@@ -23,7 +23,10 @@ vim.g.nvim_tree_icons = {
   },
 }
 
-vim.g.nvim_tree_quit_on_open = 0
+-- vim.g.nvim_tree_quit_on_open = 0
+
+-- automatically close the tab/vim when nvim-tree is the last window in the tab
+vim.api.nvim_exec([[ autocmd BufEnter * ++nested if winnr('$') == 1 && bufname() == 'NvimTree_' . tabpagenr() | quit | endif ]], false)
 
 local status_ok, nvim_tree = pcall(require, "nvim-tree")
 if not status_ok then
@@ -46,7 +49,6 @@ nvim_tree.setup {
     "dashboard",
     "alpha",
   },
-  auto_close = true,
   open_on_tab = false,
   hijack_cursor = false,
   update_cwd = true,
@@ -75,6 +77,11 @@ nvim_tree.setup {
   filters = {
     dotfiles = false,
     custom = {},
+  },
+  actions = {
+    open_file = {
+        quit_on_open = true
+    }
   },
   git = {
     enable = true,
