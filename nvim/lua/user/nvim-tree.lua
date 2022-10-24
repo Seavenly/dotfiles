@@ -1,40 +1,6 @@
--- following options are the default
--- each of these are documented in `:help nvim-tree.OPTION_NAME`
-vim.g.nvim_tree_git_hl = 1
-vim.g.nvim_tree_root_folder_modifier = ":t"
-vim.g.nvim_tree_show_icons = {
-    git = 1,
-    folders = 1,
-    files = 1,
-    folder_arrows = 1,
-    tree_width = 30,
-}
-vim.g.nvim_tree_icons = {
-    default = "",
-    symlink = "",
-    git = {
-        unstaged = "",
-        staged = "S",
-        unmerged = "",
-        renamed = "➜",
-        deleted = "",
-        untracked = "U",
-        ignored = "◌",
-    },
-    folder = {
-        arrow_open = "",
-        arrow_closed = "",
-        default = "",
-        open = "",
-        empty = "",
-        empty_open = "",
-        symlink = "",
-    },
-}
-
-
 -- automatically close the tab/vim when nvim-tree is the last window in the tab
-vim.api.nvim_exec([[ autocmd BufEnter * ++nested if winnr('$') == 1 && bufname() == 'NvimTree_' . tabpagenr() | quit | endif ]], false)
+vim.api.nvim_exec([[ autocmd BufEnter * ++nested if winnr('$') == 1 && bufname() == 'NvimTree_' . tabpagenr() | quit | endif ]]
+    , false)
 
 local status_ok, nvim_tree = pcall(require, "nvim-tree")
 if not status_ok then
@@ -45,6 +11,11 @@ local config_status_ok, nvim_tree_config = pcall(require, "nvim-tree.config")
 if not config_status_ok then
     return
 end
+
+vim.opt.foldmethod = 'expr'
+vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
+-- Anything deeper than this autofolds when buffer opens
+vim.opt.foldlevel = 20
 
 local tree_cb = nvim_tree_config.nvim_tree_callback
 
@@ -107,7 +78,6 @@ nvim_tree.setup {
     },
     view = {
         width = 40,
-        height = 30,
         hide_root_folder = false,
         side = "right",
         mappings = {
@@ -125,4 +95,38 @@ nvim_tree.setup {
         cmd = "trash",
         require_confirm = true,
     },
+    renderer = {
+        highlight_git = true,
+        root_folder_modifier = ":t",
+        icons = {
+            show = {
+                git = true,
+                folder = true,
+                file = true,
+                folder_arrow = true,
+            },
+            glyphs = {
+                default = "",
+                symlink = "",
+                git = {
+                    unstaged = "",
+                    staged = "S",
+                    unmerged = "",
+                    renamed = "➜",
+                    deleted = "",
+                    untracked = "U",
+                    ignored = "◌",
+                },
+                folder = {
+                    arrow_open = "",
+                    arrow_closed = "",
+                    default = "",
+                    open = "",
+                    empty = "",
+                    empty_open = "",
+                    symlink = "",
+                },
+            }
+        }
+    }
 }
