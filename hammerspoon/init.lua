@@ -1,11 +1,41 @@
 local MARKS_FILE_PATH = "~/.hammerspoon-marks.json"
 
+local M = {
+    marks = {},
+    events = {}
+}
+
+function printTable(table)
+    for k, v in pairs(table) do
+        print(k, v)
+    end
+end
+
+local filter = hs.window.filter.new(true)
+
+printTable(filter:getFilters())
+printTable(filter:getWindows())
+
+
 local function getDeserializedMarks()
+    local status, serializedMarks = pcall(function() return hs.json.read(MARKS_FILE_PATH) end)
+
+    if not status then
+        return {}
+    end
+
     local deserializedMarks = {}
 
-    for k, v in pairs(hs.json.read(MARKS_FILE_PATH)) do
-        local window = hs.window.filter.new(function(win) return win:id() == v.window end):getWindows()[1]
+    for k, v in pairs(serializedMarks) do
+        local filter = hs.window.filter.new(function(win)
+            -- print(window)
+            return win:id() == v.window
+        end):setDefaultFilter {}
+
+        local window = filter:getWindows()[1]
         local application = hs.application.get(v.application) or v.application
+
+        -- print(k, window)
 
         deserializedMarks[k] = {
             window = window,
@@ -16,10 +46,7 @@ local function getDeserializedMarks()
     return deserializedMarks
 end
 
-local M = {
-    marks = getDeserializedMarks(),
-    events = {}
-}
+M.marks = getDeserializedMarks()
 
 local function getSerializedMarks()
     local serializedMarks = {}
@@ -34,27 +61,35 @@ local function getSerializedMarks()
     return serializedMarks
 end
 
-local function showApplication(application, window)
+local function showApplication(application, window, key)
+    print("window", window)
     if window and window:application():bundleID() == application:bundleID() then
-        window:focus()
+        if window:isVisible() then
+            window:focus()
+        else
+            window:maximize()
+        end
     else
         if application then
+            print("HERE")
+            printTable(application:allWindows())
+            print(application:allWindows()[1]:role())
+            application:allWindows()[1]:becomeMain()
+            application:allWindows()[1]:maximize()
             application:activate()
+            application:unhide()
         else
-            markData.application = hs.application.open(application, 0, true)
+            M.marks[key].application = hs.application.open(application, 0, true)
         end
 
-        markData.window = application:focusedWindow()
+        M.marks[key].window = application:focusedWindow()
         hs.json.write(getSerializedMarks(), MARKS_FILE_PATH, true, true)
     end
 end
 
 hs.hotkey.bind({ "ctrl" }, "m", function()
     M.events.setMark = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
-        print("keyDown", event:getCharacters(true))
-
         local focusedWindow = hs.window.focusedWindow()
-        print("title", focusedWindow:title())
 
         if focusedWindow then
             M.marks[event:getCharacters(true)] = {
@@ -83,14 +118,14 @@ end)
 
 hs.hotkey.bind({ "ctrl" }, "`", function()
     M.events.gotoMark = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
-
-        local markData = M.marks[event:getCharacters(true)]
+        local key = event:getCharacters(true)
+        local markData = M.marks[key]
 
         if markData then
             local window = markData.window
             local application = markData.application
 
-            showApplication(application, window)
+            showApplication(application, window, key)
         end
 
         M.events.gotoMark:stop()
@@ -101,10 +136,11 @@ end)
 
 local chooser = hs.chooser.new(function(choice)
     if choice and choice.application then
+        local key = choice.key
         local window = choice.window
         local application = choice.application
 
-        showApplication(application, window)
+        showApplication(application, window, key)
     end
 end)
 chooser:rows(5)
@@ -118,12 +154,21 @@ local function refreshChoices()
     local choices = {}
 
     for k, v in pairs(M.marks) do
+        local text = string.format(
+            "   [%s]  %s",
+            k,
+            v.application:name():gsub("^%l", string.upper)
+        )
+        local styledText = hs.styledtext.ansi(text, {
+            font = {
+                name = "Menlo-Regular",
+                size = 20
+            },
+            color = { hex = "#ffffff" }
+        })
+
         table.insert(choices, {
-            text = string.format(
-                "  [%s]   %s",
-                k,
-                v.application:name():gsub("^%l", string.upper)
-            ),
+            text = styledText,
             key = k,
             application = v.application,
             window = v.window
