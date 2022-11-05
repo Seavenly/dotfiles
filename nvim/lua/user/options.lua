@@ -24,6 +24,7 @@ local options = {
     expandtab = true, -- convert tabs to spaces
     shiftwidth = 4, -- the number of spaces inserted for each indentation
     tabstop = 4, -- insert 2 spaces for a tab
+    softtabstop = 4,
     cursorline = true, -- highlight the current line
     number = true, -- set numbered lines
     relativenumber = true, -- set relative numbered lines

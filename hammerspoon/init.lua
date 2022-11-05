@@ -1,11 +1,16 @@
 local MARKS_FILE_PATH = "~/.hammerspoon-marks.json"
 
+-- GOBAL STATE
+
 local M = {
     marks = {},
-    events = {}
+    events = {},
+    chooser = nil
 }
 
-function printTable(table)
+-- UTIL FUNCTIONS
+
+local function printTable(table)
     for k, v in pairs(table) do
         print(k, v)
     end
@@ -66,14 +71,12 @@ local function getDeserializedMarks()
     return deserializedMarks
 end
 
-M.marks = getDeserializedMarks()
-
 local function getSerializedMarks()
     local serializedMarks = {}
 
     for k, v in pairs(M.marks) do
         serializedMarks[k] = {
-            window = v.window:id(),
+            window = v.window and v.window:id(),
             application = v.application:bundleID()
         }
     end
@@ -81,15 +84,32 @@ local function getSerializedMarks()
     return serializedMarks
 end
 
-local function showApplication(application, window, key)
-    print("--- showApplication ---")
+local function saveMarks()
+    hs.json.write(getSerializedMarks(), MARKS_FILE_PATH, true, true)
+end
+
+local function showApplicationForKey(key)
+    print("--- showApplicationForKey ---")
     print("key ", key)
+
+    local markData = M.marks[key]
+
+    if not markData then return end
+
+    local window = markData.window
+    local application = markData.application
+
     print("application ", application)
     print("window ", window)
 
     if not application then return end
 
-    if next(application:allWindows()) == nil then
+    if type(application) == "string" then
+        -- Application is completely closed and needs to be reopened
+
+        hs.application.open(application, 0, true)
+
+    elseif next(application:allWindows()) == nil then
         -- A closed window can be held onto so check to see if all application windows are closed
 
         hs.application.open(application:bundleID(), 0, true)
@@ -116,11 +136,15 @@ local function showApplication(application, window, key)
         -- If the window has been updated then we want to save it
 
         M.marks[key].window = application:focusedWindow()
-        hs.json.write(getSerializedMarks(), MARKS_FILE_PATH, true, true)
+        saveMarks()
     end
 end
 
-hs.hotkey.bind({ "ctrl" }, "m", function()
+-- Initial Setup
+
+local function setup()
+    -- SUB KEY BINDS
+
     M.events.setMark = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
         local focusedWindow = hs.window.focusedWindow()
 
@@ -129,6 +153,7 @@ hs.hotkey.bind({ "ctrl" }, "m", function()
                 window = focusedWindow,
                 application = focusedWindow:application(),
             }
+
             hs.notify.new(nil, {
                 informativeText = string.format("Mark[%s] = %s", event:getCharacters(true),
                     focusedWindow:application():name()),
@@ -136,105 +161,113 @@ hs.hotkey.bind({ "ctrl" }, "m", function()
                 title = "Mark set",
                 withdrawAfter = 2
             }):send()
+
             print(string.format("Mark[%s] = %s", event:getCharacters(true), focusedWindow:application():name()))
 
-            hs.json.write(getSerializedMarks(), MARKS_FILE_PATH, true, true)
+            saveMarks()
         end
 
         -- Ensure event tap event only happens once
         M.events.setMark:stop()
         return true
     end)
-    -- Requires manually starting the event listener
-    M.events.setMark:start()
-end)
 
-hs.hotkey.bind({ "ctrl" }, "`", function()
     M.events.gotoMark = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
         local key = event:getCharacters(true)
-        local markData = M.marks[key]
 
-        if markData then
-            local window = markData.window
-            local application = markData.application
-
-            showApplication(application, window, key)
-        end
+        showApplicationForKey(key)
 
         -- Ensure event tap event only happens once
         M.events.gotoMark:stop()
         return true
     end)
-    -- Requires manually starting the event listener
-    M.events.gotoMark:start()
-end)
 
-local chooser = hs.chooser.new(function(choice)
-    if choice and choice.application then
-        local key = choice.key
-        local window = choice.window
-        local application = choice.application
+    M.events.deleteMark = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
+        local characters = event:getCharacters(true)
+        local flags = event:getFlags()
 
-        showApplication(application, window, key)
-    end
-end)
-chooser:rows(5)
-chooser:width(40)
-chooser:hideCallback(function()
-    -- Reset the search box
-    chooser:query(nil)
-    -- Clear the develteMark keypress event
-    M.events.deleteMark:stop()
-end)
+        if characters == "d" and flags.ctrl then
+            local choice = M.chooser:selectedRowContents()
 
-local function refreshChoices()
-    local choices = {}
+            M.marks[choice.key] = nil
+            M.chooser:refreshChoicesCallback()
+            saveMarks()
 
-    for k, v in pairs(M.marks) do
-        local text = string.format(
-            "   [%s]  %s",
-            k,
-            v.application:name():gsub("^%l", string.upper)
-        )
-        local styledText = hs.styledtext.ansi(text, {
-            font = {
-                name = "Menlo-Regular",
-                size = 20
-            },
-            color = { hex = "#ffffff" }
-        })
+            return true
+        end
 
-        table.insert(choices, {
-            text = styledText,
-            key = k,
-            application = v.application,
-            window = v.window
-        })
-    end
+        return false
+    end)
 
-    chooser:choices(choices)
+    -- GLOBAL KEY BINDS
+
+    hs.hotkey.bind({ "ctrl" }, "m", function()
+        M.events.setMark:start()
+    end)
+
+    hs.hotkey.bind({ "ctrl" }, "`", function()
+        M.events.gotoMark:start()
+    end)
+
+    hs.hotkey.bind({ "ctrl" }, "Space", function()
+        M.chooser:show()
+        M.events.deleteMark:start()
+    end)
+
+    -- Load Saved Marks
+
+    M.marks = getDeserializedMarks()
+
+    -- Setup Chooser
+
+    M.chooser = hs.chooser.new(function(choice)
+        -- choice can be nil if none selected with enter key press
+        if choice then
+            local key = choice.key
+
+            showApplicationForKey(key)
+        end
+    end)
+        :rows(7)
+        :width(40)
+        :showCallback(function()
+            M.chooser:refreshChoicesCallback()
+        end)
+        :hideCallback(function()
+            -- Reset the search box
+            M.chooser:query(nil)
+            -- Clear the develteMark keypress event
+            M.events.deleteMark:stop()
+        end)
+        :choices(function()
+            local choices = {}
+
+            for k, v in pairs(M.marks) do
+                local applicationName = type(v.application) == "string" and hs.application.nameForBundleID(v.application)
+                    or
+                    v.application:name()
+                local text = string.format(
+                    "   [%s]  %s",
+                    k,
+                    applicationName:gsub("^%l", string.upper)
+                )
+                local styledText = hs.styledtext.ansi(text, {
+                    font = {
+                        name = "Menlo-Regular",
+                        size = 20
+                    },
+                    color = { hex = "#ffffff" }
+                })
+
+                table.insert(choices, {
+                    text = styledText,
+                    key = k,
+                })
+            end
+
+            return choices
+        end)
+
 end
 
-M.events.deleteMark = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
-    local characters = event:getCharacters(true)
-    local flags = event:getFlags()
-
-    if characters == "d" and flags.ctrl then
-        local choice = chooser:selectedRowContents()
-
-        M.marks[choice.key] = nil
-        refreshChoices()
-        hs.json.write(getSerializedMarks(), MARKS_FILE_PATH, true, true)
-
-        return true
-    end
-
-    return false
-end)
-
-hs.hotkey.bind({ "ctrl" }, "Space", function()
-    refreshChoices()
-    chooser:show()
-
-    M.events.deleteMark:start()
-end)
+setup()
