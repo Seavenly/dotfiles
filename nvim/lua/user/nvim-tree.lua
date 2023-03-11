@@ -20,7 +20,7 @@ vim.opt.foldlevel = 20
 local tree_cb = nvim_tree_config.nvim_tree_callback
 
 nvim_tree.setup {
-    disable_netrw = true,
+    disable_netrw = false,
     hijack_netrw = true,
     open_on_setup = false,
     ignore_ft_on_setup = {
