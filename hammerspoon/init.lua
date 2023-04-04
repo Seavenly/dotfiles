@@ -77,7 +77,7 @@ local function getSerializedMarks()
     for k, v in pairs(M.marks) do
         serializedMarks[k] = {
             window = v.window and v.window:id(),
-            application = v.application:bundleID()
+            application = (type(v.application) == "string" and v.application) or v.application:bundleID()
         }
     end
 
@@ -108,12 +108,10 @@ local function showApplicationForKey(key)
         -- Application is completely closed and needs to be reopened
 
         hs.application.open(application, 0, true)
-
     elseif next(application:allWindows()) == nil then
         -- A closed window can be held onto so check to see if all application windows are closed
 
         hs.application.open(application:bundleID(), 0, true)
-
     elseif window and window:application():bundleID() == application:bundleID() then
         -- Check to ensure that the window ID that may have been deserialized back to a window
         -- instance wtill matches the same application
@@ -123,7 +121,6 @@ local function showApplicationForKey(key)
         end
 
         window:focus()
-
     else
         -- In this scenario we were unable to recover the window from a previous state
         -- so we just show whatever window is available for the application
@@ -205,7 +202,7 @@ local function setup()
         M.events.setMark:start()
     end)
 
-    hs.hotkey.bind({ "ctrl" }, "`", function()
+    hs.hotkey.bind({ "ctrl", "cmd" }, "a", function()
         M.events.gotoMark:start()
     end)
 
@@ -221,13 +218,13 @@ local function setup()
     -- Setup Chooser
 
     M.chooser = hs.chooser.new(function(choice)
-        -- choice can be nil if none selected with enter key press
-        if choice then
-            local key = choice.key
+            -- choice can be nil if none selected with enter key press
+            if choice then
+                local key = choice.key
 
-            showApplicationForKey(key)
-        end
-    end)
+                showApplicationForKey(key)
+            end
+        end)
         :rows(7)
         :width(40)
         :showCallback(function()
@@ -267,7 +264,6 @@ local function setup()
 
             return choices
         end)
-
 end
 
 setup()
