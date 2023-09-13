@@ -1,15 +1,16 @@
 -- automatically close the tab/vim when nvim-tree is the last window in the tab
 vim.api.nvim_exec(
-[[ autocmd BufEnter * ++nested if winnr('$') == 1 && bufname() == 'NvimTree_' . tabpagenr() | quit | endif ]]
-, false)
+    [[ autocmd BufEnter * ++nested if winnr('$') == 1 && bufname() == 'NvimTree_' . tabpagenr() | quit | endif ]]
+    , false)
+
 
 local status_ok, nvim_tree = pcall(require, "nvim-tree")
 if not status_ok then
     return
 end
 
-local config_status_ok, nvim_tree_config = pcall(require, "nvim-tree.config")
-if not config_status_ok then
+local api_status_ok, api = pcall(require, "nvim-tree.api")
+if not api_status_ok then
     return
 end
 
@@ -18,7 +19,19 @@ vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
 -- Anything deeper than this autofolds when buffer opens
 vim.opt.foldlevel = 20
 
-local tree_cb = nvim_tree_config.nvim_tree_callback
+local function custom_on_attach(bufnr)
+    local function opts(desc)
+        return { desc = "nvim-tree: " .. desc, buffer = bufnr, noremap = true, silent = true, nowait = true }
+    end
+
+    -- default mappings
+    api.config.mappings.default_on_attach(bufnr)
+
+    -- custom mappings
+    vim.keymap.set('n', 'l', api.node.open.edit, opts('Edit'))
+    vim.keymap.set('n', 'v', api.node.open.vertical, opts('Vertical Split'))
+    vim.keymap.set('n', 'h', api.node.navigate.parent_close, opts('Close Node'))
+end
 
 nvim_tree.setup {
     disable_netrw = false,
@@ -26,6 +39,7 @@ nvim_tree.setup {
     open_on_tab = false,
     hijack_cursor = false,
     update_cwd = true,
+    on_attach = custom_on_attach,
     hijack_directories = {
         enable = true,
         auto_open = true,
@@ -75,14 +89,6 @@ nvim_tree.setup {
         width = 40,
         hide_root_folder = false,
         side = "right",
-        mappings = {
-            custom_only = false,
-            list = {
-                { key = { "l", "<CR>", "o" }, cb = tree_cb "edit" },
-                { key = "h",                  cb = tree_cb "close_node" },
-                { key = "v",                  cb = tree_cb "vsplit" },
-            },
-        },
         number = false,
         relativenumber = false,
     },
