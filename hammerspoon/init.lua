@@ -202,7 +202,7 @@ local function setup()
         M.events.setMark:start()
     end)
 
-    hs.hotkey.bind({ "ctrl", "cmd" }, "a", function()
+    hs.hotkey.bind({ "ctrl", "shift" }, "a", function()
         M.events.gotoMark:start()
     end)
 
