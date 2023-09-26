@@ -46,6 +46,12 @@ M.setup = function()
     vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
         border = "rounded",
     })
+
+    vim.filetype.add {
+        filename = {
+            ["Fastfile"] = "ruby",
+        },
+    }
 end
 
 local augroup_lsp_document_highlight = vim.api.nvim_create_augroup("lsp_document_highlight", {})

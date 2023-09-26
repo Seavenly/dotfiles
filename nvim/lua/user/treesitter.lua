@@ -11,7 +11,7 @@ end
 configs.setup {
     ensure_installed = { "javascript", "lua", "rust", "bash", "comment", "css", "dockerfile", "go", "graphql", "html",
         "jsdoc", "json", "kotlin", "markdown", "python", "svelte", "scss", "swift", "toml", "typescript", "tsx", "vim",
-        "yaml" },            -- one of "all" or a list of languages
+        "yaml", "ruby" },    -- one of "all" or a list of languages
     sync_install = false,    -- install languages synchronously (only applied to `ensure_installed`)
     ignore_install = { "" }, -- List of parsers to ignore installing
     autopairs = {
