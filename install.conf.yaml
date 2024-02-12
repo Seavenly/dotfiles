@@ -3,6 +3,8 @@
 - link:
     ~/.config/kitty: kitty
     ~/.config/nvim: nvim
+    ~/.config/lazygit: lazygit
+    ~/.config/zshrc: zshrc
     ~/.hammerspoon: hammerspoon
     ~/.tmux.conf: tmux.conf
 

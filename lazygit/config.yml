@@ -1,0 +1,17 @@
+gui:
+  sidePanelWidth: 0.2
+
+os:
+  edit: '~/.dotfiles/scripts/tmux-nvim-remote.sh --remote {{filename}}'
+  editAtLine: '~/.dotfiles/scripts/tmux-nvim-remote.sh -c {{line}} --remote {{filename}}'
+  editAtLineAndWait: '~/.dotfiles/scripts/tmux-nvim-remote.sh -c {{line}} --remote-wait {{filename}}'
+  editInTerminal: true
+  openDirInEditor: '~/.dotfiles/scripts/tmux-nvim-remote.sh --remote {{dir}}'
+
+promptToReturnFromSubprocess: false # display confirmation when subprocess terminates
+
+git:
+  paging:
+    colorArg: always
+    #pager: delta --dark --paging=never --side-by-side --line-numbers-left-format="{nm:>4}│" --line-numbers-right-format="{np:>4}│"
+    pager: delta --dark --paging=never
