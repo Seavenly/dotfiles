@@ -16,4 +16,4 @@ export PATH="${HOME}/.pyenv/shims:${PATH}"
 # Start tmux with a specific project session
 bindkey -s '^a' "~/.dotfiles/scripts/tmux-sessionizer.sh\n"
 
-alias nv="~/.dotfiles/scripts/tmux-nvim-remote.sh"
+source ~/.dotfiles/scripts/tmux-nvim-remote.sh
