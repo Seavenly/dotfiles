@@ -2,11 +2,11 @@ gui:
   sidePanelWidth: 0.2
 
 os:
-  edit: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --remote {{filename}}'
-  editAtLine: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv -c {{line}} --remote {{filename}}'
-  editAtLineAndWait: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv -c {{line}} --remote-wait {{filename}}'
+  edit: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap --remote {{filename}}'
+  editAtLine: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap -c {{line}} --remote {{filename}}'
+  editAtLineAndWait: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap -c {{line}} --remote-wait {{filename}}'
   editInTerminal: true
-  openDirInEditor: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --remote {{dir}}'
+  openDirInEditor: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap --remote {{dir}}'
 
 promptToReturnFromSubprocess: false # display confirmation when subprocess terminates
 
