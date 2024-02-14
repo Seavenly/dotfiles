@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-nv() {
+function nv() {
     local arguments=()
 
     for arg in "$@"; do
@@ -16,11 +16,9 @@ nv() {
         fi
     done
 
-    open_tmux_nvim() {
+    function open_tmux_nvim() {
         local tmux_window=$(tmux display -p "#{session_id}.#{window_id}.#{pane_id}")
         nvim --listen "${dir}nvim.$USER.$tmux_window" ${arguments[@]}
-        
-        return 0
     } 
 
     if [[ -z $TMUX ]]; then
@@ -29,12 +27,12 @@ nv() {
         else
             nvim ${arguments[@]}
         fi
-
         return 0
     fi
 
     if [[ $is_remote != "true" ]]; then
-        return open_tmux_nvim
+        open_tmux_nvim
+        return 0
     fi
 
     local dir=$(getconf DARWIN_USER_TEMP_DIR)
@@ -48,7 +46,8 @@ nv() {
 
     # If no instances exist
     if [[ -z $pane_id ]]; then
-        return open_tmux_nvim
+        open_tmux_nvim
+        return 0
     fi
 
     nvr --servername "${dir}nvim.$USER.$session_id.$window_id.$pane_id" ${arguments[@]}
