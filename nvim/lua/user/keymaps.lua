@@ -32,6 +32,11 @@ vim.keymap.set("n", "<C-Right>", ":vertical resize +2<CR>", opts)
 vim.keymap.set("n", "<S-l>", ":bnext<CR>", opts)
 vim.keymap.set("n", "<S-h>", ":bprevious<CR>", opts)
 
+-- Scroll half page and center
+vim.keymap.set("n", "<C-u>", "<C-u>zz", { desc = "Center cursor after moving up half-page" })
+vim.keymap.set("n", "<C-d>", "<C-d>zz", { desc = "Center cursor after moving down half-page" })
+
+
 -- Move text up and down
 vim.keymap.set("n", "<A-j>", "<Esc>:m .+1<CR>==gi", opts)
 vim.keymap.set("n", "<A-k>", "<Esc>:m .-2<CR>==gi", opts)
