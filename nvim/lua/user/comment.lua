@@ -3,6 +3,17 @@ if not status_ok then
     return
 end
 
+local status_ok, ts_context = pcall(require, 'ts_context_commentstring')
+if not status_ok then
+    return
+end
+
+vim.g.skip_ts_context_commentstring_module = true
+
+ts_context.setup {
+    enable_autocmd = false,
+}
+
 comment.setup {
     ---Add a space b/w comment and the line
     padding = true,
