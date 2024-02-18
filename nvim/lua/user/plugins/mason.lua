@@ -7,9 +7,10 @@ local language_servers = {
 return {
     "williamboman/mason-lspconfig.nvim",
     dependencies = {
-        "neovim/nvim-lspconfig", -- enable LSP
+        "neovim/nvim-lspconfig",           -- enable LSP
         "williamboman/mason.nvim",
-        "hrsh7th/cmp-nvim-lsp",  -- lsp completions
+        "hrsh7th/cmp-nvim-lsp",            -- lsp completions
+        { 'j-hui/fidget.nvim', opts = {} } -- Useful status updates for LSP
     },
     opts = {
         ensure_installed = language_servers

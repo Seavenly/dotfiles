@@ -77,21 +77,12 @@ local mappings = {
             "Workspace Symbols",
         },
     },
-    s = {
-        name = "Search",
-        b = { "<cmd>Telescope git_branches<cr>", "Checkout branch" },
-        c = { "<cmd>Telescope colorscheme<cr>", "Colorscheme" },
-        h = { "<cmd>Telescope help_tags<cr>", "Find Help" },
-        M = { "<cmd>Telescope man_pages<cr>", "Man Pages" },
-        r = { "<cmd>Telescope oldfiles<cr>", "Open Recent File" },
-        R = { "<cmd>Telescope registers<cr>", "Registers" },
-        k = { "<cmd>Telescope keymaps<cr>", "Keymaps" },
-        C = { "<cmd>Telescope commands<cr>", "Commands" },
-    }
+    s = { name = "[S]earch", _ = "which_key_ignore" }
 }
 
 return {
     "folke/which-key.nvim",
+    event = "VeryLazy",
     opts = {
         plugins = {
             marks = true,         -- shows a list of your marks on ' and `
@@ -125,7 +116,7 @@ return {
         icons = {
             breadcrumb = "»", -- symbol used in the command line area that shows your active key combo
             separator = "=>", -- symbol used between a key and it's label
-            group = "+", -- symbol prepended to a group
+            group = "+",      -- symbol prepended to a group
         },
         popup_mappings = {
             scroll_down = "<c-d>", -- binding to scroll down inside the popup
@@ -144,7 +135,7 @@ return {
             spacing = 3,                                                              -- spacing between columns
             align = "left",                                                           -- align columns left, center or right
         },
-        ignore_missing = true,                                                        -- enable this to hide mappings for which you didn't specify a label
+        ignore_missing = false,                                                       -- enable this to hide mappings for which you didn't specify a label
         hidden = { "<silent>", "<cmd>", "<Cmd>", "<CR>", "call", "lua", "^:", "^ " }, -- hide mapping boilerplate
         show_help = true,                                                             -- show help message on the command line when the popup is visible
         triggers = "auto",                                                            -- automatically setup triggers

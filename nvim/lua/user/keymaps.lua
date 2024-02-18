@@ -1,9 +1,8 @@
 local opts = { silent = true }
 
--- local term_opts = { silent = true }
+vim.keymap.set({ "n", "v" }, "<Space>", "<Nop>", opts)
 
 --Remap space as leader key
-vim.keymap.set("", "<Space>", "<Nop>", opts)
 vim.g.mapleader = " "
 vim.g.maplocalleader = " "
 
@@ -62,10 +61,3 @@ vim.keymap.set("x", "J", ":move '>+1<CR>gv-gv", opts)
 vim.keymap.set("x", "K", ":move '<-2<CR>gv-gv", opts)
 vim.keymap.set("x", "<A-j>", ":move '>+1<CR>gv-gv", opts)
 vim.keymap.set("x", "<A-k>", ":move '<-2<CR>gv-gv", opts)
-
--- Terminal --
--- Better terminal navigation
--- vim.keymap.set("t", "<C-h>", "<C-\\><C-N><C-w>h", term_opts)
--- vim.keymap.set("t", "<C-j>", "<C-\\><C-N><C-w>j", term_opts)
--- vim.keymap.set("t", "<C-k>", "<C-\\><C-N><C-w>k", term_opts)
--- vim.keymap.set("t", "<C-l>", "<C-\\><C-N><C-w>l", term_opts)

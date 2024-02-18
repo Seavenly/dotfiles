@@ -78,41 +78,31 @@ local function lsp_highlight_document(client, bufnr)
 end
 
 local augroup_lsp_formatting = vim.api.nvim_create_augroup("lsp_formatting", {})
--- Use "null-ls" for formatting active buffer if supported, otherwise use LSP formatting
+
 local function lsp_formatting(client, bufnr)
-    local opts = {}
+    if not client.server_capabilities.documentFormattingProvider then
+        return
+    end
 
     local function lsp_format()
-        local null_ls_formatting_supported = false
-
-        for _, v in pairs(vim.lsp.get_active_clients()) do
-            if v.name == "null-ls" and v.server_capabilities.documentFormattingProvider then
-                null_ls_formatting_supported = true
-            end
-        end
-
         vim.lsp.buf.format({
             bufnr = bufnr,
-            filter = function(client)
-                if (null_ls_formatting_supported) then
-                    return client.name == "null-ls"
-                end
-
-                return true
+            async = false,
+            filter = function(c)
+                return c.id == client.id
             end
         })
     end
 
-    if client.server_capabilities.documentFormattingProvider then
-        vim.api.nvim_buf_create_user_command(bufnr, "Format", lsp_format, opts)
+    vim.api.nvim_buf_create_user_command(bufnr, "Format", lsp_format, {})
 
-        vim.api.nvim_clear_autocmds({ group = augroup_lsp_formatting, buffer = bufnr })
-        vim.api.nvim_create_autocmd("BufWritePre", {
-            group = augroup_lsp_formatting,
-            buffer = bufnr,
-            callback = lsp_format
-        })
-    end
+    vim.api.nvim_clear_autocmds({ group = augroup_lsp_formatting, buffer = bufnr })
+
+    vim.api.nvim_create_autocmd("BufWritePre", {
+        group = augroup_lsp_formatting,
+        buffer = bufnr,
+        callback = lsp_format
+    })
 end
 
 local function lsp_keymaps(bufnr)
