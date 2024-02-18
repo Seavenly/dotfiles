@@ -1,4 +1,3 @@
-local handlers = require("user.lsp.handlers")
 local language_servers = {
     "lua_ls", "cssls", "eslint", "gopls", "html", "jsonls", "tsserver", "remark_ls", "pyright", "rust_analyzer",
     "svelte", "taplo", "yamlls"
@@ -7,38 +6,87 @@ local language_servers = {
 return {
     "williamboman/mason-lspconfig.nvim",
     dependencies = {
-        "neovim/nvim-lspconfig",           -- enable LSP
-        "williamboman/mason.nvim",
-        "hrsh7th/cmp-nvim-lsp",            -- lsp completions
-        { 'j-hui/fidget.nvim', opts = {} } -- Useful status updates for LSP
+        "neovim/nvim-lspconfig",                  -- neovim LSP
+        { "williamboman/mason.nvim", opts = {} }, -- Mason LSP installer
+        "hrsh7th/cmp-nvim-lsp",                   -- lsp completions
+        { 'j-hui/fidget.nvim',       opts = {} }, -- Useful status updates for LSP
+        { 'folke/neodev.nvim',       opts = {} }  -- Additional lua configuration, makes nvim stuff amazing!
     },
+    init = function()
+        local signs = {
+            { name = "DiagnosticSignError", text = "" },
+            { name = "DiagnosticSignWarn", text = "" },
+            { name = "DiagnosticSignHint", text = "" },
+            { name = "DiagnosticSignInfo", text = "" },
+        }
+
+        for _, sign in ipairs(signs) do
+            vim.fn.sign_define(sign.name, { texthl = sign.name, text = sign.text, numhl = "" })
+        end
+
+        local config = {
+            -- disable virtual text
+            virtual_text = false,
+            -- virtual_text = {
+            --   source = "always",
+            --   prefix = "●",
+            -- },
+            -- show signs
+            signs = {
+                active = signs,
+            },
+            update_in_insert = false,
+            underline = true,
+            severity_sort = true,
+            float = {
+                focusable = false,
+                style = "minimal",
+                border = "rounded",
+                source = "always",
+                header = "",
+                prefix = "",
+            },
+        }
+
+        vim.diagnostic.config(config)
+
+        vim.lsp.handlers["textDocument/hover"] = vim.lsp.with(vim.lsp.handlers.hover, {
+            border = "rounded",
+        })
+        vim.lsp.handlers["textDocument/signatureHelp"] = vim.lsp.with(vim.lsp.handlers.signature_help, {
+            border = "rounded",
+        })
+
+        vim.filetype.add {
+            filename = {
+                ["Fastfile"] = "ruby",
+            },
+        }
+    end,
     opts = {
         ensure_installed = language_servers
     },
     config = function(_, opts)
         local lspconfig = require "lspconfig"
+        local mason_lspconfig = require "mason-lspconfig"
+        local handlers = require "user.lsp.handlers"
 
-        handlers.setup()
-        require("mason").setup()
-        require("mason-lspconfig").setup(opts)
+        mason_lspconfig.setup(opts)
 
-        for _, server in pairs(language_servers) do
-            local lsp_opts = {
-                on_attach = handlers.on_attach,
-                capabilities = handlers.capabilities,
-            }
+        mason_lspconfig.setup_handlers {
+            function(server_name)
+                local lsp_opts = {
+                    on_attach = handlers.on_attach,
+                    capabilities = handlers.capabilities,
+                }
 
-            if server == "jsonls" then
-                local jsonls_opts = require("user.lsp.settings.jsonls")
-                lsp_opts = vim.tbl_deep_extend("force", jsonls_opts, lsp_opts)
-            end
+                if server_name == "jsonls" then
+                    local jsonls_opts = require("user.lsp.settings.jsonls")
+                    lsp_opts = vim.tbl_deep_extend("force", jsonls_opts, lsp_opts)
+                end
 
-            if server == "lua_ls" then
-                local lua_opts = require("user.lsp.settings.lua_ls")
-                lsp_opts = vim.tbl_deep_extend("force", lua_opts, lsp_opts)
-            end
-
-            lspconfig[server].setup(lsp_opts)
-        end
+                lspconfig[server_name].setup(lsp_opts)
+            end,
+        }
     end
 }
