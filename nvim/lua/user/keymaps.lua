@@ -49,13 +49,13 @@ local Keymaps = {
     kmap('n', '<C-k>', '<C-w>k', 'Navigate to window up')
     kmap('n', '<C-l>', '<C-w>l', 'Navigate to window right')
     -- Buffer navigation
-    kmap('n', '<S-l>', ':bnext<CR>', 'Navigate to next buffer')
-    kmap('n', '<S-h>', ':bprevious<CR>', 'Navigate to previous buffer')
+    kmap('n', 'L', ':bnext<CR>', 'Navigate to next buffer')
+    kmap('n', 'H', ':bprevious<CR>', 'Navigate to previous buffer')
     -- Window resize
-    kmap('n', '<C-Up>', ':resize -2<CR>', 'Resize window up')
-    kmap('n', '<C-Down>', ':resize +2<CR>', 'Resize window down')
-    kmap('n', '<C-Left>', ':vertical resize -2<CR>', 'Resize window left')
-    kmap('n', '<C-Right>', ':vertical resize +2<CR>', 'Resize window right')
+    kmap('n', '<A-Up>', ':resize -2<CR>', 'Resize window up')
+    kmap('n', '<A-Down>', ':resize +2<CR>', 'Resize window down')
+    kmap('n', '<A-Left>', ':vertical resize -2<CR>', 'Resize window left')
+    kmap('n', '<A-Right>', ':vertical resize +2<CR>', 'Resize window right')
     -- Scrolling
     kmap('n', '<C-u>', '<C-u>zz', 'Scroll half-page up and center on cursor')
     kmap('n', '<C-d>', '<C-d>zz', 'Scroll half-page down and center on cursor')
@@ -126,6 +126,7 @@ local Keymaps = {
     -- custom mappings
     kmap('n', 'l', api.node.open.edit, 'Edit')
     kmap('n', 'v', api.node.open.vertical, 'Vertical Split')
+    kmap('n', 's', api.node.open.horizontal, 'Horizontal Split')
     kmap('n', 'h', api.node.navigate.parent_close, 'Close Node')
   end,
 
