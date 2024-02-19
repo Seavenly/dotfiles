@@ -1,3 +1,5 @@
+local keymaps = require "user.keymaps"
+
 -- automatically close the tab/vim when nvim-tree is the last window in the tab
 vim.api.nvim_exec(
     [[ autocmd BufEnter * ++nested if winnr('$') == 1 && bufname() == 'NvimTree_' . tabpagenr() | quit | endif ]]
@@ -8,22 +10,6 @@ vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
 -- Anything deeper than this autofolds when buffer opens
 vim.opt.foldlevel = 20
 
-local function custom_on_attach(bufnr)
-    local api = require "nvim-tree.api"
-
-    local function opts(desc)
-        return { desc = "nvim-tree: " .. desc, buffer = bufnr, noremap = true, silent = true, nowait = true }
-    end
-
-    -- default mappings
-    api.config.mappings.default_on_attach(bufnr)
-
-    -- custom mappings
-    vim.keymap.set('n', 'l', api.node.open.edit, opts('Edit'))
-    vim.keymap.set('n', 'v', api.node.open.vertical, opts('Vertical Split'))
-    vim.keymap.set('n', 'h', api.node.navigate.parent_close, opts('Close Node'))
-end
-
 return {
     "kyazdani42/nvim-tree.lua",
     dependencies = { "kyazdani42/nvim-web-devicons" },
@@ -33,7 +19,7 @@ return {
         open_on_tab = false,
         hijack_cursor = false,
         update_cwd = true,
-        on_attach = custom_on_attach,
+        on_attach = keymaps.nvim_tree,
         hijack_directories = {
             enable = true,
             auto_open = true,

@@ -8,9 +8,10 @@ return {
     dependencies = {
         "neovim/nvim-lspconfig",                  -- neovim LSP
         { "williamboman/mason.nvim", opts = {} }, -- Mason LSP installer
-        "hrsh7th/cmp-nvim-lsp",                   -- lsp completions
         { 'j-hui/fidget.nvim',       opts = {} }, -- Useful status updates for LSP
-        { 'folke/neodev.nvim',       opts = {} }  -- Additional lua configuration, makes nvim stuff amazing!
+        { 'folke/neodev.nvim',       opts = {} }, -- Additional lua configuration, makes nvim stuff amazing!
+        "hrsh7th/cmp-nvim-lsp",                   -- lsp completions
+        'vim-telescope/telescope.nvim'
     },
     init = function()
         local signs = {
@@ -63,15 +64,14 @@ return {
             },
         }
     end,
-    opts = {
-        ensure_installed = language_servers
-    },
-    config = function(_, opts)
+    config = function()
         local lspconfig = require "lspconfig"
         local mason_lspconfig = require "mason-lspconfig"
         local handlers = require "user.lsp.handlers"
 
-        mason_lspconfig.setup(opts)
+        mason_lspconfig.setup {
+            ensure_installed = language_servers
+        }
 
         mason_lspconfig.setup_handlers {
             function(server_name)
