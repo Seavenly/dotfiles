@@ -140,14 +140,15 @@ local Keymaps = {
     kmap('n', ']d', function() vim.diagnostic.goto_next({ border = 'rounded' }) end, 'Go to next diagnostic message')
     kmap('n', '<leader>f', function() vim.diagnostic.open_float({ border = 'rounded', source = true }) end,
       'Open floating diagnostic message')
-    kmap('n', '<leader>q', function() trouble.toggle("document_diagnostics") end, 'Open diagnostics list')
+    kmap('n', '<leader>q', function() trouble.toggle('document_diagnostics') end, 'Document Diagnostics')
+    kmap('n', '<leader>wq', function() trouble.toggle('workspace_diagnostics') end, 'Workspace Diagnostics')
 
     -- LSP keymaps
-    kmap('n', 'gd', builtin.lsp_definitions, '[G]oto [D]efinition')
+    kmap('n', 'gd', function() trouble.toggle('lsp_definitions') end, '[G]oto [D]efinition')
     kmap('n', 'gD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
-    kmap('n', 'gr', builtin.lsp_references, '[G]oto [R]eferences')
-    kmap('n', 'gi', builtin.lsp_implementations, '[G]oto [I]mplementations')
-    kmap('n', 'gt', builtin.lsp_type_definitions, '[G]oto [T]ype Definition')
+    kmap('n', 'gr', function() trouble.toggle('lsp_references') end, '[G]oto [R]eferences')
+    kmap('n', 'gi', function() trouble.toggle('lsp_implementations') end, '[G]oto [I]mplementations')
+    kmap('n', 'gt', function() trouble.toggle('lsp_type_definitions') end, '[G]oto [T]ype Definition')
     kmap('n', 'gs', builtin.lsp_document_symbols, '[G]oto Document [S]ymbols')
     kmap('n', 'gw', builtin.lsp_dynamic_workspace_symbols, '[G]oto [W]orkspace Symbols')
     -- Hover
