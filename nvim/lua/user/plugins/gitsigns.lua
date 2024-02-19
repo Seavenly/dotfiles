@@ -1,3 +1,5 @@
+local keymaps = require "user.keymaps"
+
 return {
     "lewis6991/gitsigns.nvim",
     opts = {
@@ -42,5 +44,6 @@ return {
         yadm = {
             enable = false,
         },
+        on_attach = keymaps.gitsigns
     }
 }

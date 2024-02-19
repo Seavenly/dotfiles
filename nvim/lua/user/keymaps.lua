@@ -130,8 +130,8 @@ local Keymaps = {
   end,
 
   lsp = function(bufnr)
-    local builtin = require 'telescope.builtin'
     local trouble = require "trouble"
+    local builtin = require "telescope.builtin"
 
     local kmap = opts({ buffer = bufnr, silent = true })
 
@@ -140,23 +140,57 @@ local Keymaps = {
     kmap('n', ']d', function() vim.diagnostic.goto_next({ border = 'rounded' }) end, 'Go to next diagnostic message')
     kmap('n', '<leader>f', function() vim.diagnostic.open_float({ border = 'rounded', source = true }) end,
       'Open floating diagnostic message')
-    kmap('n', '<leader>q', function() trouble.toggle('document_diagnostics') end, 'Document Diagnostics')
-    kmap('n', '<leader>wq', function() trouble.toggle('workspace_diagnostics') end, 'Workspace Diagnostics')
-
-    -- LSP keymaps
+    kmap('n', '<leader>ld', function() trouble.toggle('document_diagnostics') end, '[L]SP: Document [D]iagnostics')
+    kmap('n', '<leader>lD', function() trouble.toggle('workspace_diagnostics') end, '[L]SP: Workspace [D]iagnostics')
+    kmap('n', '<leader>lr', vim.lsp.buf.rename, '[L]SP: [R]ename')
+    kmap('n', '<leader>la', vim.lsp.buf.code_action, '[L]SP: Code [A]ctions')
+    kmap('n', '<leader>ls', builtin.lsp_document_symbols, '[L]SP: Search Document [S]ymbols')
+    kmap('n', '<leader>lS', builtin.lsp_dynamic_workspace_symbols, '[L]SP: Search Workspace [S]ymbols')
+    -- Non-leader keymaps
     kmap('n', 'gd', function() trouble.toggle('lsp_definitions') end, '[G]oto [D]efinition')
     kmap('n', 'gD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
     kmap('n', 'gr', function() trouble.toggle('lsp_references') end, '[G]oto [R]eferences')
     kmap('n', 'gi', function() trouble.toggle('lsp_implementations') end, '[G]oto [I]mplementations')
     kmap('n', 'gt', function() trouble.toggle('lsp_type_definitions') end, '[G]oto [T]ype Definition')
-    kmap('n', 'gs', builtin.lsp_document_symbols, '[G]oto Document [S]ymbols')
-    kmap('n', 'gw', builtin.lsp_dynamic_workspace_symbols, '[G]oto [W]orkspace Symbols')
     -- Hover
     kmap('n', 'K', vim.lsp.buf.hover, 'Hover documentation')
     kmap('n', '<C-k>', vim.lsp.buf.signature_help, 'Signature documentation')
+  end,
 
-    kmap('n', '<leader>rn', vim.lsp.buf.rename, '[R]e[n]ame')
-    kmap('n', '<leader>ca', vim.lsp.buf.code_action, '[C]ode [A]ctions')
+  gitsigns = function(bufnr)
+    local gs = require "gitsigns"
+
+    local kmap = opts({ buffer = bufnr, expr = true })
+
+    -- Navigation
+    kmap('n', ']c', function()
+      if vim.wo.diff then return ']c' end
+      vim.schedule(function() gs.next_hunk() end)
+      return '<Ignore>'
+    end, 'Go to next git change')
+
+    kmap('n', '[c', function()
+      if vim.wo.diff then return '[c' end
+      vim.schedule(function() gs.prev_hunk() end)
+      return '<Ignore>'
+    end, 'Go to previous git change')
+
+    kmap = opts({ buffer = bufnr })
+
+    kmap('v', '<leader>hs', function() gs.stage_hunk { vim.fn.line '.', vim.fn.line 'v' } end, 'Stage git hunk')
+    kmap('v', '<leader>hr', function() gs.reset_hunk { vim.fn.line '.', vim.fn.line 'v' } end, 'Reset git hunk')
+    -- normal mode
+    kmap('n', '<leader>hs', gs.stage_hunk, 'Git stage hunk')
+    kmap('n', '<leader>hr', gs.reset_hunk, 'Git reset hunk')
+    kmap('n', '<leader>hS', gs.stage_buffer, 'Git stage buffer')
+    kmap('n', '<leader>hu', gs.undo_stage_hunk, 'Undo stage hunk')
+    kmap('n', '<leader>hR', gs.reset_buffer, 'Git reset buffer')
+    kmap('n', '<leader>hp', gs.preview_hunk, 'Preview git hunk')
+    kmap('n', '<leader>hb', function() gs.blame_line { full = false } end, 'Git blame line')
+    kmap('n', '<leader>hd', gs.diffthis, 'Git diff against index')
+    kmap('n', '<leader>hD', function() gs.diffthis '~' end, 'Git diff against last commit')
+    -- Text object
+    kmap({ 'o', 'x' }, 'ih', ':<C-U>Gitsigns select_hunk<CR>', 'Select git hunk')
   end
 }
 
