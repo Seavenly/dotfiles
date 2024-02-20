@@ -1,5 +1,5 @@
 return {
-    'vim-telescope/telescope.nvim',
+    'nvim-telescope/telescope.nvim',
     dependencies = { 'nvim-lua/plenary.nvim', "folke/trouble.nvim" },
     opts = {
         defaults = {

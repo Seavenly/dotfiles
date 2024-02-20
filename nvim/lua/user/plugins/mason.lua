@@ -11,7 +11,7 @@ return {
         { 'j-hui/fidget.nvim',       opts = {} }, -- Useful status updates for LSP
         { 'folke/neodev.nvim',       opts = {} }, -- Additional lua configuration, makes nvim stuff amazing!
         "hrsh7th/cmp-nvim-lsp",                   -- lsp completions
-        'vim-telescope/telescope.nvim'
+        'nvim-telescope/telescope.nvim'
     },
     init = function()
         local signs = {

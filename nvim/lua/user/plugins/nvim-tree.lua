@@ -11,8 +11,8 @@ vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
 vim.opt.foldlevel = 20
 
 return {
-    "kyazdani42/nvim-tree.lua",
-    dependencies = { "kyazdani42/nvim-web-devicons" },
+    "nvim-tree/nvim-tree.lua",
+    dependencies = { "nvim-tree/nvim-web-devicons" },
     opts = {
         disable_netrw = false,
         hijack_netrw = true,
