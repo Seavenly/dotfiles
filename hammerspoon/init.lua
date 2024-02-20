@@ -1,3 +1,6 @@
+-- Adds support for global `hs` annotations
+hs.loadSpoon('EmmyLua')
+
 local MARKS_FILE_PATH = "~/.hammerspoon-marks.json"
 
 -- GOBAL STATE
@@ -40,10 +43,10 @@ local function getAllWindows()
     return allWindows
 end
 
-local function getDeserializedMarks()
-    local status, serializedMarks = pcall(function() return hs.json.read(MARKS_FILE_PATH) end)
+local function loadMarks()
+    local status_ok, serializedMarks = pcall(function() return hs.json.read(MARKS_FILE_PATH) end)
 
-    if not status then
+    if not status_ok then
         return {}
     end
 
@@ -71,7 +74,7 @@ local function getDeserializedMarks()
     return deserializedMarks
 end
 
-local function getSerializedMarks()
+local function saveMarks()
     local serializedMarks = {}
 
     for k, v in pairs(M.marks) do
@@ -81,11 +84,7 @@ local function getSerializedMarks()
         }
     end
 
-    return serializedMarks
-end
-
-local function saveMarks()
-    hs.json.write(getSerializedMarks(), MARKS_FILE_PATH, true, true)
+    hs.json.write(serializedMarks, MARKS_FILE_PATH, true, true)
 end
 
 local function showApplicationForKey(key)
@@ -213,7 +212,7 @@ local function setup()
 
     -- Load Saved Marks
 
-    M.marks = getDeserializedMarks()
+    M.marks = loadMarks()
 
     -- Setup Chooser
 
