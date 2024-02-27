@@ -16,6 +16,8 @@ function nv() {
         fi
     done
 
+    local dir=$(getconf DARWIN_USER_TEMP_DIR)
+
     function open_tmux_nvim() {
         local tmux_window=$(tmux display -p "#{session_id}.#{window_id}.#{pane_id}")
         nvim --listen "${dir}nvim.$USER.$tmux_window" ${arguments[@]}
@@ -35,7 +37,6 @@ function nv() {
         return 0
     fi
 
-    local dir=$(getconf DARWIN_USER_TEMP_DIR)
     local session_id window_id pane_id
 
     OLDIFS=$IFS
