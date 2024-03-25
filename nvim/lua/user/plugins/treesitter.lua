@@ -6,7 +6,8 @@ return {
     opts = {
         ensure_installed = { "javascript", "lua", "rust", "bash", "comment", "css", "dockerfile", "go", "graphql",
             "html",
-            "jsdoc", "json", "kotlin", "markdown", "python", "svelte", "scss", "swift", "toml", "typescript", "tsx",
+            "jsdoc", "json", "kotlin", "markdown", "markdown_inline", "python", "svelte", "scss", "swift", "toml",
+            "typescript", "tsx",
             "vim",
             "yaml", "ruby" },    -- one of "all" or a list of languages
         sync_install = false,    -- install languages synchronously (only applied to `ensure_installed`)

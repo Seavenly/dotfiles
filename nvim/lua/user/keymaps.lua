@@ -74,10 +74,10 @@ local Keymaps = {
     -- Other
     kmap('v', 'p', '"_dP', 'Paste and keep previous yank on clipboard')
     -- Global leader commands
-    kmap('n', '<leader>e', '<cmd>NvimTreeToggle<CR>', 'File Explorer')
-    kmap('n', '<leader>x', '<cmd>Bdelete!<CR>', 'Close Buffer')
-    kmap('n', '<leader>w', '<cmd>w!<CR>', 'Save')
-    kmap('n', '<leader>h', '<cmd>nohlsearch<CR>', 'No Highlight')
+    kmap('n', '<leader>e', ':NvimTreeToggle<CR>', 'File Explorer')
+    kmap('n', '<leader>x', ':Bdelete!<CR>', 'Close Buffer')
+    kmap('n', '<leader>w', ':w!<CR>', 'Save')
+    kmap('n', '<leader>h', ':nohlsearch<CR>', 'No Highlight')
   end,
 
   telescope = function()
@@ -192,6 +192,27 @@ local Keymaps = {
     kmap('n', '<leader>hD', function() gs.diffthis '~' end, 'Git diff against last commit')
     -- Text object
     kmap({ 'o', 'x' }, 'ih', ':<C-U>Gitsigns select_hunk<CR>', 'Select git hunk')
+  end,
+
+  obsidian = function()
+    local kmap = opts({ silent = true })
+
+    kmap('n', '<leader>oo', ':ObsidianOpen<CR>', '[O]bsidian [O]pen in App')
+    kmap('n', '<leader>ot', ':ObsidianTags<CR>', '[O]bsidian [T]ags')
+    kmap('n', '<leader>od', ':ObsidianDailies<CR>', '[O]bsidian [D]ailies')
+    kmap('n', '<leader>ol', ':ObsidianLinks<CR>', '[O]bsidian [L]inks')
+    kmap('n', '<leader>ob', ':ObsidianBacklinks<CR>', '[O]bsidian [B]acklinks')
+    kmap('n', '<leader>on', ':ObsidianNew<CR>', '[O]bsidian [N]ew Note')
+    kmap('n', '<leader>oy', ':ObsidianToday<CR>', '[O]bsidian Toda[y]')
+    kmap('n', '<leader>op', ':ObsidianPasteImg<CR>', '[O]bsidian [P]aste Image')
+    kmap('n', '<leader>oc', function() return require("obsidian").util.toggle_checkbox() end,
+      '[O]bsidian [C]heckbox Toggle')
+    -- Search Keymap
+    kmap('n', '<leader>so', ':ObsidianSearch<CR>', '[S]earch [O]bsidian')
+    -- Visual Mode Selection Keymaps
+    kmap('v', '<leader>oe', ":ObsidianExtractNote<CR>", '[O]bsidian [E]xtract Note')
+    kmap('v', '<leader>ol', ":ObsidianLink<CR>", '[O]bsidian [L]ink')
+    kmap('v', '<leader>on', ":ObsidianLinkNew<CR>", '[O]bsidian Link [N]ew')
   end
 }
 

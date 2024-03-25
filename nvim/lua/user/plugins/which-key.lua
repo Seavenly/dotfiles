@@ -1,4 +1,4 @@
-local mappings_opts = {
+local n_mappings_opts = {
     mode = "n",     -- NORMAL mode
     prefix = "<leader>",
     buffer = nil,   -- Global mappings. Specify a buffer number for buffer local mappings
@@ -7,10 +7,24 @@ local mappings_opts = {
     nowait = true,  -- use `nowait` when creating keymaps
 }
 
-local mappings = {
+local v_mappings_opts = {
+    mode = "v",     -- NORMAL mode
+    prefix = "<leader>",
+    buffer = nil,   -- Global mappings. Specify a buffer number for buffer local mappings
+    silent = true,  -- use `silent` when creating keymaps
+    noremap = true, -- use `noremap` when creating keymaps
+    nowait = true,  -- use `nowait` when creating keymaps
+}
+
+local n_mappings = {
     h = { name = "Git [H]unk", _ = "which_key_ignore" },
     l = { name = "[L]SP", _ = "which_key_ignore" },
+    o = { name = "[O]bsidian", _ = "which_key_ignore" },
     s = { name = "[S]earch", _ = "which_key_ignore" }
+}
+
+local v_mappings = {
+    o = { name = "[O]bsidian", _ = "which_key_ignore" },
 }
 
 return {
@@ -85,6 +99,7 @@ return {
         local which_key = require "which-key"
 
         which_key.setup(opts)
-        which_key.register(mappings, mappings_opts)
+        which_key.register(n_mappings, n_mappings_opts)
+        which_key.register(v_mappings, v_mappings_opts)
     end
 }
