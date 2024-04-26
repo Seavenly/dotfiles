@@ -11,13 +11,21 @@ return {
             css = { { "prettierd", "prettier" } },
             scss = { { "prettierd", "prettier" } },
             html = { { "prettierd", "prettier" } },
-            markdown = { { "prettierd", "prettier" } }
+            markdown = { { "prettierd", "prettier" } },
+            json = { { "prettierd", "prettier" } }
         },
         format_on_save = {
             -- These options will be passed to conform.format()
             timeout_ms = 500,
             lsp_fallback = true,
         },
+        formatters = {
+            prettierd = {
+                env = {
+                    PRETTIERD_DEFAULT_CONFIG = vim.fn.expand('~/.config/nvim/lua/user/plugins/.prettierrc.json'),
+                }
+            }
+        }
     },
     init = function()
         -- Manual Format command
