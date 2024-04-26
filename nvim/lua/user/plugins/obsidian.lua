@@ -23,12 +23,8 @@ return {
     opts = {
         workspaces = {
             {
-                name = "personal",
-                path = "~/vaults/personal",
-            },
-            {
-                name = "work",
-                path = "~/vaults/work",
+                name = "vault",
+                path = "~/dev/vault/",
             },
         },
         notes_subdir = "0.zettlekasten",
