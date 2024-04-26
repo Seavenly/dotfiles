@@ -9,9 +9,9 @@ return {
             "jsdoc", "json", "kotlin", "markdown", "markdown_inline", "python", "svelte", "scss", "swift", "toml",
             "typescript", "tsx",
             "vim",
-            "yaml", "ruby" },    -- one of "all" or a list of languages
-        sync_install = false,    -- install languages synchronously (only applied to `ensure_installed`)
-        ignore_install = { "" }, -- List of parsers to ignore installing
+            "yaml", "ruby", "hurl" }, -- one of "all" or a list of languages
+        sync_install = false,         -- install languages synchronously (only applied to `ensure_installed`)
+        ignore_install = { "" },      -- List of parsers to ignore installing
         autopairs = {
             enable = true,
         },
