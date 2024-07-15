@@ -135,14 +135,24 @@ local Keymaps = {
     local builtin = require "telescope.builtin"
 
     local kmap = opts({ buffer = bufnr, silent = true })
+    local trouble_toggle = function(mode)
+      return function()
+        trouble.toggle({ mode = mode, auto_jump = false })
+
+        if trouble.is_open(mode) then
+          trouble.focus()
+          trouble.first()
+        end
+      end
+    end
 
     -- Diagnostics keymaps
     kmap('n', '[d', function() vim.diagnostic.goto_prev({ border = 'rounded' }) end, 'Go to previous diagnostic message')
     kmap('n', ']d', function() vim.diagnostic.goto_next({ border = 'rounded' }) end, 'Go to next diagnostic message')
     kmap('n', '<leader>f', function() vim.diagnostic.open_float({ border = 'rounded', source = true }) end,
       'Open floating diagnostic message')
-    kmap('n', '<leader>ld', function() trouble.toggle('document_diagnostics') end, '[L]SP: Document [D]iagnostics')
-    kmap('n', '<leader>lD', function() trouble.toggle('workspace_diagnostics') end, '[L]SP: Workspace [D]iagnostics')
+    kmap('n', '<leader>ld', trouble_toggle('document_diagnostics'), '[L]SP: Document [D]iagnostics')
+    kmap('n', '<leader>lD', trouble_toggle('workspace_diagnostics'), '[L]SP: Workspace [D]iagnostics')
     kmap('n', '<leader>lr', vim.lsp.buf.rename, '[L]SP: [R]ename')
     kmap('n', '<leader>la', vim.lsp.buf.code_action, '[L]SP: Code [A]ctions')
     kmap('n', '<leader>ls', builtin.lsp_document_symbols, '[L]SP: Search Document [S]ymbols')
@@ -150,9 +160,9 @@ local Keymaps = {
     -- Non-leader keymaps
     kmap('n', 'gd', function() trouble.toggle('lsp_definitions') end, '[G]oto [D]efinition')
     kmap('n', 'gD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
-    kmap('n', 'gr', function() trouble.toggle('lsp_references') end, '[G]oto [R]eferences')
-    kmap('n', 'gi', function() trouble.toggle('lsp_implementations') end, '[G]oto [I]mplementations')
-    kmap('n', 'gt', function() trouble.toggle('lsp_type_definitions') end, '[G]oto [T]ype Definition')
+    kmap('n', 'gr', trouble_toggle('lsp_references'), '[G]oto [R]eferences')
+    kmap('n', 'gi', trouble_toggle('lsp_implementations'), '[G]oto [I]mplementations')
+    kmap('n', 'gt', trouble_toggle('lsp_type_definitions'), '[G]oto [T]ype Definition')
     -- Hover
     kmap('n', 'K', vim.lsp.buf.hover, 'Hover documentation')
     kmap('n', '<C-k>', vim.lsp.buf.signature_help, 'Signature documentation')
