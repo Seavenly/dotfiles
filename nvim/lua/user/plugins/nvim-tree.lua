@@ -99,7 +99,7 @@ return {
                     },
                     folder = {
                         arrow_open = "󰁅",
-                        arrow_closed = "",
+                        arrow_closed = "",
                         default = "",
                         open = "",
                         empty = "",
