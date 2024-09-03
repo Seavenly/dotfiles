@@ -1,0 +1,135 @@
+#!/bin/zsh
+
+source ./colors.sh
+
+FONT_FACE="SF Pro"
+APP_FONT_FACE="sketchybar-app-font"
+PLUGIN_DIR="$HOME/.config/sketchybar/plugins"
+
+# Bar appearance
+
+sketchybar --bar \
+    height=26 \
+    y_offset=6 \
+    color=0x00000000 \
+    margin=0 \
+    sticky=on \
+    padding_left=10 \
+    padding_right=10 \
+    notch_width=188 \
+    display=main
+
+# Custom Events
+
+sketchybar --add event aerospace_workspace_change # triggered manually by aerospace in config
+sketchybar --add event spotify_change "com.spotify.client.PlaybackStateChanged" # triggered by Spotify
+
+# Left Side Items
+
+for sid in $(aerospace list-workspaces --all); do
+    sketchybar  --add item $sid.space.label left \
+                --set $sid.space.label \
+                    drawing=off \
+                    background.corner_radius=5 \
+                    background.height=18 \
+                    background.padding_left=5 \
+                    background.color=$COLOR_SUMI_INK_4 \
+                    label="$sid" \
+                    label.font="$FONT_FACE:Bold:13.0" \
+                    label.padding_left=5 \
+                    label.padding_right=7 \
+                    label.color=$COLOR_FUJI_WHITE \
+                    click_script="aerospace workspace $sid" \
+
+
+    sketchybar  --add item $sid.space.icons left \
+                --set $sid.space.icons \
+                    drawing=off \
+                    background.drawing=off \
+                    label.y_offset=-1 \
+                    label.font="$APP_FONT_FACE:Regular:16.0" \
+                    label.color=$COLOR_FUJI_WHITE \
+                    label.padding_left=9 \
+                    label.padding_right=6
+                    click_script="aerospace workspace $sid" \
+
+    sketchybar  --add bracket $sid.space $sid.space.label $sid.space.icons \
+                --set $sid.space \
+                    drawing=off \
+                    background.color=$COLOR_SUMI_INK_0 \
+                    background.corner_radius=7 \
+                    background.border_color=0x44FFFFFF \
+                    background.border_width=1 \
+                    background.height=26
+                    click_script="aerospace workspace $sid" \
+
+    sketchybar  --add item $sid.space.spacer left \
+                --set $sid.space.spacer \
+                    drawing=off \
+                    background.drawing=off \
+                    width=6
+done
+
+sketchybar  --add bracket aerospace \
+            --set aerospace \
+                script="$PLUGIN_DIR/aerospace.sh $sid" \
+            --subscribe aerospace aerospace_workspace_change front_app_switched
+
+# Defaults applied to further items
+
+sketchybar --default \
+    background.color=$COLOR_SUMI_INK_0 \
+    background.corner_radius=7 \
+    background.padding_right=6 \
+    background.border_color=0x44FFFFFF \
+    background.border_width=1 \
+    background.height=26 \
+    icon.font="$FONT_FACE:Medium:16.0" \
+    icon.padding_left=10 \
+    icon.padding_right=5 \
+    label.font="$FONT_FACE:Medium:13.0" \
+    label.color=$COLOR_FUJI_WHITE \
+    label.padding_left=0 \
+    label.padding_right=10
+
+# Center Items
+
+sketchybar  --add item spotify q \
+            --set spotify \
+                icon=":spotify:" \
+                icon.font="$APP_FONT_FACE:Regular:16.0" \
+                label.drawing=off \
+                label.padding_left=3 \
+                script="$PLUGIN_DIR/spotify.sh" \
+            --subscribe spotify spotify_change mouse.clicked
+
+# Right Side Items
+
+sketchybar  --add item clock right \
+            --set clock \
+                background.padding_right=0 \
+                icon=􀧞 \
+                icon.color=$COLOR_ONI_VIOLET \
+                update_freq=10 \
+                script="$PLUGIN_DIR/clock.sh"
+
+sketchybar  --add item battery right \
+            --set battery \
+                update_freq=20 \
+                script="$PLUGIN_DIR/battery.sh"
+
+sketchybar  --add item volume right \
+            --set volume \
+                icon.color=$COLOR_SPRING_BLUE \
+                label.drawing=true \
+                script="$PLUGIN_DIR/volume.sh" \
+            --subscribe volume volume_change
+
+sketchybar  --add item weather right \
+            --set weather \
+                update_freq=1800 \
+                script="$PLUGIN_DIR/weather.sh" \
+            --subscribe weather system_woke
+
+##### Force all scripts to run the first time (never do this in a script) #####
+sketchybar --update

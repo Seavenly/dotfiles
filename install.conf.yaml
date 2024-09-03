@@ -4,7 +4,9 @@
     ~/.config/kitty: kitty
     ~/.config/nvim: nvim
     ~/.config/lazygit: lazygit
+    ~/.config/aerospace: aerospace
     ~/.config/zshrc: zshrc
+    ~/.config/sketchybar: sketchybar
     ~/.hammerspoon: hammerspoon
     ~/.tmux.conf: tmux.conf
 
