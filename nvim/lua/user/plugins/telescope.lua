@@ -6,7 +6,7 @@ return {
             prompt_prefix = ' ',
             selection_caret = ' ',
             path_display = { 'smart' },
-            file_ignore_patterns = { 'node_modules', 'dist', 'build' },
+            file_ignore_patterns = { 'node_modules/', 'dist/', 'build/' },
         },
         pickers = {
             pickers = {

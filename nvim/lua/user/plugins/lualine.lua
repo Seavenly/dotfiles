@@ -25,6 +25,7 @@ local mode = {
 
 local filetype = {
     "filetype",
+    colored = false,
     icons_enabled = false,
     icon = nil,
 }
@@ -77,7 +78,8 @@ return {
         inactive_sections = {
             lualine_a = {},
             lualine_b = {},
-            lualine_c = { "filename" },
+            -- lualine_c = { "filename" },
+            lualine_c = { "vim.fn.expand(\"%:.\")" },
             lualine_x = { "location" },
             lualine_y = {},
             lualine_z = {},
