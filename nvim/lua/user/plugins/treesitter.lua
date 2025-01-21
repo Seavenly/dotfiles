@@ -9,9 +9,9 @@ return {
             "jsdoc", "json", "kotlin", "markdown", "markdown_inline", "python", "svelte", "scss", "swift", "toml",
             "typescript", "tsx",
             "vim",
-            "yaml", "ruby", "hurl" }, -- one of "all" or a list of languages
-        sync_install = false,         -- install languages synchronously (only applied to `ensure_installed`)
-        ignore_install = { "" },      -- List of parsers to ignore installing
+            "yaml", "ruby", "hurl", "zig" }, -- one of "all" or a list of languages
+        sync_install = false,                -- install languages synchronously (only applied to `ensure_installed`)
+        ignore_install = { "" },             -- List of parsers to ignore installing
         autopairs = {
             enable = true,
         },
@@ -20,7 +20,7 @@ return {
             disable = { "" }, -- list of language that will be disabled
             additional_vim_regex_highlighting = true,
         },
-        indent = { enable = true },
+        indent = { enable = false },
         textobjects = {
             select = {
                 enable = true,

@@ -1,6 +1,6 @@
 local language_servers = {
-    "lua_ls", "cssls", "eslint", "gopls", "html", "jsonls", "tsserver", "pyright", "rust_analyzer",
-    "svelte", "taplo", "yamlls"
+    "lua_ls", "cssls", "eslint", "gopls", "html", "jsonls", "ts_ls", "pyright", "rust_analyzer",
+    "svelte", "taplo", "yamlls", "zls"
 }
 
 return {
@@ -61,7 +61,8 @@ return {
         vim.filetype.add {
             extension = {
                 ["mdx"] = "markdown",
-                ["hurl"] = "hurl"
+                ["hurl"] = "hurl",
+                ["sh"] = "sh"
             },
             filename = {
                 ["Fastfile"] = "ruby",
