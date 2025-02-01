@@ -27,6 +27,9 @@ return {
                 path = "~/dev/vault/",
             },
         },
+        ui = {
+            enable = false
+        },
         notes_subdir = "0.zettlekasten",
         open_app_foreground = true,
         daily_notes = {
