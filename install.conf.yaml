@@ -7,6 +7,7 @@
     ~/.config/aerospace: aerospace
     ~/.config/zshrc: zshrc
     ~/.config/sketchybar: sketchybar
+    ~/.config/ghostty: ghostty
     ~/.hammerspoon: hammerspoon
     ~/.tmux.conf: tmux.conf
 

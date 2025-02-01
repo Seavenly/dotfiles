@@ -1,0 +1,17 @@
+# https://ghostty.org/docs/config
+theme = Kanagawa Wave
+
+font-family = JetBrainsMono Nerd Font Mono
+font-size = 14
+
+cursor-style-blink = false
+shell-integration-features = no-cursor
+mouse-hide-while-typing = true
+
+adjust-cell-height = 25%
+adjust-cursor-height = 25%
+window-padding-balance = true
+window-padding-color = extend
+macos-titlebar-style = hidden
+
+link-url = true
