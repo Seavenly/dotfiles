@@ -1,0 +1,24 @@
+model: gemini/gemini-1.5-flash-latest
+watch-files: true
+auto-commits: false
+
+# Output settings
+code-theme: github-dark
+# # Set the color for user input (default: #00cc00)
+user-input-color: "#98bb6c"
+# # Set the color for tool output (default: None)
+tool-output-color: "#dcd7ba"
+# # Set the color for tool error messages (default: #FF2222)
+tool-error-color: "#e82424"
+# # Set the color for tool warning messages (default: #FFA500)
+tool-warning-color: "#ffa065"
+# # Set the color for assistant output (default: #0088ff)
+assistant-output-color: "#7e9cd8"
+# # Set the color for the completion menu (default: terminal's default text color)
+completion-menu-color: "#dcd7ba"
+# # Set the background color for the completion menu (default: terminal's default background color)
+completion-menu-bg-color: "#213249"
+# # Set the color for the current item in the completion menu (default: terminal's default background color)
+completion-menu-current-color: "#213249"
+# # Set the background color for the current item in the completion menu (default: terminal's default text color)
+completion-menu-current-bg-color: "#98bb6c"

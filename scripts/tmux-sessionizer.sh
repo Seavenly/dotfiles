@@ -3,7 +3,11 @@
 if [[ $# -eq 1 ]]; then
     selected=$1
 else
-    selected=$(find ~/dev ~/dev/sandbox -name '.git' -mindepth 2 -maxdepth 2 -type d | xargs dirname | fzf --delimiter '/' --with-nth -2,-1)
+    find_result="${TMPDIR}session.txt"
+
+    rm -f $find_result
+    tmux display-popup -E "find ~/dev ~/dev/sandbox -name '.git' -mindepth 2 -maxdepth 2 -type d | xargs dirname | fzf --delimiter '/' --with-nth -2,-1 > $find_result"
+    selected=$(cat $find_result)
 fi
 
 if [[ -z $selected ]]; then
