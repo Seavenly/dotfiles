@@ -56,8 +56,8 @@ local Keymaps = {
         -- Window resize
         kmap('n', '<A-C-Up>', ':resize -2<CR>', 'Resize window up')
         kmap('n', '<A-C-Down>', ':resize +2<CR>', 'Resize window down')
-        kmap('n', '<A-C-Left>', ':vertical resize -2<CR>', 'Resize window left')
-        kmap('n', '<A-C-Right>', ':vertical resize +2<CR>', 'Resize window right')
+        kmap('n', '<A-C-Left>', ':vertical resize +2<CR>', 'Resize window left')
+        kmap('n', '<A-C-Right>', ':vertical resize -2<CR>', 'Resize window right')
         -- Scrolling
         kmap('n', '<C-u>', '<C-u>zz', 'Scroll half-page up and center on cursor')
         kmap('n', '<C-d>', '<C-d>zz', 'Scroll half-page down and center on cursor')
