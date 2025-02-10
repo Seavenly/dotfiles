@@ -1,5 +1,14 @@
 return {
     'olimorris/codecompanion.nvim',
+    keys = {
+        { '<C-c>',     ':CodeCompanionActions<CR>',     desc = 'CodeCompanion Actions',  mode = { 'n', 'v' } },
+        { '<leader>c', ':CodeCompanionChat Toggle<CR>', desc = 'CodeCompanion Chat' },
+        { '<leader>c', ':CodeCompanionChat Add<CR>',    desc = 'CodeCompanion Chat Add', mode = 'v' }
+    },
+    init = function()
+        -- Expand 'cc' into 'CodeCompanion' in the command line
+        vim.cmd([[cab cc CodeCompanion]])
+    end,
     opts = {
         strategies = {
             chat = {
@@ -34,12 +43,5 @@ return {
                 provider = "telescope"
             }
         }
-    },
-    config = function(_, opts)
-        local codecompanion = require 'codecompanion'
-        local keymaps = require "user.keymaps"
-
-        codecompanion.setup(opts)
-        keymaps.codecompanion()
-    end
+    }
 }

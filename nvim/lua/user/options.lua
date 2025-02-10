@@ -34,7 +34,13 @@ local options = {
     scrolloff = 8,                           -- is one of my fav
     sidescrolloff = 8,
     guifont = "monospace:h17",               -- the font used in graphical neovim applications
-    linebreak = true                         -- wrap lines at word breaks instead of where the line ends
+    linebreak = true,                        -- wrap lines at word breaks instead of where the line ends
+    foldenable = true,
+    foldcolumn = '0',
+    foldlevel = 99,
+    foldlevelstart = 99,
+    -- foldmethod = "expr",
+    -- foldexpr = "v:lua.vim.treesitter.foldexpr()",
 }
 
 vim.opt.shortmess:append "c"

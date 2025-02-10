@@ -1,5 +1,3 @@
-local keymaps = require "user.keymaps"
-
 return {
     "epwalsh/obsidian.nvim",
     version = "*", -- recommended, use latest release instead of latest commit
@@ -19,6 +17,23 @@ return {
         "hrsh7th/nvim-cmp",
         "nvim-telescope/telescope.nvim",
         "nvim-treesitter/nvim-treesitter",
+    },
+    keys = {
+        { '<leader>oo', ':ObsidianOpen<CR>',                                              desc = 'Obsidian Open in App' },
+        { '<leader>ot', ':ObsidianTags<CR>',                                              desc = 'Obsidian Tags' },
+        { '<leader>od', ':ObsidianDailies<CR>',                                           desc = 'Obsidian Dailies' },
+        { '<leader>ol', ':ObsidianLinks<CR>',                                             desc = 'Obsidian Links' },
+        { '<leader>ob', ':ObsidianBacklinks<CR>',                                         desc = 'Obsidian Backlinks' },
+        { '<leader>on', ':ObsidianNew<CR>',                                               desc = 'Obsidian New Note' },
+        { '<leader>oy', ':ObsidianToday<CR>',                                             desc = 'Obsidian Today' },
+        { '<leader>op', ':ObsidianPasteImg<CR>',                                          desc = 'Obsidian Paste Image' },
+        { '<leader>oc', function() return require("obsidian").util.toggle_checkbox() end, desc = 'Obsidian Checkbox Toggle' },
+        -- Search Keymap
+        { '<leader>so', ':ObsidianSearch<CR>',                                            desc = 'Search Obsidian' },
+        -- Visual Mode Selection Keymaps
+        { '<leader>oe', ":ObsidianExtractNote<CR>",                                       desc = 'Obsidian Extract Note',   mode = 'v' },
+        { '<leader>ol', ":ObsidianLink<CR>",                                              desc = 'Obsidian Link',           mode = 'v' },
+        { '<leader>on', ":ObsidianLinkNew<CR>",                                           desc = 'Obsidian Link New',       mode = 'v' }
     },
     opts = {
         workspaces = {
