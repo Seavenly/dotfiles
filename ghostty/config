@@ -19,3 +19,5 @@ window-padding-color = extend
 macos-titlebar-style = hidden
 
 link-url = true
+
+background-opacity = 0.8
