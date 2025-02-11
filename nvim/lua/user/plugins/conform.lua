@@ -24,7 +24,7 @@ return {
         formatters = {
             prettierd = {
                 env = {
-                    PRETTIERD_DEFAULT_CONFIG = vim.fn.expand('~/.config/nvim/lua/user/plugins/.prettierrc.json'),
+                    PRETTIERD_DEFAULT_CONFIG = vim.fn.expand('~/.config/nvim/lua/user/.prettierrc.json'),
                 }
             }
         }
