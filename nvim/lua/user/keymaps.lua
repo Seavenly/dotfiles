@@ -22,6 +22,8 @@ local keys = {
     { '<A-C-Left>',  ':vertical resize +2<CR>', desc = 'Resize window left' },
     { '<A-C-Right>', ':vertical resize -2<CR>', desc = 'Resize window right' },
     -- Scrolling
+    { '<S-Up>',      '5k',                      desc = 'Move up 5 lines' },
+    { '<S-Down>',    '5j',                      desc = 'Move down 5 lines' },
     { '<C-u>',       '<C-u>zz',                 desc = 'Scroll half-page up and center on cursor' },
     { '<C-d>',       '<C-d>zz',                 desc = 'Scroll half-page down and center on cursor' },
     -- Move text up and down
