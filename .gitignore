@@ -42,5 +42,5 @@ luac.out
 
 lazygit/state.yml
 .aider*
-!.aider.conf.yml
+!aider/*
 zshrc/private.sh

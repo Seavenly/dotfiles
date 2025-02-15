@@ -9,7 +9,8 @@
     ~/.config/sketchybar: sketchybar
     ~/.config/ghostty: ghostty
     ~/.tmux.conf: tmux.conf
-    ~/.aider.conf.yml: .aider.conf.yml
+    ~/.aider.conf.yml: aider/.aider.conf.yml
+    ~/.aider.model.setting.yml: aider/.aider.model.setting.yml
 
 - shell:
     - [git submodule update --init --recursive, Installing submodules]
