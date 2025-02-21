@@ -1,6 +1,5 @@
 return {
     "rebelot/kanagawa.nvim",
-    dependencies = { "folke/tokyonight.nvim" },
     opts = {
         compile = false,  -- enable compiling the colorscheme
         undercurl = true, -- enable undercurls
@@ -9,7 +8,7 @@ return {
         keywordStyle = { italic = true },
         statementStyle = { bold = true },
         typeStyle = {},
-        transparent = true,    -- do not set background color
+        -- transparent = true,    -- do not set background color
         dimInactive = false,   -- dim inactive window `:h hl-NormalNC`
         terminalColors = true, -- define vim.g.terminal_color_{0,17}
         colors = {
@@ -31,7 +30,6 @@ return {
     config = function(_, opts)
         require("kanagawa").setup(opts)
 
-        vim.cmd("colorscheme tokyonight") -- Not sure why this fixes svelte files
-        vim.cmd("colorscheme kanagawa")
+        -- vim.cmd("colorscheme kanagawa")
     end
 }

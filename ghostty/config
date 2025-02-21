@@ -1,7 +1,7 @@
 # https://ghostty.org/docs/config
-theme = Kanagawa Wave
+theme = rose-pine-moon
 
-font-family = JetBrainsMono Nerd Font Mono
+font-family = CommitMono Nerd Font Mono
 font-style = Medium
 font-style-bold = Bold
 font-style-italic = Medium Italic
@@ -20,4 +20,4 @@ macos-titlebar-style = hidden
 
 link-url = true
 
-background-opacity = 0.8
+background-opacity = 0.9
