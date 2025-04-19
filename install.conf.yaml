@@ -1,13 +1,14 @@
 - clean: ['~']
 
 - link:
+    ~/.zshrc: zshrc/zshrc.sh
     ~/.config/kitty: kitty
     ~/.config/nvim: nvim
     ~/.config/lazygit: lazygit
     ~/.config/aerospace: aerospace
-    ~/.config/zshrc: zshrc
     ~/.config/sketchybar: sketchybar
     ~/.config/ghostty: ghostty
+    ~/.config/mise: mise
     ~/.tmux.conf: tmux.conf
     ~/.aider.conf.yml: aider/.aider.conf.yml
     ~/.aider.model.setting.yml: aider/.aider.model.setting.yml

@@ -5,13 +5,13 @@ if [[ $# -eq 1 ]]; then
     selected=$1
 elif [[ -z $TMUX ]]; then
     # executed outside of tmux when first connecting to session
-    selected=$(find ~/dev ~/dev/sandbox -name '.git' -mindepth 2 -maxdepth 2 -type d | xargs dirname | fzf --delimiter '/' --with-nth -2,-1) 
+    selected=$(find ~/dev ~/dev/sandbox -mindepth 2 -maxdepth 2 -type d -name '.git' | xargs dirname | fzf --delimiter '/' --with-nth -2,-1) 
 else
     # find projects using tmux popup inside tmux session
     find_result="${TMPDIR}session.txt"
 
     rm -f $find_result
-    tmux display-popup -E "find ~/dev ~/dev/sandbox -name '.git' -mindepth 2 -maxdepth 2 -type d | xargs dirname | fzf --delimiter '/' --with-nth -2,-1 > $find_result"
+    tmux display-popup -E "find ~/dev ~/dev/sandbox -mindepth 2 -maxdepth 2 -type d -name '.git' | xargs dirname | fzf --delimiter '/' --with-nth -2,-1 > $find_result"
     selected=$(cat $find_result)
 fi
 

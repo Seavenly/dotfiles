@@ -16,7 +16,11 @@ function nv() {
         fi
     done
 
-    local dir=$(getconf DARWIN_USER_TEMP_DIR)
+    if [[ $OSTYPE == darwin* ]]; then
+        local dir=$(getconf DARWIN_USER_TEMP_DIR)
+    else
+        local dir="/tmp/"
+    fi
 
     function open_tmux_nvim() {
         local tmux_window=$(tmux display -p "#{session_id}.#{window_id}.#{pane_id}")
