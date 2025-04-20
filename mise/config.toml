@@ -1,2 +1,10 @@
 [tools]
+delta = "latest"
+go = "latest"
+lazygit = "latest"
+neovim = "latest"
+node = "22"
+python = "latest"
 ruby = "latest"
+rust = "latest"
+tmux = "latest"

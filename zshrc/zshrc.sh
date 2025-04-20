@@ -37,5 +37,4 @@ source "$HOME/.dotfiles/scripts/tmux-nvim-remote.sh"
 source "$HOME/.dotfiles/zshrc/aliases.sh"
 
 eval "$(oh-my-posh init zsh --config $HOME/.dotfiles/zshrc/onehalf.minimal.omp.yaml)"
-eval "$(fnm env --use-on-cd --shell zsh)"
 eval "$(~/.local/bin/mise activate zsh)"
