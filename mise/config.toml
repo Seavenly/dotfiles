@@ -1,5 +1,6 @@
 [tools]
 delta = "latest"
+github-cli = "latest"
 go = "latest"
 lazygit = "latest"
 neovim = "latest"
