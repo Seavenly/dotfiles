@@ -4,6 +4,7 @@ return {
     ---@type Flash.Config
     opts = {},
     keys = {
-        { "gs", function() require("flash").jump() end, desc = "Flash" },
+        { "gs", function() require("flash").jump() end,       desc = "Flash" },
+        { "gS", function() require("flash").treesitter() end, desc = "Flash Treesitter" },
     }
 }
