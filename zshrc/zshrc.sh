@@ -22,8 +22,10 @@ setopt hist_save_no_dups
 setopt hist_ignore_dups
 setopt hist_find_no_dups
 
-# Load color into LS_COLORS var
-eval "$(dircolors)"
+if which dircolors &> /dev/null; then
+    # Load color into LS_COLORS var (linux)
+    eval "$(dircolors)"
+fi
 # Completion styling
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
