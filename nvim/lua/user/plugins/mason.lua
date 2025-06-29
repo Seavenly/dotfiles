@@ -1,5 +1,5 @@
 local language_servers = {
-    "lua_ls", "cssls", "eslint", "gopls", "html", "jsonls", "ts_ls", "pyright", "rust_analyzer",
+    "templ", "lua_ls", "cssls", "eslint", "gopls", "html", "jsonls", "ts_ls", "pyright", "rust_analyzer",
     "svelte", "taplo", "yamlls", "zls"
 }
 
