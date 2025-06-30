@@ -6,14 +6,14 @@ font-style = Medium
 font-style-bold = Bold
 font-style-italic = Medium Italic
 font-style-bold-italic = Bold Italic
-font-size = 14
+font-size = 15
 
 cursor-style-blink = false
 shell-integration-features = no-cursor
 mouse-hide-while-typing = true
 
-adjust-cell-height = 20%
-adjust-cursor-height = 20%
+adjust-cell-height = 30%
+adjust-cursor-height = 30%
 window-padding-balance = true
 window-padding-color = extend
 macos-titlebar-style = hidden
@@ -21,3 +21,4 @@ macos-titlebar-style = hidden
 link-url = true
 
 background-opacity = 0.9
+keybind = shift+enter=text:\n
