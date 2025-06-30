@@ -9,6 +9,12 @@ export PATH="$PATH:$HOME/.pyenv/shims"
 export PATH="$PATH:$HOME/.local/bin"
 export PATH="$PATH:./node_modules/.bin"
 
+if which ruby &> /dev/null; then
+    export PATH=`gem environment gemdir`/bin:$PATH
+    export GEM_HOME=$HOME/.gem
+fi
+
+
 if [[ $OSTYPE == darwin* ]]; then
     if ! which brew &> /dev/null; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
