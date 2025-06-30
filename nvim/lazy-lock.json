@@ -1,8 +1,8 @@
 {
   "blink.cmp": { "branch": "main", "commit": "b6f11a0aa33e601c469a126e3ed6e35208fe3ea3" },
   "catppuccin": { "branch": "main", "commit": "4bb938bbba41d306db18bf0eb0633a5f28fd7ba0" },
-  "codecompanion.nvim": { "branch": "main", "commit": "36e62353f2fc44bb13b6374714ab53cfae630a48" },
-  "conform.nvim": { "branch": "master", "commit": "363243c03102a531a8203311d4f2ae704c620d9b" },
+  "codecompanion.nvim": { "branch": "main", "commit": "8870a114009d15ee75958eb1f026277c18ce542b" },
+  "conform.nvim": { "branch": "master", "commit": "6dc21d4ce050c2e592d9635b7983d67baf216e3d" },
   "everforest": { "branch": "master", "commit": "c3b375b5fb2a07c3b75f24fefb8a7031015d8231" },
   "flash.nvim": { "branch": "main", "commit": "3c942666f115e2811e959eabbdd361a025db8b63" },
   "friendly-snippets": { "branch": "main", "commit": "efff286dd74c22f731cdec26a70b46e5b203c619" },
