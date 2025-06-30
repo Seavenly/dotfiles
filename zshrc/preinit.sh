@@ -31,7 +31,7 @@ source "${ZINIT_HOME}/zinit.zsh"
 # Setup oh my posh
 if ! which oh-my-posh &> /dev/null; then
     if [[ $OSTYPE == darwin* ]]; then
-        brew install jandedobbeleer/oh-my-posh/oh-my-posh
+        brew install oh-my-posh
     else
         curl -s https://ohmyposh.dev/install.sh | bash -s
     fi
