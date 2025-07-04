@@ -1,6 +1,6 @@
 local language_servers = {
     "templ", "lua_ls", "cssls", "eslint", "gopls", "html", "jsonls", "ts_ls", "pyright", "rust_analyzer",
-    "svelte", "taplo", "yamlls", "zls"
+    "svelte", "taplo", "yamlls", "zls", "terraformls"
 }
 
 return {

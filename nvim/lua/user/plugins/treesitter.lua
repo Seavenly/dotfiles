@@ -11,7 +11,7 @@ return {
             "jsdoc", "json", "kotlin", "markdown", "markdown_inline", "python", "svelte", "scss", "swift", "toml",
             "typescript", "tsx",
             "vim",
-            "yaml", "ruby", "hurl", "zig", "templ", "regex"
+            "yaml", "ruby", "hurl", "zig", "templ", "regex", "terraform"
         },                       -- one of "all" or a list of languages
         sync_install = false,    -- install languages synchronously (only applied to `ensure_installed`)
         ignore_install = { "" }, -- List of parsers to ignore installing
