@@ -2,11 +2,15 @@ return {
     'echasnovski/mini.files',
     version = false,
     keys = {
-        { '<leader>e', function() MiniFiles.open() end,                                                    desc = "File Explorer" },
-        { '<leader>E', function()
-            MiniFiles.open(vim.api.nvim_buf_get_name(0))
-            MiniFiles.reveal_cwd()
-        end,                                                                                               desc = "File Explorer" }
+        { '<leader>e', function() MiniFiles.open() end, desc = "File Explorer" },
+        {
+            '<leader>E',
+            function()
+                MiniFiles.open(vim.api.nvim_buf_get_name(0))
+                MiniFiles.reveal_cwd()
+            end,
+            desc = "File Explorer"
+        }
     },
     opts = {
         -- Customization of shown content

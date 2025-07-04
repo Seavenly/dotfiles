@@ -21,4 +21,7 @@ require("lazy").setup({
         { import = "user.plugins" },
         { import = "user.plugins.colorschemes" },
     },
+    ui = {
+        border = 'rounded'
+    }
 })
