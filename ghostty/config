@@ -1,5 +1,5 @@
 # https://ghostty.org/docs/config
-theme = rose-pine-moon
+theme = Rose Pine Moon
 
 font-family = CommitMono Nerd Font Mono
 font-style = Medium
@@ -22,3 +22,5 @@ link-url = true
 
 background-opacity = 0.9
 keybind = shift+enter=text:\n
+
+desktop-notifications = true

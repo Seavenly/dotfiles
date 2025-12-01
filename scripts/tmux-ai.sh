@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Find all process IDs running the node AI assistant command
-ai_assistant_pids=$(ps | grep "node [^ ]*$1" | awk '{print $1}')
+ai_assistant_pids=$(ps | grep "$1" | awk '{print $1}')
 
 # Find all process IDs for each tmux pane in the current session
 tmux_panes=$(tmux list-panes -s -F "#{pane_pid} #{window_index} #{pane_index}")
