@@ -8,6 +8,7 @@
     ~/.config/ghostty: ghostty
     ~/.config/mise: mise
     ~/.tmux.conf: tmux.conf
+    ~/.claude/hooks: claude/hooks
 
 - shell:
     - [git submodule update --init --recursive, Installing submodules]

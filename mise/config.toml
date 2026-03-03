@@ -15,6 +15,7 @@ ripgrep = "latest"
 ruby = "latest"
 rust = "latest"
 tmux = "latest"
+tree-sitter = "latest"
 zig = "latest"
 
 [settings]

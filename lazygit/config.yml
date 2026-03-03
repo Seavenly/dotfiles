@@ -1,17 +1,14 @@
 gui:
   sidePanelWidth: 0.2
-
 os:
   edit: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap --remote {{filename}}'
   editAtLine: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap -c {{line}} --remote {{filename}}'
   editAtLineAndWait: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap -c {{line}} --remote-wait {{filename}}'
   editInTerminal: true
   openDirInEditor: 'source ~/.dotfiles/scripts/tmux-nvim-remote.sh && nv --swap --remote {{dir}}'
-
 promptToReturnFromSubprocess: false # display confirmation when subprocess terminates
-
 git:
-  paging:
-    colorArg: always
-    #pager: delta --dark --paging=never --side-by-side --line-numbers-left-format="{nm:>4}│" --line-numbers-right-format="{np:>4}│"
-    pager: delta --dark --paging=never
+  pagers:
+    - colorArg: always
+      #pager: delta --dark --paging=never --side-by-side --line-numbers-left-format="{nm:>4}│" --line-numbers-right-format="{np:>4}│"
+      pager: delta --dark --paging=never
