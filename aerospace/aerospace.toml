@@ -94,6 +94,9 @@ outer.right = 10
 # '''
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
+alt-quote = 'exec-and-forget $HOME/.dotfiles/scripts/toggle-zk-note.sh prev'
+alt-shift-quote = 'exec-and-forget $HOME/.dotfiles/scripts/toggle-zk-note.sh new'
+
 alt-slash = 'layout tiles horizontal vertical'
 alt-comma = 'layout accordion horizontal vertical'
 

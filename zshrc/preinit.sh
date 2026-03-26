@@ -4,6 +4,7 @@ export VISUAL="nvr --remote-wait + 'set bufhidden=wipe'"
 
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_DATA_HOME="$HOME/.local/share"
+export ZK_NOTEBOOK_DIR="$HOME/notes/"
  
 export PATH="$PATH:$HOME/.pyenv/shims"
 export PATH="$PATH:$HOME/.local/bin"

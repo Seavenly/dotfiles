@@ -6,7 +6,7 @@ return {
         { '<leader>x',       function() Snacks.bufdelete() end,                                      desc = 'Close Buffer' },
         { '<leader>gr',      function() Snacks.gitbrowse() end,                                      desc = 'Git Open Remote',          mode = { 'n', 'v' } },
         { '<leader>gk',      function() Snacks.git.blame_line() end,                                 desc = 'Git Blame' },
-        { '<leader>z',       function() Snacks.zen() end,                                            desc = 'Zen Mode',                 mode = { 'n', 'v' } },
+        { '<leader>zz',      function() Snacks.zen() end,                                            desc = 'Zen Mode',                 mode = { 'n', 'v' } },
         -- Top Pickers & Explorer
         { "<leader><space>", function() Snacks.picker.smart() end,                                   desc = "Smart Find Files" },
         { "<leader>,",       function() Snacks.picker.buffers() end,                                 desc = "Buffers" },
