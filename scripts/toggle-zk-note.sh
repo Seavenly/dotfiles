@@ -2,6 +2,8 @@
 # Dual-mode zk note scratchpad toggle
 # Usage: toggle-zk-note.sh new|prev
 
+export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
 MODE="${1:-new}"
 NOTES_DIR="$HOME/notes"
 SOCKET="/tmp/nvim-zk-qt.sock"
