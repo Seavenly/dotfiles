@@ -9,6 +9,7 @@ export ZK_NOTEBOOK_DIR="$HOME/notes/"
 export PATH="$PATH:$HOME/.pyenv/shims"
 export PATH="$PATH:$HOME/.local/bin"
 export PATH="$PATH:./node_modules/.bin"
+export PATH="$PATH:$HOME/.dotfiles/tools/rec"
 
 if which ruby &> /dev/null; then
     export PATH=`gem environment gemdir`/bin:$PATH
