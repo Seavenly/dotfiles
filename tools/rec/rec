@@ -130,36 +130,50 @@ stop_recording() {
 
     if [ "$mode" = "full" ]; then
         echo ""
+        do_clean "$rec_dir"
+        echo ""
         do_transcribe "$rec_dir"
     fi
 }
 
-do_transcribe() {
+resolve_rec_dir() {
     local rec_dir="${1:-}"
-
     if [ -z "$rec_dir" ]; then
-        # Find latest recording
         rec_dir="$(ls -td "$REC_BASE"/*/ 2>/dev/null | head -1)"
         if [ -z "$rec_dir" ]; then
-            echo "No recordings found in $REC_BASE"
+            echo "No recordings found in $REC_BASE" >&2
             exit 1
         fi
         rec_dir="${rec_dir%/}"
     fi
-
     if [ ! -d "$rec_dir" ]; then
-        echo "Error: Directory not found: $rec_dir"
+        echo "Error: Directory not found: $rec_dir" >&2
         exit 1
     fi
+    echo "$rec_dir"
+}
 
+do_clean() {
+    local rec_dir
+    rec_dir="$(resolve_rec_dir "${1:-}")"
     check_venv
+    echo "Cleaning mic audio: $rec_dir"
+    "$PYTHON" "$SCRIPT_DIR/clean.py" "$rec_dir"
+}
 
+do_transcribe() {
+    local rec_dir
+    rec_dir="$(resolve_rec_dir "${1:-}")"
+    check_venv
     echo "Transcribing: $rec_dir"
     "$PYTHON" "$SCRIPT_DIR/transcribe.py" "$rec_dir"
 }
 
 # Main dispatch
 case "${1:-}" in
+    clean)
+        do_clean "${2:-}"
+        ;;
     transcribe)
         do_transcribe "${2:-}"
         ;;
@@ -178,7 +192,7 @@ case "${1:-}" in
         fi
         ;;
     *)
-        echo "Usage: rec [transcribe [path] | full]"
+        echo "Usage: rec [clean [path] | transcribe [path] | full]"
         exit 1
         ;;
 esac

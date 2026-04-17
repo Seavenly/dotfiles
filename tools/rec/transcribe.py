@@ -41,10 +41,9 @@ def transcribe_track(model, audio_path, device):
 def diarize_track(audio_path, segments, device, hf_token):
     """Run pyannote diarization on a track, assign speaker IDs to segments."""
     import whisperx
+    from whisperx.diarize import DiarizationPipeline
 
-    diarize_model = whisperx.DiarizationPipeline(
-        use_auth_token=hf_token, device=device
-    )
+    diarize_model = DiarizationPipeline(token=hf_token, device=device)
     audio = whisperx.load_audio(audio_path)
     diarize_result = diarize_model(audio)
     result = whisperx.assign_word_speakers(diarize_result, {"segments": segments})
@@ -120,9 +119,12 @@ def main():
         sys.exit(1)
 
     rec_dir = sys.argv[1]
-    mic_path = os.path.join(rec_dir, "mic.wav")
+    cleaned_path = os.path.join(rec_dir, "mic_cleaned.wav")
+    mic_path = cleaned_path if os.path.exists(cleaned_path) else os.path.join(rec_dir, "mic.wav")
     sys_path = os.path.join(rec_dir, "system.wav")
     output_path = os.path.join(rec_dir, "transcript.md")
+    if mic_path == cleaned_path:
+        print(f"Using cleaned mic track: {cleaned_path}")
 
     hf_token = get_hf_token()
     if not hf_token:
