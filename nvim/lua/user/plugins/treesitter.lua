@@ -1,28 +1,28 @@
 return {
     "nvim-treesitter/nvim-treesitter",
-    build = ":TSUpdate",
-    main = "nvim-treesitter.configs",
-    dependencies = { "OXY2DEV/markview.nvim" },
+    branch = "main",
     lazy = false,
-    opts = {
-        ensure_installed = {
+    build = ":TSUpdate",
+    config = function()
+        local ensure_installed = {
             "javascript", "lua", "rust", "bash", "comment", "css", "dockerfile", "go", "graphql",
-            "html",
-            "jsdoc", "json", "kotlin", "markdown", "markdown_inline", "python", "svelte", "scss", "swift", "toml",
-            "typescript", "tsx",
-            "vim",
-            "yaml", "ruby", "hurl", "zig", "templ", "regex", "terraform"
-        },                       -- one of "all" or a list of languages
-        sync_install = false,    -- install languages synchronously (only applied to `ensure_installed`)
-        ignore_install = { "" }, -- List of parsers to ignore installing
-        autopairs = {
-            enable = true,
-        },
-        highlight = {
-            enable = true,    -- false will disable the whole extension
-            disable = { "" }, -- list of language that will be disabled
-            additional_vim_regex_highlighting = true,
-        },
-        indent = { enable = false },
-    },
+            "html", "jsdoc", "json", "kotlin", "markdown", "markdown_inline", "python", "svelte",
+            "scss", "swift", "toml", "typescript", "tsx", "vim", "yaml", "ruby", "hurl", "zig",
+            "templ", "regex", "terraform",
+        }
+
+        local installed = require("nvim-treesitter.config").get_installed()
+        local to_install = vim.iter(ensure_installed)
+            :filter(function(p) return not vim.tbl_contains(installed, p) end)
+            :totable()
+        if #to_install > 0 then
+            require("nvim-treesitter").install(to_install)
+        end
+
+        vim.api.nvim_create_autocmd("FileType", {
+            callback = function(args)
+                pcall(vim.treesitter.start, args.buf)
+            end,
+        })
+    end,
 }
