@@ -21,6 +21,17 @@ local diff = {
     cond = hide_in_width,
 }
 
+local filename = {
+    "filename",
+    path = 1, -- relative path
+    file_status = true,
+    symbols = {
+        modified = "*",
+        readonly = "",
+        unnamed = "[No Name]",
+    },
+}
+
 local mode = { "mode" }
 
 local filetype = {
@@ -48,7 +59,7 @@ local progress = function()
 end
 
 local spaces = function()
-    return "spaces: " .. vim.api.nvim_buf_get_option(0, "shiftwidth")
+    return "spaces: " .. vim.bo[0].shiftwidth
 end
 
 require('lualine').setup({
@@ -62,7 +73,7 @@ require('lualine').setup({
     sections = {
         lualine_a = { mode },
         lualine_b = { diagnostics, branch },
-        lualine_c = { diff },
+        lualine_c = { diff, filename },
         lualine_x = { spaces, "encoding", filetype },
         lualine_y = { location },
         lualine_z = { progress },

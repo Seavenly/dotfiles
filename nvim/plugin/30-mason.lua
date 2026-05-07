@@ -1,6 +1,6 @@
 vim.pack.add({
-    'https://github.com/williamboman/mason.nvim',
-    'https://github.com/williamboman/mason-lspconfig.nvim',
+    'https://github.com/mason-org/mason.nvim',
+    'https://github.com/mason-org/mason-lspconfig.nvim',
     'https://github.com/neovim/nvim-lspconfig',
 })
 
@@ -16,8 +16,8 @@ require('mason-lspconfig').setup({
 })
 
 require('user.utils').set_keys({
-    { '[d',         function() vim.diagnostic.jump({ count = 1, float = true, border = 'rounded' }) end,  desc = 'Go to previous diagnostic message' },
-    { ']d',         function() vim.diagnostic.jump({ count = -1, float = true, border = 'rounded' }) end, desc = 'Go to next diagnostic message' },
+    { '[d',         function() vim.diagnostic.jump({ count = -1, float = true, border = 'rounded' }) end, desc = 'Go to previous diagnostic message' },
+    { ']d',         function() vim.diagnostic.jump({ count = 1, float = true, border = 'rounded' }) end,  desc = 'Go to next diagnostic message' },
     { '<leader>k',  function() vim.diagnostic.open_float({ border = 'rounded', source = true }) end,      desc = 'Open floating diagnostic message' },
     { '<leader>lr', function() vim.lsp.buf.rename() end,                                                  desc = 'LSP: Rename' },
     { '<leader>la', function() vim.lsp.buf.code_action() end,                                             desc = 'LSP: Code Actions' },

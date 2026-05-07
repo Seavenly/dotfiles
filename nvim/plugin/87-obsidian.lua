@@ -3,14 +3,13 @@ vim.api.nvim_create_autocmd('FileType', {
     once = true,
     callback = function()
         -- nvim-treesitter is loaded eagerly in 10-treesitter.lua.
-        -- nvim-cmp is intentionally dropped: obsidian's completion auto-detects blink.cmp.
+        -- The community fork has no required deps; picker integrates natively with snacks.
         vim.pack.add({
-            'https://github.com/nvim-lua/plenary.nvim',
-            'https://github.com/nvim-telescope/telescope.nvim',
-            { src = 'https://github.com/epwalsh/obsidian.nvim', version = vim.version.range('*') },
+            { src = 'https://github.com/obsidian-nvim/obsidian.nvim', version = vim.version.range('*') },
         })
 
         require('obsidian').setup({
+            picker = { name = "snacks.pick" },
             workspaces = {
                 {
                     name = "vault",

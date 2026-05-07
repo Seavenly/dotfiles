@@ -68,7 +68,7 @@ require('gitsigns').setup({
             { '<leader>hs', gs.stage_hunk,                                                     desc = 'Git stage hunk' },
             { '<leader>hr', gs.reset_hunk,                                                     desc = 'Git reset hunk' },
             { '<leader>hS', gs.stage_buffer,                                                   desc = 'Git stage buffer' },
-            { '<leader>hu', gs.undo_stage_hunk,                                                desc = 'Undo stage hunk' },
+            { '<leader>hu', gs.stage_hunk,                                                     desc = 'Toggle stage on hunk' },
             { '<leader>hR', gs.reset_buffer,                                                   desc = 'Git reset buffer' },
             { '<leader>hp', gs.preview_hunk,                                                   desc = 'Preview git hunk' },
             { '<leader>hb', function() gs.blame_line { full = false } end,                     desc = 'Git blame line' },

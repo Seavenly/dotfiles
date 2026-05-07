@@ -45,6 +45,4 @@ require('rose-pine').setup({
     },
 })
 
--- Default fallback. Shada-restored colors_name will override this post-startup
--- if the user picked a different scheme last session via <leader>uC.
 pcall(vim.cmd.colorscheme, 'rose-pine-moon')

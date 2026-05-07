@@ -4,7 +4,7 @@ return {
             local mode = kmap_opts.mode or 'n'
             local lhs = kmap_opts[1]
             local rhs = kmap_opts[2]
-            local total_opts = vim.tbl_deep_extend('force', kmap_opts, common_opts)
+            local total_opts = vim.tbl_deep_extend('force', common_opts, kmap_opts)
 
             total_opts[1] = nil
             total_opts[2] = nil
