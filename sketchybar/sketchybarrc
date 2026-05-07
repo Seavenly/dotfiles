@@ -105,6 +105,12 @@ sketchybar  --add item spotify q \
 
 # Right Side Items
 
+sketchybar  --add item cockpit right \
+            --set cockpit \
+                update_freq=3 \
+                click_script="open -a Ghostty && osascript -e 'tell application \"Ghostty\" to activate' || true" \
+                script="$PLUGIN_DIR/cockpit.sh"
+
 sketchybar  --add item clock right \
             --set clock \
                 background.padding_right=0 \
