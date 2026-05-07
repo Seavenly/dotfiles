@@ -18,6 +18,13 @@ fi
 
 eval "$(~/.local/bin/mise activate zsh)"
 
+
+if ! which mise &> /dev/null; then
+    curl https://mise.run | sh
+fi
+
+eval "$(~/.local/bin/mise activate zsh)"
+
 if which ruby &> /dev/null; then
     export PATH=`gem environment gemdir`/bin:$PATH
     export GEM_HOME=$HOME/.gem
@@ -29,10 +36,6 @@ if [[ $OSTYPE == darwin* ]]; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         brew update
     fi
-fi
-
-if ! which mise &> /dev/null; then
-    curl https://mise.run | sh
 fi
 
 # Setup zinit zsh plugin manager

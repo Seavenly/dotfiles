@@ -1,8 +1,8 @@
 local options = {
     backup = false,                          -- creates a backup file
     clipboard = "unnamedplus",               -- allows neovim to access the system clipboard
-    cmdheight = 2,                           -- more space in the neovim command line for displaying messages
-    completeopt = { "menuone", "noselect" }, -- mostly just for cmp
+    cmdheight = 1,                           -- snacks.notifier handles message display
+    completeopt = { "menu", "menuone", "noselect", "noinsert" }, -- mostly just for cmp
     conceallevel = 2,                        -- so that `` is hidden in markdown files
     fileencoding = "utf-8",                  -- the encoding written to a file
     hlsearch = true,                         -- highlight all matches on previous search pattern
@@ -10,7 +10,7 @@ local options = {
     mouse = "a",                             -- allow the mouse to be used in neovim
     pumheight = 10,                          -- pop up menu height
     showmode = false,                        -- we don't need to see things like -- INSERT -- anymore
-    showtabline = 2,                         -- always show tabs
+    showtabline = 0,                         -- never show the tabline
     smartcase = true,                        -- smart case
     smartindent = true,                      -- make indenting smarter again
     splitbelow = true,                       -- force all horizontal splits to go below current window
@@ -28,7 +28,7 @@ local options = {
     cursorline = true,                       -- highlight the current line
     number = true,                           -- set numbered lines
     relativenumber = true,                   -- set relative numbered lines
-    numberwidth = 4,                         -- set number column width to 2 {default 4}
+    numberwidth = 4,                         -- number column width
     signcolumn = "yes",                      -- always show the sign column, otherwise it would shift the text each time
     wrap = false,                            -- display lines as one long line
     scrolloff = 8,                           -- is one of my fav
@@ -51,4 +51,14 @@ end
 
 vim.cmd "set whichwrap+=<,>,[,],h,l"
 vim.cmd [[set iskeyword+=-]]
-vim.cmd [[set formatoptions-=cro]] -- TODO: this doesn't seem to work
+
+vim.filetype.add {
+    extension = {
+        ["mdx"] = "markdown",
+        ["hurl"] = "hurl",
+        ["sh"] = "sh"
+    },
+    filename = {
+        ["Fastfile"] = "ruby",
+    },
+}
