@@ -122,7 +122,11 @@ def main():
     cleaned_path = os.path.join(rec_dir, "mic_cleaned.wav")
     mic_path = cleaned_path if os.path.exists(cleaned_path) else os.path.join(rec_dir, "mic.wav")
     sys_path = os.path.join(rec_dir, "system.wav")
-    output_path = os.path.join(rec_dir, "transcript.md")
+
+    notes_dir = Path.home() / "notes" / "raw" / "meetings"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str(notes_dir / f"{Path(rec_dir).name}.md")
+
     if mic_path == cleaned_path:
         print(f"Using cleaned mic track: {cleaned_path}")
 

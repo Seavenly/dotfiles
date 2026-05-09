@@ -10,13 +10,16 @@ lazygit = "latest"
 lua = "latest"
 neovim = "latest"
 node = "22"
+"npm:pnpm" = "latest"
 python = "latest"
 ripgrep = "latest"
 ruby = "latest"
 rust = "latest"
+terraform = "latest"
 tmux = "latest"
 tree-sitter = "latest"
 zig = "latest"
+tflint = "latest"
 
 [settings]
 idiomatic_version_file_enable_tools = ["node"]

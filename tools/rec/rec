@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Defensive PATH: when invoked from aerospace's exec-and-forget the launch
+# environment may not include Homebrew's bin dir, which whisperx needs for ffmpeg.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 PIDFILE="${TMPDIR:-/tmp}/rec.pid"
 REC_BASE="$HOME/Recordings/meetings"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +33,10 @@ else:
 "
 }
 
+notify_sketchybar() {
+    command -v sketchybar >/dev/null 2>&1 && sketchybar --trigger rec_status_change >/dev/null 2>&1 || true
+}
+
 cleanup_stale_pid() {
     if [ ! -f "$PIDFILE" ]; then
         return 1
@@ -43,6 +51,7 @@ cleanup_stale_pid() {
 
     echo "Cleaning up stale PID file..."
     rm -f "$PIDFILE"
+    notify_sketchybar
     return 1
 }
 
@@ -95,6 +104,7 @@ for i, d in enumerate(sd.query_devices()):
     local sys_pid=$!
 
     printf '%s\n' "$mic_pid" "$sys_pid" "$rec_dir" "$mode" > "$PIDFILE"
+    notify_sketchybar
 
     echo "Recording started"
     echo "  Directory: $rec_dir"
@@ -125,15 +135,32 @@ stop_recording() {
     done
 
     rm -f "$PIDFILE"
+    notify_sketchybar
 
     echo "Recording stopped: $rec_dir"
 
     if [ "$mode" = "full" ]; then
-        echo ""
-        do_clean "$rec_dir"
-        echo ""
-        do_transcribe "$rec_dir"
+        if [ -t 1 ]; then
+            # Interactive: run in foreground so the user sees progress
+            echo ""
+            do_clean "$rec_dir"
+            echo ""
+            do_transcribe "$rec_dir"
+        else
+            # Non-interactive (e.g. aerospace hotkey): detach so the long task
+            # survives even if the parent is reaped. Output goes to a log.
+            local log="$rec_dir/post.log"
+            nohup "$SCRIPT_DIR/rec" __post "$rec_dir" >"$log" 2>&1 < /dev/null &
+            disown 2>/dev/null || true
+            echo "Post-processing detached. Log: $log"
+        fi
     fi
+}
+
+do_post() {
+    local rec_dir="$1"
+    do_clean "$rec_dir"
+    do_transcribe "$rec_dir"
 }
 
 resolve_rec_dir() {
@@ -176,6 +203,9 @@ case "${1:-}" in
         ;;
     transcribe)
         do_transcribe "${2:-}"
+        ;;
+    __post)
+        do_post "${2:-}"
         ;;
     full)
         if cleanup_stale_pid; then
