@@ -9,6 +9,7 @@
     ~/.config/mise: mise
     ~/.tmux.conf: tmux.conf
     ~/.claude/hooks: claude/hooks
+    ~/.claude/commands: claude/commands
 
 - shell:
     - [git submodule update --init --recursive, Installing submodules]
