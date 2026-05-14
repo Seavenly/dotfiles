@@ -121,26 +121,40 @@ Compute window: `spike-<slug>-$(date +%H%M)`.
 
 Mount mode depends on `prototype`:
 
-**Pure research (`prototype: false`):**
+sbx uses direct-mount (host path = sandbox path). The kit's startup hook
+scans mounted workspaces for `brief.md` and symlinks `/work` to whichever
+mount contains it, so the in-sandbox lead briefing can read `/work/...`
+regardless of which workspace sbx made primary. sbx requires the primary
+workspace to be writable.
+
+Launch via `~/.dotfiles/scripts/agent-teams-launch.sh`, which wraps
+`sbx create` + a settings.json patch (to enable Agent Teams; the kit's
+own settings.json gets clobbered by sbx) + `sbx run`. See the script
+for details.
+
+**Pure research (`prototype: false`):** run dir is primary writable, repo
+secondary read-only.
 ```bash
 tmux new-window -t agent-teams: -n "<window>" -d \
-  "sbx run claude <repo>:ro \
-     --name agt-spike-<slug> \
-     --kit ~/.dotfiles/claude/agent-teams-kit \
-     <run_dir>:rw \
-     -- -p '/spike-flow /work/brief.md'"
+  "~/.dotfiles/scripts/agent-teams-launch.sh agt-spike-<slug> '/spike-flow /work/brief.md' \
+     -- claude <run_dir> <repo>:ro \
+        --kit ~/.dotfiles/claude/agent-teams-kit"
 ```
 
-**With prototype:**
+**With prototype:** repo is primary writable via worktree, run dir
+secondary writable. Worktree is created on the repo, not the run dir.
 ```bash
 tmux new-window -t agent-teams: -n "<window>" -d \
-  "sbx run claude <repo> \
-     --branch auto \
-     --name agt-spike-<slug> \
-     --kit ~/.dotfiles/claude/agent-teams-kit \
-     <run_dir>:rw \
-     -- -p '/spike-flow /work/brief.md'"
+  "~/.dotfiles/scripts/agent-teams-launch.sh agt-spike-<slug> '/spike-flow /work/brief.md' \
+     -- claude <repo> <run_dir> \
+        --branch auto \
+        --kit ~/.dotfiles/claude/agent-teams-kit"
 ```
+
+Note: launcher invokes claude WITHOUT `-p` so the session stays open
+after the flow completes for follow-up. The launcher pauses with
+`read` at the end so the tmux window stays around even after claude
+exits.
 
 Ensure tmux session exists (run `~/.dotfiles/scripts/tmux-agent-teams.sh`
 if not).

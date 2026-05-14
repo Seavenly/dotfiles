@@ -66,14 +66,17 @@ kit's `.claude/skills/` and `.claude/mcp.json`.
 │      1. interview user (light/heavy by task type)                 │
 │      2. write brief to ~/.agent-teams/runs/<ts>-<slug>/brief.md   │
 │      3. show brief, confirm                                       │
-│      4. spawn sandbox in a new tmux window:                       │
+│      4. spawn sandbox in a new tmux window via the launcher:      │
 │         tmux new-window -t agent-teams: -n <type>-<slug>-<HHMM> \ │
-│           "sbx run claude <repo> --branch auto \                  │
-│              --name agt-<type>-<slug> \                           │
-│              --template claude-team \                             │
-│              --kit ~/.dotfiles/claude/agent-teams-kit \           │
-│              ~/.agent-teams/runs/<id>:rw \                        │
-│              -- -p '/<flow> /work/brief.md'"                      │
+│           "~/.dotfiles/scripts/agent-teams-launch.sh \             │
+│              agt-<type>-<slug> '/<flow> /work/brief.md' \         │
+│              -- claude <repo> ~/.agent-teams/runs/<id> \          │
+│                 --branch auto \                                   │
+│                 --kit ~/.dotfiles/claude/agent-teams-kit"         │
+│      (mount order varies by flow; see §sbx setup.)                │
+│      Launcher = sbx create + settings.json overlay + sbx run.     │
+│      /work is a startup-hook symlink to whichever mount has        │
+│      brief.md.                                                    │
 └───────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -119,27 +122,30 @@ kit's `.claude/skills/` and `.claude/mcp.json`.
     │   ├── feature-flow.md                     # drafts brief, spawns sandbox
     │   ├── review-flow.md
     │   └── spike-flow.md
-    └── agent-teams-kit/                        # the sbx kit (passed via --kit, mounted at /home/claude/.claude/)
+    └── agent-teams-kit/                        # the sbx kit (passed via --kit, applied into the sandbox home)
         ├── README.md                           # kit-internal mechanics
         ├── SETUP.md                            # one-time host setup commands
+        ├── spec.yaml                           # sbx kit manifest (schemaVersion, kind, startup hook)
         ├── template/
         │   └── build.sh                        # builds `claude-team` sbx template (deferred)
-        └── .claude/
-            ├── settings.json                   # enables Agent Teams, teammateMode: tmux
-            ├── defaults.yaml                   # cap defaults (merged into brief at draft time)
-            ├── agents/                         # role definitions (dual-purpose: subagent + teammate type)
-            │   ├── researcher.md
-            │   ├── planner.md
-            │   ├── tester.md
-            │   ├── implementer.md
-            │   ├── critic.md
-            │   └── synthesizer.md
-            ├── commands/                       # in-sandbox slash commands (lead briefings)
-            │   ├── feature-flow.md
-            │   ├── review-flow.md
-            │   └── spike-flow.md
-            ├── hooks/                          # TaskCompleted gates etc. (deferred)
-            └── skills/                         # any skills teammates need (kit-level so they load)
+        └── files/                              # kit payload; sbx delivers files/home/<path> to /home/agent/<path>
+            └── home/
+                └── .claude/                    # claude config delivered into the agent user's home
+                    ├── settings.json           # enables Agent Teams, teammateMode: tmux
+                    ├── defaults.yaml           # cap defaults (merged into brief at draft time)
+                    ├── agents/                 # role definitions (dual-purpose: subagent + teammate type)
+                    │   ├── researcher.md
+                    │   ├── planner.md
+                    │   ├── tester.md
+                    │   ├── implementer.md
+                    │   ├── critic.md
+                    │   └── synthesizer.md
+                    ├── commands/               # in-sandbox slash commands (lead briefings)
+                    │   ├── feature-flow.md
+                    │   ├── review-flow.md
+                    │   └── spike-flow.md
+                    ├── hooks/                  # TaskCompleted gates etc. (deferred)
+                    └── skills/                 # any skills teammates need (kit-level so they load)
 
 ~/.dotfiles/scripts/
 └── tmux-agent-teams.sh                         # bullpen launcher (idempotent)
@@ -362,6 +368,51 @@ Hooks live in `agent-teams-kit/.claude/hooks/`. Not implemented in Phase 1.
 
 ## sbx setup
 
+**Mount strategy.** sbx uses direct-mount: workspace paths inside the
+sandbox match their host paths exactly. The primary workspace must be
+writable. The kit's `spec.yaml` declares a startup hook that scans
+mounted virtiofs paths for `brief.md` and symlinks `/work` to the run
+dir. This lets the in-sandbox lead briefings keep using `/work/brief.md`,
+`/work/notes.md`, `/work/out/*.md` regardless of which workspace happens
+to be primary for a given flow:
+
+| Flow | Primary (writable) | Secondary |
+|---|---|---|
+| spike-flow (research) | run dir | repo `:ro` |
+| spike-flow (`--prototype`) | repo + `--branch auto` worktree | run dir |
+| feature-flow | repo + `--branch auto` worktree | run dir |
+| review-flow | run dir | repo `:ro` (if local) |
+
+**Launcher script.** Host slash commands spawn sandboxes via
+`~/.dotfiles/scripts/agent-teams-launch.sh`, which does:
+
+1. `sbx create` — creates the sandbox (if not already present), delivers
+   kit files, runs the `/work` startup hook.
+2. `sbx exec ... jq merge` — overlays our Agent Teams config
+   (`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `teammateMode: tmux`)
+   onto `/home/agent/.claude/settings.json`. This is needed because sbx
+   writes its own agent-template `settings.json` *after* kit files land
+   and *after* startup hooks run, clobbering whatever the kit ships in
+   `files/home/.claude/settings.json`. The patch is idempotent.
+3. `sbx run` — attaches the inner claude session with the lead briefing
+   slash command. After the session exits, the script `read`s so the
+   tmux window stays around for the user to inspect final state.
+
+This is why the kit's `files/home/.claude/settings.json` looks correct
+but doesn't actually take effect — sbx wins. The launcher's overlay is
+the seam that makes Agent Teams config land in the inner session.
+
+**Inner-sandbox login.** SETUP.md previously claimed sbx handles
+Anthropic auth automatically; it doesn't. The first time a sandbox name
+appears, the inner claude session shows `Not logged in — Please run
+/login` and won't execute the briefing. The user must attach to the
+window, run `/login`, complete the OAuth flow in the browser, then
+re-run the slash command. Auth persists in the sandbox filesystem until
+the sandbox is removed (`sbx rm`), so re-running the same flow against
+the same sandbox name skips re-auth. Each new sandbox name pays the
+login cost once. See `agent-teams-kit/SETUP.md §Inner-sandbox login` for
+the headless-friendly alternative via `sbx secret set -g anthropic`.
+
 **Custom template (Phase 2):** `agent-teams-kit/template/build.sh` builds a
 `claude-team` template that includes `mise`, `gh`, common runtimes
 (node, python, go, rust). Falls back to default `claude` template until built.
@@ -370,8 +421,9 @@ Hooks live in `agent-teams-kit/.claude/hooks/`. Not implemented in Phase 1.
 injects them on outbound requests; tokens never appear in transcripts.
 
 ```bash
-sbx secret set github     # used by gh inside sandbox
-sbx secret set anthropic  # used by inner claude session (handled by sbx)
+sbx secret set -g github     # used by gh inside sandbox
+sbx secret set -g anthropic  # optional; only if you have an API key and
+                             # want to skip the interactive /login step
 ```
 
 **Network policy:** currently allow-all (deferred hardening — see Future
@@ -437,10 +489,29 @@ click into any pane to talk to a teammate directly.
 
 ## Troubleshooting
 
-**Teammates not appearing.** Verify
-`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in the kit's
-`settings.json`. Verify Claude Code version is 2.1.32+. Try Shift+Down in
-in-process mode to see hidden teammates.
+**Inner claude shows `Not logged in — Please run /login`.** Expected on
+first run against a new sandbox name. Attach to the window, run `/login`
+in the claude REPL, complete OAuth in the browser, then re-run the slash
+command (e.g., `/spike-flow /work/brief.md`). Auth persists in the
+sandbox until `sbx rm`. See SETUP.md §Inner-sandbox login for the
+API-key alternative.
+
+**`/work` path missing inside sandbox.** The kit's startup hook scans
+mounted virtiofs paths for `brief.md` and symlinks `/work` to that mount.
+If the symlink isn't there, either no mounted workspace contains a
+`brief.md` (check that the run dir got mounted), or the startup hook
+failed (look at `sbx exec <name> -- cat /var/log/sbx-startup.log` if
+that exists; otherwise re-create the sandbox to retrigger startup).
+
+**Teammates not appearing.** Verify the launcher's settings-overlay
+step ran — inside the sandbox, `cat /home/agent/.claude/settings.json`
+should show `"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"` and
+`"teammateMode": "tmux"`. If those are missing, the sandbox was
+launched directly via `sbx run` instead of via
+`~/.dotfiles/scripts/agent-teams-launch.sh` and the env var never got
+applied — fix the spawn command, `sbx rm` the sandbox, and re-launch.
+Verify Claude Code version is 2.1.32+. Try Shift+Down in in-process mode
+to see hidden teammates.
 
 **Tasks stuck in pending.** Agent Teams sometimes fails to mark tasks
 complete. Tell the lead "nudge the teammate working on task X" or manually

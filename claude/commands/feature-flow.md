@@ -116,6 +116,15 @@ Compute window name: `feature-<slug>-$(date +%H%M)`.
 
 Spawn via tmux:
 
+sbx uses direct-mount (host path = sandbox path). The kit's startup hook
+scans mounted workspaces for `brief.md` and symlinks `/work` to whichever
+mount contains it, so `/work/brief.md` resolves regardless of mount order.
+Feature-flow always uses `--branch auto` to get a worktree on the repo,
+which means the repo must be the primary workspace.
+
+Launch via `~/.dotfiles/scripts/agent-teams-launch.sh`, which wraps
+`sbx create` + settings.json patch (to enable Agent Teams) + `sbx run`.
+
 ```bash
 # Ensure the agent-teams session exists
 tmux has-session -t agent-teams 2>/dev/null || \
@@ -123,17 +132,22 @@ tmux has-session -t agent-teams 2>/dev/null || \
 
 # Create a new detached window in agent-teams with the sandbox running
 tmux new-window -t agent-teams: -n "<window>" -d \
-  "cd <repo> && sbx run claude . \
-     --branch auto \
-     --name agt-feature-<slug> \
-     --kit ~/.dotfiles/claude/agent-teams-kit \
-     <run_dir>:rw \
-     -- -p '/feature-flow /work/brief.md'"
+  "~/.dotfiles/scripts/agent-teams-launch.sh agt-feature-<slug> '/feature-flow /work/brief.md' \
+     -- claude <repo> <run_dir> \
+        --branch auto \
+        --kit ~/.dotfiles/claude/agent-teams-kit"
 ```
 
-Note: `--template claude-team` is omitted until the custom template is
-built (Phase 2 per AGENT-TEAMS.md). sbx will use its default `claude`
-template.
+Notes:
+- Launcher invokes claude WITHOUT `-p` so the session stays open after
+  the flow completes for follow-up. The launcher pauses with `read` at
+  the end so the tmux window stays around even after claude exits.
+- `--template claude-team` is omitted until the custom template is built
+  (Phase 2 per AGENT-TEAMS.md). sbx will use its default `claude`
+  template.
+- First time spawning a sandbox with a new name, the inner claude session
+  is not authenticated. The user must `/login` interactively once. See
+  `SETUP.md §Inner-sandbox login`.
 
 ## Step 6 — Report back
 

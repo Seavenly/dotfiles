@@ -48,8 +48,8 @@ Or restart tmux. The `prefix C-t` binding should now jump to the
 inside the sandbox never see the raw token in their transcripts.
 
 ```bash
-sbx secret set github     # GitHub PAT with repo scope
-                          # used by gh inside the sandbox for review-flow
+sbx secret set -g github     # GitHub PAT with repo scope
+                             # used by gh inside the sandbox for review-flow
 ```
 
 Verify:
@@ -58,10 +58,49 @@ Verify:
 sbx secret ls
 ```
 
-Anthropic auth for the inner Claude session is handled automatically by
-sbx — no action needed beyond your existing `claude` login.
+## 4. Inner-sandbox login
 
-## 4. (Phase 2 — deferred) Build the custom `claude-team` sbx template
+**This is not automatic.** Each new sandbox name spawns a fresh inner
+Claude Code session that is not authenticated. The first time a flow
+spawns a sandbox with a new name, the lead session shows
+`Not logged in — Please run /login` and the briefing doesn't execute.
+
+### Subscription-based path (default)
+
+After the host slash command spawns the window:
+
+1. Attach to the new tmux window:
+   ```
+   tmux switch-client -t agent-teams:<window-name>
+   ```
+   or `prefix C-t` then pick the window.
+2. Inside the claude REPL, run `/login`. Complete the OAuth flow in
+   your browser (uses your Claude Code subscription; no API key needed).
+3. Once authed, re-run the briefing:
+   ```
+   /spike-flow /work/brief.md
+   ```
+   (or `/feature-flow /work/brief.md`, `/review-flow /work/brief.md`).
+
+Auth persists in the sandbox's filesystem until you `sbx rm` it. Reusing
+the same sandbox name on a later run skips this step. Each *new*
+sandbox name (each new spike/feature/review slug) pays the login cost
+once.
+
+### API-key path (skips interactive login)
+
+If you have an Anthropic API key, store it globally and the proxy injects
+it into every sandbox. No `/login` ever needed:
+
+```bash
+echo "$ANTHROPIC_API_KEY" | sbx secret set -g anthropic
+```
+
+This is the headless-friendly path. Only useful if you actually have a
+raw API key — Claude Code subscriptions are OAuth-only and don't expose
+one.
+
+## 5. (Phase 2 — deferred) Build the custom `claude-team` sbx template
 
 Until this is built, the kit falls back to sbx's default `claude` template
 and pays a per-task install penalty for tooling (`mise`, `gh`, runtimes).
@@ -73,7 +112,7 @@ The fall-back works; the custom template is purely an optimization.
 
 (Build script lands in Phase 2.)
 
-## 5. (Optional — future hardening) Tighten network policy
+## 6. (Optional — future hardening) Tighten network policy
 
 The kit currently runs with default-allow networking. To switch to
 default-deny with an explicit allowlist:

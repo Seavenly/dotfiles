@@ -102,46 +102,51 @@ Otherwise just proceed (review-flow is the fast path).
 
 Compute window: `review-pr-<num>-$(date +%H%M)`.
 
+sbx uses direct-mount (host path = sandbox path). The kit's startup hook
+scans mounted workspaces for `brief.md` and symlinks `/work` to whichever
+mount contains it, so `/work/brief.md` resolves regardless of mount order.
+sbx requires the primary workspace to be writable. Review-flow doesn't
+need a worktree, so the run dir is primary writable and the repo (if
+locally available) is a secondary `:ro` mount.
+
+Launch via `~/.dotfiles/scripts/agent-teams-launch.sh`, which wraps
+`sbx create` + settings.json patch (to enable Agent Teams) + `sbx run`.
+
 ```bash
 tmux has-session -t agent-teams 2>/dev/null || \
   ~/.dotfiles/scripts/tmux-agent-teams.sh
-
-# For review-flow, target repo is read-only. We don't need a worktree.
-# We pass the repo path :ro so reviewers can read surrounding code.
-LOCAL_REPO="$(gh repo view <repo> --json sshUrl -q .sshUrl | head -c 1)"
-# Detect: do we have the repo checked out locally?
-
-# If repo is locally checked out somewhere reachable, mount it :ro.
-# Otherwise the sandbox uses `gh` to fetch the PR diff alone.
 ```
 
-Build the spawn command. If the repo is locally checked out:
+If the repo is locally checked out, give the reviewers access to
+surrounding source by mounting it `:ro`:
 
 ```bash
 tmux new-window -t agent-teams: -n "<window>" -d \
-  "sbx run claude <local_repo_path>:ro \
-     --name agt-review-pr-<num> \
-     --kit ~/.dotfiles/claude/agent-teams-kit \
-     <run_dir>:rw \
-     -- -p '/review-flow /work/brief.md'"
+  "~/.dotfiles/scripts/agent-teams-launch.sh agt-review-pr-<num> '/review-flow /work/brief.md' \
+     -- claude <run_dir> <local_repo_path>:ro \
+        --kit ~/.dotfiles/claude/agent-teams-kit"
 ```
 
-If not locally checked out:
+If not locally checked out, just mount the run dir:
 
 ```bash
 tmux new-window -t agent-teams: -n "<window>" -d \
-  "sbx run claude <run_dir> \
-     --name agt-review-pr-<num> \
-     --kit ~/.dotfiles/claude/agent-teams-kit \
-     <run_dir>:rw \
-     -- -p '/review-flow /work/brief.md'"
+  "~/.dotfiles/scripts/agent-teams-launch.sh agt-review-pr-<num> '/review-flow /work/brief.md' \
+     -- claude <run_dir> \
+        --kit ~/.dotfiles/claude/agent-teams-kit"
 ```
 
 (The lead inside the sandbox uses `gh pr diff` either way; the difference
 is whether reviewers can also browse surrounding source for context.)
 
-Note: `--branch auto` is **not** used for review-flow. There's no
-worktree — the sandbox is read-only against the source.
+Notes:
+- Launcher invokes claude WITHOUT `-p` so the session stays open after
+  the flow completes. The launcher pauses with `read` so the tmux window
+  stays around even after claude exits.
+- `--branch auto` is **not** used for review-flow. There's no worktree.
+- First time spawning a sandbox with a new name, the inner claude session
+  is not authenticated. The user must `/login` interactively once. See
+  `SETUP.md §Inner-sandbox login`.
 
 ## Step 6 — Report back
 

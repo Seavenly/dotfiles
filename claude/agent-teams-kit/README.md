@@ -14,23 +14,55 @@ and how to modify it.
 agent-teams-kit/
 ├── README.md                          # this file
 ├── SETUP.md                           # one-time host setup commands
+├── spec.yaml                          # sbx kit manifest: schemaVersion, kind=mixin, startup hook
 ├── template/
 │   └── build.sh                       # builds the claude-team sbx template (Phase 2)
-└── .claude/                           # mounted into the sandbox's CLAUDE_HOME equivalent
-    ├── settings.json                  # enables Agent Teams, teammateMode: tmux
-    ├── defaults.yaml                  # cap defaults, merged into brief
-    ├── agents/                        # role definitions
-    │   ├── researcher.md
-    │   ├── planner.md
-    │   ├── tester.md
-    │   ├── implementer.md
-    │   ├── critic.md
-    │   └── synthesizer.md
-    └── commands/                      # in-sandbox slash commands (lead briefings)
-        ├── feature-flow.md
-        ├── review-flow.md
-        └── spike-flow.md
+└── files/                             # sbx delivers files/home/<path> → /home/agent/<path>
+    └── home/
+        └── .claude/                   # claude config delivered into the agent user's home
+            ├── settings.json          # enables Agent Teams, teammateMode: tmux
+            ├── defaults.yaml          # cap defaults, merged into brief
+            ├── agents/                # role definitions
+            │   ├── researcher.md
+            │   ├── planner.md
+            │   ├── tester.md
+            │   ├── implementer.md
+            │   ├── critic.md
+            │   └── synthesizer.md
+            └── commands/              # in-sandbox slash commands (lead briefings)
+                ├── feature-flow.md
+                ├── review-flow.md
+                └── spike-flow.md
 ```
+
+## spec.yaml — kit manifest
+
+sbx requires a `spec.yaml` at the kit root. Ours declares:
+
+- `schemaVersion: 1`, `kind: mixin` — minimum valid manifest fields.
+- A `commands.startup` hook that runs as root and symlinks
+  `/work` → whichever mounted workspace contains a `brief.md`. This
+  lets the in-sandbox lead briefings reference `/work/brief.md`,
+  `/work/notes.md`, `/work/out/*.md` regardless of which workspace sbx
+  made primary for a given flow (which varies — see AGENT-TEAMS.md
+  §sbx setup for the per-flow table).
+
+Validate after edits with `sbx kit validate ~/.dotfiles/claude/agent-teams-kit`.
+
+### What the kit can't do directly
+
+`files/home/.claude/settings.json` looks like it should configure the
+inner Claude session, but **sbx clobbers it.** sbx writes its own
+agent-template `settings.json` *after* kit files land and *after*
+startup hooks complete, so anything the kit puts at that path is gone
+by the time claude starts. Agent Teams config (env var, teammateMode)
+is therefore applied via a post-create `sbx exec` overlay step in
+`~/.dotfiles/scripts/agent-teams-launch.sh`, not via the kit's own
+settings.json. The kit also ships a `settings.local.json` as a
+documentation marker — Claude Code's settings.local.json is *not*
+clobbered, so it survives, but whether it gets read at user-level
+depends on Claude Code's exact version-specific behavior. Treat the
+launcher script's overlay as authoritative.
 
 ## How role agents work
 
