@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+# cockpit — manage parallel AI chats across tmux sessions.
+# See ~/.dotfiles/tools/cockpit/lib/state.sh for the state schema.
+
+set -u
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$HERE/lib/state.sh"
+# shellcheck source=/dev/null
+source "$HERE/lib/tui.sh"
+
+usage() {
+  cat <<'USAGE'
+cockpit — dashboard for parallel AI chats
+
+Usage:
+  cockpit                       Open the TUI (popup if in tmux)
+  cockpit list                  Print a formatted table of active chats
+  cockpit summary               One-line compact form for status bars
+  cockpit spawn                 Start a new claude chat in a project tmux window
+  cockpit jump <id>             Switch tmux focus to a chat's pane
+  cockpit rename <id> <text>    Update a chat's goal label
+  cockpit kill <id>             Terminate the chat process and archive its state
+  cockpit clean                 Prune stale entries (panes that no longer exist)
+  cockpit recent [n]            Show recently-archived chats (default 10)
+  cockpit help                  This message
+USAGE
+}
+
+# ─── Status presentation ──────────────────────────────────────────────────
+
+# Single-char glyph for status. Keep these stable; sketchybar/status-line
+# parsing depends on them.
+status_glyph() {
+  case "$1" in
+    working) echo "⏳" ;;
+    waiting) echo "✉️" ;;
+    blocked) echo "⚠️" ;;
+    idle)    echo "○"  ;;
+    *)       echo "·"  ;;
+  esac
+}
+
+# Format a relative time delta from epoch seconds.
+ago() {
+  local then=$1 now delta
+  now=$(cockpit_now)
+  delta=$(( now - then ))
+  if   (( delta < 60   )); then printf '%ds' "$delta"
+  elif (( delta < 3600 )); then printf '%dm' "$(( delta / 60 ))"
+  else                          printf '%dh' "$(( delta / 3600 ))"
+  fi
+}
+
+# ─── Render rows ──────────────────────────────────────────────────────────
+
+# Emit one tab-separated row per active chat:
+#   id\tstatus\tglyph\tgoal\tcurrent_action\ttmux\tcwd_basename\tage\talive(0|1)
+# Sorted: blocked first, then waiting, then working, then idle. Within a status,
+# most-recently-updated first.
+cockpit_rows() {
+  local id state pane alive cwd_base
+  while read -r id; do
+    [[ -z "$id" ]] && continue
+    state=$(cockpit_read "$id")
+    pane=$(jq -r '.tmux_pane // ""' <<<"$state")
+    alive=0
+    cockpit_pane_alive "$pane" && alive=1
+    cwd_base=$(jq -r '.cwd // ""' <<<"$state")
+    cwd_base=${cwd_base##*/}
+    jq -r --arg id "$id" \
+          --arg glyph "$(status_glyph "$(jq -r '.status // "idle"' <<<"$state")")" \
+          --arg cwdb "$cwd_base" \
+          --arg alive "$alive" \
+          --arg age "$(ago "$(jq -r '.updated_at // 0' <<<"$state")")" \
+          '
+          [
+            $id,
+            (.status // "idle"),
+            $glyph,
+            (.goal // ""),
+            (.current_action // ""),
+            ((.tmux_session // "") + ":" + (.tmux_window // "") + "." + (.tmux_pane // "")),
+            $cwdb,
+            $age,
+            $alive
+          ] | @tsv
+          ' <<<"$state"
+  done < <(cockpit_list_ids) \
+  | awk -F'\t' '
+      BEGIN { OFS=FS }
+      { rank = (($2=="blocked")?0:($2=="waiting")?1:($2=="working")?2:3); print rank "\t" $0 }
+    ' \
+  | sort -t $'\t' -k1,1n -k9,9 \
+  | cut -f2-
+}
+
+# ─── Subcommands ──────────────────────────────────────────────────────────
+
+cmd_list() {
+  local rows
+  rows=$(cockpit_rows)
+  if [[ -z "$rows" ]]; then
+    echo "No active chats."
+    return 0
+  fi
+  {
+    printf 'STATUS\tGOAL\tACTION\tWHERE\tAGE\tID\n'
+    awk -F'\t' -v OFS='\t' '
+      {
+        id=$1; status=$2; glyph=$3; goal=$4; action=$5; tmux=$6; cwdb=$7; age=$8; alive=$9
+        if (alive=="0") glyph=glyph "✗"
+        if (goal=="")   goal="—"
+        if (action=="") action="—"
+        where = (cwdb != "") ? cwdb " " tmux : tmux
+        print glyph " " status, goal, action, where, age, id
+      }
+    ' <<<"$rows"
+  } | column -t -s $'\t'
+}
+
+# One-line compact form. Empty if no chats. Glyph counts blocked/waiting/working.
+cmd_summary() {
+  local rows
+  rows=$(cockpit_rows)
+  [[ -z "$rows" ]] && { echo ""; return 0; }
+  local counts
+  counts=$(awk -F'\t' '
+    { c[$2]++ }
+    END { printf "%d %d %d", c["blocked"]+0, c["waiting"]+0, c["working"]+0 }
+  ' <<<"$rows")
+  local blocked waiting working
+  read -r blocked waiting working <<<"$counts"
+  local out="🤖"
+  (( blocked > 0 )) && out+=" ${blocked}⚠️"
+  (( waiting > 0 )) && out+=" ${waiting}✉️"
+  (( working > 0 )) && out+=" ${working}⏳"
+  echo "$out"
+}
+
+cmd_spawn() {
+  local selected_dir
+  selected_dir=$(find ~/dev -mindepth 2 -maxdepth 2 -type d \( -name .git -o -name .jj \) \
+    | xargs dirname \
+    | fzf --delimiter / --with-nth -2,-1)
+  [[ -z "$selected_dir" ]] && return 0
+
+  local session_name
+  session_name=$(basename "$selected_dir" | tr . _)
+
+  if ! tmux has-session -t="$session_name" 2>/dev/null; then
+    tmux new-session -ds "$session_name" -c "$selected_dir"
+  fi
+
+  local target
+  target=$(tmux new-window -P -F '#{session_name}:#{window_index}' \
+    -t "${session_name}:" -n claude -c "$selected_dir")
+  tmux send-keys -t "$target" 'claude' Enter
+
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "$target"
+  else
+    tmux attach -t "$target"
+  fi
+}
+
+cmd_jump() {
+  local id="${1:-}"
+  [[ -z "$id" ]] && { echo "usage: cockpit jump <id>" >&2; return 2; }
+  local state pane session window
+  state=$(cockpit_read "$id")
+  pane=$(jq -r '.tmux_pane // ""' <<<"$state")
+  session=$(jq -r '.tmux_session // ""' <<<"$state")
+  window=$(jq -r '.tmux_window // ""' <<<"$state")
+  if [[ -z "$pane" ]]; then
+    echo "no tmux pane recorded for $id" >&2
+    return 1
+  fi
+  if ! cockpit_pane_alive "$pane"; then
+    echo "pane $pane no longer exists (chat may have exited)" >&2
+    return 1
+  fi
+  # Try most-specific target first.
+  if tmux switch-client -t "${session}:${window}.${pane}" 2>/dev/null; then
+    return 0
+  fi
+  if tmux switch-client -t "$pane" 2>/dev/null; then
+    return 0
+  fi
+  # Last resort: select-pane by id (works if we're already attached to the
+  # right session and just need to move within it).
+  tmux select-pane -t "$pane"
+}
+
+cmd_rename() {
+  local id="${1:-}"; shift || true
+  local new="$*"
+  [[ -z "$id" || -z "$new" ]] && { echo "usage: cockpit rename <id> <text>" >&2; return 2; }
+  cockpit_update "$id" '.goal = $g | .updated_at = ($now|tonumber)' \
+    --arg g "$new" --arg now "$(cockpit_now)"
+  echo "renamed $id"
+}
+
+cmd_kill() {
+  local id="${1:-}"
+  [[ -z "$id" ]] && { echo "usage: cockpit kill <id>" >&2; return 2; }
+  local state pane
+  state=$(cockpit_read "$id")
+  pane=$(jq -r '.tmux_pane // ""' <<<"$state")
+  if [[ -n "$pane" ]] && cockpit_pane_alive "$pane"; then
+    # Send SIGTERM to the foreground process group of the pane's tty.
+    local pane_pid tty
+    pane_pid=$(tmux display-message -t "$pane" -p '#{pane_pid}' 2>/dev/null)
+    if [[ -n "$pane_pid" ]]; then
+      # Find descendants and signal them. Simpler: signal the pane_pid's children.
+      pkill -TERM -P "$pane_pid" 2>/dev/null || true
+    fi
+  fi
+  cockpit_archive "$id"
+  echo "killed $id"
+}
+
+cmd_clean() {
+  local id state pane removed=0
+  while read -r id; do
+    [[ -z "$id" ]] && continue
+    state=$(cockpit_read "$id")
+    pane=$(jq -r '.tmux_pane // ""' <<<"$state")
+    if [[ -n "$pane" ]] && ! cockpit_pane_alive "$pane"; then
+      cockpit_archive "$id"
+      (( removed++ ))
+    fi
+  done < <(cockpit_list_ids)
+  echo "cleaned $removed stale entr$([[ $removed -eq 1 ]] && echo y || echo ies)"
+}
+
+cmd_recent() {
+  local n="${1:-10}"
+  local d
+  d=$(cockpit_archive_dir)
+  [[ -d "$d" ]] || { echo "no archive."; return 0; }
+  shopt -s nullglob
+  local f files=("$d"/*.json)
+  (( ${#files[@]} == 0 )) && { echo "no archived chats."; return 0; }
+  # Newest first.
+  ls -1t "${files[@]}" | head -n "$n" | while read -r f; do
+    jq -r '[(.updated_at // 0 | strftime("%m/%d %H:%M")),
+            (.tool // "?"),
+            (.goal // "—"),
+            .id] | @tsv' "$f"
+  done | column -t -s $'\t'
+}
+
+# ─── Dispatch ─────────────────────────────────────────────────────────────
+
+cmd="${1:-}"; [[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+  ""|popup|tui)        cockpit_tui "$@" ;;
+  list|ls)             cmd_list ;;
+  summary)             cmd_summary ;;
+  spawn|new)           cmd_spawn ;;
+  jump|j)              cmd_jump "$@" ;;
+  rename|mv)           cmd_rename "$@" ;;
+  kill|rm)             cmd_kill "$@" ;;
+  clean)               cmd_clean ;;
+  recent)              cmd_recent "$@" ;;
+  rows)                cockpit_rows ;;                  # internal
+  tui-format)          cockpit_tui_format ;;             # internal (fzf source)
+  tui-rename)          cockpit_tui_rename "$@" ;;        # internal (fzf binding)
+  tui-kill)            cockpit_tui_kill "$@" ;;          # internal (fzf binding)
+  preview-id)          cockpit_tui_preview "$@" ;;       # internal (fzf preview)
+  help|-h|--help)      usage ;;
+  *)                   echo "unknown command: $cmd" >&2; usage; exit 2 ;;
+esac

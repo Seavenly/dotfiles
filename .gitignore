@@ -45,3 +45,4 @@ lazygit/state.yml
 .aider*
 !aider/*
 zshrc/private.sh
+tools/rec/.venv

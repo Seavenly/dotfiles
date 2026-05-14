@@ -3,8 +3,10 @@ vim.api.nvim_create_autocmd('FileType', {
     once = true,
     callback = function()
         -- nvim-treesitter is loaded eagerly in 10-treesitter.lua.
-        -- The community fork has no required deps; picker integrates natively with snacks.
+        -- obsidian.client transitively requires plenary.async, so plenary must be added
+        -- alongside the plugin itself even though the picker integrates natively with snacks.
         vim.pack.add({
+            { src = 'https://github.com/nvim-lua/plenary.nvim' },
             { src = 'https://github.com/obsidian-nvim/obsidian.nvim', version = vim.version.range('*') },
         })
 
@@ -12,26 +14,15 @@ vim.api.nvim_create_autocmd('FileType', {
             picker = { name = "snacks.pick" },
             workspaces = {
                 {
-                    name = "vault",
-                    path = "~/dev/vault/",
+                    name = "notes",
+                    path = "~/notes/",
                 },
             },
             ui = {
                 enable = false,
             },
-            notes_subdir = "0.zettlekasten",
+            notes_subdir = "raw/notes",
             open_app_foreground = true,
-            daily_notes = {
-                folder = "5.dailies",
-                date_format = "%Y-%m-%d",
-                alias_format = "%B %-d, %Y",
-                template = "daily.md",
-            },
-            templates = {
-                subdir = "_templates",
-                date_format = "%Y-%m-%d-%a",
-                time_format = "%H:%M",
-            },
             attachments = {
                 img_folder = "_attachments",
             },
@@ -42,11 +33,9 @@ vim.api.nvim_create_autocmd('FileType', {
                     local keys = {
                         { '<leader>oo', ':ObsidianOpen<CR>',                                              desc = 'Obsidian Open in App' },
                         { '<leader>ot', ':ObsidianTags<CR>',                                              desc = 'Obsidian Tags' },
-                        { '<leader>od', ':ObsidianDailies<CR>',                                           desc = 'Obsidian Dailies' },
                         { '<leader>ol', ':ObsidianLinks<CR>',                                             desc = 'Obsidian Links' },
                         { '<leader>ob', ':ObsidianBacklinks<CR>',                                         desc = 'Obsidian Backlinks' },
                         { '<leader>on', ':ObsidianNew<CR>',                                               desc = 'Obsidian New Note' },
-                        { '<leader>oy', ':ObsidianToday<CR>',                                             desc = 'Obsidian Today' },
                         { '<leader>op', ':ObsidianPasteImg<CR>',                                          desc = 'Obsidian Paste Image' },
                         { '<leader>oc', function() return require("obsidian").util.toggle_checkbox() end, desc = 'Obsidian Checkbox Toggle' },
                         { '<leader>so', ':ObsidianSearch<CR>',                                            desc = 'Search Obsidian' },
@@ -69,15 +58,12 @@ vim.api.nvim_create_autocmd('FileType', {
             ---@param title string|?
             ---@return string
             note_id_func = function(title)
-                local suffix = ""
-                if title ~= nil then
-                    suffix = title:gsub(" ", "-"):gsub("[^A-Za-z0-9-]", ""):lower()
-                else
-                    for _ = 1, 4 do
-                        suffix = suffix .. string.char(math.random(65, 90))
-                    end
+                local date = os.date("%Y-%m-%d")
+                if title ~= nil and title ~= "" then
+                    local cleaned = title:gsub("[^%w%s%-]", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+                    return date .. " " .. cleaned
                 end
-                return tostring(os.time()) .. "-" .. suffix
+                return date .. " " .. os.date("%H%M%S")
             end,
             follow_url_func = function(url)
                 vim.fn.jobstart({ "open", url })
