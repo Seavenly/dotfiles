@@ -53,13 +53,25 @@ For each slice in `/work/out/plan.md`, in order:
 ```
 retries = 0
 max_retries = brief.config.max_slice_retries  // default 3
+is_final_slice = (this is the last slice in /work/out/plan.md)
 
 // Step A — tester writes failing test
 Agent(tester):
   "Slice <N>: <slice description from plan>.
+   <If is_final_slice: "This is the final slice for this feature — your
+   test should exercise the feature's primary user-facing path
+   end-to-end, not just the unit being added.">
    Read /work/notes.md and /work/out/plan.md. Write ONE failing test for
    this slice. Run the suite. Confirm the failure is behavioral.
-   Update /work/notes.md if applicable."
+   Update /work/notes.md if applicable.
+   End your return message with the structured ### Handoff block
+   defined in your role."
+
+// Read the tester's ### Handoff block. Items worth carrying forward
+// (Issues discovered, Undone, anomalous Procedures-followed lines)
+// → append a terse entry to /work/notes.md under ## Run journal with
+// reasoning ("noting because: ..."). Do not launder. If the tester
+// flagged a framework quirk, write it down.
 
 // Step B — implementer makes it pass
 Agent(implementer):
@@ -67,7 +79,16 @@ Agent(implementer):
    Read /work/notes.md. The failing test is at <test_path>. Make it pass
    with minimal code. Run the suite to confirm green and no regressions.
    On green, do a focused local refactor. Update /work/notes.md if
-   applicable."
+   applicable.
+   End your return message with the structured ### Handoff block
+   defined in your role."
+
+// Read the implementer's ### Handoff block. Same integration discipline
+// as above. Pay particular attention to: items listed under "Undone"
+// (deferred TODOs, edge cases skipped), suspicious procedures-followed
+// admissions (a test marked xfail, an out-of-scope file touched), and
+// issues spotted elsewhere in the code (these become candidates for
+// follow-up slices or critic findings).
 
 // Step C — Run tests yourself to verify
 Bash: <project's test command>
@@ -82,11 +103,14 @@ if tests fail:
   else:
     Agent(implementer):
       "Retry <retries>/<max_retries>. Test still fails:
-       <failure output>. Revise. Do not modify the test."
+       <failure output>. Revise. Do not modify the test.
+       End your return message with the structured ### Handoff block."
     Goto Step C
 
 if tests pass:
-  Update /work/notes.md with anything cross-slice worth carrying forward.
+  Update /work/notes.md with anything cross-slice worth carrying forward
+  (conventions established, helpers extracted, decisions made — informed
+  by the handoff blocks you just read).
   Continue to next slice.
 ```
 
@@ -104,25 +128,41 @@ inner-loop transcripts — context isolation by construction.
 > `critic` subagent type. Spawn prompt:
 > "You are the feature-flow critic for run <run_id>. Read /work/brief.md.
 > Run `git diff main...HEAD` to see the final diff. Read /work/out/plan.md.
-> Review for design quality, edge cases the tests miss, security/perf
-> smells. Output your verdict to /work/out/critic-verdict.md per Mode A
-> in your role definition. DO NOT request or read transcripts from the
-> implementer or tester subagents — you operate independently by design."
+> Read /work/notes.md — this is the lead-curated journal of the run; use
+> it for audit signal (skipped tests, xfails, deferred TODOs, issues
+> flagged but unaddressed). Review for design quality, edge cases the
+> tests miss, security/perf smells, and anything the notes admit was
+> left undone. Output your verdict to /work/out/critic-verdict.md per
+> Mode A in your role definition. FIX_LIST items must be shaped as
+> testable slices so the team can route each through the TDD inner loop.
+> DO NOT request or read transcripts from the implementer or tester
+> subagents — you operate independently by design."
 
 Wait for the critic teammate to complete. Read `/work/out/critic-verdict.md`.
 
 ### Handle the verdict
 
 - **APPROVE** → continue to Phase 4.
-- **FIX_LIST** → run one revision cycle:
-  - For each FIX_LIST item, decide whether it's an implementer-only fix
-    or needs new test coverage.
-  - Need test: `Agent(tester)` to add the test, then `Agent(implementer)`
-    to address the issue.
-  - Implementer-only: `Agent(implementer)` with the fix item as input.
-  - Re-run the suite. All tests must remain green.
-  - Cap: only **one** revision cycle (per `max_critic_revisions`). If the
-    critic returns another FIX_LIST after revision, escalate to user.
+- **FIX_LIST** → run a revision cycle through the TDD inner loop. Each
+  FIX_LIST item is treated as a new slice appended to the slice queue:
+  - For each item flagged as testable (the default):
+    `Agent(tester)` with the item's `Test idea` and `Behavior` →
+    `Agent(implementer)` with the failing test → run the suite (same
+    retry budget as a regular slice).
+  - For each item flagged `non-testable: true` (e.g., naming, dead
+    code, doc fix): `Agent(implementer)` directly with the fix item;
+    re-run the suite to confirm no regressions.
+  - After all fix-items in this revision cycle complete, re-spawn the
+    `critic` teammate (fresh teammate name with revision suffix, e.g.
+    `critic-feature-<slug>-rev2`) with the same prompt as the initial
+    spawn. The critic re-evaluates the updated diff + notes.
+  - The lead reads each subagent's `### Handoff` block as in Phase 2
+    and integrates notable items into `/work/notes.md`.
+  - Cap: up to `max_critic_revisions` (default 3) such cycles. If after
+    the cap the critic still returns FIX_LIST, ship as-is and surface
+    the remaining findings in the synthesizer's PR body so the human
+    reviewer sees them. If the critic returns RE_PLAN at any cycle,
+    escalate to user immediately.
 - **RE_PLAN** → escalate to the user. Do not attempt a second plan
   automatically. Surface the critic's reasoning and stop.
 

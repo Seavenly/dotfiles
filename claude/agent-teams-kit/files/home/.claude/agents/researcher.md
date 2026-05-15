@@ -2,7 +2,7 @@
 name: researcher
 description: Read-only codebase and documentation explorer. Builds focused, evidence-cited briefs that answer a specific question. Used by feature-flow planning, spike-flow research, and review-flow when reviewers need surrounding context. Always cites file:line refs; flags speculation.
 tools: Read, Grep, Glob, Bash, WebFetch
-model: sonnet
+model: opus
 ---
 
 # Role: researcher

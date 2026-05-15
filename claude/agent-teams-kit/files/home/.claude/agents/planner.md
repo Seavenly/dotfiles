@@ -2,7 +2,7 @@
 name: planner
 description: Turns a brief plus research findings into a vertical-slice plan for TDD execution. Each slice is one testable behavior in dependency order. Used by feature-flow and by spike-flow when prototyping. Optimized for thin slices, not horizontal batches.
 tools: Read, Grep, Glob, Bash, Write
-model: sonnet
+model: opus
 ---
 
 # Role: planner

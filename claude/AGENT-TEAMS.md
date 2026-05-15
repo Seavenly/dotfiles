@@ -47,6 +47,22 @@ The Anthropic docs explicitly warn against Agent Teams for sequential,
 same-file work — overhead and token cost dominate. They shine when teammates
 work *independently*. Our split honors that.
 
+**Per-role model assignment.** Roles are tuned to their cognitive load
+via the `model:` frontmatter field in `.claude/agents/*.md`. Current
+assignment:
+
+| Role | Model | Why |
+|---|---|---|
+| planner | opus | Goal → slice decomposition; errors here compound through every later agent |
+| critic | opus | Independent design review of final diff; catch rate matters more than throughput |
+| tester | opus | Test design defines correctness for the slice; subtle behavioral framing |
+| implementer | opus | Code fluency + tasteful minimal-fix discipline |
+| researcher | opus | Read-heavy exploration with file:line citations; reasoning over volume |
+| synthesizer | sonnet | Format existing artifacts into PR body / review doc / spike report — formatting task, no novel reasoning |
+
+Aliases (not version pins) so the assignment rides forward with each
+model release.
+
 **Both modes use the same role prompts.** The kit's `.claude/agents/*.md`
 files work dual-purpose: subagent definitions AND Agent Teams teammate
 types. When spawning a teammate, the lead references the role by name; the
@@ -90,17 +106,23 @@ kit's `.claude/skills/` and `.claude/mcp.json`.
 │      Agent() planner → slice plan committed to notes.md           │
 │                                                                   │
 │   per-slice TDD inner loop (subagents, ≤3 retries):              │
-│      Agent() tester  (reads notes.md, writes ONE failing test)    │
-│      Agent() implementer (reads notes.md, makes it pass)          │
+│      Agent() tester  (reads notes.md, writes ONE failing test,   │
+│                      returns structured ### Handoff block)        │
+│      Agent() implementer (reads notes.md, makes it pass,          │
+│                      returns structured ### Handoff block)        │
 │      Bash: run test suite → deterministic gate                    │
 │      on green: implementer local refactor pass                    │
-│      lead updates /work/notes.md with decisions worth carrying    │
+│      lead reads each Handoff, integrates notable items into       │
+│        /work/notes.md (Issues/Undone/procedure slips, with reason)│
 │                                                                   │
 │   outer critic pass (TEAMMATE, parallel-capable):                 │
 │      spawn `critic` teammate with role: prompt                    │
-│      input: final diff + test summary ONLY                        │
+│      input: final diff + test summary + /work/notes.md            │
+│        (notes is lead-curated, not raw transcripts)               │
 │      output: APPROVE | FIX_LIST | RE_PLAN                         │
-│      FIX_LIST → ≤1 revision cycle via subagents                  │
+│      FIX_LIST items shaped as testable slices →                  │
+│        route each through TDD inner loop (tester+implementer);    │
+│        up to max_critic_revisions cycles (default 3)              │
 │                                                                   │
 │   synthesizer:                                                    │
 │      Agent() synthesizer → /work/out/report.md (PR body)          │
@@ -187,10 +209,16 @@ run.
    f. Lead updates /work/notes.md
 4. After all slices green:
    spawn critic TEAMMATE
-   input: final diff + test summary only
+   input: final diff + test summary + /work/notes.md
    output: APPROVE | FIX_LIST | RE_PLAN
-   FIX_LIST → 1 revision cycle via subagents
-   RE_PLAN → escalate to user
+   FIX_LIST items are shaped as testable slices; each is routed
+     back through the TDD inner loop (tester writes failing test
+     → implementer makes pass → suite gate). Non-testable items
+     (naming, dead code, doc fixes) route to implementer directly.
+     After each revision cycle, re-spawn a fresh critic teammate.
+     Cap: max_critic_revisions cycles (default 3); after the cap
+     ship as-is and surface remaining findings in the PR body.
+   RE_PLAN → escalate to user immediately
 5. synthesizer subagent writes /work/out/report.md
    (intended as PR body)
 ```
@@ -199,14 +227,27 @@ run.
 - `~/.agent-teams/runs/<id>/out/report.md` — PR body
 - Branch `agt/feature-<slug>` on the worktree, ready for review/merge
 
-**Hard caps:** 3 retries per slice, 1 post-critic revision. Configurable via
-brief `config:` block.
+**Hard caps:** 3 retries per slice, 3 post-critic revision cycles
+(default; configurable via brief `config:` block).
 
-**Notes file pattern:** `/work/notes.md` is maintained by the lead between
-slices. Captures conventions established, decisions made, gotchas
-discovered. Implementer and tester both read it at start, can update it at
-end of their slice. This is how the "journey" persists despite subagents
-having fresh context per call.
+**Notes file pattern:** `/work/notes.md` is the single carrier of
+inter-slice state. The tester and implementer subagents return a
+structured `### Handoff` block (Completed / Undone / Commands+exit codes
+/ Issues discovered / Procedures followed) at the end of their final
+message; the lead reads each handoff and integrates notable items
+(Issues, Undone, admitted procedure slips, helpers extracted, conventions
+established) into `notes.md` with reasoning about why each is worth
+carrying. The next slice's tester and implementer read `notes.md` to
+inherit that context. The critic at the outer pass also sees `notes.md`
+— it is a lead-curated artifact, not a transcript, so it preserves the
+critic's fresh-context principle while giving it audit signal (skipped
+tests, xfails, deferred TODOs).
+
+**End-to-end coverage:** for any feature, the slice collection must
+include at least one test that exercises the feature's primary
+user-facing path end-to-end. Default placement: the final slice. The
+lead's spawn prompt to the `tester` flags whether the current slice is
+the final one so the tester can shape the test accordingly.
 
 ### review-flow
 
@@ -486,6 +527,20 @@ click into any pane to talk to a teammate directly.
 8. **Cross-run learning** — eventually critique notes from past runs could
    become a brief-time input ("when reviewing this kind of PR, you've
    previously flagged X"). Out of scope for now.
+9. **Behavioral validator** — a second validator that actually runs the
+   app and exercises it (headless browser via Playwright for web,
+   expect-driven for TUIs/CLIs) before declaring a feature done.
+   Today only the static critic runs at the outer pass and the e2e-final-
+   slice tester rule is the compensating discipline. Worth revisiting if
+   we start running multi-day autonomous missions where the human is no
+   longer the "click around before merging" step. Pattern from Factory's
+   missions: scrutiny validator (tests/types/lint/code review — already
+   covered) plus user-testing validator (live app interaction — the gap).
+10. **Cross-provider validation** — to address the structural concern
+    that in-family critic+implementer share training distribution and
+    can agree on wrong things, route the critic to a different provider
+    when Claude Code supports it. Today's per-role model assignment
+    captures most of the missions claim but not this part.
 
 ## Troubleshooting
 

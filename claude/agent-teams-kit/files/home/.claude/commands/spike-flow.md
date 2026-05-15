@@ -105,6 +105,13 @@ You're now in the equivalent of feature-flow but scoped to
 
 2. For each slice, run the TDD inner loop (tester → implementer → run
    tests, retry up to `brief.config.max_slice_retries` or default 3).
+   Use the same handoff discipline as feature-flow: instruct each
+   subagent to end its return with the structured `### Handoff` block
+   from its role, and integrate notable items (Issues, Undone,
+   admitted procedure slips) into `/work/notes.md` before invoking the
+   next subagent. For a prototype, the e2e-final-slice requirement on
+   `tester` still applies — the final slice should exercise the
+   prototype end-to-end so a user can run it.
 
 3. Skip the critic outer pass — for a prototype, the team isn't trying
    to ship-quality code. If the prototype works and tests pass, it's done.

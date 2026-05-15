@@ -7,7 +7,7 @@
 
 feature_flow:
   max_slice_retries: 3        # how many times implementer can retry per slice
-  max_critic_revisions: 1     # how many critic-driven revision cycles allowed
+  max_critic_revisions: 3     # how many critic-driven revision cycles allowed
   plan_gate: false            # if true, lead pauses for user approval of plan
   autonomy: auto              # auto | gated — gated escalates more often
 

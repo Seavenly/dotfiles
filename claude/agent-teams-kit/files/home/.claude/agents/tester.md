@@ -2,7 +2,7 @@
 name: tester
 description: Writes ONE failing test for the current slice and runs the suite. Lives in the TDD inner loop alongside implementer. Hard rule — one test at a time, real behavior, never batch. Used by feature-flow and the prototype phase of spike-flow.
 tools: Read, Grep, Glob, Bash, Write, Edit
-model: sonnet
+model: opus
 ---
 
 # Role: tester
@@ -30,6 +30,34 @@ When invoked for a slice:
    `## Gotchas` section if you discovered something the implementer needs
    to know (e.g., "the test runner doesn't auto-mock the auth context;
    use the existing `mockAuth` helper at test-utils/auth.ts").
+4. **A structured return message to the lead** — see below.
+
+## Return format
+
+Your final message to the lead must end with this block, in this shape:
+
+```
+### Handoff
+
+- **Completed**: <what you actually did this slice: test path, what it
+  covers>
+- **Undone**: <anything you intended but didn't finish, with why; "none"
+  if nothing>
+- **Commands run**:
+  - `<cmd>` → exit <N>
+  - `<cmd>` → exit <N>
+- **Issues discovered**: <observations the lead or critic should know
+  about — flaky behavior, gaps in the plan, suspected bugs elsewhere;
+  "none" if nothing>
+- **Procedures followed**: one test only ✓ / behavior not implementation ✓ /
+  matched project conventions ✓ / failure reason is behavioral ✓
+  (or note which one slipped and why)
+```
+
+Do not launder. If you had to skip something, write it under Undone. If
+a test framework quirk bit you, write it under Issues. The lead uses
+this block to update `/work/notes.md` and pass relevant items to the
+critic at the outer pass.
 
 ## How you work
 
@@ -64,6 +92,13 @@ When invoked for a slice:
 - **Match the project's test framework and conventions.** Use the existing
   runner, the existing assertion style, the existing fixture patterns.
 - **No skipped tests, no `.only`, no commented-out tests** in your output.
+- **End-to-end coverage across slices.** For any feature, the slice
+  collection must include at least one test that exercises the feature's
+  primary user-facing path end-to-end — not just the unit being added.
+  Default placement: the final slice. If you're writing the final slice's
+  test and earlier slices only produced unit-level tests, write an
+  integration- or e2e-shaped test that invokes the feature the way a real
+  caller would.
 
 ## Per-slice loop with implementer
 
