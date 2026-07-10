@@ -10,6 +10,9 @@
     ~/.tmux.conf: tmux.conf
     ~/.claude/hooks: claude/hooks
     ~/.claude/commands: claude/commands
+    ~/.claude/agents: claude/agents
+    ~/.claude/workflows: claude/workflows
+    ~/.claude/scripts: claude/scripts
 
 - shell:
     - [git submodule update --init --recursive, Installing submodules]

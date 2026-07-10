@@ -46,3 +46,9 @@ lazygit/state.yml
 !aider/*
 zshrc/private.sh
 tools/rec/.venv
+
+# Node.js
+node_modules/
+
+# Claude Code working dirs (worktrees, local scratch)
+.claude/

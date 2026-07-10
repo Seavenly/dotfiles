@@ -5,583 +5,279 @@ Single source of truth for the agent-teams system in this dotfiles repo.
 
 ## What this is
 
-A homegrown system for handing off recurring software-engineering tasks to a
-team of Claude Code agents running in a sandboxed Docker container via
-[`sbx`](https://docker.com/sbx).
+A homegrown system for handing off recurring software-engineering tasks to
+a team of Claude Code subagents, orchestrated by **dynamic workflows** and
+run **entirely on the local machine** (no sandbox). Three flows:
 
-Three flows supported:
-- `/feature-flow` — implement a feature: plan → TDD inner loop → critic outer pass → PR-ready diff on a worktree branch.
-- `/review-flow` — review an open PR: parallel reviewers across four lenses (security, correctness, style, tests) → critic synthesizes/caps comments → review document + optional pending review draft on GitHub.
+- `/feature-flow` — implement a feature: plan → TDD inner loop → critic outer pass → PR-ready branch on a worktree.
+- `/review-flow` — review an open PR: parallel reviewers across lenses (security, correctness, style, tests, observability) → critic dedupes/right-sizes/anchors → rendered review.md/.html + optional pending draft on GitHub.
 - `/spike-flow` — investigate a question: researcher(s) → critic gap-analysis → optional in-repo prototype → spike report.
 
-You trigger flows from host-side slash commands that draft a brief, confirm
-with you, and spawn the sandbox in a new tmux window of the `agent-teams`
-bullpen session. You jump to the bullpen with `prefix C-t`.
+Each flow is **two layers**: a thin interactive *command* (the front half)
+and a saved *workflow script* (the autonomous back half). You start a flow
+by running the command in your normal Claude Code session; it interviews
+you, drafts a brief, sets up a worktree, then launches the workflow, which
+runs in the background while your session stays responsive. You watch with
+`/workflows`.
 
-## Substrate: Agent Teams + subagents hybrid
+> **History.** This system previously ran inside Docker `sbx` sandboxes
+> with the experimental Agent Teams (tmux teammates) feature. We moved
+> host-local + workflow-backed to get real host MCP servers, native deps
+> (no OS-mismatch reinstall ping-pong), no inner `/login`, and the
+> context-isolation a sandbox handoff used to provide — now delivered by
+> the workflow runtime's isolated execution. The Agent Teams experimental
+> flag is no longer used.
 
-Claude Code has two parallel-work mechanisms. We use **both**.
+## The three layers
 
-| Mechanism | Behavior | We use it for |
-|---|---|---|
-| **Subagents** (`Agent()` tool) | Helper invocations in the parent session's process. Each has its own context window but returns results to the parent. Sequential. | Sequential work, same-file edits, one-shot delegations |
-| **Agent Teams** (experimental) | Separate Claude Code instances with own context windows. Direct teammate-to-teammate communication via mailbox. Shared task list. Split-pane display via tmux. | Parallel exploration with independent contexts |
-
-**Per-flow mapping:**
-
-| Flow | Phase | Mechanism | Why |
+| Layer | File | What it is | Interactive? |
 |---|---|---|---|
-| feature-flow | Plan | Subagent (`planner`) | One-shot, sequential |
-| | TDD inner loop | Subagents (`tester`, `implementer`) | Same files, fast iteration |
-| | Critic outer pass | **Teammate** | Independent context = critic never sees inner transcripts by construction |
-| | Synthesizer | Subagent | One-shot |
-| review-flow | Reviewers (parallel) | **Teammates** (`reviewer-security`, `reviewer-correctness`, `reviewer-style`, `reviewer-tests`) | Canonical parallel-exploration use case |
-| | Critic | **Teammate** | Synthesizes findings; independent context |
-| | Synthesizer | Subagent | One-shot |
-| spike-flow | Researchers (parallel angles, deep mode) | **Teammates** | Multiple hypotheses; can debate |
-| | Critic | **Teammate** | Synthesizes consensus |
-| | Prototype (if requested) | Subagents (TDD inner) | Same as feature-flow |
-| | Synthesizer | Subagent | One-shot |
+| **Command** | `commands/<flow>-flow.md` (prose) | Interview → brief → worktree/setup → launch workflow → render/wrap-up. Owns everything that talks to you or needs the shell (`gh`/`git`/`node`). | **Yes** |
+| **Workflow** | `workflows/<flow>-flow-run.js` (JS) | The autonomous orchestration: fan-out, loops, gates, caps — held as code. Runs in the isolated workflow runtime; results live in script variables; only the final summary returns to the conversation. | No |
+| **Role agents** | `agents/<role>.md` (prose) | The personas the workflow spawns as subagents via `agent(..., {agentType})`. Judgment lives here; the JS is only wiring. | No |
 
-The Anthropic docs explicitly warn against Agent Teams for sequential,
-same-file work — overhead and token cost dominate. They shine when teammates
-work *independently*. Our split honors that.
+**Naming:** the user-facing command is `/<flow>-flow`; the workflow it
+launches is `/<flow>-flow-run` (distinct name to avoid a `/` collision).
+You never invoke `*-run` directly — the command does, by name, passing a
+structured `args` object.
 
-**Per-role model assignment.** Roles are tuned to their cognitive load
-via the `model:` frontmatter field in `.claude/agents/*.md`. Current
-assignment:
+## Substrate: why workflows
 
-| Role | Model | Why |
-|---|---|---|
-| planner | opus | Goal → slice decomposition; errors here compound through every later agent |
-| critic | opus | Independent design review of final diff; catch rate matters more than throughput |
-| tester | opus | Test design defines correctness for the slice; subtle behavioral framing |
-| implementer | opus | Code fluency + tasteful minimal-fix discipline |
-| researcher | opus | Read-heavy exploration with file:line citations; reasoning over volume |
-| synthesizer | sonnet | Format existing artifacts into PR body / review doc / spike report — formatting task, no novel reasoning |
+Claude Code offers subagents, skills, agent teams, and dynamic workflows.
+We use **workflows** for the execution half because the plan lives in
+*code*: deterministic loops/branching/caps, intermediate results in script
+variables (not the conversation's context), background execution, a
+`/workflows` progress view, and built-in quality patterns (adversarial
+cross-check, judge panels). The interactive half *can't* be a workflow —
+the runtime takes no mid-run user input — so it stays in the command.
 
-Aliases (not version pins) so the assignment rides forward with each
-model release.
+Within a workflow, parallel work is just concurrent `agent()` calls
+(`parallel`/`pipeline`); sequential same-file work (the TDD loop) is a
+plain `for` loop. The critic/reviewers keep independent context **by
+construction** — a subagent only sees its spawn prompt — which is the
+property the old Agent Teams "teammate" gave us. Mailbox debate (the one
+thing teammates did that subagents can't) is replaced by parallel
+researchers + a critic gap-analysis pass (cross-checked synthesis).
 
-**Both modes use the same role prompts.** The kit's `.claude/agents/*.md`
-files work dual-purpose: subagent definitions AND Agent Teams teammate
-types. When spawning a teammate, the lead references the role by name; the
-role's prompt body is appended to the teammate's system prompt.
+**Per-role model assignment** — each persona declares its default in its
+frontmatter `model:`; a workflow overrides per call via `opts.model` only
+when a specific call should deviate (precedence: `opts.model` > persona
+frontmatter > inherit session model). Assigned by **frequency × leverage**:
+top tier where one call's quality compounds through the run, the workhorse
+tier on the high-volume inner loop, the cheap tier on prescriptive assembly.
 
-**Caveat from the Agent Teams docs:** when a subagent definition runs as a
-teammate, the `skills` and `mcpServers` frontmatter fields are **not**
-applied. Any skills or MCP servers needed by teammates must live in the
-kit's `.claude/skills/` and `.claude/mcp.json`.
+| Role | Default | Calls / typical run | Why |
+|---|---|---|---|
+| planner | opus¹ | 1 | Highest leverage per call; a bad decomposition multiplies cost through every slice and critic cycle |
+| critic | opus¹ | 1–4 | Catch rate is the whole value; fable-critic over opus-implementer also breaks the shared-distribution blind spot (in-family version of the cross-provider idea) |
+| tester | opus | ~1 per slice | High-skill code work; blast radius bounded to one slice by the gate |
+| implementer | opus | ~1–2 per slice | Highest-volume heavyweight role; the test gate defines "done" |
+| researcher | opus | 3–4 in parallel | High-recall finder; precision comes from the fable critic downstream |
+| diagrammer | sonnet | 0–1 | Near-checklist persona with graceful failure (skipped.txt / .mmd fallback); bump back to opus if diagrams degrade |
+| synthesizer | sonnet | 1 | Format artifacts into PR body / report — no novel reasoning |
+| gate (test-runner) | sonnet | ~1–2 per slice | Mechanical, highest-frequency call; pinned via `opts.model` in the scripts since it has no persona file |
+
+Current deliberate overrides in the scripts: the review-flow **orientation**
+agent runs the researcher persona at `sonnet` (a 300-word strictly templated
+summary, not open-ended research), and the **gate** is script-pinned to
+`sonnet`. Everything else omits `opts.model` so the persona default is the
+single source of truth — don't re-add redundant pins. Caveat: `fable`
+assumes Fable access on whatever plan the run executes under; if that ever
+breaks, `opus` is the fallback for planner/critic.
+
+¹ **Temporary (2026-06-15):** planner and critic are pinned to `opus`
+because Fable access is turned off. Their intended default is `fable` (see
+the rationale above). There is no automatic preferred-with-fallback model
+selection in the harness — frontmatter `model:` and `opts.model` each take a
+single value — so this is a manual swap. Revert both persona frontmatters
+(`claude/agents/planner.md`, `claude/agents/critic.md`) to `model: fable`
+once Fable is re-enabled.
 
 ## Data flow
 
 ```
-┌─ host claude session ─────────────────────────────────────────────┐
-│ user: /feature-flow "add user profile page"                       │
-│   → host slash command (claude/commands/feature-flow.md):         │
-│      1. interview user (light/heavy by task type)                 │
-│      2. write brief to ~/.agent-teams/runs/<ts>-<slug>/brief.md   │
-│      3. show brief, confirm                                       │
-│      4. spawn sandbox in a new tmux window via the launcher:      │
-│         tmux new-window -t agent-teams: -n <type>-<slug>-<HHMM> \ │
-│           "~/.dotfiles/scripts/agent-teams-launch.sh \             │
-│              agt-<type>-<slug> '/<flow> /work/brief.md' \         │
-│              -- claude <repo> ~/.agent-teams/runs/<id> \          │
-│                 --branch auto \                                   │
-│                 --kit ~/.dotfiles/claude/agent-teams-kit"         │
-│      (mount order varies by flow; see §sbx setup.)                │
-│      Launcher = sbx create + settings.json overlay + sbx run.     │
-│      /work is a startup-hook symlink to whichever mount has        │
-│      brief.md.                                                    │
+┌─ your Claude Code session (the command) ──────────────────────────┐
+│ /feature-flow "add user profile page"                             │
+│   → interview (light, or --grill heavy)                           │
+│   → write ~/.agent-teams/runs/<id>/brief.md, confirm              │
+│   → git worktree add <run>/worktree -b agt/feature-<slug> <base>  │
+│   → install deps ONCE (native; setup_commands or auto-detect)     │
+│   → launch saved workflow by name, args = {runDir, worktree,      │
+│        base, briefPath, caps, testCmd, ...}                       │
 └───────────────────────────────────────────────────────────────────┘
-                              │
+                              │ args (the brief is the handoff)
                               ▼
-┌─ sbx container (in tmux window) ──────────────────────────────────┐
-│ Claude Code session (becomes the team LEAD)                       │
-│   → in-sandbox lead briefing (.claude/commands/feature-flow.md)   │
-│   → reads /work/brief.md                                          │
-│   → reads /work/notes.md (created fresh, persisted across slices) │
-│                                                                   │
-│   plan phase:                                                     │
-│      Agent() planner → slice plan committed to notes.md           │
-│                                                                   │
-│   per-slice TDD inner loop (subagents, ≤3 retries):              │
-│      Agent() tester  (reads notes.md, writes ONE failing test,   │
-│                      returns structured ### Handoff block)        │
-│      Agent() implementer (reads notes.md, makes it pass,          │
-│                      returns structured ### Handoff block)        │
-│      Bash: run test suite → deterministic gate                    │
-│      on green: implementer local refactor pass                    │
-│      lead reads each Handoff, integrates notable items into       │
-│        /work/notes.md (Issues/Undone/procedure slips, with reason)│
-│                                                                   │
-│   outer critic pass (TEAMMATE, parallel-capable):                 │
-│      spawn `critic` teammate with role: prompt                    │
-│      input: final diff + test summary + /work/notes.md            │
-│        (notes is lead-curated, not raw transcripts)               │
-│      output: APPROVE | FIX_LIST | RE_PLAN                         │
-│      FIX_LIST items shaped as testable slices →                  │
-│        route each through TDD inner loop (tester+implementer);    │
-│        up to max_critic_revisions cycles (default 3)              │
-│                                                                   │
-│   synthesizer:                                                    │
-│      Agent() synthesizer → /work/out/report.md (PR body)          │
-│                                                                   │
-│   artifacts in /work/out/ ⇒ visible at ~/.agent-teams/runs/<id>/  │
-│   worktree branch on host ⇒ user reviews + merges                 │
+┌─ workflow runtime (background, isolated context) ─────────────────┐
+│ feature-flow-run.js:                                              │
+│   phase Plan      → agent(planner)  → slices[] (+ plan.md)        │
+│   phase Implement → workflow('tdd-slice-loop') — per slice,       │
+│        sequential (same files): tester → implementer → gate       │
+│        (run suite; commit on green), retry ≤ N                    │
+│   phase Critique  → agent(critic) → APPROVE|FIX_LIST|RE_PLAN      │
+│        FIX_LIST → blocking items back through tdd-slice-loop;     │
+│        non-blocking deferred to the PR body as follow-ups;        │
+│        re-spawn critic; cap max_critic_revisions cycles           │
+│   phase Synthesize→ agent(synthesizer) → out/report.md (PR body)  │
+│   return {branch, reportPath, slices, stuck, openFindings,        │
+│           deferredFindings, ...}                                  │
+└───────────────────────────────────────────────────────────────────┘
+                              │ summary returns to the conversation
+                              ▼
+┌─ your session (wrap-up) ──────────────────────────────────────────┐
+│ prints branch + report path + diff command; handles RE_PLAN /     │
+│ stuck-slice / open-finding escalations. You review in the         │
+│ worktree (deps already installed), then merge. /retro optional.   │
 └───────────────────────────────────────────────────────────────────┘
 ```
+
+review-flow and spike-flow follow the same command→workflow→wrap-up shape;
+their workflow internals differ (see below).
 
 ## File map
 
 ```
 ~/.dotfiles/
-├── install.conf.yaml                          # dotbot — adds ~/.claude/commands symlink
+├── install.conf.yaml              # dotbot — symlinks ~/.claude/{commands,agents,workflows,scripts}
+├── tmux.conf                      # (C-a `claude agents` pane; the old C-t bullpen binding is gone)
 └── claude/
-    ├── AGENT-TEAMS.md                          # this file
-    ├── hooks/                                  # existing Claude Code hooks (unrelated)
-    ├── commands/                               # host-side slash commands (symlinked → ~/.claude/commands)
-    │   ├── feature-flow.md                     # drafts brief, spawns sandbox
+    ├── AGENT-TEAMS.md             # this file
+    ├── OBSERVABILITY.md           # observability doctrine shared by the builder + reviewer
+    ├── defaults.yaml              # cap defaults (merged into the brief at draft time)
+    ├── RETRO-LEDGER.md            # cross-run process memory (version-controlled)
+    ├── hooks/                     # existing Claude Code hooks (unrelated)
+    ├── commands/                  # → ~/.claude/commands
+    │   ├── feature-flow.md        # interactive front half
     │   ├── review-flow.md
-    │   └── spike-flow.md
-    └── agent-teams-kit/                        # the sbx kit (passed via --kit, applied into the sandbox home)
-        ├── README.md                           # kit-internal mechanics
-        ├── SETUP.md                            # one-time host setup commands
-        ├── spec.yaml                           # sbx kit manifest (schemaVersion, kind, startup hook)
-        ├── template/
-        │   └── build.sh                        # builds `claude-team` sbx template (deferred)
-        └── files/                              # kit payload; sbx delivers files/home/<path> to /home/agent/<path>
-            └── home/
-                └── .claude/                    # claude config delivered into the agent user's home
-                    ├── settings.json           # enables Agent Teams, teammateMode: tmux
-                    ├── defaults.yaml           # cap defaults (merged into brief at draft time)
-                    ├── agents/                 # role definitions (dual-purpose: subagent + teammate type)
-                    │   ├── researcher.md
-                    │   ├── planner.md
-                    │   ├── tester.md
-                    │   ├── implementer.md
-                    │   ├── critic.md
-                    │   └── synthesizer.md
-                    ├── commands/               # in-sandbox slash commands (lead briefings)
-                    │   ├── feature-flow.md
-                    │   ├── review-flow.md
-                    │   └── spike-flow.md
-                    ├── hooks/                  # TaskCompleted gates etc. (deferred)
-                    └── skills/                 # any skills teammates need (kit-level so they load)
-
-~/.dotfiles/scripts/
-└── tmux-agent-teams.sh                         # bullpen launcher (idempotent)
-
-~/.dotfiles/tmux.conf                           # add: bind-key C-t run-shell "..."
+    │   ├── spike-flow.md
+    │   ├── retro.md               # conversation-side retro (emits run-dir retro.md)
+    │   └── retro-consume.md       # applies retro patterns to agents/workflows/docs
+    ├── workflows/                 # → ~/.claude/workflows  (saved dynamic workflows)
+    │   ├── feature-flow-run.js
+    │   ├── review-flow-run.js
+    │   ├── spike-flow-run.js
+    │   └── tdd-slice-loop.js      # shared TDD inner loop (sub-workflow, never run directly)
+    ├── agents/                    # → ~/.claude/agents  (role personas; agentType source)
+    │   ├── planner.md  tester.md  implementer.md
+    │   ├── critic.md   researcher.md  synthesizer.md  diagrammer.md
+    └── scripts/                   # → ~/.claude/scripts
+        ├── render-review.js       # deterministic review.md/.html/draft renderer
+        ├── package.json  mermaid.config.json
 
 State (host-local, not version-controlled):
-~/.agent-teams/runs/<ts>-<slug>/                 # per-run sidecar dir
-  ├── brief.md                                  # task contract; durable, re-runnable
-  ├── context/                                  # files copied at brief time
-  └── out/                                      # synthesizer writes artifacts here
-                                                # mounted into sandbox at /work/
-~/.claude/teams/<team-name>/config.json          # Agent Teams runtime state (managed automatically)
-~/.claude/tasks/<team-name>/                     # Agent Teams shared task list
+~/.agent-teams/runs/<ts>-<slug>/
+  ├── brief.md          # task contract; durable, re-runnable (the workflow's args point here)
+  ├── context/          # files copied at brief time
+  ├── repo/             # review-flow: shallow clone of the PR head ref
+  ├── worktree/         # feature/spike-prototype: the branch worktree (deps installed here)
+  └── out/              # artifacts: plan.md, comments.json, review.{md,html}, report.md, retro.md
 ```
 
 ## The three flows in detail
 
 ### feature-flow
-
-**Input:** goal statement, optional context files, optional acceptance signal.
-
-**Brief draft interview:** lightweight by default. Asks for target repo,
-must-read context files, acceptance check. `--grill` for heavy interview on
-hairy features. `--gated` to add explicit plan-approval gate before slices
-run.
-
-**In-sandbox execution:**
-```
-1. Lead reads /work/brief.md
-2. Lead invokes planner subagent → slice plan
-   (optional human gate via brief.config.plan_gate)
-3. For each slice:
-   a. tester subagent writes ONE failing test
-   b. implementer subagent writes minimal code to pass
-   c. Lead runs test suite (Bash)
-   d. fail → implementer revises with error; retry ≤ 3
-   e. green → implementer local refactor pass
-   f. Lead updates /work/notes.md
-4. After all slices green:
-   spawn critic TEAMMATE
-   input: final diff + test summary + /work/notes.md
-   output: APPROVE | FIX_LIST | RE_PLAN
-   FIX_LIST items are shaped as testable slices; each is routed
-     back through the TDD inner loop (tester writes failing test
-     → implementer makes pass → suite gate). Non-testable items
-     (naming, dead code, doc fixes) route to implementer directly.
-     After each revision cycle, re-spawn a fresh critic teammate.
-     Cap: max_critic_revisions cycles (default 3); after the cap
-     ship as-is and surface remaining findings in the PR body.
-   RE_PLAN → escalate to user immediately
-5. synthesizer subagent writes /work/out/report.md
-   (intended as PR body)
-```
-
-**Output:**
-- `~/.agent-teams/runs/<id>/out/report.md` — PR body
-- Branch `agt/feature-<slug>` on the worktree, ready for review/merge
-
-**Hard caps:** 3 retries per slice, 3 post-critic revision cycles
-(default; configurable via brief `config:` block).
-
-**Notes file pattern:** `/work/notes.md` is the single carrier of
-inter-slice state. The tester and implementer subagents return a
-structured `### Handoff` block (Completed / Undone / Commands+exit codes
-/ Issues discovered / Procedures followed) at the end of their final
-message; the lead reads each handoff and integrates notable items
-(Issues, Undone, admitted procedure slips, helpers extracted, conventions
-established) into `notes.md` with reasoning about why each is worth
-carrying. The next slice's tester and implementer read `notes.md` to
-inherit that context. The critic at the outer pass also sees `notes.md`
-— it is a lead-curated artifact, not a transcript, so it preserves the
-critic's fresh-context principle while giving it audit signal (skipped
-tests, xfails, deferred TODOs).
-
-**End-to-end coverage:** for any feature, the slice collection must
-include at least one test that exercises the feature's primary
-user-facing path end-to-end. Default placement: the final slice. The
-lead's spawn prompt to the `tester` flags whether the current slice is
-the final one so the tester can shape the test accordingly.
+**Command:** interview (light; `--grill` heavy; `--gated` adds a plan gate) → brief → worktree + one-time install → launch.
+**Workflow (`feature-flow-run.js`):** planner → per-slice TDD loop via the shared `tdd-slice-loop` sub-workflow (tester → implementer → independent test-gate that commits on green, retry ≤ `max_slice_retries`; tester output is sanity-checked — a missing/never-failing test gets one tester retry, then the slice is recorded stuck) → critic Mode A outer pass (only **merge-blocking** FIX_LIST items re-enter the loop; non-blocking findings are deferred to the PR body as follow-ups; re-spawn critic; cap `max_critic_revisions`; RE_PLAN escalates; a critic that returns nothing gets one re-spawn, then the run ships flagged `criticVerdictMissing`) → synthesizer PR body.
+**`--gated`:** the command launches twice — `planOnly:true` returns the plan for your approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).
+**Notes journal:** carried as a list of entry blocks in a script variable, folded from each agent's structured handoff. Inner-loop prompts see a capped view (most recent ~40 entries) so a long run doesn't tax every prompt; the critic and synthesizer get the full journal, and the synthesizer persists it verbatim to `out/notes.md` for auditability.
+**E2E discipline:** the final slice's tester drives the feature end-to-end through the real wiring.
 
 ### review-flow
-
-**Input:** PR number (and optionally repo).
-
-**Brief draft interview:** skipped by default — PR number is enough context.
-
-**In-sandbox execution:**
-```
-1. Lead reads /work/brief.md, fetches PR via gh
-2. Lead spawns reviewer TEAMMATES in parallel:
-     - reviewer-security
-     - reviewer-correctness
-     - reviewer-style
-     - reviewer-tests
-   Each teammate gets its lens-specific spawn prompt + the reviewer role
-   definition. They each enumerate findings (aggressive, high-recall).
-3. After all reviewers complete:
-   spawn critic TEAMMATE
-   input: all findings + project CLAUDE.md / CONTRIBUTING.md
-   tasks: dedupe near-duplicates, recategorize tier mistakes,
-          apply priority-protect cap
-4. synthesizer subagent writes /work/out/review.md
-   (tier sections, file:line refs)
-5. If --prepare-draft: also writes /work/out/draft-review.json
-   and POSTs PENDING review via:
-     gh api repos/<owner>/<repo>/pulls/<num>/reviews \
-       --method POST --input out/draft-review.json
-```
-
-**Output:**
-- `~/.agent-teams/runs/<id>/out/review.md` — human-readable review
-- Optional: PENDING review on the PR (visible only to user; submit via UI)
-
-**Tier classification:**
-- `critical` — bug, security issue, data correctness, broken contract. Never dropped.
-- `important` — design smell, missed edge case, perf regression. Rarely dropped.
-- `recommended` — readability, naming, structure, test gaps. Dropped first when over cap.
-- `nit` — style, minor wording. Dropped most aggressively.
-
-**Cap policy (priority-protect):** brief sets `max_comments` (default 20).
-All `critical` + `important` always included even if total exceeds cap (with
-overflow signal). Remaining budget fills with `recommended` ranked by
-critic's confidence, then `nit`.
-
-**Inline comment anchoring:** comments tagged at generation as `inline:`
-(has `path` + `line` + `side`) or `body:` (no anchor). Inline comments must
-point at lines actually in the fetched diff — unanchorable comments demote
-to body.
-
-**No tests, no execution.** Review is static. Reviewers don't try to
-reproduce bugs locally. Run order: parallel reviewers → single critic round
-→ synthesizer. You are the final pass.
+**Command:** validate PR (`gh`) → clone head ref + fetch diff into the run dir → brief → launch → on return, write `comments.json`, run `render-review.js`, optionally POST a pending draft.
+**Workflow (`review-flow-run.js`):** one reviewer per lens in `parallel(...)`, with orientation + diagrammer fired alongside but **un-barriered** (the critic starts as soon as the lens findings are in — it never waits on the diagrammer's possible multi-minute mermaid-cli bootstrap; side results are collected before the return). Both side agents are skipped on `--urgency hotfix`. Then critic Mode B (dedupe, spot-verify against the code and **strike** wrong findings, right-size tiers, verify anchoring, decide posture, name the cluster). Reviewers **return structured findings**; the critic **writes its own `comments.json`** (its deliverable, like plan.md/report.md) and returns a summary; the conversation just renders.
+**Policy is deterministic:** `render-review.js` applies the urgency floor (hotfix=criticals only, fast=+important, standard=all) and numeric per-tier caps, and emits review.md, review.html (blob-deep-linked), and draft-review.json. **No tests, no execution** — review is static. **Never auto-submit** — drafts stay PENDING.
 
 ### spike-flow
-
-**Input:** question, optional context files, optional `--prototype` flag,
-`--depth quick|deep`.
-
-**Brief draft interview:** lightweight. Asks for context files, prototype
-desire, depth.
-
-**In-sandbox execution:**
-
-`--depth quick` (no critic, single researcher):
-```
-1. Lead reads brief
-2. researcher subagent → notes
-3. synthesizer subagent → /work/out/report.md
-```
-
-`--depth deep` (default; multiple angles, debate, critic):
-```
-1. Lead reads brief
-2. Lead spawns 2-3 researcher TEAMMATES with distinct angles:
-     - "is X technically feasible given our stack?"
-     - "what are the operational implications?"
-     - "what does prior art say?"
-   Teammates may debate (per Agent Teams "scientific debate" example).
-3. critic TEAMMATE synthesizes consensus, flags gaps:
-     output: APPROVE | FIX_LIST (researchers may revise once)
-4. If brief.prototype: planner subagent → TDD inner loop
-   scoped to experiments/<slug>/
-5. synthesizer subagent writes /work/out/report.md
-```
-
-**Output:**
-- `~/.agent-teams/runs/<id>/out/report.md` — spike report
-- If prototyped: branch `agt/spike-<slug>` with code in `experiments/<slug>/`,
-  plus report links to it
-
-**Mount mode:** read-only by default (pure research). Brief `prototype: true`
-flips to `--branch auto` writable worktree.
+**Command:** light interview (+ derive research angles for deep) → brief → (prototype only) worktree + install → launch.
+**Workflow (`spike-flow-run.js`):** quick = single researcher → synthesizer. deep = `parallel(researchers per angle)` → critic Mode C gap-analysis → revision pass (each reviser receives its angle's **original findings** to update — keep what holds, fix the gap — not redo from scratch; one cycle by default, a token-budget directive with ≥150k headroom buys a second critic+revision cycle) → synthesizer. Optional prototype = planner → shared `tdd-slice-loop` sub-workflow scoped to `experiments/<slug>/` (no critic outer pass; stuck slices surface in the return and the report) → synthesizer. Researchers return findings as text held in script variables and passed inline to the critic and synthesizer.
 
 ## Brief schema
 
-The brief file is the runtime contract between you and the team. It lives
-at `~/.agent-teams/runs/<ts>-<slug>/brief.md`. Same shape for all flows,
-with a `type:` field.
-
-```markdown
----
-type: feature | review | spike
-created: 2026-05-14T14:30:00Z
-run_id: 2026-05-14-1430-user-profile
-repo: /Users/nschott/dev/myapp
-config:
-  max_slice_retries: 3        # feature-flow only
-  max_critic_revisions: 1
-  plan_gate: false            # feature-flow only
-  autonomy: auto              # auto | gated
-  max_comments: 20            # review-flow only
-  prototype: false            # spike-flow only
-  depth: deep                 # spike-flow only
-env:
-  # project env vars sourced before any agent runs
-  DATABASE_URL: postgres://localhost/myapp_test
-setup_commands:
-  # explicit override; otherwise auto-detected from project files
-  - mise install
-  - pnpm install
-acceptance:                   # feature-flow only — explicit acceptance signal
-  - "GET /profile/:id returns user profile JSON"
-  - "all existing tests still pass"
-context_files:
-  - docs/data-model.md
-  - app/lib/users.ts
----
-
-# Goal
-
-<free-form goal statement, plus anything else worth carrying into the team's
-spawn prompt>
-```
+The brief is the runtime contract and the workflow's `args` source. Lives
+at `~/.agent-teams/runs/<ts>-<slug>/brief.md`. Same shape across flows with
+a `type:` field (feature | review | spike). The command merges
+`defaults.yaml` + brief `config:` + CLI flags at draft time, *before*
+confirmation, then launches with a structured `args` object derived from
+the finalized brief.
 
 ## Caps cascade
 
-Three layers, lowest-priority first:
+Three layers, lowest priority first: **shipped defaults** (`defaults.yaml`) →
+**brief `config:` overrides** → **command flags** (`--max-retries`,
+`--gated`, `--max-comments`, `--urgency`, …). Flags merge into the brief
+before confirmation; the workflow reads the merged values from `args`.
 
-1. **Kit defaults** — `agent-teams-kit/.claude/defaults.yaml`. Shipped values.
-2. **Brief overrides** — `brief.md` frontmatter `config:` block.
-3. **Slash command flags** — `--max-retries 5`, `--gated`, `--max-comments 30`, etc.
+## Permission / trust posture
 
-Slash command flags are merged into the brief at draft time, *before*
-confirmation, so the brief reflects the merged final state. Agents only ever
-read the brief.
-
-## Hooks (deferred to Phase 2)
-
-Agent Teams exposes three hooks we plan to use:
-
-| Hook | Use |
-|---|---|
-| `TaskCompleted` | TDD gate: exit code 2 if tests fail when implementer marks slice complete. Review gate: exit code 2 if criticals exceed cap silently. |
-| `TaskCreated` | Validate task structure (must have file ownership for parallel work). |
-| `TeammateIdle` | Feedback channel: if a researcher goes idle with un-explored brief items, nudge them back. |
-
-Hooks live in `agent-teams-kit/.claude/hooks/`. Not implemented in Phase 1.
-
-## sbx setup
-
-**Mount strategy.** sbx uses direct-mount: workspace paths inside the
-sandbox match their host paths exactly. The primary workspace must be
-writable. The kit's `spec.yaml` declares a startup hook that scans
-mounted virtiofs paths for `brief.md` and symlinks `/work` to the run
-dir. This lets the in-sandbox lead briefings keep using `/work/brief.md`,
-`/work/notes.md`, `/work/out/*.md` regardless of which workspace happens
-to be primary for a given flow:
-
-| Flow | Primary (writable) | Secondary |
-|---|---|---|
-| spike-flow (research) | run dir | repo `:ro` |
-| spike-flow (`--prototype`) | repo + `--branch auto` worktree | run dir |
-| feature-flow | repo + `--branch auto` worktree | run dir |
-| review-flow | run dir | repo `:ro` (if local) |
-
-**Launcher script.** Host slash commands spawn sandboxes via
-`~/.dotfiles/scripts/agent-teams-launch.sh`, which does:
-
-1. `sbx create` — creates the sandbox (if not already present), delivers
-   kit files, runs the `/work` startup hook.
-2. `sbx exec ... jq merge` — overlays our Agent Teams config
-   (`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, `teammateMode: tmux`)
-   onto `/home/agent/.claude/settings.json`. This is needed because sbx
-   writes its own agent-template `settings.json` *after* kit files land
-   and *after* startup hooks run, clobbering whatever the kit ships in
-   `files/home/.claude/settings.json`. The patch is idempotent.
-3. `sbx run` — attaches the inner claude session with the lead briefing
-   slash command. After the session exits, the script `read`s so the
-   tmux window stays around for the user to inspect final state.
-
-This is why the kit's `files/home/.claude/settings.json` looks correct
-but doesn't actually take effect — sbx wins. The launcher's overlay is
-the seam that makes Agent Teams config land in the inner session.
-
-**Inner-sandbox login.** SETUP.md previously claimed sbx handles
-Anthropic auth automatically; it doesn't. The first time a sandbox name
-appears, the inner claude session shows `Not logged in — Please run
-/login` and won't execute the briefing. The user must attach to the
-window, run `/login`, complete the OAuth flow in the browser, then
-re-run the slash command. Auth persists in the sandbox filesystem until
-the sandbox is removed (`sbx rm`), so re-running the same flow against
-the same sandbox name skips re-auth. Each new sandbox name pays the
-login cost once. See `agent-teams-kit/SETUP.md §Inner-sandbox login` for
-the headless-friendly alternative via `sbx secret set -g anthropic`.
-
-**Custom template (Phase 2):** `agent-teams-kit/template/build.sh` builds a
-`claude-team` template that includes `mise`, `gh`, common runtimes
-(node, python, go, rust). Falls back to default `claude` template until built.
-
-**Secrets:** `sbx secret set <service>` is used for API tokens. Proxy
-injects them on outbound requests; tokens never appear in transcripts.
-
-```bash
-sbx secret set -g github     # used by gh inside sandbox
-sbx secret set -g anthropic  # optional; only if you have an API key and
-                             # want to skip the interactive /login step
-```
-
-**Network policy:** currently allow-all (deferred hardening — see Future
-Considerations). To switch to default-deny later:
-
-```bash
-sbx policy set-default deny
-sbx policy allow api.github.com github.com objects.githubusercontent.com
-sbx policy allow registry.npmjs.org registry.yarnpkg.com
-sbx policy allow pypi.org files.pythonhosted.org
-sbx policy allow proxy.golang.org sum.golang.org
-sbx policy allow crates.io static.crates.io
-```
-
-## Tmux bullpen
-
-All team runs are gathered in a single tmux session named `agent-teams`.
-Each run is a window in that session. The session is created on first call;
-subsequent calls switch to it.
-
-- `prefix C-t` → run `~/.dotfiles/scripts/tmux-agent-teams.sh`
-- Each new run = `tmux new-window -t agent-teams: -n <type>-<slug>-<HHMM>`
-- `_overview` window watches `~/.agent-teams/runs/` for new dirs
-
-Inside each window, the sandbox runs Claude Code as the Agent Teams lead.
-With `teammateMode: "tmux"` in kit settings, teammates spawn into split
-panes within that window — you see every parallel teammate at once and can
-click into any pane to talk to a teammate directly.
+Host-local means agents run **real commands with your real credentials and
+no sandbox isolation** — feature/spike run your test suite and installs on
+this machine; review `--prepare-draft` posts with your `gh` auth. This is
+accepted by design. Flows **default to `auto` permission mode** so the team
+runs unsupervised; workflow subagents always run `acceptEdits` regardless
+of session mode. **Pre-allowlist** the test/build/`gh`/`git`/`node`
+commands a run needs, or an un-allowlisted command will pause the run
+waiting on you. Review is static (no execution), so it's the lowest-risk
+flow.
 
 ## Where state lives
 
 | What | Where | Persistence |
 |---|---|---|
-| Brief, context, artifacts | `~/.agent-teams/runs/<id>/` | Until `agt-prune` (manual) |
-| Worktree branch | git on the target repo | Until `git worktree remove` (manual) |
-| sbx container | Docker | Until `sbx rm` (manual) |
-| Agent Teams config | `~/.claude/teams/<name>/config.json` inside sandbox | Managed by Claude Code |
-| Agent Teams tasks | `~/.claude/tasks/<name>/` inside sandbox | Managed by Claude Code |
-| Session logs | `~/.claude/projects/<...>/session.jsonl` inside sandbox | Until container is removed |
-| Tmux windows | `agent-teams` session | Until tmux server restart or manual `tmux kill-window` |
+| Brief, context, artifacts | `~/.agent-teams/runs/<id>/` | Until manual prune |
+| Worktree branch | `<run>/worktree` + git on the repo | Until `git worktree remove` |
+| Workflow script (source of truth) | `~/.dotfiles/claude/workflows/*.js` | Version-controlled |
+| Workflow run journal | `~/.claude/projects/<...>/` (per-run script + agent results) | Managed by Claude Code |
+| Retro ledger | `~/.dotfiles/claude/RETRO-LEDGER.md` | Version-controlled |
 
-## Future considerations
+## Retro loop
 
-1. **Network hardening** — switch from allow-all to default-deny with
-   explicit allowlist. See `sbx setup` above for the commands.
-2. **Cowork migration** — when raw Claude API access (or Cowork access) is
-   available, port the orchestrator to Cowork's hosted multi-agent runtime.
-   Role markdowns port unchanged; in-sandbox lead briefings become Cowork
-   team definitions. Brief schema stays stable.
-3. **Auto-notify completion** — wire team-done event into existing
-   `~/.dotfiles/claude/hooks/notify.sh` for macOS notification.
-4. **`agt-ls` / `agt-prune`** — operational scripts for listing active runs
-   and pruning old run dirs/containers. Build when run count justifies it.
-5. **Status board in `_overview`** — richer than `watch ls`; per-run state,
-   runtime, last orchestrator event.
-6. **TaskCompleted hooks** — deterministic enforcement of TDD test gate and
-   review cap policy.
-7. **Notes-keeper subagent** — dedicated role for maintaining
-   `/work/notes.md` if lead-maintained drifts in practice.
-8. **Cross-run learning** — eventually critique notes from past runs could
-   become a brief-time input ("when reviewing this kind of PR, you've
-   previously flagged X"). Out of scope for now.
-9. **Behavioral validator** — a second validator that actually runs the
-   app and exercises it (headless browser via Playwright for web,
-   expect-driven for TUIs/CLIs) before declaring a feature done.
-   Today only the static critic runs at the outer pass and the e2e-final-
-   slice tester rule is the compensating discipline. Worth revisiting if
-   we start running multi-day autonomous missions where the human is no
-   longer the "click around before merging" step. Pattern from Factory's
-   missions: scrutiny validator (tests/types/lint/code review — already
-   covered) plus user-testing validator (live app interaction — the gap).
-10. **Cross-provider validation** — to address the structural concern
-    that in-family critic+implementer share training distribution and
-    can agree on wrong things, route the critic to a different provider
-    when Claude Code supports it. Today's per-role model assignment
-    captures most of the missions claim but not this part.
+Two steps, flow-agnostic. (1) **`/retro`** (conversation-side, after a
+workflow returns) reflects on the run via the `/workflows` view, the
+run-dir artifacts, and the workflow's return value, and writes
+`<run>/out/retro.md` — transferable process patterns only (AVOID / ADD /
+STRESS), each mapped to a target. (2) **`/retro-consume`** reads it, checks
+`RETRO-LEDGER.md` for corroboration/conflicts/prior reverts, and applies
+surgical edits anywhere under `~/.dotfiles/claude`. The key triage: a
+**judgment** problem edits a role `agents/*.md`; an **orchestration**
+problem (wiring, budgets, a spawn prompt that lives in the script) edits a
+`workflows/*.js`. The ledger is the cross-run memory that keeps single-run
+noise from thrashing the prompts.
+
+**Discipline:** always launch the *saved* workflow by name so retro-tuned
+orchestration is used — never let Claude regenerate a workflow ad-hoc, or
+the accumulated learnings evaporate.
 
 ## Troubleshooting
 
-**Inner claude shows `Not logged in — Please run /login`.** Expected on
-first run against a new sandbox name. Attach to the window, run `/login`
-in the claude REPL, complete OAuth in the browser, then re-run the slash
-command (e.g., `/spike-flow /work/brief.md`). Auth persists in the
-sandbox until `sbx rm`. See SETUP.md §Inner-sandbox login for the
-API-key alternative.
+- **Two `/<flow>` commands collide.** The interactive command is
+  `/<flow>-flow`; the workflow is `/<flow>-flow-run`. If you see a clash,
+  a workflow was misnamed to match its command.
+- **A run stalls mid-flow.** An agent hit an un-allowlisted shell/MCP call
+  (only those can pause a run). Allowlist the command and resume from
+  `/workflows`, or run in `auto`.
+- **Workflow starts fresh after a restart.** Resumability is same-session
+  only; re-launch the command (the brief is durable and re-runnable).
+- **Stuck slices / open findings.** The workflow returns these; the
+  command surfaces them and the synthesizer carries open findings into the
+  PR body. Not silent.
+- **`/work/...` errors from an agent.** A role definition still references
+  the old sandbox path; the spawn prompt tells agents to substitute the
+  run-dir/worktree absolute paths — make sure that substitution note is
+  present in the workflow's spawn prompt.
+- **Workflows unavailable.** Need Claude Code ≥ 2.1.154 and workflows not
+  disabled (`/config` → Dynamic workflows; `disableWorkflows`;
+  `CLAUDE_CODE_DISABLE_WORKFLOWS`).
+- **`workflow('tdd-slice-loop')` throws (unknown name).** The shared inner
+  loop is a saved workflow that must exist at
+  `~/.claude/workflows/tdd-slice-loop.js` (dotbot-symlinked from this
+  repo). If it's missing, the parent logs the launch failure and records
+  every slice as stuck rather than dying mid-run — re-link and re-launch.
 
-**`/work` path missing inside sandbox.** The kit's startup hook scans
-mounted virtiofs paths for `brief.md` and symlinks `/work` to that mount.
-If the symlink isn't there, either no mounted workspace contains a
-`brief.md` (check that the run dir got mounted), or the startup hook
-failed (look at `sbx exec <name> -- cat /var/log/sbx-startup.log` if
-that exists; otherwise re-create the sandbox to retrigger startup).
+## Future considerations
 
-**Teammates not appearing.** Verify the launcher's settings-overlay
-step ran — inside the sandbox, `cat /home/agent/.claude/settings.json`
-should show `"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"` and
-`"teammateMode": "tmux"`. If those are missing, the sandbox was
-launched directly via `sbx run` instead of via
-`~/.dotfiles/scripts/agent-teams-launch.sh` and the env var never got
-applied — fix the spawn command, `sbx rm` the sandbox, and re-launch.
-Verify Claude Code version is 2.1.32+. Try Shift+Down in in-process mode
-to see hidden teammates.
-
-**Tasks stuck in pending.** Agent Teams sometimes fails to mark tasks
-complete. Tell the lead "nudge the teammate working on task X" or manually
-update task status.
-
-**Orphaned tmux sessions.** `tmux ls` and `tmux kill-session -t <name>` for
-any leaked `agt-*` sessions.
-
-**Sandbox can't reach the network.** Check `sbx policy ls`. If you've
-hardened past the v1 allow-all default, your service may not be in the
-allowlist.
-
-**`gh` auth fails inside sandbox.** Run `sbx secret set github` on the host
-and re-spawn. Token is proxy-injected.
-
-**Test runner can't find tooling.** Until the custom `claude-team` template
-ships (Phase 2), the kit falls back to default sbx claude image. Add a
-`setup_commands:` block to the brief to install what's needed.
+1. **Behavioral validator** — a stage that runs the app and exercises it
+   (Playwright for web, expect for TUIs/CLIs) before declaring a feature
+   done, complementing the static critic.
+2. **Cross-provider critic** — route the critic to a different provider to
+   break the in-family critic+implementer shared-distribution blind spot.
+3. **`agt-ls` / `agt-prune`** — list active runs, prune old run dirs +
+   worktrees, when run count justifies it.

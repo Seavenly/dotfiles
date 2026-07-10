@@ -1,0 +1,44 @@
+{
+  "theme": "dark",
+  "themeVariables": {
+    "darkMode": true,
+    "background": "transparent",
+    "fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif",
+    "fontSize": "14px",
+    "primaryColor": "#1c1f24",
+    "primaryTextColor": "#e8eaed",
+    "primaryBorderColor": "#3a3d44",
+    "secondaryColor": "#16181c",
+    "tertiaryColor": "#1c1f24",
+    "lineColor": "#9aa1a9",
+    "textColor": "#e8eaed",
+    "mainBkg": "#1c1f24",
+    "noteBkgColor": "#1c1f24",
+    "noteTextColor": "#e8eaed",
+    "noteBorderColor": "#3a3d44",
+    "activationBkgColor": "#3a3d44",
+    "activationBorderColor": "#9aa1a9",
+    "actorBkg": "#1c1f24",
+    "actorBorder": "#3a3d44",
+    "actorTextColor": "#e8eaed",
+    "actorLineColor": "#9aa1a9",
+    "labelBoxBkgColor": "#1c1f24",
+    "labelBoxBorderColor": "#3a3d44",
+    "labelTextColor": "#e8eaed",
+    "loopTextColor": "#e8eaed",
+    "signalColor": "#e8eaed",
+    "signalTextColor": "#e8eaed",
+    "sequenceNumberColor": "#0b0c0e"
+  },
+  "flowchart": {
+    "useMaxWidth": false,
+    "padding": 18,
+    "nodeSpacing": 50,
+    "rankSpacing": 60
+  },
+  "sequence": {
+    "useMaxWidth": false,
+    "boxMargin": 10,
+    "messageMargin": 40
+  }
+}

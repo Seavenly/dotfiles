@@ -10,7 +10,6 @@ export PATH="$PATH:$HOME/.pyenv/shims"
 export PATH="$PATH:$HOME/.local/bin"
 export PATH="$PATH:./node_modules/.bin"
 export PATH="$PATH:$HOME/.dotfiles/tools/rec"
-export PATH="$PATH:$HOME/.dotfiles/tools/cockpit"
 
 if ! which mise &> /dev/null; then
     curl https://mise.run | sh

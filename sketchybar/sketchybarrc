@@ -126,12 +126,6 @@ sketchybar  --add item volume right \
                 script="$PLUGIN_DIR/volume.sh" \
             --subscribe volume volume_change
 
-sketchybar  --add item cockpit right \
-            --set cockpit \
-                update_freq=3 \
-                click_script="open -a Ghostty && osascript -e 'tell application \"Ghostty\" to activate' || true" \
-                script="$PLUGIN_DIR/cockpit.sh"
-
 sketchybar  --add item rec right \
             --set rec \
                 drawing=off \
