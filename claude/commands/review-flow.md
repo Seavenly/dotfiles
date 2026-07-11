@@ -11,8 +11,8 @@ needs to talk to the user.
 User's invocation: `/review-flow $ARGUMENTS`
 
 ## Read first
-- `~/.dotfiles/claude/AGENT-TEAMS.md` — system architecture.
-- `~/.dotfiles/claude/defaults.yaml` — cap defaults (`review_flow`).
+- `~/.claude/AGENT-TEAMS.md` — system architecture.
+- `~/.claude/defaults.yaml` — cap defaults (`review_flow`).
 
 ## Step 1 — Parse arguments
 
@@ -134,7 +134,7 @@ If `prepare_draft` is true, the renderer already wrote `$out_dir/draft-review.js
 
 Fire a completion notification so the user sees it if they stepped away:
 ```bash
-echo '{"hook_event_name":"Notification","message":"review-flow complete: PR #<num>"}' | ~/.dotfiles/claude/hooks/notify.sh
+echo '{"hook_event_name":"Notification","message":"review-flow complete: PR #<num>"}' | ~/.claude/hooks/notify.sh
 ```
 
 ```

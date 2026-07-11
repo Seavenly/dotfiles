@@ -9,12 +9,12 @@ after-login-command = []
 # You can use it to add commands that run after AeroSpace startup.
 # 'after-startup-command' is run after 'after-login-command'
 # Available commands : https://nikitabobko.github.io/AeroSpace/commands
-after-startup-command = ['exec-and-forget sketchybar']
+after-startup-command = ['exec-and-forget /opt/homebrew/bin/sketchybar']
 
 exec-on-workspace-change = [
     '/bin/zsh',
     '-c',
-    'sketchybar --trigger aerospace_workspace_change PREV_WORKSPACE=$AEROSPACE_PREV_WORKSPACE FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE',
+    '/opt/homebrew/bin/sketchybar --trigger aerospace_workspace_change PREV_WORKSPACE=$AEROSPACE_PREV_WORKSPACE FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE',
 ]
 
 # Start AeroSpace at login
@@ -94,9 +94,6 @@ outer.right = 10
 # '''
 
 # See: https://nikitabobko.github.io/AeroSpace/commands#layout
-alt-quote = 'exec-and-forget $HOME/.dotfiles/scripts/toggle-zk-note.sh prev'
-alt-shift-quote = 'exec-and-forget $HOME/.dotfiles/scripts/toggle-zk-note.sh new'
-
 alt-slash = 'layout tiles horizontal vertical'
 alt-comma = 'layout accordion horizontal vertical'
 

@@ -136,9 +136,9 @@ their workflow internals differ (see below).
 ## File map
 
 ```
-~/.dotfiles/
-├── install.conf.yaml              # dotbot — symlinks ~/.claude/{commands,agents,workflows,scripts}
-├── tmux.conf                      # (C-a `claude agents` pane; the old C-t bullpen binding is gone)
+<dotfiles-root>/
+├── mise.toml                      # native bootstrap links managed Claude files into ~/.claude
+├── tmux/tmux.conf                 # (C-a `claude agents` pane; the old C-t bullpen binding is gone)
 └── claude/
     ├── AGENT-TEAMS.md             # this file
     ├── OBSERVABILITY.md           # observability doctrine shared by the builder + reviewer
@@ -224,9 +224,9 @@ flow.
 |---|---|---|
 | Brief, context, artifacts | `~/.agent-teams/runs/<id>/` | Until manual prune |
 | Worktree branch | `<run>/worktree` + git on the repo | Until `git worktree remove` |
-| Workflow script (source of truth) | `~/.dotfiles/claude/workflows/*.js` | Version-controlled |
+| Workflow script (source of truth) | `~/.claude/workflows/*.js` | Version-controlled |
 | Workflow run journal | `~/.claude/projects/<...>/` (per-run script + agent results) | Managed by Claude Code |
-| Retro ledger | `~/.dotfiles/claude/RETRO-LEDGER.md` | Version-controlled |
+| Retro ledger | `~/.claude/RETRO-LEDGER.md` | Version-controlled |
 
 ## Retro loop
 
@@ -236,7 +236,7 @@ run-dir artifacts, and the workflow's return value, and writes
 `<run>/out/retro.md` — transferable process patterns only (AVOID / ADD /
 STRESS), each mapped to a target. (2) **`/retro-consume`** reads it, checks
 `RETRO-LEDGER.md` for corroboration/conflicts/prior reverts, and applies
-surgical edits anywhere under `~/.dotfiles/claude`. The key triage: a
+surgical edits anywhere under `~/.claude`. The key triage: a
 **judgment** problem edits a role `agents/*.md`; an **orchestration**
 problem (wiring, budgets, a spawn prompt that lives in the script) edits a
 `workflows/*.js`. The ledger is the cross-run memory that keeps single-run
@@ -259,16 +259,12 @@ the accumulated learnings evaporate.
 - **Stuck slices / open findings.** The workflow returns these; the
   command surfaces them and the synthesizer carries open findings into the
   PR body. Not silent.
-- **`/work/...` errors from an agent.** A role definition still references
-  the old sandbox path; the spawn prompt tells agents to substitute the
-  run-dir/worktree absolute paths — make sure that substitution note is
-  present in the workflow's spawn prompt.
 - **Workflows unavailable.** Need Claude Code ≥ 2.1.154 and workflows not
   disabled (`/config` → Dynamic workflows; `disableWorkflows`;
   `CLAUDE_CODE_DISABLE_WORKFLOWS`).
 - **`workflow('tdd-slice-loop')` throws (unknown name).** The shared inner
   loop is a saved workflow that must exist at
-  `~/.claude/workflows/tdd-slice-loop.js` (dotbot-symlinked from this
+  `~/.claude/workflows/tdd-slice-loop.js` (mise-symlinked from this
   repo). If it's missing, the parent logs the launch failure and records
   every slice as stuck rather than dying mid-run — re-link and re-launch.
 

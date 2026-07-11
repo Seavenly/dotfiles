@@ -1,0 +1,3 @@
+zsh-users/zsh-completions pin:e5507e0d0c8879f960f4b8e7c6ddb813608d95ab
+zsh-users/zsh-autosuggestions pin:0e810e5afa27acbd074398eefbe28d13005dbc15
+zsh-users/zsh-syntax-highlighting pin:5eb677bb0fa9a3e60f0eff031dc13926e093df92

@@ -82,7 +82,7 @@ correctness). Look at:
   inner loop never reasoned about, because no individual slice was
   thinking about traffic flow as a whole.
 - **Observability.** Can this be debugged in production from telemetry
-  alone? Per `~/.dotfiles/claude/OBSERVABILITY.md`: is the unit of work
+  alone? Per `~/.claude/OBSERVABILITY.md`: is the unit of work
   covered by one wide root span rather than a confetti of micro-spans; do the
   debugging/filtering dimensions (tenant, resource, route, status, retry
   count, branch-taken reason) live on the **root span**; does every

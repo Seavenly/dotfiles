@@ -125,7 +125,7 @@ intra-slice detail belongs in the commit body, not the journal.
 ## Observability
 
 Build the feature so it can be debugged in production from telemetry alone.
-The full doctrine is `~/.dotfiles/claude/OBSERVABILITY.md` (read it once if a
+The full doctrine is `~/.claude/OBSERVABILITY.md` (read it once if a
 slice has any non-trivial runtime behavior); the working rules:
 
 - **Add it where it earns its place, don't force it.** The bar is "would this

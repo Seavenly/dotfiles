@@ -1,6 +1,9 @@
 #!/bin/zsh
 
-source ./colors.sh
+export PATH="/opt/homebrew/bin:$HOME/.local/share/mise/shims:/usr/bin:/bin"
+
+CONFIG_DIR="${0:A:h:h}"
+source "$CONFIG_DIR/colors.sh"
 
 IP=$(curl -s https://ipinfo.io/ip)
 LOCATION_JSON=$(curl -s https://ipinfo.io/$IP/json)

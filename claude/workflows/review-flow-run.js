@@ -24,7 +24,7 @@ const LENS_SCOPE = {
 }
 
 // Extra doctrine handed only to the observability reviewer (mirrors
-// ~/.dotfiles/claude/OBSERVABILITY.md so the reviewer has the bar inline).
+// ~/.claude/OBSERVABILITY.md so the reviewer has the bar inline).
 const OBSERVABILITY_DOCTRINE = `
 **Observability doctrine for this lens** (the bar you review against):
   - One **wide root span per request**, not a confetti of tiny nested spans. A forest of one-attribute child spans where root-span attributes would answer the same questions is a finding.

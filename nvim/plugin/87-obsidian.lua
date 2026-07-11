@@ -15,7 +15,7 @@ vim.api.nvim_create_autocmd('FileType', {
             workspaces = {
                 {
                     name = "notes",
-                    path = "~/notes/",
+                    path = vim.env.NOTES_DIR or "~/notes/",
                 },
             },
             ui = {
@@ -66,7 +66,7 @@ vim.api.nvim_create_autocmd('FileType', {
                 return date .. " " .. os.date("%H%M%S")
             end,
             follow_url_func = function(url)
-                vim.fn.jobstart({ "open", url })
+                vim.ui.open(url)
             end,
         })
 

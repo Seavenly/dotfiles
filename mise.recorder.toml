@@ -1,0 +1,13 @@
+[settings]
+system_packages.managers = ["brew"]
+
+[bootstrap.packages]
+"brew:ffmpeg" = "latest"
+
+[dotfiles]
+"~/.local/bin/rec" = "bin/rec"
+
+[tasks.bootstrap]
+description = "Install the optional recorder environment"
+run = "bin/bootstrap-recorder"
+dir = "{{ env.DOTFILES_ROOT }}"

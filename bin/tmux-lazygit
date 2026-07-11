@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pane="$(tmux list-panes -a -F '#{pane_title}:#{session_name}:#{window_index}.#{pane_index}' | awk -F: '$1 == "lazygit" {print; exit}')"
+if [[ -z "$pane" ]]; then
+  tmux new-window -c "#{pane_current_path}" -n lazygit "zsh -i -c lazygit"
+  tmux select-pane -T lazygit
+else
+  target="${pane#*:}"
+  session="${target%%:*}"
+  pane_target="${target#*:}"
+  window="${pane_target%.*}"
+  tmux switch-client -t "$session"
+  tmux select-window -t "$session:$window"
+  tmux select-pane -t "$session:$pane_target"
+fi

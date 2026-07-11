@@ -1,0 +1,108 @@
+min_version = "2026.7.5"
+
+[settings]
+experimental = true
+lockfile = true
+locked = true
+lockfile_platforms = ["macos-arm64", "linux-x64", "linux-arm64"]
+minimum_release_age = "7d"
+idiomatic_version_file_enable_tools = ["node"]
+dotfiles.default_mode = "symlink"
+
+[tools]
+actionlint = "latest"
+aws-cli = "latest"
+atuin = "latest"
+bat = "latest"
+claude = "latest"
+codex = "latest"
+"github:dandavison/delta" = "latest"
+"github:eza-community/eza" = { version = "latest", matching = "eza_", os = ["linux"] }
+"github:nikitabobko/AeroSpace" = { version = "0.21.2-Beta", asset_pattern = "AeroSpace-v*.zip", prerelease = true, os = ["macos"] }
+fd = "latest"
+fzf = "latest"
+github-cli = "latest"
+gitleaks = "latest"
+go = "1.26"
+herdr = "latest"
+jq = "latest"
+lazygit = "latest"
+lua = "5.4"
+lua-language-server = "latest"
+neovim = "latest"
+node = "22"
+oh-my-posh = "latest"
+"npm:@fsouza/prettierd" = "latest"
+"npm:pnpm" = "latest"
+"npm:pyright" = "latest"
+"npm:svelte-language-server" = "latest"
+"npm:typescript-language-server" = "latest"
+"npm:vscode-langservers-extracted" = "latest"
+"npm:yaml-language-server" = "latest"
+"pipx:neovim-remote" = "latest"
+python = ["3.13", "3.11"]
+ripgrep = "latest"
+ruby = "3.4"
+rust = "1.96.1"
+rust-analyzer = "latest"
+shellcheck = "latest"
+shfmt = "latest"
+"go:github.com/a-h/templ/cmd/templ" = "latest"
+"go:github.com/joshmedeski/sesh/v2" = "latest"
+"go:golang.org/x/tools/gopls" = "latest"
+stylua = "latest"
+taplo = "latest"
+terraform = "1"
+terraform-ls = "latest"
+tflint = "latest"
+tmux = "latest"
+tree-sitter = "latest"
+uv = "latest"
+zig = "0.15"
+zls = "latest"
+zoxide = "latest"
+
+[bootstrap.repos]
+"~/.local/share/antidote" = { url = "https://github.com/mattmc3/antidote.git", ref = "4913257e0ae3fee2a77e7189e526fe55b6ff9536" }
+
+[bootstrap.mise_shell_activate]
+zprofile = "shims"
+
+[bootstrap.hooks.pre-dotfiles]
+run = "bin/bootstrap-pre-dotfiles"
+
+[dotfiles]
+"~/.zprofile/dotfiles-path" = { block = '''
+if [[ -d /opt/homebrew/bin ]]; then
+  export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+fi
+export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+''' }
+"~/.zshrc" = "zsh/zshrc"
+"~/.tmux.conf" = "tmux/tmux.conf"
+"~/.config/git/config" = "git/config"
+"~/.config/lazygit/config.yml" = "lazygit/config.yml"
+"~/.config/atuin/config.toml" = "atuin/config.toml"
+"~/.config/nvim" = "nvim"
+"~/.config/mise/config.toml" = "mise.toml"
+"~/.config/mise/mise.lock" = "mise.lock"
+"~/.local/bin/dotfiles-root" = "bin/dotfiles-root"
+"~/.local/bin/nvim-remote-shell" = "bin/nvim-remote-shell"
+"~/.local/bin/tmux-sessionizer" = "bin/tmux-sessionizer"
+"~/.local/bin/tmux-agents" = "bin/tmux-agents"
+"~/.local/bin/tmux-ai" = "bin/tmux-ai"
+"~/.local/bin/tmux-lazygit" = "bin/tmux-lazygit"
+"~/.claude/agents" = { source = "claude/agents", mode = "symlink-each" }
+"~/.claude/commands" = { source = "claude/commands", mode = "symlink-each" }
+"~/.claude/hooks" = { source = "claude/hooks", mode = "symlink-each" }
+"~/.claude/scripts" = { source = "claude/scripts", mode = "symlink-each" }
+"~/.claude/workflows" = { source = "claude/workflows", mode = "symlink-each" }
+"~/.claude/AGENT-TEAMS.md" = "claude/AGENT-TEAMS.md"
+"~/.claude/OBSERVABILITY.md" = "claude/OBSERVABILITY.md"
+"~/.claude/RETRO-LEDGER.md" = "claude/RETRO-LEDGER.md"
+"~/.claude/defaults.yaml" = "claude/defaults.yaml"
+
+[tasks.bootstrap]
+description = "Finish idempotent dotfile migrations and warm managed caches"
+run = "bin/bootstrap-finalize"
+dir = "{{ env.DOTFILES_ROOT }}"

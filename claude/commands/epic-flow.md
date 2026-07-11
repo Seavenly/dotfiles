@@ -12,9 +12,9 @@ state lives in Jira and git, none in this session.
 User's invocation: `/epic-flow $ARGUMENTS`
 
 ## Read first
-- `~/.dotfiles/claude/AGENT-TEAMS.md` — system architecture.
-- `~/.dotfiles/claude/commands/feature-flow.md` — the per-story unit of work this command dispatches.
-- `~/.dotfiles/claude/defaults.yaml` — `epic_flow` defaults.
+- `~/.claude/AGENT-TEAMS.md` — system architecture.
+- `~/.claude/commands/feature-flow.md` — the per-story unit of work this command dispatches.
+- `~/.claude/defaults.yaml` — `epic_flow` defaults.
 
 ## Conventions the epic's stories must follow
 - Every story carries exactly one of the labels `agent-auto` or `human-gate`. **The agent builds BOTH via feature-flow** — the label governs *merge authority*, not whether the agent runs the story:
@@ -61,7 +61,7 @@ Repeat until no story is launchable:
 4. **Failure policy** (the flawed-agent clause): a run that ends stuck / RE_PLAN / with open merge-blocking findings gets ONE fresh retry — a new feature-flow run for the same story with the prior journal passed as `--context`. On the second failure: add label `agent-blocked`, comment the reason on the story, do NOT open a PR, and continue with stories that don't depend on it.
 
 ## Step 5 — Human-merge gates
-The gate is now at **merge**, not pick-up: the agent builds `human-gate` stories, but their PRs sit open until a human merges them. The loop pauses when it can make no further progress without a human merge — i.e. the ready set is empty and every remaining To-Do story is blocked by a story whose PR is open-but-unmerged (a `human-gate` PR, or an `agent-auto` PR left open because its run didn't finish cleanly). Post a gate summary (which PRs await a human merge, what each needs — e.g. deploy / cross-team handshake / review — and what's blocked behind them), fire the notify hook (`~/.dotfiles/claude/hooks/notify.sh`), and stop the loop. The human merges those PRs (merging marks the story Done and unblocks its dependents); re-invoking `/epic-flow <KEY>` resumes from live state.
+The gate is now at **merge**, not pick-up: the agent builds `human-gate` stories, but their PRs sit open until a human merges them. The loop pauses when it can make no further progress without a human merge — i.e. the ready set is empty and every remaining To-Do story is blocked by a story whose PR is open-but-unmerged (a `human-gate` PR, or an `agent-auto` PR left open because its run didn't finish cleanly). Post a gate summary (which PRs await a human merge, what each needs — e.g. deploy / cross-team handshake / review — and what's blocked behind them), fire the notify hook (`~/.claude/hooks/notify.sh`), and stop the loop. The human merges those PRs (merging marks the story Done and unblocks its dependents); re-invoking `/epic-flow <KEY>` resumes from live state.
 
 Idempotency: Done stories are skipped. A story with an **open PR** (a `human-gate` PR, or an agent-auto PR awaiting review) is *awaiting merge* — do not re-run or re-open it. An In Progress story with **no live run and no open PR** is treated as To Do. A `human-gate` story whose deliverable is already merged/complete should be marked **Done**, not left In Progress, or the loop will re-run it.
 

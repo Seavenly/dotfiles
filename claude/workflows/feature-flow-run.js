@@ -18,7 +18,7 @@ export const meta = {
 //   slices (array|null — gated step 2 passes the approved slices to skip planning)
 // args can arrive as a JSON-encoded string when launched by name — normalize.
 const a = typeof args === 'string' ? JSON.parse(args) : args
-const inWorktree = `Work in the worktree at ${a.worktree} — cd there for all commands, reads, and writes. Never switch branches. (Your role definition may reference \`/work/...\` paths from the old sandbox; ignore those literals — use the absolute paths given in this prompt, and treat the run journal shown inline below as the contents of your \`/work/notes.md\`. Return structured output where this prompt asks for it instead of writing a verdict/handoff file.)`
+const inWorktree = `Work in the worktree at ${a.worktree} — cd there for all commands, reads, and writes. Never switch branches. Treat the run journal shown inline below as the authoritative notes, and return structured output where this prompt asks for it instead of writing a verdict/handoff file.`
 // Guard against a stray agent that didn't cd: confirm we're in the worktree before any commit.
 const wtGuard = `Before staging or committing, confirm \`git -C "${a.worktree}" rev-parse --show-toplevel\` resolves to ${a.worktree}; run all git from \`-C "${a.worktree}"\` so you never touch another checkout. If it doesn't resolve there, do NOT commit — set committed=false and say so in output.`
 

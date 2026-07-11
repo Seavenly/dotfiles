@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+nv() {
+  local arguments=()
+  local is_remote=false
+  local should_swap=false
+  local arg socket_dir
+
+  for arg in "$@"; do
+    [[ "$arg" == --remote* ]] && is_remote=true
+    if [[ "$arg" == --swap ]]; then
+      should_swap=true
+    else
+      arguments+=("$arg")
+    fi
+  done
+
+  if [[ "$(uname -s)" == Darwin ]]; then
+    socket_dir="$(getconf DARWIN_USER_TEMP_DIR)"
+  else
+    socket_dir="${XDG_RUNTIME_DIR:-/tmp}/"
+  fi
+
+  open_tmux_nvim() {
+    local tmux_pane
+    tmux_pane="$(tmux display -p '#{session_id}.#{window_id}.#{pane_id}')"
+    nvim --listen "${socket_dir}nvim.${USER}.${tmux_pane}" "${arguments[@]}"
+  }
+
+  if [[ -z ${TMUX:-} ]]; then
+    if [[ "$is_remote" == true ]]; then nvr "${arguments[@]}"; else nvim "${arguments[@]}"; fi
+    return
+  fi
+
+  if [[ "$is_remote" != true ]]; then
+    open_tmux_nvim
+    return
+  fi
+
+  local session_id window_id pane_id
+  read -r session_id window_id pane_id < <(
+    tmux list-panes -s -F '#{pane_current_command}:#{session_id} #{window_id} #{pane_id}' \
+      | awk -F: '/^nvim:/ {print $2; exit}'
+  )
+
+  if [[ -z ${pane_id:-} ]]; then
+    open_tmux_nvim
+    return
+  fi
+
+  nvr --servername "${socket_dir}nvim.${USER}.${session_id}.${window_id}.${pane_id}" "${arguments[@]}"
+  if [[ "$should_swap" == true ]]; then
+    tmux select-window -t "$window_id"
+    tmux select-pane -t "$pane_id"
+  fi
+}

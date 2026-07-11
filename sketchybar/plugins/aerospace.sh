@@ -1,11 +1,14 @@
 #!/bin/zsh
 
-source ./colors.sh
-source ./icon_map.sh
+export PATH="/opt/homebrew/bin:$HOME/.local/share/mise/shims:/usr/bin:/bin"
+CONFIG_DIR="${0:A:h:h}"
+AEROSPACE="$HOME/.local/share/mise/shims/aerospace"
+source "$CONFIG_DIR/colors.sh"
+source "$CONFIG_DIR/icon_map.sh"
 
 change_workspace() {
     if [ -z "$FOCUSED_WORKSPACE" ]; then
-        FOCUSED_WORKSPACE=$(aerospace list-workspaces --empty no --monitor focused --visible)
+        FOCUSED_WORKSPACE=$("$AEROSPACE" list-workspaces --empty no --monitor focused --visible)
     fi
 
     # Focused item
@@ -22,9 +25,9 @@ change_workspace() {
 }
 
 update_apps() {
-    all_apps=$(aerospace list-windows --all --format "%{workspace}:%{app-name}")
+    all_apps=$("$AEROSPACE" list-windows --all --format "%{workspace}:%{app-name}")
 
-    for sid in $(aerospace list-workspaces --all); do
+    for sid in $("$AEROSPACE" list-workspaces --all); do
         workspace_apps=$(echo $all_apps | grep "$sid:")
 
         if [ -z $workspace_apps ]; then
@@ -74,4 +77,3 @@ case "$SENDER" in
 *)
     ;;
 esac
-

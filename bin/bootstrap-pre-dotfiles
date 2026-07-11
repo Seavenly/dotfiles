@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Dotbot used to own the entire mise directory. Remove only that exact legacy
+# symlink so native mise can own config.toml without taking over the directory.
+legacy_mise="$HOME/.config/mise"
+if [[ -L "$legacy_mise" ]]; then
+  target="$(readlink "$legacy_mise")"
+  case "$target" in
+    "$root/mise"|"$root/mise/") unlink "$legacy_mise" ;;
+  esac
+fi
+
+# LazyGit writes state.yml beside its config. Convert Dotbot's whole-directory
+# link into a real state directory while preserving the existing local state.
+legacy_lazygit="$HOME/.config/lazygit"
+if [[ -L "$legacy_lazygit" ]]; then
+  target="$(readlink "$legacy_lazygit")"
+  case "$target" in
+    "$root/lazygit"|"$root/lazygit/")
+      unlink "$legacy_lazygit"
+      mkdir -p "$legacy_lazygit"
+      if [[ -f "$root/lazygit/state.yml" ]]; then
+        install -m 0600 "$root/lazygit/state.yml" "$legacy_lazygit/state.yml"
+        unlink "$root/lazygit/state.yml"
+      fi
+      ;;
+  esac
+fi

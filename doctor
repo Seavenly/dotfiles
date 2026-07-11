@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+full=0
+[[ ${1:-} == --full ]] && full=1
+
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) env_name=macos ;;
+  Linux:x86_64|Linux:aarch64|Linux:arm64) env_name=linux ;;
+  *) env_name=unknown ;;
+esac
+
+errors=0
+warn() { printf 'WARN: %s\n' "$*"; }
+bad() { printf 'ERROR: %s\n' "$*"; errors=$((errors + 1)); }
+
+echo "Platform: $(uname -s) $(uname -m)"
+echo "Repository: $root"
+
+for command in git curl zsh mise; do
+  command -v "$command" >/dev/null 2>&1 || bad "missing required command: $command"
+done
+
+if [[ "$(uname -s)" == Darwin ]]; then
+  if command -v brew >/dev/null 2>&1; then
+    HOMEBREW_NO_AUTO_UPDATE=1 brew bundle check --file "$root/Brewfile.macos" >/dev/null 2>&1 || bad "managed macOS casks are missing or outdated"
+    if [[ -x "$HOME/.local/bin/rec" ]]; then
+      HOMEBREW_NO_AUTO_UPDATE=1 brew bundle check --file "$root/Brewfile.recorder" >/dev/null 2>&1 || bad "managed recorder cask is missing or outdated"
+    fi
+  else
+    bad "missing required command: brew"
+  fi
+fi
+
+if command -v mise >/dev/null 2>&1 && [[ "$env_name" != unknown ]]; then
+  MISE_TRUSTED_CONFIG_PATHS="$root" mise bootstrap -C "$root" -E "$env_name" status --missing || bad "bootstrap state has missing or drifted entries"
+fi
+
+if [[ ! -s "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/git.local" ]]; then
+  warn "Git identity is not configured in the local machine file"
+fi
+for link in "$HOME/.config/zshrc" "$HOME/.config/kitty" "$HOME/.aider.conf.yml"; do
+  if [[ -L "$link" && ! -e "$link" ]]; then
+    warn "stale legacy link: $link -> $(readlink "$link")"
+  fi
+done
+
+if [[ "$(uname -s)" == Darwin && -x "$HOME/.local/bin/rec" ]]; then
+  recorder_venv="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles/recorder-venv"
+  [[ -d "$recorder_venv" ]] || warn "recorder command exists but its uv environment is absent"
+  [[ ! -d "$recorder_venv" || -x "$recorder_venv/bin/hf" ]] || warn "recorder environment exists but its Hugging Face CLI is absent"
+  resolved_rec="$(command -v rec 2>/dev/null || true)"
+  [[ "$resolved_rec" == "$HOME/.local/bin/rec" ]] || bad "rec resolves to ${resolved_rec:-nothing}; expected $HOME/.local/bin/rec"
+fi
+
+if ((full)); then
+  "$root/check" || bad "repository source validation failed"
+fi
+((errors == 0)) || exit 1
+echo "doctor: no blocking health problems found"

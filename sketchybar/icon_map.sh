@@ -18,6 +18,9 @@ function __icon_map() {
    "Actual")
         icon_result=":actual:"
         ;;
+   "AdGuard VPN")
+        icon_result=":adguard_vpn:"
+        ;;
    "Adobe Bridge"*)
         icon_result=":adobe_bridge:"
         ;;
@@ -171,6 +174,9 @@ function __icon_map() {
    "Beeper" | "Beeper Desktop")
         icon_result=":beeper:"
         ;;
+   "Betterbird")
+        icon_result=":betterbird:"
+        ;;
    "BetterTouchTool")
         icon_result=":bettertouchtool:"
         ;;
@@ -179,6 +185,9 @@ function __icon_map() {
         ;;
    "Bitwarden")
         icon_result=":bit_warden:"
+        ;;
+   "Bitwig Studio")
+        icon_result=":bitwig_studio:"
         ;;
    "Blender")
         icon_result=":blender:"
@@ -282,7 +291,7 @@ function __icon_map() {
    "coconutBattery")
         icon_result=":coconut_battery:"
         ;;
-   "Code" | "Code - Insiders" | "Electron")
+   "Code" | "Code - Insiders")
         icon_result=":code:"
         ;;
    "Codex")
@@ -441,6 +450,9 @@ function __icon_map() {
    "Eagle")
         icon_result=":eagle:"
         ;;
+   "Electron")
+        icon_result=":electron:"
+        ;;
    "Element")
         icon_result=":element:"
         ;;
@@ -498,6 +510,9 @@ function __icon_map() {
    "Floorp")
         icon_result=":floorp:"
         ;;
+   "FlowJo")
+        icon_result=":flowjo:"
+        ;;
    "FL Studio")
         icon_result=":flstudio:"
         ;;
@@ -525,6 +540,9 @@ function __icon_map() {
    "Foxit PDF Reader")
         icon_result=":foxit_reader:"
         ;;
+   "FreeLLMAPI")
+        icon_result=":free_llm_api:"
+        ;;
    "FreeCAD")
         icon_result=":freecad:"
         ;;
@@ -548,6 +566,9 @@ function __icon_map() {
         ;;
    "Gemini" | "Google Gemini")
         icon_result=":gemini:"
+        ;;
+   "Ghidra")
+        icon_result=":ghidra:"
         ;;
    "Ghostty")
         icon_result=":ghostty:"
@@ -585,6 +606,9 @@ function __icon_map() {
    "Google Drive")
         icon_result=":google_drive:"
         ;;
+   "Google Earth Pro" | "Google Earth")
+        icon_result=":google_earth:"
+        ;;
    "Grammarly Editor")
         icon_result=":grammarly:"
         ;;
@@ -612,6 +636,9 @@ function __icon_map() {
    "Helium")
         icon_result=":helium:"
         ;;
+   "Hermes" | "Hermes Agent" | "Hermes Agent Desktop" | "Hermes Agent"*)
+        icon_result=":hermes_agent:"
+        ;;
    "Hex Fiend")
         icon_result=":hex_fiend:"
         ;;
@@ -620,6 +647,9 @@ function __icon_map() {
         ;;
    "Home Assistant")
         icon_result=":home_assistant:"
+        ;;
+   "brew-browser" | "WailBrew"| "TapHouse" | "Cork" | "Homebrew" | "Brewer X" | "Applite" | "BrewMate" | "Brewlet")
+        icon_result=":homebrew:"
         ;;
    "Hyper")
         icon_result=":hyper:"
@@ -669,7 +699,10 @@ function __icon_map() {
    "Instapaper")
         icon_result=":instapaper:"
         ;;
-   "iPhone Mirroring")
+   "Invoice Ninja" | "InvoiceNinja" | "Invoice Ninja"* | "invoiceninja"*)
+        icon_result=":invoice_ninja:"
+        ;;
+   "iPhone Mirroring" | "Simulator")
         icon_result=":iphone_mirroring:"
         ;;
    "Iris")
@@ -687,7 +720,7 @@ function __icon_map() {
    "JDownloader" | "JDownloader2" | "Uninstall JDownloader")
         icon_result=":jdownloader:"
         ;;
-   "Jellyfin Media Player")
+   "Jellyfin Media Player" | "Jellyfin Desktop")
         icon_result=":jellyfin:"
         ;;
    "Jellyseer")
@@ -750,6 +783,9 @@ function __icon_map() {
    "LanguageTool for Desktop")
         icon_result=":languagetool_for_desktop:"
         ;;
+   "Latest")
+        icon_result=":latest:"
+        ;;
    "League of Legends")
         icon_result=":league_of_legends:"
         ;;
@@ -809,6 +845,9 @@ function __icon_map() {
         ;;
    "MacPass")
         icon_result=":macpass:"
+        ;;
+   "macshot" | "macshot.app" | "MacShot")
+        icon_result=":macshot:"
         ;;
    "Mactracker")
         icon_result=":mactracker:"
@@ -1029,7 +1068,7 @@ function __icon_map() {
    "OpenAI Translator")
         icon_result=":openai_translator:"
         ;;
-   "opencode")
+   "opencode" | "OpenCode")
         icon_result=":opencode:"
         ;;
    "OpenEmu")
@@ -1233,6 +1272,12 @@ function __icon_map() {
    "Raycast" | "Raycast Beta")
         icon_result=":raycast:"
         ;;
+   "rclone" | "Rclone" | "Rclone UI")
+        icon_result=":rclone:"
+        ;;
+   "REAPER")
+        icon_result=":reaper:"
+        ;;
    "Reeder")
         icon_result=":reeder5:"
         ;;
@@ -1272,7 +1317,10 @@ function __icon_map() {
    "RStudio")
         icon_result=":rstudio:"
         ;;
-   "ruffle")
+   "RsyncUI")
+        icon_result=":rsyncui:"
+        ;;
+   "ruffle" | "Ruffle")
         icon_result=":ruffle:"
         ;;
    "RustDesk")
@@ -1298,6 +1346,9 @@ function __icon_map() {
         ;;
    "Seafile")
         icon_result=":seafile:"
+        ;;
+   "Secretive" | "Secretive.app")
+        icon_result=":secretive:"
         ;;
    "Sequel Ace")
         icon_result=":sequel_ace:"
@@ -1329,6 +1380,9 @@ function __icon_map() {
    "sioyek")
         icon_result=":sioyek:"
         ;;
+   "Siri")
+        icon_result=":siri:"
+        ;;
    "Sketch")
         icon_result=":sketch:"
         ;;
@@ -1340,6 +1394,9 @@ function __icon_map() {
         ;;
    "SmartGit")
         icon_result=":smartgit:"
+        ;;
+   "SnapGene")
+        icon_result=":snapgene:"
         ;;
    "SnippetsLab")
         icon_result=":snippetslab:"
@@ -1392,8 +1449,8 @@ function __icon_map() {
    "Summoners War")
         icon_result=":summoners_war:"
         ;;
-   "superProductivity")
-        icon_result=":superproductivity:"
+   "Super Productivity" | "superProductivity")
+        icon_result=":super_productivity:"
         ;;
    "Surfshark")
         icon_result=":surfshark:"
@@ -1458,6 +1515,9 @@ function __icon_map() {
    "Thunderbird" | "Thunderbird Daily")
         icon_result=":thunderbird:"
         ;;
+   "TI Connect CE")
+        icon_result=":ti_connect_ce:"
+        ;;
    "TickTick")
         icon_result=":tick_tick:"
         ;;
@@ -1508,6 +1568,9 @@ function __icon_map() {
         ;;
    "Trello")
         icon_result=":trello:"
+        ;;
+   "Tuple")
+        icon_result=":tuple:"
         ;;
    "Twingate")
         icon_result=":twingate:"
@@ -1658,9 +1721,6 @@ function __icon_map() {
         ;;
    "Zulip")
         icon_result=":zulip:"
-        ;;
-   "Simulator")
-        icon_result=":iphone_mirroring:"
         ;;
     *)
         icon_result=":default:"

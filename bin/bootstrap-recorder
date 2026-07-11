@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$(uname -s)" == Darwin ]] || { echo "Recorder setup is macOS-only." >&2; exit 1; }
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+export UV_PROJECT_ENVIRONMENT="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles/recorder-venv"
+uv sync --project "$root/tools/recorder" --frozen
+mkdir -p "$HOME/Recordings/meetings"
+
+cat <<'EOF'
+Recorder installed. Manual prerequisites remain:
+  1. Create a Multi-Output Device containing your speakers and BlackHole 2ch.
+  2. Accept the pyannote speaker-diarization-community-1 license.
+  3. Run: rec auth
+See tools/recorder/README.md for details.
+EOF

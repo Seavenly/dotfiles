@@ -1,6 +1,9 @@
-#!/bin/sh
+#!/bin/zsh
 
-source ./colors.sh
+export PATH="/opt/homebrew/bin:$HOME/.local/share/mise/shims:/usr/bin:/bin"
+
+CONFIG_DIR="${0:A:h:h}"
+source "$CONFIG_DIR/colors.sh"
 
 PIDFILE="${TMPDIR:-/tmp}/rec.pid"
 
@@ -30,5 +33,5 @@ sketchybar --set "$NAME" \
     drawing=on \
     update_freq=1 \
     icon="●" \
-    icon.color=$COLOR_SAMURAI_RED \
+    icon.color="$COLOR_SAMURAI_RED" \
     label="$label"

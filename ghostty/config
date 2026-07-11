@@ -21,7 +21,6 @@ macos-titlebar-style = hidden
 link-url = true
 
 background-opacity = 0.9
-keybind = shift+enter=text:\n
 
 desktop-notifications = true
 
@@ -29,4 +28,3 @@ quick-terminal-position = center
 quick-terminal-size = 800px,80%
 quick-terminal-animation-duration = 0.1
 keybind = global:cmd+backquote=toggle_quick_terminal
-

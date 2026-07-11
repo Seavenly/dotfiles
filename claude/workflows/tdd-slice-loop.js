@@ -18,7 +18,7 @@ const a = typeof args === 'string' ? JSON.parse(args) : args
 const noteEntries = (a.noteEntries || []).slice()
 const stuck = []
 
-const inWorktree = `Work in the worktree at ${a.worktree} — cd there for all commands, reads, and writes. Never switch branches. (Your role definition may reference \`/work/...\` paths from the old sandbox; ignore those literals — use the absolute paths given in this prompt, and treat the run journal shown inline below as the contents of your \`/work/notes.md\`. Return structured output where this prompt asks for it instead of writing a verdict/handoff file.)${a.scopeNote ? ` ${a.scopeNote}` : ''}`
+const inWorktree = `Work in the worktree at ${a.worktree} — cd there for all commands, reads, and writes. Never switch branches. Treat the run journal shown inline below as the authoritative notes, and return structured output where this prompt asks for it instead of writing a verdict/handoff file.${a.scopeNote ? ` ${a.scopeNote}` : ''}`
 // Guard against a stray agent that didn't cd: confirm we're in the worktree before any commit.
 const wtGuard = `Before staging or committing, confirm \`git -C "${a.worktree}" rev-parse --show-toplevel\` resolves to ${a.worktree}; run all git from \`-C "${a.worktree}"\` so you never touch another checkout. If it doesn't resolve there, do NOT commit — set committed=false and say so in output.`
 const readRefs = `Read ${a.briefPath}${a.planPath ? ` and ${a.planPath}` : ''}.`

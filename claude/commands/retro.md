@@ -11,7 +11,7 @@ works* — not about the code it produced.
 
 The companion `/retro-consume` command reads the file you write and edits
 the actual agent personas, workflow scripts, flow commands, and docs under
-`~/.dotfiles/claude`. This file is the channel between what the run
+`~/.claude`. This file is the channel between what the run
 revealed and the prompts/scripts that drive the next run. Be concrete and
 honest.
 

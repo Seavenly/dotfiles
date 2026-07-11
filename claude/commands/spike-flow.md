@@ -10,8 +10,8 @@ you handle the interview, brief, worktree setup, and wrap-up.
 User's invocation: `/spike-flow $ARGUMENTS`
 
 ## Read first
-- `~/.dotfiles/claude/AGENT-TEAMS.md` — system architecture.
-- `~/.dotfiles/claude/defaults.yaml` — cap defaults (`spike_flow`).
+- `~/.claude/AGENT-TEAMS.md` — system architecture.
+- `~/.claude/defaults.yaml` — cap defaults (`spike_flow`).
 
 ## Step 1 — Parse arguments
 - **Question** — leading quoted string / free text up to the first flag.
@@ -95,7 +95,7 @@ The workflow returns `{ reportPath, depth, angles, prototype, prototypeStuck }`.
 
 Fire a completion notification so the user sees it if they stepped away:
 ```bash
-echo '{"hook_event_name":"Notification","message":"spike-flow complete: <slug>"}' | ~/.dotfiles/claude/hooks/notify.sh
+echo '{"hook_event_name":"Notification","message":"spike-flow complete: <slug>"}' | ~/.claude/hooks/notify.sh
 ```
 
 If `prototypeStuck[]` is non-empty, call out which prototype slices got stuck and their recorded reason (the report also notes them). Print:

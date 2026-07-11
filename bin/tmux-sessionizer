@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+paths_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/paths.env"
+projects_override="${PROJECTS_DIR:-}"
+# shellcheck disable=SC1090
+[[ ! -r "$paths_file" ]] || source "$paths_file"
+[[ -z "$projects_override" ]] || PROJECTS_DIR="$projects_override"
+projects_dir="${PROJECTS_DIR:-$HOME/dev}"
+
+selection="$({
+  # Scan live so newly cloned repositories are immediately selectable. The
+  # second field keeps the UI concise while fzf returns the full project path.
+  if [[ -d "$projects_dir" ]]; then
+    while IFS= read -r -d '' metadata; do
+      repo="${metadata%/*}"
+      project="${repo##*/}"
+      parent_path="${repo%/*}"
+      parent="${parent_path##*/}"
+      printf '%s\t%s/%s\n' "$repo" "$parent" "$project"
+    done < <(find "$projects_dir" -mindepth 2 -maxdepth 3 -type d \
+      -name .git -prune -print0)
+  fi
+} | FZF_DEFAULT_OPTS='' fzf \
+  --scheme=path \
+  --delimiter=$'\t' \
+  --with-nth=2 \
+  --accept-nth=1 \
+  --border=none \
+  --preview-window=hidden \
+  "$@")" || exit 1
+
+[[ -z "$selection" ]] || printf '%s\n' "$selection"

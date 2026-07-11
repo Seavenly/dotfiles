@@ -1,6 +1,9 @@
 #!/bin/zsh
 
-source ./colors.sh
+export PATH="/opt/homebrew/bin:$HOME/.local/share/mise/shims:/usr/bin:/bin"
+
+CONFIG_DIR="${0:A:h:h}"
+source "$CONFIG_DIR/colors.sh"
 
 # Max number of characters so it fits nicely to the right of the notch
 # MAY NOT WORK WITH NON-ENGLISH CHARACTERS

@@ -11,8 +11,8 @@ worktree/setup, the optional plan gate, and the wrap-up.
 User's invocation: `/feature-flow $ARGUMENTS`
 
 ## Read first
-- `~/.dotfiles/claude/AGENT-TEAMS.md` — system architecture.
-- `~/.dotfiles/claude/defaults.yaml` — cap defaults (`feature_flow`).
+- `~/.claude/AGENT-TEAMS.md` — system architecture.
+- `~/.claude/defaults.yaml` — cap defaults (`feature_flow`).
 
 ## Step 1 — Parse arguments
 - **Goal statement** — leading free text / first quoted string.
@@ -107,7 +107,7 @@ The workflow returns `{ branch, reportPath, notesPath, slices, criticRevisions, 
 
 First, fire a completion notification so the user sees it if they stepped away:
 ```bash
-echo '{"hook_event_name":"Notification","message":"feature-flow complete: <slug>"}' | ~/.dotfiles/claude/hooks/notify.sh
+echo '{"hook_event_name":"Notification","message":"feature-flow complete: <slug>"}' | ~/.claude/hooks/notify.sh
 ```
 
 - **RE_PLAN** → surface the critic's reason and stop; do not auto-replan.

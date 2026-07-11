@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# App launch environments may not contain the mise shims or Homebrew prefix.
+export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:$PATH"
+paths_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/paths.env"
+if [[ -r "$paths_file" ]]; then
+    # shellcheck disable=SC1090
+    source "$paths_file"
+    export NOTES_DIR
+fi
+
+PIDFILE="${TMPDIR:-/tmp}/rec.pid"
+REC_BASE="$HOME/Recordings/meetings"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOTFILES_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VENV="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles/recorder-venv"
+PYTHON="$VENV/bin/python"
+
+check_venv() {
+    if [ ! -d "$VENV" ]; then
+        echo "Error: Python venv not found."
+        echo "Run: $DOTFILES_ROOT/install --recorder"
+        exit 1
+    fi
+}
+
+find_device_index() {
+    # Query sounddevice for a device by name, return its index
+    local name="$1"
+    "$PYTHON" -c "
+import sounddevice as sd
+for i, d in enumerate(sd.query_devices()):
+    if d['max_input_channels'] > 0 and '$name'.lower() in d['name'].lower():
+        print(f\"{i} {d['max_input_channels']} {int(d['default_samplerate'])}\")
+        break
+else:
+    exit(1)
+"
+}
+
+notify_sketchybar() {
+    command -v sketchybar >/dev/null 2>&1 && sketchybar --trigger rec_status_change >/dev/null 2>&1 || true
+}
+
+cleanup_stale_pid() {
+    if [ ! -f "$PIDFILE" ]; then
+        return 1
+    fi
+
+    local mic_pid sys_pid
+    { read -r mic_pid; read -r sys_pid; } < "$PIDFILE"
+
+    if kill -0 "$mic_pid" 2>/dev/null || kill -0 "$sys_pid" 2>/dev/null; then
+        return 0  # Processes still running
+    fi
+
+    echo "Cleaning up stale PID file..."
+    rm -f "$PIDFILE"
+    notify_sketchybar
+    return 1
+}
+
+start_recording() {
+    local mode="${1:-record}"
+
+    check_venv
+
+    # Find BlackHole device
+    local bh_info
+    bh_info="$(find_device_index "BlackHole 2ch")" || {
+        echo "Error: BlackHole 2ch not found."
+        echo "Install it: $DOTFILES_ROOT/install --recorder"
+        echo "Then set up a Multi-Output Device in Audio MIDI Setup."
+        exit 1
+    }
+    local bh_index bh_channels bh_rate
+    read -r bh_index bh_channels bh_rate <<< "$bh_info"
+
+    # Find mic device (first non-BlackHole input)
+    local mic_info
+    mic_info="$("$PYTHON" -c "
+import sounddevice as sd
+for i, d in enumerate(sd.query_devices()):
+    if d['max_input_channels'] > 0 and 'blackhole' not in d['name'].lower():
+        print(f\"{i} {d['max_input_channels']} {int(d['default_samplerate'])}\")
+        break
+")" || {
+        echo "Error: No microphone found."
+        exit 1
+    }
+    local mic_index mic_rate
+    read -r mic_index _ mic_rate <<< "$mic_info"
+
+    local timestamp
+    timestamp="$(date +%Y-%m-%d_%H%M)"
+    local rec_dir="$REC_BASE/$timestamp"
+    mkdir -p "$rec_dir"
+
+    # Record mic (mono)
+    "$PYTHON" "$SCRIPT_DIR/record.py" \
+        --device "$mic_index" --channels 1 --samplerate "$mic_rate" \
+        "$rec_dir/mic.wav" &>/dev/null &
+    local mic_pid=$!
+
+    # Record system audio (stereo from BlackHole 2ch)
+    "$PYTHON" "$SCRIPT_DIR/record.py" \
+        --device "$bh_index" --channels "$bh_channels" --samplerate "$bh_rate" \
+        "$rec_dir/system.wav" &>/dev/null &
+    local sys_pid=$!
+
+    printf '%s\n' "$mic_pid" "$sys_pid" "$rec_dir" "$mode" > "$PIDFILE"
+    notify_sketchybar
+
+    echo "Recording started"
+    echo "  Directory: $rec_dir"
+    echo "  Mic (device $mic_index, ${mic_rate}Hz) PID: $mic_pid"
+    echo "  System (BlackHole, device $bh_index, ${bh_rate}Hz) PID: $sys_pid"
+    echo "  Run 'rec' again to stop."
+}
+
+stop_recording() {
+    if [ ! -f "$PIDFILE" ]; then
+        echo "No recording in progress."
+        exit 1
+    fi
+
+    local mic_pid sys_pid rec_dir mode
+    { read -r mic_pid; read -r sys_pid; read -r rec_dir; read -r mode; } < "$PIDFILE"
+
+    echo "Stopping recording..."
+
+    kill -INT "$mic_pid" 2>/dev/null || true
+    kill -INT "$sys_pid" 2>/dev/null || true
+
+    # Wait for processes to exit
+    for pid in "$mic_pid" "$sys_pid"; do
+        while kill -0 "$pid" 2>/dev/null; do
+            sleep 0.1
+        done
+    done
+
+    rm -f "$PIDFILE"
+    notify_sketchybar
+
+    echo "Recording stopped: $rec_dir"
+
+    if [ "$mode" = "full" ]; then
+        if [ -t 1 ]; then
+            # Interactive: run in foreground so the user sees progress
+            echo ""
+            do_clean "$rec_dir"
+            echo ""
+            do_transcribe "$rec_dir"
+        else
+            # Non-interactive (e.g. aerospace hotkey): detach so the long task
+            # survives even if the parent is reaped. Output goes to a log.
+            local log="$rec_dir/post.log"
+            nohup "$SCRIPT_DIR/rec" __post "$rec_dir" >"$log" 2>&1 < /dev/null &
+            disown 2>/dev/null || true
+            echo "Post-processing detached. Log: $log"
+        fi
+    fi
+}
+
+do_post() {
+    local rec_dir="$1"
+    do_clean "$rec_dir"
+    do_transcribe "$rec_dir"
+}
+
+resolve_rec_dir() {
+    local rec_dir="${1:-}"
+    if [ -z "$rec_dir" ]; then
+        local candidate
+        for candidate in "$REC_BASE"/*/; do
+            [ -d "$candidate" ] || continue
+            if [ -z "$rec_dir" ] || [ "$candidate" -nt "$rec_dir" ]; then
+                rec_dir="$candidate"
+            fi
+        done
+        if [ -z "$rec_dir" ]; then
+            echo "No recordings found in $REC_BASE" >&2
+            exit 1
+        fi
+        rec_dir="${rec_dir%/}"
+    fi
+    if [ ! -d "$rec_dir" ]; then
+        echo "Error: Directory not found: $rec_dir" >&2
+        exit 1
+    fi
+    echo "$rec_dir"
+}
+
+do_clean() {
+    local rec_dir
+    rec_dir="$(resolve_rec_dir "${1:-}")"
+    check_venv
+    echo "Cleaning mic audio: $rec_dir"
+    "$PYTHON" "$SCRIPT_DIR/clean.py" "$rec_dir"
+}
+
+do_transcribe() {
+    local rec_dir
+    rec_dir="$(resolve_rec_dir "${1:-}")"
+    check_venv
+    echo "Transcribing: $rec_dir"
+    "$PYTHON" "$SCRIPT_DIR/transcribe.py" "$rec_dir"
+}
+
+do_auth() {
+    check_venv
+    if (($#)); then
+        exec "$VENV/bin/hf" auth "$@"
+    fi
+    exec "$VENV/bin/hf" auth login
+}
+
+# Main dispatch
+case "${1:-}" in
+    auth)
+        shift
+        do_auth "$@"
+        ;;
+    clean)
+        do_clean "${2:-}"
+        ;;
+    transcribe)
+        do_transcribe "${2:-}"
+        ;;
+    __post)
+        do_post "${2:-}"
+        ;;
+    full)
+        if cleanup_stale_pid; then
+            stop_recording
+        else
+            start_recording "full"
+        fi
+        ;;
+    "")
+        if cleanup_stale_pid; then
+            stop_recording
+        else
+            start_recording "record"
+        fi
+        ;;
+    *)
+        echo "Usage: rec [auth [args...] | clean [path] | transcribe [path] | full]"
+        exit 1
+        ;;
+esac

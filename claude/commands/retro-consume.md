@@ -1,5 +1,5 @@
 ---
-description: Consume an agent-teams retro file and apply its process patterns to the prompts / personas / docs under ~/.dotfiles/claude, then append to the retro ledger. Args — optional run_id or path to a retro.md (defaults to the most recent run that has one).
+description: Consume an agent-teams retro file and apply its process patterns to the managed Claude prompts/personas/docs, then append to the retro ledger. Args — optional run_id or path to a retro.md (defaults to the most recent run that has one).
 ---
 
 You are applying a retro produced by an agent-teams run. The `/retro`
@@ -26,7 +26,7 @@ items and their suggested `target:` files.
 
 ## Step 2 — Read the ledger for history
 
-Read `~/.dotfiles/claude/RETRO-LEDGER.md` (create it from the template in
+Read `~/.claude/RETRO-LEDGER.md` (create it from the template in
 Step 5 if missing). Before applying anything, check each incoming pattern
 against the ledger:
 - **Corroborates** a prior entry → stronger signal; apply with confidence
@@ -41,7 +41,7 @@ prompts. Use it.
 
 ## Step 3 — Apply the edits
 
-Scope: anything under `~/.dotfiles/claude` is fair game:
+Scope: anything under `~/.claude` is fair game:
 - `agents/<role>.md` — persona / judgment (planner, researcher, tester, implementer, critic, synthesizer, diagrammer)
 - `workflows/<flow>-run.js` — orchestration: fan-out shape, retry/cap budgets, gate, phase order, spawn-prompt wording
 - `commands/<flow>-flow.md` — the interactive front half (interview, brief, worktree/setup, wrap-up); `commands/retro*.md`
@@ -82,13 +82,13 @@ Print a summary: each pattern, the file you edited (or skipped + why), and
 any conflicts you surfaced. Then:
 ```
 Applied retro <run_id> (<flow>). Review the edits:
-  git -C ~/.dotfiles diff
-Ledger updated: ~/.dotfiles/claude/RETRO-LEDGER.md
+  git -C "$(dotfiles-root)" diff
+Ledger updated: ~/.claude/RETRO-LEDGER.md
 ```
 
 ## Step 5 — Update the ledger
 
-Append an entry to `~/.dotfiles/claude/RETRO-LEDGER.md`. If the file does
+Append an entry to `~/.claude/RETRO-LEDGER.md`. If the file does
 not exist, create it with this header first:
 
 ```markdown
@@ -117,5 +117,5 @@ Notes: <conflicts surfaced, reverts, anything a future consumer should know>
 ## Reverting
 
 If the user asks to revert a past retro's changes, use the ledger to find
-which files an entry touched, revert those edits (`git -C ~/.dotfiles` log
+which files an entry touched, revert those edits (`git -C "$(dotfiles-root)"` log
 helps), and append a new ledger entry recording the revert and why.

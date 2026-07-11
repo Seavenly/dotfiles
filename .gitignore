@@ -40,15 +40,20 @@ luac.out
 *.hex
 
 .DS_Store
+nvim.log
 
 lazygit/state.yml
 .aider*
 !aider/*
 zshrc/private.sh
-tools/rec/.venv
 
 # Node.js
 node_modules/
+.venv/
+
+# Local machine state is kept outside the repository.
+.mise.local.toml
+mise.local.lock
 
 # Claude Code working dirs (worktrees, local scratch)
 .claude/

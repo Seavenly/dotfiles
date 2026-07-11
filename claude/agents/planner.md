@@ -74,7 +74,7 @@ during planning) — the workflow carries this forward as run context.
    fallback, race, "should never happen" guard), name the observability
    touchpoint in that slice's behavior or test idea so the implementer leaves
    a trail there — a root-span attribute or a structured log on the edge.
-   Follow `~/.dotfiles/claude/OBSERVABILITY.md`: one wide root span per
+   Follow `~/.claude/OBSERVABILITY.md`: one wide root span per
    request, debugging/filtering dimensions on the root span. Don't force it
    onto trivial slices.
 
