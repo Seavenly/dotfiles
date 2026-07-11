@@ -12,9 +12,9 @@ system_packages.managers = ["brew"]
 "~/.local/share/sketchybar-app-font" = { url = "https://github.com/kvndrsslr/sketchybar-app-font.git", ref = "8899e75c5b08aa0ead9c347ff6139260720bc0b0" }
 
 [dotfiles]
-"~/.config/aerospace" = "aerospace"
-"~/.config/ghostty" = "ghostty"
-"~/.config/sketchybar" = "sketchybar"
+"~/.config/aerospace" = "config/aerospace"
+"~/.config/ghostty" = "config/ghostty"
+"~/.config/sketchybar" = "config/sketchybar"
 
 [bootstrap.macos.keyboard]
 key_repeat = 2
@@ -69,4 +69,4 @@ TrackpadRightClick = true
 TrackpadRightClick = true
 
 [bootstrap.hooks.post-defaults]
-run = "bin/macos-defaults-finalize"
+run = "internal/bootstrap/macos-defaults"

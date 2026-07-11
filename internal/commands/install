@@ -2,9 +2,11 @@
 set -euo pipefail
 
 readonly MISE_VERSION="2026.7.5"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 readonly ROOT
 readonly MISE_BIN="$HOME/.local/bin/mise"
+# shellcheck source=internal/shell/context.sh
+source "$ROOT/internal/shell/context.sh"
 
 dry_run=0
 assume_yes=0
@@ -13,7 +15,7 @@ recorder=0
 
 usage() {
   cat <<'EOF'
-Usage: ./install [--dry-run] [--yes] [--force] [--recorder]
+Usage: dotfiles install [--dry-run] [--yes] [--force] [--recorder]
 
   --dry-run   Show the convergence plan without changing the machine
   --yes       Accept safe mise bootstrap prompts (recorder remains off)
@@ -39,47 +41,22 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   exit 1
 fi
 
-os="$(uname -s)"
-arch="$(uname -m)"
-case "$os:$arch" in
-  Darwin:arm64)
-    macos_major="$(sw_vers -productVersion | cut -d. -f1)"
-    if ((macos_major < 26)); then
-      printf 'Unsupported macOS version: %s (expected macOS 26 or newer).\n' "$(sw_vers -productVersion)" >&2
-      exit 1
-    fi
-    env_name="macos"
-    asset="mise-v${MISE_VERSION}-macos-arm64"
+dotfiles_context_init "$ROOT" || true
+dotfiles_require_supported_host
+os="$DOTFILES_OS"
+env_name="$DOTFILES_ENV"
+asset="mise-v${MISE_VERSION}-${DOTFILES_MISE_ASSET_PLATFORM}"
+case "$DOTFILES_MISE_ASSET_PLATFORM" in
+  macos-arm64)
     expected_sha="a456c65907e8334619d77fa152bdcf9023fddc0daa03d47fbe86d032dbf565b0"
     ;;
-  Linux:x86_64)
-    env_name="linux"
-    asset="mise-v${MISE_VERSION}-linux-x64"
+  linux-x64)
     expected_sha="5f7ab76afdf0780d12edeaa67e908094e9ccf7924cfe203e415c1cfb87bbf778"
     ;;
-  Linux:aarch64|Linux:arm64)
-    env_name="linux"
-    asset="mise-v${MISE_VERSION}-linux-arm64"
+  linux-arm64)
     expected_sha="41fcf744050bfa27f9871e2151ac6f44b5ce2741424b3d5282b92becc71e6bc4"
     ;;
-  *)
-    printf 'Unsupported platform: %s %s\n' "$os" "$arch" >&2
-    exit 1
-    ;;
 esac
-
-if [[ "$os" == Linux ]]; then
-  if [[ ! -r /etc/os-release ]]; then
-    echo "Unsupported Linux distribution: /etc/os-release is missing." >&2
-    exit 1
-  fi
-  # shellcheck disable=SC1091
-  source /etc/os-release
-  if [[ ${ID:-} != ubuntu || ! ${VERSION_ID:-} =~ ^(24\.04|26\.04)$ ]]; then
-    printf 'Unsupported Linux distribution: %s %s (expected Ubuntu 24.04 or 26.04).\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" >&2
-    exit 1
-  fi
-fi
 
 current_version=""
 if [[ -x "$MISE_BIN" ]]; then
@@ -123,7 +100,7 @@ if [[ "$os" == Darwin ]]; then
   cask_args=()
   ((dry_run)) && cask_args+=(--dry-run)
   ((recorder)) && cask_args+=(--recorder)
-  "$ROOT/bin/bootstrap-macos-casks" "${cask_args[@]}"
+  "$ROOT/internal/bootstrap/macos-casks" "${cask_args[@]}"
 fi
 
 args=(bootstrap -C "$ROOT" -E "$env_name" --locked)
@@ -156,12 +133,7 @@ fi
 
 "$mise_cmd" "${args[@]}"
 
-if [[ "$os" == Darwin ]]; then
-  migration_args=()
-  ((dry_run)) && migration_args+=(--dry-run)
-  ((assume_yes)) && migration_args+=(--yes)
-  "$ROOT/bin/migrate-homebrew-overlaps" "${migration_args[@]}"
-fi
+((dry_run)) && "$ROOT/internal/migrate" --dry-run
 
 if ((recorder)); then
   if [[ "$os" != Darwin ]]; then

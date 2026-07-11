@@ -4,23 +4,11 @@
 # overlaps are removed, so use errexit and pipefail without nounset.
 set -eo pipefail
 
-root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles"
-marker="$state_dir/migrations/007-homebrew-overlaps"
-dry_run=0
+root="$DOTFILES_ROOT"
+dry_run="${DOTFILES_MIGRATION_DRY_RUN:-0}"
 assume_yes="${DOTFILES_YES:-0}"
 
-while (($#)); do
-  case "$1" in
-    --dry-run) dry_run=1 ;;
-    --yes|-y) assume_yes=1 ;;
-    *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
-  esac
-  shift
-done
-
-[[ "$(uname -s)" == Darwin ]] || exit 0
-((dry_run)) || [[ ! -e "$marker" ]] || exit 0
+[[ "$DOTFILES_OS" == Darwin ]] || exit 75
 
 if command -v brew >/dev/null 2>&1; then
   brew_bin="$(command -v brew)"
@@ -74,12 +62,7 @@ if ((${#installed_formulae[@]} == 0 && ${#installed_casks[@]} == 0)); then
   for retained in "${retained_formulae[@]}"; do
     printf 'Homebrew transition: retaining formula %s.\n' "$retained"
   done
-  if ((dry_run)); then
-    echo "Homebrew transition: no known overlaps remain."
-  else
-    mkdir -p "$(dirname "$marker")"
-    touch "$marker"
-  fi
+  ((dry_run)) && echo "Homebrew transition: no known overlaps remain."
   exit 0
 fi
 
@@ -134,7 +117,7 @@ done
 
 if [[ "$assume_yes" != 1 ]]; then
   if [[ ! -t 0 ]]; then
-    echo "Skipping Homebrew transition without a terminal; rerun ./install --yes."
+    echo "Skipping Homebrew transition without a terminal; rerun dotfiles install --yes."
     exit 0
   fi
   read -r -p "Remove these Homebrew installations? [Y/n] " answer
@@ -163,6 +146,4 @@ if ((restart_aerospace)); then
   sketchybar --reload >/dev/null 2>&1 || true
 fi
 
-mkdir -p "$(dirname "$marker")"
-touch "$marker"
 echo "Homebrew transition complete."

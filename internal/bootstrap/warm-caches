@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+
+antidote="$HOME/.local/share/antidote/antidote.zsh"
+if [[ -r "$antidote" ]]; then
+  zsh -c 'source "$1"; antidote bundle < "$2" > "$3"' -- \
+    "$antidote" "$root/config/zsh/zsh_plugins.txt" "$cache_home/antidote/zsh_plugins.zsh"
+fi
+
+if [[ -f "$root/config/claude/scripts/package-lock.json" ]]; then
+  npm ci --prefix "$root/config/claude/scripts"
+fi
+
+# vim.pack and Tree-sitter both converge during headless startup.
+nvim --headless '+qa' </dev/null

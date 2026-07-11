@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+dotfiles_context_init "$root" || true
+
+dry_run=0
+while (($#)); do
+  case "$1" in
+    --dry-run) dry_run=1 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+marker_dir="$DOTFILES_STATE_DIR/migrations"
+((dry_run)) || mkdir -p "$marker_dir"
+
+for migration in "$root"/internal/migrations/[0-9][0-9][0-9]-*.sh; do
+  [[ -e "$migration" ]] || continue
+  name="$(basename "$migration" .sh)"
+  marker="$marker_dir/$name"
+  [[ ! -e "$marker" ]] || continue
+
+  set +e
+  DOTFILES_MIGRATION_DRY_RUN="$dry_run" "$migration"
+  status=$?
+  set -e
+  case "$status" in
+    0)
+      if ((dry_run)); then
+        printf 'Migration pending: %s\n' "$name"
+      else
+        touch "$marker"
+      fi
+      ;;
+    75) ;; # Deliberately deferred until its preconditions are present.
+    *) printf 'Migration failed: %s\n' "$name" >&2; exit "$status" ;;
+  esac
+done

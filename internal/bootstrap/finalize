@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+"$root/internal/migrate"
+"$root/internal/bootstrap/machine-local"
+"$root/internal/bootstrap/warm-caches"
+"$root/internal/bootstrap/macos-finalize"

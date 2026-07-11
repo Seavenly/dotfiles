@@ -1,12 +1,13 @@
-# Fast, deterministic shell startup. Downloads and installs belong to ./install.
+# Fast, deterministic shell startup. Downloads and installs belong to dotfiles install.
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 [[ "$(uname -s)" == Darwin ]] && export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
-[[ -r "$XDG_CONFIG_HOME/dotfiles/paths.env" ]] && source "$XDG_CONFIG_HOME/dotfiles/paths.env"
 export DOTFILES_ROOT="$(dotfiles-root)"
+source "$DOTFILES_ROOT/internal/shell/paths.sh"
+dotfiles_load_paths
 
 export EDITOR="nvr -l"
 export VISUAL="nvr --remote-wait +'set bufhidden=wipe'"
@@ -54,10 +55,10 @@ zle -N sesh-connect
 bindkey '^a' sesh-connect
 
 source "$HOME/.local/bin/nvim-remote-shell"
-source "$DOTFILES_ROOT/zsh/aliases.zsh"
+source "$DOTFILES_ROOT/config/zsh/aliases.zsh"
 [[ -r "$XDG_CONFIG_HOME/dotfiles/aliases.local.zsh" ]] && source "$XDG_CONFIG_HOME/dotfiles/aliases.local.zsh"
 [[ -r "$XDG_CONFIG_HOME/dotfiles/private.zsh" ]] && source "$XDG_CONFIG_HOME/dotfiles/private.zsh"
 
 if command -v oh-my-posh >/dev/null 2>&1; then
-  eval "$(oh-my-posh init zsh --config "$DOTFILES_ROOT/zsh/onehalf.minimal.omp.yaml")"
+  eval "$(oh-my-posh init zsh --config "$DOTFILES_ROOT/config/zsh/onehalf.minimal.omp.yaml")"
 fi

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-paths_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/paths.env"
-projects_override="${PROJECTS_DIR:-}"
-# shellcheck disable=SC1090
-[[ ! -r "$paths_file" ]] || source "$paths_file"
-[[ -z "$projects_override" ]] || PROJECTS_DIR="$projects_override"
-projects_dir="${PROJECTS_DIR:-$HOME/dev}"
+root="$("$(dirname "${BASH_SOURCE[0]}")/dotfiles-root")"
+# shellcheck source=internal/shell/paths.sh
+source "$root/internal/shell/paths.sh"
+dotfiles_load_paths
+projects_dir="$PROJECTS_DIR"
 
 selection="$({
   # Scan live so newly cloned repositories are immediately selectable. The

@@ -1,28 +1,40 @@
 #!/usr/bin/env bash
 set -u
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: dotfiles doctor [--full]
+
+  --full  Also run repository source and behavior validation
+EOF
+}
+
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  --full|"") ;;
+  *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+esac
+dotfiles_context_init "$root" || true
 full=0
 [[ ${1:-} == --full ]] && full=1
-
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) env_name=macos ;;
-  Linux:x86_64|Linux:aarch64|Linux:arm64) env_name=linux ;;
-  *) env_name=unknown ;;
-esac
+env_name="$DOTFILES_ENV"
 
 errors=0
 warn() { printf 'WARN: %s\n' "$*"; }
 bad() { printf 'ERROR: %s\n' "$*"; errors=$((errors + 1)); }
 
-echo "Platform: $(uname -s) $(uname -m)"
+echo "Platform: $DOTFILES_OS $DOTFILES_ARCH"
 echo "Repository: $root"
 
 for command in git curl zsh mise; do
   command -v "$command" >/dev/null 2>&1 || bad "missing required command: $command"
 done
 
-if [[ "$(uname -s)" == Darwin ]]; then
+if [[ "$DOTFILES_OS" == Darwin ]]; then
   if command -v brew >/dev/null 2>&1; then
     HOMEBREW_NO_AUTO_UPDATE=1 brew bundle check --file "$root/Brewfile.macos" >/dev/null 2>&1 || bad "managed macOS casks are missing or outdated"
     if [[ -x "$HOME/.local/bin/rec" ]]; then
@@ -37,7 +49,7 @@ if command -v mise >/dev/null 2>&1 && [[ "$env_name" != unknown ]]; then
   MISE_TRUSTED_CONFIG_PATHS="$root" mise bootstrap -C "$root" -E "$env_name" status --missing || bad "bootstrap state has missing or drifted entries"
 fi
 
-if [[ ! -s "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/git.local" ]]; then
+if [[ ! -s "$DOTFILES_CONFIG_DIR/git.local" ]]; then
   warn "Git identity is not configured in the local machine file"
 fi
 for link in "$HOME/.config/zshrc" "$HOME/.config/kitty" "$HOME/.aider.conf.yml"; do
@@ -46,8 +58,8 @@ for link in "$HOME/.config/zshrc" "$HOME/.config/kitty" "$HOME/.aider.conf.yml";
   fi
 done
 
-if [[ "$(uname -s)" == Darwin && -x "$HOME/.local/bin/rec" ]]; then
-  recorder_venv="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles/recorder-venv"
+if [[ "$DOTFILES_OS" == Darwin && -x "$HOME/.local/bin/rec" ]]; then
+  recorder_venv="$DOTFILES_DATA_DIR/recorder-venv"
   [[ -d "$recorder_venv" ]] || warn "recorder command exists but its uv environment is absent"
   [[ ! -d "$recorder_venv" || -x "$recorder_venv/bin/hf" ]] || warn "recorder environment exists but its Hugging Face CLI is absent"
   resolved_rec="$(command -v rec 2>/dev/null || true)"
@@ -55,7 +67,7 @@ if [[ "$(uname -s)" == Darwin && -x "$HOME/.local/bin/rec" ]]; then
 fi
 
 if ((full)); then
-  "$root/check" || bad "repository source validation failed"
+  "$root/dotfiles" check || bad "repository source validation failed"
 fi
 ((errors == 0)) || exit 1
 echo "doctor: no blocking health problems found"

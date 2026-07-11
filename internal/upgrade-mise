@@ -2,7 +2,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ "$(uname -s)" == Darwin ]]; then
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+dotfiles_context_init "$root" || true
+if [[ "$DOTFILES_OS" == Darwin ]]; then
   cutoff="$(date -u -v-7d '+%Y-%m-%dT%H:%M:%SZ')"
 else
   cutoff="$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
@@ -39,8 +42,8 @@ perl -0pi -e '
   s/(Darwin:arm64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_MAC_SHA}/s;
   s/(Linux:x86_64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_LINUX_X64_SHA}/s;
   s/(Linux:aarch64\|Linux:arm64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_LINUX_ARM64_SHA}/s;
-' "$root/install"
+' "$root/internal/commands/install"
 perl -pi -e 's/^min_version = "[^"]+"/min_version = "$ENV{MISE_UPGRADE_VERSION}"/' "$root/mise.toml"
 
 MISE_LOCKED=0 mise self-update --yes --no-plugins "$version"
-echo "mise $version is installed; review the changes to install and mise.toml."
+echo "mise $version is installed; review internal/commands/install and mise.toml."

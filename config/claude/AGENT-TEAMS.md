@@ -1,7 +1,7 @@
 # Agent Teams — Architecture
 
 Single source of truth for the agent-teams system in this dotfiles repo.
-**Read this before editing anything under `claude/`.**
+**Read this before editing anything under `config/claude/`.**
 
 ## What this is
 
@@ -90,7 +90,7 @@ because Fable access is turned off. Their intended default is `fable` (see
 the rationale above). There is no automatic preferred-with-fallback model
 selection in the harness — frontmatter `model:` and `opts.model` each take a
 single value — so this is a manual swap. Revert both persona frontmatters
-(`claude/agents/planner.md`, `claude/agents/critic.md`) to `model: fable`
+(`config/claude/agents/planner.md`, `config/claude/agents/critic.md`) to `model: fable`
 once Fable is re-enabled.
 
 ## Data flow
@@ -138,30 +138,31 @@ their workflow internals differ (see below).
 ```
 <dotfiles-root>/
 ├── mise.toml                      # native bootstrap links managed Claude files into ~/.claude
-├── tmux/tmux.conf                 # (C-a `claude agents` pane; the old C-t bullpen binding is gone)
-└── claude/
-    ├── AGENT-TEAMS.md             # this file
-    ├── OBSERVABILITY.md           # observability doctrine shared by the builder + reviewer
-    ├── defaults.yaml              # cap defaults (merged into the brief at draft time)
-    ├── RETRO-LEDGER.md            # cross-run process memory (version-controlled)
-    ├── hooks/                     # existing Claude Code hooks (unrelated)
-    ├── commands/                  # → ~/.claude/commands
-    │   ├── feature-flow.md        # interactive front half
-    │   ├── review-flow.md
-    │   ├── spike-flow.md
-    │   ├── retro.md               # conversation-side retro (emits run-dir retro.md)
-    │   └── retro-consume.md       # applies retro patterns to agents/workflows/docs
-    ├── workflows/                 # → ~/.claude/workflows  (saved dynamic workflows)
-    │   ├── feature-flow-run.js
-    │   ├── review-flow-run.js
-    │   ├── spike-flow-run.js
-    │   └── tdd-slice-loop.js      # shared TDD inner loop (sub-workflow, never run directly)
-    ├── agents/                    # → ~/.claude/agents  (role personas; agentType source)
-    │   ├── planner.md  tester.md  implementer.md
-    │   ├── critic.md   researcher.md  synthesizer.md  diagrammer.md
-    └── scripts/                   # → ~/.claude/scripts
-        ├── render-review.js       # deterministic review.md/.html/draft renderer
-        ├── package.json  mermaid.config.json
+└── config/
+    ├── tmux/tmux.conf             # (C-a `claude agents` pane; the old C-t bullpen binding is gone)
+    └── claude/
+        ├── AGENT-TEAMS.md         # this file
+        ├── OBSERVABILITY.md       # observability doctrine shared by the builder + reviewer
+        ├── defaults.yaml          # cap defaults (merged into the brief at draft time)
+        ├── RETRO-LEDGER.md        # cross-run process memory (version-controlled)
+        ├── hooks/                 # existing Claude Code hooks (unrelated)
+        ├── commands/              # → ~/.claude/commands
+        │   ├── feature-flow.md    # interactive front half
+        │   ├── review-flow.md
+        │   ├── spike-flow.md
+        │   ├── retro.md           # conversation-side retro (emits run-dir retro.md)
+        │   └── retro-consume.md   # applies retro patterns to agents/workflows/docs
+        ├── workflows/             # → ~/.claude/workflows  (saved dynamic workflows)
+        │   ├── feature-flow-run.js
+        │   ├── review-flow-run.js
+        │   ├── spike-flow-run.js
+        │   └── tdd-slice-loop.js  # shared TDD inner loop (sub-workflow, never run directly)
+        ├── agents/                # → ~/.claude/agents  (role personas; agentType source)
+        │   ├── planner.md  tester.md  implementer.md
+        │   ├── critic.md   researcher.md  synthesizer.md  diagrammer.md
+        └── scripts/               # → ~/.claude/scripts
+            ├── render-review.js   # deterministic review.md/.html/draft renderer
+            ├── package.json  mermaid.config.json
 
 State (host-local, not version-controlled):
 ~/.agent-teams/runs/<ts>-<slug>/

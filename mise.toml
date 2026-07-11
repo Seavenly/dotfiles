@@ -69,7 +69,7 @@ zoxide = "latest"
 zprofile = "shims"
 
 [bootstrap.hooks.pre-dotfiles]
-run = "bin/bootstrap-pre-dotfiles"
+run = "internal/bootstrap/pre-links"
 
 [dotfiles]
 "~/.zprofile/dotfiles-path" = { block = '''
@@ -78,31 +78,32 @@ if [[ -d /opt/homebrew/bin ]]; then
 fi
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
 ''' }
-"~/.zshrc" = "zsh/zshrc"
-"~/.tmux.conf" = "tmux/tmux.conf"
-"~/.config/git/config" = "git/config"
-"~/.config/lazygit/config.yml" = "lazygit/config.yml"
-"~/.config/atuin/config.toml" = "atuin/config.toml"
-"~/.config/nvim" = "nvim"
+"~/.zshrc" = "config/zsh/zshrc"
+"~/.tmux.conf" = "config/tmux/tmux.conf"
+"~/.config/git/config" = "config/git/config"
+"~/.config/lazygit/config.yml" = "config/lazygit/config.yml"
+"~/.config/atuin/config.toml" = "config/atuin/config.toml"
+"~/.config/nvim" = "config/nvim"
 "~/.config/mise/config.toml" = "mise.toml"
 "~/.config/mise/mise.lock" = "mise.lock"
+"~/.local/bin/dotfiles" = "dotfiles"
 "~/.local/bin/dotfiles-root" = "bin/dotfiles-root"
 "~/.local/bin/nvim-remote-shell" = "bin/nvim-remote-shell"
 "~/.local/bin/tmux-sessionizer" = "bin/tmux-sessionizer"
 "~/.local/bin/tmux-agents" = "bin/tmux-agents"
 "~/.local/bin/tmux-ai" = "bin/tmux-ai"
 "~/.local/bin/tmux-lazygit" = "bin/tmux-lazygit"
-"~/.claude/agents" = { source = "claude/agents", mode = "symlink-each" }
-"~/.claude/commands" = { source = "claude/commands", mode = "symlink-each" }
-"~/.claude/hooks" = { source = "claude/hooks", mode = "symlink-each" }
-"~/.claude/scripts" = { source = "claude/scripts", mode = "symlink-each" }
-"~/.claude/workflows" = { source = "claude/workflows", mode = "symlink-each" }
-"~/.claude/AGENT-TEAMS.md" = "claude/AGENT-TEAMS.md"
-"~/.claude/OBSERVABILITY.md" = "claude/OBSERVABILITY.md"
-"~/.claude/RETRO-LEDGER.md" = "claude/RETRO-LEDGER.md"
-"~/.claude/defaults.yaml" = "claude/defaults.yaml"
+"~/.claude/agents" = { source = "config/claude/agents", mode = "symlink-each" }
+"~/.claude/commands" = { source = "config/claude/commands", mode = "symlink-each" }
+"~/.claude/hooks" = { source = "config/claude/hooks", mode = "symlink-each" }
+"~/.claude/scripts" = { source = "config/claude/scripts", mode = "symlink-each" }
+"~/.claude/workflows" = { source = "config/claude/workflows", mode = "symlink-each" }
+"~/.claude/AGENT-TEAMS.md" = "config/claude/AGENT-TEAMS.md"
+"~/.claude/OBSERVABILITY.md" = "config/claude/OBSERVABILITY.md"
+"~/.claude/RETRO-LEDGER.md" = "config/claude/RETRO-LEDGER.md"
+"~/.claude/defaults.yaml" = "config/claude/defaults.yaml"
 
 [tasks.bootstrap]
 description = "Finish idempotent dotfile migrations and warm managed caches"
-run = "bin/bootstrap-finalize"
+run = "internal/bootstrap/finalize"
 dir = "{{ env.DOTFILES_ROOT }}"

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ "$(uname -s)" == Darwin ]] || exit 0
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+dotfiles_context_init "$root" || true
+[[ "$DOTFILES_OS" == Darwin ]] || exit 0
 screenshot_dir="$HOME/Pictures/Screenshots"
 mkdir -p "$screenshot_dir"
 current="$(defaults read com.apple.screencapture location 2>/dev/null || true)"

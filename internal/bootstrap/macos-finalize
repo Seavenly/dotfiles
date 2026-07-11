@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+dotfiles_context_init "$root" || true
+[[ "$DOTFILES_OS" == Darwin ]] || exit 0
+
+applications="$HOME/Applications"
+mkdir -p "$applications" "$DOTFILES_STATE_DIR/revisions"
+aerospace_root="$(mise where github:nikitabobko/AeroSpace 2>/dev/null || true)"
+aerospace_app="$(find "$aerospace_root" -maxdepth 3 -name AeroSpace.app -print -quit 2>/dev/null || true)"
+[[ -z "$aerospace_app" ]] || ln -sfn "$aerospace_app" "$applications/AeroSpace.app"
+
+font_repo="$HOME/.local/share/sketchybar-app-font"
+font_target="$HOME/Library/Fonts/sketchybar-app-font.ttf"
+font_revision_file="$DOTFILES_STATE_DIR/revisions/sketchybar-app-font"
+font_revision="$(git -C "$font_repo" rev-parse HEAD 2>/dev/null || true)"
+installed_revision="$(cat "$font_revision_file" 2>/dev/null || true)"
+if [[ -n "$font_revision" && "$installed_revision" != "$font_revision" ]]; then
+  pnpm --dir "$font_repo" install --frozen-lockfile
+  pnpm --dir "$font_repo" run build
+  install -m 0644 "$font_repo/dist/sketchybar-app-font.ttf" "$font_target"
+  printf '%s\n' "$font_revision" > "$font_revision_file"
+fi
+
+defaults_revision_file="$DOTFILES_STATE_DIR/revisions/macos-defaults-restart"
+defaults_revision="$(shasum -a 256 "$root/mise.macos.toml" | awk '{print $1}')"
+restarted_revision="$(cat "$defaults_revision_file" 2>/dev/null || true)"
+if [[ "$restarted_revision" != "$defaults_revision" ]]; then
+  if [[ ${DOTFILES_YES:-0} != 1 && -t 0 ]]; then
+    read -r -p "Restart Dock, Finder, and SystemUIServer to load the managed defaults? [Y/n] " restart_apps
+    if [[ ! "$restart_apps" =~ ^[Nn]$ ]]; then
+      killall Dock 2>/dev/null || true
+      killall Finder 2>/dev/null || true
+      killall SystemUIServer 2>/dev/null || true
+      printf '%s\n' "$defaults_revision" > "$defaults_revision_file"
+    fi
+  else
+    echo "Log out or restart Dock, Finder, and SystemUIServer to load all macOS defaults."
+  fi
+fi

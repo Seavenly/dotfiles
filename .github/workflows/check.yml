@@ -32,7 +32,7 @@ jobs:
       - name: Install validators from the lock
         run: mise install --locked actionlint gitleaks shellcheck lua uv
       - name: Validate sources
-        run: ./check
+        run: ./dotfiles check
       - name: Validate isolated-home dotfile plan
         env:
           MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}

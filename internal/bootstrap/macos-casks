@@ -4,7 +4,7 @@ set -euo pipefail
 readonly HOMEBREW_INSTALL_COMMIT="16be749c00897e40ecbf09e21f7f258706961b7b"
 readonly HOMEBREW_INSTALL_SHA256="99287f194a8b3c9e6b0203a11a5fa54518be57209343e6bb954dec4635796d9d"
 
-root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 dry_run=0
 recorder=0
 recorder_only=0

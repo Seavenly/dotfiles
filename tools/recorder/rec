@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# App launch environments may not contain the mise shims or Homebrew prefix.
-export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:$PATH"
-paths_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/paths.env"
-if [[ -r "$paths_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$paths_file"
-    export NOTES_DIR
-fi
-
-PIDFILE="${TMPDIR:-/tmp}/rec.pid"
-REC_BASE="$HOME/Recordings/meetings"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOTFILES_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=internal/shell/paths.sh
+source "$DOTFILES_ROOT/internal/shell/paths.sh"
+dotfiles_load_paths
+
+# App launch environments may not contain the mise shims or Homebrew prefix.
+export PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:$PATH"
+PIDFILE="${TMPDIR:-/tmp}/rec.pid"
+REC_BASE="$NOTES_DIR/raw/meetings"
 VENV="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles/recorder-venv"
 PYTHON="$VENV/bin/python"
 

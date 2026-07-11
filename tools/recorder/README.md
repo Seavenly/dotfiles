@@ -3,7 +3,7 @@
 The recorder is an optional, macOS-only stack. Install it with:
 
 ```sh
-./install --recorder
+./dotfiles install --recorder
 ```
 
 This installs `ffmpeg`, BlackHole 2ch, and a locked uv environment outside the

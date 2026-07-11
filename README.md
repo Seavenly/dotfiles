@@ -5,7 +5,7 @@ The repository is designed to be cloned anywhere and converged with one
 command:
 
 ```sh
-./install
+./dotfiles install
 ```
 
 Native [`mise bootstrap`](https://mise.jdx.dev/bootstrap.html) manages tools,
@@ -44,8 +44,8 @@ macOS-only applications and preferences are kept in the macOS environment.
 ```sh
 git clone https://github.com/Seavenly/dotfiles.git ~/.dotfiles
 cd ~/.dotfiles
-./install --dry-run
-./install
+./dotfiles install --dry-run
+./dotfiles install
 ```
 
 The first run may ask for a Git identity, whether to import existing Zsh
@@ -56,10 +56,10 @@ defaults.
 ### Installer options
 
 ```text
-./install --dry-run          show the convergence plan without changing anything
-./install --yes              accept safe bootstrap and migration prompts
-./install --force            replace conflicting managed dotfile targets
-./install --recorder         include the optional macOS recording stack
+./dotfiles install --dry-run   show the convergence plan without changing anything
+./dotfiles install --yes       accept safe bootstrap and migration prompts
+./dotfiles install --force     replace conflicting managed dotfile targets
+./dotfiles install --recorder  include the optional macOS recording stack
 ```
 
 `--yes` does not enable the recorder, invent a Git identity, import history,
@@ -71,7 +71,7 @@ or silently enable services that require personal credentials.
 - Tool versions are resolved in `mise.lock` for macOS arm64 and Linux x86_64/
   arm64.
 - Existing unmanaged files are preserved unless `--force` is supplied.
-- Re-running `./install` is the supported repair and convergence path.
+- Re-running `dotfiles install` is the supported repair and convergence path.
 - Versioned one-time migrations are recorded under
   `~/.local/state/dotfiles/migrations`.
 - There is intentionally no automatic rollback or uninstall operation.
@@ -103,12 +103,12 @@ Homebrew tap and keeps the CLI and running application on the same version.
 ## Daily operations
 
 ```sh
-./doctor                     inspect machine and bootstrap health
-./doctor --full              also run repository source validation
-./check                      validate scripts, configs, locks, and credentials
-./upgrade                    upgrade normal components
-./upgrade tools nvim         upgrade selected components only
-./upgrade mise               update the pinned mise release and checksums
+dotfiles doctor                 inspect machine and bootstrap health
+dotfiles doctor --full          also run repository source validation
+dotfiles check                  validate scripts, configs, locks, and credentials
+dotfiles upgrade                upgrade normal components
+dotfiles upgrade tools nvim     upgrade selected components only
+dotfiles upgrade mise           update the pinned mise release and checksums
 ```
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
@@ -116,7 +116,7 @@ Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
 lock or configuration changes uncommitted for review. Tool resolution observes
 a seven-day minimum release age.
 
-CI runs `./check` and validates the dotfile plan against isolated home
+CI runs `dotfiles check` and validates the dotfile plan against isolated home
 directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 
 ## Repository layout
@@ -129,13 +129,12 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `mise.recorder.toml` | Optional recorder package, command, and bootstrap task |
 | `mise.lock` | Resolved cross-platform tool versions |
 | `Brewfile.*` | Declarative macOS casks |
-| `bin/` | Bootstrap helpers and commands linked into `~/.local/bin` |
-| `zsh/`, `tmux/`, `git/`, `nvim/` | Portable terminal and development configuration |
-| `aerospace/`, `ghostty/`, `sketchybar/` | macOS workstation configuration |
-| `atuin/`, `lazygit/` | Application-specific configuration |
-| `claude/` | Claude commands, agents, hooks, and workflows |
+| `dotfiles` | Public command dispatcher, also linked into `~/.local/bin` |
+| `bin/` | Additional user commands linked into `~/.local/bin` |
+| `config/` | Application-owned configuration organized by concern |
+| `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
+| `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
-| `install`, `doctor`, `check`, `upgrade` | Public repository entry points |
 
 Configuration is organized by concern rather than mirroring the destination
 layout under `$HOME`. Native mise dotfiles create explicit symlinks from these
@@ -196,7 +195,7 @@ every macOS preference takes effect.
 Install the recording stack with:
 
 ```sh
-./install --recorder
+dotfiles install --recorder
 ```
 
 The recorder's uv environment lives at
@@ -219,5 +218,5 @@ be placed in tracked files.
 
 This repository does not clone the notes repository, manage SSH configuration,
 configure firewalls or server services, authenticate applications, remove
-unrelated Homebrew software, or delete arbitrary stale symlinks. `./doctor`
+unrelated Homebrew software, or delete arbitrary stale symlinks. `dotfiles doctor`
 reports known health problems without performing repairs.

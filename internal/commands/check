@@ -1,8 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+
+usage() {
+  echo "Usage: dotfiles check"
+}
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  "") ;;
+  *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+esac
+dotfiles_context_init "$root" || true
 failures=0
+
+bash_files=("$root/dotfiles")
+while IFS= read -r file; do
+  bash_files+=("$file")
+done < <(rg -l '^#!/usr/bin/env bash' "$root/bin" "$root/internal" \
+  "$root/tests" "$root/tools/recorder" "$root/config/sketchybar" \
+  "$root/.githooks" | sort -u)
 
 # A just-completed bootstrap cannot rewrite the parent shell's PATH. Re-enter
 # the already-installed, locked tool environment so validation works before the
@@ -12,14 +31,11 @@ if [[ ${DOTFILES_CHECK_MISE_EXEC:-0} != 1 ]] \
   && { ! command -v actionlint >/dev/null 2>&1 \
     || ! command -v shellcheck >/dev/null 2>&1 \
     || ! command -v gitleaks >/dev/null 2>&1; }; then
-  case "$(uname -s)" in
-    Darwin) check_exec_env=macos ;;
-    Linux) check_exec_env=linux ;;
-    *) check_exec_env=linux ;;
-  esac
+  check_exec_env="$DOTFILES_ENV"
+  [[ "$check_exec_env" != unknown ]] || check_exec_env=linux
   exec env DOTFILES_CHECK_MISE_EXEC=1 MISE_AUTO_INSTALL=false \
     MISE_TRUSTED_CONFIG_PATHS="$root" \
-    mise exec --locked -C "$root" -E "$check_exec_env" -- "$root/check"
+    mise exec --locked -C "$root" -E "$check_exec_env" -- "$root/dotfiles" check
 fi
 
 run() {
@@ -33,49 +49,47 @@ run() {
   fi
 }
 
-run "bash syntax" bash -n "$root/install" "$root/check" "$root/doctor" "$root/upgrade" "$root/bin/bootstrap-macos-casks" "$root/bin/bootstrap-pre-dotfiles" "$root/bin/bootstrap-finalize" "$root/bin/bootstrap-recorder" "$root/bin/dotfiles-root" "$root/bin/macos-defaults-finalize" "$root/bin/migrate-homebrew-overlaps" "$root/bin/upgrade-mise" "$root/bin/nvim-remote-shell" "$root/bin/tmux-sessionizer" "$root/bin/tmux-ai" "$root/bin/tmux-agents" "$root/bin/tmux-lazygit" "$root/bin/rec"
-run "zsh syntax" zsh -n "$root/zsh/zshrc" "$root/zsh/aliases.zsh" "$root/sketchybar/sketchybarrc" "$root/sketchybar/plugins/aerospace.sh" "$root/sketchybar/plugins/battery.sh" "$root/sketchybar/plugins/rec.sh" "$root/sketchybar/plugins/spotify.sh" "$root/sketchybar/plugins/weather.sh"
+run "bash syntax" bash -n "${bash_files[@]}"
+run "zsh syntax" zsh -n "$root/config/zsh/zshrc" "$root/config/zsh/aliases.zsh" "$root/config/sketchybar/sketchybarrc" "$root/config/sketchybar/plugins/aerospace.sh" "$root/config/sketchybar/plugins/battery.sh" "$root/config/sketchybar/plugins/rec.sh" "$root/config/sketchybar/plugins/spotify.sh" "$root/config/sketchybar/plugins/weather.sh"
 # shellcheck disable=SC2016
-run "shell activation owner" bash -c '! rg -q '\''mise.*activate zsh'\'' "$1/zsh/zshrc"' _ "$root"
+run "shell activation owner" bash -c '! rg -q '\''mise.*activate zsh'\'' "$1/config/zsh/zshrc"' _ "$root"
 # shellcheck disable=SC2016
-run "sesh TTY handoff" bash -c 'rg -q '\''exec </dev/tty'\'' "$1/zsh/zshrc"' _ "$root"
+run "sesh TTY handoff" bash -c 'rg -q '\''exec </dev/tty'\'' "$1/config/zsh/zshrc"' _ "$root"
 # shellcheck disable=SC2016
 run "project picker matching" bash -c 'tmp=$(mktemp -d); trap '\''rm -rf "$tmp"'\'' EXIT; mkdir -p "$tmp/dev/notes/.git" "$tmp/dev/personal/.git"; result=$(PROJECTS_DIR="$tmp/dev" "$1/bin/tmux-sessionizer" --filter=notes); [[ "$result" == "$tmp/dev/notes" ]]' _ "$root"
 # shellcheck disable=SC2016
 run "tmux lazygit focus" bash -c 'tmp=$(mktemp -d); trap '\''rm -rf "$tmp"'\'' EXIT; printf '\''#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$TMUX_TEST_LOG"\n[[ $1 != list-panes ]] || printf "lazygit:test:1.0\\n"\n'\'' > "$tmp/tmux"; chmod +x "$tmp/tmux"; TMUX_TEST_LOG="$tmp/log" PATH="$tmp:$PATH" "$1/bin/tmux-lazygit"; printf '\''list-panes -a -F #{pane_title}:#{session_name}:#{window_index}.#{pane_index}\nswitch-client -t test\nselect-window -t test:1\nselect-pane -t test:1.0\n'\'' > "$tmp/expected"; diff -u "$tmp/expected" "$tmp/log"' _ "$root"
 # shellcheck disable=SC2016
-run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ "$root/nvim/nvim-pack-lock.json" "$root/claude/scripts/package.json" "$root/claude/scripts/package-lock.json"
+run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ "$root/config/nvim/nvim-pack-lock.json" "$root/config/claude/scripts/package.json" "$root/config/claude/scripts/package-lock.json"
 run "TOML (macOS)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E macos config ls
 run "TOML (Linux)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E linux config ls
 # shellcheck disable=SC2016
 run "native cask workaround" bash -c '! rg -q '\''brew-cask:'\'' "$1"/mise.macos.toml "$1"/mise.recorder.toml' _ "$root"
 run "mise lock" test -s "$root/mise.lock"
-case "$(uname -s)" in
-  Darwin) check_env=macos ;;
-  Linux) check_env=linux ;;
-  *) check_env=linux ;;
-esac
+check_env="$DOTFILES_ENV"
+[[ "$check_env" != unknown ]] || check_env=linux
 run "locked tools" env MISE_TRUSTED_CONFIG_PATHS="$root" mise install -n --locked -C "$root" -E "$check_env"
 # shellcheck disable=SC2016
-run "Lua" bash -c 'find "$1/nvim" -name "*.lua" -print0 | xargs -0 luac -p' _ "$root"
+run "Lua" bash -c 'find "$1/config/nvim" -name "*.lua" -print0 | xargs -0 luac -p' _ "$root"
 run "Python" env PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/dotfiles-pycache" python3 -m py_compile "$root/tools/recorder/clean.py" "$root/tools/recorder/record.py" "$root/tools/recorder/transcribe.py"
 run "recorder lock" env UV_CACHE_DIR="${TMPDIR:-/tmp}/dotfiles-uv-cache" uv lock --project "$root/tools/recorder" --check
+run "behavior" "$root/tests/run"
 if command -v actionlint >/dev/null 2>&1; then
   run "GitHub Actions" actionlint "$root/.github/workflows/check.yml"
 else
-  printf 'check: %-24s%s\n' "GitHub Actions" "FAILED (actionlint is not installed; run ./install)"
+  printf 'check: %-24s%s\n' "GitHub Actions" "FAILED (actionlint is not installed; run ./dotfiles install)"
   failures=$((failures + 1))
 fi
 if command -v shellcheck >/dev/null 2>&1; then
-  run "shellcheck" shellcheck -x "$root/install" "$root/check" "$root/doctor" "$root/upgrade" "$root/.githooks/pre-commit" "$root/bin/bootstrap-macos-casks" "$root/bin/bootstrap-finalize" "$root/bin/bootstrap-pre-dotfiles" "$root/bin/bootstrap-recorder" "$root/bin/dotfiles-root" "$root/bin/macos-defaults-finalize" "$root/bin/migrate-homebrew-overlaps" "$root/bin/nvim-remote-shell" "$root/bin/rec" "$root/bin/tmux-sessionizer" "$root/bin/tmux-agents" "$root/bin/tmux-ai" "$root/bin/tmux-lazygit" "$root/bin/upgrade-mise" "$root/tools/recorder/rec" "$root/sketchybar/plugins/clock.sh" "$root/sketchybar/plugins/volume.sh"
+  run "shellcheck" shellcheck -x "${bash_files[@]}"
 else
-  printf 'check: %-24s%s\n' "shellcheck" "FAILED (shellcheck is not installed; run ./install)"
+  printf 'check: %-24s%s\n' "shellcheck" "FAILED (shellcheck is not installed; run ./dotfiles install)"
   failures=$((failures + 1))
 fi
 if command -v gitleaks >/dev/null 2>&1; then
   run "credentials" gitleaks git --redact --no-banner
 else
-  printf 'check: %-24s%s\n' "credentials" "FAILED (gitleaks is not installed; run ./install)"
+  printf 'check: %-24s%s\n' "credentials" "FAILED (gitleaks is not installed; run ./dotfiles install)"
   failures=$((failures + 1))
 fi
 
