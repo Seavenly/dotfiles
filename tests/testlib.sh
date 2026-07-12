@@ -12,6 +12,12 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "expected output to contain: $needle"
 }
 
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain: $needle"
+}
+
 assert_status() {
   local actual="$1"
   local expected="$2"

@@ -105,11 +105,6 @@ Launch the saved `~/.claude/workflows/feature-flow-run.js` by name — never reg
 ## Step 6 — Wrap-up (after the workflow returns)
 The workflow returns `{ branch, reportPath, notesPath, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance }` (or `{ escalate:'RE_PLAN', reason }`).
 
-First, fire a completion notification so the user sees it if they stepped away:
-```bash
-echo '{"hook_event_name":"Notification","message":"feature-flow complete: <slug>"}' | ~/.claude/hooks/notify.sh
-```
-
 - **RE_PLAN** → surface the critic's reason and stop; do not auto-replan.
 - **stuck[]** non-empty → call out which slices exhausted retries (or never got a behaviorally-failing test) and the recorded reason.
 - **uncoveredAcceptance[]** non-empty → the completeness gate found acceptance criteria the brief asked for but the artifact still doesn't demonstrate after a fix pass — i.e. promised behavior that did **not** ship. Call these out first and prominently; they're surfaced at the top of the PR body under "Unmet acceptance criteria". This is a stronger signal than an open design finding: the feature is incomplete against its own contract.

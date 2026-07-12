@@ -95,7 +95,6 @@ export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
 "~/.local/bin/tmux-lazygit" = "bin/tmux-lazygit"
 "~/.claude/agents" = { source = "config/claude/agents", mode = "symlink-each" }
 "~/.claude/commands" = { source = "config/claude/commands", mode = "symlink-each" }
-"~/.claude/hooks" = { source = "config/claude/hooks", mode = "symlink-each" }
 "~/.claude/scripts" = { source = "config/claude/scripts", mode = "symlink-each" }
 "~/.claude/workflows" = { source = "config/claude/workflows", mode = "symlink-each" }
 "~/.claude/AGENT-TEAMS.md" = "config/claude/AGENT-TEAMS.md"

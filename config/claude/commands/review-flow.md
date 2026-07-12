@@ -132,11 +132,6 @@ If `prepare_draft` is true, the renderer already wrote `$out_dir/draft-review.js
 
 ## Step 7 — Wrap-up
 
-Fire a completion notification so the user sees it if they stepped away:
-```bash
-echo '{"hook_event_name":"Notification","message":"review-flow complete: PR #<num>"}' | ~/.claude/hooks/notify.sh
-```
-
 ```
 ✓ review-flow complete
   PR:        #<num> — <title>

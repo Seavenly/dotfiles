@@ -93,11 +93,6 @@ Launch the saved `~/.claude/workflows/spike-flow-run.js` by name — never regen
 ## Step 6 — Wrap-up (after the workflow returns)
 The workflow returns `{ reportPath, depth, angles, prototype, prototypeStuck }`.
 
-Fire a completion notification so the user sees it if they stepped away:
-```bash
-echo '{"hook_event_name":"Notification","message":"spike-flow complete: <slug>"}' | ~/.claude/hooks/notify.sh
-```
-
 If `prototypeStuck[]` is non-empty, call out which prototype slices got stuck and their recorded reason (the report also notes them). Print:
 ```
 ✓ spike-flow complete

@@ -12,9 +12,26 @@ export XDG_CONFIG_HOME="$tmp/config"
 export XDG_STATE_HOME="$tmp/state"
 export DOTFILES_CONTEXT_OS=Linux
 export DOTFILES_CONTEXT_ARCH=x86_64
+export MISE_TRUSTED_CONFIG_PATHS="$root"
 mkdir -p "$HOME" "$XDG_STATE_HOME/dotfiles/migrations"
 printf 'font-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/004-sketchybar-app-font"
 printf 'defaults-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/005-macos-defaults-restart"
+mkdir -p "$HOME/.claude/hooks"
+ln -s "$root/config/claude/hooks/notify.sh" "$HOME/.claude/hooks/notify.sh"
+cat > "$HOME/.claude/settings.json" <<EOF
+{
+  "hooks": {
+    "Notification": [{"hooks": [
+      {"type": "command", "command": "$root/claude/hooks/notify.sh"},
+      {"type": "command", "command": "$root/claude/hooks/cockpit-hook.sh"}
+    ]}],
+    "SessionStart": [{"matcher": "*", "hooks": [
+      {"type": "command", "command": "bash '$HOME/.claude/hooks/herdr-agent-state.sh' session"}
+    ]}]
+  },
+  "permissions": {"allow": ["Bash(git status:*)"]}
+}
+EOF
 
 "$root/internal/migrate"
 
@@ -58,3 +75,14 @@ echo "ok - migrations remove only known legacy links"
 [[ ! -e "$XDG_STATE_HOME/dotfiles/migrations/005-macos-defaults-restart" ]] \
   || fail "legacy defaults revision was not removed"
 echo "ok - migrations preserve recurring convergence revisions"
+
+[[ ! -L "$HOME/.claude/hooks/notify.sh" ]] \
+  || fail "retired Claude notification link was not removed"
+[[ -f "$XDG_STATE_HOME/dotfiles/migrations/009-retired-claude-hooks" ]] \
+  || fail "retired Claude hooks migration was not recorded"
+settings="$(cat "$HOME/.claude/settings.json")"
+assert_not_contains "$settings" 'notify.sh'
+assert_not_contains "$settings" 'cockpit-hook.sh'
+assert_contains "$settings" 'herdr-agent-state.sh'
+assert_contains "$settings" 'Bash(git status:*)'
+echo "ok - migrations remove retired Claude hooks only"

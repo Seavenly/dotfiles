@@ -145,7 +145,6 @@ their workflow internals differ (see below).
         ├── OBSERVABILITY.md       # observability doctrine shared by the builder + reviewer
         ├── defaults.yaml          # cap defaults (merged into the brief at draft time)
         ├── RETRO-LEDGER.md        # cross-run process memory (version-controlled)
-        ├── hooks/                 # existing Claude Code hooks (unrelated)
         ├── commands/              # → ~/.claude/commands
         │   ├── feature-flow.md    # interactive front half
         │   ├── review-flow.md
