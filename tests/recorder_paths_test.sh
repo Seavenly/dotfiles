@@ -16,6 +16,7 @@ printf 'NOTES_DIR=%q\nPROJECTS_DIR=%q\n' "$notes" "$tmp/projects" \
 
 set +e
 output="$(HOME="$home" XDG_CONFIG_HOME="$config_home" \
+  NOTES_DIR='' PROJECTS_DIR='' \
   "$root/bin/rec" clean 2>&1)"
 status=$?
 set -e

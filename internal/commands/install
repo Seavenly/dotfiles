@@ -97,10 +97,12 @@ export DOTFILES_YES="$assume_yes"
 export DOTFILES_RECORDER="$recorder"
 
 if [[ "$os" == Darwin ]]; then
-  cask_args=()
-  ((dry_run)) && cask_args+=(--dry-run)
-  ((recorder)) && cask_args+=(--recorder)
-  "$ROOT/internal/bootstrap/macos-casks" "${cask_args[@]}"
+  case "$dry_run:$recorder" in
+    1:1) "$ROOT/internal/bootstrap/macos-casks" --dry-run --recorder ;;
+    1:0) "$ROOT/internal/bootstrap/macos-casks" --dry-run ;;
+    0:1) "$ROOT/internal/bootstrap/macos-casks" --recorder ;;
+    0:0) "$ROOT/internal/bootstrap/macos-casks" ;;
+  esac
 fi
 
 args=(bootstrap -C "$ROOT" -E "$env_name" --locked)

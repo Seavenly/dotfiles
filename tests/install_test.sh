@@ -56,3 +56,38 @@ set -e
 assert_status "$status" 1
 assert_contains "$output" 'The recorder is supported only on macOS.'
 echo "ok - install keeps recorder explicitly macOS-only"
+
+mac_home="$tmp/macos-home"
+mac_bin="$tmp/macos-bin"
+mac_log="$tmp/macos.log"
+mkdir -p "$mac_home/.local/bin" "$mac_bin"
+cat > "$mac_home/.local/bin/mise" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${1:-} == --version ]]; then
+  echo "2026.7.5 macos-arm64"
+  exit 0
+fi
+printf 'mise %s\n' "$*" >> "$MACOS_TEST_LOG"
+EOF
+cat > "$mac_bin/brew" <<'EOF'
+#!/usr/bin/env bash
+printf 'brew %s\n' "$*" >> "$MACOS_TEST_LOG"
+EOF
+cat > "$mac_bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -s) echo Darwin ;;
+  -m) echo arm64 ;;
+  *) echo Darwin ;;
+esac
+EOF
+chmod +x "$mac_home/.local/bin/mise" "$mac_bin/brew" "$mac_bin/uname"
+
+HOME="$mac_home" PATH="$mac_bin:$PATH" MACOS_TEST_LOG="$mac_log" \
+  DOTFILES_CONTEXT_OS=Darwin DOTFILES_CONTEXT_ARCH=arm64 \
+  DOTFILES_CONTEXT_OS_VERSION=26.0 \
+  "$root/dotfiles" install --yes >/dev/null
+
+assert_contains "$(cat "$mac_log")" "brew bundle install --force --file $root/Brewfile.macos"
+assert_contains "$(cat "$mac_log")" 'mise bootstrap -C'
+echo "ok - install runs on macOS without dry-run cask arguments"
