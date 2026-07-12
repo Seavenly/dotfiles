@@ -17,6 +17,9 @@ mkdir -p "$HOME" "$XDG_STATE_HOME/dotfiles/migrations"
 printf 'font-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/004-sketchybar-app-font"
 printf 'defaults-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/005-macos-defaults-restart"
 mkdir -p "$HOME/.claude/hooks"
+mkdir -p "$HOME/.codex"
+: > "$HOME/.claude/CLAUDE.md"
+: > "$HOME/.codex/AGENTS.md"
 ln -s "$root/config/claude/hooks/notify.sh" "$HOME/.claude/hooks/notify.sh"
 cat > "$HOME/.claude/settings.json" <<EOF
 {
@@ -86,3 +89,11 @@ assert_not_contains "$settings" 'cockpit-hook.sh'
 assert_contains "$settings" 'herdr-agent-state.sh'
 assert_contains "$settings" 'Bash(git status:*)'
 echo "ok - migrations remove retired Claude hooks only"
+
+[[ ! -e "$HOME/.claude/CLAUDE.md" ]] \
+  || fail "empty Claude guidance file was not removed"
+[[ ! -e "$HOME/.codex/AGENTS.md" ]] \
+  || fail "empty Codex guidance file was not removed"
+[[ -f "$XDG_STATE_HOME/dotfiles/migrations/010-empty-agent-guidance" ]] \
+  || fail "empty agent guidance migration was not recorded"
+echo "ok - migrations prepare empty agent guidance files for managed links"

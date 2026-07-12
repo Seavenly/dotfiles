@@ -132,6 +132,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `dotfiles` | Public command dispatcher, also linked into `~/.local/bin` |
 | `bin/` | Additional user commands linked into `~/.local/bin` |
 | `config/` | Application-owned configuration organized by concern |
+| `config/agents/` | Shared agent guidance, managed skills, and colocated profile variants |
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
