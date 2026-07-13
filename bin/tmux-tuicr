@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Find an existing tuicr pane in the CURRENT session only, so every tmux
+# session keeps its own tuicr instance. `-s` scopes the search to the current
+# session; `-a` (all sessions) would jump the client into another session's
+# tuicr. The pane is tagged with the title "tuicr" when created below.
+pane="$(tmux list-panes -s -F '#{pane_title}:#{window_index}.#{pane_index}' | awk -F: '$1 == "tuicr" {print $2; exit}')"
+
+if [[ -z "$pane" ]]; then
+  tmux new-window -c "#{pane_current_path}" -n tuicr "zsh -i -c tuicr"
+  tmux select-pane -T tuicr
+else
+  tmux select-window -t "${pane%.*}"
+  tmux select-pane -t "$pane"
+fi
