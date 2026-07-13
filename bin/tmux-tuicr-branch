@@ -32,11 +32,26 @@ if [[ -z "$default_branch" ]]; then
 fi
 : "${default_branch:=main}"
 
-# Choose a branch to review, excluding the base itself.
-branch="$(git branch --format='%(refname:short)' \
-  | grep -vxF "$default_branch" \
-  | fzf --prompt="review vs ${default_branch} > " --reverse)" || exit 0
-[[ -z "$branch" ]] && exit 0
+# Choose a branch to review, excluding the base itself. Branches that already
+# have an open review window in this session are listed first and marked with a
+# dot, so the one you likely want is at the top of the picker. The marker sits
+# in its own tab-delimited column; fzf searches and we recover only the branch.
+selection="$(
+  {
+    tmux list-windows -F '#{@tuicr_review}' 2>/dev/null | awk 'NF { print "O", $0 }'
+    git branch --format='%(refname:short)' | grep -vxF "$default_branch" | awk '{ print "C", $0 }'
+  } | awk '
+      $1 == "O" { isopen[substr($0, 3)] = 1; next }
+      { b = substr($0, 3); cand[++n] = b }
+      END {
+        for (i=1;i<=n;i++) if ( isopen[cand[i]] && !seen[cand[i]]++) printf "●\t%s\n", cand[i]
+        for (i=1;i<=n;i++) if (!isopen[cand[i]] && !seen[cand[i]]++) printf " \t%s\n", cand[i]
+      }
+    ' \
+  | fzf --prompt="review vs ${default_branch} > " --reverse --delimiter=$'\t' --nth=2
+)" || exit 0
+[[ -z "$selection" ]] && exit 0
+branch="${selection#*$'\t'}"
 
 # Reuse this branch's review window in the current session if it is still open.
 existing="$(tmux list-windows -F '#{@tuicr_review}'$'\t''#{window_index}' \
