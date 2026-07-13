@@ -28,7 +28,12 @@ selection="$(
     tmux list-windows -F '#{@tuicr_wt}'$'\t''#{@tuicr_rev}' 2>/dev/null \
       | awk -F'\t' '$1 != "" { print "O\t" $1 "\t" $2 }'
     printf '%s\n' "$reviews" | awk -F'\t' '{ print "R\t" $0 }'
-  } | awk -F'\t' '
+  } | awk -F'\t' -v gap="    " '
+      function emit(i,   disp) {
+        disp = sprintf("%s %-*s", mark[i], wrepo, reponame[i]) gap sprintf("%-*s", wbase, base[i]) gap sprintf("%-*s", wbranch, branch[i])
+        if (summary[i] != "") disp = disp gap summary[i]
+        printf "%s\t%s\t%s\t%s\n", disp, wt[i], base[i], branch[i]
+      }
       $1 == "O" { isopen[$2 SUBSEP $3] = 1; next }
       {
         n++
@@ -41,11 +46,8 @@ selection="$(
         if (length($4) > wbranch)          wbranch = length($4)
       }
       END {
-        for (i = 1; i <= n; i++) {
-          disp = sprintf("%s %-*s  %-*s  %-*s", mark[i], wrepo, reponame[i], wbase, base[i], wbranch, branch[i])
-          if (summary[i] != "") disp = disp "  " summary[i]
-          printf "%s\t%s\t%s\t%s\n", disp, wt[i], base[i], branch[i]
-        }
+        for (i = 1; i <= n; i++) if (mark[i] == "●") emit(i)   # open reviews first
+        for (i = 1; i <= n; i++) if (mark[i] != "●") emit(i)
       }
     ' \
   | fzf --no-preview --reverse --delimiter=$'\t' --with-nth=1 --nth=1 --prompt="tuicr review > "
