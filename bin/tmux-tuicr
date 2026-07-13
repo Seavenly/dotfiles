@@ -1,16 +1,80 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Find an existing tuicr pane in the CURRENT session only, so every tmux
-# session keeps its own tuicr instance. `-s` scopes the search to the current
-# session; `-a` (all sessions) would jump the client into another session's
-# tuicr. The pane is tagged with the title "tuicr" when created below.
-pane="$(tmux list-panes -s -F '#{pane_title}:#{window_index}.#{pane_index}' | awk -F: '$1 == "tuicr" {print $2; exit}')"
+# Pick a local branch with fzf and open a tuicr review of that branch against
+# the repository's default branch. tuicr's `-r` is a commit range, so
+# `default..branch` reviews the commits the branch introduced since it forked -
+# the same file set a GitHub PR shows (later default-branch commits excluded).
+#
+# Picker ordering:
+#   1. Branches with an open review window in this session (marked ●), so an
+#      in-progress review is one keystroke away. Reopening one reuses its window
+#      instead of stacking a duplicate.
+#   2. Otherwise, when nothing is under review, the current branch is placed
+#      first so it is selected by default.
+#   3. Remaining branches (including worktree branches) follow, most-recently
+#      committed first.
+#
+# Review windows are tagged with a `@tuicr_review` user option (keyed by branch)
+# so both the "open" ordering and the reuse match survive tmux's
+# automatic-rename and any title tuicr sets itself.
+#
+# Intended to run inside a `tmux display-popup` (fzf needs a TTY). On selection
+# it opens/selects the review window and exits, closing the popup.
 
-if [[ -z "$pane" ]]; then
-  tmux new-window -c "#{pane_current_path}" -n tuicr "zsh -i -c tuicr"
-  tmux select-pane -T tuicr
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "tmux-tuicr: not inside a git repository" >&2
+  sleep 1.5
+  exit 0
+fi
+
+# Resolve the default branch: prefer the remote's HEAD, then fall back to a
+# local main/master, then a bare "main".
+default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+if [[ -z "$default_branch" ]]; then
+  for candidate in main master; do
+    if git show-ref --verify --quiet "refs/heads/$candidate"; then
+      default_branch="$candidate"
+      break
+    fi
+  done
+fi
+: "${default_branch:=main}"
+
+# Current branch (empty when detached); used to default-select when idle.
+current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+# Build the picker: open reviews first (●), else the current branch, then the
+# remaining branches most-recently-committed first. The marker sits in its own
+# tab-delimited column; fzf searches and we recover only the branch column.
+selection="$(
+  {
+    tmux list-windows -F '#{@tuicr_review}' 2>/dev/null | awk 'NF { print "O", $0 }'
+    git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/ \
+      | grep -vxF "$default_branch" | awk '{ print "C", $0 }'
+  } | awk -v current="$current_branch" '
+      $1 == "O" { isopen[substr($0, 3)] = 1; open_count++; next }
+      { b = substr($0, 3); cand[++n] = b }
+      END {
+        for (i=1;i<=n;i++) if (isopen[cand[i]] && !seen[cand[i]]++) printf "●\t%s\n", cand[i]
+        if (open_count == 0 && current != "")
+          for (i=1;i<=n;i++) if (cand[i] == current && !seen[cand[i]]++) { printf " \t%s\n", cand[i]; break }
+        for (i=1;i<=n;i++) if (!seen[cand[i]]++) printf " \t%s\n", cand[i]
+      }
+    ' \
+  | fzf --prompt="review vs ${default_branch} > " --reverse --delimiter=$'\t' --nth=2
+)" || exit 0
+[[ -z "$selection" ]] && exit 0
+branch="${selection#*$'\t'}"
+
+# Reuse this branch's review window in the current session if it is still open.
+existing="$(tmux list-windows -F '#{@tuicr_review}'$'\t''#{window_index}' \
+  | awk -F'\t' -v b="$branch" '$1 == b { print $2; exit }')"
+
+if [[ -n "$existing" ]]; then
+  tmux select-window -t ":$existing"
 else
-  tmux select-window -t "${pane%.*}"
-  tmux select-pane -t "$pane"
+  idx="$(tmux new-window -P -F '#{window_index}' -c "$PWD" -n "tuicr:${branch}" \
+    "zsh -i -c 'tuicr -r \"${default_branch}..${branch}\"'")"
+  tmux set-option -w -t ":$idx" @tuicr_review "$branch"
 fi
