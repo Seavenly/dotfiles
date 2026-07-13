@@ -67,10 +67,12 @@ expected_skills=(
   improve-codebase-architecture
   prototype
   setup-matt-pocock-skills
+  split
   tdd
   to-spec
   to-tickets
   triage
+  tuicr
   wayfinder
   write-a-skill
 )
@@ -93,6 +95,14 @@ for harness_root in .agents .claude .hermes; do
 done
 echo "ok - every approved package is linked as a discoverable directory"
 
+expected_repository() {
+  case "$1" in
+    split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
+    tuicr) printf '%s\n' 'https://github.com/agavra/tuicr.git' ;;
+    *) printf '%s\n' 'https://github.com/mattpocock/skills.git' ;;
+  esac
+}
+
 for skill in "${expected_skills[@]}"; do
   package="$skills_root/$skill"
   lineage="$package/LINEAGE.md"
@@ -103,7 +113,7 @@ for skill in "${expected_skills[@]}"; do
   [[ "$kind" =~ ^(mirror|derivative|composite)$ ]] \
     || fail "$skill has invalid lineage kind: $kind"
   assert_contains "$(cat "$lineage")" \
-    'repository: https://github.com/mattpocock/skills.git'
+    "repository: $(expected_repository "$skill")"
   grep -Eq '^    path: skills/' "$lineage" \
     || fail "$skill lineage has no upstream path"
   revisions="$(awk '/^    revision: / { print $2 }' "$lineage")"

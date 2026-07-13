@@ -3,7 +3,7 @@ set -euo pipefail
 
 # tmux hotkey (prefix + r): pick a recorded tuicr review - a feature-flow job or
 # anything added via `tuicr-reviews add` - and open it in its own worktree with
-# `tuicr -r base..branch`. Reviews come from the tuicr-reviews registry, so this
+# `tuicr -r base...branch`. Reviews come from the tuicr-reviews registry, so this
 # is cross-repo. Reopening one reuses its window, keyed by worktree path.
 #
 # Intended to run inside a `tmux display-popup` (fzf needs a TTY).
@@ -21,7 +21,7 @@ fi
 # Registry rows are TSV: worktree base branch repo slug created summary. The
 # display is aligned columns - repo, base, branch (PR), then the summary. A
 # review whose window is already open (a window tagged @tuicr_wt + @tuicr_rev
-# matching its worktree and base..branch) is marked. fzf shows only the built
+# matching its worktree and base...branch) is marked. fzf shows only the built
 # display column; the trailing columns carry the machine fields.
 selection="$(
   {
@@ -39,7 +39,7 @@ selection="$(
         n++
         wt[n]=$2; base[n]=$3; branch[n]=$4; summary[n]=$8
         m = split($5, p, "/"); reponame[n] = p[m]
-        rev = $3 ".." $4
+        rev = $3 "..." $4
         mark[n] = (isopen[$2 SUBSEP rev] ? "●" : " ")
         if (length(reponame[n]) > wrepo)   wrepo = length(reponame[n])
         if (length($3) > wbase)            wbase = length($3)
@@ -62,7 +62,7 @@ if [[ -z "$worktree" || ! -d "$worktree" ]]; then
   sleep 2
   exit 0
 fi
-revset="${base}..${branch}"
+revset="${base}...${branch}"
 
 # Reuse this review's window (same worktree + revset) if open; else open + tag.
 existing="$(tmux list-windows -F '#{window_index}'$'\t''#{@tuicr_wt}'$'\t''#{@tuicr_rev}' \
