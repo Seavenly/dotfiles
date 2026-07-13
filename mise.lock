@@ -323,7 +323,16 @@ url_api = "https://api.github.com/repos/jesseduffield/lazygit/releases/assets/43
 
 [[tools.lua]]
 version = "5.4.8"
-backend = "asdf:lua"
+backend = "vfox:lua"
+
+[tools.lua."platforms.linux-arm64"]
+url = "https://www.lua.org/ftp/lua-5.4.8.tar.gz"
+
+[tools.lua."platforms.linux-x64"]
+url = "https://www.lua.org/ftp/lua-5.4.8.tar.gz"
+
+[tools.lua."platforms.macos-arm64"]
+url = "https://www.lua.org/ftp/lua-5.4.8.tar.gz"
 
 [[tools.lua-language-server]]
 version = "3.18.2"
@@ -431,25 +440,6 @@ version = "2.5.1"
 backend = "pipx:neovim-remote"
 
 [[tools.python]]
-version = "3.13.14"
-backend = "core:python"
-
-[tools.python."platforms.linux-arm64"]
-checksum = "sha256:e931d7a393f54902503f8745ceb35420e7dd50a067e78e5f45c71404f7a15b30"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.linux-x64"]
-checksum = "sha256:459ed79967acc207bef2ff5124dac35d74d5108528e37b15395d14e2922f2c92"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.macos-arm64"]
-checksum = "sha256:795a5aeeb050f00aa8a2214d779bad9f1b9113edb6923317a80c042a11a087d7"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[[tools.python]]
 version = "3.11.15"
 backend = "core:python"
 
@@ -466,6 +456,25 @@ provenance = "github-attestations"
 [tools.python."platforms.macos-arm64"]
 checksum = "sha256:2318799eaf104f8a29bc09a93b0851b05dbbcb4ce9a5f045ddea169c0c7ff3a5"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.11.15+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[[tools.python]]
+version = "3.13.14"
+backend = "core:python"
+
+[tools.python."platforms.linux-arm64"]
+checksum = "sha256:e931d7a393f54902503f8745ceb35420e7dd50a067e78e5f45c71404f7a15b30"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[tools.python."platforms.linux-x64"]
+checksum = "sha256:459ed79967acc207bef2ff5124dac35d74d5108528e37b15395d14e2922f2c92"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[tools.python."platforms.macos-arm64"]
+checksum = "sha256:795a5aeeb050f00aa8a2214d779bad9f1b9113edb6923317a80c042a11a087d7"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
 [[tools.ripgrep]]
@@ -664,7 +673,22 @@ provenance = "github-attestations"
 
 [[tools.tmux]]
 version = "3.7b"
-backend = "asdf:tmux"
+backend = "aqua:tmux/tmux-builds"
+
+[tools.tmux."platforms.linux-arm64"]
+checksum = "sha256:b2955782695283fbc3682a2f77d65616f53b986ee3cf3d80618d3b1cb95b91a6"
+url = "https://github.com/tmux/tmux-builds/releases/download/v3.7b/tmux-3.7b-linux-arm64.tar.gz"
+url_api = "https://api.github.com/repos/tmux/tmux-builds/releases/assets/465072868"
+
+[tools.tmux."platforms.linux-x64"]
+checksum = "sha256:f85e6c1c412750a774eb3f370f33bad05fc726fb8b6a0b174ad6f0b6d954df58"
+url = "https://github.com/tmux/tmux-builds/releases/download/v3.7b/tmux-3.7b-linux-x86_64.tar.gz"
+url_api = "https://api.github.com/repos/tmux/tmux-builds/releases/assets/465072866"
+
+[tools.tmux."platforms.macos-arm64"]
+checksum = "sha256:ee66dbcd49613eb41dc6b2f3abc5cd39d9135d67b7dfef1fdb180a3dbdc01f1e"
+url = "https://github.com/tmux/tmux-builds/releases/download/v3.7b/tmux-3.7b-macos-arm64.tar.gz"
+url_api = "https://api.github.com/repos/tmux/tmux-builds/releases/assets/465072864"
 
 [[tools.tree-sitter]]
 version = "0.26.10"
