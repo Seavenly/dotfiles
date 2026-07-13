@@ -16,6 +16,7 @@ atuin = "latest"
 bat = "latest"
 claude = "latest"
 codex = "latest"
+"github:agavra/tuicr" = "latest"
 "github:dandavison/delta" = "latest"
 "github:eza-community/eza" = { version = "latest", matching = "eza_", os = ["linux"] }
 "github:nikitabobko/AeroSpace" = { version = "0.21.2-Beta", asset_pattern = "AeroSpace-v*.zip", prerelease = true, os = ["macos"] }

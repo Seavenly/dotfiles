@@ -153,6 +153,25 @@ url = "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_macOS_arm6
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/464728562"
 provenance = "github-attestations"
 
+[[tools."github:agavra/tuicr"]]
+version = "0.18.0"
+backend = "github:agavra/tuicr"
+
+[tools."github:agavra/tuicr"."platforms.linux-arm64"]
+checksum = "sha256:5b6f71b597da42aad4e345b2b112a82f42e42039bda0fea350adc5ea42166d42"
+url = "https://github.com/agavra/tuicr/releases/download/v0.18.0/tuicr-0.18.0-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/453155054"
+
+[tools."github:agavra/tuicr"."platforms.linux-x64"]
+checksum = "sha256:3023e850e6e336238acc0337799e912705d76e0078a4a5d1a0a84290717926e2"
+url = "https://github.com/agavra/tuicr/releases/download/v0.18.0/tuicr-0.18.0-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/453155364"
+
+[tools."github:agavra/tuicr"."platforms.macos-arm64"]
+checksum = "sha256:b2bb012e9b3863f691fc42ee04fec5dfd3384950d9c9fca1ea8fc4b63845c0b4"
+url = "https://github.com/agavra/tuicr/releases/download/v0.18.0/tuicr-0.18.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/453155015"
+
 [[tools."github:dandavison/delta"]]
 version = "0.19.2"
 backend = "github:dandavison/delta"
