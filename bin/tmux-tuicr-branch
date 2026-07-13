@@ -6,8 +6,12 @@ set -euo pipefail
 # `default..branch` reviews the commits the branch introduced since it forked -
 # the same file set a GitHub PR shows (later default-branch commits excluded).
 #
+# Reopening the same branch reuses its existing review window instead of
+# stacking a new one. Windows are tagged with a `@tuicr_review` user option so
+# the match survives tmux's automatic-rename and any title tuicr sets itself.
+#
 # Intended to run inside a `tmux display-popup` (fzf needs a TTY). On selection
-# it opens the review in its own window and exits, closing the popup.
+# it opens/selects the review window and exits, closing the popup.
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "tmux-tuicr-branch: not inside a git repository" >&2
@@ -34,6 +38,14 @@ branch="$(git branch --format='%(refname:short)' \
   | fzf --prompt="review vs ${default_branch} > " --reverse)" || exit 0
 [[ -z "$branch" ]] && exit 0
 
-# Fresh revset each time, so open a dedicated window rather than reusing a pane.
-tmux new-window -c "$PWD" -n "tuicr:${branch}" \
-  "zsh -i -c 'tuicr -r \"${default_branch}..${branch}\"'"
+# Reuse this branch's review window in the current session if it is still open.
+existing="$(tmux list-windows -F '#{@tuicr_review}'$'\t''#{window_index}' \
+  | awk -F'\t' -v b="$branch" '$1 == b { print $2; exit }')"
+
+if [[ -n "$existing" ]]; then
+  tmux select-window -t ":$existing"
+else
+  idx="$(tmux new-window -P -F '#{window_index}' -c "$PWD" -n "tuicr:${branch}" \
+    "zsh -i -c 'tuicr -r \"${default_branch}..${branch}\"'")"
+  tmux set-option -w -t ":$idx" @tuicr_review "$branch"
+fi
