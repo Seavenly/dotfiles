@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pick a local branch with fzf and open a tuicr review of that branch against
-# the repository's default branch. tuicr's `-r` is a commit range, so
-# `default..branch` reviews the commits the branch introduced since it forked -
-# the same file set a GitHub PR shows (later default-branch commits excluded).
+# Pick a local branch with fzf and open a tuicr review of it. tuicr's `-r` is a
+# commit range, so `base..branch` reviews the commits the branch introduced
+# since it forked from base - the file set a PR against that base would show.
+# Everything stays local; no GitHub PR is required.
 #
-# Picker ordering:
+# Modes:
+#   (default)     review the chosen branch against the default branch.
+#   --pick-base   also choose the base with a second picker, for branches that
+#                 fork off a feature branch rather than the default branch.
+#
+# Target picker ordering:
 #   1. Branches with an open review window in this session (marked ●), so an
-#      in-progress review is one keystroke away. Reopening one reuses its window
-#      instead of stacking a duplicate.
-#   2. Otherwise, when nothing is under review, the current branch is placed
-#      first so it is selected by default.
+#      in-progress review is one keystroke away.
+#   2. Otherwise, when nothing is under review, the current branch first, so it
+#      is selected by default.
 #   3. Remaining branches (including worktree branches) follow, most-recently
 #      committed first.
 #
-# Review windows are tagged with a `@tuicr_review` user option (keyed by branch)
-# so both the "open" ordering and the reuse match survive tmux's
-# automatic-rename and any title tuicr sets itself.
+# Review windows are tagged with a `@tuicr_review` user option set to the exact
+# `base..branch` revset, so reopening the same review reuses its window (keyed
+# per base) and the ordering above survives tmux's automatic-rename.
 #
-# Intended to run inside a `tmux display-popup` (fzf needs a TTY). On selection
-# it opens/selects the review window and exits, closing the popup.
+# Intended to run inside a `tmux display-popup` (fzf needs a TTY).
+
+pick_base=0
+[[ "${1:-}" == "--pick-base" ]] && pick_base=1
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "tmux-tuicr: not inside a git repository" >&2
@@ -28,8 +34,12 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 0
 fi
 
-# Resolve the default branch: prefer the remote's HEAD, then fall back to a
-# local main/master, then a bare "main".
+# fzf without the global bat/eza preview, which is meaningless for branch names.
+# Lines are "<marker>\t<branch>"; search and return only the branch column.
+fzf_pick() { fzf --no-preview --reverse --delimiter=$'\t' --nth=2 "$@"; }
+
+# Resolve the default branch: prefer the remote's HEAD, then a local
+# main/master, then a bare "main".
 default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 if [[ -z "$default_branch" ]]; then
   for candidate in main master; do
@@ -44,14 +54,17 @@ fi
 # Current branch (empty when detached); used to default-select when idle.
 current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
-# Build the picker: open reviews first (●), else the current branch, then the
-# remaining branches most-recently-committed first. The marker sits in its own
-# tab-delimited column; fzf searches and we recover only the branch column.
+# --- pick the branch to review ---
+if [[ $pick_base -eq 1 ]]; then
+  branch_prompt="review branch (choose base next) > "
+else
+  branch_prompt="review vs ${default_branch} > "
+fi
 selection="$(
   {
-    tmux list-windows -F '#{@tuicr_review}' 2>/dev/null | awk 'NF { print "O", $0 }'
+    tmux list-windows -F '#{@tuicr_review}' 2>/dev/null | awk 'NF { sub(/^.*\.\./, ""); print "O", $0 }'
     git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/ \
-      | grep -vxF "$default_branch" | awk '{ print "C", $0 }'
+      | awk -v d="$default_branch" '$0 != d { print "C", $0 }'
   } | awk -v current="$current_branch" '
       $1 == "O" { isopen[substr($0, 3)] = 1; open_count++; next }
       { b = substr($0, 3); cand[++n] = b }
@@ -62,19 +75,47 @@ selection="$(
         for (i=1;i<=n;i++) if (!seen[cand[i]]++) printf " \t%s\n", cand[i]
       }
     ' \
-  | fzf --prompt="review vs ${default_branch} > " --reverse --delimiter=$'\t' --nth=2
+  | fzf_pick --prompt="$branch_prompt"
 )" || exit 0
 [[ -z "$selection" ]] && exit 0
 branch="${selection#*$'\t'}"
 
-# Reuse this branch's review window in the current session if it is still open.
+# --- choose the base (default branch pre-selected at the top) ---
+if [[ $pick_base -eq 1 ]]; then
+  base_sel="$(
+    {
+      printf '%s\n' "$default_branch"
+      git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/ \
+        | awk -v d="$default_branch" -v t="$branch" '$0 != d && $0 != t'
+    } | awk '{ print " \t" $0 }' | fzf_pick --prompt="base for ${branch} > "
+  )" || exit 0
+  [[ -z "$base_sel" ]] && exit 0
+  base="${base_sel#*$'\t'}"
+else
+  base="$default_branch"
+fi
+
+if [[ "$base" == "$branch" ]]; then
+  echo "tmux-tuicr: base and branch are the same" >&2
+  sleep 1.5
+  exit 0
+fi
+
+revset="${base}..${branch}"
+if [[ "$base" == "$default_branch" ]]; then
+  window_name="tuicr:${branch}"
+else
+  window_name="tuicr:${branch}@${base}"
+fi
+
+# --- open or reuse the review window, keyed by the exact revset ---
 existing="$(tmux list-windows -F '#{@tuicr_review}'$'\t''#{window_index}' \
-  | awk -F'\t' -v b="$branch" '$1 == b { print $2; exit }')"
+  | awk -F'\t' -v r="$revset" '$1 == r { print $2; exit }')"
 
 if [[ -n "$existing" ]]; then
   tmux select-window -t ":$existing"
 else
-  idx="$(tmux new-window -P -F '#{window_index}' -c "$PWD" -n "tuicr:${branch}" \
-    "zsh -i -c 'tuicr -r \"${default_branch}..${branch}\"'")"
-  tmux set-option -w -t ":$idx" @tuicr_review "$branch"
+  idx="$(tmux new-window -P -F '#{window_index}' -c "$PWD" -n "$window_name" \
+    "zsh -i -c 'tuicr -r \"${revset}\"'")"
+  tmux set-option -w -t ":$idx" @tuicr_review "$revset"
 fi

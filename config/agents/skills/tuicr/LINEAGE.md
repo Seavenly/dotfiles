@@ -34,11 +34,12 @@ wrappers are mirrored with their executable bit set.
 
 - The `tuicr` binary is managed through mise's GitHub backend
   (`github:agavra/tuicr` in `mise.toml`); these wrappers require it on `PATH`.
-- `bin/tmux-tuicr` is a separate personal tmux hotkey (`prefix + r`) that opens
-  an fzf branch picker and launches a `tuicr` review of the chosen branch in the
-  current session. It is not part of this skill; the upstream `tuicr-wrapper.sh`
-  here is the agent-facing launcher the skill documents, and the two are
-  intentionally distinct.
+- `bin/tmux-tuicr` is a separate personal tmux launcher behind two hotkeys:
+  `prefix + r` reviews an fzf-picked branch against the default branch, and
+  `prefix + b` (`--pick-base`) additionally picks the base branch first. It
+  launches `tuicr` in the current session and needs no GitHub PR. It is not part
+  of this skill; the upstream `tuicr-wrapper.sh` here is the agent-facing
+  launcher the skill documents, and the two are intentionally distinct.
 
 ## Update policy
 
