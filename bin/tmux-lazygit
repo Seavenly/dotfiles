@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-pane="$(tmux list-panes -a -F '#{pane_title}:#{session_name}:#{window_index}.#{pane_index}' | awk -F: '$1 == "lazygit" {print; exit}')"
+# Find an existing lazygit pane in the CURRENT session only, so every tmux
+# session keeps its own lazygit instance. `-s` scopes the search to the current
+# session; `-a` (all sessions) would jump the client into another session's
+# lazygit. The pane is tagged with the title "lazygit" when created below.
+pane="$(tmux list-panes -s -F '#{pane_title}:#{window_index}.#{pane_index}' | awk -F: '$1 == "lazygit" {print $2; exit}')"
+
 if [[ -z "$pane" ]]; then
   tmux new-window -c "#{pane_current_path}" -n lazygit "zsh -i -c lazygit"
   tmux select-pane -T lazygit
 else
-  target="${pane#*:}"
-  session="${target%%:*}"
-  pane_target="${target#*:}"
-  window="${pane_target%.*}"
-  tmux switch-client -t "$session"
-  tmux select-window -t "$session:$window"
-  tmux select-pane -t "$session:$pane_target"
+  tmux select-window -t "${pane%.*}"
+  tmux select-pane -t "$pane"
 fi
