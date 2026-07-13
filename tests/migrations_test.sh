@@ -17,9 +17,33 @@ mkdir -p "$HOME" "$XDG_STATE_HOME/dotfiles/migrations"
 printf 'font-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/004-sketchybar-app-font"
 printf 'defaults-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/005-macos-defaults-restart"
 mkdir -p "$HOME/.claude/hooks"
+mkdir -p "$HOME/.claude/skills"
 mkdir -p "$HOME/.codex"
+mkdir -p "$HOME/.agents/skills/caveman"
+mkdir -p "$HOME/.agents/skills/handoff"
+mkdir -p "$HOME/.agents/skills/code-review"
+mkdir -p "$HOME/.agents/skills/codebase-design"
+mkdir -p "$HOME/.claude/skills/code-review"
+mkdir -p "$HOME/.hermes/skills/code-review"
 : > "$HOME/.claude/CLAUDE.md"
 : > "$HOME/.codex/AGENTS.md"
+printf '%s\n' 'legacy skill content' > "$HOME/.agents/skills/caveman/SKILL.md"
+printf '%s\n' 'legacy handoff content' > "$HOME/.agents/skills/handoff/SKILL.md"
+ln -s "$root/config/agents/skills/diagnose" "$HOME/.agents/skills/diagnose"
+ln -s ../../.agents/skills/handoff "$HOME/.claude/skills/handoff"
+for generated_root in \
+  "$HOME/.agents/skills/code-review" \
+  "$HOME/.claude/skills/code-review" \
+  "$HOME/.hermes/skills/code-review"
+do
+  ln -s "$root/config/agents/skills/code-review/SKILL.md" \
+    "$generated_root/SKILL.md"
+  ln -s "$root/config/agents/skills/code-review/LINEAGE.md" \
+    "$generated_root/LINEAGE.md"
+done
+printf '%s\n' 'unmanaged conflicting skill' \
+  > "$HOME/.agents/skills/codebase-design/SKILL.md"
+printf '%s\n' '{"version":3}' > "$HOME/.agents/.skill-lock.json"
 ln -s "$root/config/claude/hooks/notify.sh" "$HOME/.claude/hooks/notify.sh"
 cat > "$HOME/.claude/settings.json" <<EOF
 {
@@ -97,3 +121,38 @@ echo "ok - migrations remove retired Claude hooks only"
 [[ -f "$XDG_STATE_HOME/dotfiles/migrations/010-empty-agent-guidance" ]] \
   || fail "empty agent guidance migration was not recorded"
 echo "ok - migrations prepare empty agent guidance files for managed links"
+
+legacy_backup="$XDG_STATE_HOME/dotfiles/legacy-agent-skills/011-shared-agent-skills"
+[[ -f "$legacy_backup/caveman/SKILL.md" ]] \
+  || fail "legacy skill package was not preserved"
+[[ ! -e "$HOME/.agents/skills/caveman" ]] \
+  || fail "legacy skill package still blocks convergence"
+[[ ! -L "$HOME/.agents/skills/diagnose" ]] \
+  || fail "stale managed skill link was not removed"
+[[ ! -L "$HOME/.claude/skills/handoff" ]] \
+  || fail "legacy Claude skill link was not removed"
+[[ -f "$HOME/.agents/.skill-lock.json" ]] \
+  || fail "skill lock evidence was removed"
+[[ -f "$XDG_STATE_HOME/dotfiles/migrations/011-shared-agent-skills" ]] \
+  || fail "shared agent skill migration was not recorded"
+echo "ok - migrations preserve legacy skills and remove only managed stale links"
+
+for generated_root in \
+  "$HOME/.agents/skills/code-review" \
+  "$HOME/.claude/skills/code-review" \
+  "$HOME/.hermes/skills/code-review"
+do
+  [[ ! -e "$generated_root" ]] \
+    || fail "generated skill file-link tree still blocks directory convergence"
+done
+[[ -f "$HOME/.agents/skills/codebase-design/SKILL.md" ]] \
+  || fail "unmanaged conflicting skill was removed"
+[[ -f "$XDG_STATE_HOME/dotfiles/migrations/012-agent-skill-directory-links" ]] \
+  || fail "agent skill directory-link migration was not recorded"
+echo "ok - migrations replace only generated file-link skill trees"
+
+backup_count="$(find "$legacy_backup" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+"$root/internal/migrate"
+[[ "$(find "$legacy_backup" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" == "$backup_count" ]] \
+  || fail "re-running migrations duplicated legacy skill backups"
+echo "ok - shared agent skill migration is idempotent"

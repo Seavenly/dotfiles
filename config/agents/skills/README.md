@@ -53,3 +53,8 @@ upstream snapshots.
 
 The update process must never overwrite `LINEAGE.md` with upstream content.
 After a successful update it records the newly incorporated revisions.
+
+Thin orchestration wrappers may be made self-contained by combining their
+upstream component workflows into one package. Record these as `composite` and
+list every material component source; retain standalone components only when
+they remain useful for direct invocation.

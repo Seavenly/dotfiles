@@ -3,6 +3,11 @@ set -euo pipefail
 
 root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
+# Pending layout transitions must complete before mise evaluates conflicting
+# dotfile targets. Finalize runs the same migration command idempotently as a
+# safety net before warming derived state.
+"$root/internal/migrate"
+
 # Dotbot used to own the entire mise directory. Remove only that exact legacy
 # symlink so native mise can own config.toml without taking over the directory.
 legacy_mise="$HOME/.config/mise"

@@ -27,3 +27,16 @@ machine-local configuration outside Git.
 Skills are the portable unit and may be shared directly. Profile definitions
 are semantic siblings: keep each harness's complete native format rather than
 generating all variants from a common schema.
+
+## Skill discovery
+
+Mise exposes each managed skill as a directory symlink while preserving
+harness-owned entries alongside it. Directory links are required because Codex
+does not discover a real skill directory whose `SKILL.md` is itself a symlink:
+
+- `~/.agents/skills/` for Codex and the agent-neutral user scope.
+- `~/.claude/skills/` for Claude Code.
+- `~/.hermes/skills/` for Hermes Agent.
+
+The repository package is authoritative. Do not edit a linked copy under a
+harness directory; update the effective package and its lineage here.
