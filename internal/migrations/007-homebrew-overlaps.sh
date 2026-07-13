@@ -97,9 +97,9 @@ for formula in "${installed_formulae[@]}"; do
     zk) continue ;; # Explicitly retired; no replacement is expected.
   esac
   "$mise_bin" -C "$root" which "$replacement" >/dev/null 2>&1 || {
-    printf 'Refusing to remove brew:%s; mise replacement %s is unavailable.\n' \
+    printf 'Deferring brew:%s removal; mise replacement %s not installed yet.\n' \
       "$formula" "$replacement" >&2
-    exit 1
+    exit 75
   }
 done
 
@@ -107,8 +107,8 @@ for cask in "${installed_casks[@]}"; do
   case "$cask" in
     aerospace)
       [[ -x "$HOME/Applications/AeroSpace.app/Contents/MacOS/AeroSpace" ]] || {
-        echo "Refusing to remove brew-cask:aerospace; the mise-managed app is unavailable." >&2
-        exit 1
+        echo "Deferring brew-cask:aerospace removal; the mise-managed app is not installed yet." >&2
+        exit 75
       }
       ;;
     sbx) : ;; # Explicitly retired; no replacement is expected.
@@ -117,8 +117,8 @@ done
 
 if [[ "$assume_yes" != 1 ]]; then
   if [[ ! -t 0 ]]; then
-    echo "Skipping Homebrew transition without a terminal; rerun dotfiles install --yes."
-    exit 0
+    echo "Deferring Homebrew transition without a terminal; rerun interactively or with --yes."
+    exit 75
   fi
   read -r -p "Remove these Homebrew installations? [Y/n] " answer
   [[ ! "$answer" =~ ^[Nn]$ ]] || exit 0
