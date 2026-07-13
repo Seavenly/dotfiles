@@ -4,8 +4,8 @@ set -euo pipefail
 # Registry of local tuicr reviews (feature-flow jobs and the like) so a tmux
 # hotkey can list them and open the right worktree. One JSON object per line.
 #
-#   tuicr-reviews add --repo R --worktree W --base B --branch BR [--slug S]
-#   tuicr-reviews list    # prune-then-print TSV: worktree base branch repo slug created
+#   tuicr-reviews add --repo R --worktree W --base B --branch BR [--slug S] [--summary "..."]
+#   tuicr-reviews list    # prune-then-print TSV: worktree base branch repo slug created summary
 #   tuicr-reviews prune   # drop entries whose worktree directory no longer exists
 #   tuicr-reviews rm --worktree W
 #
@@ -43,7 +43,7 @@ persist_clean() {
 cmd="${1:-}"; shift || true
 case "$cmd" in
   add)
-    repo="" worktree="" base="" branch="" slug=""
+    repo="" worktree="" base="" branch="" slug="" summary=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --repo) repo="$2"; shift 2;;
@@ -51,9 +51,11 @@ case "$cmd" in
         --base) base="$2"; shift 2;;
         --branch) branch="$2"; shift 2;;
         --slug) slug="$2"; shift 2;;
+        --summary) summary="$2"; shift 2;;
         *) die "unknown arg: $1";;
       esac
     done
+    summary="${summary//$'\t'/ }"; summary="${summary//$'\n'/ }"
     [[ -n "$worktree" && -n "$base" && -n "$branch" ]] || die "add needs --worktree, --base, --branch"
     worktree="$(cd "$worktree" 2>/dev/null && pwd || echo "$worktree")"
     [[ -n "$repo" ]] || repo="$worktree"
@@ -63,13 +65,13 @@ case "$cmd" in
     clean_stream | jq -c --arg wt "$worktree" --arg base "$base" --arg branch "$branch" \
       'select(.worktree != $wt or .base != $base or .branch != $branch)' > "$tmp"
     jq -cn --arg repo "$repo" --arg wt "$worktree" --arg base "$base" \
-           --arg branch "$branch" --arg slug "$slug" --arg created "$created" \
-      '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created}' >> "$tmp"
+           --arg branch "$branch" --arg slug "$slug" --arg created "$created" --arg summary "$summary" \
+      '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created, summary:$summary}' >> "$tmp"
     mv "$tmp" "$file"
     ;;
   list)
     persist_clean
-    jq -r '[.worktree, .base, .branch, .repo, (.slug // ""), (.created // "")] | @tsv' "$file" \
+    jq -r '[.worktree, .base, .branch, .repo, (.slug // ""), (.created // ""), (.summary // "")] | @tsv' "$file" \
       | sort -t "$(printf '\t')" -k6,6r
     ;;
   prune)

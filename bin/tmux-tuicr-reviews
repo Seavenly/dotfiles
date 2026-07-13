@@ -18,10 +18,11 @@ if [[ -z "$reviews" ]]; then
   exit 0
 fi
 
-# Registry rows are TSV: worktree base branch repo slug created. A review whose
-# window is already open (a window tagged @tuicr_wt + @tuicr_rev matching its
-# worktree and base..branch) is marked. fzf shows only the display column;
-# later columns carry the machine fields.
+# Registry rows are TSV: worktree base branch repo slug created summary. The
+# display is aligned columns - repo, base, branch (PR), then the summary. A
+# review whose window is already open (a window tagged @tuicr_wt + @tuicr_rev
+# matching its worktree and base..branch) is marked. fzf shows only the built
+# display column; the trailing columns carry the machine fields.
 selection="$(
   {
     tmux list-windows -F '#{@tuicr_wt}'$'\t''#{@tuicr_rev}' 2>/dev/null \
@@ -30,11 +31,21 @@ selection="$(
   } | awk -F'\t' '
       $1 == "O" { isopen[$2 SUBSEP $3] = 1; next }
       {
-        wt=$2; base=$3; branch=$4; repo=$5
-        rev = base ".." branch
-        m = split(repo, p, "/"); reponame = p[m]
-        mark = (isopen[wt SUBSEP rev] ? "●" : " ")
-        printf "%s %s  [base: %s]  %s\t%s\t%s\t%s\n", mark, branch, base, reponame, wt, base, branch
+        n++
+        wt[n]=$2; base[n]=$3; branch[n]=$4; summary[n]=$8
+        m = split($5, p, "/"); reponame[n] = p[m]
+        rev = $3 ".." $4
+        mark[n] = (isopen[$2 SUBSEP rev] ? "●" : " ")
+        if (length(reponame[n]) > wrepo)   wrepo = length(reponame[n])
+        if (length($3) > wbase)            wbase = length($3)
+        if (length($4) > wbranch)          wbranch = length($4)
+      }
+      END {
+        for (i = 1; i <= n; i++) {
+          disp = sprintf("%s %-*s  %-*s  %-*s", mark[i], wrepo, reponame[i], wbase, base[i], wbranch, branch[i])
+          if (summary[i] != "") disp = disp "  " summary[i]
+          printf "%s\t%s\t%s\t%s\n", disp, wt[i], base[i], branch[i]
+        }
       }
     ' \
   | fzf --no-preview --reverse --delimiter=$'\t' --with-nth=1 --nth=1 --prompt="tuicr review > "
