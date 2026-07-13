@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tmux hotkey (prefix + r): pick a recorded tuicr review - a feature-flow job or
+# anything added via `tuicr-reviews add` - and open it in its own worktree with
+# `tuicr -r base..branch`. Reviews come from the tuicr-reviews registry, so this
+# is cross-repo. Reopening one reuses its window, keyed by worktree path.
+#
+# Intended to run inside a `tmux display-popup` (fzf needs a TTY).
+
+reviews_bin="tuicr-reviews"
+command -v "$reviews_bin" >/dev/null 2>&1 || reviews_bin="$HOME/.local/bin/tuicr-reviews"
+
+reviews="$("$reviews_bin" list 2>/dev/null)"
+if [[ -z "$reviews" ]]; then
+  echo "No recorded reviews yet. Finish a feature-flow job, or run 'tuicr-reviews add'." >&2
+  sleep 2
+  exit 0
+fi
+
+# Registry rows are TSV: worktree base branch repo slug created. Reviews whose
+# window is already open (tagged @tuicr_wt = worktree) are marked and float up.
+# fzf shows only the display column; later columns carry the machine fields.
+selection="$(
+  {
+    tmux list-windows -F '#{@tuicr_wt}' 2>/dev/null | awk 'NF { print "O\t" $0 }'
+    printf '%s\n' "$reviews" | awk -F'\t' '{ print "R\t" $0 }'
+  } | awk -F'\t' '
+      $1 == "O" { isopen[$2] = 1; next }
+      {
+        wt=$2; base=$3; branch=$4; repo=$5
+        m = split(repo, p, "/"); reponame = p[m]
+        mark = (isopen[wt] ? "●" : " ")
+        printf "%s %s  [base: %s]  %s\t%s\t%s\t%s\n", mark, branch, base, reponame, wt, base, branch
+      }
+    ' \
+  | fzf --no-preview --reverse --delimiter=$'\t' --with-nth=1 --nth=1 --prompt="tuicr review > "
+)" || exit 0
+[[ -z "$selection" ]] && exit 0
+
+worktree="$(printf '%s' "$selection" | cut -f2)"
+base="$(printf '%s' "$selection" | cut -f3)"
+branch="$(printf '%s' "$selection" | cut -f4)"
+if [[ -z "$worktree" || ! -d "$worktree" ]]; then
+  echo "tmux-tuicr-reviews: worktree is missing: $worktree" >&2
+  sleep 2
+  exit 0
+fi
+revset="${base}..${branch}"
+
+# Reuse this worktree's review window if it is still open; else open and tag it.
+existing="$(tmux list-windows -F '#{@tuicr_wt}'$'\t''#{window_index}' \
+  | awk -F'\t' -v w="$worktree" '$1 == w { print $2; exit }')"
+
+if [[ -n "$existing" ]]; then
+  tmux select-window -t ":$existing"
+else
+  idx="$(tmux new-window -P -F '#{window_index}' -c "$worktree" -n "tuicr:${branch}" \
+    "zsh -i -c 'tuicr -r \"${revset}\"'")"
+  tmux set-option -w -t ":$idx" @tuicr_wt "$worktree"
+fi
