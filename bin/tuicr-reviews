@@ -9,9 +9,11 @@ set -euo pipefail
 #   tuicr-reviews prune   # drop entries whose worktree directory no longer exists
 #   tuicr-reviews rm --worktree W
 #
-# Entries are keyed by absolute worktree path (re-adding upserts). `list` and
-# `prune` drop entries whose worktree is gone, since feature-flow worktrees are
-# removed after use. Override the store with TUICR_REVIEWS_FILE (used by tests).
+# Entries are keyed by (worktree, base, branch) so one checkout can hold several
+# reviews (e.g. several PRs off a shared base); re-adding the same triple
+# upserts. `list` and `prune` drop entries whose worktree is gone, since
+# feature-flow worktrees are removed after use. Override the store with
+# TUICR_REVIEWS_FILE (used by tests).
 
 file="${TUICR_REVIEWS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/tuicr-reviews.jsonl}"
 
@@ -58,7 +60,8 @@ case "$cmd" in
     created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     ensure_file
     tmp="$file.tmp.$$"
-    clean_stream | jq -c --arg wt "$worktree" 'select(.worktree != $wt)' > "$tmp"
+    clean_stream | jq -c --arg wt "$worktree" --arg base "$base" --arg branch "$branch" \
+      'select(.worktree != $wt or .base != $base or .branch != $branch)' > "$tmp"
     jq -cn --arg repo "$repo" --arg wt "$worktree" --arg base "$base" \
            --arg branch "$branch" --arg slug "$slug" --arg created "$created" \
       '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created}' >> "$tmp"
