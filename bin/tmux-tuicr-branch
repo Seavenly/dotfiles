@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pick a local branch with fzf and open a tuicr review of that branch against
+# the repository's default branch. tuicr's `-r` is a commit range, so
+# `default..branch` reviews the commits the branch introduced since it forked -
+# the same file set a GitHub PR shows (later default-branch commits excluded).
+#
+# Intended to run inside a `tmux display-popup` (fzf needs a TTY). On selection
+# it opens the review in its own window and exits, closing the popup.
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "tmux-tuicr-branch: not inside a git repository" >&2
+  sleep 1.5
+  exit 0
+fi
+
+# Resolve the default branch: prefer the remote's HEAD, then fall back to a
+# local main/master, then a bare "main".
+default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+if [[ -z "$default_branch" ]]; then
+  for candidate in main master; do
+    if git show-ref --verify --quiet "refs/heads/$candidate"; then
+      default_branch="$candidate"
+      break
+    fi
+  done
+fi
+: "${default_branch:=main}"
+
+# Choose a branch to review, excluding the base itself.
+branch="$(git branch --format='%(refname:short)' \
+  | grep -vxF "$default_branch" \
+  | fzf --prompt="review vs ${default_branch} > " --reverse)" || exit 0
+[[ -z "$branch" ]] && exit 0
+
+# Fresh revset each time, so open a dedicated window rather than reusing a pane.
+tmux new-window -c "$PWD" -n "tuicr:${branch}" \
+  "zsh -i -c 'tuicr -r \"${default_branch}..${branch}\"'"
