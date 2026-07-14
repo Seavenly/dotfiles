@@ -35,6 +35,11 @@ const expectedWorkerTools = {
   artifact: [...kanbanTools, ...fileTools],
   gate: [...kanbanTools, "process", "terminal"],
 };
+const expectedConcurrency = {
+  maxInProgress: 6,
+  maxInProgressPerProfile: 3,
+  maxSpawn: 6,
+};
 
 function completeRouting() {
   return {
@@ -95,6 +100,19 @@ function fakeProfileInspector(overrides = {}) {
     dispatchInGateway:
       overrides[name]?.dispatchInGateway ?? name === "flow-controller",
     autoDecompose: overrides[name]?.autoDecompose ?? false,
+    terminalBackend: overrides[name]?.terminalBackend ?? "local",
+    terminalHomeMode: overrides[name]?.terminalHomeMode ?? "real",
+    memoryEnabled: overrides[name]?.memoryEnabled ?? false,
+    userProfileEnabled: overrides[name]?.userProfileEnabled ?? false,
+    concurrency: overrides[name]?.concurrency ?? expectedConcurrency,
+    terminalProbe: overrides[name]?.terminalProbe ?? {
+      home: "/Users/test",
+      homeReadable: true,
+      ordinaryEnvInherited: true,
+      providerSecretFilteredByDefault: true,
+      gatewaySecretFiltered: true,
+      homeIsOsUserHome: true,
+    },
   });
 }
 
@@ -134,6 +152,7 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
       ["routing", true],
       ["credentials", true],
       ["native-config", true],
+      ["trust-posture", true],
       ["dispatch-owner", true],
       ["toolsets", true],
     ],
@@ -155,6 +174,66 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
     report.profiles.find(({ name }) => name === "builder").workerTools,
     expectedWorkerTools.builder,
   );
+  const builder = report.profiles.find(({ name }) => name === "builder");
+  assert.equal(builder.trust.filesystemSandbox, false);
+  assert.equal(builder.trust.terminal.backend, "local");
+  assert.equal(builder.trust.terminal.inheritsRealUserHome, true);
+  assert.equal(builder.trust.terminal.normalCliCredentialsReachable, true);
+  assert.equal(builder.trust.terminal.providerSecretsFilteredByDefault, true);
+  assert.equal(builder.trust.terminal.gatewaySecretsFiltered, true);
+  assert.match(builder.trust.contractOnly.join("\n"), /assigned worktree/);
+  assert.deepEqual(builder.concurrency, expectedConcurrency);
+  assert.match(report.profileSetFingerprint, /^sha256:[a-f0-9]{64}$/);
+  for (const profile of report.profiles) {
+    assert.match(profile.configurationFingerprint, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(profile.trust.execution, "host-local");
+    assert.ok(profile.trust.technicallyEnforced.length > 0);
+    assert.ok(profile.trust.contractOnly.length > 0);
+  }
+
+  const repeated = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
+  assert.equal(repeated.profileSetFingerprint, report.profileSetFingerprint);
+});
+
+test("profile doctor rejects drift in host trust and concurrency posture", async () => {
+  const paths = await fixture();
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector({
+      builder: { terminalHomeMode: "profile" },
+      gate: {
+        terminalProbe: {
+          home: "/Users/test",
+          homeReadable: true,
+          ordinaryEnvInherited: true,
+          providerSecretFilteredByDefault: false,
+          gatewaySecretFiltered: true,
+          homeIsOsUserHome: true,
+        },
+      },
+      "flow-controller": {
+        concurrency: {
+          maxInProgress: 12,
+          maxInProgressPerProfile: 3,
+          maxSpawn: 6,
+        },
+      },
+    }),
+  });
+
+  const trust = report.checks.find(({ id }) => id === "trust-posture");
+  assert.equal(trust.ok, false);
+  assert.match(trust.details.join("\n"), /builder.*home_mode=profile/);
+  assert.match(
+    trust.details.join("\n"),
+    /gate.*default provider-secret filtering/,
+  );
+  assert.match(trust.details.join("\n"), /flow-controller.*max_in_progress=12/);
 });
 
 test("profile doctor rejects unexpected worker tools even when the count matches", async () => {
@@ -178,6 +257,14 @@ test("profile doctor rejects unexpected worker tools even when the count matches
   const toolCheck = report.checks.find(({ id }) => id === "toolsets");
   assert.equal(toolCheck.ok, false);
   assert.match(toolCheck.details.join("\n"), /analyst.*dangerous_shell/);
+  const trustCheck = report.checks.find(({ id }) => id === "trust-posture");
+  assert.equal(trustCheck.ok, false);
+  assert.match(
+    report.profiles
+      .find(({ name }) => name === "analyst")
+      .trust.technicallyEnforced.join("\n"),
+    /MCP absence not established/,
+  );
 });
 
 test("profile doctor verifies Hermes-native dispatch and decomposition settings", async () => {
@@ -191,6 +278,23 @@ test("profile doctor verifies Hermes-native dispatch and decomposition settings"
   const nativeConfig = report.checks.find(({ id }) => id === "native-config");
   assert.equal(nativeConfig.ok, false);
   assert.match(nativeConfig.details.join("\n"), /gate.*auto_decompose/);
+});
+
+test("profile doctor cannot approve trust when native inspection fails", async () => {
+  const paths = await fixture();
+  const inspectProfile = async (name) => {
+    if (name === "builder") throw new Error("inspection unavailable");
+    return fakeProfileInspector()(name);
+  };
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile,
+  });
+
+  const trust = report.checks.find(({ id }) => id === "trust-posture");
+  assert.equal(trust.ok, false);
+  assert.match(trust.details.join("\n"), /builder.*could not verify/);
 });
 
 test("profile doctor rejects unvalidated Hermes patch releases", async () => {

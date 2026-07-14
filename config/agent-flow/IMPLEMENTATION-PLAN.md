@@ -51,7 +51,11 @@ Repository changes:
 - Add the minimal `bin/agent-flow` interface with only `doctor profiles`.
   Doctor checks an explicitly validated Hermes release, initially v0.18.2,
   complete routing, credentials available to each selected provider, exactly
-  one dispatch-owning gateway, and the effective worker tool schemas.
+  one dispatch-owning gateway, the effective worker tool schemas, and the
+  actual host-local trust posture. Report which restrictions are technically
+  enforced and which remain contract-only, including terminal HOME and normal
+  CLI credential reachability. Emit stable effective-profile fingerprints for
+  future run manifests.
 
 Tests:
 
@@ -67,7 +71,16 @@ Tests:
   non-enforceable read-only contract; builder code tools; artifact file tools
   with declared-path contracts; gate terminal with no direct file edit tools.
 - Prove only the flow-controller gateway dispatches and built-in decomposition
-  is disabled.
+  is disabled. Prove the explicit global, per-profile, and spawn concurrency
+  limits.
+- Verify that profiles are host-local rather than filesystem-sandboxed, and
+  that terminal lanes use the real user HOME and can reach normal HOME- or
+  keychain-backed CLI credentials. Verify Hermes-managed provider and gateway
+  secret filtering with harmless subprocess sentinels, including the explicit
+  provider `env_passthrough` exception, without describing it as a general
+  credential sandbox.
+- Prove effective-profile fingerprints are stable for identical configuration
+  and include the validated Hermes version and exact worker tool schemas.
 - Run an offline integration test against every installed, explicitly
   supported Hermes release; skip clearly when no supported release is present.
 
@@ -78,6 +91,9 @@ Exit criteria:
 - The critic route uses a provider distinct from the builder route.
 - `agent-flow doctor profiles` can explain every unavailable lane before a run
   is launched.
+- `agent-flow doctor profiles` makes the accepted trust model, explicit
+  concurrency caps, and single-dispatch ownership visible before automated
+  flows launch.
 
 Rollback:
 

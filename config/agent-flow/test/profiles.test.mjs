@@ -188,6 +188,11 @@ test("complete routing renders native configs with restricted toolsets", async (
     );
     assert.equal(config.kanban.dispatch_in_gateway, name === "flow-controller");
     assert.equal(config.kanban.auto_decompose, false);
+    assert.equal(config.kanban.max_in_progress, 6);
+    assert.equal(config.kanban.max_in_progress_per_profile, 3);
+    assert.equal(config.kanban.max_spawn, 6);
+    assert.equal(config.terminal.backend, "local");
+    assert.equal(config.terminal.home_mode, "real");
   }
 
   const controller = parse(

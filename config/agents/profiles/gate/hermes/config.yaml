@@ -7,7 +7,13 @@ memory:
   user_profile_enabled: false
 compression:
   enabled: false
+terminal:
+  backend: local
+  home_mode: real
 kanban:
   dispatch_in_gateway: false
   auto_decompose: false
   orchestrator_profile: flow-controller
+  max_in_progress: 6
+  max_in_progress_per_profile: 3
+  max_spawn: 6

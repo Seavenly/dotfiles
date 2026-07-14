@@ -3,7 +3,10 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 
-import { PROFILE_NAMES } from "./profile-catalog.mjs";
+import {
+  PROFILE_CONCURRENCY,
+  PROFILE_NAMES,
+} from "./profile-catalog.mjs";
 import {
   PROFILE_OWNER,
   PROFILE_OWNER_FILE,
@@ -275,6 +278,22 @@ function validateBaseConfig(name, config) {
   }
   if (config.kanban.auto_decompose !== false) {
     throw new Error(`${name} must disable kanban.auto_decompose`);
+  }
+  if (config.terminal?.backend !== "local") {
+    throw new Error(`${name} must use the local terminal backend`);
+  }
+  if (config.terminal?.home_mode !== "real") {
+    throw new Error(`${name} must expose the real user HOME to local tools`);
+  }
+  const concurrency = {
+    maxInProgress: config.kanban.max_in_progress,
+    maxInProgressPerProfile: config.kanban.max_in_progress_per_profile,
+    maxSpawn: config.kanban.max_spawn,
+  };
+  for (const [key, expected] of Object.entries(PROFILE_CONCURRENCY)) {
+    if (concurrency[key] !== expected) {
+      throw new Error(`${name} must set the managed ${key} limit to ${expected}`);
+    }
   }
 }
 

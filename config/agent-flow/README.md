@@ -98,17 +98,18 @@ not treated as an implemented workflow runtime.
 
 ## Execution profiles
 
-Profiles are execution lanes. Card-pinned skills provide the semantic role.
-Separate OS worker processes provide context isolation.
+Profiles are host-local execution lanes. Card-pinned skills provide the
+semantic role. Separate OS worker processes provide context isolation, not OS
+identity or filesystem isolation.
 
-| Profile | Effective tools and workspace posture | Invariants |
+| Profile | Technically enforced by effective Hermes configuration | Contract-only restrictions |
 | --- | --- | --- |
-| `flow-controller` | Explicit `kanban` toolset only | Cannot use terminal, file, web, forge, delegation, todo, session, or memory tools; never treats memory as flow state |
-| `analyst` | Bundled file toolset, optional web, pinned read target | Produces evidence and plans; its contract prohibits the bundled write operations |
-| `critic` | Bundled file toolset, optional web, pinned read target | Uses independently routed model/provider; its contract prohibits the bundled write operations |
-| `builder` | File and terminal tools in one pinned feature worktree | May edit product code only for the assigned slice; never creates another worktree |
-| `artifact` | Read tools plus writes to declared run-artifact paths | May write diagrams and summaries, never product code |
-| `gate` | Terminal plus task lifecycle, pinned directory | Runs one exact `agent-flow gate --spec ...`; never edits product code directly |
+| `flow-controller` | Kanban tools only; terminal, file, web, MCP, memory, and user profile unavailable; sole dispatch owner; auto-decomposition disabled | Creates only versioned graph transitions and always records a lifecycle call |
+| `analyst` | Bundled file and web tools; terminal, MCP, memory, and user profile unavailable; dispatch disabled | Treats the pinned target as read-only despite bundled write tools and always records a lifecycle call |
+| `critic` | Bundled file and web tools; terminal, MCP, memory, and user profile unavailable; independently routed provider; dispatch disabled | Treats the pinned target as read-only, maintains review independence beyond provider routing, and always records a lifecycle call |
+| `builder` | Bundled file and terminal tools; local terminal with real user HOME; MCP, memory, and user profile unavailable; dispatch disabled | Writes only in the assigned worktree, relies on graph dependencies to avoid concurrent writes, and always records a lifecycle call |
+| `artifact` | Bundled file tools; terminal, MCP, memory, and user profile unavailable; dispatch disabled | Writes only declared artifact paths, never product code, and always records a lifecycle call |
+| `gate` | Terminal tools without direct file tools; local terminal with real user HOME; MCP, memory, and user profile unavailable; dispatch disabled | Runs only the declared command and workspace, never edits product code, and always records a lifecycle call |
 
 Hermes profiles are not filesystem sandboxes on the local terminal backend.
 Restrictions use the effective tool schema where Hermes provides the needed
@@ -119,12 +120,24 @@ technical write boundary. Profile doctoring reports that limitation instead of
 claiming stronger isolation. A future custom read-only tool plugin would be a
 separate, explicitly approved security improvement.
 
+The `builder` and `gate` terminal lanes explicitly use the `local` backend with
+`home_mode: real`. They inherit the real OS-user HOME, so normal CLI credential
+files and OS-keychain integrations are reachable. Hermes v0.18.2 filters its
+managed inference-provider secret environment variables from local subprocesses
+by default, although an explicitly registered `env_passthrough` skill can
+re-enable a named provider variable. Gateway secrets remain unconditionally
+filtered. This is not a general credential sandbox. Commands can still reach
+credentials available through the user's HOME, keychain, or other normal host
+mechanisms; ordinary non-blocklisted environment variables also remain visible.
+
 Exactly one gateway owns dispatch, initially the `flow-controller` gateway with
 `kanban.dispatch_in_gateway: true` and `kanban.auto_decompose: false`. Every
 other managed profile sets `dispatch_in_gateway: false`. Launch preflight fails
-if another active gateway also owns dispatch. Board-wide and per-profile
-concurrency limits are defense in depth; epic controllers still enforce their
-own feature-stream cap by materializing only a bounded ready wave.
+if another active gateway also owns dispatch. Managed profiles cap Kanban at
+six in-progress cards globally, three in-progress cards per profile, and six
+spawned tasks. These caps are defense in depth; graph dependencies remain the
+write-serialization boundary and epic controllers still enforce their own
+feature-stream cap by materializing only a bounded ready wave.
 
 ## Native profile convergence and routing
 
@@ -199,9 +212,25 @@ files and never enter the overlay or run metadata.
 Profile doctoring supports only explicitly validated Hermes releases, initially
 v0.18.2. It constructs each profile through Hermes' offline native loading path
 without making a model request, then compares the exact worker tool names,
-dispatch ownership, and decomposition setting with the managed catalog. It
-also verifies credentials for every primary and fallback provider, including
-custom-provider `key_env` declarations and explicitly keyless endpoints.
+dispatch ownership, decomposition setting, terminal backend, HOME mode, memory
+settings, and concurrency limits with the managed catalog. For terminal lanes,
+it also launches a harmless sentinel subprocess through Hermes' local terminal
+environment construction to verify real-HOME access, ordinary environment
+inheritance, default provider-secret filtering, and unconditional
+gateway-secret filtering. Its trust-posture report separates technically
+enforced restrictions from contract-only worker rules and states that local
+profiles are not filesystem sandboxes. It also verifies credentials for every
+primary and fallback provider, including custom-provider `key_env` declarations
+and explicitly keyless endpoints.
+
+The JSON report includes a stable SHA-256 fingerprint for each effective
+profile and one aggregate `profileSetFingerprint`. The fingerprint covers the
+validated Hermes version, canonical rendered native configuration, exact worker
+tool schemas, and the loaded dispatch, decomposition, terminal, memory, and
+concurrency values. It excludes credential contents, sentinel results, host
+paths, and runtime state. Future run manifests can record these values to
+identify the profile configuration that passed preflight without copying
+sensitive or mutable Hermes data.
 
 ## Handoffs and local review
 

@@ -64,6 +64,22 @@ test("real Hermes accepts every managed profile and exposes its exact worker too
     report.checks.find(({ id }) => id === "native-config").ok,
     true,
   );
+  assert.equal(
+    report.checks.find(({ id }) => id === "trust-posture").ok,
+    true,
+  );
+  assert.match(report.profileSetFingerprint, /^sha256:[a-f0-9]{64}$/);
+  for (const name of ["builder", "gate"]) {
+    const terminal = report.profiles.find(
+      (profile) => profile.name === name,
+    ).trust.terminal;
+    assert.equal(terminal.inheritsRealUserHome, true);
+    assert.equal(terminal.homeReadable, true);
+    assert.equal(terminal.ordinaryEnvironmentInherited, true);
+    assert.equal(terminal.normalCliCredentialsReachable, true);
+    assert.equal(terminal.providerSecretsFilteredByDefault, true);
+    assert.equal(terminal.gatewaySecretsFiltered, true);
+  }
   assert.deepEqual(
     report.profiles.map(({ name, workerTools, dispatchOwner }) => ({
       name,
