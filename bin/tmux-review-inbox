@@ -16,8 +16,9 @@ set -euo pipefail
 # Override the path with COWORKER_PRS_FILE (default
 # ~/.local/state/dotfiles/coworker-review-prs.jsonl). Missing file -> local only.
 #
-# Status column glyphs: ● an open tuicr window (agent); ✓ approved (agent
-# review, or a PR of yours); ✗ changes requested; • comments only.
+# Status column glyphs (colored via ANSI, rendered with fzf --ansi): ● an open
+# tuicr window (agent, cyan); ✓ approved (agent review, or a PR of yours, green);
+# ✗ changes requested (red); • comments only (yellow).
 # In the picker: Enter opens the item; ctrl-a toggles approval on a local review
 # (no-op elsewhere).
 #
@@ -55,13 +56,16 @@ build_lines() {
     [[ -n "$pr_rows" ]]    && printf '%s\n' "$pr_rows"    | awk -F'\t' '{ print "P\t" $0 }'
   } | awk -F'\t' -v gap="    " '
       function pad(s,w) { return sprintf("%-*s", w, s) }
+      # Wrap already-padded text in an ANSI SGR code so alignment (computed on
+      # the raw string) survives; fzf --ansi strips these before matching.
+      function col(code, s) { return "\033[" code "m" s "\033[0m" }
       function glyph(s) {
-        return (s=="approved") ? "✓" : \
-               (s=="changes_requested" || s=="changes") ? "✗" : \
-               (s=="commented" || s=="comments") ? "•" : " "
+        return (s=="approved") ? col("32","✓") : \
+               (s=="changes_requested" || s=="changes") ? col("31","✗") : \
+               (s=="commented" || s=="comments") ? col("33","•") : " "
       }
       function emitrow(st2,kind,repo,ref,text,action,a,b,c,   disp) {
-        disp = st2 " " pad(kind,wkind) gap pad(repo,wrepo) gap pad(ref,wref)
+        disp = st2 " " col("2", pad(kind,wkind)) gap pad(repo,wrepo) gap pad(ref,wref)
         if (text != "") disp = disp gap text
         printf "%s\t%s\t%s\t%s\t%s\n", disp, action, a, b, c
       }
@@ -88,11 +92,11 @@ build_lines() {
         for (pass=1; pass<=2; pass++)
           for (i=1;i<=nl;i++) {
             if ((pass==1) != (Lopen[i]==1)) continue
-            st2=(Lopen[i]?"●":" ") (Lappr[i]?"✓":" ")
+            st2=(Lopen[i]?col("36","●"):" ") (Lappr[i]?col("32","✓"):" ")
             emitrow(st2,"agent",Lrepo[i],Lref[i],Lsum[i],"local",Lwt[i],Lbase[i],Lbranch[i])
           }
         if (np>0) {
-          printf "%s\t%s\t\t\t\n", "── external ──", "sep"
+          printf "%s\t%s\t\t\t\n", col("242","── external ──"), "sep"
           n=split("reply review", order, " ")
           for (o=1;o<=n;o++)
             for (i=1;i<=np;i++) {
@@ -116,12 +120,27 @@ if [[ -z "$lines" ]]; then
   sleep 2; exit 0
 fi
 
-hdr="enter: open   ctrl-a: approve   |   ● open  ✓ approved  ✗ changes  • comments"
-[[ -s "$coworker_file" ]] && hdr="$hdr   |   feed: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
+# Legend glyphs are colored to match the row glyphs (see the awk `col`); the
+# header is rendered with --ansi so the SGR codes take effect.
+esc=$'\033'
+legend="${esc}[36m●${esc}[0m open  ${esc}[32m✓${esc}[0m approved  ${esc}[31m✗${esc}[0m changes  ${esc}[33m•${esc}[0m comments"
+hdr="enter open · ctrl-a approve      ${legend}"
+[[ -s "$coworker_file" ]] && hdr="$hdr      feed $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
+
+# Count the composed rows for the list label. Approving toggles a glyph but does
+# not add/remove rows, so a label computed once stays correct across reloads.
+counts="$(printf '%s\n' "$lines" | awk -F'\t' '$2=="local"{l++} $2=="pr"{p++} END{printf "%d %d", l+0, p+0}')"
+list_label=" review inbox · ${counts% *} local · ${counts#* } external "
 
 selection="$(
-  printf '%s\n' "$lines" | fzf --no-preview --reverse --delimiter=$'\t' --with-nth=1 --nth=1 \
-    --prompt="review inbox > " --header="$hdr" \
+  printf '%s\n' "$lines" | fzf \
+    --ansi --reverse --highlight-line --info=inline-right --no-preview \
+    --delimiter=$'\t' --with-nth=1 --nth=1 \
+    --border=none \
+    --list-border=rounded --list-label="$list_label" --list-label-pos=3 \
+    --header-border=rounded \
+    --color='list-border:242,header-border:242,list-label:bold' \
+    --prompt='› ' --header="$hdr" \
     --bind "ctrl-a:execute-silent($self --approve {2} {3} {4} {5})+reload($self --lines)"
 )" || exit 0
 [[ -z "$selection" ]] && exit 0
