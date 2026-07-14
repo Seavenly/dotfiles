@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tmux hotkey (prefix + r): a review inbox that surfaces, in one fzf list:
+#   - local agent reviews from the `tuicr-reviews` registry  (Enter -> tuicr)
+#   - coworker PRs awaiting your review from a cron feed       (Enter -> browser)
+# Local reviews are listed first (your own agent pipeline), then coworker PRs.
+#
+# Coworker PRs come from a JSONL sidecar the PR-notifier cron writes, one PR per
+# line: {"repo","number","title","url"[,"reason","updated","summary"]}. Override
+# the path with COWORKER_PRS_FILE (default
+# ~/.local/state/dotfiles/coworker-review-prs.jsonl). Missing file -> local only.
+#
+# In the picker: Enter opens the item (tuicr window for a local review, browser
+# for a PR); ctrl-a toggles "approved" on a local review (no-op on a PR). Status
+# column: ● an open tuicr window, ✓ approved.
+#
+# Runs inside a `tmux display-popup`. `--lines` prints composed rows (fzf's
+# reload after a toggle); `--approve <type> <wt> <base> <branch>` toggles a
+# local review's approval (used by the ctrl-a bind).
+
+reviews_bin="tuicr-reviews"
+command -v "$reviews_bin" >/dev/null 2>&1 || reviews_bin="$HOME/.local/bin/tuicr-reviews"
+self="$(command -v tmux-review-inbox 2>/dev/null || printf '%s' "$0")"
+coworker_file="${COWORKER_PRS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/coworker-review-prs.jsonl}"
+
+# ctrl-a helper: approve only applies to local reviews.
+if [[ "${1:-}" == "--approve" ]]; then
+  shift
+  if [[ "${1:-}" == "local" && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]]; then
+    "$reviews_bin" toggle-approved --worktree "$2" --base "$3" --branch "$4"
+  fi
+  exit 0
+fi
+
+# Compose picker rows. Each row is: display <tab> type <tab> a <tab> b <tab> c
+#   local: type=local  a=worktree b=base   c=branch
+#   pr:    type=pr      a=url
+#   sep:   type=sep
+# Display columns: status(2) SRC repo base ref  + summary/title; aligned widths.
+build_lines() {
+  local local_rows pr_rows
+  local_rows="$("$reviews_bin" list 2>/dev/null || true)"
+  pr_rows=""
+  [[ -s "$coworker_file" ]] && pr_rows="$(jq -r '[.repo, (.number|tostring), .title, .url] | @tsv' "$coworker_file" 2>/dev/null || true)"
+  {
+    tmux list-windows -F '#{@tuicr_wt}'$'\t''#{@tuicr_rev}' 2>/dev/null \
+      | awk -F'\t' '$1 != "" { print "O\t" $1 "\t" $2 }'
+    [[ -n "$local_rows" ]] && printf '%s\n' "$local_rows" | awk -F'\t' '{ print "L\t" $0 }'
+    [[ -n "$pr_rows" ]]    && printf '%s\n' "$pr_rows"    | awk -F'\t' '{ print "P\t" $0 }'
+  } | awk -F'\t' -v gap="    " '
+      $1 == "O" { isopen[$2 SUBSEP $3] = 1; next }
+      $1 == "L" {
+        nl++
+        Lwt[nl]=$2; Lbase[nl]=$3; Lbranch[nl]=$4; Lsum[nl]=$8; Lappr[nl]=($9 == "true")
+        m=split($5,p,"/"); Lrepo[nl]=p[m]
+        Lopen[nl]=(isopen[$2 SUBSEP ($3 ".." $4)] ? 1 : 0)
+        if (length(Lrepo[nl]) > wrepo) wrepo=length(Lrepo[nl])
+        if (length($3) > wbase)  wbase=length($3)
+        if (length($4) > wref)   wref=length($4)
+        next
+      }
+      $1 == "P" {
+        np++
+        Pnum[np]=$3; Ptitle[np]=$4; Purl[np]=$5
+        m=split($2,p,"/"); Prepo[np]=p[m]
+        if (length(Prepo[np]) > wrepo) wrepo=length(Prepo[np])
+        if (length("#" $3) > wref) wref=length("#" $3)
+        next
+      }
+      END {
+        wsrc=5
+        for (pass=1; pass<=2; pass++)
+          for (i=1;i<=nl;i++) {
+            if ((pass==1) != (Lopen[i]==1)) continue
+            st=(Lopen[i]?"●":" ") (Lappr[i]?"✓":" ")
+            disp=sprintf("%s %-*s  %-*s  %-*s  %-*s", st, wsrc, "tuicr", wrepo, Lrepo[i], wbase, Lbase[i], wref, Lbranch[i])
+            if (Lsum[i] != "") disp=disp gap Lsum[i]
+            printf "%s\t%s\t%s\t%s\t%s\n", disp, "local", Lwt[i], Lbase[i], Lbranch[i]
+          }
+        if (nl>0 && np>0) printf "%s\t%s\t\t\t\n", "   ── coworker PRs ──", "sep"
+        for (i=1;i<=np;i++) {
+          disp=sprintf("%s %-*s  %-*s  %-*s  %-*s", "  ", wsrc, "gh", wrepo, Prepo[i], wbase, "", wref, ("#" Pnum[i]))
+          if (Ptitle[i] != "") disp=disp gap Ptitle[i]
+          printf "%s\t%s\t%s\t%s\t%s\n", disp, "pr", Purl[i], "", ""
+        }
+      }
+    '
+}
+
+if [[ "${1:-}" == "--lines" ]]; then build_lines; exit 0; fi
+
+lines="$(build_lines)"
+if [[ -z "$lines" ]]; then
+  echo "Review inbox is empty (no local reviews, and no coworker PR feed)." >&2
+  sleep 2; exit 0
+fi
+
+hdr="enter: open   ctrl-a: approve local (✓)"
+[[ -s "$coworker_file" ]] && hdr="$hdr   |   coworker feed: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
+
+selection="$(
+  printf '%s\n' "$lines" | fzf --no-preview --reverse --delimiter=$'\t' --with-nth=1 --nth=1 \
+    --prompt="review inbox > " --header="$hdr" \
+    --bind "ctrl-a:execute-silent($self --approve {2} {3} {4} {5})+reload($self --lines)"
+)" || exit 0
+[[ -z "$selection" ]] && exit 0
+
+type="$(printf '%s' "$selection" | cut -f2)"
+case "$type" in
+  sep) exit 0 ;;
+  pr)
+    url="$(printf '%s' "$selection" | cut -f3)"
+    [[ -n "$url" ]] && { open "$url" 2>/dev/null || xdg-open "$url" 2>/dev/null || true; }
+    ;;
+  local)
+    worktree="$(printf '%s' "$selection" | cut -f3)"
+    base="$(printf '%s' "$selection" | cut -f4)"
+    branch="$(printf '%s' "$selection" | cut -f5)"
+    if [[ -z "$worktree" || ! -d "$worktree" ]]; then
+      echo "tmux-review-inbox: worktree is missing: $worktree" >&2; sleep 2; exit 0
+    fi
+    revset="${base}..${branch}"
+    existing="$(tmux list-windows -F '#{window_index}'$'\t''#{@tuicr_wt}'$'\t''#{@tuicr_rev}' \
+      | awk -F'\t' -v w="$worktree" -v r="$revset" '$2 == w && $3 == r { print $1; exit }')"
+    if [[ -n "$existing" ]]; then
+      tmux select-window -t ":$existing"
+    else
+      idx="$(tmux new-window -P -F '#{window_index}' -c "$worktree" -n "tuicr:${branch}" \
+        "zsh -i -c 'tuicr -r \"${revset}\"'")"
+      tmux set-option -w -t ":$idx" @tuicr_wt "$worktree"
+      tmux set-option -w -t ":$idx" @tuicr_rev "$revset"
+    fi
+    ;;
+esac

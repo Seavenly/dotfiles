@@ -47,6 +47,9 @@ over `base`, opened with `tuicr -r base..branch` in `worktree`.
    if the user wants to clear all of them.
 
 ## Guardrails
+- The `prefix + r` review inbox (`bin/tmux-review-inbox`) also lists coworker
+  PRs, which open to GitHub. This skill concerns only the local registry
+  reviews - never try to merge a coworker PR.
 - Only act on reviews the user has approved. Never merge an unapproved review.
 - One checkout can hold several reviews, so always remove by the full
   `(worktree, base, branch)` triple, not by worktree alone.
