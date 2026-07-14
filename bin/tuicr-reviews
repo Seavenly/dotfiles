@@ -5,7 +5,8 @@ set -euo pipefail
 # hotkey can list them and open the right worktree. One JSON object per line.
 #
 #   tuicr-reviews add --repo R --worktree W --base B --branch BR [--slug S] [--summary "..."]
-#   tuicr-reviews list    # prune-then-print TSV: worktree base branch repo slug created summary
+#   tuicr-reviews list [--approved]   # TSV: worktree base branch repo slug created summary approved
+#   tuicr-reviews toggle-approved --worktree W --base B --branch BR
 #   tuicr-reviews prune   # drop entries whose worktree directory no longer exists
 #   tuicr-reviews rm --worktree W
 #
@@ -66,13 +67,36 @@ case "$cmd" in
       'select(.worktree != $wt or .base != $base or .branch != $branch)' > "$tmp"
     jq -cn --arg repo "$repo" --arg wt "$worktree" --arg base "$base" \
            --arg branch "$branch" --arg slug "$slug" --arg created "$created" --arg summary "$summary" \
-      '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created, summary:$summary}' >> "$tmp"
+      '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created, summary:$summary, approved:false}' >> "$tmp"
     mv "$tmp" "$file"
     ;;
   list)
+    only_approved=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in --approved) only_approved=1; shift;; *) die "unknown arg: $1";; esac
+    done
     persist_clean
-    jq -r '[.worktree, .base, .branch, .repo, (.slug // ""), (.created // ""), (.summary // "")] | @tsv' "$file" \
+    jq -r --argjson ao "$only_approved" '
+      select($ao == 0 or (.approved == true))
+      | [.worktree, .base, .branch, .repo, (.slug // ""), (.created // ""), (.summary // ""), (.approved // false)] | @tsv' "$file" \
       | sort -t "$(printf '\t')" -k6,6r
+    ;;
+  toggle-approved)
+    worktree="" base="" branch=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --worktree) worktree="$2"; shift 2;;
+        --base) base="$2"; shift 2;;
+        --branch) branch="$2"; shift 2;;
+        *) die "unknown arg: $1";;
+      esac
+    done
+    [[ -n "$worktree" && -n "$base" && -n "$branch" ]] || die "toggle-approved needs --worktree, --base, --branch"
+    ensure_file
+    tmp="$file.tmp.$$"
+    clean_stream | jq -c --arg wt "$worktree" --arg base "$base" --arg branch "$branch" \
+      'if (.worktree == $wt and .base == $base and .branch == $branch) then .approved = ((.approved // false) | not) else . end' > "$tmp"
+    mv "$tmp" "$file"
     ;;
   prune)
     persist_clean
@@ -89,7 +113,7 @@ case "$cmd" in
     mv "$tmp" "$file"
     ;;
   ""|-h|--help)
-    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR==1 { next } /^#/ { started=1; sub(/^# ?/, ""); print; next } started { exit }' "$0"
     ;;
   *) die "unknown command: $cmd";;
 esac
