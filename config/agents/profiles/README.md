@@ -24,3 +24,22 @@ hooks, and lifecycle behavior.
 Profiles do not need variants for every harness. Add a variant only when the
 role is useful in that harness. Keep Hermes runtime credentials, memories,
 sessions, gateway state, and databases outside this repository.
+
+## Hermes automation inventory
+
+The initial Hermes automation profiles are execution lanes, not one profile
+per semantic task role:
+
+| Profile | Semantic roles | Distinct lane requirement |
+| --- | --- | --- |
+| `flow-controller` | Root, slice, review, and epic controllers | Kanban routing authority without code tools |
+| `analyst` | Planner, researcher, orientation, lens reviewer | Read-oriented evidence and planning |
+| `critic` | Review critic, gap analyst, completeness critic | Independent model and provider routing |
+| `builder` | Tester, implementer, prototype builder, revision implementer | Product-code writes in a pinned worktree |
+| `artifact` | Synthesizer, diagrammer | Artifact writes without product-code ownership |
+| `gate` | Test, verification, commit, rendering, and integration gates | Restricted deterministic commands interpreted by exit status |
+
+Task-pinned skills select semantic behavior within a lane. Add another profile
+only when model routing, authority, credentials, runtime, state, or concurrency
+must differ. The complete design and the machine-local routing strategy live in
+[`config/hermes/README.md`](../../hermes/README.md).

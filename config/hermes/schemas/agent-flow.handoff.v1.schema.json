@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.handoff.v1.schema.json",
+  "title": "agent-flow.handoff/v1",
+  "description": "Compact machine-readable evidence returned in Hermes kanban_complete metadata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "flow",
+    "stage",
+    "attempt",
+    "artifacts",
+    "changed_files",
+    "verification",
+    "dependencies",
+    "retry_notes",
+    "residual_risk"
+  ],
+  "properties": {
+    "schema": {
+      "const": "agent-flow.handoff/v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "flow": {
+      "enum": ["review", "feature", "spike", "epic", "stacks", "delivery"]
+    },
+    "stage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "passed": {
+      "description": "Required by semantic measurement and deterministic gate stages; omitted by non-measurement stages.",
+      "type": "boolean"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/verification"
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "retry_notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "residual_risk": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    }
+  },
+  "$defs": {
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 2
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exit_code"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "output_path": {
+          "$ref": "#/$defs/absolutePath"
+        }
+      }
+    }
+  }
+}

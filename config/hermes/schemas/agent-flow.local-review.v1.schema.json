@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.local-review.v1.schema.json",
+  "title": "agent-flow.local-review/v1",
+  "description": "Durable identity, artifacts, and lifecycle for a local review candidate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "flow",
+    "summary",
+    "repo",
+    "worktree",
+    "base",
+    "head",
+    "kanban",
+    "external_ref",
+    "artifacts",
+    "automated_review",
+    "review"
+  ],
+  "properties": {
+    "schema": {
+      "const": "agent-flow.local-review/v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "flow": {
+      "const": "feature"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "repo": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "worktree": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "base": {
+      "$ref": "#/$defs/revision"
+    },
+    "head": {
+      "$ref": "#/$defs/revision"
+    },
+    "kanban": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board", "tenant", "task"],
+      "properties": {
+        "board": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "tenant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "external_ref": {
+      "type": ["string", "null"],
+      "maxLength": 256
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_summary", "verification", "journal"],
+      "properties": {
+        "review_summary": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "verification": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "journal": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "automated_findings": {
+          "$ref": "#/$defs/nullableAbsolutePath"
+        },
+        "diagram": {
+          "$ref": "#/$defs/nullableAbsolutePath"
+        }
+      }
+    },
+    "automated_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewed_head_sha", "findings_path"],
+      "properties": {
+        "status": {
+          "enum": ["pending", "passed", "blocking_findings"]
+        },
+        "reviewed_head_sha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "findings_path": {
+          "$ref": "#/$defs/nullableAbsolutePath"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "session_slug",
+        "reviewed_head_sha",
+        "consumed_comment_ids"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "review_ready",
+            "reviewing",
+            "changes_requested",
+            "approved",
+            "integrated",
+            "archived"
+          ]
+        },
+        "session_slug": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "reviewed_head_sha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "consumed_comment_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "reviewed_head_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40,64}$"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 2
+    },
+    "nullableAbsolutePath": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/absolutePath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "sha"],
+      "properties": {
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        }
+      }
+    }
+  }
+}
