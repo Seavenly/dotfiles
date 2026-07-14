@@ -133,6 +133,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `bin/` | Additional user commands linked into `~/.local/bin` |
 | `config/` | Application-owned configuration organized by concern |
 | `config/agents/` | Shared agent guidance, managed skills, and colocated profile variants |
+| `config/agent-flow/` | Hermes-backed agent-flow orchestration, schemas, and routing template |
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
@@ -151,9 +152,12 @@ Host-specific state stays outside Git under `~/.config/dotfiles/`:
 | `private.zsh` | Secrets and private environment variables, mode `0600` |
 | `git.local` | Git author name and email, mode `0600` |
 | `paths.env` | Local paths such as `PROJECTS_DIR` and `NOTES_DIR` |
+| `hermes-routing.yaml` | Model-neutral routing for managed Hermes profiles, mode `0600` |
 
 The defaults are `PROJECTS_DIR=~/dev` and `NOTES_DIR=~/notes`. The bootstrap
-creates these local files when needed but never commits their contents.
+creates these local files when needed but never commits their contents. The
+Hermes routing file starts with no selected models; fill all six managed lanes
+and run `agent-flow doctor profiles` before launching an automated flow.
 
 ## Shell and tmux workflow
 

@@ -1,0 +1,7 @@
+name: dotfiles-gate
+version: 1.0.0
+description: Deterministic command gate lane for repository agent flows
+hermes_requires: ">=0.18.2"
+distribution_owned:
+  - SOUL.md
+  - distribution.yaml

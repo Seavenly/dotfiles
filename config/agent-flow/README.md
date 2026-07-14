@@ -1,9 +1,15 @@
 # Hermes agent-flow orchestration
 
 This document specifies the repository-owned design for repeatable automated
-agent flows. It records interfaces and invariants only. Profile adapters,
-launchers, graph materializers, registry changes, and stack mechanics remain
-unimplemented until the implementation plan is approved.
+agent flows. Phase 1 implements native profiles, machine-local routing, and
+profile doctoring. Launchers, graph materializers, registry changes, and stack
+mechanics remain phased work under the approved implementation plan.
+
+This directory owns the `agent-flow` orchestration module built on Hermes. It
+is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
+adapters live beside their shared contracts under
+`config/agents/profiles/<profile>/hermes/`; convergence renders those adapters
+into Hermes-owned profile homes without tracking global runtime state.
 
 The behavioral reference for the existing flows remains
 [`config/claude/AGENT-TEAMS.md`](../claude/AGENT-TEAMS.md). This design preserves
@@ -98,17 +104,20 @@ Separate OS worker processes provide context isolation.
 | Profile | Effective tools and workspace posture | Invariants |
 | --- | --- | --- |
 | `flow-controller` | Explicit `kanban` toolset only | Cannot use terminal, file, web, forge, delegation, todo, session, or memory tools; never treats memory as flow state |
-| `analyst` | Read and search tools, optional web, pinned read target | Produces evidence and plans; product writes are unavailable |
-| `critic` | Read and search tools, optional web, pinned read target | Uses independently routed model/provider; never edits the reviewed product |
+| `analyst` | Bundled file toolset, optional web, pinned read target | Produces evidence and plans; its contract prohibits the bundled write operations |
+| `critic` | Bundled file toolset, optional web, pinned read target | Uses independently routed model/provider; its contract prohibits the bundled write operations |
 | `builder` | File and terminal tools in one pinned feature worktree | May edit product code only for the assigned slice; never creates another worktree |
 | `artifact` | Read tools plus writes to declared run-artifact paths | May write diagrams and summaries, never product code |
 | `gate` | Terminal plus task lifecycle, pinned directory | Runs one exact `agent-flow gate --spec ...`; never edits product code directly |
 
 Hermes profiles are not filesystem sandboxes on the local terminal backend.
-The restrictions above are enforced through the effective tool schema,
-workspace pinning, deterministic commands, and profile contracts. Profile
-validation must inspect the tools actually exposed to a dispatcher-spawned
-worker, not merely the YAML text or SOUL instructions.
+Restrictions use the effective tool schema where Hermes provides the needed
+boundary, plus workspace pinning, deterministic commands, and profile
+contracts. Hermes v0.18.2 bundles `read_file`, `write_file`, `patch`, and file
+search in one `file` toolset, so analyst and critic read-only posture is not a
+technical write boundary. Profile doctoring reports that limitation instead of
+claiming stronger isolation. A future custom read-only tool plugin would be a
+separate, explicitly approved security improvement.
 
 Exactly one gateway owns dispatch, initially the `flow-controller` gateway with
 `kanban.dispatch_in_gateway: true` and `kanban.auto_decompose: false`. Every

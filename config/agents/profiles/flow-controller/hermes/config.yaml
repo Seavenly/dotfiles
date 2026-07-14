@@ -1,0 +1,13 @@
+platform_toolsets:
+  cli:
+    - kanban
+    - no_mcp
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+compression:
+  enabled: false
+kanban:
+  dispatch_in_gateway: true
+  auto_decompose: false
+  orchestrator_profile: flow-controller

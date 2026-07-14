@@ -25,6 +25,12 @@ Profiles do not need variants for every harness. Add a variant only when the
 role is useful in that harness. Keep Hermes runtime credentials, memories,
 sessions, gateway state, and databases outside this repository.
 
+Hermes v0.18.2 bundles reads, writes, patches, and search in one `file`
+toolset. The analyst and critic contracts are therefore read-oriented policy,
+not a filesystem or tool-schema write boundary. Profile doctoring must report
+this limitation until Hermes or a separately approved plugin provides a native
+read-only subset.
+
 ## Hermes automation inventory
 
 The initial Hermes automation profiles are execution lanes, not one profile
@@ -42,4 +48,4 @@ per semantic task role:
 Task-pinned skills select semantic behavior within a lane. Add another profile
 only when model routing, authority, credentials, runtime, state, or concurrency
 must differ. The complete design and the machine-local routing strategy live in
-[`config/hermes/README.md`](../../hermes/README.md).
+[`config/agent-flow/README.md`](../../agent-flow/README.md).

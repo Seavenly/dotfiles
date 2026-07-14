@@ -62,7 +62,14 @@ run "tmux lazygit focus" bash -c 'tmp=$(mktemp -d); trap '\''rm -rf "$tmp"'\'' E
 # shellcheck disable=SC2016
 run "tmux extended keys" bash -c 'rg -q '\''^set-option -s extended-keys on$'\'' "$1/config/tmux/tmux.conf" && rg -q '\''xterm-ghostty:extkeys'\'' "$1/config/tmux/tmux.conf" && rg -q '\''^bind-key -n S-Enter send-keys Escape "\[13;2u"$'\'' "$1/config/tmux/tmux.conf"' _ "$root"
 # shellcheck disable=SC2016
-run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ "$root/config/nvim/nvim-pack-lock.json" "$root/config/claude/scripts/package.json" "$root/config/claude/scripts/package-lock.json"
+run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
+  "$root/config/nvim/nvim-pack-lock.json" \
+  "$root/config/claude/scripts/package.json" \
+  "$root/config/claude/scripts/package-lock.json" \
+  "$root/config/agent-flow/package.json" \
+  "$root/config/agent-flow/package-lock.json" \
+  "$root/config/agent-flow/schemas/agent-flow.handoff.v1.schema.json" \
+  "$root/config/agent-flow/schemas/agent-flow.local-review.v1.schema.json"
 run "TOML (macOS)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E macos config ls
 run "TOML (Linux)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E linux config ls
 # shellcheck disable=SC2016

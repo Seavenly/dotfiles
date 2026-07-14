@@ -1,6 +1,7 @@
 # Hermes agent-flow implementation plan
 
-Status: proposed. Implementation requires explicit user approval.
+Status: approved on 2026-07-13. Phase 1 is complete; Phase 2 awaits explicit
+approval after review of this foundation.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -33,10 +34,10 @@ Repository changes:
 - Add `CONTRACT.md`, `hermes/SOUL.md`, `hermes/config.yaml`, and
   `hermes/distribution.yaml` for the six profiles under
   `config/agents/profiles/`.
-- Add a model-neutral routing example under `config/hermes/` and create
+- Add a model-neutral routing example under `config/agent-flow/` and create
   `~/.config/dotfiles/hermes-routing.yaml` as a secure empty skeleton when it
   is missing.
-- Add a Node-based native YAML renderer under `config/hermes/agent-flow/`.
+- Add a Node-based native YAML renderer under `config/agent-flow/`.
   Use the locked `yaml` package, deep-merge maps, replace arrays and scalars,
   reject unknown profiles and secret-like keys, validate native config shape,
   and atomically render regular files with mode `0600`.
@@ -59,9 +60,9 @@ Tests:
 - Run convergence twice in an isolated home and prove idempotency.
 - Seed unmanaged profiles and Hermes runtime files and prove preservation.
 - Spawn or inspect each profile through Hermes and assert the actual tools:
-  controller only Kanban; analyst and critic no product writes; builder code
-  tools; artifact declared-path writes; gate terminal with no direct file edit
-  tools.
+  controller only Kanban; analyst and critic bundled file tools with a reported
+  non-enforceable read-only contract; builder code tools; artifact file tools
+  with declared-path contracts; gate terminal with no direct file edit tools.
 - Prove only the flow-controller gateway dispatches and built-in decomposition
   is disabled.
 
@@ -86,7 +87,7 @@ Depends on: Phase 1.
 Repository changes:
 
 - Expand `bin/agent-flow`, already containing profile doctoring, as a thin
-  launcher for the Node ESM module under `config/hermes/agent-flow/`.
+  launcher for the Node ESM module under `config/agent-flow/`.
 - Use locked `ajv` for the published schemas and the locked `yaml` package for
   native configuration and gate specs. Do not add a database.
 - Implement internal modules for input loading, schema validation, board
