@@ -49,7 +49,7 @@ Repository changes:
   replace `.env`, `auth.json`, memory, sessions, logs, board databases, or
   workspaces.
 - Add the minimal `bin/agent-flow` interface with only `doctor profiles`.
-  Doctor checks Hermes v0.18.2 or a validated compatible release,
+  Doctor checks an explicitly validated Hermes release, initially v0.18.2,
   complete routing, credentials available to each selected provider, exactly
   one dispatch-owning gateway, and the effective worker tool schemas.
 
@@ -58,13 +58,18 @@ Tests:
 - Unit-test merge precedence, array replacement, atomic failure, file mode,
   missing and partial overlays, unknown profiles, and secret-key rejection.
 - Run convergence twice in an isolated home and prove idempotency.
-- Seed unmanaged profiles and Hermes runtime files and prove preservation.
+- Seed colliding and differently named unmanaged profiles plus Hermes runtime
+  files and prove preservation unless force takeover is explicit.
+- Run collision detection before mise creates profile links, and migrate the
+  pre-marker managed layout without requiring force.
 - Spawn or inspect each profile through Hermes and assert the actual tools:
   controller only Kanban; analyst and critic bundled file tools with a reported
   non-enforceable read-only contract; builder code tools; artifact file tools
   with declared-path contracts; gate terminal with no direct file edit tools.
 - Prove only the flow-controller gateway dispatches and built-in decomposition
   is disabled.
+- Run an offline integration test against every installed, explicitly
+  supported Hermes release; skip clearly when no supported release is present.
 
 Exit criteria:
 
@@ -76,8 +81,9 @@ Exit criteria:
 
 Rollback:
 
-- Stop the flow-controller gateway, remove only managed aliases and rendered
-  config files, and restore the previous convergence revision.
+- Stop the flow-controller gateway, remove only managed aliases, ownership
+  markers, and rendered config files, and restore the previous convergence
+  revision.
 - Keep credentials, profile state, and Kanban data untouched.
 
 ## Phase 2 - build the CLI seam and local review tracer

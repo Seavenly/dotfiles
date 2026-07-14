@@ -13,5 +13,5 @@ Implement and revise one serialized product slice in the assigned worktree.
 
 ## Expected capabilities
 
-File operations, terminal commands, and task-pinned implementation
+File operations, terminal commands, and card-pinned implementation
 instructions.

@@ -45,7 +45,7 @@ per semantic task role:
 | `artifact` | Synthesizer, diagrammer | Artifact writes without product-code ownership |
 | `gate` | Test, verification, commit, rendering, and integration gates | Restricted deterministic commands interpreted by exit status |
 
-Task-pinned skills select semantic behavior within a lane. Add another profile
+Card-pinned skills select semantic behavior within a lane. Add another profile
 only when model routing, authority, credentials, runtime, state, or concurrency
 must differ. The complete design and the machine-local routing strategy live in
 [`config/agent-flow/README.md`](../../agent-flow/README.md).

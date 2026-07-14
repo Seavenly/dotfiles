@@ -212,6 +212,7 @@ test("render is idempotent and preserves Hermes state and unmanaged profiles", a
   const hermesHome = join(paths.home, ".hermes");
   const builderHome = join(hermesHome, "profiles", "builder");
   const unmanagedHome = join(hermesHome, "profiles", "local-only");
+  await renderProfiles({ root, ...paths });
   await mkdir(join(builderHome, "memory"), { recursive: true });
   await mkdir(unmanagedHome, { recursive: true });
   await writeFile(join(builderHome, ".env"), "SECRET=preserved\n");
@@ -219,7 +220,6 @@ test("render is idempotent and preserves Hermes state and unmanaged profiles", a
   await writeFile(join(builderHome, "memory", "notes.md"), "preserved\n");
   await writeFile(join(unmanagedHome, "config.yaml"), "unmanaged: true\n");
 
-  await renderProfiles({ root, ...paths });
   const first = await readFile(join(builderHome, "config.yaml"), "utf8");
   await renderProfiles({ root, ...paths });
 
@@ -239,6 +239,71 @@ test("render is idempotent and preserves Hermes state and unmanaged profiles", a
   assert.equal(
     await readFile(join(unmanagedHome, "config.yaml"), "utf8"),
     "unmanaged: true\n",
+  );
+});
+
+test("render refuses to claim an existing unmanaged profile", async () => {
+  const paths = await fixture();
+  await writeFile(paths.routingFile, JSON.stringify(completeRouting()));
+  const builderHome = join(paths.home, ".hermes", "profiles", "builder");
+  await mkdir(builderHome, { recursive: true });
+  await writeFile(join(builderHome, "config.yaml"), "user_owned: true\n");
+
+  await assert.rejects(
+    () => renderProfiles({ root, ...paths }),
+    /unmanaged Hermes profile.*builder.*--force/,
+  );
+
+  assert.equal(
+    await readFile(join(builderHome, "config.yaml"), "utf8"),
+    "user_owned: true\n",
+  );
+  for (const name of PROFILE_NAMES.filter((name) => name !== "builder")) {
+    await assert.rejects(
+      readFile(
+        join(paths.home, ".hermes", "profiles", name, "config.yaml"),
+        "utf8",
+      ),
+      { code: "ENOENT" },
+    );
+  }
+});
+
+test("render refuses to claim a markerless profile containing only runtime state", async () => {
+  const paths = await fixture();
+  await writeFile(paths.routingFile, JSON.stringify(completeRouting()));
+  const gateHome = join(paths.home, ".hermes", "profiles", "gate");
+  await mkdir(join(gateHome, "sessions"), { recursive: true });
+  await writeFile(join(gateHome, "auth.json"), '{"user_owned":true}\n');
+  await writeFile(join(gateHome, "sessions", "one.json"), "{}\n");
+
+  await assert.rejects(
+    () => renderProfiles({ root, ...paths }),
+    /unmanaged Hermes profile.*gate.*--force/,
+  );
+
+  assert.equal(
+    await readFile(join(gateHome, "auth.json"), "utf8"),
+    '{"user_owned":true}\n',
+  );
+});
+
+test("force deliberately claims an unmanaged profile", async () => {
+  const paths = await fixture();
+  await writeFile(paths.routingFile, JSON.stringify(completeRouting()));
+  const builderHome = join(paths.home, ".hermes", "profiles", "builder");
+  await mkdir(builderHome, { recursive: true });
+  await writeFile(join(builderHome, "config.yaml"), "user_owned: true\n");
+
+  await renderProfiles({ root, ...paths, force: true });
+
+  const rendered = parse(
+    await readFile(join(builderHome, "config.yaml"), "utf8"),
+  );
+  assert.equal(rendered.model.default, "builder-model");
+  assert.equal(
+    await readFile(join(builderHome, ".dotfiles-managed-profile"), "utf8"),
+    "dotfiles.hermes-profile/v1\n",
   );
 });
 

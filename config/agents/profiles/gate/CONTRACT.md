@@ -14,4 +14,4 @@ report its exit status and durable output.
 
 ## Expected capabilities
 
-Terminal execution and task-pinned deterministic gate instructions.
+Terminal execution and card-pinned deterministic gate instructions.

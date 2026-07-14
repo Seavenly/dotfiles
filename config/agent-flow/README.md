@@ -98,7 +98,7 @@ not treated as an implemented workflow runtime.
 
 ## Execution profiles
 
-Profiles are execution lanes. Task-pinned skills provide the semantic role.
+Profiles are execution lanes. Card-pinned skills provide the semantic role.
 Separate OS worker processes provide context isolation.
 
 | Profile | Effective tools and workspace posture | Invariants |
@@ -182,11 +182,26 @@ Unknown profile names, other top-level sections, and secret-like keys are
 rejected. Missing routing leaves that profile unavailable and causes
 `agent-flow doctor profiles` to fail before launch. Convergence preserves
 existing `.env`, `auth.json`, memories, sessions, logs, and unmanaged profiles.
+Each rendered profile carries a `.dotfiles-managed-profile` ownership marker.
+The pre-dotfiles hook checks every reserved profile name before mise creates
+profile links. An existing markerless profile, including one containing only
+Hermes runtime state, is preserved and stops convergence before any profile is
+modified. `dotfiles install --force` explicitly claims such a conflict while
+leaving its Hermes runtime state intact. Profiles from the pre-marker layout
+are adopted without force only when both managed links still resolve to this
+repository.
 
 This is a native YAML merge, not a cross-harness profile schema. Work hosts may
 route to Claude and personal hosts may route to GPT/Codex without changing the
 stable contracts. Credentials remain in Hermes-owned `.env` and `auth.json`
 files and never enter the overlay or run metadata.
+
+Profile doctoring supports only explicitly validated Hermes releases, initially
+v0.18.2. It constructs each profile through Hermes' offline native loading path
+without making a model request, then compares the exact worker tool names,
+dispatch ownership, and decomposition setting with the managed catalog. It
+also verifies credentials for every primary and fallback provider, including
+custom-provider `key_env` declarations and explicitly keyless endpoints.
 
 ## Handoffs and local review
 
@@ -287,8 +302,9 @@ and intentionally not linked into Claude while same-named Claude commands
 exist. After explicit parity review, Claude may invoke the shared skills and
 Hermes control plane, or the existing commands may remain as the rollback path.
 
-Rollback stops the dispatch-owning gateway, removes only managed profile links
-or rendered configs and the new command links, and restores the prior
-convergence revision. It does not delete Kanban databases, run directories,
-worktrees, branches, review manifests, or external tracker comments. Claude
-autonomous workflows are retired only after explicit parity approval.
+Rollback stops the dispatch-owning gateway, removes only managed profile links,
+ownership markers, rendered configs, and the new command links, and restores
+the prior convergence revision. It does not delete Kanban databases, run
+directories, worktrees, branches, review manifests, or external tracker
+comments. Claude autonomous workflows are retired only after explicit parity
+approval.

@@ -14,4 +14,4 @@ product implementation.
 
 ## Expected capabilities
 
-File operations and task-pinned artifact instructions.
+File operations and card-pinned artifact instructions.

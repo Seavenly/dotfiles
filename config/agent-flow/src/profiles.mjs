@@ -3,14 +3,15 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 
-export const PROFILE_NAMES = [
-  "flow-controller",
-  "analyst",
-  "critic",
-  "builder",
-  "artifact",
-  "gate",
-];
+import { PROFILE_NAMES } from "./profile-catalog.mjs";
+import {
+  PROFILE_OWNER,
+  PROFILE_OWNER_FILE,
+  assertClaimableProfiles,
+  inspectProfileSet,
+} from "./profile-ownership.mjs";
+
+export { PROFILE_NAMES } from "./profile-catalog.mjs";
 
 const ROUTING_SCHEMA = "dotfiles.hermes-routing/v1";
 const ROUTING_KEYS = new Set([
@@ -297,7 +298,13 @@ export async function atomicWrite(
   }
 }
 
-export async function renderProfiles({ root, home, configHome, routingFile }) {
+export async function renderProfiles({
+  root,
+  home,
+  configHome,
+  routingFile,
+  force = false,
+}) {
   const resolvedHome = home ?? process.env.HOME;
   if (!resolvedHome) throw new Error("HOME is required");
   const resolvedConfigHome =
@@ -334,8 +341,16 @@ export async function renderProfiles({ root, home, configHome, routingFile }) {
     }),
   );
 
+  assertClaimableProfiles(await inspectProfileSet({ root, home: resolvedHome }), {
+    force,
+  });
+
   for (const plan of plans) {
     await mkdir(plan.targetDirectory, { recursive: true });
+    await atomicWrite(
+      join(plan.targetDirectory, PROFILE_OWNER_FILE),
+      PROFILE_OWNER,
+    );
     await atomicWrite(join(plan.targetDirectory, "config.yaml"), plan.contents);
   }
 

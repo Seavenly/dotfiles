@@ -14,5 +14,5 @@ Provide an independent adversarial review of plans, evidence, and code.
 
 ## Expected capabilities
 
-Bundled file inspection and search, optional web research, and task-pinned
+Bundled file inspection and search, optional web research, and card-pinned
 critical-review instructions.

@@ -13,4 +13,4 @@ Own native Hermes Kanban transitions for repository agent flows.
 
 ## Expected capabilities
 
-Native Kanban tools and task-pinned flow instructions.
+Native Kanban tools and card-pinned flow instructions.

@@ -9,7 +9,10 @@ const root =
   fileURLToPath(new URL("../../..", import.meta.url));
 
 try {
-  const result = await renderProfiles({ root });
+  const result = await renderProfiles({
+    root,
+    force: process.env.DOTFILES_FORCE === "1",
+  });
   const unavailable = result.unavailable.length
     ? `; routing unavailable for ${result.unavailable.join(", ")}`
     : "";

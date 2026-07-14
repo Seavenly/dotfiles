@@ -30,6 +30,46 @@ for profile in flow-controller analyst critic builder artifact gate; do
 done
 echo "ok - empty routing still converges safe model-neutral profile configs"
 
+collision_home="$tmp/collision-home"
+collision_config="$collision_home/.config"
+mkdir -p "$collision_config/dotfiles" \
+  "$collision_home/.hermes/profiles/builder"
+cp "$root/config/agent-flow/hermes-routing.example.yaml" \
+  "$collision_config/dotfiles/hermes-routing.yaml"
+printf '%s\n' 'user_owned: true' \
+  > "$collision_home/.hermes/profiles/builder/config.yaml"
+if HOME="$collision_home" XDG_CONFIG_HOME="$collision_config" \
+  DOTFILES_ROOT="$root" "$root/internal/bootstrap/pre-links" \
+  >"$tmp/preflight.out" 2>&1; then
+  fail "pre-dotfiles hook accepted an unmanaged Hermes profile"
+fi
+assert_contains "$(cat "$tmp/preflight.out")" 'unmanaged Hermes profile'
+[[ ! -e "$collision_home/.hermes/profiles/builder/SOUL.md" ]] \
+  || fail "preflight modified the unmanaged profile"
+if HOME="$collision_home" XDG_CONFIG_HOME="$collision_config" \
+  DOTFILES_ROOT="$root" "$root/internal/bootstrap/hermes-profiles" \
+  >"$tmp/collision.out" 2>&1; then
+  fail "Hermes convergence claimed an unmanaged profile"
+fi
+assert_contains "$(cat "$tmp/collision.out")" 'unmanaged Hermes profile'
+[[ ! -e "$collision_home/.hermes/profiles/analyst/config.yaml" ]] \
+  || fail "collision preflight partially rendered another profile"
+assert_contains \
+  "$(cat "$collision_home/.hermes/profiles/builder/config.yaml")" \
+  'user_owned: true'
+HOME="$collision_home" XDG_CONFIG_HOME="$collision_config" \
+  DOTFILES_ROOT="$root" DOTFILES_FORCE=1 "$root/internal/bootstrap/pre-links"
+HOME="$collision_home" XDG_CONFIG_HOME="$collision_config" \
+  DOTFILES_ROOT="$root" DOTFILES_FORCE=1 \
+  "$root/internal/bootstrap/hermes-profiles" >/dev/null
+assert_contains \
+  "$(cat "$collision_home/.hermes/profiles/builder/.dotfiles-managed-profile")" \
+  'dotfiles.hermes-profile/v1'
+assert_not_contains \
+  "$(cat "$collision_home/.hermes/profiles/builder/config.yaml")" \
+  'user_owned: true'
+echo "ok - Hermes profile collisions require explicit force takeover"
+
 cat > "$routing" <<'EOF'
 schema: dotfiles.hermes-routing/v1
 profiles:
@@ -97,6 +137,15 @@ for profile in flow-controller analyst critic builder artifact gate; do
 done
 [[ -f "$unmanaged/config.yaml" ]] || fail "static profile links removed an unmanaged profile"
 echo "ok - managed profile documents converge as individual links"
+
+rm "$builder_home/.dotfiles-managed-profile"
+HOME="$home" XDG_CONFIG_HOME="$config_home" DOTFILES_ROOT="$root" \
+  "$root/internal/bootstrap/pre-links"
+assert_contains "$(cat "$builder_home/.dotfiles-managed-profile")" \
+  'dotfiles.hermes-profile/v1'
+HOME="$home" XDG_CONFIG_HOME="$config_home" DOTFILES_ROOT="$root" \
+  "$root/internal/bootstrap/hermes-profiles" >/dev/null
+echo "ok - pre-marker managed profiles migrate without force"
 
 linked_help="$(HOME="$home" env -u DOTFILES_ROOT "$home/.local/bin/agent-flow" --help)"
 assert_contains "$linked_help" 'agent-flow doctor profiles'

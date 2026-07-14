@@ -17,6 +17,24 @@ const expectedToolsets = {
   artifact: ["file"],
   gate: ["terminal"],
 };
+const kanbanTools = [
+  "kanban_block",
+  "kanban_comment",
+  "kanban_complete",
+  "kanban_create",
+  "kanban_heartbeat",
+  "kanban_link",
+  "kanban_show",
+];
+const fileTools = ["patch", "read_file", "search_files", "write_file"];
+const expectedWorkerTools = {
+  "flow-controller": kanbanTools,
+  analyst: [...kanbanTools, ...fileTools],
+  critic: [...kanbanTools, ...fileTools],
+  builder: [...kanbanTools, ...fileTools, "process", "terminal"].sort(),
+  artifact: [...kanbanTools, ...fileTools],
+  gate: [...kanbanTools, "process", "terminal"],
+};
 
 function completeRouting() {
   return {
@@ -47,7 +65,7 @@ async function fixture(routing = completeRouting()) {
 }
 
 function fakeHermes(version = "0.18.2", gatewayRunning = true) {
-  return async (args, options = {}) => {
+  return async (args) => {
     if (args[0] === "--version") {
       return `Hermes Agent v${version} (test)\n`;
     }
@@ -57,21 +75,6 @@ function fakeHermes(version = "0.18.2", gatewayRunning = true) {
         : "Gateways:\n  ✗ flow-controller          - not running\n";
     }
     const profile = args[1];
-    if (args[2] === "prompt-size") {
-      assert.equal(
-        options.env.HERMES_KANBAN_TASK,
-        "agent-flow-doctor-inspection",
-      );
-      const counts = {
-        "flow-controller": 7,
-        analyst: 11,
-        critic: 11,
-        builder: 13,
-        artifact: 11,
-        gate: 9,
-      };
-      return JSON.stringify({ tools: { count: counts[profile] } });
-    }
     assert.deepEqual(args, [
       "-p",
       profile,
@@ -84,6 +87,15 @@ function fakeHermes(version = "0.18.2", gatewayRunning = true) {
       .map((toolset) => `  ✓ enabled  ${toolset}  test`)
       .join("\n");
   };
+}
+
+function fakeProfileInspector(overrides = {}) {
+  return async (name) => ({
+    tools: overrides[name]?.tools ?? expectedWorkerTools[name],
+    dispatchInGateway:
+      overrides[name]?.dispatchInGateway ?? name === "flow-controller",
+    autoDecompose: overrides[name]?.autoDecompose ?? false,
+  });
 }
 
 test("profile doctor verifies routing, credentials, tools, and dispatcher ownership", async () => {
@@ -108,7 +120,11 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
     }),
   );
 
-  const report = await doctorProfiles({ ...paths, runHermes: fakeHermes() });
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
 
   assert.equal(report.ok, true);
   assert.deepEqual(
@@ -117,6 +133,7 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
       ["hermes-version", true],
       ["routing", true],
       ["credentials", true],
+      ["native-config", true],
       ["dispatch-owner", true],
       ["toolsets", true],
     ],
@@ -134,6 +151,59 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
       .workerSchemaCount,
     7,
   );
+  assert.deepEqual(
+    report.profiles.find(({ name }) => name === "builder").workerTools,
+    expectedWorkerTools.builder,
+  );
+});
+
+test("profile doctor rejects unexpected worker tools even when the count matches", async () => {
+  const paths = await fixture();
+  for (const name of PROFILE_NAMES) {
+    const provider = name === "critic" ? "anthropic" : "openai-codex";
+    await writeFile(
+      join(paths.home, ".hermes", "profiles", name, "auth.json"),
+      JSON.stringify({ providers: { [provider]: { access_token: "test" } } }),
+    );
+  }
+
+  const analystTools = [...expectedWorkerTools.analyst];
+  analystTools[analystTools.indexOf("read_file")] = "dangerous_shell";
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector({ analyst: { tools: analystTools } }),
+  });
+
+  const toolCheck = report.checks.find(({ id }) => id === "toolsets");
+  assert.equal(toolCheck.ok, false);
+  assert.match(toolCheck.details.join("\n"), /analyst.*dangerous_shell/);
+});
+
+test("profile doctor verifies Hermes-native dispatch and decomposition settings", async () => {
+  const paths = await fixture();
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector({ gate: { autoDecompose: true } }),
+  });
+
+  const nativeConfig = report.checks.find(({ id }) => id === "native-config");
+  assert.equal(nativeConfig.ok, false);
+  assert.match(nativeConfig.details.join("\n"), /gate.*auto_decompose/);
+});
+
+test("profile doctor rejects unvalidated Hermes patch releases", async () => {
+  const paths = await fixture();
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes("0.18.3"),
+    inspectProfile: fakeProfileInspector(),
+  });
+
+  const version = report.checks.find(({ id }) => id === "hermes-version");
+  assert.equal(version.ok, false);
+  assert.match(version.details.join("\n"), /validated version: 0\.18\.2/);
 });
 
 test("profile doctor rejects structurally empty credential stores", async () => {
@@ -158,9 +228,124 @@ test("profile doctor rejects structurally empty credential stores", async () => 
     );
   }
 
-  const report = await doctorProfiles({ ...paths, runHermes: fakeHermes() });
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
 
   assert.equal(report.checks.find(({ id }) => id === "credentials").ok, false);
+});
+
+test("profile doctor accepts Hermes credential pools", async () => {
+  const paths = await fixture();
+  for (const name of PROFILE_NAMES) {
+    const provider = name === "critic" ? "anthropic" : "openai-codex";
+    await writeFile(
+      join(paths.home, ".hermes", "profiles", name, "auth.json"),
+      JSON.stringify({
+        credential_pool: {
+          [provider]: [{ access_token: "pooled-test-token" }],
+        },
+      }),
+    );
+  }
+
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
+
+  assert.equal(report.checks.find(({ id }) => id === "credentials").ok, true);
+});
+
+test("profile doctor honors a custom provider key_env", async () => {
+  const routing = completeRouting();
+  routing.profiles.builder = {
+    model: { provider: "custom:work", default: "work-model" },
+    custom_providers: [
+      {
+        name: "work",
+        base_url: "https://models.example.test/v1",
+        key_env: "WORK_API_KEY",
+      },
+    ],
+  };
+  const paths = await fixture(routing);
+  for (const name of PROFILE_NAMES.filter((name) => name !== "builder")) {
+    const provider = name === "critic" ? "anthropic" : "openai-codex";
+    await writeFile(
+      join(paths.home, ".hermes", "profiles", name, "auth.json"),
+      JSON.stringify({ providers: { [provider]: { access_token: "test" } } }),
+    );
+  }
+  await writeFile(
+    join(paths.home, ".hermes", "profiles", "builder", ".env"),
+    "WORK_API_KEY=available\n",
+  );
+
+  const report = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
+
+  assert.equal(report.checks.find(({ id }) => id === "credentials").ok, true);
+  assert.equal(
+    report.profiles.find(({ name }) => name === "builder").available,
+    true,
+  );
+});
+
+test("profile doctor verifies every configured fallback credential", async () => {
+  const routing = completeRouting();
+  routing.profiles.analyst.fallback_providers = [
+    { provider: "custom:fallback", model: "fallback-model" },
+  ];
+  routing.profiles.analyst.custom_providers = [
+    {
+      name: "fallback",
+      base_url: "https://fallback.example.test/v1",
+      key_env: "FALLBACK_API_KEY",
+    },
+  ];
+  const paths = await fixture(routing);
+  for (const name of PROFILE_NAMES) {
+    const provider = name === "critic" ? "anthropic" : "openai-codex";
+    await writeFile(
+      join(paths.home, ".hermes", "profiles", name, "auth.json"),
+      JSON.stringify({ providers: { [provider]: { access_token: "test" } } }),
+    );
+  }
+
+  const missing = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
+  const missingCredentials = missing.checks.find(
+    ({ id }) => id === "credentials",
+  );
+  assert.equal(missingCredentials.ok, false);
+  assert.match(
+    missingCredentials.details.join("\n"),
+    /analyst.*fallback.*custom:fallback/,
+  );
+
+  await writeFile(
+    join(paths.home, ".hermes", "profiles", "analyst", ".env"),
+    "FALLBACK_API_KEY=available\n",
+  );
+  const available = await doctorProfiles({
+    ...paths,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
+  assert.equal(
+    available.checks.find(({ id }) => id === "credentials").ok,
+    true,
+  );
 });
 
 test("profile doctor explains every unavailable prerequisite", async () => {
@@ -176,6 +361,7 @@ test("profile doctor explains every unavailable prerequisite", async () => {
   const report = await doctorProfiles({
     ...paths,
     runHermes: fakeHermes("0.19.0", false),
+    inspectProfile: fakeProfileInspector(),
   });
 
   assert.equal(report.ok, false);

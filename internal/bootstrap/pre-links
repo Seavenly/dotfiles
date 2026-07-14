@@ -3,6 +3,11 @@ set -euo pipefail
 
 root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
+# Refuse profile-name collisions before mise can add managed profile links.
+# The same preflight adopts profiles from the pre-marker layout only when both
+# existing managed links still point to this repository.
+node "$root/config/agent-flow/src/preflight-profiles.mjs"
+
 # Pending layout transitions must complete before mise evaluates conflicting
 # dotfile targets. Finalize runs the same migration command idempotently as a
 # safety net before warming derived state.

@@ -15,5 +15,5 @@ pinned repository target.
 
 ## Expected capabilities
 
-Bundled file inspection and search, optional web research, and task-pinned
+Bundled file inspection and search, optional web research, and card-pinned
 analysis instructions.

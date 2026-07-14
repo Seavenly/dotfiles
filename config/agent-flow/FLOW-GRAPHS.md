@@ -7,7 +7,7 @@ the runtime state machine.
 ## Notation and common rules
 
 ```text
-stage-key [profile; workspace; task-pinned skill]
+stage-key [profile; workspace; card-pinned skill]
 ```
 
 An arrow `a -> b` means card `a` is a parent dependency of card `b`. A join
