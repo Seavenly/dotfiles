@@ -133,7 +133,12 @@ class FakeHermesAdapter {
     return [...this.tasks.values()]
       .filter((task) => task.tenant === tenant)
       .filter((task) => includeArchived || task.status !== "archived")
-      .map((task) => structuredClone(task));
+      .map(({ id, status, tenant: taskTenant, title }) => ({
+        id,
+        status,
+        tenant: taskTenant,
+        title,
+      }));
   }
 
   async getTaskLifecycle({ taskId }) {
@@ -400,6 +405,328 @@ test("launch review seals the standard urgency floor", async (t) => {
     finalizeGate.review_policy.per_tier_caps,
     fixture.review.automated_review.per_tier_caps,
   );
+});
+
+test("launch review seals an external tracker root", async (t) => {
+  const fixture = await reviewFixture(t, "review-external-root", {
+    externalRef: "github:example/project#42",
+  });
+  const adapter = new FakeHermesAdapter();
+
+  assert.equal(await launch(fixture, adapter), 0);
+
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  assert.deepEqual(run.identity.external_root, {
+    system: "github",
+    id: "example/project#42",
+  });
+  assert.equal(run.identity.supersedes, null);
+  const status = await statusReport(fixture, adapter);
+  assert.deepEqual(status.report.external_root, run.identity.external_root);
+  assert.equal(status.report.supersedes, null);
+});
+
+test("launch review rejects a second nonterminal external-root owner", async (t) => {
+  const first = await reviewFixture(t, "review-external-first", {
+    externalRef: "github:example/project#42",
+  });
+  const second = await replacementFixture(first, "review-external-second");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  const stderr = captureStream();
+
+  assert.equal(await launch(second, adapter, { stderr }), 1);
+
+  assert.match(
+    stderr.value(),
+    /external root github:example\/project#42 is owned by nonterminal run review-external-first/,
+  );
+  await assert.rejects(readFile(second.runManifestPath), { code: "ENOENT" });
+  assert.equal(adapter.tasks.size, 10);
+});
+
+test("launch review rejects silent replacement of a terminal external owner", async (t) => {
+  const first = await reviewFixture(t, "review-external-terminal", {
+    externalRef: "github:example/project#42",
+  });
+  const second = await replacementFixture(first, "review-external-replacement");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  completeRun(adapter);
+  const stderr = captureStream();
+
+  assert.equal(await launch(second, adapter, { stderr }), 1);
+
+  assert.match(
+    stderr.value(),
+    /must explicitly supersede terminal owner review-external-terminal/,
+  );
+  await assert.rejects(readFile(second.runManifestPath), { code: "ENOENT" });
+});
+
+test("launch review explicitly supersedes a terminal external owner", async (t) => {
+  const first = await reviewFixture(t, "review-external-prior", {
+    externalRef: "github:example/project#42",
+  });
+  const second = await replacementFixture(first, "review-external-successor", {
+    supersedes: first.review.run_id,
+  });
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  completeRun(adapter);
+
+  assert.equal(await launch(second, adapter), 0);
+
+  const run = JSON.parse(await readFile(second.runManifestPath, "utf8"));
+  assert.deepEqual(run.identity.external_root, {
+    system: "github",
+    id: "example/project#42",
+  });
+  assert.equal(run.identity.supersedes, first.review.run_id);
+  assert.equal(adapter.tasks.size, 20);
+});
+
+test("supersession rejects a root that only claims to be terminal", async (t) => {
+  const first = await reviewFixture(t, "review-external-false-terminal", {
+    externalRef: "jira:TEAM-42",
+  });
+  const second = await replacementFixture(first, "review-external-blocked", {
+    supersedes: first.review.run_id,
+  });
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  for (const task of adapter.tasks.values()) task.status = "done";
+  const stderr = captureStream();
+
+  assert.equal(await launch(second, adapter, { stderr }), 1);
+
+  assert.match(
+    stderr.value(),
+    /external root jira:TEAM-42 is owned by nonterminal run review-external-false-terminal/,
+  );
+  await assert.rejects(readFile(second.runManifestPath), { code: "ENOENT" });
+});
+
+test("launch review can supersede an auditable cancelled owner", async (t) => {
+  const first = await reviewFixture(t, "review-external-cancelled", {
+    externalRef: "jira:TEAM-42",
+  });
+  const second = await replacementFixture(first, "review-external-after-cancel", {
+    supersedes: first.review.run_id,
+  });
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  const completed = taskForStage(adapter, "critic");
+  completed.status = "done";
+  completed.runs.push({ status: "done", outcome: "completed" });
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    first.review.run_id,
+    "--reason",
+    "Superseded by a fresh review",
+  ], {
+    adapter,
+    env: first.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  }), 0);
+
+  assert.equal(await launch(second, adapter), 0);
+
+  const run = JSON.parse(await readFile(second.runManifestPath, "utf8"));
+  assert.equal(run.identity.supersedes, first.review.run_id);
+});
+
+test("supersession rejects an active undeclared card in a completed tenant", async (t) => {
+  const first = await reviewFixture(t, "review-external-extra-complete", {
+    externalRef: "github:example/project#42",
+  });
+  const second = await replacementFixture(first, "review-external-extra-successor", {
+    supersedes: first.review.run_id,
+  });
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  completeRun(adapter);
+  addUndeclaredTask(adapter, first.review.run_id);
+  const stderr = captureStream();
+
+  assert.equal(await launch(second, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /owned by nonterminal run review-external-extra-complete/);
+  await assert.rejects(readFile(second.runManifestPath), { code: "ENOENT" });
+});
+
+test("supersession rejects an active undeclared card in a cancelled tenant", async (t) => {
+  const first = await reviewFixture(t, "review-external-extra-cancelled", {
+    externalRef: "jira:TEAM-42",
+  });
+  const second = await replacementFixture(first, "review-external-extra-after-cancel", {
+    supersedes: first.review.run_id,
+  });
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    first.review.run_id,
+    "--reason",
+    "Superseded by a fresh review",
+  ], {
+    adapter,
+    env: first.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  }), 0);
+  addUndeclaredTask(adapter, first.review.run_id);
+  const stderr = captureStream();
+
+  assert.equal(await launch(second, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /owned by nonterminal run review-external-extra-cancelled/);
+  await assert.rejects(readFile(second.runManifestPath), { code: "ENOENT" });
+});
+
+test("unrelated damaged sealed authority does not block external ownership", async (t) => {
+  const first = await reviewFixture(t, "review-external-unrelated-damaged", {
+    externalRef: "github:example/project#41",
+  });
+  const second = await replacementFixture(first, "review-external-unrelated-next");
+  second.review.external_ref = "github:example/project#42";
+  await writeFile(second.manifestPath, `${JSON.stringify(second.review, null, 2)}\n`);
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  const prior = JSON.parse(await readFile(first.runManifestPath, "utf8"));
+  await chmod(prior.graph.sealed_path, 0o600);
+  await writeFile(prior.graph.sealed_path, "damaged sealed graph\n");
+
+  assert.equal(await launch(second, adapter), 0);
+});
+
+test("concurrent launches cannot claim the same external root", async (t) => {
+  const first = await reviewFixture(t, "review-external-race-one", {
+    externalRef: "github:example/project#99",
+  });
+  const second = await replacementFixture(first, "review-external-race-two");
+  const adapter = new FakeHermesAdapter({ createDelayMs: 5 });
+  const firstStderr = captureStream();
+  const secondStderr = captureStream();
+
+  const results = await Promise.all([
+    launch(first, adapter, { stderr: firstStderr }),
+    launch(second, adapter, { stderr: secondStderr }),
+  ]);
+
+  assert.deepEqual(results.sort(), [0, 1]);
+  assert.equal(adapter.tasks.size, 10);
+  const manifests = await Promise.allSettled([
+    readFile(first.runManifestPath),
+    readFile(second.runManifestPath),
+  ]);
+  assert.equal(manifests.filter(({ status }) => status === "fulfilled").length, 1);
+  assert.match(
+    `${firstStderr.value()}${secondStderr.value()}`,
+    /external ownership is being claimed/,
+  );
+});
+
+test("same-run ownership contention cannot mutate the materialized root", async (t) => {
+  const fixture = await reviewFixture(t, "review-external-same-run-race", {
+    externalRef: "github:example/project#99",
+  });
+  const adapter = new FakeHermesAdapter();
+  const releaseTask = adapter.releaseTask.bind(adapter);
+  let announceReceipt;
+  let continueRelease;
+  const receiptReady = new Promise((resolve) => { announceReceipt = resolve; });
+  const releaseAllowed = new Promise((resolve) => { continueRelease = resolve; });
+  adapter.releaseTask = async (request) => {
+    announceReceipt();
+    await releaseAllowed;
+    return releaseTask(request);
+  };
+  const first = launch(fixture, adapter);
+  await receiptReady;
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+  continueRelease();
+  assert.equal(await first, 0);
+
+  assert.match(stderr.value(), /external ownership is being claimed/);
+  assert.equal(adapter.events.some(({ type }) => type === "comment"), false);
+  assert.equal(taskForStage(adapter, "review-root").status, "todo");
+});
+
+test("stale external ownership locks fail with an explicit recovery path", async (t) => {
+  const fixture = await reviewFixture(t, "review-external-stale-lock", {
+    externalRef: "github:example/project#99",
+  });
+  const key = createHash("sha256")
+    .update(JSON.stringify([
+      fixture.repository,
+      "github",
+      "example/project#99",
+    ]))
+    .digest("hex");
+  const lockDirectory = join(
+    fixture.env.XDG_STATE_HOME,
+    "agent-flow",
+    "ownership-locks",
+  );
+  const lockPath = join(lockDirectory, `${key}.lock`);
+  await mkdir(lockDirectory, { recursive: true });
+  await writeFile(lockPath, `${JSON.stringify({
+    operation: "external-ownership",
+    pid: 999999,
+    token: "stale",
+  })}\n`);
+  const adapter = new FakeHermesAdapter();
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /stale external ownership lock detected/);
+  assert.equal(stderr.value().includes(lockPath), true);
+  await assert.rejects(readFile(fixture.runManifestPath), { code: "ENOENT" });
+  assert.equal(adapter.tasks.size, 0);
+});
+
+test("launch review rejects supersession without an external root", async (t) => {
+  const fixture = await reviewFixture(t, "review-invalid-supersession", {
+    supersedes: "review-prior",
+  });
+  const adapter = new FakeHermesAdapter();
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /supersedes requires external_ref/);
+  await assert.rejects(readFile(fixture.runManifestPath), { code: "ENOENT" });
+  assert.equal(adapter.tasks.size, 0);
+});
+
+test("GitHub external ownership is canonical across coordinate case", async (t) => {
+  const first = await reviewFixture(t, "review-external-case-one", {
+    externalRef: "github:Example/Project#42",
+  });
+  const second = await replacementFixture(first, "review-external-case-two");
+  second.review.external_ref = "github:example/project#42";
+  await writeFile(
+    second.manifestPath,
+    `${JSON.stringify(second.review, null, 2)}\n`,
+  );
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(first, adapter), 0);
+  const stderr = captureStream();
+
+  assert.equal(await launch(second, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /owned by nonterminal run review-external-case-one/);
+  const run = JSON.parse(await readFile(first.runManifestPath, "utf8"));
+  assert.equal(run.identity.external_root.id, "example/project#42");
 });
 
 test("status projects a launched run from sealed identity and Hermes state", async (t) => {
@@ -1369,7 +1696,11 @@ async function statusReport(fixture, adapter) {
 async function reviewFixture(
   t,
   runId = "review-launch-example",
-  { urgency = "hotfix" } = {},
+  {
+    externalRef = null,
+    supersedes = null,
+    urgency = "hotfix",
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "agent-flow-review-launch-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -1388,7 +1719,7 @@ async function reviewFixture(
     base: { branch: "main", sha: GIT_SHA },
     head: { branch: "feature/example", sha: `1${GIT_SHA.slice(1)}` },
     kanban: { board: "review-launch", tenant: "feature-parent", task: "t_feature" },
-    external_ref: null,
+    external_ref: externalRef,
     artifacts: {
       review_summary: join(directory, "review.md"),
       verification: join(directory, "verification.json"),
@@ -1411,6 +1742,7 @@ async function reviewFixture(
       consumed_comment_ids: [],
     },
   };
+  if (supersedes !== null) review.supersedes = supersedes;
   const manifestPath = join(directory, "review.json");
   await writeFile(manifestPath, `${JSON.stringify(review, null, 2)}\n`);
   return {
@@ -1423,10 +1755,58 @@ async function reviewFixture(
   };
 }
 
+async function replacementFixture(fixture, runId, { supersedes = null } = {}) {
+  const review = structuredClone(fixture.review);
+  review.run_id = runId;
+  if (supersedes === null) delete review.supersedes;
+  else review.supersedes = supersedes;
+  const manifestPath = join(fixture.directory, `${runId}.json`);
+  await writeFile(manifestPath, `${JSON.stringify(review, null, 2)}\n`);
+  return {
+    ...fixture,
+    manifestPath,
+    review,
+    runManifestPath: join(
+      fixture.env.XDG_STATE_HOME,
+      "agent-flow",
+      "runs",
+      runId,
+      "run.json",
+    ),
+  };
+}
+
 function taskForStage(adapter, stage) {
   return [...adapter.tasks.values()].find(({ title }) =>
     title.endsWith(`/${stage}]`)
   );
+}
+
+function completeRun(adapter) {
+  for (const task of adapter.tasks.values()) {
+    task.status = "done";
+    task.completed_at = Date.parse("2026-07-15T12:00:45Z") / 1000;
+    task.runs.push({ status: "done", outcome: "completed" });
+  }
+}
+
+function addUndeclaredTask(adapter, runId) {
+  const id = `t_${adapter.nextId++}`;
+  adapter.tasks.set(id, {
+    id,
+    title: `[${runId}/undeclared]`,
+    body: "undeclared tenant card",
+    assignee: "critic",
+    status: "ready",
+    tenant: runId,
+    workspace_kind: "dir",
+    workspace_path: "/tmp",
+    max_retries: 1,
+    parents: [],
+    comments: [],
+    events: [],
+    runs: [],
+  });
 }
 
 function aggregateFingerprint(graph, inputs) {

@@ -360,6 +360,13 @@ test("run manifests bind tenancy, graph identity, sealed content, and profiles",
   const mutations = [
     (run) => { run.identity.tenant = "unrelated-tenant"; },
     (run) => { run.identity.supersedes = run.identity.run_id; },
+    (run) => { run.identity.supersedes = "review-prior"; },
+    (run) => {
+      run.identity.external_root = {
+        system: "github",
+        id: "Example/Project#42",
+      };
+    },
     (run) => {
       run.identity.parent_run_id = run.identity.run_id;
       run.identity.tenant = run.identity.run_id;

@@ -6,10 +6,10 @@ profile doctoring. Phase 2 now includes the machine contracts, task-pinned
 command, handoff-validation, and review-finalize gate tracers, the canonical
 standard review graph, a recoverable hotfix review launcher, and practical
 inline handoffs for terminal-free review workers. Review launch now supports
-hotfix, fast, and standard urgency. Run status and convergent cancellation are
-now implemented for sealed review runs. External-root ownership, registry
-changes, and stack mechanics remain phased work under the approved
-implementation plan.
+hotfix, fast, and standard urgency. Run status, convergent cancellation,
+external-root uniqueness, and explicit supersession are now implemented for
+sealed review runs. Registry changes and stack mechanics remain phased work
+under the approved implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -74,9 +74,12 @@ derived from the Kanban board and durable manifests. No command waits for a
 worker or advances a card by polling.
 
 The implemented `launch review` tracer accepts `hotfix`, `fast`, and `standard`
-urgency with `external_ref: null`. Hotfix materializes only required lenses.
-Fast and standard also materialize style and observability lenses plus
-orientation and diagram side artifacts. The review manifest seals
+urgency with either `external_ref: null`,
+`github:<owner>/<repository>#<issue-number>`, or
+`jira:<project-key>-<issue-number>`. An optional `supersedes` names one prior
+terminal run. Hotfix materializes only required lenses. Fast and standard also
+materialize style and observability lenses plus orientation and diagram side
+artifacts. The review manifest seals
 `max_comments` and the `critical`, `important`, `recommended`, and `nit` values
 under `per_tier_caps`. Unsupported external ownership fails before
 run-directory or Kanban mutation.
@@ -87,12 +90,13 @@ materialization receipt and dependency links with the complete tenant task
 list, and reads native Hermes attempt and comment history. It reports
 `complete`, `running`,
 `blocked`, `retrying`, `broken`, `cancelling`, or `cancelled` without issuing a
-lifecycle mutation command. Native Hermes v0.18.2 `kanban list` reconciles dependency-
-cleared cards to `ready` before returning them, so observation can expose that
-Hermes-owned lifecycle transition. JSON output includes every card and attempt
-count, status counts, every sealed run-wide limit measurement, finalize and
-validation artifact pointers, cancellation survivors, and audit issues. A
-broken or incompletely cancelled projection exits nonzero.
+lifecycle mutation command. Native Hermes v0.18.2 `kanban list` reconciles
+dependency-cleared cards to `ready` before returning them, so observation can
+expose that Hermes-owned lifecycle transition. JSON output includes every card
+and attempt count, status counts, canonical external-root and supersession
+identity, every sealed run-wide limit measurement, finalize and validation
+artifact pointers, cancellation survivors, and audit issues. A broken or
+incompletely cancelled projection exits nonzero.
 
 ## Run and board identity
 
@@ -194,6 +198,23 @@ repository. Launch rejects a duplicate owner. A replacement must explicitly
 name the prior run as superseded, and the prior run must first reach a durable
 terminal state. Kanban-only launches have no external ownership key but still
 require a unique run ID.
+
+External identity is canonicalized before comparison: GitHub owner and
+repository coordinates are lowercase, and Jira issue keys are uppercase. The
+launcher scans immutable run authority beneath the configured state home and
+binds each matching prior card to its sealed task authority. A completed owner
+is terminal only when every card is `done` with a terminal completed attempt.
+A cancelled owner is terminal only when its root has exactly one valid
+`agent-flow` cancellation request, no card remains nonterminal, and every
+`done` card has a terminal completed attempt; cards interrupted by cancellation
+are archived. Missing, incompatible, or ambiguous authority fails closed.
+
+A host-local lock keyed by canonical repository path and external root
+serializes the ownership scan through run publication. Concurrent replacements
+cannot both claim the same tracker issue, and a stale lock reports its exact
+path for deliberate recovery. This lock is ephemeral coordination, not an
+ownership registry or lifecycle database; immutable run manifests remain the
+ownership authority.
 
 Cancellation is an audited, convergent Kanban operation, not a lifecycle field
 in the run manifest. `agent-flow cancel` records the request on the root,

@@ -14,8 +14,16 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { formatTaskAuthority, HermesAdapter } from "./hermes-adapter.mjs";
-import { acquireRunMutationLock } from "./run-lock.mjs";
+import { parseExternalRef } from "./external-root.mjs";
+import {
+  acquireExternalOwnershipLock,
+  acquireRunMutationLock,
+} from "./run-lock.mjs";
+import { assertExternalOwnershipAvailable } from "./run-ownership.mjs";
+import { materializationOrder } from "./review-topology.mjs";
 import { validateContract } from "./schema-validator.mjs";
+
+export { materializationOrder } from "./review-topology.mjs";
 
 const execFileAsync = promisify(execFile);
 const SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -61,11 +69,6 @@ export async function launchReview({
   if (review.automated_review.status !== "pending") {
     throw new Error("review launch requires automated_review.status=pending");
   }
-  if (review.external_ref !== null) {
-    throw new Error(
-      "this launch tracer requires external_ref=null until Phase 2 external-root ownership is implemented",
-    );
-  }
   const resolvedAdapter = adapter ?? new HermesAdapter({
     board: review.kanban.board,
   });
@@ -80,6 +83,7 @@ export async function launchReview({
     review.run_id,
   );
   let releaseLaunchLock = null;
+  let releaseOwnershipLock = null;
   try {
     const graphSource = await loadReviewGraph(
       review.automated_review.urgency,
@@ -100,6 +104,24 @@ export async function launchReview({
     if (!/^[0-9a-f]{40,64}$/.test(revision)) {
       throw new Error("agent-flow implementation revision is not a Git revision");
     }
+    const externalRoot = parseExternalRef(review.external_ref);
+    if (externalRoot !== null) {
+      releaseOwnershipLock = await acquireExternalOwnershipLock({
+        externalRoot,
+        repositoryPath: repository.repositoryPath,
+        stateHome,
+      });
+    }
+    await assertExternalOwnershipAvailable({
+      adapterForBoard: (board) => board === review.kanban.board
+        ? resolvedAdapter
+        : new HermesAdapter({ board }),
+      currentRunId: review.run_id,
+      externalRoot,
+      repositoryPath: repository.repositoryPath,
+      stateHome,
+      supersedes: review.supersedes ?? null,
+    });
     releaseLaunchLock = await acquireRunMutationLock(runDirectory);
     const bundle = await sealOrLoadBundle({
       manifestPath,
@@ -118,12 +140,16 @@ export async function launchReview({
       review,
     });
   } catch (error) {
-    if (error.code !== "AGENT_FLOW_LAUNCH_BUSY") {
+    if (releaseLaunchLock !== null) {
       await protectExistingRoot(resolvedAdapter, runDirectory, error);
     }
     throw error;
   } finally {
-    if (releaseLaunchLock) await releaseLaunchLock();
+    try {
+      if (releaseLaunchLock) await releaseLaunchLock();
+    } finally {
+      if (releaseOwnershipLock) await releaseOwnershipLock();
+    }
   }
 }
 
@@ -246,8 +272,8 @@ async function sealOrLoadBundle({
       board: review.kanban.board,
       tenant: review.run_id,
       parent_run_id: null,
-      external_root: null,
-      supersedes: null,
+      external_root: parseExternalRef(review.external_ref),
+      supersedes: review.supersedes ?? null,
     },
     graph: graphIdentity,
     approved_read_roots: [
@@ -690,47 +716,6 @@ async function writeMaterialization(layout, graph, taskIds) {
   const temporary = join(layout.runDirectory, ".materialization.json.tmp");
   await writeFile(temporary, jsonBytes(document), { mode: 0o600 });
   await rename(temporary, layout.materialization);
-}
-
-function enabledReviewStages(graph, urgency) {
-  if (urgency !== "hotfix") return graph.stages;
-  const byKey = new Map(graph.stages.map((stage) => [stage.key, stage]));
-  return graph.stages.filter((stage) => {
-    if (stage.optional) return false;
-    if (!stage.validates_handoff_for) return true;
-    return !byKey.get(stage.validates_handoff_for)?.optional;
-  });
-}
-
-export function materializationOrder(graph, urgency = "hotfix") {
-  const enabled = enabledReviewStages(graph, urgency);
-  const enabledKeys = new Set(enabled.map(({ key }) => key));
-  const root = enabled.find(({ key }) => key === graph.root);
-  if (!root) throw new Error("review graph root is not enabled");
-  const ordered = [root];
-  const created = new Set([root.key]);
-  const remaining = new Map(
-    enabled.filter(({ key }) => key !== root.key).map((stage) => [stage.key, stage]),
-  );
-  const dependencies = graph.dependencies.filter(({ parent, child }) =>
-    enabledKeys.has(parent) && enabledKeys.has(child)
-  );
-  while (remaining.size > 0) {
-    const ready = [...remaining.values()]
-      .filter((stage) => dependencies
-        .filter(({ child }) => child === stage.key)
-        .every(({ parent }) => created.has(parent)))
-      .sort((left, right) => left.key.localeCompare(right.key));
-    if (ready.length === 0) {
-      throw new Error("review graph does not have a complete materialization order");
-    }
-    for (const stage of ready) {
-      ordered.push(stage);
-      created.add(stage.key);
-      remaining.delete(stage.key);
-    }
-  }
-  return ordered;
 }
 
 function bundleLayout(runDirectory, stages) {

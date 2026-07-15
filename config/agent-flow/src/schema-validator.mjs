@@ -8,6 +8,7 @@ import {
   MAX_INLINE_HANDOFF_BYTES,
   serializeInlineArtifact,
 } from "./inline-artifact.mjs";
+import { isCanonicalExternalRoot } from "./external-root.mjs";
 
 const CONTRACT_FILES = new Map([
   ["agent-flow.run/v1", "agent-flow.run.v1.schema.json"],
@@ -105,9 +106,29 @@ const SEMANTIC_VALIDATORS = new Map([
   ["agent-flow.migration-receipt/v1", validateMigrationReceipt],
   ["agent-flow.validation/v1", validateValidationEnvelope],
   ["agent-flow.handoff/v1", validateHandoff],
+  ["agent-flow.local-review/v1", validateLocalReview],
   ["agent-flow.review-comments/v1", validateReviewComments],
   ["agent-flow.review-result/v1", validateReviewResult],
 ]);
+
+function validateLocalReview(document) {
+  const errors = [];
+  if (document.supersedes && document.external_ref === null) {
+    errors.push({
+      instancePath: "/supersedes",
+      keyword: "externalOwnership",
+      message: "supersedes requires external_ref",
+    });
+  }
+  if (document.supersedes === document.run_id) {
+    errors.push({
+      instancePath: "/supersedes",
+      keyword: "distinctRun",
+      message: "must not supersede the current run",
+    });
+  }
+  return errors;
+}
 
 function validateHandoff(document) {
   const inlineBytes = document.artifacts
@@ -194,6 +215,20 @@ function validateRunManifest(document) {
       instancePath: "/identity/supersedes",
       keyword: "distinctRun",
       message: "must not supersede the current run",
+    });
+  }
+  if (identity.supersedes !== null && identity.external_root === null) {
+    errors.push({
+      instancePath: "/identity/supersedes",
+      keyword: "externalOwnership",
+      message: "requires identity.external_root",
+    });
+  }
+  if (!isCanonicalExternalRoot(identity.external_root)) {
+    errors.push({
+      instancePath: "/identity/external_root",
+      keyword: "canonicalExternalRoot",
+      message: "must contain a canonical tracker identifier",
     });
   }
   if (identity.parent_run_id === identity.run_id) {

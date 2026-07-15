@@ -2,12 +2,17 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  formatCancellationComment,
+  parseCancellationAudit,
+} from "./cancellation-audit.mjs";
 import { HermesAdapter, parseTaskAuthority } from "./hermes-adapter.mjs";
-import { materializationOrder } from "./review-launch.mjs";
+import { materializationOrder } from "./review-topology.mjs";
 import { acquireRunMutationLock } from "./run-lock.mjs";
+import { loadRunManifest } from "./run-manifest.mjs";
+import { classifyRunTerminal } from "./run-terminal.mjs";
 import { validateContract } from "./schema-validator.mjs";
 
-const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TASK_STATUSES = [
   "triage",
   "todo",
@@ -20,8 +25,6 @@ const TASK_STATUSES = [
   "archived",
 ];
 const TERMINAL_STATUSES = new Set(["done", "archived"]);
-const CANCELLATION_PATTERN =
-  /<!-- agent-flow-cancellation\n(?<document>\{[^\n]+\})\n-->/;
 
 export async function projectRunStatus({
   runId,
@@ -150,6 +153,13 @@ export async function projectRunStatus({
   );
   issues.push(...cancellationAudit.issues);
   const cancellation = cancellationAudit.cancellation;
+  const terminalClassification = classifyRunTerminal({
+    cancellationAudit: {
+      issues: cancellationAudit.issues,
+      request: cancellation.requested ? cancellation : null,
+    },
+    tasks: [...lifecycles.values()],
+  });
   const attemptCount = cards.reduce((total, card) => total + card.attempts, 0);
   const observedAt = now();
   const terminalAt = cards.every(({ status }) => TERMINAL_STATUSES.has(status))
@@ -197,7 +207,15 @@ export async function projectRunStatus({
     flow: authority.manifest.identity.flow,
     board: authority.manifest.identity.board,
     tenant: authority.manifest.identity.tenant,
-    state: deriveState({ cards, cancellation, issues, rootCard }),
+    external_root: structuredClone(authority.manifest.identity.external_root),
+    supersedes: authority.manifest.identity.supersedes,
+    state: deriveState({
+      cancellation,
+      cards,
+      issues,
+      rootCard,
+      terminalClassification,
+    }),
     root: rootCard === null
       ? null
       : { id: rootCard.id, stage: rootCard.stage, status: rootCard.status },
@@ -363,6 +381,12 @@ export function renderRunStatus(report) {
   return [
     `run ${report.run_id}: ${report.state}`,
     `board: ${report.board} tenant: ${report.tenant}`,
+    ...(report.external_root
+      ? [
+          `external root: ${report.external_root.system}:${report.external_root.id}`,
+          ...(report.supersedes ? [`supersedes: ${report.supersedes}`] : []),
+        ]
+      : []),
     `root: ${report.root ? `${report.root.id} (${report.root.status})` : "missing"}`,
     `cards: ${report.counts.total} total, ${active} nonterminal`,
     `artifacts: ${report.artifacts.directory}`,
@@ -380,30 +404,8 @@ export function renderRunStatus(report) {
 }
 
 export async function loadRunAuthority({ runId, env = process.env }) {
-  if (!RUN_ID_PATTERN.test(runId)) throw new Error("invalid run ID");
-  const stateHome = env.XDG_STATE_HOME?.trim() ||
-    (env.HOME ? join(env.HOME, ".local", "state") : null);
-  if (!stateHome) throw new Error("HOME or XDG_STATE_HOME is required");
-  const runDirectory = join(stateHome, "agent-flow", "runs", runId);
-  const manifestPath = join(runDirectory, "run.json");
-  let manifest;
-  let manifestBytes;
-  try {
-    manifestBytes = await readFile(manifestPath);
-    manifest = JSON.parse(manifestBytes.toString("utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") throw new Error(`unknown run: ${runId}`);
-    throw new Error(`cannot read run manifest for ${runId}`, { cause: error });
-  }
-  if (!(await validateContract(manifest)).valid) {
-    throw new Error(`run ${runId} has an invalid manifest`);
-  }
-  if (
-    manifest.identity.run_id !== runId ||
-    manifest.identity.run_directory !== runDirectory
-  ) {
-    throw new Error(`run ${runId} manifest does not match its state directory`);
-  }
+  const { manifest, manifestBytes, manifestPath, runDirectory } =
+    await loadRunManifest({ runId, env });
 
   const issues = [];
   const graphBytes = await readFile(manifest.graph.sealed_path);
@@ -528,40 +530,6 @@ function cancellationFromComments(comments, cards, runId) {
   };
 }
 
-function parseCancellationAudit(comments, runId) {
-  const requests = [];
-  const issues = [];
-  for (const { author, body } of comments ?? []) {
-    if (author !== "agent-flow") continue;
-    if (!body?.includes("<!-- agent-flow-cancellation")) continue;
-    const document = body?.match(CANCELLATION_PATTERN)?.groups?.document;
-    if (!document) {
-      issues.push("root has a malformed agent-flow cancellation marker");
-      continue;
-    }
-    try {
-      const request = JSON.parse(document);
-      if (
-        request?.run_id === runId &&
-        typeof request.reason === "string" &&
-        request.reason.length > 0 &&
-        typeof request.requested_at === "string" &&
-        Number.isFinite(Date.parse(request.requested_at))
-      ) {
-        requests.push(request);
-      } else {
-        issues.push("root has an invalid agent-flow cancellation marker");
-      }
-    } catch {
-      issues.push("root has a malformed agent-flow cancellation marker");
-    }
-  }
-  if (requests.length > 1) {
-    issues.push("root has multiple agent-flow cancellation requests");
-  }
-  return { issues, request: requests[0] ?? null };
-}
-
 function terminalTimestamp({ cancellation, rootLifecycle, terminalTimes }) {
   if (terminalTimes.length > 0) {
     return new Date(Math.max(...terminalTimes.map((date) => date.getTime())));
@@ -571,17 +539,6 @@ function terminalTimestamp({ cancellation, rootLifecycle, terminalTimes }) {
     return new Date(completedAt * 1000);
   }
   return cancellation.requested_at ? new Date(cancellation.requested_at) : null;
-}
-
-function formatCancellationComment(request) {
-  return [
-    "Cancellation requested by agent-flow.",
-    `Reason: ${request.reason}`,
-    "",
-    "<!-- agent-flow-cancellation",
-    JSON.stringify(request),
-    "-->",
-  ].join("\n");
 }
 
 function nonterminalTasks(tasks) {
@@ -690,15 +647,19 @@ function survivorReport(tasks, runId) {
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function deriveState({ cards, cancellation, issues, rootCard }) {
+function deriveState({
+  cards,
+  cancellation,
+  issues,
+  rootCard,
+  terminalClassification,
+}) {
   if (issues.length > 0) return "broken";
+  if (terminalClassification === "cancelled") return "cancelled";
   if (cancellation.requested) {
     return cancellation.survivors.length === 0 ? "cancelled" : "cancelling";
   }
-  if (
-    rootCard?.status === "done" &&
-    cards.every(({ status }) => status === "done")
-  ) return "complete";
+  if (terminalClassification === "completed") return "complete";
   if (cards.some(({ status }) => ["blocked", "triage"].includes(status))) {
     return "blocked";
   }

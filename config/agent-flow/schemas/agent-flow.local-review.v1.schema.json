@@ -70,8 +70,22 @@
       }
     },
     "external_ref": {
-      "type": ["string", "null"],
-      "maxLength": 256
+      "description": "Optional canonicalizable tracker root in github:<owner>/<repository>#<issue> or jira:<project>-<issue> form.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "string",
+          "pattern": "^(github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*|jira:[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*)$",
+          "maxLength": 256
+        }
+      ]
+    },
+    "supersedes": {
+      "description": "Prior terminal run explicitly replaced for the same repository and external_ref.",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/runId" }
+      ]
     },
     "artifacts": {
       "type": "object",
@@ -230,6 +244,10 @@
           "pattern": "^[0-9a-f]{40,64}$"
         }
       }
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     }
   }
 }

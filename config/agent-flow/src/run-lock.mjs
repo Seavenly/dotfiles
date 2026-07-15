@@ -1,13 +1,60 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 export async function acquireRunMutationLock(
   runDirectory,
   { operation = "launch" } = {},
 ) {
   const lockPath = `${runDirectory}.launch.lock`;
-  await mkdir(dirname(runDirectory), { recursive: true, mode: 0o700 });
+  return acquireExclusiveLock({
+    busyCode: "AGENT_FLOW_LAUNCH_BUSY",
+    lockPath,
+    operation,
+    busyMessage: (owner) => {
+      const label = owner?.operation === "cancellation"
+        ? "cancellation"
+        : "launcher";
+      return `another ${label} is active for this run; retry after it exits (${lockPath})`;
+    },
+    staleMessage:
+      `stale launch lock detected; remove ${lockPath} after confirming no launcher is active`,
+  });
+}
+
+export async function acquireExternalOwnershipLock({
+  externalRoot,
+  repositoryPath,
+  stateHome,
+}) {
+  const key = createHash("sha256")
+    .update(JSON.stringify([repositoryPath, externalRoot.system, externalRoot.id]))
+    .digest("hex");
+  const lockPath = join(
+    stateHome,
+    "agent-flow",
+    "ownership-locks",
+    `${key}.lock`,
+  );
+  return acquireExclusiveLock({
+    busyCode: "AGENT_FLOW_OWNERSHIP_BUSY",
+    lockPath,
+    operation: "external-ownership",
+    busyMessage: () =>
+      `external ownership is being claimed; retry after it exits (${lockPath})`,
+    staleMessage:
+      `stale external ownership lock detected; remove ${lockPath} after confirming no launcher is active`,
+  });
+}
+
+async function acquireExclusiveLock({
+  busyCode,
+  lockPath,
+  operation,
+  busyMessage,
+  staleMessage,
+}) {
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
   const token = `${process.pid}:${randomUUID()}`;
   try {
     const handle = await open(lockPath, "wx", 0o600);
@@ -30,15 +77,12 @@ export async function acquireRunMutationLock(
     if (error.code !== "EEXIST") throw error;
     const owner = await readLock(lockPath);
     const stale = owner !== null && !processIsAlive(owner.pid);
-    const ownerLabel = owner?.operation === "cancellation"
-      ? "cancellation"
-      : "launcher";
     const busy = new Error(
       stale
-        ? `stale launch lock detected; remove ${lockPath} after confirming no launcher is active`
-        : `another ${ownerLabel} is active for this run; retry after it exits (${lockPath})`,
+        ? staleMessage
+        : busyMessage(owner),
     );
-    busy.code = "AGENT_FLOW_LAUNCH_BUSY";
+    busy.code = busyCode;
     throw busy;
   }
 }

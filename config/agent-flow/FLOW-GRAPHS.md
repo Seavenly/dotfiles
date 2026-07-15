@@ -81,8 +81,10 @@ Every graph follows these rules:
    nonterminal cards with the root last, and retries only while the survivor
    set is shrinking. Launch and cancellation share the host-local run mutation
    lock, and cancellation binds every receipt-selected card to its sealed task
-   authority before mutation. No archived card may be silently recreated under
-   a new run ID.
+   authority before mutation. External ownership is serialized by canonical
+   repository and tracker-root identity. A successor names exactly one durable
+   terminal ownership head in its immutable manifest. No archived card may be
+   silently recreated under a new run ID.
 
 ## Review flow
 
