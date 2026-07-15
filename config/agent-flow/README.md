@@ -8,8 +8,9 @@ standard review graph, a recoverable hotfix review launcher, and practical
 inline handoffs for terminal-free review workers. Review launch now supports
 hotfix, fast, and standard urgency. Run status, convergent cancellation,
 external-root uniqueness, and explicit supersession are now implemented for
-sealed review runs. Registry changes and stack mechanics remain phased work
-under the approved implementation plan.
+sealed review runs. Repeated review launch now performs independently derived
+resume-migration comparison and durable limit admission. Registry changes and
+stack mechanics remain phased work under the approved implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -154,6 +155,21 @@ flow to the run manifest. Migration validation recomputes that same before and
 after compatibility identity and requires the receipt to enumerate every
 changed sealed item; a receipt's own assertions are not sufficient evidence.
 
+Phase 2 resume is a repeated `launch review` with the same run ID. The launcher
+builds the current candidate content set without publishing it, compares it
+with the immutable run, and derives changes to implementation, compatible
+contracts, profiles, graph, gates, other inputs, skills, and role contracts.
+Original source paths are provenance and do not create a delta when approved
+bytes and identities are unchanged. A compatible resume needs no receipt. An
+incompatible resume requires exactly one direct receipt at
+`migrations/<receipt-id>.json`; the filename and run ID must match the receipt,
+its approval evidence must be a regular file beneath `migrations/`, and its
+before identity, after identity, and complete change set must exactly match the
+launcher-derived comparison. Receipts are append-only approvals and never
+rewrite the run manifest or sealed inputs. Old valid receipts may remain beside
+the run, but ambiguous matching approvals fail closed. Once cancellation is
+requested, only the convergent cancellation path may continue the run.
+
 The launcher creates the root card blocked, materializes and validates every
 known card and dependency, then unblocks the root. The dependency links keep it
 in `todo` until terminal cards complete. A failed launch leaves the root
@@ -251,8 +267,10 @@ instructions require them to check the active root, declared transition shape,
 idempotency key, and immutable run-wide limits before mutation. Idempotency keys
 and durable Kanban counts survive worker retries and gateway restarts. Status
 and resume independently reconcile created cards, links, and limits so policy
-violations remain visible, but the initial implementation does not claim a
-technical boundary against a controller that ignores its contract. Reaching a
+violations remain visible. Resume refuses controller-driven continuation when
+any durable run-wide limit is already exceeded, but the initial implementation
+does not claim a technical boundary against a controller that ignores its
+contract. Reaching a
 limit blocks the controller with exact evidence and requires an explicit human
 decision. Supersession, cancellation, and limit changes never reuse an approval
 or silently alter the original run contract.

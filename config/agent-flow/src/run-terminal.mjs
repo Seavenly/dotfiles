@@ -18,7 +18,7 @@ export function classifyRunTerminal({ cancellationAudit, tasks }) {
   return "completed";
 }
 
-function hasTerminalCompletedAttempt({ runs }) {
+export function hasTerminalCompletedAttempt({ runs }) {
   const terminal = Array.isArray(runs) ? runs.at(-1) : null;
   return terminal?.status === "done" && terminal.outcome === "completed";
 }

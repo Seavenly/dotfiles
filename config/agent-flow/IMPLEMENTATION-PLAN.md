@@ -15,8 +15,11 @@ atomically seals the immutable run bundle, creates the root blocked, reconciles
 ten idempotent cards and their native dependencies, writes a task-ID receipt,
 and releases the root only after topology audit. A host-local launch lock closes
 Hermes v0.18.2's non-atomic idempotency race. Interrupted, duplicate, and
-concurrent launches cannot create duplicate work. The remaining Phase 2 launch
-work is resume-migration comparison and the sacrificial real-board tracer.
+concurrent launches cannot create duplicate work. Resume now independently
+recomputes implementation, contract, profile, graph, gate, input, skill, and
+role-contract compatibility deltas, requires an exact append-only approval for
+incompatible runs, and blocks continuation after a durable limit overrun. The
+remaining Phase 2 work is the sacrificial real-board tracer and review gate.
 External-root ownership now canonicalizes GitHub and Jira identity, rejects
 active duplicates under a host-local ownership lock, and requires an explicit
 terminal predecessor for supersession. Status now validates sealed run identity

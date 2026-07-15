@@ -677,11 +677,11 @@ function validateExactPathSet(errors, instancePath, declared, typed) {
 function validateMigrationReceipt(document) {
   const dimensions = [
     ["contract_version", new Set(["contract"])],
-    ["implementation_revision", new Set(["implementation"])],
+    ["implementation_revision", new Set(["implementation", "contract"])],
     ["profile_set_fingerprint", new Set(["profile"])],
     [
       "content_set_fingerprint",
-      new Set(["graph", "gate", "input", "skill", "role-contract"]),
+      new Set(["graph", "gate", "input", "profile", "skill", "role-contract"]),
     ],
   ];
   const changedDimensions = dimensions.filter(

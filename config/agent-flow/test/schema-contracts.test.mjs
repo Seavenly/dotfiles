@@ -717,6 +717,17 @@ test("migration receipts explain each changed compatibility dimension", async ()
 
   contentChange.changes[0].kind = "implementation";
   assert.equal((await validateContract(contentChange)).valid, false);
+
+  const topologyProfileChange = validMigrationReceipt();
+  topologyProfileChange.to.implementation_revision =
+    topologyProfileChange.from.implementation_revision;
+  topologyProfileChange.to.content_set_fingerprint =
+    "2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  topologyProfileChange.changes = [
+    { ...topologyProfileChange.changes[0], kind: "graph", name: "local-review" },
+    { ...topologyProfileChange.changes[0], kind: "profile", name: "artifact" },
+  ];
+  assert.equal((await validateContract(topologyProfileChange)).valid, true);
 });
 
 test("successful validation envelopes cannot retain errors", async () => {

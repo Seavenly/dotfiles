@@ -15,6 +15,11 @@ import { promisify } from "node:util";
 
 import { formatTaskAuthority, HermesAdapter } from "./hermes-adapter.mjs";
 import { parseExternalRef } from "./external-root.mjs";
+import { parseCancellationAudit } from "./cancellation-audit.mjs";
+import {
+  deriveResumeCompatibility,
+  requireMigrationApproval,
+} from "./migration-compatibility.mjs";
 import {
   acquireExternalOwnershipLock,
   acquireRunMutationLock,
@@ -22,6 +27,8 @@ import {
 import { assertExternalOwnershipAvailable } from "./run-ownership.mjs";
 import { materializationOrder } from "./review-topology.mjs";
 import { validateContract } from "./schema-validator.mjs";
+import { projectRunStatus } from "./run-lifecycle.mjs";
+import { hasTerminalCompletedAttempt } from "./run-terminal.mjs";
 
 export { materializationOrder } from "./review-topology.mjs";
 
@@ -89,6 +96,10 @@ export async function launchReview({
       review.automated_review.urgency,
     );
     const doctor = await runDoctor();
+    const existingProfiles = await existingRequiredProfiles(runDirectory);
+    if (existingProfiles.length > 0) {
+      requireHealthyProfiles(doctor, existingProfiles);
+    }
     const profileIdentity = requireHealthyProfiles(
       doctor,
       [...new Set(graphSource.enabledStages.map(({ profile }) => profile))],
@@ -134,6 +145,32 @@ export async function launchReview({
       now,
       graphSource,
     });
+    if (bundle.resumed) {
+      const status = await projectRunStatus({
+        adapter: resolvedAdapter,
+        env,
+        now,
+        runId: review.run_id,
+      });
+      if (status.cancellation.requested) {
+        throw new Error(
+          "resume blocked: cancellation has been requested for this run",
+        );
+      }
+      const exceeded = Object.entries(status.limits)
+        .filter(([, limit]) => limit.exceeded)
+        .map(([name]) => `${name} limit exceeded`);
+      const hasReceipt = await materializationReceiptExists(runDirectory);
+      const blockingIssues = [
+        ...(hasReceipt ? status.issues : []),
+        ...exceeded,
+      ];
+      if (blockingIssues.length > 0) {
+        throw new Error(
+          `resume blocked: ${[...new Set(blockingIssues)].join("; ")}`,
+        );
+      }
+    }
     return await materializeReview({
       adapter: resolvedAdapter,
       bundle,
@@ -150,6 +187,31 @@ export async function launchReview({
     } finally {
       if (releaseOwnershipLock) await releaseOwnershipLock();
     }
+  }
+}
+
+async function materializationReceiptExists(runDirectory) {
+  try {
+    await readFile(join(runDirectory, "materialization.json"));
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function existingRequiredProfiles(runDirectory) {
+  try {
+    const manifest = parseJson(
+      await readFile(join(runDirectory, "run.json")),
+      "existing run manifest",
+    );
+    return Array.isArray(manifest?.profiles?.required)
+      ? manifest.profiles.required.filter((name) => typeof name === "string")
+      : [];
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
   }
 }
 
@@ -184,10 +246,19 @@ async function sealOrLoadBundle({
   now,
   graphSource,
 }) {
+  const candidate = await prepareCandidateBundle({
+    graphSource,
+    manifestPath,
+    repository,
+    review,
+    reviewBytes,
+    runDirectory,
+  });
   const runManifestPath = join(runDirectory, "run.json");
   try {
     const existingBytes = await readFile(runManifestPath);
     return loadExistingBundle({
+      candidate,
       existingBytes,
       review,
       reviewBytes,
@@ -199,64 +270,23 @@ async function sealOrLoadBundle({
     if (error.code !== "ENOENT") throw error;
   }
 
-  const { graphBytes, graph, enabledStages } = graphSource;
-  const layout = bundleLayout(runDirectory, enabledStages);
-  const generatedGates = generateGates({ enabledStages, layout, review });
-  for (const gate of generatedGates) {
-    const gateValidation = await validateContract(gate.document);
-    if (!gateValidation.valid) {
-      throw new Error(
-        `generated gate ${gate.name} is invalid: ${formatValidationError(gateValidation)}`,
-      );
-    }
-  }
-  const sources = await loadStaticInputs(enabledStages, layout);
-  const inputContents = [
-    {
-      kind: "review-manifest",
-      name: "review.json",
-      sourcePath: manifestPath,
-      sealedPath: layout.reviewManifest,
-      bytes: reviewBytes,
-    },
-    {
-      kind: "machine-input",
-      name: "candidate.patch",
-      sourcePath: review.worktree,
-      sealedPath: layout.candidateDiff,
-      bytes: repository.diffBytes ?? Buffer.from(""),
-    },
-    ...generatedGates.map(({ name, path, document }) => ({
-      kind: "gate",
-      name,
-      sourcePath: LAUNCH_SOURCE,
-      sealedPath: path,
-      bytes: jsonBytes(document),
-    })),
-    ...sources,
-  ];
-  const inputs = inputContents.map((input) => ({
-    kind: input.kind,
-    name: input.name,
-    source_path: input.sourcePath,
-    sealed_path: input.sealedPath,
-    sha256: sha256(input.bytes),
-  }));
-  const graphDigest = sha256(graphBytes);
-  const graphIdentity = {
-    name: graph.name,
-    version: graph.version,
-    flow: graph.flow,
-    sealed_path: layout.graph,
-    sha256: graphDigest,
-  };
+  const {
+    enabledStages,
+    gates: generatedGates,
+    graph,
+    graphBytes,
+    graphIdentity,
+    inputContents,
+    inputs,
+    layout,
+  } = candidate;
   const manifest = {
     schema: "agent-flow.run/v1",
     contract_version: 1,
     implementation: {
       revision,
       compatible_contracts: COMPATIBLE_CONTRACTS,
-      content_set_fingerprint: aggregateFingerprint(graphIdentity, inputs),
+      content_set_fingerprint: candidate.contentSetFingerprint,
     },
     identity: {
       run_id: review.run_id,
@@ -318,6 +348,7 @@ async function sealOrLoadBundle({
     layout,
     manifest,
     manifestBytes: jsonBytes(manifest),
+    resumed: false,
     runManifestPath,
   };
 }
@@ -339,6 +370,7 @@ async function loadReviewGraph(urgency) {
 }
 
 async function loadExistingBundle({
+  candidate,
   existingBytes,
   review,
   reviewBytes,
@@ -360,19 +392,20 @@ async function loadExistingBundle({
   ) {
     throw new Error("existing run identity does not match this review launch");
   }
-  if (
-    manifest.implementation.revision !== revision ||
-    manifest.profiles.profile_set_fingerprint !==
-      profileIdentity.profile_set_fingerprint ||
-    JSON.stringify(manifest.profiles) !== JSON.stringify(profileIdentity)
-  ) {
-    throw new Error("existing run is incompatible with the current implementation or profiles");
-  }
+  const compatibility = deriveResumeCompatibility({
+    candidate,
+    manifest,
+    profileIdentity,
+    revision,
+  });
   const sealedReview = manifest.inputs.find(
     ({ kind, name }) => kind === "review-manifest" && name === "review.json",
   );
+  if (!sealedReview) {
+    throw new Error("existing run omits its sealed review input");
+  }
   if (
-    !sealedReview ||
+    !compatibility.contentChanged &&
     sealedReview.sha256 !== sha256(reviewBytes)
   ) {
     throw new Error("existing run was sealed from different review input");
@@ -406,12 +439,22 @@ async function loadExistingBundle({
   ) {
     throw new Error("existing review graph identity does not match the run manifest");
   }
+  const sealedReviewDocument = parseJson(
+    await readFile(sealedReview.sealed_path),
+    "existing sealed review input",
+  );
+  const sealedReviewValidation = await validateContract(sealedReviewDocument);
+  if (!sealedReviewValidation.valid) {
+    throw new Error("existing run has an invalid sealed review input");
+  }
   const enabledStages = materializationOrder(
     graph,
-    review.automated_review.urgency,
+    sealedReviewDocument.automated_review.urgency,
   );
   const layout = bundleLayout(runDirectory, enabledStages);
-  const expectedGates = generateGates({ enabledStages, layout, review });
+  const expectedGates = compatibility.contentChanged
+    ? expectedSealedGateTopology(enabledStages, layout)
+    : candidate.gates;
   const gateInputs = manifest.inputs.filter(({ kind }) => kind === "gate");
   if (gateInputs.length !== expectedGates.length) {
     throw new Error("existing run does not contain the exact generated gate set");
@@ -432,7 +475,13 @@ async function loadExistingBundle({
           formatValidationError(gateValidation),
       );
     }
-    if (JSON.stringify(document) !== JSON.stringify(expected.document)) {
+    if (document.stage !== expected.stage) {
+      throw new Error("existing run does not contain the exact generated gate set");
+    }
+    if (
+      !compatibility.contentChanged &&
+      JSON.stringify(document) !== JSON.stringify(expected.document)
+    ) {
       throw new Error(
         `existing gate ${input.name} does not match its generated operation`,
       );
@@ -443,6 +492,15 @@ async function loadExistingBundle({
       document,
     });
   }
+  if (compatibility.changes.length > 0) {
+    await requireMigrationApproval({
+      changes: compatibility.changes,
+      from: compatibility.from,
+      runDirectory,
+      runId: review.run_id,
+      to: compatibility.to,
+    });
+  }
   return {
     graph,
     enabledStages,
@@ -450,7 +508,80 @@ async function loadExistingBundle({
     layout,
     manifest,
     manifestBytes: existingBytes,
+    resumed: true,
     runManifestPath: join(runDirectory, "run.json"),
+  };
+}
+
+async function prepareCandidateBundle({
+  graphSource,
+  manifestPath,
+  repository,
+  review,
+  reviewBytes,
+  runDirectory,
+}) {
+  const { graphBytes, graph, enabledStages } = graphSource;
+  const layout = bundleLayout(runDirectory, enabledStages);
+  const gates = generateGates({ enabledStages, layout, review });
+  for (const gate of gates) {
+    const gateValidation = await validateContract(gate.document);
+    if (!gateValidation.valid) {
+      throw new Error(
+        `generated gate ${gate.name} is invalid: ${formatValidationError(gateValidation)}`,
+      );
+    }
+  }
+  const sources = await loadStaticInputs(enabledStages, layout);
+  const inputContents = [
+    {
+      kind: "review-manifest",
+      name: "review.json",
+      sourcePath: manifestPath,
+      sealedPath: layout.reviewManifest,
+      bytes: reviewBytes,
+    },
+    {
+      kind: "machine-input",
+      name: "candidate.patch",
+      sourcePath: review.worktree,
+      sealedPath: layout.candidateDiff,
+      bytes: repository.diffBytes ?? Buffer.from(""),
+    },
+    ...gates.map(({ name, path, document }) => ({
+      kind: "gate",
+      name,
+      sourcePath: LAUNCH_SOURCE,
+      sealedPath: path,
+      bytes: jsonBytes(document),
+    })),
+    ...sources,
+  ];
+  const inputs = inputContents.map((input) => ({
+    kind: input.kind,
+    name: input.name,
+    source_path: input.sourcePath,
+    sealed_path: input.sealedPath,
+    sha256: sha256(input.bytes),
+  }));
+  const graphIdentity = {
+    name: graph.name,
+    version: graph.version,
+    flow: graph.flow,
+    sealed_path: layout.graph,
+    sha256: sha256(graphBytes),
+  };
+  return {
+    compatibleContracts: COMPATIBLE_CONTRACTS,
+    contentSetFingerprint: aggregateFingerprint(graphIdentity, inputs),
+    enabledStages,
+    gates,
+    graph,
+    graphBytes,
+    graphIdentity,
+    inputContents,
+    inputs,
+    layout,
   };
 }
 
@@ -473,6 +604,7 @@ async function publishBundle({
       "artifacts",
       "artifacts/review",
       "artifacts/validations",
+      "migrations",
       "validated",
     ]) {
       await mkdir(join(staging, directory), { recursive: true, mode: 0o700 });
@@ -580,6 +712,13 @@ async function materializeReview({ adapter, bundle, review }) {
         throw new Error(`task ${task.id} has unexpected dependency parents`);
       }
     }
+    await auditMaterializedTenant({
+      adapter,
+      enabledStages,
+      rootStage: graph.root,
+      taskIds,
+      tenant: manifest.identity.tenant,
+    });
     await writeMaterialization(layout, graph, taskIds);
     const root = await adapter.getTask({ taskId: rootId });
     if (root.status === "blocked") {
@@ -610,6 +749,53 @@ async function materializeReview({ adapter, bundle, review }) {
       }
     }
     throw error;
+  }
+}
+
+async function auditMaterializedTenant({
+  adapter,
+  enabledStages,
+  rootStage,
+  taskIds,
+  tenant,
+}) {
+  const listed = await adapter.listTasks({ tenant, includeArchived: true });
+  if (!Array.isArray(listed)) {
+    throw new Error("Hermes adapter did not return a task list");
+  }
+  const expected = new Set(taskIds.values());
+  const actual = new Set(listed.map(({ id }) => id));
+  if (
+    actual.size !== listed.length ||
+    actual.size !== expected.size ||
+    [...expected].some((taskId) => !actual.has(taskId))
+  ) {
+    throw new Error("materialized tenant does not contain the exact sealed task set");
+  }
+  const stages = new Map(enabledStages.map((stage) => [stage.key, stage]));
+  const lifecycles = new Map();
+  for (const [stage, taskId] of taskIds) {
+    const lifecycle = await adapter.getTaskLifecycle({ taskId });
+    lifecycles.set(taskId, lifecycle);
+    const attempts = Array.isArray(lifecycle.runs) ? lifecycle.runs.length : 0;
+    if (attempts > stages.get(stage).max_attempts) {
+      throw new Error(`task ${taskId} exceeds the ${stage} attempt limit`);
+    }
+    if (
+      lifecycle.status === "done" &&
+      !hasTerminalCompletedAttempt(lifecycle)
+    ) {
+      throw new Error(
+        `task ${taskId} is done without a terminal completed attempt`,
+      );
+    }
+  }
+  if ([...lifecycles.values()].some(({ status }) => status === "archived")) {
+    const root = lifecycles.get(taskIds.get(rootStage));
+    const cancellation = parseCancellationAudit(root?.comments, tenant);
+    if (cancellation.request === null || cancellation.issues.length > 0) {
+      throw new Error("materialized tenant has an archived task without cancellation");
+    }
   }
 }
 
@@ -1064,6 +1250,23 @@ function jsonBytes(document) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function expectedSealedGateTopology(enabledStages, layout) {
+  return [
+    ...enabledStages
+      .filter(({ validates_handoff_for: producer }) => producer)
+      .map(({ key }) => ({
+        name: `${key}.json`,
+        path: layout.gatePath(key),
+        stage: key,
+      })),
+    {
+      name: "finalize.json",
+      path: layout.gatePath("finalize"),
+      stage: "finalize",
+    },
+  ];
 }
 
 function stagingPath(staging, runDirectory, finalPath) {

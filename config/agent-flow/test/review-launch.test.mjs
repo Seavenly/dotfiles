@@ -1426,7 +1426,7 @@ test("duplicate and interrupted review launches converge without releasing an in
     ),
     1,
   );
-  assert.match(changedStderr.value(), /different review input/);
+  assert.match(changedStderr.value(), /migration receipt/);
   assert.equal(adapter.tasks.get("t_1").status, "blocked");
   assert.equal(adapter.events.at(-1).type, "block");
 });
@@ -1561,6 +1561,218 @@ test("resume requires the exact generated gate set", async (t) => {
   assert.equal(adapter.tasks.get("t_1").status, "blocked");
 });
 
+test("resume accepts an approved complete implementation migration", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-implementation-migration");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  const nextRevision = `2${GIT_SHA.slice(1)}`;
+  await writeMigrationReceipt(fixture, {
+    changes: [{
+      kind: "implementation",
+      name: "agent-flow",
+      prior_sha256: digestText(run.implementation.revision),
+      next_sha256: digestText(nextRevision),
+    }],
+    from: compatibilityIdentity(run),
+    to: {
+      content_set_fingerprint: run.implementation.content_set_fingerprint,
+      profile_set_fingerprint: run.profiles.profile_set_fingerprint,
+      implementation_revision: nextRevision,
+      contract_version: run.contract_version,
+    },
+  });
+  const originalTaskIds = [...adapter.tasks.keys()];
+
+  assert.equal(await launch(fixture, adapter, {
+    implementationRevision: nextRevision,
+  }), 0);
+
+  assert.deepEqual([...adapter.tasks.keys()], originalTaskIds);
+});
+
+test("resume accepts an approved complete profile migration", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-profile-migration");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  const report = healthyDoctor();
+  const critic = report.profiles.find(({ name }) => name === "critic");
+  critic.configurationFingerprint = `sha256:${"b".repeat(64)}`;
+  report.profileSetFingerprint = `sha256:${"c".repeat(64)}`;
+  await writeMigrationReceipt(fixture, {
+    changes: [{
+      kind: "profile",
+      name: "critic",
+      prior_sha256: run.profiles.fingerprints.critic,
+      next_sha256: "b".repeat(64),
+    }],
+    from: compatibilityIdentity(run),
+    to: {
+      ...compatibilityIdentity(run),
+      profile_set_fingerprint: "c".repeat(64),
+    },
+  });
+  const originalTaskIds = [...adapter.tasks.keys()];
+
+  assert.equal(await launch(fixture, adapter, {
+    runDoctor: async () => report,
+  }), 0);
+
+  assert.deepEqual([...adapter.tasks.keys()], originalTaskIds);
+});
+
+test("resume accepts an approved complete sealed-input migration", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-input-migration");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  const priorInput = run.inputs.find(({ kind }) => kind === "review-manifest");
+  fixture.review.summary = "Review the same candidate with clarified intent";
+  const nextBytes = Buffer.from(`${JSON.stringify(fixture.review, null, 2)}\n`);
+  await writeFile(fixture.manifestPath, nextBytes);
+  const nextInputDigest = createHash("sha256").update(nextBytes).digest("hex");
+  const nextInputs = run.inputs.map((input) => input === priorInput
+    ? { ...input, sha256: nextInputDigest }
+    : input);
+  const nextContentFingerprint = aggregateFingerprint(run.graph, nextInputs);
+  await writeMigrationReceipt(fixture, {
+    changes: [{
+      kind: "input",
+      name: "review-manifest/review.json",
+      prior_sha256: priorInput.sha256,
+      next_sha256: nextInputDigest,
+    }],
+    from: compatibilityIdentity(run),
+    to: {
+      ...compatibilityIdentity(run),
+      content_set_fingerprint: nextContentFingerprint,
+    },
+  });
+  const originalTaskIds = [...adapter.tasks.keys()];
+
+  assert.equal(await launch(fixture, adapter), 0);
+
+  assert.deepEqual([...adapter.tasks.keys()], originalTaskIds);
+});
+
+test("resume blocks before continuation when durable card limits are exceeded", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-resume-limit");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  addUndeclaredTask(adapter, fixture.review.run_id);
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /created_cards limit exceeded/);
+  assert.equal(taskForStage(adapter, "review-root").status, "blocked");
+});
+
+test("resume blocks on audited lifecycle issues before materialization", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-resume-broken");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const critic = taskForStage(adapter, "critic");
+  critic.status = "done";
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /done without a terminal completed attempt/);
+  assert.equal(taskForStage(adapter, "review-root").status, "blocked");
+});
+
+test("pre-receipt recovery audits lifecycle state before root release", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-pre-receipt-broken");
+  const adapter = new FakeHermesAdapter({ failAfterCreates: 4 });
+  assert.equal(await launch(fixture, adapter), 1);
+  const worker = [...adapter.tasks.values()].find(({ assignee }) =>
+    assignee !== "flow-controller"
+  );
+  worker.status = "done";
+  adapter.failAfterCreates = null;
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /done without a terminal completed attempt/);
+  assert.equal(taskForStage(adapter, "review-root").status, "blocked");
+  await assert.rejects(
+    readFile(join(dirname(fixture.runManifestPath), "materialization.json")),
+    { code: "ENOENT" },
+  );
+});
+
+test("resume cannot reverse an initiated cancellation", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-cancelling");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  for (const taskId of adapter.tasks.keys()) {
+    adapter.unarchivableTaskIds.add(taskId);
+  }
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Operator requested cancellation",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  }), 1);
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, { stderr }), 1);
+
+  assert.match(stderr.value(), /cancellation has been requested/);
+});
+
+test("resume derives every content delta instead of trusting the receipt list", async (t) => {
+  const fixture = await reviewFixture(t, "review-launch-incomplete-migration");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  fixture.review.summary = "Changed review intent";
+  const nextReviewBytes = Buffer.from(`${JSON.stringify(fixture.review, null, 2)}\n`);
+  const nextPatchBytes = Buffer.from("different candidate patch\n");
+  await writeFile(fixture.manifestPath, nextReviewBytes);
+  const nextInputs = run.inputs.map((input) => {
+    if (input.kind === "review-manifest") {
+      return { ...input, sha256: digestBytes(nextReviewBytes) };
+    }
+    if (input.kind === "machine-input") {
+      return { ...input, sha256: digestBytes(nextPatchBytes) };
+    }
+    return input;
+  });
+  const priorReview = run.inputs.find(({ kind }) => kind === "review-manifest");
+  await writeMigrationReceipt(fixture, {
+    changes: [{
+      kind: "input",
+      name: "review-manifest/review.json",
+      prior_sha256: priorReview.sha256,
+      next_sha256: digestBytes(nextReviewBytes),
+    }],
+    from: compatibilityIdentity(run),
+    to: {
+      ...compatibilityIdentity(run),
+      content_set_fingerprint: aggregateFingerprint(run.graph, nextInputs),
+    },
+  });
+  const stderr = captureStream();
+
+  assert.equal(await launch(fixture, adapter, {
+    diffBytes: nextPatchBytes,
+    stderr,
+  }), 1);
+
+  assert.match(stderr.value(), /explaining every compatibility change/);
+});
+
 test("stale launch locks fail with explicit recovery instead of racing reclamation", async (t) => {
   const fixture = await reviewFixture(t, "review-launch-stale-lock");
   const lockPath = `${join(
@@ -1658,7 +1870,13 @@ test("review repository inspection pins the declared commits and candidate diff"
 async function launch(
   fixture,
   adapter,
-  { stdout = captureStream(), stderr = captureStream() } = {},
+  {
+    implementationRevision = GIT_SHA,
+    diffBytes = Buffer.from("diff --git a/example b/example\n"),
+    runDoctor = async () => healthyDoctor(),
+    stdout = captureStream(),
+    stderr = captureStream(),
+  } = {},
 ) {
   return runCli(["launch", "review", "--manifest", fixture.manifestPath], {
     adapter,
@@ -1666,11 +1884,11 @@ async function launch(
     inspectRepository: async () => ({
       repositoryPath: fixture.repository,
       headSha: fixture.review.head.sha,
-      diffBytes: Buffer.from("diff --git a/example b/example\n"),
+      diffBytes,
     }),
-    implementationRevision: GIT_SHA,
+    implementationRevision,
     now: () => new Date("2026-07-15T12:00:00Z"),
-    runDoctor: async () => healthyDoctor(),
+    runDoctor,
     stdout: stdout.stream,
     stderr: stderr.stream,
   });
@@ -1815,4 +2033,44 @@ function aggregateFingerprint(graph, inputs) {
     ...inputs.map(({ kind, name, sha256 }) => `${kind}\0${name}\0${sha256}`),
   ].sort();
   return createHash("sha256").update(entries.join("\n")).digest("hex");
+}
+
+function compatibilityIdentity(run) {
+  return {
+    contract_version: run.contract_version,
+    implementation_revision: run.implementation.revision,
+    profile_set_fingerprint: run.profiles.profile_set_fingerprint,
+    content_set_fingerprint: run.implementation.content_set_fingerprint,
+  };
+}
+
+function digestText(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function digestBytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function writeMigrationReceipt(fixture, { changes, from, to }) {
+  const migrations = join(dirname(fixture.runManifestPath), "migrations");
+  const evidencePath = join(migrations, "approval.json");
+  await mkdir(migrations, { recursive: true });
+  await writeFile(evidencePath, `${JSON.stringify({
+    decision: "Approved migration evidence",
+  }, null, 2)}\n`);
+  await writeFile(join(migrations, "migration-1.json"), `${JSON.stringify({
+    schema: "agent-flow.migration-receipt/v1",
+    receipt_id: "migration-1",
+    run_id: fixture.review.run_id,
+    from,
+    to,
+    changes,
+    approval: {
+      actor: "operator",
+      approved_at: "2026-07-15T12:30:00Z",
+      reason: "Reviewed compatibility change",
+      evidence_path: evidencePath,
+    },
+  }, null, 2)}\n`);
 }

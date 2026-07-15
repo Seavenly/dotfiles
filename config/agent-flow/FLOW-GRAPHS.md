@@ -21,7 +21,10 @@ Every graph follows these rules:
    that manifest; a resume with incompatible contracts or changed content
    blocks before dispatch. Standalone schema validation is not sufficient:
    launch and resume load the sealed graph and inputs, verify their hashes, and
-   recompute the manifest's compatibility fingerprints.
+   recompute the manifest's compatibility fingerprints. Resume independently
+   derives every compatibility delta from the sealed and current content sets;
+   an append-only receipt must match the exact comparison and must never rewrite
+   sealed authority. Original source-path changes alone are not content drift.
 2. The launcher creates the root blocked, creates cards with idempotency keys,
    links the terminal cards as root parents, validates the complete executable
    topology, and unblocks the root. The root is a required terminal
