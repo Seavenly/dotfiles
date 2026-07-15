@@ -5,7 +5,10 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
-assert_contains "$("$root/bin/agent-flow" --help)" 'agent-flow doctor profiles'
+help="$("$root/bin/agent-flow" --help)"
+assert_contains "$help" 'agent-flow doctor profiles'
+assert_contains "$help" 'agent-flow status --run'
+assert_contains "$help" 'agent-flow cancel --run'
 
 set +e
 output="$("$root/bin/agent-flow" launch review 2>&1)"

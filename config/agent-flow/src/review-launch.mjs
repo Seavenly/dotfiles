@@ -1,14 +1,12 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
-  open,
   readFile,
   realpath,
   rename,
   rm,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -16,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { formatTaskAuthority, HermesAdapter } from "./hermes-adapter.mjs";
+import { acquireRunMutationLock } from "./run-lock.mjs";
 import { validateContract } from "./schema-validator.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -101,7 +100,7 @@ export async function launchReview({
     if (!/^[0-9a-f]{40,64}$/.test(revision)) {
       throw new Error("agent-flow implementation revision is not a Git revision");
     }
-    releaseLaunchLock = await acquireLaunchLock(runDirectory);
+    releaseLaunchLock = await acquireRunMutationLock(runDirectory);
     const bundle = await sealOrLoadBundle({
       manifestPath,
       review,
@@ -125,61 +124,6 @@ export async function launchReview({
     throw error;
   } finally {
     if (releaseLaunchLock) await releaseLaunchLock();
-  }
-}
-
-async function acquireLaunchLock(runDirectory) {
-  const lockPath = `${runDirectory}.launch.lock`;
-  await mkdir(dirname(runDirectory), { recursive: true, mode: 0o700 });
-  const token = `${process.pid}:${randomUUID()}`;
-  try {
-    const handle = await open(lockPath, "wx", 0o600);
-    try {
-      await handle.writeFile(
-        `${JSON.stringify({ pid: process.pid, token })}\n`,
-      );
-    } finally {
-      await handle.close();
-    }
-    return async () => {
-      try {
-        const owner = parseJson(await readFile(lockPath), "launch lock");
-        if (owner.token === token) await unlink(lockPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-    };
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
-    const owner = await readLaunchLock(lockPath);
-    const stale = owner !== null && !processIsAlive(owner.pid);
-    const busy = new Error(
-      stale
-        ? `stale launch lock detected; remove ${lockPath} after confirming no launcher is active`
-        : `another launcher is active for this run; retry after it exits (${lockPath})`,
-    );
-    busy.code = "AGENT_FLOW_LAUNCH_BUSY";
-    throw busy;
-  }
-}
-
-async function readLaunchLock(lockPath) {
-  try {
-    const owner = parseJson(await readFile(lockPath), "launch lock");
-    return Number.isInteger(owner.pid) && owner.pid > 0 ? owner : null;
-  } catch (error) {
-    if (error.code === "ENOENT") return { pid: -1 };
-    return null;
-  }
-}
-
-function processIsAlive(pid) {
-  if (pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
   }
 }
 

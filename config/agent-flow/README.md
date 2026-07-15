@@ -6,9 +6,10 @@ profile doctoring. Phase 2 now includes the machine contracts, task-pinned
 command, handoff-validation, and review-finalize gate tracers, the canonical
 standard review graph, a recoverable hotfix review launcher, and practical
 inline handoffs for terminal-free review workers. Review launch now supports
-hotfix, fast, and standard urgency. Status, cancellation, external-root
-ownership, registry changes, and stack mechanics remain phased work under the
-approved implementation plan.
+hotfix, fast, and standard urgency. Run status and convergent cancellation are
+now implemented for sealed review runs. External-root ownership, registry
+changes, and stack mechanics remain phased work under the approved
+implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -79,6 +80,19 @@ orientation and diagram side artifacts. The review manifest seals
 `max_comments` and the `critical`, `important`, `recommended`, and `nit` values
 under `per_tier_caps`. Unsupported external ownership fails before
 run-directory or Kanban mutation.
+
+`agent-flow status --run <run-id> [--json]` loads the run from the configured
+state home, validates the sealed manifest and graph, reconciles the
+materialization receipt and dependency links with the complete tenant task
+list, and reads native Hermes attempt and comment history. It reports
+`complete`, `running`,
+`blocked`, `retrying`, `broken`, `cancelling`, or `cancelled` without issuing a
+lifecycle mutation command. Native Hermes v0.18.2 `kanban list` reconciles dependency-
+cleared cards to `ready` before returning them, so observation can expose that
+Hermes-owned lifecycle transition. JSON output includes every card and attempt
+count, status counts, every sealed run-wide limit measurement, finalize and
+validation artifact pointers, cancellation survivors, and audit issues. A
+broken or incompletely cancelled projection exits nonzero.
 
 ## Run and board identity
 
@@ -192,6 +206,23 @@ Status reports exact survivors and treats the run as incompletely cancelled
 until a later sweep converges. An operator who needs a stronger emergency stop
 may stop the gateway before cancellation, accepting that unrelated runs also
 pause.
+
+The cancellation request is an append-only, machine-readable root comment
+authored by `agent-flow` with the run ID, reason, and request time. A repeated
+command reuses that request instead of duplicating it. Each sweep lists only the
+sealed tenant, reclaims
+tasks observed as running, archives every observed nonterminal task with the
+root last, then reconciles again. If the survivor count stops decreasing, the
+command exits nonzero and prints each survivor's task ID, stage, and status for
+the next sweep. Interruptions before or after the comment, reclaim, or archive
+mutation are safe to retry. A run that completed before any cancellation
+request is rejected rather than relabeled as cancelled.
+
+Launch and cancellation share one host-local per-run mutation lock. This
+serializes materialization against cancellation and prevents concurrent cancel
+commands from recording competing requests. Cancellation validates every
+receipt-selected task against its launcher-authored manifest authority before
+the first board mutation.
 
 Dynamic transition admission is cooperative in the initial implementation.
 Controllers use native `kanban_create` and `kanban_link`, and their pinned card

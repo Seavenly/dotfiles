@@ -10,6 +10,12 @@ import {
   launchReview,
 } from "./review-launch.mjs";
 import { executeReviewFinalizeGate } from "./review-finalize-gate.mjs";
+import {
+  cancelRun,
+  projectRunStatus,
+  renderCancellation,
+  renderRunStatus,
+} from "./run-lifecycle.mjs";
 
 export async function runCli(
   args,
@@ -46,6 +52,12 @@ export async function runCli(
       stdout,
     });
   }
+  if (args[0] === "status") {
+    return runStatus(args.slice(1), { adapter, env, now, stderr, stdout });
+  }
+  if (args[0] === "cancel") {
+    return runCancel(args.slice(1), { adapter, env, now, stderr, stdout });
+  }
   stderr.write(`Unknown command: ${args[0]}\n`);
   usage(stderr);
   return 2;
@@ -56,8 +68,65 @@ function usage(stream) {
     "Usage:\n" +
       "  agent-flow doctor profiles [--json]\n" +
       "  agent-flow launch review --manifest <absolute-review.json>\n" +
+      "  agent-flow status --run <run-id> [--json]\n" +
+      "  agent-flow cancel --run <run-id> --reason <text>\n" +
       "  agent-flow gate --spec <absolute-gate.json>\n",
   );
+}
+
+async function runCancel(options, { adapter, env, now, stderr, stdout }) {
+  if (
+    options.length !== 4 ||
+    options[0] !== "--run" ||
+    options[2] !== "--reason" ||
+    options[3].trim().length === 0
+  ) {
+    stderr.write("Usage: agent-flow cancel --run <run-id> --reason <text>\n");
+    return 2;
+  }
+  try {
+    const result = await cancelRun({
+      adapter,
+      env,
+      now,
+      reason: options[3].trim(),
+      runId: options[1],
+    });
+    const output = renderCancellation(result);
+    (result.converged ? stdout : stderr).write(output);
+    return result.converged ? 0 : 1;
+  } catch (error) {
+    stderr.write(`agent-flow cancel: ${error.message}\n`);
+    return 1;
+  }
+}
+
+async function runStatus(options, { adapter, env, now, stderr, stdout }) {
+  const json = options.includes("--json");
+  const positional = options.filter((option) => option !== "--json");
+  if (
+    positional.length !== 2 ||
+    positional[0] !== "--run" ||
+    options.length !== (json ? 3 : 2)
+  ) {
+    stderr.write("Usage: agent-flow status --run <run-id> [--json]\n");
+    return 2;
+  }
+  try {
+    const report = await projectRunStatus({
+      adapter,
+      env,
+      now,
+      runId: positional[1],
+    });
+    stdout.write(json
+      ? `${JSON.stringify(report, null, 2)}\n`
+      : renderRunStatus(report));
+    return report.state === "broken" || report.state === "cancelling" ? 1 : 0;
+  } catch (error) {
+    stderr.write(`agent-flow status: ${error.message}\n`);
+    return 1;
+  }
 }
 
 async function runLaunchReview(

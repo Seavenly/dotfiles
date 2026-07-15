@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -49,13 +49,19 @@ function healthyDoctor() {
 }
 
 class FakeHermesAdapter {
-  constructor({ createDelayMs = 0, failAfterCreates = null } = {}) {
+  constructor({
+    archiveTimestamp = Date.parse("2026-07-15T12:00:10Z") / 1000,
+    createDelayMs = 0,
+    failAfterCreates = null,
+  } = {}) {
+    this.archiveTimestamp = archiveTimestamp;
     this.createDelayMs = createDelayMs;
     this.failAfterCreates = failAfterCreates;
     this.tasks = new Map();
     this.idsByKey = new Map();
     this.events = [];
     this.nextId = 1;
+    this.unarchivableTaskIds = new Set();
   }
 
   async createTask(spec) {
@@ -83,6 +89,9 @@ class FakeHermesAdapter {
       workspace_path: spec.workspace.path,
       max_retries: spec.maxAttempts,
       parents: [...spec.parents],
+      comments: [],
+      events: [],
+      runs: [],
     };
     this.tasks.set(id, task);
     this.idsByKey.set(spec.idempotencyKey, id);
@@ -116,7 +125,43 @@ class FakeHermesAdapter {
   }
 
   async commentTask({ taskId, body }) {
+    this.tasks.get(taskId).comments.push({ author: "agent-flow", body });
     this.events.push({ type: "comment", taskId, body });
+  }
+
+  async listTasks({ tenant, includeArchived }) {
+    return [...this.tasks.values()]
+      .filter((task) => task.tenant === tenant)
+      .filter((task) => includeArchived || task.status !== "archived")
+      .map((task) => structuredClone(task));
+  }
+
+  async getTaskLifecycle({ taskId }) {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`unknown task ${taskId}`);
+    return structuredClone(task);
+  }
+
+  async reclaimTask({ taskId, reason }) {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== "running") return false;
+    task.status = "ready";
+    task.runs.push({ status: "done", outcome: "reclaimed" });
+    this.events.push({ type: "reclaim", taskId, reason });
+    return true;
+  }
+
+  async archiveTask({ taskId }) {
+    const task = this.tasks.get(taskId);
+    if (
+      !task ||
+      task.status === "archived" ||
+      this.unarchivableTaskIds.has(taskId)
+    ) return false;
+    task.status = "archived";
+    task.events.push({ kind: "archived", created_at: this.archiveTimestamp });
+    this.events.push({ type: "archive", taskId });
+    return true;
   }
 }
 
@@ -355,6 +400,656 @@ test("launch review seals the standard urgency floor", async (t) => {
     finalizeGate.review_policy.per_tier_caps,
     fixture.review.automated_review.per_tier_caps,
   );
+});
+
+test("status projects a launched run from sealed identity and Hermes state", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-running");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const stdout = captureStream();
+  const stderr = captureStream();
+
+  assert.equal(await runCli([
+    "status",
+    "--run",
+    fixture.review.run_id,
+    "--json",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:00:30Z"),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+  }), 0, stderr.value());
+
+  const report = JSON.parse(stdout.value());
+  assert.equal(report.run_id, fixture.review.run_id);
+  assert.equal(report.flow, "review");
+  assert.equal(report.board, "review-launch");
+  assert.equal(report.tenant, fixture.review.run_id);
+  assert.equal(report.state, "running");
+  assert.deepEqual(report.root, { id: "t_1", stage: "review-root", status: "todo" });
+  assert.equal(report.counts.total, 10);
+  assert.equal(report.counts.ready, 3);
+  assert.equal(report.counts.todo, 7);
+  assert.equal(report.counts.blocked, 0);
+  assert.equal(report.cards.length, 10);
+  assert.equal(report.cards[0].stage, "review-root");
+  assert.equal(report.limits.created_cards.actual, 10);
+  assert.equal(report.limits.created_cards.maximum, 10);
+  assert.equal(report.limits.worker_attempts.actual, 0);
+  assert.equal(report.limits.elapsed_seconds.actual, 30);
+  assert.deepEqual(report.limits.feature_streams, {
+    actual: 0,
+    maximum: 1,
+    exceeded: false,
+  });
+  assert.equal(report.cancellation.requested, false);
+  assert.deepEqual(report.issues, []);
+  assert.equal(
+    report.artifacts.result,
+    join(dirname(fixture.runManifestPath), "artifacts", "review", "result.json"),
+  );
+  assert.equal(report.artifacts.outputs.length, 4);
+  assert.equal(report.artifacts.validations.length, 4);
+});
+
+test("status reports retry and broken topology without issuing mutations", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-broken");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const retrying = taskForStage(adapter, "lens:correctness");
+  retrying.runs.push({ status: "done", outcome: "crashed" });
+  retrying.status = "ready";
+  adapter.tasks.delete(taskForStage(adapter, "critic").id);
+  const stdout = captureStream();
+
+  assert.equal(await runCli([
+    "status",
+    "--run",
+    fixture.review.run_id,
+    "--json",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:00:30Z"),
+    stdout: stdout.stream,
+    stderr: captureStream().stream,
+  }), 1);
+
+  const report = JSON.parse(stdout.value());
+  assert.equal(report.state, "broken");
+  assert.equal(
+    report.cards.find(({ stage }) => stage === "lens:correctness").retrying,
+    true,
+  );
+  assert.deepEqual(report.issues, ["missing Hermes task t_8 for stage critic"]);
+  assert.equal(adapter.events.some(({ type }) => type === "comment"), false);
+});
+
+test("status distinguishes blocked, retrying, and complete runs", async (t) => {
+  const blockedFixture = await reviewFixture(t, "review-status-blocked");
+  const blockedAdapter = new FakeHermesAdapter();
+  assert.equal(await launch(blockedFixture, blockedAdapter), 0);
+  taskForStage(blockedAdapter, "critic").status = "blocked";
+  assert.equal(
+    (await statusReport(blockedFixture, blockedAdapter)).report.state,
+    "blocked",
+  );
+
+  const retryFixture = await reviewFixture(t, "review-status-retrying");
+  const retryAdapter = new FakeHermesAdapter();
+  assert.equal(await launch(retryFixture, retryAdapter), 0);
+  const retrying = taskForStage(retryAdapter, "lens:correctness");
+  retrying.runs.push({ status: "done", outcome: "crashed" });
+  retrying.status = "ready";
+  assert.equal(
+    (await statusReport(retryFixture, retryAdapter)).report.state,
+    "retrying",
+  );
+
+  const completeFixture = await reviewFixture(t, "review-status-complete");
+  const completeAdapter = new FakeHermesAdapter();
+  assert.equal(await launch(completeFixture, completeAdapter), 0);
+  for (const task of completeAdapter.tasks.values()) {
+    task.status = "done";
+    task.completed_at = Date.parse("2026-07-15T12:00:45Z") / 1000;
+    task.runs.push({ status: "done", outcome: "completed" });
+  }
+  const complete = await statusReport(completeFixture, completeAdapter);
+  assert.equal(complete.code, 0);
+  assert.equal(complete.report.state, "complete");
+  assert.equal(complete.report.limits.elapsed_seconds.actual, 45);
+});
+
+test("status exposes a mismatched materialization receipt as broken", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-receipt");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const receiptPath = join(dirname(fixture.runManifestPath), "materialization.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  receipt.run_id = "different-run";
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+
+  const { code, report } = await statusReport(fixture, adapter);
+
+  assert.equal(code, 1);
+  assert.equal(report.state, "broken");
+  assert.deepEqual(report.issues, [
+    "materialization receipt names a different run",
+  ]);
+});
+
+test("status exposes dependency drift from the sealed graph", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-dependency");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const critic = taskForStage(adapter, "critic");
+  critic.parents.pop();
+
+  const { code, report } = await statusReport(fixture, adapter);
+
+  assert.equal(code, 1);
+  assert.equal(report.state, "broken");
+  assert.deepEqual(report.issues, [
+    `task ${critic.id} has unexpected dependency parents`,
+  ]);
+});
+
+test("status rejects substituted stages and drifted execution authority", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-authority");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const receiptPath = join(dirname(fixture.runManifestPath), "materialization.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  receipt.tasks["lens:style"] = receipt.tasks.critic;
+  delete receipt.tasks.critic;
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  const lens = taskForStage(adapter, "lens:correctness");
+  lens.assignee = "builder";
+  lens.body = "authority removed";
+
+  const { code, report } = await statusReport(fixture, adapter);
+
+  assert.equal(code, 1);
+  assert.equal(report.state, "broken");
+  assert.equal(
+    report.issues.includes(
+      "materialization receipt does not name the exact enabled stages",
+    ),
+    true,
+  );
+  assert.equal(
+    report.issues.includes(
+      `task ${lens.id} execution settings do not match stage lens:correctness`,
+    ),
+    true,
+  );
+  assert.equal(
+    report.issues.includes(
+      `task ${lens.id} does not contain agent-flow authority`,
+    ),
+    true,
+  );
+});
+
+test("status rejects archived or uncompleted required work as complete", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-invalid-complete");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  for (const task of adapter.tasks.values()) {
+    task.status = "done";
+    task.completed_at = Date.parse("2026-07-15T12:00:45Z") / 1000;
+    task.runs.push({ status: "done", outcome: "completed" });
+  }
+  const archived = taskForStage(adapter, "lens:security");
+  archived.status = "archived";
+  archived.events.push({
+    kind: "archived",
+    created_at: Date.parse("2026-07-15T12:00:46Z") / 1000,
+  });
+  const uncompleted = taskForStage(adapter, "lens:tests");
+  uncompleted.runs = [{ status: "done", outcome: "crashed" }];
+
+  const { code, report } = await statusReport(fixture, adapter);
+
+  assert.equal(code, 1);
+  assert.equal(report.state, "broken");
+  assert.equal(
+    report.issues.includes(
+      `task ${archived.id} is archived without an audited cancellation request`,
+    ),
+    true,
+  );
+  assert.equal(
+    report.issues.includes(
+      `task ${uncompleted.id} is done without a terminal completed attempt`,
+    ),
+    true,
+  );
+});
+
+test("status exposes worker-attempt and elapsed-time overruns", async (t) => {
+  const fixture = await reviewFixture(t, "review-status-overrun");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const overrun = taskForStage(adapter, "lens:correctness");
+  overrun.runs = Array.from(
+    { length: 31 },
+    () => ({ status: "done", outcome: "crashed" }),
+  );
+  const stdout = captureStream();
+
+  assert.equal(await runCli([
+    "status",
+    "--run",
+    fixture.review.run_id,
+    "--json",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T18:00:01Z"),
+    stdout: stdout.stream,
+    stderr: captureStream().stream,
+  }), 1);
+
+  const report = JSON.parse(stdout.value());
+  assert.equal(report.state, "broken");
+  assert.deepEqual(report.limits.worker_attempts, {
+    actual: 31,
+    maximum: 18,
+    exceeded: true,
+  });
+  assert.equal(report.limits.elapsed_seconds.exceeded, true);
+  assert.deepEqual(report.issues, [
+    `task ${overrun.id} exceeds the lens:correctness attempt limit`,
+    "worker_attempts limit exceeded",
+    "elapsed_seconds limit exceeded",
+  ]);
+});
+
+test("cancel audits and converges a raced tenant without touching another tenant", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-converged");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  taskForStage(adapter, "review-root").comments.push({
+    author: "critic",
+    body: [
+      "<!-- agent-flow-cancellation",
+      JSON.stringify({
+        run_id: fixture.review.run_id,
+        reason: "forged worker request",
+        requested_at: "2026-07-15T12:00:00Z",
+      }),
+      "-->",
+    ].join("\n"),
+  });
+  taskForStage(adapter, "lens:correctness").status = "running";
+  adapter.tasks.set("t_other", {
+    id: "t_other",
+    title: "unrelated",
+    body: "unrelated",
+    assignee: "analyst",
+    status: "ready",
+    tenant: "another-run",
+    workspace_kind: "dir",
+    workspace_path: fixture.directory,
+    max_retries: 1,
+    parents: [],
+    comments: [],
+    runs: [],
+  });
+  const archiveTask = adapter.archiveTask.bind(adapter);
+  let injectedRace = false;
+  adapter.archiveTask = async (request) => {
+    const result = await archiveTask(request);
+    if (!injectedRace) {
+      injectedRace = true;
+      taskForStage(adapter, "finalize").status = "running";
+    }
+    return result;
+  };
+  const stdout = captureStream();
+  const stderr = captureStream();
+
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Operator requested stop",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+  }), 0, stderr.value());
+  assert.match(stdout.value(), /cancellation converged/);
+  assert.equal(adapter.tasks.get("t_other").status, "ready");
+  assert.equal(taskForStage(adapter, "finalize").status, "archived");
+  assert.equal(
+    adapter.events.some(
+      ({ type, taskId }) => type === "reclaim" && taskId === "t_2",
+    ),
+    true,
+  );
+  assert.equal(
+    adapter.events.filter(({ type }) => type === "comment").length,
+    1,
+  );
+
+  const eventCount = adapter.events.length;
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Operator requested stop",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:02:00Z"),
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  }), 0);
+  assert.equal(adapter.events.length, eventCount);
+
+  const statusOutput = captureStream();
+  assert.equal(await runCli([
+    "status",
+    "--run",
+    fixture.review.run_id,
+    "--json",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:02:00Z"),
+    stdout: statusOutput.stream,
+    stderr: captureStream().stream,
+  }), 0);
+  const report = JSON.parse(statusOutput.value());
+  assert.equal(report.state, "cancelled");
+  assert.equal(report.cancellation.reason, "Operator requested stop");
+  assert.deepEqual(report.cancellation.survivors, []);
+});
+
+test("cancel refuses a receipt root that is not bound to sealed task authority", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-root-authority");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const receiptPath = join(dirname(fixture.runManifestPath), "materialization.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  adapter.tasks.set("t_swapped", {
+    ...structuredClone(taskForStage(adapter, "review-root")),
+    id: "t_swapped",
+    body: "not launcher authority",
+  });
+  receipt.tasks["review-root"] = "t_swapped";
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  const stderr = captureStream();
+
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Operator requested stop",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 1);
+
+  assert.match(stderr.value(), /does not contain agent-flow authority/);
+  assert.equal(adapter.events.some(({ type }) => type === "comment"), false);
+  assert.equal(
+    [...adapter.tasks.values()].some(({ status }) => status === "archived"),
+    false,
+  );
+});
+
+test("concurrent cancellation commands serialize one audited request", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-concurrent");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const invoke = (reason) => runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    reason,
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  });
+
+  assert.deepEqual(
+    (await Promise.all([invoke("first request"), invoke("second request")])).sort(),
+    [0, 1],
+  );
+  assert.equal(
+    adapter.events.filter(({ type }) => type === "comment").length,
+    1,
+  );
+  assert.equal(await invoke("retry after convergence"), 0);
+  assert.equal(
+    adapter.events.filter(({ type }) => type === "comment").length,
+    1,
+  );
+});
+
+test("cancelled status preserves an elapsed overrun through convergence", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-overrun");
+  const adapter = new FakeHermesAdapter({
+    archiveTimestamp: Date.parse("2026-07-15T18:00:01Z") / 1000,
+  });
+  assert.equal(await launch(fixture, adapter), 0);
+
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Long-running cancellation",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  }), 0);
+
+  const { code, report } = await statusReport(fixture, adapter);
+  assert.equal(code, 1);
+  assert.equal(report.state, "broken");
+  assert.equal(report.cancellation.requested, true);
+  assert.deepEqual(report.limits.elapsed_seconds, {
+    actual: 21601,
+    maximum: 3600,
+    exceeded: true,
+  });
+});
+
+test("status and cancel reject multiple agent-flow cancellation requests", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-duplicate-audit");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const root = taskForStage(adapter, "review-root");
+  for (const reason of ["first", "second"]) {
+    root.comments.push({
+      author: "agent-flow",
+      body: [
+        "<!-- agent-flow-cancellation",
+        JSON.stringify({
+          run_id: fixture.review.run_id,
+          reason,
+          requested_at: "2026-07-15T12:00:00Z",
+        }),
+        "-->",
+      ].join("\n"),
+    });
+  }
+
+  const status = await statusReport(fixture, adapter);
+  assert.equal(status.code, 1);
+  assert.equal(status.report.state, "broken");
+  assert.equal(
+    status.report.issues.includes(
+      "root has multiple agent-flow cancellation requests",
+    ),
+    true,
+  );
+
+  const stderr = captureStream();
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "third",
+  ], {
+    adapter,
+    env: fixture.env,
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 1);
+  assert.match(stderr.value(), /ambiguous cancellation audit/);
+  assert.equal(
+    [...adapter.tasks.values()].some(({ status }) => status === "archived"),
+    false,
+  );
+});
+
+test("cancel reports exact survivors when a sweep cannot progress", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-incomplete");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  const survivor = taskForStage(adapter, "critic");
+  adapter.unarchivableTaskIds.add(survivor.id);
+  const stdout = captureStream();
+  const stderr = captureStream();
+
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Stop for recovery",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+  }), 1);
+  assert.equal(stdout.value(), "");
+  assert.match(stderr.value(), /cancellation incomplete/);
+  assert.match(stderr.value(), new RegExp(`${survivor.id} critic todo`));
+  assert.equal(adapter.tasks.get(survivor.id).status, "todo");
+});
+
+test("cancel refuses to relabel an already completed run", async (t) => {
+  const fixture = await reviewFixture(t, "review-cancel-complete");
+  const adapter = new FakeHermesAdapter();
+  assert.equal(await launch(fixture, adapter), 0);
+  for (const task of adapter.tasks.values()) task.status = "done";
+  const stderr = captureStream();
+
+  assert.equal(await runCli([
+    "cancel",
+    "--run",
+    fixture.review.run_id,
+    "--reason",
+    "Too late",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 1);
+  assert.match(stderr.value(), /already terminal/);
+  assert.equal(
+    adapter.events.filter(({ type }) => type === "comment").length,
+    0,
+  );
+});
+
+test("cancel resumes safely around every Kanban mutation boundary", async (t) => {
+  for (const fault of [
+    "before-comment",
+    "after-comment",
+    "after-reclaim",
+    "after-archive",
+  ]) {
+    await t.test(fault, async () => {
+      const fixture = await reviewFixture(t, `review-cancel-${fault}`);
+      const adapter = new FakeHermesAdapter();
+      assert.equal(await launch(fixture, adapter), 0);
+      taskForStage(adapter, "lens:correctness").status = "running";
+      const method = fault.split("-").at(-1) === "comment"
+        ? "commentTask"
+        : fault.split("-").at(-1) === "reclaim"
+          ? "reclaimTask"
+          : "archiveTask";
+      const original = adapter[method].bind(adapter);
+      let injected = false;
+      adapter[method] = async (request) => {
+        if (injected) return original(request);
+        injected = true;
+        if (fault === "before-comment") throw new Error("injected interruption");
+        const result = await original(request);
+        throw new Error("injected interruption");
+      };
+
+      const interruptedError = captureStream();
+      assert.equal(await runCli([
+        "cancel",
+        "--run",
+        fixture.review.run_id,
+        "--reason",
+        "Recovery test",
+      ], {
+        adapter,
+        env: fixture.env,
+        now: () => new Date("2026-07-15T12:01:00Z"),
+        stdout: captureStream().stream,
+        stderr: interruptedError.stream,
+      }), 1);
+      assert.match(interruptedError.value(), /injected interruption/);
+
+      adapter[method] = original;
+      assert.equal(await runCli([
+        "cancel",
+        "--run",
+        fixture.review.run_id,
+        "--reason",
+        "Recovery test",
+      ], {
+        adapter,
+        env: fixture.env,
+        now: () => new Date("2026-07-15T12:02:00Z"),
+        stdout: captureStream().stream,
+        stderr: captureStream().stream,
+      }), 0);
+      assert.equal(
+        [...adapter.tasks.values()]
+          .filter(({ tenant }) => tenant === fixture.review.run_id)
+          .every(({ status }) => status === "archived"),
+        true,
+      );
+      assert.equal(
+        adapter.events.filter(({ type }) => type === "comment").length,
+        1,
+      );
+    });
+  }
 });
 
 test("duplicate and interrupted review launches converge without releasing an incomplete root", async (t) => {
@@ -652,6 +1347,23 @@ async function launch(
     stdout: stdout.stream,
     stderr: stderr.stream,
   });
+}
+
+async function statusReport(fixture, adapter) {
+  const stdout = captureStream();
+  const code = await runCli([
+    "status",
+    "--run",
+    fixture.review.run_id,
+    "--json",
+  ], {
+    adapter,
+    env: fixture.env,
+    now: () => new Date("2026-07-15T12:01:00Z"),
+    stdout: stdout.stream,
+    stderr: captureStream().stream,
+  });
+  return { code, report: JSON.parse(stdout.value()) };
 }
 
 async function reviewFixture(

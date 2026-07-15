@@ -679,3 +679,101 @@ test("Hermes adapter materializes and reconciles tasks through native Kanban", a
     },
   ]);
 });
+
+test("Hermes adapter exposes tenant lifecycle operations through native Kanban", async () => {
+  const calls = [];
+  const adapter = new HermesAdapter({
+    board: "cli-test",
+    async run(args, options) {
+      calls.push({ args, options });
+      if (args.includes("list")) {
+        return [{ id: "t_run", status: "running", tenant: "run" }];
+      }
+      if (args.includes("show")) {
+        return {
+          task: { id: "t_run", status: "running", tenant: "run" },
+          parents: ["t_parent"],
+          comments: [{ body: "audit" }],
+          events: [{ kind: "claimed" }],
+          runs: [{ id: 1, status: "running", outcome: null }],
+        };
+      }
+      return "ok";
+    },
+  });
+
+  assert.deepEqual(await adapter.listTasks({
+    tenant: "run",
+    includeArchived: true,
+  }), [{ id: "t_run", status: "running", tenant: "run" }]);
+  assert.deepEqual(await adapter.getTaskLifecycle({ taskId: "t_run" }), {
+    id: "t_run",
+    status: "running",
+    tenant: "run",
+    parents: ["t_parent"],
+    comments: [{ body: "audit" }],
+    events: [{ kind: "claimed" }],
+    runs: [{ id: 1, status: "running", outcome: null }],
+  });
+  assert.equal(await adapter.reclaimTask({
+    taskId: "t_run",
+    reason: "cancel run",
+  }), true);
+  assert.equal(await adapter.archiveTask({ taskId: "t_run" }), true);
+
+  assert.deepEqual(calls, [
+    {
+      args: [
+        "kanban", "--board", "cli-test", "list", "--tenant", "run",
+        "--archived", "--json",
+      ],
+      options: { signal: undefined, json: true },
+    },
+    {
+      args: ["kanban", "--board", "cli-test", "show", "t_run", "--json"],
+      options: { signal: undefined },
+    },
+    {
+      args: [
+        "kanban", "--board", "cli-test", "reclaim", "--reason",
+        "cancel run", "t_run",
+      ],
+      options: { signal: undefined, json: false },
+    },
+    {
+      args: ["kanban", "--board", "cli-test", "archive", "t_run"],
+      options: { signal: undefined, json: false },
+    },
+  ]);
+});
+
+test("Hermes adapter distinguishes lifecycle races from command failures", async () => {
+  const raceAdapter = new HermesAdapter({
+    async run(args) {
+      const operation = args.includes("reclaim") ? "reclaim" : "archive";
+      throw Object.assign(new Error(`${operation} raced`), {
+        code: 1,
+        stderr: `cannot ${operation} t_run`,
+      });
+    },
+  });
+
+  assert.equal(await raceAdapter.reclaimTask({
+    taskId: "t_run",
+    reason: "cancel run",
+  }), false);
+  assert.equal(await raceAdapter.archiveTask({ taskId: "t_run" }), false);
+
+  const failedAdapter = new HermesAdapter({
+    async run() {
+      throw Object.assign(new Error("database unavailable"), {
+        code: 1,
+        stderr: "database unavailable",
+      });
+    },
+  });
+  await assert.rejects(
+    failedAdapter.archiveTask({ taskId: "t_run" }),
+    /database unavailable/,
+  );
+});

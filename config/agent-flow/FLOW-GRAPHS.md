@@ -76,8 +76,13 @@ Every graph follows these rules:
 9. Cancellation and supersession are terminal run operations. A controller
    must not create another transition after the root becomes terminal.
    Cancellation repeatedly sweeps cards that race the request, and status
-   reports any survivor; no archived card may be silently recreated under a new
-   run ID.
+   reports any survivor. The audited request is an append-only root comment;
+   each tenant-scoped sweep reclaims observed running cards, archives
+   nonterminal cards with the root last, and retries only while the survivor
+   set is shrinking. Launch and cancellation share the host-local run mutation
+   lock, and cancellation binds every receipt-selected card to its sealed task
+   authority before mutation. No archived card may be silently recreated under
+   a new run ID.
 
 ## Review flow
 
