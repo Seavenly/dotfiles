@@ -2,7 +2,10 @@
 
 Status: approved on 2026-07-13. Phase 1 is complete. Phase 2 contract definition
 and corrective review completed on 2026-07-14. The task-pinned command-gate
-tracer is implemented; review-launch materialization is next.
+tracer is implemented. The canonical standard review graph is now versioned,
+and its handoff gates bind assigned producer task IDs through launcher-created
+task authority without making pre-card run sealing circular. Runnable handoff
+and finalize gates are the next prerequisite to exposing review launch.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -162,9 +165,11 @@ Repository changes:
 - Add `agent-flow.graph/v1` review graph data and gate specs for deterministic
   finding caps and rendering.
 - Insert deterministic handoff-validation gates before every machine consumer.
-  They read the completed attempt through the Hermes adapter and validate
-  identity, schema, semantic measurements, artifact containment, and hashes;
-  malformed metadata cannot release downstream work.
+  They derive the terminal completed attempt through the Hermes adapter and
+  validate its runtime ordinal, identity, schema, semantic measurements,
+  artifact containment, and hashes; malformed metadata cannot release
+  downstream work. Pre-card gate specs seal the producer stage while
+  task-specific authority binds the Hermes producer ID after materialization.
 - Snapshot verified artifact bytes into validator-owned storage and expose only
   that path to consumers. Keep the mutable worker source path as provenance.
 - Validate graph reachability, the terminal controller root, global static and

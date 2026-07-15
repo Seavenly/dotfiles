@@ -2,10 +2,10 @@
 
 This document specifies the repository-owned design for repeatable automated
 agent flows. Phase 1 implements native profiles, machine-local routing, and
-profile doctoring. Phase 2 now includes the machine contracts and the first
-task-pinned command-gate tracer. Launchers, graph materializers, registry
-changes, and stack mechanics remain phased work under the approved
-implementation plan.
+profile doctoring. Phase 2 now includes the machine contracts, the first
+task-pinned command-gate tracer, and the canonical standard review graph.
+Launchers, graph materializers, registry changes, and stack mechanics remain
+phased work under the approved implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -355,6 +355,16 @@ expected completed attempt. Invalid metadata
 blocks the validation card and therefore cannot release downstream work. The
 graph notation defines this expansion once rather than drawing a validator
 after every worker.
+
+Handoff gate specs seal the producer stage before any card exists. They do not
+seal a task ID or attempt ordinal because Hermes assigns the task ID during
+materialization and native retries determine the terminal completed attempt at
+runtime. The launcher binds the concrete producer task ID in the validation
+card's task-specific `agent-flow.task-authority/v1`. Gate execution must require
+the stage and task bindings to agree, derive the terminal completed attempt
+from Hermes, and validate the handoff's attempt ordinal against that runtime
+record. Embedding either runtime value in the pre-card gate spec would make
+immutable run sealing circular or incorrectly select one possible retry.
 
 Graph contract validation requires one terminal, required flow-controller
 root; every declared stage must reach it; stage keys are unique across static

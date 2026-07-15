@@ -474,9 +474,12 @@ test("Hermes adapter translates native completed runs at the production seam", a
   const authority = {
     schema: "agent-flow.task-authority/v1",
     run_id: "review-cli-example",
-    stage: "lens:correctness",
+    stage: "validate-handoff:lens:correctness",
     run_manifest_path: "/tmp/run.json",
     run_manifest_sha256: SHA256,
+    gate_spec_path: "/tmp/gate.json",
+    gate_spec_sha256: SHA256,
+    producer_task_id: "t_producer",
   };
   const adapter = new HermesAdapter({
     board: "cli-test",
@@ -484,7 +487,7 @@ test("Hermes adapter translates native completed runs at the production seam", a
       calls.push(args);
       return {
         task: {
-          id: "t_lens",
+          id: args.at(-2),
           body: `Review the candidate.\n\n${formatTaskAuthority(authority)}`,
         },
         runs: [
@@ -507,12 +510,15 @@ test("Hermes adapter translates native completed runs at the production seam", a
     },
   });
 
-  assert.deepEqual(await adapter.getTaskAuthority({ taskId: "t_lens" }), {
-    taskId: "t_lens",
+  assert.deepEqual(await adapter.getTaskAuthority({ taskId: "t_validator" }), {
+    taskId: "t_validator",
     runId: "review-cli-example",
-    stage: "lens:correctness",
+    stage: "validate-handoff:lens:correctness",
     runManifestPath: "/tmp/run.json",
     runManifestSha256: SHA256,
+    gateSpecPath: "/tmp/gate.json",
+    gateSpecSha256: SHA256,
+    producerTaskId: "t_producer",
   });
   assert.deepEqual(
     await adapter.getCompletedAttempt({ taskId: "t_lens", attempt: 2 }),
@@ -524,7 +530,18 @@ test("Hermes adapter translates native completed runs at the production seam", a
       metadata: { handoff: { passed: true } },
     },
   );
+  assert.deepEqual(
+    await adapter.getTerminalCompletedAttempt({ taskId: "t_lens" }),
+    {
+      attemptId: "42",
+      taskId: "t_lens",
+      attempt: 2,
+      state: "completed",
+      metadata: { handoff: { passed: true } },
+    },
+  );
   assert.deepEqual(calls, [
+    ["kanban", "--board", "cli-test", "show", "t_validator", "--json"],
     ["kanban", "--board", "cli-test", "show", "t_lens", "--json"],
     ["kanban", "--board", "cli-test", "show", "t_lens", "--json"],
   ]);

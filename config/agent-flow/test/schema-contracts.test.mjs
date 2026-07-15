@@ -535,11 +535,16 @@ test("gate specs require the operation payload selected by their kind", async ()
   delete handoffGate.review_policy;
   handoffGate.handoff_validation = {
     producer_stage: "lens:correctness",
-    task_id: "t_12345678",
-    attempt: 1,
     require_passed: true,
   };
   assert.equal((await validateContract(handoffGate)).valid, true);
+
+  handoffGate.handoff_validation.attempt = 1;
+  assert.equal((await validateContract(handoffGate)).valid, false);
+  delete handoffGate.handoff_validation.attempt;
+
+  handoffGate.handoff_validation.task_id = "t_12345678";
+  assert.equal((await validateContract(handoffGate)).valid, false);
 });
 
 test("gate specs reject mixed operation payloads and incorrect urgency floors", async () => {

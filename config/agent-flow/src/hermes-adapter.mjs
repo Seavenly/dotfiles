@@ -29,6 +29,9 @@ export class HermesAdapter {
       stage: authority.stage,
       runManifestPath: authority.run_manifest_path,
       runManifestSha256: authority.run_manifest_sha256,
+      ...(authority.producer_task_id
+        ? { producerTaskId: authority.producer_task_id }
+        : {}),
       ...(authority.gate_spec_path
         ? {
             gateSpecPath: authority.gate_spec_path,
@@ -40,13 +43,32 @@ export class HermesAdapter {
 
   async getCompletedAttempt({ taskId, attempt }) {
     const payload = await this.#show(taskId);
-    const runs = [...payload.runs].sort(
-      (left, right) => left.started_at - right.started_at,
-    );
+    const runs = this.#orderedRuns(payload);
     const run = runs[attempt - 1];
     if (!run) {
       throw new Error(`task ${taskId} does not have attempt ${attempt}`);
     }
+    return this.#attempt(taskId, attempt, run);
+  }
+
+  async getTerminalCompletedAttempt({ taskId }) {
+    const payload = await this.#show(taskId);
+    const runs = this.#orderedRuns(payload);
+    const attempt = runs.length;
+    const run = runs.at(-1);
+    if (!run || run.status !== "done" || run.outcome !== "completed") {
+      throw new Error(`task ${taskId} does not have a terminal completed attempt`);
+    }
+    return this.#attempt(taskId, attempt, run);
+  }
+
+  #orderedRuns(payload) {
+    return [...payload.runs].sort(
+      (left, right) => left.started_at - right.started_at,
+    );
+  }
+
+  #attempt(taskId, attempt, run) {
     return {
       attemptId: String(run.id),
       taskId,

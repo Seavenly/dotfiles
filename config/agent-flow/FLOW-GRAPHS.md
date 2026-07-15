@@ -52,6 +52,12 @@ Every graph follows these rules:
    never releases the consumer. Verified bytes are snapshotted beneath the
    run's `validated/` directory; consumers never reopen the mutable source
    path. Diagrams omit these repeated validation cards for readability.
+   The sealed gate names the producer stage, but not a task ID or attempt
+   ordinal. After Hermes assigns card IDs, launcher-created task authority binds
+   the validator to the concrete producer task without rewriting the sealed
+   gate or run manifest. At execution, the validator derives the terminal
+   completed attempt from Hermes and checks the handoff ordinal against it, so
+   native retries do not invalidate the sealed gate.
 8. All artifact paths are absolute and live beneath an artifact root recorded
    in the run manifest. Phase 2 write roots are contained by the canonical
    run `artifacts/` directory and are disjoint from sealed authority.
@@ -69,15 +75,15 @@ remote PR adapter may later prepare the same manifest without changing this
 graph.
 
 ```text
-review-root [flow-controller; run-dir; review-flow]
+review-root [flow-controller; run-dir; review-flow-controller]
 
-lens:<name>... [analyst; candidate-worktree; pinned review lens] --+
-                                                                    |
-orientation [analyst; candidate-worktree; orientation] -------------+-->
-                                                                    |   finalize
-required lens join -> critic [critic; candidate-worktree; critic] ---+   [gate; run-dir]
-                                                                    |
-diagram [artifact; candidate-worktree; diagrammer] ------------------+
+required lenses [analyst; candidate-worktree; review-lens]
+  -> critic [critic; candidate-worktree; review-critic] -------------+
+optional lenses [analyst; candidate-worktree; review-lens] ----------+
+orientation [analyst; candidate-worktree; review-orientation] -------+-->
+diagram [artifact; candidate-worktree; review-diagram] --------------+   finalize
+                                                                        [gate; run-dir;
+                                                                         review-finalizer]
 
 finalize -> review-root
 ```

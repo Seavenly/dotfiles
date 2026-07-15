@@ -53,11 +53,9 @@
     "handoff_validation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["producer_stage", "task_id", "attempt", "require_passed"],
+      "required": ["producer_stage", "require_passed"],
       "properties": {
         "producer_stage": { "$ref": "#/$defs/stageKey" },
-        "task_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "attempt": { "type": "integer", "minimum": 1 },
         "require_passed": { "type": "boolean" }
       }
     },

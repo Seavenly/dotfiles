@@ -1,0 +1,209 @@
+{
+  "schema": "agent-flow.graph/v1",
+  "name": "local-review",
+  "version": 1,
+  "flow": "review",
+  "root": "review-root",
+  "stages": [
+    {
+      "key": "review-root",
+      "profile": "flow-controller",
+      "workspace": "run-dir",
+      "skill": "review-flow-controller",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": null,
+      "optional": false
+    },
+    {
+      "key": "lens:correctness",
+      "profile": "analyst",
+      "workspace": "candidate-worktree",
+      "skill": "review-lens",
+      "max_attempts": 2,
+      "semantic_measurement": true,
+      "validates_handoff_for": null,
+      "optional": false
+    },
+    {
+      "key": "validate-handoff:lens:correctness",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "lens:correctness",
+      "optional": false
+    },
+    {
+      "key": "lens:security",
+      "profile": "analyst",
+      "workspace": "candidate-worktree",
+      "skill": "review-lens",
+      "max_attempts": 2,
+      "semantic_measurement": true,
+      "validates_handoff_for": null,
+      "optional": false
+    },
+    {
+      "key": "validate-handoff:lens:security",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "lens:security",
+      "optional": false
+    },
+    {
+      "key": "lens:tests",
+      "profile": "analyst",
+      "workspace": "candidate-worktree",
+      "skill": "review-lens",
+      "max_attempts": 2,
+      "semantic_measurement": true,
+      "validates_handoff_for": null,
+      "optional": false
+    },
+    {
+      "key": "validate-handoff:lens:tests",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "lens:tests",
+      "optional": false
+    },
+    {
+      "key": "lens:style",
+      "profile": "analyst",
+      "workspace": "candidate-worktree",
+      "skill": "review-lens",
+      "max_attempts": 2,
+      "semantic_measurement": true,
+      "validates_handoff_for": null,
+      "optional": true
+    },
+    {
+      "key": "validate-handoff:lens:style",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "lens:style",
+      "optional": false
+    },
+    {
+      "key": "lens:observability",
+      "profile": "analyst",
+      "workspace": "candidate-worktree",
+      "skill": "review-lens",
+      "max_attempts": 2,
+      "semantic_measurement": true,
+      "validates_handoff_for": null,
+      "optional": true
+    },
+    {
+      "key": "validate-handoff:lens:observability",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "lens:observability",
+      "optional": false
+    },
+    {
+      "key": "critic",
+      "profile": "critic",
+      "workspace": "candidate-worktree",
+      "skill": "review-critic",
+      "max_attempts": 2,
+      "semantic_measurement": true,
+      "validates_handoff_for": null,
+      "optional": false
+    },
+    {
+      "key": "validate-handoff:critic",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "critic",
+      "optional": false
+    },
+    {
+      "key": "orientation",
+      "profile": "analyst",
+      "workspace": "candidate-worktree",
+      "skill": "review-orientation",
+      "max_attempts": 2,
+      "semantic_measurement": false,
+      "validates_handoff_for": null,
+      "optional": true
+    },
+    {
+      "key": "validate-handoff:orientation",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "orientation",
+      "optional": false
+    },
+    {
+      "key": "diagram",
+      "profile": "artifact",
+      "workspace": "candidate-worktree",
+      "skill": "review-diagram",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": null,
+      "optional": true
+    },
+    {
+      "key": "validate-handoff:diagram",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "handoff-validator",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": "diagram",
+      "optional": false
+    },
+    {
+      "key": "finalize",
+      "profile": "gate",
+      "workspace": "run-dir",
+      "skill": "review-finalizer",
+      "max_attempts": 1,
+      "semantic_measurement": false,
+      "validates_handoff_for": null,
+      "optional": false
+    }
+  ],
+  "dependencies": [
+    { "parent": "lens:correctness", "child": "validate-handoff:lens:correctness" },
+    { "parent": "validate-handoff:lens:correctness", "child": "critic" },
+    { "parent": "lens:security", "child": "validate-handoff:lens:security" },
+    { "parent": "validate-handoff:lens:security", "child": "critic" },
+    { "parent": "lens:tests", "child": "validate-handoff:lens:tests" },
+    { "parent": "validate-handoff:lens:tests", "child": "critic" },
+    { "parent": "lens:style", "child": "validate-handoff:lens:style" },
+    { "parent": "validate-handoff:lens:style", "child": "finalize" },
+    { "parent": "lens:observability", "child": "validate-handoff:lens:observability" },
+    { "parent": "validate-handoff:lens:observability", "child": "finalize" },
+    { "parent": "critic", "child": "validate-handoff:critic" },
+    { "parent": "validate-handoff:critic", "child": "finalize" },
+    { "parent": "orientation", "child": "validate-handoff:orientation" },
+    { "parent": "validate-handoff:orientation", "child": "finalize" },
+    { "parent": "diagram", "child": "validate-handoff:diagram" },
+    { "parent": "validate-handoff:diagram", "child": "finalize" },
+    { "parent": "finalize", "child": "review-root" }
+  ],
+  "transitions": []
+}
