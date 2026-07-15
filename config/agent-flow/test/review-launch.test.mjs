@@ -213,6 +213,24 @@ test("launch review seals a hotfix run before safely materializing its graph", a
     title.endsWith("/critic]")
   );
   assert.match(critic.body, /inputs\/candidate\.patch/);
+  assert.match(critic.body, /inputs\/review\.json/);
+  assert.match(
+    critic.body,
+    /Outputs: metadata\.handoff\.artifacts\[0\]\.inline \(review-comments\)/,
+  );
+  assert.doesNotMatch(critic.body, /artifacts\/review\/comments\.json/);
+  const correctness = [...adapter.tasks.values()].find(({ title }) =>
+    title.endsWith("/lens:correctness]")
+  );
+  assert.match(
+    correctness.body,
+    /Outputs: metadata\.handoff\.artifacts\[0\]\.inline \(review-findings\)/,
+  );
+  assert.doesNotMatch(correctness.body, /artifacts\/lenses/);
+  const correctnessValidator = [...adapter.tasks.values()].find(({ title }) =>
+    title.endsWith("/validate-handoff:lens:correctness]")
+  );
+  assert.doesNotMatch(correctnessValidator.body, /artifacts\/lenses/);
   assert.equal(
     adapter.events.every((event, index) =>
       event.type !== "release" || index === adapter.events.length - 1),

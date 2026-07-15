@@ -489,7 +489,6 @@ async function publishBundle({
       "inputs/skills",
       "inputs/roles",
       "artifacts",
-      "artifacts/lenses",
       "artifacts/review",
       "artifacts/validations",
       "validated",
@@ -798,8 +797,6 @@ function bundleLayout(runDirectory, stages) {
     candidateDiff: join(runDirectory, "inputs", "candidate.patch"),
     materialization: join(runDirectory, "materialization.json"),
     validationEvidence,
-    lensArtifact: (stage) => join(artifacts, "lenses", `${safe(stage)}.json`),
-    reviewComments: join(artifacts, "review", "comments.json"),
     reviewResult: join(artifacts, "review", "result.json"),
     reviewMarkdown: join(artifacts, "review", "review.md"),
     reviewHtml: join(artifacts, "review", "review.html"),
@@ -890,15 +887,12 @@ function stageIo(stage, layout) {
   if (stage.key.startsWith("lens:")) {
     return {
       inputs: [layout.reviewManifest, layout.candidateDiff],
-      outputs: [layout.lensArtifact(stage.key)],
+      outputs: ["metadata.handoff.artifacts[0].inline (review-findings)"],
     };
   }
   if (stage.validates_handoff_for) {
-    const producerOutput = stage.validates_handoff_for === "critic"
-      ? layout.reviewComments
-      : layout.lensArtifact(stage.validates_handoff_for);
     return {
-      inputs: [producerOutput],
+      inputs: [],
       outputs: [layout.validationEvidence.get(stage.key)],
     };
   }
@@ -907,8 +901,8 @@ function stageIo(stage, layout) {
       .filter(([key]) => key.startsWith("validate-handoff:lens:"))
       .map(([, path]) => path);
     return {
-      inputs: [layout.candidateDiff, ...lensValidations],
-      outputs: [layout.reviewComments],
+      inputs: [layout.reviewManifest, layout.candidateDiff, ...lensValidations],
+      outputs: ["metadata.handoff.artifacts[0].inline (review-comments)"],
     };
   }
   if (stage.key === "finalize") {

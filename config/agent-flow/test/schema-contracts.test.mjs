@@ -714,14 +714,45 @@ test("successful validation envelopes require verified semantic and artifact evi
   const missingProvenance = validValidationEnvelope();
   delete missingProvenance.provenance;
   assert.equal((await validateContract(missingProvenance)).valid, false);
+
+  const inlineSource = validValidationEnvelope();
+  inlineSource.artifacts[0].source_path = inlineSource.artifacts[0].path;
+  assert.equal((await validateContract(inlineSource)).valid, true);
 });
 
-test("handoffs require a digest for every declared artifact", async () => {
+test("handoffs distinguish file and terminal-free inline artifacts", async () => {
   assert.equal((await validateContract(validHandoff())).valid, true);
 
-  const malformed = validHandoff();
-  delete malformed.artifacts[0].sha256;
-  assert.equal((await validateContract(malformed)).valid, false);
+  const missingFileDigest = validHandoff();
+  delete missingFileDigest.artifacts[0].sha256;
+  assert.equal((await validateContract(missingFileDigest)).valid, false);
+
+  const inline = validHandoff();
+  delete inline.attempt;
+  inline.artifacts = [{
+    kind: "review-findings",
+    inline: { findings: [] },
+  }];
+  assert.equal((await validateContract(inline)).valid, true);
+
+  const mixed = structuredClone(inline);
+  mixed.artifacts[0].path =
+    "/tmp/state/runs/review-20260714-example/artifacts/correctness.json";
+  mixed.artifacts[0].sha256 = SHA256;
+  assert.equal((await validateContract(mixed)).valid, false);
+
+  const scalar = structuredClone(inline);
+  scalar.artifacts[0].inline = 42;
+  assert.equal((await validateContract(scalar)).valid, false);
+
+  const oversized = structuredClone(inline);
+  oversized.artifacts = ["first", "second"].map((kind) => ({
+    kind,
+    inline: { content: "x".repeat(140 * 1024) },
+  }));
+  const oversizedResult = await validateContract(oversized);
+  assert.equal(oversizedResult.valid, false);
+  assert.equal(oversizedResult.errors[0].keyword, "inlineArtifactBytes");
 });
 
 test("validation envelopes bind handoffs to the expected attempt", async () => {

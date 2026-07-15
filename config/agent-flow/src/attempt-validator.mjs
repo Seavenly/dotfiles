@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 
+import { serializeInlineArtifact } from "./inline-artifact.mjs";
 import { validateContract } from "./schema-validator.mjs";
 
 // This is the authority boundary for worker output. Validation envelopes are
@@ -93,7 +94,7 @@ export async function validateCompletedAttempt({
       handoff_schema: "agent-flow.handoff/v1",
       run_id: handoffResult.valid ? handoff.run_id : manifest.identity.run_id,
       stage: handoffResult.valid ? handoff.stage : stage,
-      attempt: handoffResult.valid ? handoff.attempt : attempt,
+      attempt,
     },
     semantic: {
       required: measurementRequired,
@@ -183,7 +184,7 @@ function validateIdentity(handoff, result, manifest, stage, attempt, errors) {
     (handoff.run_id !== manifest.identity.run_id ||
       handoff.flow !== manifest.identity.flow ||
       handoff.stage !== stage ||
-      handoff.attempt !== attempt)
+      (handoff.attempt !== undefined && handoff.attempt !== attempt))
   ) {
     errors.push({
       code: "identity_mismatch",
@@ -282,6 +283,27 @@ async function validateArtifact(
   errors,
   signal,
 ) {
+  if (Object.hasOwn(artifact, "inline")) {
+    const artifactBytes = serializeInlineArtifact(artifact.inline);
+    const digest = sha256(artifactBytes);
+    const validatedPath = await snapshotArtifact(
+      artifactBytes,
+      digest,
+      validationDirectory,
+      taskId,
+      attempt,
+      index,
+      signal,
+    );
+    return {
+      source_path: validatedPath,
+      path: validatedPath,
+      expected_sha256: digest,
+      actual_sha256: digest,
+      valid: true,
+    };
+  }
+
   const lexicallyContained = approvedRoots.some((root) =>
     pathIsWithin(root, artifact.path),
   );

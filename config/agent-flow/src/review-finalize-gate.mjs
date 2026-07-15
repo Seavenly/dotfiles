@@ -8,6 +8,7 @@ import {
   withGateTimeout,
   writeFilesAtomically,
 } from "./gate-runtime.mjs";
+import { serializeInlineArtifact } from "./inline-artifact.mjs";
 import { loadSealedGate } from "./run-bundle-validator.mjs";
 import { validateContract } from "./schema-validator.mjs";
 
@@ -289,18 +290,22 @@ async function validateEvidenceAuthority({
     handoff.run_id !== manifest.identity.run_id ||
     handoff.flow !== manifest.identity.flow ||
     handoff.stage !== expectedStage ||
-    handoff.attempt !== producer.attempt ||
+    (handoff.attempt !== undefined && handoff.attempt !== producer.attempt) ||
     (validatorGate.handoff_validation.require_passed && !handoff.passed)
   ) {
     throw new Error("review input evidence does not match the producer completed attempt");
   }
-  const declaredArtifacts = handoff.artifacts.map(({ path, sha256: digest }) =>
-    `${path}\0${digest}`
+  const declaredArtifacts = handoff.artifacts.map((artifact) =>
+    Object.hasOwn(artifact, "inline")
+      ? `inline\0${sha256(serializeInlineArtifact(artifact.inline))}`
+      : `file\0${artifact.path}\0${artifact.sha256}`
   );
   const evidencedArtifacts = validation.artifacts.map((artifact) =>
-    `${artifact.source_path}\0${artifact.expected_sha256}`
+    artifact.source_path === artifact.path
+      ? `inline\0${artifact.expected_sha256}`
+      : `file\0${artifact.source_path}\0${artifact.expected_sha256}`
   );
-  if (!sameSet(declaredArtifacts, evidencedArtifacts)) {
+  if (!sameSequence(declaredArtifacts, evidencedArtifacts)) {
     throw new Error("review input evidence does not match producer artifacts");
   }
 }
@@ -516,10 +521,20 @@ function zeroCounts() {
 }
 
 function sameSet(left, right) {
+  const leftSet = new Set(left);
   const rightSet = new Set(right);
   return (
-    left.length === rightSet.size &&
-    left.every((value) => rightSet.has(value))
+    left.length === leftSet.size &&
+    right.length === rightSet.size &&
+    leftSet.size === rightSet.size &&
+    [...leftSet].every((value) => rightSet.has(value))
+  );
+}
+
+function sameSequence(left, right) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
   );
 }
 

@@ -64,6 +64,43 @@ test("agent-flow gate deterministically finalizes validated review comments", as
   assert.equal(await readFile(fixture.outputs.result, "utf8"), resultBytes);
 });
 
+test("review-finalize accepts validator-owned inline critic snapshots", async (t) => {
+  const fixture = await reviewFinalizeFixture(t, { inlineCritic: true });
+  const stderr = captureStream();
+
+  assert.equal(await runCli(["gate", "--spec", fixture.gatePath], {
+    adapter: fixture.adapter,
+    env: { HERMES_KANBAN_TASK: fixture.taskId },
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 0, stderr.value());
+
+  const result = JSON.parse(await readFile(fixture.outputs.result, "utf8"));
+  assert.equal(result.source.attempt, 1);
+  assert.equal(result.counts.input, 6);
+});
+
+test("review-finalize rejects changed inline content after validation", async (t) => {
+  const fixture = await reviewFinalizeFixture(t, { inlineCritic: true });
+  fixture.criticHandoff.artifacts[0].inline.cluster = "Fabricated after validation.";
+  const evidence = JSON.parse(await readFile(fixture.commentsEvidence, "utf8"));
+  evidence.source_metadata_sha256 = sha256(JSON.stringify({
+    handoff: fixture.criticHandoff,
+  }));
+  await writeFile(fixture.commentsEvidence, JSON.stringify(evidence));
+  const stderr = captureStream();
+
+  assert.equal(await runCli(["gate", "--spec", fixture.gatePath], {
+    adapter: fixture.adapter,
+    env: { HERMES_KANBAN_TASK: fixture.taskId },
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 1);
+
+  assert.match(stderr.value(), /does not match producer artifacts/);
+  await assert.rejects(readFile(fixture.outputs.result), { code: "ENOENT" });
+});
+
 test("review-finalize rejects changed validated artifact bytes", async (t) => {
   const fixture = await reviewFinalizeFixture(t);
   await writeFile(fixture.commentsSnapshot, JSON.stringify({ fabricated: true }));
@@ -164,7 +201,12 @@ test("review-finalize rejects posture that contradicts hotfix findings", async (
 
 async function reviewFinalizeFixture(
   t,
-  { urgency = "standard", criticPassed = true, posture = "do_not_merge" } = {},
+  {
+    urgency = "standard",
+    criticPassed = true,
+    posture = "do_not_merge",
+    inlineCritic = false,
+  } = {},
 ) {
   const runDirectory = await mkdtemp(join(tmpdir(), "agent-flow-review-finalize-"));
   t.after(() => rm(runDirectory, { recursive: true, force: true }));
@@ -194,7 +236,9 @@ async function reviewFinalizeFixture(
       finding("nit", "maintainability", 60, "Rename the local value."),
     ],
   };
-  const commentsBytes = JSON.stringify(comments);
+  const commentsBytes = inlineCritic
+    ? stableJsonBytes(comments)
+    : JSON.stringify(comments);
   const commentsSnapshot = join(validationDirectory, "comments.json");
   await writeFile(commentsSnapshot, commentsBytes);
   const orientationSnapshot = join(validationDirectory, "orientation.md");
@@ -412,14 +456,22 @@ async function reviewFinalizeFixture(
   const manifestBytes = JSON.stringify(manifest);
   await writeFile(manifestPath, manifestBytes);
   const manifestDigest = sha256(manifestBytes);
-  const criticHandoff = producerHandoff({
-    runId,
-    stage: "critic",
-    passed: criticPassed,
-    path: join(artifactsDirectory, "comments.json"),
-    digest: sha256(commentsBytes),
-    kind: "review-comments",
-  });
+  const criticHandoff = inlineCritic
+    ? producerInlineHandoff({
+        runId,
+        stage: "critic",
+        passed: criticPassed,
+        inline: comments,
+        kind: "review-comments",
+      })
+    : producerHandoff({
+        runId,
+        stage: "critic",
+        passed: criticPassed,
+        path: join(artifactsDirectory, "comments.json"),
+        digest: sha256(commentsBytes),
+        kind: "review-comments",
+      });
   const orientationHandoff = producerHandoff({
     runId,
     stage: "orientation",
@@ -449,6 +501,7 @@ async function reviewFinalizeFixture(
     digest: sha256(commentsBytes),
     handoff: criticHandoff,
     semanticRequired: true,
+    inlineSource: inlineCritic,
   })));
   await writeFile(orientationEvidencePath, JSON.stringify(validationEvidence({
     runId,
@@ -564,6 +617,7 @@ async function reviewFinalizeFixture(
     outputs,
     commentsSnapshot,
     commentsEvidence: commentsEvidencePath,
+    criticHandoff,
     adapter: {
       async getTaskAuthority({ taskId: requested }) {
         assert.equal(authorities.has(requested), true);
@@ -590,6 +644,7 @@ function validationEvidence({
   digest,
   handoff,
   semanticRequired,
+  inlineSource = false,
 }) {
   const producerMetadata = { handoff };
   return {
@@ -616,7 +671,9 @@ function validationEvidence({
     approved_artifact_roots: [artifactsDirectory],
     validated_artifact_root: validationDirectory,
     artifacts: [{
-      source_path: join(artifactsDirectory, sourceName),
+      source_path: inlineSource
+        ? snapshotPath
+        : join(artifactsDirectory, sourceName),
       path: snapshotPath,
       expected_sha256: digest,
       actual_sha256: digest,
@@ -662,6 +719,22 @@ function producerHandoff({ runId, stage, passed, path, digest, kind }) {
     attempt: 1,
     passed,
     artifacts: [{ kind, path, sha256: digest }],
+    changed_files: [],
+    verification: [],
+    dependencies: [],
+    retry_notes: [],
+    residual_risk: [],
+  };
+}
+
+function producerInlineHandoff({ runId, stage, passed, inline, kind }) {
+  return {
+    schema: "agent-flow.handoff/v1",
+    run_id: runId,
+    flow: "review",
+    stage,
+    passed,
+    artifacts: [{ kind, inline }],
     changed_files: [],
     verification: [],
     dependencies: [],
@@ -751,4 +824,18 @@ function captureStream() {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function stableJsonBytes(value) {
+  return `${JSON.stringify(sortJson(value), null, 2)}\n`;
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, sortJson(value[key])]),
+    );
+  }
+  return value;
 }

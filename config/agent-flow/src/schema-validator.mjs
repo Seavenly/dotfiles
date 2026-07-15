@@ -4,6 +4,11 @@ import { isAbsolute, join, relative, sep } from "node:path";
 
 import Ajv2020 from "ajv/dist/2020.js";
 
+import {
+  MAX_INLINE_HANDOFF_BYTES,
+  serializeInlineArtifact,
+} from "./inline-artifact.mjs";
+
 const CONTRACT_FILES = new Map([
   ["agent-flow.run/v1", "agent-flow.run.v1.schema.json"],
   ["agent-flow.graph/v1", "agent-flow.graph.v1.schema.json"],
@@ -93,9 +98,27 @@ const SEMANTIC_VALIDATORS = new Map([
   ["agent-flow.gate/v1", validateGate],
   ["agent-flow.migration-receipt/v1", validateMigrationReceipt],
   ["agent-flow.validation/v1", validateValidationEnvelope],
+  ["agent-flow.handoff/v1", validateHandoff],
   ["agent-flow.review-comments/v1", validateReviewComments],
   ["agent-flow.review-result/v1", validateReviewResult],
 ]);
+
+function validateHandoff(document) {
+  const inlineBytes = document.artifacts
+    .filter((artifact) => Object.hasOwn(artifact, "inline"))
+    .reduce(
+      (total, artifact) =>
+        total + serializeInlineArtifact(artifact.inline).byteLength,
+      0,
+    );
+  if (inlineBytes <= MAX_INLINE_HANDOFF_BYTES) return [];
+  return [{
+    instancePath: "/artifacts",
+    keyword: "inlineArtifactBytes",
+    message:
+      `serialized inline artifact content must not exceed ${MAX_INLINE_HANDOFF_BYTES} bytes`,
+  }];
+}
 
 function validateRunManifest(document) {
   const errors = [];
@@ -684,11 +707,13 @@ function validateValidationEnvelope(document) {
         },
       ];
     }
-    if (
-      !document.approved_artifact_roots.some((root) =>
-        pathIsWithin(root, artifact.source_path),
-      )
-    ) {
+    const fileSource = document.approved_artifact_roots.some((root) =>
+      pathIsWithin(root, artifact.source_path)
+    );
+    const inlineSource =
+      artifact.source_path === artifact.path &&
+      pathIsWithin(document.validated_artifact_root, artifact.source_path);
+    if (!fileSource && !inlineSource) {
       return [
         {
           instancePath: `/artifacts/${index}/source_path`,

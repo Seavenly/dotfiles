@@ -18,9 +18,11 @@ Hermes v0.18.2's non-atomic idempotency race. Interrupted, duplicate, and
 concurrent launches cannot create duplicate work. The remaining Phase 2 launch work is
 fast and standard review expansion, including optional lens and supplement
 inputs. Status, cancellation, external-root ownership and supersession,
-resume-migration comparison, practical handoff digest authoring for
-terminal-free worker profiles, and the sacrificial real-board tracer also
-remain before the Phase 2 review gate.
+resume-migration comparison, and the sacrificial real-board tracer also remain
+before the Phase 2 review gate. Terminal-free handoff authoring is now
+executable through inline completion metadata: the validator owns stable
+serialization, a 256 KiB aggregate content cap, digesting, snapshotting, and
+the authoritative attempt ordinal.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -136,8 +138,7 @@ Entry decisions:
 - Keep document validation and authority validation separate. A validation
   envelope is accepted only when `validateCompletedAttempt()` derives it from
   the Hermes completed attempt, the manifest path and digest pinned by
-  launcher-created task state, the sealed graph, and filesystem artifact
-  hashes.
+  launcher-created task state, the sealed graph, and artifact content.
   `validateContract()` alone never authorizes consumption.
 - Accept convergent cancellation over the native Hermes CLI. Cancellation
   records the request, repeatedly reclaims and archives the tenant, and reports
@@ -182,11 +183,15 @@ Repository changes:
 - Insert deterministic handoff-validation gates before every machine consumer.
   They derive the terminal completed attempt through the Hermes adapter and
   validate its runtime ordinal, identity, schema, semantic measurements,
-  artifact containment, and hashes; malformed metadata cannot release
-  downstream work. Pre-card gate specs seal the producer stage while
+  file-artifact containment and hashes, or validator-owned serialization and
+  hashes for inline artifacts; malformed metadata cannot release downstream
+  work. A worker-supplied attempt ordinal is an optional cross-check, not the
+  authority source. Pre-card gate specs seal the producer stage while
   task-specific authority binds the Hermes producer ID after materialization.
 - Snapshot verified artifact bytes into validator-owned storage and expose only
-  that path to consumers. Keep the mutable worker source path as provenance.
+  that path to consumers. Keep a file artifact's mutable worker source path as
+  provenance; inline artifacts use their immutable snapshot as the evidence
+  source path and bind back to completed metadata through its digest.
 - Validate graph reachability, the terminal controller root, global static and
   transition stage-key uniqueness, transition-to-controller linkage, and the
   required worker-producer handoff-gate expansion before materialization.

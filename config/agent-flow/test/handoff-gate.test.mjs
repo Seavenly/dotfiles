@@ -39,6 +39,112 @@ test("agent-flow gate validates the producer's terminal completed attempt", asyn
   );
 });
 
+test("handoff-validation snapshots inline terminal-free worker artifacts", async (t) => {
+  const fixture = await handoffGateFixture(t);
+  const inline = {
+    stage: "lens:correctness",
+    findings: [],
+    summary: "No blocking defects found.",
+  };
+  delete fixture.handoff.attempt;
+  fixture.handoff.artifacts = [{ kind: "review-findings", inline }];
+  await rm(fixture.artifactPath);
+  const stderr = captureStream();
+
+  assert.equal(
+    await runCli(["gate", "--spec", fixture.gatePath], {
+      adapter: fixture.adapter,
+      env: { HERMES_KANBAN_TASK: fixture.validatorTaskId },
+      stdout: captureStream().stream,
+      stderr: stderr.stream,
+    }),
+    0,
+    stderr.value(),
+  );
+
+  const evidence = JSON.parse(await readFile(fixture.evidencePath, "utf8"));
+  const expectedBytes = `${JSON.stringify({
+    findings: [],
+    stage: "lens:correctness",
+    summary: "No blocking defects found.",
+  }, null, 2)}\n`;
+  assert.equal(evidence.valid, true);
+  assert.equal(evidence.attempt, 2);
+  assert.equal(evidence.identity.attempt, 2);
+  assert.equal(evidence.artifacts[0].source_path, evidence.artifacts[0].path);
+  assert.equal(evidence.artifacts[0].expected_sha256, sha256(expectedBytes));
+  assert.equal(evidence.artifacts[0].actual_sha256, sha256(expectedBytes));
+  assert.equal(await readFile(evidence.artifacts[0].path, "utf8"), expectedBytes);
+  assert.deepEqual(await validateContract(evidence), { valid: true, errors: [] });
+});
+
+test("handoff-validation preserves inline string bytes exactly", async (t) => {
+  const fixture = await handoffGateFixture(t);
+  const inline = "## Review notes\n\nNo defects found.\n";
+  delete fixture.handoff.attempt;
+  fixture.handoff.artifacts = [{ kind: "review-notes", inline }];
+
+  assert.equal(
+    await runCli(["gate", "--spec", fixture.gatePath], {
+      adapter: fixture.adapter,
+      env: { HERMES_KANBAN_TASK: fixture.validatorTaskId },
+      stdout: captureStream().stream,
+      stderr: captureStream().stream,
+    }),
+    0,
+  );
+
+  const evidence = JSON.parse(await readFile(fixture.evidencePath, "utf8"));
+  assert.equal(await readFile(evidence.artifacts[0].path, "utf8"), inline);
+  assert.equal(evidence.artifacts[0].actual_sha256, sha256(inline));
+});
+
+test("handoff-validation rejects a wrong optional worker attempt", async (t) => {
+  const fixture = await handoffGateFixture(t);
+  fixture.handoff.attempt = 1;
+
+  assert.equal(
+    await runCli(["gate", "--spec", fixture.gatePath], {
+      adapter: fixture.adapter,
+      env: { HERMES_KANBAN_TASK: fixture.validatorTaskId },
+      stdout: captureStream().stream,
+      stderr: captureStream().stream,
+    }),
+    1,
+  );
+
+  const evidence = JSON.parse(await readFile(fixture.evidencePath, "utf8"));
+  assert.equal(evidence.identity.attempt, 2);
+  assert.deepEqual(evidence.errors, [{
+    code: "identity_mismatch",
+    message: "handoff identity does not match the completed attempt",
+  }]);
+});
+
+test("handoff-validation rejects oversized inline metadata before snapshotting", async (t) => {
+  const fixture = await handoffGateFixture(t);
+  delete fixture.handoff.attempt;
+  fixture.handoff.artifacts = ["first", "second"].map((kind) => ({
+    kind,
+    inline: { content: "x".repeat(140 * 1024) },
+  }));
+
+  assert.equal(
+    await runCli(["gate", "--spec", fixture.gatePath], {
+      adapter: fixture.adapter,
+      env: { HERMES_KANBAN_TASK: fixture.validatorTaskId },
+      stdout: captureStream().stream,
+      stderr: captureStream().stream,
+    }),
+    1,
+  );
+
+  const evidence = JSON.parse(await readFile(fixture.evidencePath, "utf8"));
+  assert.equal(evidence.valid, false);
+  assert.equal(evidence.errors[0].code, "invalid_handoff");
+  assert.deepEqual(evidence.artifacts, []);
+});
+
 test("handoff-validation gate records semantic failure without releasing work", async (t) => {
   const fixture = await handoffGateFixture(t);
   fixture.handoff.passed = false;
@@ -392,6 +498,7 @@ async function handoffGateFixture(t, { timeoutSeconds = 30 } = {}) {
   };
   return {
     adapter,
+    artifactPath,
     artifactBytes,
     completed,
     evidencePath,

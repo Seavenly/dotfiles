@@ -4,7 +4,8 @@ This document specifies the repository-owned design for repeatable automated
 agent flows. Phase 1 implements native profiles, machine-local routing, and
 profile doctoring. Phase 2 now includes the machine contracts, task-pinned
 command, handoff-validation, and review-finalize gate tracers, the canonical
-standard review graph, and a recoverable hotfix review launcher. Fast and
+standard review graph, a recoverable hotfix review launcher, and practical
+inline handoffs for terminal-free review workers. Fast and
 standard review materialization, status, cancellation, external-root ownership,
 registry changes, and stack mechanics remain phased work under the approved
 implementation plan.
@@ -378,11 +379,17 @@ worker may consume it. The validator reads the completed attempt through the
 Hermes adapter. `validateCompletedAttempt()` loads and hashes the authoritative
 sealed run manifest pinned by path and digest in launcher-created task state,
 then loads its graph and checks the handoff's run, flow, stage, attempt,
-schema, and semantic measurement when required. It derives artifact roots only
-from the manifest and hashes each artifact from the filesystem. Every declared
-artifact must include a digest. Verified bytes are copied into the
-validator-owned `validated/` directory, and consumers use only that snapshot
-path and digest, never the mutable worker `source_path`. The gate persists the
+schema, and semantic measurement when required. The runtime attempt ordinal
+comes from Hermes; a worker-provided ordinal is optional and must match when
+present. File artifacts retain an absolute path and digest. For terminal-free
+profiles, an artifact may instead contain inline JSON or text. The validator
+sorts JSON object keys recursively, preserves array order, formats JSON with a
+trailing newline, preserves inline text exactly, and computes the digest itself.
+It derives file-artifact roots only from the manifest. Verified or serialized
+bytes are copied into the validator-owned `validated/` directory, and consumers
+use only that snapshot path and digest, never a mutable worker `source_path`.
+For inline artifacts, the evidence `source_path` is the immutable snapshot path.
+The gate persists the
 returned `agent-flow.validation/v1` as durable evidence with the source attempt
 and manifest provenance. That envelope is output evidence, not a reusable
 authorization token; consumers accept only the result produced for their
@@ -397,8 +404,9 @@ materialization and native retries determine the terminal completed attempt at
 runtime. The launcher binds the concrete producer task ID in the validation
 card's task-specific `agent-flow.task-authority/v1`. Gate execution must require
 the stage and task bindings to agree, derive the terminal completed attempt
-from Hermes, and validate the handoff's attempt ordinal against that runtime
-record. Embedding either runtime value in the pre-card gate spec would make
+from Hermes, and validate any worker-supplied handoff ordinal against that
+runtime record. The evidence always records the runtime ordinal. Embedding
+either runtime value in the pre-card gate spec would make
 immutable run sealing circular or incorrectly select one possible retry.
 
 `agent-flow gate --spec <absolute-gate.json>` executes a sealed gate only for
@@ -422,7 +430,8 @@ paths declared in its sealed operation payload. Launcher-authored task authority
 binds each path to one validator task ID. Finalization loads that task's sealed
 handoff gate, requires its terminal completion, derives its producer task and
 terminal attempt through the Hermes adapter, and matches the evidence to the
-producer metadata, handoff identity, artifact declarations, and attempt. It
+producer metadata, handoff identity, artifact declarations or inline content,
+and runtime attempt. It
 also matches run authority, approved artifact roots, the validation snapshot
 root, stage, and current snapshot digest.
 
@@ -466,9 +475,13 @@ exist. Approved roots are resolved and anchored back to the real run,
 repository, and artifact directories. This is a robust declared-path guard,
 not a filesystem sandbox against a deliberately hostile command.
 
-Metadata contains concise evidence and absolute artifact pointers, not raw
-logs, transcripts, credentials, or tokens. Human checkpoints use
-`kanban_block(kind="needs_input")`, name the durable artifact and question,
+Metadata contains concise evidence and may carry compact terminal-free
+artifacts. It must not carry raw logs, transcripts, credentials, tokens, or
+large binary content. The validator caps total serialized inline artifact
+content at 256 KiB per handoff. File-producing profiles use absolute artifact
+pointers.
+Human checkpoints use `kanban_block(kind="needs_input")`, name the durable
+artifact and question,
 accept the answer as a task comment, and resume the same card.
 
 The review manifest is the source for immutable base and head SHAs. Branch

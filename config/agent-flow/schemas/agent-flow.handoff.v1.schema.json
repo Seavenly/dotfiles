@@ -10,7 +10,6 @@
     "run_id",
     "flow",
     "stage",
-    "attempt",
     "artifacts",
     "changed_files",
     "verification",
@@ -36,6 +35,7 @@
       "maxLength": 128
     },
     "attempt": {
+      "description": "Optional worker assertion. When present, it must match the authoritative Hermes attempt ordinal.",
       "type": "integer",
       "minimum": 1
     },
@@ -95,6 +95,16 @@
       "minLength": 2
     },
     "artifact": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/fileArtifact"
+        },
+        {
+          "$ref": "#/$defs/inlineArtifact"
+        }
+      ]
+    },
+    "fileArtifact": {
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "path", "sha256"],
@@ -109,6 +119,34 @@
         },
         "sha256": {
           "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "inlineArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "inline"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "inline": {
+          "description": "Terminal-free artifact content. Objects and arrays are serialized as stable, pretty JSON with a trailing newline; strings are preserved exactly. Semantic validation caps total serialized inline content across the handoff at 262144 bytes.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "array"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 262144
+            }
+          ]
         }
       }
     },

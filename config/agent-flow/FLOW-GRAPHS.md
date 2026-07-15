@@ -45,10 +45,13 @@ Every graph follows these rules:
 7. Every arrow from a non-gate worker to a machine consumer expands to
    `producer -> validate-handoff:<producer> [gate; run-dir] -> consumer`. The
    validator reads the completed attempt through the Hermes adapter and checks
-   `agent-flow.handoff/v1`, run and stage identity, attempt number, required
-   `passed` value, artifact containment, and recorded hashes. Approved roots
-   come from the sealed run manifest, never from worker metadata or a supplied
-   validation envelope. Invalid handoff metadata blocks at the validator and
+   `agent-flow.handoff/v1`, run and stage identity, any optional worker attempt
+   assertion, and the required `passed` value. It checks file-artifact
+   containment and recorded hashes. For inline JSON or text, it owns stable
+   serialization, enforces a 256 KiB aggregate serialized-content cap, and owns
+   hashing. Approved roots come from the sealed run manifest,
+   never from worker metadata or a supplied validation envelope. Invalid
+   handoff metadata blocks at the validator and
    never releases the consumer. Verified bytes are snapshotted beneath the
    run's `validated/` directory; consumers never reopen the mutable source
    path. Diagrams omit these repeated validation cards for readability.
@@ -56,17 +59,20 @@ Every graph follows these rules:
    ordinal. After Hermes assigns card IDs, launcher-created task authority binds
    the validator to the concrete producer task without rewriting the sealed
    gate or run manifest. At execution, the validator derives the terminal
-   completed attempt from Hermes and checks the handoff ordinal against it, so
+   completed attempt from Hermes and records that authoritative ordinal. If the
+   handoff also declares an ordinal, the validator checks it against Hermes, so
    native retries do not invalidate the sealed gate. It writes exactly one
    declared `agent-flow.validation/v1` evidence file. Producer and validator
    authorities must pin the same run-manifest path and digest before artifacts
    are read. Invalid metadata and a failed required measurement persist evidence
    but fail the validator card. Timeout aborts validation as an operational
    failure so Hermes may retry the same card.
-8. All artifact paths are absolute and live beneath an artifact root recorded
-   in the run manifest. Phase 2 write roots are contained by the canonical
-   run `artifacts/` directory and are disjoint from sealed authority.
-   Candidate worktrees are gate read roots, not artifact write roots.
+8. File artifact paths are absolute and live beneath an artifact root recorded
+   in the run manifest. Inline artifacts have no worker path; the validator
+   writes their stable bytes beneath the run's `validated/` directory. Phase 2
+   write roots are contained by the canonical run `artifacts/` directory and
+   are disjoint from sealed authority. Candidate worktrees are gate read roots,
+   not artifact write roots.
 9. Cancellation and supersession are terminal run operations. A controller
    must not create another transition after the root becomes terminal.
    Cancellation repeatedly sweeps cards that race the request, and status

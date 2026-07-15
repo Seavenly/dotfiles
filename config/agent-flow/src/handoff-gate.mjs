@@ -45,8 +45,11 @@ export async function executeHandoffValidationGate({
       now,
       signal,
     });
-    if (!(await validateContract(validation)).valid) {
-      throw new Error("handoff validation does not satisfy its evidence contract");
+    const validationContract = await validateContract(validation);
+    if (!validationContract.valid) {
+      throw new Error(
+        `handoff validation does not satisfy its evidence contract: ${JSON.stringify(validationContract.errors)}`,
+      );
     }
     throwIfAborted(signal);
     const outputPath = runtime.outputPathByDeclaration.get(gate.outputs[0]);
