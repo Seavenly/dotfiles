@@ -58,6 +58,7 @@ agent-flow gate           --spec <absolute-gate.json>
 agent-flow review transition      --manifest <review.json> --to <state>
 agent-flow review record-comments --manifest <review.json> --comments <comments.json>
 agent-flow status         --run <run-id> [--json]
+agent-flow cancel         --run <run-id> --reason <text>
 agent-flow prune          --run <run-id> [--apply]
 ```
 
@@ -84,6 +85,31 @@ worker or advances a card by polling.
   approved inputs, graph and gate specifications, task identifiers, and
   artifacts. It is not a lifecycle database.
 
+Every launch writes and validates an immutable `agent-flow.run/v1` manifest
+before creating executable cards. The manifest records:
+
+- the repository identity, flow, run ID, board, tenant, external root, and any
+  explicitly superseded run;
+- the selected graph name and version plus content digests for the graph, gate
+  specifications, approved brief and plan, card-pinned skills and role
+  contracts, and every other machine-consumed input copied beneath the run
+  directory;
+- the `agent-flow` contract version and implementation revision plus the
+  Phase 1 `profileSetFingerprint` and per-profile fingerprints that passed
+  launch preflight;
+- the approved run-wide limits, including maximum created cards, worker
+  attempts, elapsed time, and feature-stream concurrency; and
+- the pinned repository base, source, and target revisions required by the
+  selected flow.
+
+Original input paths remain provenance only. Workers consume the immutable
+copies. Resume verifies every recorded digest and compatibility identifier
+before dispatching more work. A mismatch or an implementation that does not
+declare compatibility with the recorded contract blocks the run for explicit
+recovery; it never silently upgrades an active run. An approved migration is an
+append-only receipt beside the original manifest and never rewrites the
+approved run contract.
+
 The launcher creates the root card blocked, materializes and validates every
 known card and dependency, then unblocks the root. The dependency links keep it
 in `todo` until terminal cards complete. A failed launch leaves the root
@@ -95,6 +121,46 @@ create only the versioned transitions defined in
 critic fixes, and epic ready waves. Hermes' built-in auto-decomposer is disabled
 for these boards. The reserved workflow-template columns in Hermes v0.18.2 are
 not treated as an implemented workflow runtime.
+
+## Run ownership and terminal control
+
+At most one nonterminal flow run may own an external tracker issue for one
+repository. Launch rejects a duplicate owner. A replacement must explicitly
+name the prior run as superseded, and the prior run must first reach a durable
+terminal state. Kanban-only launches have no external ownership key but still
+require a unique run ID.
+
+Cancellation is an audited, convergent Kanban operation, not a lifecycle field
+in the run manifest. `agent-flow cancel` records the request on the root,
+reclaims and archives nonterminal cards, and repeats the sweep until no
+executable card remains or no further progress is possible. It is idempotent,
+does not stop the machine-wide dispatcher, and does not create a second
+scheduler or state database. Hermes v0.18.2 does not provide an atomic tenant
+fence, so a worker may briefly continue or be redispatched during a sweep.
+Status reports exact survivors and treats the run as incompletely cancelled
+until a later sweep converges. An operator who needs a stronger emergency stop
+may stop the gateway before cancellation, accepting that unrelated runs also
+pause.
+
+Dynamic transition admission is cooperative in the initial implementation.
+Controllers use native `kanban_create` and `kanban_link`, and their pinned card
+instructions require them to check the active root, declared transition shape,
+idempotency key, and immutable run-wide limits before mutation. Idempotency keys
+and durable Kanban counts survive worker retries and gateway restarts. Status
+and resume independently reconcile created cards, links, and limits so policy
+violations remain visible, but the initial implementation does not claim a
+technical boundary against a controller that ignores its contract. Reaching a
+limit blocks the controller with exact evidence and requires an explicit human
+decision. Supersession, cancellation, and limit changes never reuse an approval
+or silently alter the original run contract.
+
+This cooperative trust model applies through the planned implementation phases.
+A restricted Hermes plugin or kernel primitive is deferred hardening, not a
+Phase 4 gate. Reconsider it only with concrete evidence such as undeclared
+transitions, cancellation that repeatedly fails to converge, meaningful writes
+after cancellation, concurrent limit overruns, shared multi-host board writers,
+or use as a security or production boundary. The design defers enforcement,
+not visibility.
 
 ## Execution profiles
 
@@ -243,8 +309,25 @@ revision transition.
 
 The formal schemas are:
 
+- [`agent-flow.run/v1`](schemas/agent-flow.run.v1.schema.json)
+- [`agent-flow.graph/v1`](schemas/agent-flow.graph.v1.schema.json)
+- [`agent-flow.gate/v1`](schemas/agent-flow.gate.v1.schema.json)
+- [`agent-flow.migration-receipt/v1`](schemas/agent-flow.migration-receipt.v1.schema.json)
 - [`agent-flow.handoff/v1`](schemas/agent-flow.handoff.v1.schema.json)
+- [`agent-flow.validation/v1`](schemas/agent-flow.validation.v1.schema.json)
 - [`agent-flow.local-review/v1`](schemas/agent-flow.local-review.v1.schema.json)
+- `agent-flow.stack/v1`
+- `agent-flow.integration-receipt/v1`
+
+Hermes accepts free-form completion metadata, so schema validity cannot be a
+worker convention. Every machine-consumed worker handoff passes through a
+deterministic `agent-flow` validation gate before a controller or downstream
+worker may consume it. The validator reads the completed attempt through the
+Hermes adapter, checks its run, stage, attempt, schema, required semantic
+measurement, artifact containment and hashes, and writes a durable validation
+artifact. Invalid metadata blocks the validation card and therefore cannot
+release downstream work. The graph notation defines this expansion once rather
+than drawing a validator after every worker.
 
 Metadata contains concise evidence and absolute artifact pointers, not raw
 logs, transcripts, credentials, or tokens. Human checkpoints use
@@ -256,12 +339,21 @@ names are display and refresh inputs only. A tuicr picker opens the pinned SHA
 range. A tuicr session exists only after the interactive TUI creates one and
 its slug is then recorded separately from the flow run ID.
 
-Approval always names a head SHA. If the current head differs, approval is
-reported as stale and integration is refused. Missing worktrees are reported as
-broken review candidates and are never silently removed from the registry.
-Human `issue` comments block integration once present. Automated agent review
-is always required; human feature-level review is optional until a tuicr
-session starts or a human issue comment exists.
+Approval always names exactly one head SHA. Any head change, including a clean
+merge of a newer `epic/source`, makes approval stale and requires verification
+and review again. There is no subjective "materially changed" exception in v1.
+Missing worktrees are reported as broken review candidates and are never
+silently removed from the registry. Human `issue` comments block integration
+once present. Automated agent review is always required; human feature-level
+review is optional until a tuicr session starts or a human issue comment exists.
+
+Review updates use an expected manifest generation and fail on concurrent
+change. Each transition records actor, time, prior generation, head SHA, reason,
+and durable evidence. Integration becomes durable only when an
+`agent-flow.integration-receipt/v1` proves the reviewed head or its approved
+assembly entered the named target ref at a recorded commit and tree. Git success
+followed by a manifest-write failure is reconciled from that receipt and Git;
+the manifest is never advanced merely because an integration command started.
 
 ## Workspace and write serialization
 
@@ -304,6 +396,24 @@ There is always one completion PR:
 
 Intermediate stack PRs omit the external issue key whenever mentioning it
 could trigger premature tracker automation.
+
+The epic records the configured target SHA before implementation and refreshes
+it immediately before stack planning. If the target advanced, an explicit
+source-refresh graph merges that target into `epic/source`, resolves
+conflicts through builder and gate cards, reruns full source verification and
+automated review, and produces a new fixed source commit. Stack approval binds
+both that source commit and the refreshed target SHA.
+
+`epic/delivery` starts from the approved target SHA, not from an unpinned moving
+branch. Target movement after stack approval makes the stack and delivery
+health stale, blocks further remote mutation, and requires source refresh,
+verification, stack regeneration, and renewed approval. The completion PR may
+become mergeable only while its target base and source/delivery evidence remain
+current. A target move while the PR is open invalidates those gates and must be
+reconciled before merge completion can close the tracker issue. The remote
+repository must enforce current-base and required-check policy, or the flow must
+keep the PR in draft and require an equivalent explicit merge checkpoint; a
+policy that permits an unverified stale merge is unsupported.
 
 ## Backup, garbage collection, and recovery
 

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.graph.v1.schema.json",
+  "title": "agent-flow.graph/v1",
+  "description": "Versioned stages, dependencies, and allowed dynamic transitions for one flow graph.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "version",
+    "flow",
+    "root",
+    "stages",
+    "dependencies",
+    "transitions"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.graph/v1" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,127}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "flow": { "enum": ["review", "feature", "spike", "epic", "stacks", "delivery"] },
+    "root": { "$ref": "#/$defs/stageKey" },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/stage" }
+    },
+    "dependencies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "transitions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "from", "max_instances", "stages", "dependencies"],
+        "properties": {
+          "key": { "$ref": "#/$defs/stageKey" },
+          "from": { "$ref": "#/$defs/stageKey" },
+          "max_instances": { "type": "integer", "minimum": 1 },
+          "stages": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/stage" }
+          },
+          "dependencies": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/dependency" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stageKey": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9:-]{0,127}$"
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "profile",
+        "workspace",
+        "skill",
+        "max_attempts",
+        "semantic_measurement",
+        "optional"
+      ],
+      "properties": {
+        "key": { "$ref": "#/$defs/stageKey" },
+        "profile": {
+          "enum": ["flow-controller", "analyst", "critic", "builder", "artifact", "gate"]
+        },
+        "workspace": {
+          "oneOf": [
+            { "enum": ["run-dir", "candidate-worktree", "feature-worktree", "integration-worktree"] },
+            { "type": "string", "pattern": "^/", "minLength": 2 }
+          ]
+        },
+        "skill": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "max_attempts": { "type": "integer", "minimum": 1 },
+        "semantic_measurement": { "type": "boolean" },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parent", "child"],
+      "properties": {
+        "parent": { "$ref": "#/$defs/stageKey" },
+        "child": { "$ref": "#/$defs/stageKey" }
+      }
+    }
+  }
+}

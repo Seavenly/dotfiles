@@ -1,7 +1,7 @@
 # Hermes agent-flow implementation plan
 
-Status: approved on 2026-07-13. Phase 1 is complete; Phase 2 awaits explicit
-approval after review of this foundation.
+Status: approved on 2026-07-13. Phase 1 is complete; Phase 2 contract work began
+on 2026-07-14.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -106,6 +106,25 @@ Rollback:
 
 Depends on: Phase 1.
 
+Entry decisions:
+
+- Approve the machine-facing `agent-flow.run/v1`, `agent-flow.graph/v1`,
+  `agent-flow.gate/v1`, `agent-flow.migration-receipt/v1`, and
+  validation-envelope schemas before implementing the launcher. Briefs and
+  plans may remain human-readable Markdown, but their approved copies and
+  digests must have an unambiguous machine contract.
+- Accept convergent cancellation over the native Hermes CLI. Cancellation
+  records the request, repeatedly reclaims and archives the tenant, and reports
+  exact survivors when a dispatcher or worker races the sweep. It does not
+  promise an atomic tenant fence or stop unrelated tenants.
+- Accept cooperative admission for controller-created cards and links.
+  Controllers check declared transitions and durable run-wide limits before
+  using native Kanban tools; status and resume independently audit the result.
+  A restricted plugin or kernel extension is deferred hardening rather than a
+  Phase 4 gate.
+- Approve external-root uniqueness, explicit supersession, and run-wide card,
+  attempt, elapsed-time, and concurrency limit semantics.
+
 Repository changes:
 
 - Expand `bin/agent-flow`, already containing profile doctoring, as a thin
@@ -116,10 +135,22 @@ Repository changes:
   resolution, graph construction, idempotency keys, Hermes CLI JSON calls,
   root materialization, status projection, and deterministic gate execution.
   The Hermes adapter is the only seam that shells out to `hermes kanban`.
-- Implement only `doctor profiles`, `launch review`, `gate`, and `status` in
-  this phase.
+- Write an immutable run manifest before card creation. Copy approved inputs,
+  graphs, gate specifications, card-pinned skills, and role contracts into the
+  run directory, record their digests, the `agent-flow` implementation revision,
+  supported contract versions, pinned Git revisions, approved limits, and
+  Phase 1 profile fingerprints, and verify all of them on resume. Never silently
+  resume an active run with incompatible contracts or profiles.
+- Implement only `doctor profiles`, `launch review`, `gate`, `status`, and
+  `cancel` in this phase. Launch rejects a second nonterminal owner for the same
+  repository and external root unless it explicitly supersedes a terminal prior
+  run.
 - Add `agent-flow.graph/v1` review graph data and gate specs for deterministic
   finding caps and rendering.
+- Insert deterministic handoff-validation gates before every machine consumer.
+  They read the completed attempt through the Hermes adapter and validate
+  identity, schema, semantic measurements, artifact containment, and hashes;
+  malformed metadata cannot release downstream work.
 - Create a disposable repository fixture and a sacrificial named Kanban board
   for the real tracer.
 
@@ -127,9 +158,18 @@ Tests:
 
 - Unit-test graph output and the CLI through a fake Hermes adapter at the same
   interface used by production.
-- Test duplicate launch, interrupted materialization, missing profile,
-  malformed handoff, semantic failure, operational retry, and partial graph
-  recovery.
+- Test duplicate launch, duplicate external-root ownership, explicit
+  supersession, interrupted materialization, missing profile, malformed
+  handoff, semantic failure, operational retry, and partial graph recovery.
+- Test modified input, graph, gate, implementation, and profile fingerprints on
+  resume. Identical content at a different original path must remain valid;
+  changed approved content under the same run ID must block.
+- Interrupt cancellation before and after each Kanban mutation and inject a
+  redispatched worker or controller-created follow-up. Repeated cancellation
+  must either converge without affecting another tenant or report the exact
+  survivors for the next sweep.
+- Prove controller limit checks use durable Kanban counts after a worker retry
+  or gateway restart, and prove status and resume expose any overrun.
 - Prove the root is never runnable before every required link exists.
 - Run the real local review tracer and demonstrate profile routing, parallel
   lens join, orientation and diagram side work, urgency floors, comment caps,
@@ -143,8 +183,21 @@ Exit criteria:
 - `agent-flow status` explains complete, running, blocked, retrying, and broken
   runs using board state and artifact pointers only.
 - A restart resumes native Hermes attempts without launcher polling.
+- A malformed handoff or incompatible run contract cannot release downstream
+  work. Exceeded run-wide limits and incomplete cancellation remain visible and
+  block controller-driven continuation once detected.
+- External-root ownership is unique among nonterminal runs. Repeated
+  cancellation reaches an auditable terminal state without stopping unrelated
+  runs in the normal case and reports exact survivors when it cannot converge.
 
-Review gate: inspect the tracer and its dashboard before broadening the CLI.
+Review gate: inspect the tracer, cancellation recovery, immutable-run evidence,
+and dashboard before broadening the CLI.
+
+Deferred hardening is evidence-driven and does not block later phases. Revisit
+a restricted Hermes plugin or kernel primitive only after an undeclared
+transition, repeated cancellation failure, meaningful writes after
+cancellation, a concurrent limit overrun, shared multi-host board writers, or a
+security or production-boundary requirement is observed.
 
 Rollback:
 
@@ -158,8 +211,10 @@ Depends on: the Phase 2 review gate.
 Repository changes:
 
 - Implement `agent-flow review transition` and
-  `agent-flow review record-comments` with atomic manifest writes and explicit
-  transition validation.
+  `agent-flow review record-comments` with atomic manifest writes, expected
+  generation compare-and-swap, and explicit transition validation. Record the
+  actor, timestamp, prior generation, bound head SHA, reason, and durable
+  evidence for every lifecycle transition.
 - Change `tuicr-reviews add --manifest <review.json>` to store a manifest path
   plus projection metadata. The manifest remains review truth.
 - Preserve the legacy `tuicr-reviews add --repo ...` interface used by the
@@ -172,6 +227,12 @@ Repository changes:
   open the immutable base-SHA to head-SHA range.
 - Read tuicr comments by stable ID, record them only after durable disposition,
   and invalidate approval when the head changes.
+- Define and validate `agent-flow.integration-receipt/v1`. Advance a review to
+  `integrated` only after the receipt proves the reviewed head or approved
+  assembly entered the named target ref at the recorded commit and tree.
+- Bind every approval to exactly one head SHA. Any head change, including a
+  clean source merge, invalidates approval in v1 and requires verification and
+  review again; do not implement a subjective material-change exception.
 
 Tests:
 
@@ -179,12 +240,18 @@ Tests:
   approved head binding, stale approval, branch drift, missing worktree,
   immutable picker revsets, comment consumption, duplicate comments, and
   terminal pruning.
+- Cover concurrent manifest writers, stale expected generations, approval
+  provenance, Git success followed by manifest failure, manifest success
+  attempted before Git success, duplicate integration receipts, and recovery
+  from Git plus the durable receipt.
 - Prove a registry rebuild from manifests yields the same picker projection.
 - Re-run current tmux and Claude feature-flow compatibility tests.
 
 Exit criteria:
 
 - A moving branch cannot make an old approval look current.
+- No concurrent writer can erase a transition or comment disposition, and no
+  review can become integrated without a verifiable integration receipt.
 - A vanished worktree remains visible and blocks integration.
 - Starting tuicr is always an explicit interactive action.
 
@@ -269,7 +336,15 @@ Repository changes:
   human review, and serialize integration into `epic/source`.
 - Before integration, merge the latest source into the feature branch, resolve
   conflicts through a builder revision card, rerun verification, and require
-  re-review when the reviewed diff materially changes.
+  re-review whenever the resulting head SHA changes.
+- Write and reconcile an integration receipt for every feature entering
+  `epic/source`; the review manifest advances only after the receipt proves the
+  resulting source commit and tree.
+- Record the configured target SHA at epic launch. Immediately before stack
+  planning, detect target drift and, when present, run the declared
+  source-refresh builder, gate, automated review, and full source-verification
+  transition. The refreshed target and source commit create a new stack
+  generation and never reuse prior stack approval.
 - Have the interactive skill update one external progress comment from
   `agent-flow status --json` at launch, resume, and human checkpoints. Do not
   build two-way synchronization or one external issue per feature.
@@ -278,13 +353,16 @@ Tests:
 
 - Cover dependency cycles, ready-wave caps, duplicate resume, independent
   concurrency, serial integration, blocked features, optional human review,
-  stale approval, source movement, conflict revision, unrelated-feature
-  progress, and one-comment idempotency.
+  stale approval after any head change, source movement, conflict revision,
+  integration-receipt recovery, target drift and source refresh,
+  unrelated-feature progress, and one-comment idempotency.
 
 Exit criteria:
 
 - The epic can restart and reconstruct its ready set from Kanban and Git.
 - All integrated features exist on `epic/source`, but no completion PR exists.
+- Stack planning binds one fully verified source commit and one current target
+  SHA; target drift cannot pass through as an implicit merge.
 
 Rollback: stop creating new waves, leave active feature reviews available, and
 preserve `epic/source`. The external issue remains In Progress.
@@ -303,7 +381,9 @@ Repository changes:
   a temporary worktree, exact tree checks, durable stack manifests, PR
   creation and retargeting, owning-layer review changes, suffix restacking, and
   partial-failure reporting.
-- Require a human-approved layer plan before creating refs or PRs.
+- Bind each stack generation to an immutable source commit and target SHA.
+  Require a human-approved layer plan before creating refs or PRs, and mark the
+  generation stale before any further mutation if either identity moves.
 
 Prototype matrix:
 
@@ -312,6 +392,9 @@ Prototype matrix:
 - Prove each PR diff contains only its review layer, later branches descend
   from earlier branches, source is never checked out or mutated, and the final
   layer tree exactly equals source.
+- Prove target movement before branch creation, between PR creations, and during
+  suffix restacking blocks safely and requires a newly approved stack
+  generation rather than an implicit rebase.
 - After local proof, run an opt-in remote prototype against a non-production
   repository configured with the target work repository's actual merge policy.
 
@@ -319,6 +402,8 @@ Exit criteria:
 
 - Select and document one assembly policy that survives review edits and
   restacking without force-pushing a reviewed prefix.
+- Demonstrate that every remote mutation reconciles the recorded source commit
+  and target SHA before acting.
 - Demonstrate rollback instructions after failures at every mutation point.
 
 Review gate: approve the proven merge policy before delivery automation.
@@ -332,24 +417,38 @@ Depends on: the Phase 7 merge-policy gate.
 
 Repository changes:
 
-- Create `epic/delivery` from the configured target and assemble reviewed stack
-  layers only into that branch.
+- Create `epic/delivery` from the stack generation's recorded target SHA and
+  assemble reviewed stack layers only into that branch.
 - Retarget each next stack PR as its parent layer enters delivery.
 - Add an exact Git tree equality gate for source and delivery, followed by the
   full delivery verification suite.
+- Reconcile the remote target before every assembly or PR mutation. Target
+  movement marks delivery stale and returns the run to source refresh, full
+  verification, stack regeneration, and renewed approval; never update delivery
+  against a moving target implicitly.
 - Open the single completion PR from delivery to target only after both gates
   pass. Put the external issue key only where tracker automation is intended.
+- Keep the completion PR stale and non-completing if its target advances while
+  open. Re-run the target-drift path and required gates before it can become the
+  completion event again.
+- Require the target repository to enforce current-base and required-check
+  policy for the completion PR. If it cannot, keep the PR in draft and require
+  an equivalent explicit merge checkpoint; do not claim safe completion when a
+  stale unverified PR can merge asynchronously.
 - Observe the completion PR merge before allowing the external issue to become
   Done.
 
 Tests:
 
 - Cover partial layer assembly, failed retarget, stale review, changed source,
-  unequal trees despite equal stats, failed full verification, intermediate PR
-  issue-key suppression, final PR idempotency, and merge observation.
+  target drift before delivery, target drift during assembly, target drift
+  while the completion PR is open, unequal trees despite equal stats, failed
+  full verification, intermediate PR issue-key suppression, final PR
+  idempotency, and merge observation.
 
-Exit criteria: one final PR merge is the only event that reports the external
-outcome complete.
+Exit criteria: one final PR merge with current source, delivery, verification,
+and target-base evidence is the only event that reports the external outcome
+complete.
 
 Rollback: stop assembly, keep source immutable, and preserve delivery and stack
 refs for inspection. Never force-push the target.
@@ -386,6 +485,13 @@ Every implementation phase must also pass:
 - `dotfiles check` and the relevant isolated-home convergence tests.
 - Shellcheck and formatting for changed scripts.
 - JSON Schema validation for all fixture and produced manifests.
+- Compatibility checks against active immutable run manifests. A changed
+  implementation, graph, gate, skill contract, or profile fingerprint may not
+  resume an active run unless the recorded contract declares it compatible or
+  an explicit migration receipt exists.
+- Fault-injection tests at every multi-system seam changed by the phase,
+  including Kanban plus run artifacts, Git plus review manifests, and local
+  stack state plus remote refs or PRs.
 - No tracked credentials, model names from local routing, raw logs, or generated
   runtime state.
 - No changes to the public Claude command behavior unless that phase explicitly

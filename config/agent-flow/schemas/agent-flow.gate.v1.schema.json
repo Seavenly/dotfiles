@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.gate.v1.schema.json",
+  "title": "agent-flow.gate/v1",
+  "description": "Deterministic command, handoff-validation, or review-finalization operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "version",
+    "run_id",
+    "stage",
+    "kind",
+    "workspace",
+    "timeout_seconds",
+    "inputs",
+    "outputs"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.gate/v1" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,127}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "run_id": { "$ref": "#/$defs/runId" },
+    "stage": { "$ref": "#/$defs/stageKey" },
+    "kind": { "enum": ["command", "handoff-validation", "review-finalize"] },
+    "workspace": { "$ref": "#/$defs/absolutePath" },
+    "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "inputs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
+    },
+    "outputs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "handoff_validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_stage", "task_id", "attempt", "require_passed"],
+      "properties": {
+        "producer_stage": { "$ref": "#/$defs/stageKey" },
+        "task_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "require_passed": { "type": "boolean" }
+      }
+    },
+    "review_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["urgency", "minimum_tier", "max_comments", "per_tier_caps"],
+      "properties": {
+        "urgency": { "enum": ["hotfix", "fast", "standard"] },
+        "minimum_tier": {
+          "enum": ["critical", "important", "recommended", "nit"]
+        },
+        "max_comments": { "type": "integer", "minimum": 0, "maximum": 500 },
+        "per_tier_caps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["critical", "important", "recommended", "nit"],
+          "properties": {
+            "critical": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "important": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "recommended": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "nit": { "type": "integer", "minimum": 0, "maximum": 500 }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "urgency": { "const": "hotfix" } },
+            "required": ["urgency"]
+          },
+          "then": {
+            "properties": { "minimum_tier": { "const": "critical" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "urgency": { "const": "fast" } },
+            "required": ["urgency"]
+          },
+          "then": {
+            "properties": { "minimum_tier": { "const": "important" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "urgency": { "const": "standard" } },
+            "required": ["urgency"]
+          },
+          "then": {
+            "properties": { "minimum_tier": { "const": "nit" } }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "command" },
+        "commands": true,
+        "handoff_validation": false,
+        "review_policy": false
+      },
+      "required": ["kind", "commands"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "handoff-validation" },
+        "commands": false,
+        "handoff_validation": true,
+        "review_policy": false
+      },
+      "required": ["kind", "handoff_validation"]
+    },
+    {
+      "properties": {
+        "kind": { "const": "review-finalize" },
+        "commands": false,
+        "handoff_validation": false,
+        "review_policy": true
+      },
+      "required": ["kind", "review_policy"]
+    }
+  ],
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "stageKey": { "type": "string", "pattern": "^[a-z][a-z0-9:-]{0,127}$" },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "cwd", "output_path"],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cwd": { "$ref": "#/$defs/absolutePath" },
+        "output_path": { "$ref": "#/$defs/absolutePath" },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "propertyNames": { "pattern": "^[A-Z_][A-Z0-9_]*$" }
+        }
+      }
+    }
+  }
+}

@@ -16,22 +16,41 @@ approved input enables them.
 
 Every graph follows these rules:
 
-1. The launcher creates the root blocked, creates cards with idempotency keys,
+1. The launcher validates and seals the immutable `agent-flow.run/v1`
+   manifest before creating cards. Cards receive only paths and digests from
+   that manifest; a resume with incompatible contracts or changed content
+   blocks before dispatch.
+2. The launcher creates the root blocked, creates cards with idempotency keys,
    links the terminal cards as root parents, validates the graph, and unblocks
    the root.
-2. A controller that needs defined follow-up work creates the follow-up chain,
-   links its terminal card as a parent of itself, calls
+3. A controller that needs defined follow-up work verifies the run is active,
+   the requested transition is declared, and its recorded run-wide limits
+   remain available. It creates the chain with native Kanban tools and
+   idempotency keys, links its terminal card as a parent of itself, calls
    `kanban_block(kind="dependency")`, and returns to `todo`. Hermes promotes it
-   when the new parent completes.
-3. A card ends with `kanban_complete` or `kanban_block`. Normal process exit
+   when the new parent completes. Status and resume independently audit these
+   cooperative checks; they are visible policy, not a technical tool boundary.
+4. A card ends with `kanban_complete` or `kanban_block`. Normal process exit
    without a lifecycle call is a protocol violation.
-4. Operational failures use native worker retries. Semantic failures complete
+5. Operational failures use native worker retries. Semantic failures complete
    with a handoff containing `passed: false`; a controller applies the defined
    cap and transition.
-5. A controller may instantiate only the transitions in this document. New
+6. A controller may instantiate only the transitions in this document. New
    stage shapes require a graph-version change.
-6. All artifact paths are absolute and live beneath the run directory unless
+7. Every arrow from a semantic worker to a machine consumer expands to
+   `producer -> validate-handoff:<producer> [gate; run-dir] -> consumer`. The
+   validator reads the completed attempt through the Hermes adapter and checks
+   `agent-flow.handoff/v1`, run and stage identity, attempt number, required
+   `passed` value, artifact containment, and recorded hashes. Invalid handoff
+   metadata blocks at the validator and never releases the consumer. Diagrams
+   omit these repeated validation cards for readability.
+8. All artifact paths are absolute and live beneath the run directory unless
    the manifest explicitly names a review candidate worktree.
+9. Cancellation and supersession are terminal run operations. A controller
+   must not create another transition after the root becomes terminal.
+   Cancellation repeatedly sweeps cards that race the request, and status
+   reports any survivor; no archived card may be silently recreated under a new
+   run ID.
 
 ## Review flow
 
@@ -199,9 +218,11 @@ Each review revision generation is an idempotent subgraph in the original
 feature tenant and uses the original feature worktree. It never reopens a done
 feature root or writes concurrently with another generation.
 
-Approval records the current head SHA. A head mismatch is stale approval. If
-merging the latest `epic/source` materially changes the reviewed diff,
-verification and review run again before integration.
+Approval records the current head SHA. Any head mismatch is stale approval,
+including a head created by merging the latest `epic/source`; verification and
+review run again before integration. Review transitions use an expected
+manifest generation, and integration records a validated
+`agent-flow.integration-receipt/v1` before the lifecycle advances.
 
 ## Spike flow
 
@@ -269,8 +290,10 @@ exceeds the approved concurrency cap. Feature streams reuse the versioned
 feature graph. Integration into `epic/source` is one gate card at a time. The
 gate merges the latest source into the reviewed feature branch, resolves only
 through an explicit builder revision card when needed, reruns verification,
-requires re-review for a materially changed diff, and then integrates without
-force-push.
+requires re-review for every resulting head change, and then integrates without
+force-push. The integration gate writes a receipt binding the reviewed head,
+source ref, resulting commit, and resulting tree before the review manifest can
+advance to `integrated`.
 
 External progress is one updated comment with aggregate complete, running,
 blocked, and review counts. `agent-flow status --json` derives the data from
@@ -279,15 +302,33 @@ resume, and human checkpoints. This does not add tracker authority to a worker
 profile or create external stories for internal feature streams. The epic root
 is not externally complete after source verification.
 
+Before stack planning, the epic compares the configured target with the target
+SHA recorded at launch. When it moved, the controller instantiates the declared
+source-refresh transition:
+
+```text
+target-drift
+  -> source-refresh-builder [builder; epic/source worktree]
+  -> source-refresh-gate [gate; epic/source worktree]
+  -> source-refresh-review [critic; epic/source worktree]
+  -> source-verification [gate; epic/source worktree]
+  -> stack-plan-checkpoint
+```
+
+The refreshed target SHA and new immutable source commit become a new approved
+stack generation. They do not rewrite the original run manifest or reuse prior
+stack approval.
+
 ## Stacks and delivery
 
 The user-facing `stacks` skill proposes coherent review layers from a fixed
-source commit and blocks for approval before any branch or PR mutation.
+source commit and fixed target SHA and blocks for approval before any branch or
+PR mutation.
 Deterministic helpers then construct and validate the stack in a temporary
 worktree.
 
 ```text
-approved source commit
+approved source commit + target SHA
   -> stack plan
   -> human approval
   -> layer-1 branch from delivery base
@@ -324,7 +365,16 @@ The invariant is exact final tree equivalence, not commit identity. Partial
 failure leaves source unchanged, records created refs and PRs in the stack
 manifest, and prints explicit rollback actions without deleting them.
 
+Every remote mutation first verifies the stack generation's source commit and
+target SHA. Target movement marks the stack and delivery stale and blocks
+creation, retargeting, assembly, and completion. Recovery returns to the epic
+source-refresh transition, produces a new stack generation, and requires new
+human approval; it never restacks against a moving target implicitly.
+
 For a standalone feature, the approved feature branch plays the source role
-and a dedicated delivery branch plays the delivery role. Intermediate PRs omit
-an external issue key if it could trigger premature automation. The completion
-PR is the only PR allowed to mark the external outcome complete.
+and a dedicated delivery branch plays the delivery role. The same fixed-target
+and target-drift rules apply. Intermediate PRs omit an external issue key if it
+could trigger premature automation. The completion PR is the only PR allowed to
+mark the external outcome complete, and the remote repository must enforce a
+current target base plus required checks or require an equivalent explicit merge
+checkpoint.
