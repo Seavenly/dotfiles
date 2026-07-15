@@ -89,14 +89,18 @@ Every launch writes and validates an immutable `agent-flow.run/v1` manifest
 before creating executable cards. The manifest records:
 
 - the repository identity, flow, run ID, board, tenant, external root, and any
-  explicitly superseded run;
+  explicitly superseded run; child runs name their parent explicitly before
+  sharing its tenant;
 - the selected graph name and version plus content digests for the graph, gate
   specifications, approved brief and plan, card-pinned skills and role
   contracts, and every other machine-consumed input copied beneath the run
   directory;
+- the approved read roots, canonical `artifacts/` and `validated/` directories,
+  artifact write roots beneath `artifacts/`, and one aggregate content-set
+  fingerprint covering the sealed graph and machine inputs;
 - the `agent-flow` contract version and implementation revision plus the
-  Phase 1 `profileSetFingerprint` and per-profile fingerprints that passed
-  launch preflight;
+Phase 1 `profileSetFingerprint`, the exact required profile names, and the
+  complete per-profile fingerprint map that passed launch preflight;
 - the approved run-wide limits, including maximum created cards, worker
   attempts, elapsed time, and feature-stream concurrency; and
 - the pinned repository base, source, and target revisions required by the
@@ -109,6 +113,15 @@ declare compatibility with the recorded contract blocks the run for explicit
 recovery; it never silently upgrades an active run. An approved migration is an
 append-only receipt beside the original manifest and never rewrites the
 approved run contract.
+
+`validateContract(document)` checks a standalone document's schema and
+cross-field invariants. It is not an authorization decision and must never be
+used to trust a validation envelope supplied by a worker. Bundle validation at
+launch and resume also loads the sealed graph and inputs, recomputes their
+digests and content-set fingerprint, and binds the graph name, version, and
+flow to the run manifest. Migration validation recomputes that same before and
+after compatibility identity and requires the receipt to enumerate every
+changed sealed item; a receipt's own assertions are not sufficient evidence.
 
 The launcher creates the root card blocked, materializes and validates every
 known card and dependency, then unblocks the root. The dependency links keep it
@@ -323,11 +336,31 @@ Hermes accepts free-form completion metadata, so schema validity cannot be a
 worker convention. Every machine-consumed worker handoff passes through a
 deterministic `agent-flow` validation gate before a controller or downstream
 worker may consume it. The validator reads the completed attempt through the
-Hermes adapter, checks its run, stage, attempt, schema, required semantic
-measurement, artifact containment and hashes, and writes a durable validation
-artifact. Invalid metadata blocks the validation card and therefore cannot
-release downstream work. The graph notation defines this expansion once rather
-than drawing a validator after every worker.
+Hermes adapter. `validateCompletedAttempt()` loads and hashes the authoritative
+sealed run manifest pinned by path and digest in launcher-created task state,
+then loads its graph and checks the handoff's run, flow, stage, attempt,
+schema, and semantic measurement when required. It derives artifact roots only
+from the manifest and hashes each artifact from the filesystem. Every declared
+artifact must include a digest. Verified bytes are copied into the
+validator-owned `validated/` directory, and consumers use only that snapshot
+path and digest, never the mutable worker `source_path`. The gate persists the
+returned `agent-flow.validation/v1` as durable evidence with the source attempt
+and manifest provenance. That envelope is output evidence, not a reusable
+authorization token; consumers accept only the result produced for their
+expected completed attempt. Invalid metadata
+blocks the validation card and therefore cannot release downstream work. The
+graph notation defines this expansion once rather than drawing a validator
+after every worker.
+
+Graph contract validation requires one terminal, required flow-controller
+root; every declared stage must reach it; stage keys are unique across static
+and dynamic templates; each transition rejoins its declaring controller; and
+every non-gate worker producer's outgoing dependency first enters its dedicated
+handoff-validation gate. Gate contracts pin command working directories to the
+declared workspace, inputs to declared read roots, and all outputs to one write
+root. Bundle validation also bounds those roots by the run manifest's approved
+read and artifact roots. These checks describe an executable topology before
+Hermes cards exist.
 
 Metadata contains concise evidence and absolute artifact pointers, not raw
 logs, transcripts, credentials, or tokens. Human checkpoints use

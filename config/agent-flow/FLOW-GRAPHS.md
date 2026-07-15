@@ -19,10 +19,14 @@ Every graph follows these rules:
 1. The launcher validates and seals the immutable `agent-flow.run/v1`
    manifest before creating cards. Cards receive only paths and digests from
    that manifest; a resume with incompatible contracts or changed content
-   blocks before dispatch.
+   blocks before dispatch. Standalone schema validation is not sufficient:
+   launch and resume load the sealed graph and inputs, verify their hashes, and
+   recompute the manifest's compatibility fingerprints.
 2. The launcher creates the root blocked, creates cards with idempotency keys,
-   links the terminal cards as root parents, validates the graph, and unblocks
-   the root.
+   links the terminal cards as root parents, validates the complete executable
+   topology, and unblocks the root. The root is a required terminal
+   flow-controller, every stage reaches it, and stage keys are globally unique
+   across static stages and transition templates.
 3. A controller that needs defined follow-up work verifies the run is active,
    the requested transition is declared, and its recorded run-wide limits
    remain available. It creates the chain with native Kanban tools and
@@ -36,16 +40,22 @@ Every graph follows these rules:
    with a handoff containing `passed: false`; a controller applies the defined
    cap and transition.
 6. A controller may instantiate only the transitions in this document. New
-   stage shapes require a graph-version change.
-7. Every arrow from a semantic worker to a machine consumer expands to
+   stage shapes require a graph-version change. Every declared transition
+   stage has a dependency path back to the transition's controller.
+7. Every arrow from a non-gate worker to a machine consumer expands to
    `producer -> validate-handoff:<producer> [gate; run-dir] -> consumer`. The
    validator reads the completed attempt through the Hermes adapter and checks
    `agent-flow.handoff/v1`, run and stage identity, attempt number, required
-   `passed` value, artifact containment, and recorded hashes. Invalid handoff
-   metadata blocks at the validator and never releases the consumer. Diagrams
-   omit these repeated validation cards for readability.
-8. All artifact paths are absolute and live beneath the run directory unless
-   the manifest explicitly names a review candidate worktree.
+   `passed` value, artifact containment, and recorded hashes. Approved roots
+   come from the sealed run manifest, never from worker metadata or a supplied
+   validation envelope. Invalid handoff metadata blocks at the validator and
+   never releases the consumer. Verified bytes are snapshotted beneath the
+   run's `validated/` directory; consumers never reopen the mutable source
+   path. Diagrams omit these repeated validation cards for readability.
+8. All artifact paths are absolute and live beneath an artifact root recorded
+   in the run manifest. Phase 2 write roots are contained by the canonical
+   run `artifacts/` directory and are disjoint from sealed authority.
+   Candidate worktrees are gate read roots, not artifact write roots.
 9. Cancellation and supersession are terminal run operations. A controller
    must not create another transition after the root becomes terminal.
    Cancellation repeatedly sweeps cards that race the request, and status

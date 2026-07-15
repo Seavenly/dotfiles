@@ -70,6 +70,7 @@
         "skill",
         "max_attempts",
         "semantic_measurement",
+        "validates_handoff_for",
         "optional"
       ],
       "properties": {
@@ -86,6 +87,12 @@
         "skill": { "type": "string", "minLength": 1, "maxLength": 256 },
         "max_attempts": { "type": "integer", "minimum": 1 },
         "semantic_measurement": { "type": "boolean" },
+        "validates_handoff_for": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/stageKey" }
+          ]
+        },
         "optional": { "type": "boolean" }
       }
     },

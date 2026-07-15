@@ -97,7 +97,7 @@
     "artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "path"],
+      "required": ["kind", "path", "sha256"],
       "properties": {
         "kind": {
           "type": "string",
@@ -108,10 +108,13 @@
           "$ref": "#/$defs/absolutePath"
         },
         "sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "$ref": "#/$defs/sha256"
         }
       }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "verification": {
       "type": "object",

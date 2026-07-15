@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dotfiles.local/schemas/agent-flow.validation.v1.schema.json",
   "title": "agent-flow.validation/v1",
-  "description": "Durable evidence that a completed worker handoff is safe for machine consumption.",
+  "description": "Durable output evidence produced by authoritative completed-attempt validation; never an authorization input by itself.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,10 +13,12 @@
     "attempt",
     "validated_at",
     "source_metadata_sha256",
+    "provenance",
     "valid",
     "identity",
     "semantic",
-    "artifact_roots",
+    "approved_artifact_roots",
+    "validated_artifact_root",
     "artifacts",
     "errors"
   ],
@@ -28,6 +30,17 @@
     "attempt": { "type": "integer", "minimum": 1 },
     "validated_at": { "$ref": "#/$defs/timestamp" },
     "source_metadata_sha256": { "$ref": "#/$defs/sha256" },
+    "provenance": {
+      "description": "Hermes attempt and sealed run manifest used by the authority validator.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_manifest_path", "run_manifest_sha256", "hermes_attempt_id"],
+      "properties": {
+        "run_manifest_path": { "$ref": "#/$defs/absolutePath" },
+        "run_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "hermes_attempt_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
     "valid": { "type": "boolean" },
     "identity": {
       "type": "object",
@@ -49,22 +62,35 @@
         "passed": { "type": ["boolean", "null"] }
       }
     },
-    "artifact_roots": {
+    "approved_artifact_roots": {
+      "description": "Evidence copy of roots derived from the sealed run manifest, not caller-selected authority.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/absolutePath" }
     },
+    "validated_artifact_root": { "$ref": "#/$defs/absolutePath" },
     "artifacts": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "expected_sha256", "actual_sha256", "valid"],
+        "required": ["source_path", "path", "expected_sha256", "actual_sha256", "valid"],
         "properties": {
-          "path": { "$ref": "#/$defs/absolutePath" },
+          "source_path": { "$ref": "#/$defs/absolutePath" },
+          "path": {
+            "oneOf": [
+              { "type": "null" },
+              { "$ref": "#/$defs/absolutePath" }
+            ]
+          },
           "expected_sha256": { "$ref": "#/$defs/sha256" },
-          "actual_sha256": { "$ref": "#/$defs/sha256" },
+          "actual_sha256": {
+            "oneOf": [
+              { "type": "null" },
+              { "$ref": "#/$defs/sha256" }
+            ]
+          },
           "valid": { "type": "boolean" }
         }
       }

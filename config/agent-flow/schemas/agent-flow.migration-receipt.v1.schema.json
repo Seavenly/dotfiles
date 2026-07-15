@@ -21,7 +21,7 @@
         "required": ["kind", "name", "prior_sha256", "next_sha256"],
         "properties": {
           "kind": {
-            "enum": ["implementation", "graph", "gate", "input", "profile", "skill", "contract"]
+            "enum": ["implementation", "graph", "gate", "input", "profile", "skill", "role-contract", "contract"]
           },
           "name": { "type": "string", "minLength": 1, "maxLength": 256 },
           "prior_sha256": { "$ref": "#/$defs/sha256" },
@@ -53,11 +53,12 @@
     "compatibilityIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "implementation_revision", "profile_set_fingerprint"],
+      "required": ["contract_version", "implementation_revision", "profile_set_fingerprint", "content_set_fingerprint"],
       "properties": {
         "contract_version": { "type": "integer", "minimum": 1 },
         "implementation_revision": { "$ref": "#/$defs/gitRevision" },
-        "profile_set_fingerprint": { "$ref": "#/$defs/sha256" }
+        "profile_set_fingerprint": { "$ref": "#/$defs/sha256" },
+        "content_set_fingerprint": { "$ref": "#/$defs/sha256" }
       }
     }
   }

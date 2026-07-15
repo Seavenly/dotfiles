@@ -1,10 +1,30 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import { validateCompletedAttempt } from "../src/attempt-validator.mjs";
+import {
+  validateGateForRun,
+  validateSealedGate,
+} from "../src/run-bundle-validator.mjs";
 import { validateContract } from "../src/schema-validator.mjs";
 
 const SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const GIT_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
 
 function validRunManifest() {
   return {
@@ -12,10 +32,22 @@ function validRunManifest() {
     contract_version: 1,
     implementation: {
       revision: GIT_SHA,
-      compatible_contracts: ["agent-flow.run/v1"],
+      compatible_contracts: [
+        "agent-flow.run/v1",
+        "agent-flow.graph/v1",
+        "agent-flow.gate/v1",
+        "agent-flow.handoff/v1",
+        "agent-flow.validation/v1",
+        "agent-flow.migration-receipt/v1",
+        "agent-flow.local-review/v1",
+      ],
+      content_set_fingerprint: SHA256,
     },
     identity: {
       run_id: "review-20260714-example",
+      run_directory: "/tmp/state/runs/review-20260714-example",
+      artifact_directory: "/tmp/state/runs/review-20260714-example/artifacts",
+      validation_directory: "/tmp/state/runs/review-20260714-example/validated",
       flow: "review",
       repository: {
         path: "/tmp/example",
@@ -23,15 +55,24 @@ function validRunManifest() {
       },
       board: "example-project",
       tenant: "review-20260714-example",
+      parent_run_id: null,
       external_root: null,
       supersedes: null,
     },
     graph: {
       name: "local-review",
       version: 1,
+      flow: "review",
       sealed_path: "/tmp/state/runs/review-20260714-example/inputs/graph.json",
       sha256: SHA256,
     },
+    approved_read_roots: [
+      "/tmp/example",
+      "/tmp/state/runs/review-20260714-example",
+    ],
+    approved_artifact_roots: [
+      "/tmp/state/runs/review-20260714-example/artifacts",
+    ],
     inputs: [
       {
         kind: "review-manifest",
@@ -64,6 +105,7 @@ function validRunManifest() {
     ],
     profiles: {
       profile_set_fingerprint: SHA256,
+      required: ["analyst", "artifact", "critic", "flow-controller", "gate"],
       fingerprints: {
         analyst: SHA256,
         artifact: SHA256,
@@ -102,6 +144,7 @@ function validGraph() {
         skill: "review-flow",
         max_attempts: 2,
         semantic_measurement: false,
+        validates_handoff_for: null,
         optional: false,
       },
       {
@@ -111,11 +154,23 @@ function validGraph() {
         skill: "review-correctness",
         max_attempts: 2,
         semantic_measurement: true,
+        validates_handoff_for: null,
+        optional: false,
+      },
+      {
+        key: "validate-handoff:lens:correctness",
+        profile: "gate",
+        workspace: "run-dir",
+        skill: "handoff-validator",
+        max_attempts: 1,
+        semantic_measurement: false,
+        validates_handoff_for: "lens:correctness",
         optional: false,
       },
     ],
     dependencies: [
-      { parent: "lens:correctness", child: "review-root" },
+      { parent: "lens:correctness", child: "validate-handoff:lens:correctness" },
+      { parent: "validate-handoff:lens:correctness", child: "review-root" },
     ],
     transitions: [],
   };
@@ -130,9 +185,11 @@ function validGate() {
     stage: "finalize",
     kind: "review-finalize",
     workspace: "/tmp/state/runs/review-20260714-example",
+    read_roots: ["/tmp/state/runs/review-20260714-example"],
+    write_root: "/tmp/state/runs/review-20260714-example/artifacts",
     timeout_seconds: 300,
-    inputs: ["/tmp/state/runs/review-20260714-example/out/comments.json"],
-    outputs: ["/tmp/state/runs/review-20260714-example/out/review.md"],
+    inputs: ["/tmp/state/runs/review-20260714-example/artifacts/comments.json"],
+    outputs: ["/tmp/state/runs/review-20260714-example/artifacts/review.md"],
     review_policy: {
       urgency: "fast",
       minimum_tier: "important",
@@ -156,11 +213,13 @@ function validMigrationReceipt() {
       contract_version: 1,
       implementation_revision: GIT_SHA,
       profile_set_fingerprint: SHA256,
+      content_set_fingerprint: SHA256,
     },
     to: {
       contract_version: 1,
       implementation_revision: "1123456789abcdef0123456789abcdef01234567",
       profile_set_fingerprint: SHA256,
+      content_set_fingerprint: SHA256,
     },
     changes: [
       {
@@ -188,6 +247,11 @@ function validValidationEnvelope() {
     attempt: 1,
     validated_at: "2026-07-14T12:15:00Z",
     source_metadata_sha256: SHA256,
+    provenance: {
+      run_manifest_path: "/tmp/state/runs/review-20260714-example/run.json",
+      run_manifest_sha256: SHA256,
+      hermes_attempt_id: "attempt_12345678",
+    },
     valid: true,
     identity: {
       handoff_schema: "agent-flow.handoff/v1",
@@ -199,16 +263,46 @@ function validValidationEnvelope() {
       required: true,
       passed: true,
     },
-    artifact_roots: ["/tmp/state/runs/review-20260714-example"],
+    approved_artifact_roots: [
+      "/tmp/state/runs/review-20260714-example/artifacts",
+    ],
+    validated_artifact_root: "/tmp/state/runs/review-20260714-example/validated",
     artifacts: [
       {
-        path: "/tmp/state/runs/review-20260714-example/out/correctness.json",
+        source_path:
+          "/tmp/state/runs/review-20260714-example/artifacts/correctness.json",
+        path:
+          "/tmp/state/runs/review-20260714-example/validated/correctness.json",
         expected_sha256: SHA256,
         actual_sha256: SHA256,
         valid: true,
       },
     ],
     errors: [],
+  };
+}
+
+function validHandoff() {
+  return {
+    schema: "agent-flow.handoff/v1",
+    run_id: "review-20260714-example",
+    flow: "review",
+    stage: "lens:correctness",
+    attempt: 1,
+    passed: true,
+    artifacts: [
+      {
+        kind: "review-findings",
+        path:
+          "/tmp/state/runs/review-20260714-example/artifacts/correctness.json",
+        sha256: SHA256,
+      },
+    ],
+    changed_files: [],
+    verification: [],
+    dependencies: [],
+    retry_notes: [],
+    residual_risk: [],
   };
 }
 
@@ -241,6 +335,45 @@ test("run manifests require every machine-consumed input category", async () => 
     keyword: "requiredInputKind",
     message: "must include at least one gate input",
   });
+});
+
+test("run manifests bind tenancy, graph identity, sealed content, and profiles", async () => {
+  const mutations = [
+    (run) => { run.identity.tenant = "unrelated-tenant"; },
+    (run) => { run.identity.supersedes = run.identity.run_id; },
+    (run) => {
+      run.identity.parent_run_id = run.identity.run_id;
+      run.identity.tenant = run.identity.run_id;
+    },
+    (run) => { run.graph.flow = "feature"; },
+    (run) => { run.graph.sealed_path = "/tmp/outside/graph.json"; },
+    (run) => { run.inputs[0].sealed_path = "/tmp/outside/review.json"; },
+    (run) => { run.inputs[0].sealed_path = `${run.identity.run_directory}/artifacts/input.json`; },
+    (run) => { run.approved_read_roots = ["/"]; },
+    (run) => { run.approved_artifact_roots = [run.identity.run_directory]; },
+    (run) => { run.approved_artifact_roots = [`${run.identity.run_directory}/inputs`]; },
+    (run) => { run.inputs.push({ ...run.inputs[0] }); },
+    (run) => { run.profiles.required.push("builder"); },
+    (run) => { run.revisions.base = null; },
+    (run) => { run.implementation.compatible_contracts = ["agent-flow.run/v1"]; },
+  ];
+
+  for (const mutate of mutations) {
+    const malformed = validRunManifest();
+    mutate(malformed);
+    assert.equal((await validateContract(malformed)).valid, false);
+  }
+
+  const child = validRunManifest();
+  child.identity.parent_run_id = "epic-20260714-example";
+  child.identity.tenant = "epic-20260714-example";
+  assert.equal((await validateContract(child)).valid, true);
+
+  const emptyRevisions = validRunManifest();
+  emptyRevisions.identity.flow = "spike";
+  emptyRevisions.graph.flow = "spike";
+  emptyRevisions.revisions = { base: null, source: null, target: null };
+  assert.equal((await validateContract(emptyRevisions)).valid, false);
 });
 
 test("graphs reject dependencies that do not name declared stages", async () => {
@@ -278,6 +411,39 @@ test("graphs reject duplicate stage keys and dependency cycles", async () => {
   assert.equal(cycleResult.errors[0].keyword, "acyclic");
 });
 
+test("graphs require a controller root, complete root linkage, and handoff gates", async () => {
+  const wrongRoot = validGraph();
+  wrongRoot.stages[0].profile = "analyst";
+  assert.equal((await validateContract(wrongRoot)).valid, false);
+
+  const disconnected = validGraph();
+  disconnected.dependencies.pop();
+  assert.equal((await validateContract(disconnected)).valid, false);
+
+  const bypass = validGraph();
+  bypass.dependencies = [
+    { parent: "lens:correctness", child: "review-root" },
+    { parent: "validate-handoff:lens:correctness", child: "review-root" },
+  ];
+  assert.equal((await validateContract(bypass)).valid, false);
+
+  const nonSemanticBypass = validGraph();
+  nonSemanticBypass.stages[1].semantic_measurement = false;
+  nonSemanticBypass.dependencies = [
+    { parent: "lens:correctness", child: "review-root" },
+    { parent: "validate-handoff:lens:correctness", child: "review-root" },
+  ];
+  assert.equal((await validateContract(nonSemanticBypass)).valid, false);
+
+  const optionalValidator = validGraph();
+  optionalValidator.stages[2].optional = true;
+  assert.equal((await validateContract(optionalValidator)).valid, false);
+
+  const misplacedValidator = validGraph();
+  misplacedValidator.stages[2].workspace = "candidate-worktree";
+  assert.equal((await validateContract(misplacedValidator)).valid, false);
+});
+
 test("graphs validate declared dynamic transition shapes", async () => {
   const graph = validGraph();
   graph.transitions.push({
@@ -292,14 +458,30 @@ test("graphs validate declared dynamic transition shapes", async () => {
         skill: "implement",
         max_attempts: 2,
         semantic_measurement: false,
+        validates_handoff_for: null,
+        optional: false,
+      },
+      {
+        key: "validate-handoff:critic-fix-builder",
+        profile: "gate",
+        workspace: "run-dir",
+        skill: "handoff-validator",
+        max_attempts: 1,
+        semantic_measurement: false,
+        validates_handoff_for: "critic-fix-builder",
         optional: false,
       },
     ],
     dependencies: [
-      { parent: "lens:correctness", child: "critic-fix-builder" },
+      {
+        parent: "critic-fix-builder",
+        child: "validate-handoff:critic-fix-builder",
+      },
+      { parent: "validate-handoff:critic-fix-builder", child: "review-root" },
     ],
   });
-  assert.equal((await validateContract(graph)).valid, true);
+  const valid = await validateContract(graph);
+  assert.equal(valid.valid, true, JSON.stringify(valid.errors));
 
   const malformed = structuredClone(graph);
   malformed.transitions[0].from = "missing-controller";
@@ -307,6 +489,25 @@ test("graphs validate declared dynamic transition shapes", async () => {
 
   assert.equal(invalid.valid, false);
   assert.equal(invalid.errors[0].keyword, "stageReference");
+
+  const malformedStatic = structuredClone(graph);
+  malformedStatic.dependencies[0].parent = "missing-stage";
+  assert.equal((await validateContract(malformedStatic)).valid, false);
+
+  const nonController = structuredClone(graph);
+  nonController.transitions[0].from = "lens:correctness";
+  assert.equal((await validateContract(nonController)).valid, false);
+
+  const detached = structuredClone(graph);
+  detached.transitions[0].dependencies = [];
+  assert.equal((await validateContract(detached)).valid, false);
+
+  const colliding = structuredClone(graph);
+  colliding.transitions.push({
+    ...structuredClone(graph.transitions[0]),
+    key: "critic-fix-again",
+  });
+  assert.equal((await validateContract(colliding)).valid, false);
 });
 
 test("gate specs require the operation payload selected by their kind", async () => {
@@ -326,6 +527,17 @@ test("gate specs require the operation payload selected by their kind", async ()
     ),
     true,
   );
+
+  const handoffGate = validGate();
+  handoffGate.kind = "handoff-validation";
+  delete handoffGate.review_policy;
+  handoffGate.handoff_validation = {
+    producer_stage: "lens:correctness",
+    task_id: "t_12345678",
+    attempt: 1,
+    require_passed: true,
+  };
+  assert.equal((await validateContract(handoffGate)).valid, true);
 });
 
 test("gate specs reject mixed operation payloads and incorrect urgency floors", async () => {
@@ -344,6 +556,51 @@ test("gate specs reject mixed operation payloads and incorrect urgency floors", 
   assert.equal((await validateContract(wrongFloor)).valid, false);
 });
 
+test("gate specs pin command workspaces and read and write containment", async () => {
+  const commandGate = validGate();
+  commandGate.kind = "command";
+  delete commandGate.review_policy;
+  commandGate.commands = [
+    {
+      argv: ["npm", "test"],
+      cwd: commandGate.workspace,
+      output_path: `${commandGate.write_root}/test.log`,
+    },
+  ];
+  commandGate.outputs.push(`${commandGate.write_root}/test.log`);
+  assert.equal((await validateContract(commandGate)).valid, true);
+
+  const mutations = [
+    (gate) => { gate.commands[0].cwd = "/etc"; },
+    (gate) => { gate.inputs[0] = "/etc/passwd"; },
+    (gate) => { gate.outputs[0] = "/tmp/outside.md"; },
+    (gate) => { gate.commands[0].output_path = "/tmp/outside.log"; },
+    (gate) => { gate.commands[0].output_path = `${gate.write_root}/undeclared.log`; },
+    (gate) => { gate.read_roots = ["/tmp/unrelated"]; },
+  ];
+  for (const mutate of mutations) {
+    const malformed = structuredClone(commandGate);
+    mutate(malformed);
+    assert.equal((await validateContract(malformed)).valid, false);
+  }
+});
+
+test("gate roots are bounded by run authority", () => {
+  assert.deepEqual(validateGateForRun(validGate(), validRunManifest()), {
+    valid: true,
+    errors: [],
+  });
+
+  const broadRead = validGate();
+  broadRead.workspace = "/etc";
+  broadRead.read_roots = ["/"];
+  assert.equal(validateGateForRun(broadRead, validRunManifest()).valid, false);
+
+  const broadWrite = validGate();
+  broadWrite.write_root = "/tmp";
+  assert.equal(validateGateForRun(broadWrite, validRunManifest()).valid, false);
+});
+
 test("migration receipts bind before and after compatibility identities", async () => {
   assert.deepEqual(await validateContract(validMigrationReceipt()), {
     valid: true,
@@ -356,6 +613,22 @@ test("migration receipts bind before and after compatibility identities", async 
 
   assert.equal(invalid.valid, false);
   assert.equal(invalid.errors[0].keyword, "migrationChange");
+});
+
+test("migration receipts explain each changed compatibility dimension", async () => {
+  const unexplainedImplementation = validMigrationReceipt();
+  unexplainedImplementation.changes[0].kind = "input";
+  assert.equal((await validateContract(unexplainedImplementation)).valid, false);
+
+  const contentChange = validMigrationReceipt();
+  contentChange.to.implementation_revision = contentChange.from.implementation_revision;
+  contentChange.to.content_set_fingerprint =
+    "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  contentChange.changes[0].kind = "gate";
+  assert.equal((await validateContract(contentChange)).valid, true);
+
+  contentChange.changes[0].kind = "implementation";
+  assert.equal((await validateContract(contentChange)).valid, false);
 });
 
 test("successful validation envelopes cannot retain errors", async () => {
@@ -389,8 +662,20 @@ test("successful validation envelopes require verified semantic and artifact evi
   assert.equal((await validateContract(hashMismatch)).valid, false);
 
   const outsideRoot = validValidationEnvelope();
-  outsideRoot.artifacts[0].path = "/tmp/outside.json";
+  outsideRoot.artifacts[0].source_path = "/tmp/outside.json";
   assert.equal((await validateContract(outsideRoot)).valid, false);
+
+  const missingProvenance = validValidationEnvelope();
+  delete missingProvenance.provenance;
+  assert.equal((await validateContract(missingProvenance)).valid, false);
+});
+
+test("handoffs require a digest for every declared artifact", async () => {
+  assert.equal((await validateContract(validHandoff())).valid, true);
+
+  const malformed = validHandoff();
+  delete malformed.artifacts[0].sha256;
+  assert.equal((await validateContract(malformed)).valid, false);
 });
 
 test("validation envelopes bind handoffs to the expected attempt", async () => {
@@ -406,6 +691,189 @@ test("validation envelopes bind handoffs to the expected attempt", async () => {
   });
 });
 
+test("completed-attempt validation derives evidence from Hermes, the manifest, and files", async (t) => {
+  const runDirectory = await mkdtemp(join(tmpdir(), "agent-flow-attempt-"));
+  t.after(() => rm(runDirectory, { recursive: true, force: true }));
+  const inputsDirectory = join(runDirectory, "inputs");
+  const outputDirectory = join(runDirectory, "artifacts");
+  await mkdir(inputsDirectory);
+  await mkdir(outputDirectory);
+
+  const graph = validGraph();
+  const graphBytes = JSON.stringify(graph);
+  const graphPath = join(inputsDirectory, "graph.json");
+  await writeFile(graphPath, graphBytes);
+  const artifactPath = join(outputDirectory, "correctness.json");
+  const artifactBytes = JSON.stringify({ findings: [] });
+  await writeFile(artifactPath, artifactBytes);
+
+  const manifest = validRunManifest();
+  manifest.identity.run_directory = runDirectory;
+  manifest.identity.artifact_directory = outputDirectory;
+  manifest.identity.validation_directory = join(runDirectory, "validated");
+  manifest.graph.sealed_path = graphPath;
+  manifest.graph.sha256 = sha256(graphBytes);
+  manifest.approved_read_roots = [runDirectory, manifest.identity.repository.path];
+  manifest.approved_artifact_roots = [outputDirectory];
+  for (const [index, input] of manifest.inputs.entries()) {
+    input.sealed_path = join(inputsDirectory, `${index}-${input.name}`);
+  }
+  const gate = validGate();
+  gate.workspace = runDirectory;
+  gate.read_roots = [runDirectory];
+  gate.write_root = outputDirectory;
+  gate.inputs = [artifactPath];
+  gate.outputs = [join(outputDirectory, "review.md")];
+  const gatePath = join(inputsDirectory, "review-finalize.json");
+  const gateBytes = JSON.stringify(gate);
+  await writeFile(gatePath, gateBytes);
+  const gateInput = manifest.inputs.find(({ kind }) => kind === "gate");
+  gateInput.sealed_path = gatePath;
+  gateInput.sha256 = sha256(gateBytes);
+  const manifestPath = join(runDirectory, "run.json");
+  const manifestBytes = JSON.stringify(manifest);
+  await writeFile(manifestPath, manifestBytes);
+  const expectedRunManifestSha256 = sha256(manifestBytes);
+
+  const handoff = validHandoff();
+  handoff.artifacts[0].path = artifactPath;
+  handoff.artifacts[0].sha256 = sha256(artifactBytes);
+  let taskAuthoritySha256 = SHA256;
+  const adapter = {
+    async getTaskAuthority({ taskId }) {
+      const gateTask = taskId === "t_gate" || taskId === "t_other_gate";
+      const authorityStage = taskId === "t_other_gate"
+        ? "other-stage"
+        : gateTask
+          ? gate.stage
+          : "lens:correctness";
+      return {
+        taskId,
+        runId: manifest.identity.run_id,
+        stage: authorityStage,
+        runManifestPath: manifestPath,
+        runManifestSha256: taskAuthoritySha256,
+        ...(gateTask
+          ? { gateSpecPath: gatePath, gateSpecSha256: sha256(gateBytes) }
+          : {}),
+      };
+    },
+    async getCompletedAttempt() {
+      return {
+        attemptId: "attempt_12345678",
+        taskId: "t_12345678",
+        attempt: 1,
+        state: "completed",
+        metadata: { handoff },
+      };
+    },
+  };
+
+  await assert.rejects(
+    validateCompletedAttempt({
+      adapter,
+      taskId: "t_12345678",
+      stage: "lens:correctness",
+      attempt: 1,
+    }),
+    /run manifest digest/,
+  );
+  taskAuthoritySha256 = expectedRunManifestSha256;
+
+  assert.deepEqual(
+    await validateSealedGate({
+      adapter,
+      taskId: "t_gate",
+    }),
+    { valid: true, errors: [] },
+  );
+  await writeFile(gatePath, JSON.stringify({ ...gate, read_roots: ["/"] }));
+  assert.equal(
+    (await validateSealedGate({
+      adapter,
+      taskId: "t_gate",
+    })).valid,
+    false,
+  );
+  await writeFile(gatePath, gateBytes);
+  assert.equal(
+    (await validateSealedGate({ adapter, taskId: "t_other_gate" })).valid,
+    false,
+  );
+
+  await symlink(tmpdir(), manifest.identity.validation_directory);
+  await assert.rejects(
+    validateCompletedAttempt({
+      adapter,
+      taskId: "t_12345678",
+      stage: "lens:correctness",
+      attempt: 1,
+    }),
+    /validation directory resolves outside/,
+  );
+  await rm(manifest.identity.validation_directory, {
+    recursive: true,
+    force: true,
+  });
+
+  const validation = await validateCompletedAttempt({
+    adapter,
+    taskId: "t_12345678",
+    stage: "lens:correctness",
+    attempt: 1,
+    now: () => new Date("2026-07-14T12:15:00Z"),
+  });
+  assert.equal(validation.valid, true);
+  assert.deepEqual(await validateContract(validation), { valid: true, errors: [] });
+
+  await writeFile(artifactPath, JSON.stringify({ findings: ["tampered"] }));
+  assert.equal(await readFile(validation.artifacts[0].path, "utf8"), artifactBytes);
+  const hashRejected = await validateCompletedAttempt({
+    adapter,
+    taskId: "t_12345678",
+    stage: "lens:correctness",
+    attempt: 1,
+  });
+  assert.equal(hashRejected.valid, false);
+  assert.equal(hashRejected.errors[0].code, "artifact_hash_mismatch");
+  await writeFile(artifactPath, artifactBytes);
+
+  handoff.attempt = 2;
+  const identityRejected = await validateCompletedAttempt({
+    adapter,
+    taskId: "t_12345678",
+    stage: "lens:correctness",
+    attempt: 1,
+  });
+  assert.equal(identityRejected.valid, false);
+  assert.equal(identityRejected.errors[0].code, "identity_mismatch");
+  handoff.attempt = 1;
+
+  handoff.artifacts[0].path = "/etc/passwd";
+  handoff.artifacts[0].sha256 = SHA256;
+  const rejected = await validateCompletedAttempt({
+    adapter,
+    taskId: "t_12345678",
+    stage: "lens:correctness",
+    attempt: 1,
+  });
+  assert.equal(rejected.valid, false);
+  assert.equal(rejected.errors[0].code, "artifact_outside_root");
+  assert.equal(rejected.approved_artifact_roots.includes("/etc"), false);
+
+  const escapePath = join(outputDirectory, "escape");
+  await symlink("/etc/passwd", escapePath);
+  handoff.artifacts[0].path = escapePath;
+  const symlinkRejected = await validateCompletedAttempt({
+    adapter,
+    taskId: "t_12345678",
+    stage: "lens:correctness",
+    attempt: 1,
+  });
+  assert.equal(symlinkRejected.valid, false);
+  assert.equal(symlinkRejected.errors[0].code, "artifact_outside_root");
+});
+
 test("contract validation is deterministic during concurrent first use", async () => {
   const { validateContract: validateFreshContract } = await import(
     `../src/schema-validator.mjs?race=${Date.now()}`
@@ -414,4 +882,41 @@ test("contract validation is deterministic during concurrent first use", async (
     Array.from({ length: 8 }, () => validateFreshContract(validRunManifest())),
   );
   assert.equal(results.every(({ valid }) => valid), true);
+});
+
+test("standalone schemas keep shared scalar definitions consistent", async () => {
+  const names = [
+    "run",
+    "graph",
+    "gate",
+    "migration-receipt",
+    "validation",
+    "handoff",
+  ];
+  const schemas = new Map(
+    await Promise.all(
+      names.map(async (name) => [
+        name,
+        JSON.parse(
+          await readFile(
+            new URL(`../schemas/agent-flow.${name}.v1.schema.json`, import.meta.url),
+            "utf8",
+          ),
+        ),
+      ]),
+    ),
+  );
+  const patterns = (definition, schemaNames) =>
+    new Set(schemaNames.map((name) => schemas.get(name).$defs[definition].pattern));
+
+  assert.equal(
+    patterns("absolutePath", ["run", "gate", "migration-receipt", "validation", "handoff"]).size,
+    1,
+  );
+  assert.equal(
+    patterns("sha256", ["run", "migration-receipt", "validation", "handoff"]).size,
+    1,
+  );
+  assert.equal(patterns("stageKey", ["graph", "gate", "validation"]).size, 1);
+  assert.equal(patterns("timestamp", ["run", "migration-receipt", "validation"]).size, 1);
 });

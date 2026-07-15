@@ -11,6 +11,8 @@
     "implementation",
     "identity",
     "graph",
+    "approved_read_roots",
+    "approved_artifact_roots",
     "inputs",
     "profiles",
     "limits",
@@ -23,7 +25,7 @@
     "implementation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["revision", "compatible_contracts"],
+      "required": ["revision", "compatible_contracts", "content_set_fingerprint"],
       "properties": {
         "revision": { "$ref": "#/$defs/gitRevision" },
         "compatible_contracts": {
@@ -31,6 +33,10 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "content_set_fingerprint": {
+          "description": "Aggregate digest of the sealed graph and every machine-consumed input.",
+          "$ref": "#/$defs/sha256"
         }
       }
     },
@@ -39,15 +45,22 @@
       "additionalProperties": false,
       "required": [
         "run_id",
+        "run_directory",
+        "artifact_directory",
+        "validation_directory",
         "flow",
         "repository",
         "board",
         "tenant",
+        "parent_run_id",
         "external_root",
         "supersedes"
       ],
       "properties": {
         "run_id": { "$ref": "#/$defs/runId" },
+        "run_directory": { "$ref": "#/$defs/absolutePath" },
+        "artifact_directory": { "$ref": "#/$defs/absolutePath" },
+        "validation_directory": { "$ref": "#/$defs/absolutePath" },
         "flow": { "$ref": "#/$defs/flow" },
         "repository": {
           "type": "object",
@@ -64,6 +77,12 @@
         },
         "board": { "$ref": "#/$defs/board" },
         "tenant": { "$ref": "#/$defs/runId" },
+        "parent_run_id": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/runId" }
+          ]
+        },
         "external_root": {
           "oneOf": [
             { "type": "null" },
@@ -89,13 +108,26 @@
     "graph": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "version", "sealed_path", "sha256"],
+      "required": ["name", "version", "flow", "sealed_path", "sha256"],
       "properties": {
         "name": { "type": "string", "minLength": 1, "maxLength": 128 },
         "version": { "type": "integer", "minimum": 1 },
+        "flow": { "$ref": "#/$defs/flow" },
         "sealed_path": { "$ref": "#/$defs/absolutePath" },
         "sha256": { "$ref": "#/$defs/sha256" }
       }
+    },
+    "approved_read_roots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
+    },
+    "approved_artifact_roots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
     },
     "inputs": {
       "type": "array",
@@ -105,9 +137,15 @@
     "profiles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profile_set_fingerprint", "fingerprints"],
+      "required": ["profile_set_fingerprint", "required", "fingerprints"],
       "properties": {
         "profile_set_fingerprint": { "$ref": "#/$defs/sha256" },
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+        },
         "fingerprints": {
           "type": "object",
           "minProperties": 1,
@@ -142,10 +180,7 @@
         "target": { "$ref": "#/$defs/nullableGitRevision" }
       }
     },
-    "sealed_at": {
-      "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
-    }
+    "sealed_at": { "$ref": "#/$defs/timestamp" }
   },
   "$defs": {
     "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
@@ -160,6 +195,10 @@
     },
     "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
     "input": {
       "type": "object",
       "additionalProperties": false,

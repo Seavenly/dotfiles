@@ -1,7 +1,7 @@
 # Hermes agent-flow implementation plan
 
-Status: approved on 2026-07-13. Phase 1 is complete; Phase 2 contract work began
-on 2026-07-14.
+Status: approved on 2026-07-13. Phase 1 is complete. Phase 2 contract definition
+and corrective review completed on 2026-07-14; the CLI review tracer is next.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -113,6 +113,12 @@ Entry decisions:
   validation-envelope schemas before implementing the launcher. Briefs and
   plans may remain human-readable Markdown, but their approved copies and
   digests must have an unambiguous machine contract.
+- Keep document validation and authority validation separate. A validation
+  envelope is accepted only when `validateCompletedAttempt()` derives it from
+  the Hermes completed attempt, the manifest path and digest pinned by
+  launcher-created task state, the sealed graph, and filesystem artifact
+  hashes.
+  `validateContract()` alone never authorizes consumption.
 - Accept convergent cancellation over the native Hermes CLI. Cancellation
   records the request, repeatedly reclaims and archives the tenant, and reports
   exact survivors when a dispatcher or worker races the sweep. It does not
@@ -141,6 +147,12 @@ Repository changes:
   supported contract versions, pinned Git revisions, approved limits, and
   Phase 1 profile fingerprints, and verify all of them on resume. Never silently
   resume an active run with incompatible contracts or profiles.
+- Record the run directory, explicit parent identity for shared epic tenants,
+  graph flow, exact required profile set, approved read roots, canonical
+  artifact and validation directories, approved artifact roots, and an aggregate
+  sealed-content fingerprint. Reject self-parenting, self-supersession, duplicate
+  inputs, incomplete profile fingerprints, graph identity mismatches, and
+  sealed paths outside the run directory.
 - Implement only `doctor profiles`, `launch review`, `gate`, `status`, and
   `cancel` in this phase. Launch rejects a second nonterminal owner for the same
   repository and external root unless it explicitly supersedes a terminal prior
@@ -151,6 +163,17 @@ Repository changes:
   They read the completed attempt through the Hermes adapter and validate
   identity, schema, semantic measurements, artifact containment, and hashes;
   malformed metadata cannot release downstream work.
+- Snapshot verified artifact bytes into validator-owned storage and expose only
+  that path to consumers. Keep the mutable worker source path as provenance.
+- Validate graph reachability, the terminal controller root, global static and
+  transition stage-key uniqueness, transition-to-controller linkage, and the
+  required worker-producer handoff-gate expansion before materialization.
+  Gate execution pins command CWD to the declared workspace and contains reads
+  and writes beneath the sealed gate roots.
+- On resume, recompute migration compatibility deltas from both sealed content
+  sets. Require receipts to explain every changed contract, implementation,
+  profile, graph, gate, input, skill, or role contract; never accept the
+  receipt's self-reported change list as the comparison source.
 - Create a disposable repository fixture and a sacrificial named Kanban board
   for the real tracer.
 
@@ -164,6 +187,10 @@ Tests:
 - Test modified input, graph, gate, implementation, and profile fingerprints on
   resume. Identical content at a different original path must remain valid;
   changed approved content under the same run ID must block.
+- Test fabricated validation envelopes, caller-selected artifact roots,
+  disconnected stages, root bypass, detached transitions, gate path escape,
+  incomplete migration receipts, child-run tenancy, duplicate sealed inputs,
+  and incomplete profile sets.
 - Interrupt cancellation before and after each Kanban mutation and inject a
   redispatched worker or controller-created follow-up. Repeated cancellation
   must either converge without affecting another tenant or report the exact
