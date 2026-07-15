@@ -5,6 +5,10 @@ import { doctorProfiles } from "./doctor.mjs";
 import { executeHandoffValidationGate } from "./handoff-gate.mjs";
 import { HermesAdapter } from "./hermes-adapter.mjs";
 import { loadSealedGate } from "./run-bundle-validator.mjs";
+import {
+  inspectReviewRepository,
+  launchReview,
+} from "./review-launch.mjs";
 import { executeReviewFinalizeGate } from "./review-finalize-gate.mjs";
 
 export async function runCli(
@@ -15,6 +19,9 @@ export async function runCli(
     stdout = process.stdout,
     stderr = process.stderr,
     runDoctor = doctorProfiles,
+    inspectRepository = inspectReviewRepository,
+    implementationRevision = null,
+    now = () => new Date(),
   } = {},
 ) {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
@@ -27,6 +34,18 @@ export async function runCli(
   if (args[0] === "gate") {
     return runGate(args.slice(1), { adapter, env, stdout, stderr });
   }
+  if (args[0] === "launch" && args[1] === "review") {
+    return runLaunchReview(args.slice(2), {
+      adapter,
+      env,
+      implementationRevision,
+      inspectRepository,
+      now,
+      runDoctor,
+      stderr,
+      stdout,
+    });
+  }
   stderr.write(`Unknown command: ${args[0]}\n`);
   usage(stderr);
   return 2;
@@ -36,8 +55,54 @@ function usage(stream) {
   stream.write(
     "Usage:\n" +
       "  agent-flow doctor profiles [--json]\n" +
+      "  agent-flow launch review --manifest <absolute-review.json>\n" +
       "  agent-flow gate --spec <absolute-gate.json>\n",
   );
+}
+
+async function runLaunchReview(
+  options,
+  {
+    adapter,
+    env,
+    implementationRevision,
+    inspectRepository,
+    now,
+    runDoctor,
+    stderr,
+    stdout,
+  },
+) {
+  if (options.length !== 2 || options[0] !== "--manifest") {
+    stderr.write(
+      "Usage: agent-flow launch review --manifest <absolute-review.json>\n",
+    );
+    return 2;
+  }
+  if (!isAbsolute(options[1])) {
+    stderr.write("launch review --manifest path must be absolute\n");
+    return 2;
+  }
+  try {
+    const result = await launchReview({
+      adapter,
+      env,
+      implementationRevision,
+      inspectRepository,
+      manifestPath: options[1],
+      now,
+      runDoctor,
+    });
+    stdout.write(
+      `ok - review launch ${result.runId} materialized ${result.cardCount} cards\n` +
+        `run: ${result.runManifestPath}\n` +
+        `root: ${result.rootTaskId}\n`,
+    );
+    return 0;
+  } catch (error) {
+    stderr.write(`agent-flow launch review: ${error.message}\n`);
+    return 1;
+  }
 }
 
 async function runDoctorProfiles(options, { runDoctor, stdout, stderr }) {

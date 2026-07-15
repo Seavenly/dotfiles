@@ -68,6 +68,12 @@
           "required": ["path", "forge_coordinate"],
           "properties": {
             "path": { "$ref": "#/$defs/absolutePath" },
+            "worktree": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/absolutePath" }
+              ]
+            },
             "forge_coordinate": {
               "type": ["string", "null"],
               "minLength": 1,

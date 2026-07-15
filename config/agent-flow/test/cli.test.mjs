@@ -576,3 +576,106 @@ test("Hermes adapter rejects malformed durable task authority", async () => {
     /invalid agent-flow task authority/,
   );
 });
+
+test("Hermes adapter materializes and reconciles tasks through native Kanban", async () => {
+  const calls = [];
+  const adapter = new HermesAdapter({
+    board: "cli-test",
+    async run(args, options) {
+      calls.push({ args, options });
+      if (args.includes("create")) {
+        return { id: "t_created", title: "[run/stage]" };
+      }
+      if (args.includes("show")) {
+        return {
+          task: {
+            id: "t_created",
+            title: "[run/stage]",
+            body: "body",
+            assignee: "analyst",
+            tenant: "run",
+            workspace_kind: "dir",
+            workspace_path: "/tmp/worktree",
+            max_retries: 2,
+          },
+          parents: ["t_parent"],
+          runs: [],
+        };
+      }
+      return "ok";
+    },
+  });
+
+  assert.equal(
+    (await adapter.createTask({
+      title: "[run/stage]",
+      body: "body",
+      assignee: "analyst",
+      tenant: "run",
+      workspace: { kind: "dir", path: "/tmp/worktree" },
+      parents: ["t_parent"],
+      idempotencyKey: "run:1:stage:1",
+      maxAttempts: 2,
+      initialStatus: "running",
+    })).id,
+    "t_created",
+  );
+  assert.deepEqual(await adapter.getTask({ taskId: "t_created" }), {
+    id: "t_created",
+    title: "[run/stage]",
+    body: "body",
+    assignee: "analyst",
+    tenant: "run",
+    workspace_kind: "dir",
+    workspace_path: "/tmp/worktree",
+    max_retries: 2,
+    parents: ["t_parent"],
+  });
+  await adapter.linkTasks({ parentId: "t_parent", childId: "t_created" });
+  await adapter.blockTask({ taskId: "t_created", reason: "compatibility drift" });
+  await adapter.releaseTask({ taskId: "t_created", reason: "topology verified" });
+  await adapter.commentTask({ taskId: "t_created", body: "recovery note" });
+
+  assert.deepEqual(calls, [
+    {
+      args: [
+        "kanban", "--board", "cli-test", "create", "[run/stage]",
+        "--body", "body", "--assignee", "analyst", "--tenant", "run",
+        "--workspace", "dir:/tmp/worktree", "--idempotency-key",
+        "run:1:stage:1", "--max-retries", "2", "--initial-status",
+        "running", "--created-by", "agent-flow", "--parent", "t_parent",
+        "--json",
+      ],
+      options: { signal: undefined, json: true },
+    },
+    {
+      args: ["kanban", "--board", "cli-test", "show", "t_created", "--json"],
+      options: { signal: undefined },
+    },
+    {
+      args: ["kanban", "--board", "cli-test", "link", "t_parent", "t_created"],
+      options: { signal: undefined, json: false },
+    },
+    {
+      args: [
+        "kanban", "--board", "cli-test", "block", "t_created",
+        "compatibility drift",
+      ],
+      options: { signal: undefined, json: false },
+    },
+    {
+      args: [
+        "kanban", "--board", "cli-test", "unblock", "--reason",
+        "topology verified", "t_created",
+      ],
+      options: { signal: undefined, json: false },
+    },
+    {
+      args: [
+        "kanban", "--board", "cli-test", "comment", "t_created",
+        "recovery note", "--author", "agent-flow",
+      ],
+      options: { signal: undefined, json: false },
+    },
+  ]);
+});

@@ -13,6 +13,76 @@ export class HermesAdapter {
     this.run = run;
   }
 
+  async createTask({
+    title,
+    body,
+    assignee,
+    tenant,
+    workspace,
+    parents,
+    idempotencyKey,
+    maxAttempts,
+    initialStatus,
+    signal = undefined,
+  }) {
+    const args = [
+      "create",
+      title,
+      "--body",
+      body,
+      "--assignee",
+      assignee,
+      "--tenant",
+      tenant,
+      "--workspace",
+      `${workspace.kind}:${workspace.path}`,
+      "--idempotency-key",
+      idempotencyKey,
+      "--max-retries",
+      String(maxAttempts),
+      "--initial-status",
+      initialStatus,
+      "--created-by",
+      "agent-flow",
+    ];
+    for (const parent of parents) args.push("--parent", parent);
+    args.push("--json");
+    return this.run(this.#kanbanArgs(args), { signal, json: true });
+  }
+
+  async getTask({ taskId, signal = undefined }) {
+    const payload = await this.#show(taskId, signal);
+    return { ...payload.task, parents: [...payload.parents] };
+  }
+
+  async linkTasks({ parentId, childId, signal = undefined }) {
+    await this.run(
+      this.#kanbanArgs(["link", parentId, childId]),
+      { signal, json: false },
+    );
+  }
+
+  async releaseTask({ taskId, reason, signal = undefined }) {
+    await this.run(
+      this.#kanbanArgs(["unblock", "--reason", reason, taskId]),
+      { signal, json: false },
+    );
+  }
+
+  async blockTask({ taskId, reason, signal = undefined }) {
+    await this.run(
+      this.#kanbanArgs(["block", taskId, reason]),
+      { signal, json: false },
+    );
+  }
+
+  async commentTask({ taskId, body, signal = undefined }) {
+    await this.run(
+      this.#kanbanArgs(["comment", taskId, body, "--author", "agent-flow"]),
+      { signal, json: false },
+    );
+  }
+
   async getTaskAuthority({ taskId, signal = undefined }) {
     const payload = await this.#show(taskId, signal);
     const match = payload.task?.body?.match(AUTHORITY_PATTERN);
@@ -102,11 +172,11 @@ export function formatTaskAuthority(authority) {
   return `<!-- agent-flow-authority\n${JSON.stringify(authority)}\n-->`;
 }
 
-async function defaultRun(args, { signal } = {}) {
+async function defaultRun(args, { signal, json = true } = {}) {
   const { stdout } = await execFileAsync("hermes", args, {
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     signal,
   });
-  return JSON.parse(stdout);
+  return json ? JSON.parse(stdout) : stdout;
 }

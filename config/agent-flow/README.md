@@ -3,9 +3,10 @@
 This document specifies the repository-owned design for repeatable automated
 agent flows. Phase 1 implements native profiles, machine-local routing, and
 profile doctoring. Phase 2 now includes the machine contracts, task-pinned
-command, handoff-validation, and review-finalize gate tracers, plus the
-canonical standard review graph. Review launch, graph materialization, registry
-changes, and stack mechanics remain phased work under the approved
+command, handoff-validation, and review-finalize gate tracers, the canonical
+standard review graph, and a recoverable hotfix review launcher. Fast and
+standard review materialization, status, cancellation, external-root ownership,
+registry changes, and stack mechanics remain phased work under the approved
 implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
@@ -70,6 +71,14 @@ Flow skills invoke this interface. Worker prompts invoke only the exact
 derived from the Kanban board and durable manifests. No command waits for a
 worker or advances a card by polling.
 
+The implemented `launch review` tracer currently accepts only
+`automated_review.urgency: hotfix` and `external_ref: null`. The review manifest
+also seals `max_comments` and the `critical`, `important`, `recommended`, and
+`nit` values under `per_tier_caps`. Unsupported urgency or external ownership
+fails before run-directory or Kanban mutation. This explicit boundary keeps the
+first launch slice honest while optional lens and external ownership contracts
+are completed.
+
 ## Run and board identity
 
 - One repository maps to one named board. The launcher derives the default
@@ -130,6 +139,29 @@ The launcher creates the root card blocked, materializes and validates every
 known card and dependency, then unblocks the root. The dependency links keep it
 in `todo` until terminal cards complete. A failed launch leaves the root
 blocked with a recovery comment instead of exposing a partial executable graph.
+The hotfix tracer creates ten cards: the root, correctness, security, and tests
+lenses, one handoff validator after each lens, the critic and its validator,
+and the finalizer. It seals the source review manifest, a base-to-source Git
+patch for terminal-free review profiles, graph, generated gates, card
+instructions, role contracts, profile fingerprints, revisions, and limits
+before the first card. `materialization.json` is a derived task-ID receipt, not
+a lifecycle database. Re-running identical input reconciles native Hermes
+idempotency keys and dependency links before releasing a blocked root. A
+host-local ephemeral launch lock serializes this reconciliation because Hermes
+v0.18.2 does not make its idempotency lookup and insert atomic. A stale lock
+fails closed with its exact path; an operator removes it only after confirming
+that no launcher process remains. This avoids a racy automatic takeover.
+
+For this standalone review run, the review manifest's board is authoritative
+and the review run ID becomes the Hermes tenant. The manifest's existing
+`kanban.tenant` and `kanban.task` remain sealed provenance for the feature
+candidate; the launcher creates a separate review root. The candidate worktree
+is recorded separately from the repository path so linked Git worktrees outside
+the repository directory remain valid approved read roots.
+Launch requires the candidate worktree to be clean, verifies that it belongs to
+the declared repository, and confirms both pinned commits before sealing the
+patch. This prevents terminal-free review workers from observing uncommitted
+content outside the immutable review identity.
 
 Static graphs are fully materialized when the plan is known. Controllers may
 create only the versioned transitions defined in

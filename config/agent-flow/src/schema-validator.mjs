@@ -199,7 +199,9 @@ function validateRunManifest(document) {
   for (const [index, root] of document.approved_read_roots.entries()) {
     if (
       pathIsWithin(identity.run_directory, root) ||
-      pathIsWithin(identity.repository.path, root)
+      pathIsWithin(identity.repository.path, root) ||
+      (identity.repository.worktree &&
+        pathIsWithin(identity.repository.worktree, root))
     ) {
       continue;
     }

@@ -10,7 +10,17 @@ evidence. The review-finalize gate now consumes validator-owned snapshots,
 rebinds every input to launcher-pinned terminal validator and producer tasks,
 applies deterministic urgency and comment caps, assigns stable finding IDs,
 and renders structured, Markdown, HTML, and unsubmitted draft outputs. Review
-launch and materialization are the next Phase 2 tracer.
+launch now has a tested hotfix tracer: it preflights profiles and Git identity,
+atomically seals the immutable run bundle, creates the root blocked, reconciles
+ten idempotent cards and their native dependencies, writes a task-ID receipt,
+and releases the root only after topology audit. A host-local launch lock closes
+Hermes v0.18.2's non-atomic idempotency race. Interrupted, duplicate, and
+concurrent launches cannot create duplicate work. The remaining Phase 2 launch work is
+fast and standard review expansion, including optional lens and supplement
+inputs. Status, cancellation, external-root ownership and supersession,
+resume-migration comparison, practical handoff digest authoring for
+terminal-free worker profiles, and the sacrificial real-board tracer also
+remain before the Phase 2 review gate.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase

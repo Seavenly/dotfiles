@@ -26,8 +26,7 @@
     },
     "run_id": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 128
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     },
     "flow": {
       "const": "feature"
@@ -99,7 +98,14 @@
     "automated_review": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "reviewed_head_sha", "findings_path"],
+      "required": [
+        "status",
+        "reviewed_head_sha",
+        "findings_path",
+        "urgency",
+        "max_comments",
+        "per_tier_caps"
+      ],
       "properties": {
         "status": {
           "enum": ["pending", "passed", "blocking_findings"]
@@ -110,6 +116,25 @@
         },
         "findings_path": {
           "$ref": "#/$defs/nullableAbsolutePath"
+        },
+        "urgency": {
+          "enum": ["hotfix", "fast", "standard"]
+        },
+        "max_comments": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 500
+        },
+        "per_tier_caps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["critical", "important", "recommended", "nit"],
+          "properties": {
+            "critical": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "important": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "recommended": { "type": "integer", "minimum": 0, "maximum": 500 },
+            "nit": { "type": "integer", "minimum": 0, "maximum": 500 }
+          }
         }
       }
     },
