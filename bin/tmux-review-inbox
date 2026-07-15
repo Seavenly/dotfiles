@@ -31,10 +31,70 @@ command -v "$reviews_bin" >/dev/null 2>&1 || reviews_bin="$HOME/.local/bin/tuicr
 self="$(command -v tmux-review-inbox 2>/dev/null || printf '%s' "$0")"
 coworker_file="${COWORKER_PRS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/coworker-review-prs.jsonl}"
 
+# Arm-file for the two-press delete: the first ctrl-x records the selected
+# review's key here, the second ctrl-x on the same row confirms and removes it.
+# Cleared on every popup launch so a stale arm can't cause a surprise delete.
+armfile="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmux-review-inbox.arm"
+
+# Copy stdin to the system clipboard, falling back across platforms and finally
+# to a tmux buffer so the copy hotkey does something useful everywhere.
+clip() {
+  if command -v pbcopy >/dev/null 2>&1; then pbcopy
+  elif command -v wl-copy >/dev/null 2>&1; then wl-copy
+  elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard
+  else tmux load-buffer - 2>/dev/null || cat >/dev/null; fi
+}
+
+# The fzf header line, rebuilt on demand so a transient message (arm/copy) can be
+# swapped back to it via change-header.
+build_header() {
+  local esc=$'\033' legend h
+  legend="${esc}[36m●${esc}[0m open  ${esc}[32m✓${esc}[0m approved  ${esc}[31m✗${esc}[0m changes  ${esc}[33m•${esc}[0m comments"
+  h="enter open · ctrl-a approve · ctrl-y copy id · ctrl-x ctrl-x delete      ${legend}"
+  [[ -s "$coworker_file" ]] && h="$h      feed $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
+  printf '%s' "$h"
+}
+
 if [[ "${1:-}" == "--approve" ]]; then
   shift
   if [[ "${1:-}" == "local" && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]]; then
     "$reviews_bin" toggle-approved --worktree "$2" --base "$3" --branch "$4"
+  fi
+  exit 0
+fi
+
+# ctrl-y (via fzf `transform`): copy the review's handle token to the clipboard
+# and flash a confirmation. The token is the registry slug (falling back to the
+# branch) - a bare string you can paste to an agent: "review <token>". External
+# PR and separator rows carry no token, so this is a no-op there.
+if [[ "${1:-}" == "--copy" ]]; then
+  token="${2:-}"
+  [[ -n "$token" ]] || exit 0
+  printf '%s' "$token" | clip
+  printf 'change-header(copied: %s)' "$token"
+  exit 0
+fi
+
+# ctrl-x (via fzf `transform`): two-press delete. First press on a local review
+# arms it (records its key) and warns; a second press on the same row removes it
+# from the registry and reloads. Any other row (or a different local row) just
+# re-arms/clears - only local reviews can be deleted, and only tuicr-reviews
+# state is touched (persisted tuicr sessions are left alone by design).
+if [[ "${1:-}" == "--maybe-delete" ]]; then
+  daction="${2:-}" dwt="${3:-}" dbase="${4:-}" dbranch="${5:-}"
+  if [[ "$daction" != "local" ]]; then
+    rm -f "$armfile"
+    printf 'change-header(only local agent reviews can be deleted)'
+    exit 0
+  fi
+  key="$dwt"$'\t'"$dbase"$'\t'"$dbranch"
+  if [[ -f "$armfile" && "$(cat "$armfile" 2>/dev/null)" == "$key" ]]; then
+    "$reviews_bin" rm --worktree "$dwt" --base "$dbase" --branch "$dbranch" >/dev/null 2>&1 || true
+    rm -f "$armfile"
+    printf 'reload(%s --lines)+change-header(%s)' "$self" "$(build_header)"
+  else
+    printf '%s' "$key" > "$armfile"
+    printf 'change-header(delete %s..%s ? press ctrl-x again to confirm)' "$dbase" "$dbranch"
   fi
   exit 0
 fi
@@ -64,14 +124,14 @@ build_lines() {
                (s=="changes_requested" || s=="changes") ? col("31","✗") : \
                (s=="commented" || s=="comments") ? col("33","•") : " "
       }
-      function emitrow(st2,kind,repo,ref,text,action,a,b,c,   disp) {
+      function emitrow(st2,kind,repo,ref,text,action,a,b,c,d,   disp) {
         disp = st2 " " col("2", pad(kind,wkind)) gap pad(repo,wrepo) gap pad(ref,wref)
         if (text != "") disp = disp gap text
-        printf "%s\t%s\t%s\t%s\t%s\n", disp, action, a, b, c
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n", disp, action, a, b, c, d
       }
       $1 == "O" { isopen[$2 SUBSEP $3] = 1; next }
       $1 == "L" {
-        nl++; Lwt[nl]=$2; Lbase[nl]=$3; Lbranch[nl]=$4; Lsum[nl]=$8; Lappr[nl]=($9=="true")
+        nl++; Lwt[nl]=$2; Lbase[nl]=$3; Lbranch[nl]=$4; Lslug[nl]=$6; Lsum[nl]=$8; Lappr[nl]=($9=="true")
         m=split($5,p,"/"); Lrepo[nl]=p[m]; Lref[nl]=$3 ".." $4
         Lopen[nl]=(isopen[$2 SUBSEP ($3 ".." $4)] ? 1 : 0)
         if (length(Lrepo[nl])>wrepo) wrepo=length(Lrepo[nl])
@@ -93,19 +153,19 @@ build_lines() {
           for (i=1;i<=nl;i++) {
             if ((pass==1) != (Lopen[i]==1)) continue
             st2=(Lopen[i]?col("36","●"):" ") (Lappr[i]?col("32","✓"):" ")
-            emitrow(st2,"agent",Lrepo[i],Lref[i],Lsum[i],"local",Lwt[i],Lbase[i],Lbranch[i])
+            emitrow(st2,"agent",Lrepo[i],Lref[i],Lsum[i],"local",Lwt[i],Lbase[i],Lbranch[i],(Lslug[i]!=""?Lslug[i]:Lbranch[i]))
           }
         if (np>0) {
-          printf "%s\t%s\t\t\t\n", col("242","── external ──"), "sep"
+          printf "%s\t%s\t\t\t\t\n", col("242","── external ──"), "sep"
           n=split("reply review", order, " ")
           for (o=1;o<=n;o++)
             for (i=1;i<=np;i++) {
               if (Pkind[i] != order[o]) continue
-              emitrow(" " glyph(Pstate[i]), Pkind[i], Prepo[i], Pref[i], Ptitle[i], "pr", Purl[i], "", "")
+              emitrow(" " glyph(Pstate[i]), Pkind[i], Prepo[i], Pref[i], Ptitle[i], "pr", Purl[i], "", "", "")
             }
           for (i=1;i<=np;i++) {
             if (Pkind[i]=="reply" || Pkind[i]=="review") continue
-            emitrow(" " glyph(Pstate[i]), Pkind[i], Prepo[i], Pref[i], Ptitle[i], "pr", Purl[i], "", "")
+            emitrow(" " glyph(Pstate[i]), Pkind[i], Prepo[i], Pref[i], Ptitle[i], "pr", Purl[i], "", "", "")
           }
         }
       }
@@ -122,10 +182,11 @@ fi
 
 # Legend glyphs are colored to match the row glyphs (see the awk `col`); the
 # header is rendered with --ansi so the SGR codes take effect.
-esc=$'\033'
-legend="${esc}[36m●${esc}[0m open  ${esc}[32m✓${esc}[0m approved  ${esc}[31m✗${esc}[0m changes  ${esc}[33m•${esc}[0m comments"
-hdr="enter open · ctrl-a approve      ${legend}"
-[[ -s "$coworker_file" ]] && hdr="$hdr      feed $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
+hdr="$(build_header)"
+
+# Clear any stale two-press-delete arm so a leftover arm from a previous popup
+# can't turn a single ctrl-x into an immediate delete.
+rm -f "$armfile"
 
 # Count the composed rows for the list label. Approving toggles a glyph but does
 # not add/remove rows, so a label computed once stays correct across reloads.
@@ -141,7 +202,9 @@ selection="$(
     --header-border=rounded \
     --color='list-border:242,header-border:242,list-label:bold' \
     --prompt='› ' --header="$hdr" \
-    --bind "ctrl-a:execute-silent($self --approve {2} {3} {4} {5})+reload($self --lines)"
+    --bind "ctrl-a:execute-silent($self --approve {2} {3} {4} {5})+reload($self --lines)" \
+    --bind "ctrl-y:transform($self --copy {6})" \
+    --bind "ctrl-x:transform($self --maybe-delete {2} {3} {4} {5})"
 )" || exit 0
 [[ -z "$selection" ]] && exit 0
 
