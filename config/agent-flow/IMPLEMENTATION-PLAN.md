@@ -15,11 +15,13 @@ atomically seals the immutable run bundle, creates the root blocked, reconciles
 ten idempotent cards and their native dependencies, writes a task-ID receipt,
 and releases the root only after topology audit. A host-local launch lock closes
 Hermes v0.18.2's non-atomic idempotency race. Interrupted, duplicate, and
-concurrent launches cannot create duplicate work. The remaining Phase 2 launch work is
-fast and standard review expansion, including optional lens and supplement
-inputs. Status, cancellation, external-root ownership and supersession,
-resume-migration comparison, and the sacrificial real-board tracer also remain
-before the Phase 2 review gate. Terminal-free handoff authoring is now
+concurrent launches cannot create duplicate work. The remaining Phase 2 launch
+work is status, cancellation, external-root ownership and supersession,
+resume-migration comparison, and the sacrificial real-board tracer. Fast and
+standard review launch now materialize the complete eighteen-card graph,
+including optional style and observability evidence plus orientation and
+diagram supplements, before the Phase 2 review gate. Terminal-free handoff
+authoring is now
 executable through inline completion metadata: the validator owns stable
 serialization, a 256 KiB aggregate content cap, digesting, snapshotting, and
 the authoritative attempt ordinal.

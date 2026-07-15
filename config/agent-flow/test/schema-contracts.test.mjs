@@ -202,8 +202,8 @@ function validGate() {
       `${artifactRoot}/draft-review.json`,
     ],
     review_policy: {
-      urgency: "fast",
-      minimum_tier: "important",
+      urgency: "hotfix",
+      minimum_tier: "critical",
       max_comments: 20,
       per_tier_caps: {
         critical: 20,
@@ -587,6 +587,41 @@ test("gate specs reject mixed operation payloads and incorrect urgency floors", 
 });
 
 test("review-finalize gates bind every typed input and output", async () => {
+  const optionalLens = validGate();
+  optionalLens.review_policy.urgency = "fast";
+  optionalLens.review_policy.minimum_tier = "important";
+  for (const kind of [
+    "diagram",
+    "lens:observability",
+    "lens:style",
+    "orientation",
+  ]) {
+    const validation =
+      `${optionalLens.write_root}/${kind.replaceAll(":", "-")}.validation.json`;
+    optionalLens.inputs.push(validation);
+    optionalLens.review_finalize.supplements.push({ kind, validation });
+  }
+  assert.equal((await validateContract(optionalLens)).valid, true);
+
+  const unknownSupplement = structuredClone(optionalLens);
+  unknownSupplement.review_finalize.supplements[0].kind = "lens:unknown";
+  assert.equal((await validateContract(unknownSupplement)).valid, false);
+
+  const incompleteFast = structuredClone(optionalLens);
+  incompleteFast.inputs.pop();
+  incompleteFast.review_finalize.supplements.pop();
+  const incompleteResult = await validateContract(incompleteFast);
+  assert.equal(incompleteResult.valid, false);
+  assert.equal(
+    incompleteResult.errors.some(({ keyword }) => keyword === "urgencySupplements"),
+    true,
+  );
+
+  const supplementedHotfix = structuredClone(optionalLens);
+  supplementedHotfix.review_policy.urgency = "hotfix";
+  supplementedHotfix.review_policy.minimum_tier = "critical";
+  assert.equal((await validateContract(supplementedHotfix)).valid, false);
+
   const mutations = [
     (gate) => { gate.review_finalize.comments_validation = `${gate.write_root}/other.json`; },
     (gate) => { gate.inputs.push(`${gate.write_root}/undeclared.validation.json`); },

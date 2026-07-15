@@ -126,13 +126,20 @@
         "comments_validation": { "$ref": "#/$defs/absolutePath" },
         "supplements": {
           "type": "array",
-          "maxItems": 2,
+          "maxItems": 4,
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["kind", "validation"],
             "properties": {
-              "kind": { "enum": ["orientation", "diagram"] },
+              "kind": {
+                "enum": [
+                  "lens:style",
+                  "lens:observability",
+                  "orientation",
+                  "diagram"
+                ]
+              },
               "validation": { "$ref": "#/$defs/absolutePath" }
             }
           }

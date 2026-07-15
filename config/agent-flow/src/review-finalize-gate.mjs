@@ -18,6 +18,12 @@ const POSTURE_LABELS = {
   merge_after_fixes: "merge after fixes",
   merge_ready_with_followups: "merge ready with follow-ups",
 };
+const SUPPLEMENT_ARTIFACT_KINDS = {
+  "lens:style": "review-findings",
+  "lens:observability": "review-findings",
+  orientation: "review-orientation",
+  diagram: "review-diagram",
+};
 
 export async function executeReviewFinalizeGate({ adapter, sealedGate }) {
   const { gate, manifest, taskAuthority } = sealedGate;
@@ -36,6 +42,7 @@ export async function executeReviewFinalizeGate({ adapter, sealedGate }) {
       adapter,
       declaration: gate.review_finalize.comments_validation,
       expectedStage: "critic",
+      expectedArtifactKind: "review-comments",
       validatorTaskId:
         taskAuthority.inputTaskIds[gate.review_finalize.comments_validation],
       runtime,
@@ -77,27 +84,44 @@ export async function executeReviewFinalizeGate({ adapter, sealedGate }) {
         adapter,
         declaration: supplement.validation,
         expectedStage: supplement.kind,
+        expectedArtifactKind: SUPPLEMENT_ARTIFACT_KINDS[supplement.kind],
         validatorTaskId: taskAuthority.inputTaskIds[supplement.validation],
         runtime,
         manifest,
         taskAuthority,
         signal,
       });
-      if (evidence.artifacts.length === 0) {
-        throw new Error(`review ${supplement.kind} evidence has no artifacts`);
+      if (evidence.artifacts.length !== 1) {
+        throw new Error(
+          `review ${supplement.kind} evidence must contain exactly one artifact`,
+        );
       }
-      for (const artifact of evidence.artifacts) {
-        supplements.push({
-          kind: supplement.kind,
-          validation_path: supplement.validation,
-          artifact_path: artifact.path,
-          sha256: artifact.sha256,
-          bytes: artifact.bytes,
-        });
-      }
+      validateSupplementMeasurement(supplement.kind, evidence.validation);
+      const artifact = evidence.artifacts[0];
+      validateSupplementContent(supplement.kind, artifact.bytes);
+      supplements.push({
+        kind: supplement.kind,
+        passed: evidence.validation.semantic.passed,
+        validation_path: supplement.validation,
+        artifact_path: artifact.path,
+        sha256: artifact.sha256,
+        bytes: artifact.bytes,
+      });
     }
 
     const policyResult = applyPolicy(comments.findings, gate.review_policy);
+    const failedLenses = supplements.filter(
+      ({ kind, passed }) => kind.startsWith("lens:") && !passed,
+    );
+    const posture = failedLenses.length > 0 &&
+        comments.posture === "merge_ready_with_followups"
+      ? "merge_after_fixes"
+      : comments.posture;
+    const postureRationale = failedLenses.length === 0
+      ? comments.posture_rationale
+      : `${comments.posture_rationale} Blocking supplemental lens: ${failedLenses
+          .map(({ kind }) => kind)
+          .join(", ")}.`;
     const result = {
       schema: "agent-flow.review-result/v1",
       run_id: gate.run_id,
@@ -111,8 +135,8 @@ export async function executeReviewFinalizeGate({ adapter, sealedGate }) {
         artifact_path: commentsArtifact.path,
         sha256: commentsArtifact.sha256,
       },
-      posture: comments.posture,
-      posture_rationale: comments.posture_rationale,
+      posture,
+      posture_rationale: postureRationale,
       cluster: comments.cluster,
       findings: policyResult.findings,
       counts: policyResult.counts,
@@ -158,6 +182,7 @@ async function loadEvidence({
   adapter,
   declaration,
   expectedStage,
+  expectedArtifactKind,
   validatorTaskId,
   runtime,
   manifest,
@@ -183,6 +208,7 @@ async function loadEvidence({
     adapter,
     declaration,
     expectedStage,
+    expectedArtifactKind,
     manifest,
     signal,
     taskAuthority,
@@ -237,6 +263,7 @@ async function validateEvidenceAuthority({
   adapter,
   declaration,
   expectedStage,
+  expectedArtifactKind,
   manifest,
   signal,
   taskAuthority,
@@ -248,7 +275,10 @@ async function validateEvidenceAuthority({
     taskId: validatorTaskId,
   });
   if (!validatorBundle.valid) {
-    throw new Error("review input validator does not have valid sealed authority");
+    throw new Error(
+      "review input validator does not have valid sealed authority: " +
+        JSON.stringify(validatorBundle.errors),
+    );
   }
   const validatorGate = validatorBundle.gate;
   const validatorAuthority = validatorBundle.taskAuthority;
@@ -295,6 +325,14 @@ async function validateEvidenceAuthority({
   ) {
     throw new Error("review input evidence does not match the producer completed attempt");
   }
+  if (
+    handoff.artifacts.length !== 1 ||
+    handoff.artifacts[0].kind !== expectedArtifactKind
+  ) {
+    throw new Error(
+      `review ${expectedStage} handoff must contain exactly one ${expectedArtifactKind} artifact`,
+    );
+  }
   const declaredArtifacts = handoff.artifacts.map((artifact) =>
     Object.hasOwn(artifact, "inline")
       ? `inline\0${sha256(serializeInlineArtifact(artifact.inline))}`
@@ -308,6 +346,82 @@ async function validateEvidenceAuthority({
   if (!sameSequence(declaredArtifacts, evidencedArtifacts)) {
     throw new Error("review input evidence does not match producer artifacts");
   }
+}
+
+function validateSupplementContent(kind, bytes) {
+  if (kind === "orientation") {
+    if (!bytes.startsWith("## Orientation\n") || bytes.trim().length === 0) {
+      throw new Error(
+        "review orientation artifact must be a Markdown orientation section",
+      );
+    }
+    return;
+  }
+  if (kind === "diagram") {
+    if (!/^flowchart (?:TB|TD|BT|RL|LR)\n/.test(bytes)) {
+      throw new Error("review diagram artifact must be a Mermaid flowchart");
+    }
+    return;
+  }
+  let findings;
+  try {
+    findings = JSON.parse(bytes);
+  } catch (error) {
+    throw new Error(`review ${kind} artifact is not valid JSON`, { cause: error });
+  }
+  const expectedLens = kind.slice("lens:".length);
+  if (
+    !findings ||
+    typeof findings !== "object" ||
+    Array.isArray(findings) ||
+    Object.keys(findings).sort().join(",") !== "findings,lens,summary" ||
+    findings.lens !== expectedLens ||
+    typeof findings.summary !== "string" ||
+    findings.summary.length === 0 ||
+    !Array.isArray(findings.findings) ||
+    !findings.findings.every(
+      (finding) => reviewFindingIsValid(finding, expectedLens),
+    )
+  ) {
+    throw new Error(`review ${kind} artifact does not satisfy its findings shape`);
+  }
+}
+
+function validateSupplementMeasurement(kind, validation) {
+  if (kind.startsWith("lens:")) {
+    if (
+      !validation.semantic.required ||
+      typeof validation.semantic.passed !== "boolean"
+    ) {
+      throw new Error(`review ${kind} evidence must contain a lens measurement`);
+    }
+    return;
+  }
+  if (validation.semantic.passed !== true) {
+    throw new Error(`review ${kind} evidence must report successful production`);
+  }
+}
+
+function reviewFindingIsValid(finding, expectedLens) {
+  if (
+    !finding ||
+    typeof finding !== "object" ||
+    Array.isArray(finding) ||
+    Object.keys(finding).sort().join(",") !== "body,lens,line,path,side,tier"
+  ) return false;
+  return (
+    typeof finding.path === "string" &&
+    finding.path.length > 0 &&
+    !finding.path.startsWith("/") &&
+    !finding.path.split("/").includes("..") &&
+    Number.isInteger(finding.line) &&
+    finding.line >= 1 &&
+    ["LEFT", "RIGHT"].includes(finding.side) &&
+    TIERS.includes(finding.tier) &&
+    finding.lens === expectedLens &&
+    typeof finding.body === "string" &&
+    finding.body.length > 0
+  );
 }
 
 function assertTerminalCompleted(attempt, taskId) {
@@ -414,6 +528,18 @@ function renderMarkdown(result, supplements) {
     for (const diagram of diagrams) lines.push(`- \`${diagram.artifact_path}\``);
     lines.push("");
   }
+  const lensSupplements = supplementalLensArtifacts(result);
+  if (lensSupplements.length > 0) {
+    lines.push("## Supplemental lens evidence", "");
+    for (const lens of lensSupplements) {
+      lines.push(
+        `- ${lens.kind} (${lens.passed ? "passed" : "blocking"}): ` +
+          `\`${lens.artifact_path}\` (` +
+          `sha256:${lens.sha256})`,
+      );
+    }
+    lines.push("");
+  }
   lines.push(
     "## Policy report",
     "",
@@ -447,6 +573,17 @@ function renderHtml(result, supplements) {
   const diagramSection = diagrams
     ? `<section><h2>Diagram artifacts</h2><ul>${diagrams}</ul></section>`
     : "";
+  const lensSupplements = supplementalLensArtifacts(result)
+    .map(
+      ({ kind, passed, artifact_path: path, sha256: digest }) =>
+        `<li>${escapeHtml(kind)} (${passed ? "passed" : "blocking"}): ` +
+        `<code>${escapeHtml(path)}</code> ` +
+        `(sha256:${digest})</li>`,
+    )
+    .join("");
+  const lensSupplementSection = lensSupplements
+    ? `<section><h2>Supplemental lens evidence</h2><ul>${lensSupplements}</ul></section>`
+    : "";
   const findings = result.findings
     .map(
       (finding) =>
@@ -462,7 +599,7 @@ function renderHtml(result, supplements) {
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
     "<title>Automated review</title></head><body><main><h1>Automated review</h1>" +
     `<p><strong>Verdict: ${escapeHtml(POSTURE_LABELS[result.posture])}</strong> - urgency: ${escapeHtml(result.policy.urgency)}</p>` +
-    `<p>${escapeHtml(result.posture_rationale)}</p>${cluster}${orientation}${diagramSection}${findings}` +
+    `<p>${escapeHtml(result.posture_rationale)}</p>${cluster}${orientation}${diagramSection}${lensSupplementSection}${findings}` +
     `<section><h2>Policy report</h2><p>Included ${result.counts.included} of ${result.counts.input} findings.</p><ul>${policy}</ul></section>` +
     "</main></body></html>\n";
 }
@@ -477,12 +614,22 @@ function renderDraft(result, supplements) {
     .filter(({ kind }) => kind === "diagram")
     .map(({ artifact_path: path }) => `- \`${path}\``)
     .join("\n");
+  const lensSupplements = supplementalLensArtifacts(result)
+    .map(
+      ({ kind, passed, artifact_path: path, sha256: digest }) =>
+        `- ${kind} (${passed ? "passed" : "blocking"}): ` +
+        `\`${path}\` (sha256:${digest})`,
+    )
+    .join("\n");
   const body = [
     `**Verdict: ${POSTURE_LABELS[result.posture]}** - urgency: ${result.policy.urgency}`,
     result.posture_rationale,
     result.cluster ? `## Through-line\n${result.cluster}` : null,
     orientation || null,
     diagrams ? `## Diagram artifacts\n${diagrams}` : null,
+    lensSupplements
+      ? `## Supplemental lens evidence\n${lensSupplements}`
+      : null,
     notes.length > 0 ? `## Policy report\n${notes.map((note) => `- ${note}`).join("\n")}` : null,
   ].filter(Boolean).join("\n\n");
   return {
@@ -494,6 +641,10 @@ function renderDraft(result, supplements) {
       body: `**[${finding.tier}] [${finding.lens}] ${finding.id}**\n\n${finding.body}`,
     })),
   };
+}
+
+function supplementalLensArtifacts(result) {
+  return result.supplements.filter(({ kind }) => kind.startsWith("lens:"));
 }
 
 function policyNotes(result) {

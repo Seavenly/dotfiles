@@ -106,6 +106,11 @@ Dependency rules:
   or diagramming.
 - Finalize depends on critic and every enabled side artifact.
 - `urgency: hotfix` omits orientation, diagramming, and every optional lens.
+- `urgency: fast` and `urgency: standard` enable both optional lenses,
+  orientation, and diagramming. Optional lens evidence joins at finalization;
+  it is rendered with its semantic measurement, durable path, and digest rather
+  than bypassing the critic to become a review comment. A blocking optional
+  lens raises a merge-ready critic posture to merge-after-fixes.
 - The finalize gate applies urgency floors, comment caps, finding identifiers,
   schema validation, and rendering deterministically.
 - Finalize consumes sealed paths to handoff-validation evidence, never mutable

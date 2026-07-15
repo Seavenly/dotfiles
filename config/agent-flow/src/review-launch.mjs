@@ -23,12 +23,11 @@ const SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const GRAPH_SOURCE = join(SOURCE_ROOT, "graphs", "local-review.v1.json");
 const LAUNCH_SOURCE = fileURLToPath(import.meta.url);
-const REQUIRED_HOTFIX_PROFILES = [
-  "analyst",
-  "critic",
-  "flow-controller",
-  "gate",
-];
+const REVIEW_MINIMUM_TIER = {
+  hotfix: "critical",
+  fast: "important",
+  standard: "nit",
+};
 const COMPATIBLE_CONTRACTS = [
   "agent-flow.run/v1",
   "agent-flow.graph/v1",
@@ -63,11 +62,6 @@ export async function launchReview({
   if (review.automated_review.status !== "pending") {
     throw new Error("review launch requires automated_review.status=pending");
   }
-  if (review.automated_review.urgency !== "hotfix") {
-    throw new Error(
-      "this launch tracer currently supports urgency=hotfix; fast and standard remain Phase 2 follow-up",
-    );
-  }
   if (review.external_ref !== null) {
     throw new Error(
       "this launch tracer requires external_ref=null until Phase 2 external-root ownership is implemented",
@@ -88,10 +82,13 @@ export async function launchReview({
   );
   let releaseLaunchLock = null;
   try {
+    const graphSource = await loadReviewGraph(
+      review.automated_review.urgency,
+    );
     const doctor = await runDoctor();
     const profileIdentity = requireHealthyProfiles(
       doctor,
-      REQUIRED_HOTFIX_PROFILES,
+      [...new Set(graphSource.enabledStages.map(({ profile }) => profile))],
     );
     const repository = await inspectRepository(review);
     if (repository.headSha !== review.head.sha) {
@@ -114,6 +111,7 @@ export async function launchReview({
       profileIdentity,
       runDirectory,
       now,
+      graphSource,
     });
     return await materializeReview({
       adapter: resolvedAdapter,
@@ -214,6 +212,7 @@ async function sealOrLoadBundle({
   profileIdentity,
   runDirectory,
   now,
+  graphSource,
 }) {
   const runManifestPath = join(runDirectory, "run.json");
   try {
@@ -230,15 +229,9 @@ async function sealOrLoadBundle({
     if (error.code !== "ENOENT") throw error;
   }
 
-  const graphBytes = await readFile(GRAPH_SOURCE);
-  const graph = parseJson(graphBytes, "review graph");
-  const graphValidation = await validateContract(graph);
-  if (!graphValidation.valid) {
-    throw new Error(`review graph is invalid: ${formatValidationError(graphValidation)}`);
-  }
-  const enabledStages = materializationOrder(graph);
+  const { graphBytes, graph, enabledStages } = graphSource;
   const layout = bundleLayout(runDirectory, enabledStages);
-  const generatedGates = generateGates({ graph, layout, review });
+  const generatedGates = generateGates({ enabledStages, layout, review });
   for (const gate of generatedGates) {
     const gateValidation = await validateContract(gate.document);
     if (!gateValidation.valid) {
@@ -359,6 +352,22 @@ async function sealOrLoadBundle({
   };
 }
 
+async function loadReviewGraph(urgency) {
+  const graphBytes = await readFile(GRAPH_SOURCE);
+  const graph = parseJson(graphBytes, "review graph");
+  const graphValidation = await validateContract(graph);
+  if (!graphValidation.valid) {
+    throw new Error(
+      `review graph is invalid: ${formatValidationError(graphValidation)}`,
+    );
+  }
+  return {
+    graphBytes,
+    graph,
+    enabledStages: materializationOrder(graph, urgency),
+  };
+}
+
 async function loadExistingBundle({
   existingBytes,
   review,
@@ -427,9 +436,12 @@ async function loadExistingBundle({
   ) {
     throw new Error("existing review graph identity does not match the run manifest");
   }
-  const enabledStages = materializationOrder(graph);
+  const enabledStages = materializationOrder(
+    graph,
+    review.automated_review.urgency,
+  );
   const layout = bundleLayout(runDirectory, enabledStages);
-  const expectedGates = generateGates({ graph, layout, review });
+  const expectedGates = generateGates({ enabledStages, layout, review });
   const gateInputs = manifest.inputs.filter(({ kind }) => kind === "gate");
   if (gateInputs.length !== expectedGates.length) {
     throw new Error("existing run does not contain the exact generated gate set");
@@ -541,7 +553,7 @@ async function materializeReview({ adapter, bundle, review }) {
             formatValidationError(authorityValidation),
         );
       }
-      const io = stageIo(stage, layout);
+      const io = stageIo(stage, layout, enabledStages);
       const skill = await readFile(
         manifest.inputs.find(
           ({ kind, name }) => kind === "skill" && name === stage.skill,
@@ -736,7 +748,8 @@ async function writeMaterialization(layout, graph, taskIds) {
   await rename(temporary, layout.materialization);
 }
 
-function enabledHotfixStages(graph) {
+function enabledReviewStages(graph, urgency) {
+  if (urgency !== "hotfix") return graph.stages;
   const byKey = new Map(graph.stages.map((stage) => [stage.key, stage]));
   return graph.stages.filter((stage) => {
     if (stage.optional) return false;
@@ -745,8 +758,8 @@ function enabledHotfixStages(graph) {
   });
 }
 
-export function materializationOrder(graph) {
-  const enabled = enabledHotfixStages(graph);
+export function materializationOrder(graph, urgency = "hotfix") {
+  const enabled = enabledReviewStages(graph, urgency);
   const enabledKeys = new Set(enabled.map(({ key }) => key));
   const root = enabled.find(({ key }) => key === graph.root);
   if (!root) throw new Error("review graph root is not enabled");
@@ -807,9 +820,9 @@ function bundleLayout(runDirectory, stages) {
   };
 }
 
-function generateGates({ graph, layout, review }) {
+function generateGates({ enabledStages, layout, review }) {
   const gates = [];
-  for (const stage of enabledHotfixStages(graph)) {
+  for (const stage of enabledStages) {
     if (!stage.validates_handoff_for) continue;
     const output = layout.validationEvidence.get(stage.key);
     const document = {
@@ -840,6 +853,7 @@ function generateGates({ graph, layout, review }) {
   const commentsValidation = layout.validationEvidence.get(
     "validate-handoff:critic",
   );
+  const supplements = reviewSupplements(enabledStages, layout);
   const outputs = [
     layout.reviewResult,
     layout.reviewMarkdown,
@@ -857,17 +871,20 @@ function generateGates({ graph, layout, review }) {
     read_roots: [layout.runDirectory],
     write_root: layout.artifacts,
     timeout_seconds: 120,
-    inputs: [commentsValidation],
+    inputs: [
+      commentsValidation,
+      ...supplements.map(({ validation }) => validation),
+    ],
     outputs,
     review_policy: {
-      urgency: "hotfix",
-      minimum_tier: "critical",
+      urgency: review.automated_review.urgency,
+      minimum_tier: REVIEW_MINIMUM_TIER[review.automated_review.urgency],
       max_comments: review.automated_review.max_comments,
       per_tier_caps: structuredClone(review.automated_review.per_tier_caps),
     },
     review_finalize: {
       comments_validation: commentsValidation,
-      supplements: [],
+      supplements,
       result_output: layout.reviewResult,
       markdown_output: layout.reviewMarkdown,
       html_output: layout.reviewHtml,
@@ -883,7 +900,7 @@ function generateGates({ graph, layout, review }) {
   return gates;
 }
 
-function stageIo(stage, layout) {
+function stageIo(stage, layout, enabledStages) {
   if (stage.key.startsWith("lens:")) {
     return {
       inputs: [layout.reviewManifest, layout.candidateDiff],
@@ -897,9 +914,14 @@ function stageIo(stage, layout) {
     };
   }
   if (stage.key === "critic") {
-    const lensValidations = [...layout.validationEvidence.entries()]
-      .filter(([key]) => key.startsWith("validate-handoff:lens:"))
-      .map(([, path]) => path);
+    const byKey = new Map(
+      enabledStages.map((candidate) => [candidate.key, candidate]),
+    );
+    const lensValidations = enabledStages
+      .filter(({ validates_handoff_for: producer }) =>
+        producer?.startsWith("lens:") && !byKey.get(producer).optional
+      )
+      .map(({ key }) => layout.validationEvidence.get(key));
     return {
       inputs: [layout.reviewManifest, layout.candidateDiff, ...lensValidations],
       outputs: ["metadata.handoff.artifacts[0].inline (review-comments)"],
@@ -907,7 +929,12 @@ function stageIo(stage, layout) {
   }
   if (stage.key === "finalize") {
     return {
-      inputs: [layout.validationEvidence.get("validate-handoff:critic")],
+      inputs: [
+        layout.validationEvidence.get("validate-handoff:critic"),
+        ...reviewSupplements(enabledStages, layout).map(
+          ({ validation }) => validation,
+        ),
+      ],
       outputs: [
         layout.reviewResult,
         layout.reviewMarkdown,
@@ -922,7 +949,24 @@ function stageIo(stage, layout) {
       outputs: [],
     };
   }
+  if (stage.key === "orientation" || stage.key === "diagram") {
+    return {
+      inputs: [layout.reviewManifest, layout.candidateDiff],
+      outputs: [
+        `metadata.handoff.artifacts[0].inline (review-${stage.key})`,
+      ],
+    };
+  }
   return { inputs: [], outputs: [] };
+}
+
+function reviewSupplements(enabledStages, layout) {
+  return enabledStages
+    .filter(({ optional }) => optional)
+    .map(({ key }) => ({
+      kind: key,
+      validation: layout.validationEvidence.get(`validate-handoff:${key}`),
+    }));
 }
 
 async function loadStaticInputs(stages, layout) {

@@ -21,7 +21,7 @@ test("agent-flow gate deterministically finalizes validated review comments", as
     env: { HERMES_KANBAN_TASK: fixture.taskId },
     stdout: stdout.stream,
     stderr: stderr.stream,
-  }), 0);
+  }), 0, stderr.value());
 
   assert.equal(stdout.value(), "ok - review-finalize gate passed\n");
   assert.equal(stderr.value(), "");
@@ -40,12 +40,18 @@ test("agent-flow gate deterministically finalizes validated review comments", as
   assert.equal(result.counts.dropped_by_total_cap.recommended, 1);
   assert.equal(result.counts.dropped_by_total_cap.nit, 1);
   assert.match(result.findings[0].id, /^finding-[0-9a-f]{16}$/);
+  assert.deepEqual(
+    result.supplements.map(({ kind }) => kind),
+    ["orientation", "diagram", "lens:style", "lens:observability"],
+  );
+  assert.equal(result.supplements.every(({ passed }) => passed), true);
 
   const draft = JSON.parse(await readFile(fixture.outputs.draft, "utf8"));
   assert.equal("event" in draft, false);
   assert.equal(draft.comments.length, 3);
   assert.match(draft.body, /Start with the run authority/);
   assert.match(draft.body, /diagram\.mmd/);
+  assert.match(draft.body, /lens:style/);
   assert.match(draft.body, /Dropped 1 important by per-tier cap/);
   assert.match(draft.comments[0].body, new RegExp(result.findings[0].id));
   const html = await readFile(fixture.outputs.html, "utf8");
@@ -53,7 +59,10 @@ test("agent-flow gate deterministically finalizes validated review comments", as
   assert.match(html, /&lt;script&gt;/);
   assert.match(html, /The boundary needs one source of truth/);
   assert.match(html, /diagram\.mmd/);
-  assert.match(await readFile(fixture.outputs.markdown, "utf8"), /## Orientation/);
+  assert.match(html, /lens:style/);
+  const markdown = await readFile(fixture.outputs.markdown, "utf8");
+  assert.match(markdown, /## Orientation/);
+  assert.match(markdown, /## Supplemental lens evidence/);
 
   assert.equal(await runCli(["gate", "--spec", fixture.gatePath], {
     adapter: fixture.adapter,
@@ -183,6 +192,75 @@ test("review-finalize renders an authoritative negative critic measurement", asy
   assert.equal(result.posture, "do_not_merge");
 });
 
+test("review-finalize surfaces a blocking optional lens", async (t) => {
+  const fixture = await reviewFinalizeFixture(t, {
+    posture: "merge_ready_with_followups",
+    optionalLensPassed: false,
+  });
+
+  assert.equal(await runCli(["gate", "--spec", fixture.gatePath], {
+    adapter: fixture.adapter,
+    env: { HERMES_KANBAN_TASK: fixture.taskId },
+    stdout: captureStream().stream,
+    stderr: captureStream().stream,
+  }), 0);
+  const result = JSON.parse(await readFile(fixture.outputs.result, "utf8"));
+  assert.equal(result.posture, "merge_after_fixes");
+  assert.match(result.posture_rationale, /Blocking supplemental lens: lens:style/);
+  assert.equal(
+    result.supplements.find(({ kind }) => kind === "lens:style").passed,
+    false,
+  );
+  assert.match(await readFile(fixture.outputs.markdown, "utf8"), /lens:style \(blocking\)/);
+});
+
+test("review-finalize rejects a supplement with the wrong artifact kind", async (t) => {
+  const fixture = await reviewFinalizeFixture(t);
+  fixture.styleHandoff.artifacts[0].kind = "review-diagram";
+  const evidence = JSON.parse(await readFile(fixture.styleEvidence, "utf8"));
+  evidence.source_metadata_sha256 = sha256(JSON.stringify({
+    handoff: fixture.styleHandoff,
+  }));
+  await writeFile(fixture.styleEvidence, JSON.stringify(evidence));
+  const stderr = captureStream();
+
+  assert.equal(await runCli(["gate", "--spec", fixture.gatePath], {
+    adapter: fixture.adapter,
+    env: { HERMES_KANBAN_TASK: fixture.taskId },
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 1);
+  assert.match(stderr.value(), /exactly one review-findings artifact/);
+});
+
+test("review-finalize rejects malformed optional lens content", async (t) => {
+  const fixture = await reviewFinalizeFixture(t);
+  const inline = {
+    lens: "style",
+    summary: "Malformed producer output.",
+    findings: "not-an-array",
+  };
+  fixture.styleHandoff.artifacts[0].inline = inline;
+  const bytes = stableJsonBytes(inline);
+  await writeFile(fixture.styleSnapshot, bytes);
+  const evidence = JSON.parse(await readFile(fixture.styleEvidence, "utf8"));
+  evidence.source_metadata_sha256 = sha256(JSON.stringify({
+    handoff: fixture.styleHandoff,
+  }));
+  evidence.artifacts[0].expected_sha256 = sha256(bytes);
+  evidence.artifacts[0].actual_sha256 = sha256(bytes);
+  await writeFile(fixture.styleEvidence, JSON.stringify(evidence));
+  const stderr = captureStream();
+
+  assert.equal(await runCli(["gate", "--spec", fixture.gatePath], {
+    adapter: fixture.adapter,
+    env: { HERMES_KANBAN_TASK: fixture.taskId },
+    stdout: captureStream().stream,
+    stderr: stderr.stream,
+  }), 1);
+  assert.match(stderr.value(), /does not satisfy its findings shape/);
+});
+
 test("review-finalize rejects posture that contradicts hotfix findings", async (t) => {
   const fixture = await reviewFinalizeFixture(t, {
     urgency: "hotfix",
@@ -206,6 +284,7 @@ async function reviewFinalizeFixture(
     criticPassed = true,
     posture = "do_not_merge",
     inlineCritic = false,
+    optionalLensPassed = true,
   } = {},
 ) {
   const runDirectory = await mkdtemp(join(tmpdir(), "agent-flow-review-finalize-"));
@@ -227,14 +306,29 @@ async function reviewFinalizeFixture(
     posture,
     posture_rationale: "Critical issues should be fixed before merge.",
     cluster: "The boundary needs one source of truth.",
-    findings: [
-      finding("critical", "security", 10, "Escapes <script> markup."),
-      finding("critical", "correctness", 20, "Loses committed state."),
-      finding("important", "correctness", 30, "Accepts stale input."),
-      finding("important", "testing", 40, "Misses retry coverage."),
-      finding("recommended", "maintainability", 50, "Split the adapter seam."),
-      finding("nit", "maintainability", 60, "Rename the local value."),
-    ],
+    findings: posture === "merge_ready_with_followups"
+      ? [
+          finding(
+            "recommended",
+            "maintainability",
+            50,
+            "Split the adapter seam.",
+          ),
+          finding("nit", "maintainability", 60, "Rename the local value."),
+        ]
+      : [
+          finding("critical", "security", 10, "Escapes <script> markup."),
+          finding("critical", "correctness", 20, "Loses committed state."),
+          finding("important", "correctness", 30, "Accepts stale input."),
+          finding("important", "testing", 40, "Misses retry coverage."),
+          finding(
+            "recommended",
+            "maintainability",
+            50,
+            "Split the adapter seam.",
+          ),
+          finding("nit", "maintainability", 60, "Rename the local value."),
+        ],
   };
   const commentsBytes = inlineCritic
     ? stableJsonBytes(comments)
@@ -248,6 +342,22 @@ async function reviewFinalizeFixture(
   const diagramSnapshot = join(validationDirectory, "diagram.mmd");
   const diagramBytes = "flowchart LR\n  critic --> finalize\n";
   await writeFile(diagramSnapshot, diagramBytes);
+  const styleSnapshot = join(validationDirectory, "style.json");
+  const style = {
+    lens: "style",
+    summary: "Naming follows the repository conventions.",
+    findings: [],
+  };
+  const styleBytes = stableJsonBytes(style);
+  await writeFile(styleSnapshot, styleBytes);
+  const observabilitySnapshot = join(validationDirectory, "observability.json");
+  const observability = {
+    lens: "observability",
+    summary: "Operational signals cover the changed boundary.",
+    findings: [],
+  };
+  const observabilityBytes = stableJsonBytes(observability);
+  await writeFile(observabilitySnapshot, observabilityBytes);
 
   const graph = {
     schema: "agent-flow.graph/v1",
@@ -272,6 +382,20 @@ async function reviewFinalizeFixture(
         ...stage("validate-handoff:diagram", "gate", "handoff-validator"),
         validates_handoff_for: "diagram",
       },
+      stage("lens:style", "analyst", "review-lens", true),
+      {
+        ...stage("validate-handoff:lens:style", "gate", "handoff-validator"),
+        validates_handoff_for: "lens:style",
+      },
+      stage("lens:observability", "analyst", "review-lens", true),
+      {
+        ...stage(
+          "validate-handoff:lens:observability",
+          "gate",
+          "handoff-validator",
+        ),
+        validates_handoff_for: "lens:observability",
+      },
       stage("finalize", "gate", "review-finalizer"),
     ],
     dependencies: [
@@ -281,6 +405,16 @@ async function reviewFinalizeFixture(
       { parent: "validate-handoff:orientation", child: "finalize" },
       { parent: "diagram", child: "validate-handoff:diagram" },
       { parent: "validate-handoff:diagram", child: "finalize" },
+      { parent: "lens:style", child: "validate-handoff:lens:style" },
+      { parent: "validate-handoff:lens:style", child: "finalize" },
+      {
+        parent: "lens:observability",
+        child: "validate-handoff:lens:observability",
+      },
+      {
+        parent: "validate-handoff:lens:observability",
+        child: "finalize",
+      },
       { parent: "finalize", child: "review-root" },
     ],
     transitions: [],
@@ -292,6 +426,11 @@ async function reviewFinalizeFixture(
   const commentsEvidencePath = join(artifactsDirectory, "comments.validation.json");
   const orientationEvidencePath = join(artifactsDirectory, "orientation.validation.json");
   const diagramEvidencePath = join(artifactsDirectory, "diagram.validation.json");
+  const styleEvidencePath = join(artifactsDirectory, "style.validation.json");
+  const observabilityEvidencePath = join(
+    artifactsDirectory,
+    "observability.validation.json",
+  );
   const runId = comments.run_id;
   const outputs = {
     result: join(artifactsDirectory, "review.json"),
@@ -299,6 +438,12 @@ async function reviewFinalizeFixture(
     html: join(artifactsDirectory, "review.html"),
     draft: join(artifactsDirectory, "draft-review.json"),
   };
+  const supplements = urgency === "hotfix" ? [] : [
+    { kind: "orientation", validation: orientationEvidencePath },
+    { kind: "diagram", validation: diagramEvidencePath },
+    { kind: "lens:style", validation: styleEvidencePath },
+    { kind: "lens:observability", validation: observabilityEvidencePath },
+  ];
   const gate = {
     schema: "agent-flow.gate/v1",
     name: "review-finalize",
@@ -310,7 +455,7 @@ async function reviewFinalizeFixture(
     read_roots: [runDirectory],
     write_root: artifactsDirectory,
     timeout_seconds: 30,
-    inputs: [commentsEvidencePath, orientationEvidencePath, diagramEvidencePath],
+    inputs: [commentsEvidencePath, ...supplements.map(({ validation }) => validation)],
     outputs: Object.values(outputs),
     review_policy: {
       urgency,
@@ -324,10 +469,7 @@ async function reviewFinalizeFixture(
     },
     review_finalize: {
       comments_validation: commentsEvidencePath,
-      supplements: [
-        { kind: "orientation", validation: orientationEvidencePath },
-        { kind: "diagram", validation: diagramEvidencePath },
-      ],
+      supplements,
       result_output: outputs.result,
       markdown_output: outputs.markdown,
       html_output: outputs.html,
@@ -371,6 +513,34 @@ async function reviewFinalizeFixture(
   const diagramValidatorGatePath = join(inputsDirectory, "validate-diagram.json");
   const diagramValidatorGateBytes = JSON.stringify(diagramValidatorGate);
   await writeFile(diagramValidatorGatePath, diagramValidatorGateBytes);
+  const styleValidatorGate = handoffGate({
+    runId,
+    runDirectory,
+    artifactsDirectory,
+    stage: "lens:style",
+    evidencePath: styleEvidencePath,
+  });
+  const styleValidatorGatePath = join(inputsDirectory, "validate-style.json");
+  const styleValidatorGateBytes = JSON.stringify(styleValidatorGate);
+  await writeFile(styleValidatorGatePath, styleValidatorGateBytes);
+  const observabilityValidatorGate = handoffGate({
+    runId,
+    runDirectory,
+    artifactsDirectory,
+    stage: "lens:observability",
+    evidencePath: observabilityEvidencePath,
+  });
+  const observabilityValidatorGatePath = join(
+    inputsDirectory,
+    "validate-observability.json",
+  );
+  const observabilityValidatorGateBytes = JSON.stringify(
+    observabilityValidatorGate,
+  );
+  await writeFile(
+    observabilityValidatorGatePath,
+    observabilityValidatorGateBytes,
+  );
 
   const manifest = {
     schema: "agent-flow.run/v1",
@@ -435,6 +605,18 @@ async function reviewFinalizeFixture(
         diagramValidatorGatePath,
         sha256(diagramValidatorGateBytes),
       ),
+      sealedInput(
+        "gate",
+        "validate-style.json",
+        styleValidatorGatePath,
+        sha256(styleValidatorGateBytes),
+      ),
+      sealedInput(
+        "gate",
+        "validate-observability.json",
+        observabilityValidatorGatePath,
+        sha256(observabilityValidatorGateBytes),
+      ),
       sealedInput("skill", "review-finalizer", join(inputsDirectory, "review-finalizer.md"), SHA256),
       sealedInput("role-contract", "gate", join(inputsDirectory, "gate.md"), SHA256),
     ],
@@ -444,8 +626,8 @@ async function reviewFinalizeFixture(
       fingerprints: { gate: SHA256 },
     },
     limits: {
-      max_created_cards: 4,
-      max_worker_attempts: 8,
+      max_created_cards: 10,
+      max_worker_attempts: 10,
       max_elapsed_seconds: 300,
       max_feature_streams: 1,
     },
@@ -472,21 +654,33 @@ async function reviewFinalizeFixture(
         digest: sha256(commentsBytes),
         kind: "review-comments",
       });
-  const orientationHandoff = producerHandoff({
+  const orientationHandoff = producerInlineHandoff({
     runId,
     stage: "orientation",
     passed: true,
-    path: join(artifactsDirectory, "orientation.md"),
-    digest: sha256(orientationBytes),
+    inline: orientationBytes,
     kind: "review-orientation",
   });
-  const diagramHandoff = producerHandoff({
+  const diagramHandoff = producerInlineHandoff({
     runId,
     stage: "diagram",
     passed: true,
-    path: join(artifactsDirectory, "diagram.mmd"),
-    digest: sha256(diagramBytes),
+    inline: diagramBytes,
     kind: "review-diagram",
+  });
+  const styleHandoff = producerInlineHandoff({
+    runId,
+    stage: "lens:style",
+    passed: optionalLensPassed,
+    inline: style,
+    kind: "review-findings",
+  });
+  const observabilityHandoff = producerInlineHandoff({
+    runId,
+    stage: "lens:observability",
+    passed: true,
+    inline: observability,
+    kind: "review-findings",
   });
   await writeFile(commentsEvidencePath, JSON.stringify(validationEvidence({
     runId,
@@ -516,6 +710,7 @@ async function reviewFinalizeFixture(
     digest: sha256(orientationBytes),
     handoff: orientationHandoff,
     semanticRequired: false,
+    inlineSource: true,
   })));
   await writeFile(diagramEvidencePath, JSON.stringify(validationEvidence({
     runId,
@@ -530,9 +725,50 @@ async function reviewFinalizeFixture(
     digest: sha256(diagramBytes),
     handoff: diagramHandoff,
     semanticRequired: false,
+    inlineSource: true,
   })));
+  await writeFile(styleEvidencePath, JSON.stringify(validationEvidence({
+    runId,
+    stage: "lens:style",
+    taskId: "t_style",
+    manifestPath,
+    manifestDigest,
+    artifactsDirectory,
+    validationDirectory,
+    sourceName: "style.json",
+    snapshotPath: styleSnapshot,
+    digest: sha256(styleBytes),
+    handoff: styleHandoff,
+    semanticRequired: true,
+    inlineSource: true,
+  })));
+  await writeFile(
+    observabilityEvidencePath,
+    JSON.stringify(validationEvidence({
+      runId,
+      stage: "lens:observability",
+      taskId: "t_observability",
+      manifestPath,
+      manifestDigest,
+      artifactsDirectory,
+      validationDirectory,
+      sourceName: "observability.json",
+      snapshotPath: observabilitySnapshot,
+      digest: sha256(observabilityBytes),
+      handoff: observabilityHandoff,
+      semanticRequired: true,
+      inlineSource: true,
+    })),
+  );
 
   const taskId = "t_finalize";
+  const validatorTaskByInput = new Map([
+    [commentsEvidencePath, "t_validate_critic"],
+    [orientationEvidencePath, "t_validate_orientation"],
+    [diagramEvidencePath, "t_validate_diagram"],
+    [styleEvidencePath, "t_validate_style"],
+    [observabilityEvidencePath, "t_validate_observability"],
+  ]);
   const authorities = new Map([
     [taskId, {
       taskId,
@@ -542,11 +778,9 @@ async function reviewFinalizeFixture(
       runManifestSha256: manifestDigest,
       gateSpecPath: gatePath,
       gateSpecSha256: sha256(gateBytes),
-      inputTaskIds: {
-        [commentsEvidencePath]: "t_validate_critic",
-        [orientationEvidencePath]: "t_validate_orientation",
-        [diagramEvidencePath]: "t_validate_diagram",
-      },
+      inputTaskIds: Object.fromEntries(
+        gate.inputs.map((input) => [input, validatorTaskByInput.get(input)]),
+      ),
     }],
     ["t_validate_critic", validatorAuthority({
       taskId: "t_validate_critic",
@@ -578,6 +812,26 @@ async function reviewFinalizeFixture(
       gateDigest: sha256(diagramValidatorGateBytes),
       producerTaskId: "t_diagram",
     })],
+    ["t_validate_style", validatorAuthority({
+      taskId: "t_validate_style",
+      runId,
+      stage: "lens:style",
+      manifestPath,
+      manifestDigest,
+      gatePath: styleValidatorGatePath,
+      gateDigest: sha256(styleValidatorGateBytes),
+      producerTaskId: "t_style",
+    })],
+    ["t_validate_observability", validatorAuthority({
+      taskId: "t_validate_observability",
+      runId,
+      stage: "lens:observability",
+      manifestPath,
+      manifestDigest,
+      gatePath: observabilityValidatorGatePath,
+      gateDigest: sha256(observabilityValidatorGateBytes),
+      producerTaskId: "t_observability",
+    })],
     ["t_critic", producerAuthority({
       taskId: "t_critic",
       runId,
@@ -599,17 +853,41 @@ async function reviewFinalizeFixture(
       manifestPath,
       manifestDigest,
     })],
+    ["t_style", producerAuthority({
+      taskId: "t_style",
+      runId,
+      stage: "lens:style",
+      manifestPath,
+      manifestDigest,
+    })],
+    ["t_observability", producerAuthority({
+      taskId: "t_observability",
+      runId,
+      stage: "lens:observability",
+      manifestPath,
+      manifestDigest,
+    })],
   ]);
   const completed = new Map([
     ["t_validate_critic", completedAttempt("t_validate_critic", null)],
     ["t_validate_orientation", completedAttempt("t_validate_orientation", null)],
     ["t_validate_diagram", completedAttempt("t_validate_diagram", null)],
+    ["t_validate_style", completedAttempt("t_validate_style", null)],
+    [
+      "t_validate_observability",
+      completedAttempt("t_validate_observability", null),
+    ],
     ["t_critic", completedAttempt("t_critic", { handoff: criticHandoff })],
     [
       "t_orientation",
       completedAttempt("t_orientation", { handoff: orientationHandoff }),
     ],
     ["t_diagram", completedAttempt("t_diagram", { handoff: diagramHandoff })],
+    ["t_style", completedAttempt("t_style", { handoff: styleHandoff })],
+    [
+      "t_observability",
+      completedAttempt("t_observability", { handoff: observabilityHandoff }),
+    ],
   ]);
   return {
     taskId,
@@ -617,7 +895,10 @@ async function reviewFinalizeFixture(
     outputs,
     commentsSnapshot,
     commentsEvidence: commentsEvidencePath,
+    styleEvidence: styleEvidencePath,
+    styleSnapshot,
     criticHandoff,
+    styleHandoff,
     adapter: {
       async getTaskAuthority({ taskId: requested }) {
         assert.equal(authorities.has(requested), true);
@@ -692,7 +973,7 @@ function handoffGate({
 }) {
   return {
     schema: "agent-flow.gate/v1",
-    name: `validate-${stage}-handoff`,
+    name: `validate-${stage.replaceAll(":", "-")}-handoff`,
     version: 1,
     run_id: runId,
     stage: `validate-handoff:${stage}`,

@@ -5,10 +5,10 @@ agent flows. Phase 1 implements native profiles, machine-local routing, and
 profile doctoring. Phase 2 now includes the machine contracts, task-pinned
 command, handoff-validation, and review-finalize gate tracers, the canonical
 standard review graph, a recoverable hotfix review launcher, and practical
-inline handoffs for terminal-free review workers. Fast and
-standard review materialization, status, cancellation, external-root ownership,
-registry changes, and stack mechanics remain phased work under the approved
-implementation plan.
+inline handoffs for terminal-free review workers. Review launch now supports
+hotfix, fast, and standard urgency. Status, cancellation, external-root
+ownership, registry changes, and stack mechanics remain phased work under the
+approved implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -72,13 +72,13 @@ Flow skills invoke this interface. Worker prompts invoke only the exact
 derived from the Kanban board and durable manifests. No command waits for a
 worker or advances a card by polling.
 
-The implemented `launch review` tracer currently accepts only
-`automated_review.urgency: hotfix` and `external_ref: null`. The review manifest
-also seals `max_comments` and the `critical`, `important`, `recommended`, and
-`nit` values under `per_tier_caps`. Unsupported urgency or external ownership
-fails before run-directory or Kanban mutation. This explicit boundary keeps the
-first launch slice honest while optional lens and external ownership contracts
-are completed.
+The implemented `launch review` tracer accepts `hotfix`, `fast`, and `standard`
+urgency with `external_ref: null`. Hotfix materializes only required lenses.
+Fast and standard also materialize style and observability lenses plus
+orientation and diagram side artifacts. The review manifest seals
+`max_comments` and the `critical`, `important`, `recommended`, and `nit` values
+under `per_tier_caps`. Unsupported external ownership fails before
+run-directory or Kanban mutation.
 
 ## Run and board identity
 
@@ -140,10 +140,12 @@ The launcher creates the root card blocked, materializes and validates every
 known card and dependency, then unblocks the root. The dependency links keep it
 in `todo` until terminal cards complete. A failed launch leaves the root
 blocked with a recovery comment instead of exposing a partial executable graph.
-The hotfix tracer creates ten cards: the root, correctness, security, and tests
-lenses, one handoff validator after each lens, the critic and its validator,
-and the finalizer. It seals the source review manifest, a base-to-source Git
-patch for terminal-free review profiles, graph, generated gates, card
+The hotfix topology creates ten cards: the root, correctness, security, and
+tests lenses, one handoff validator after each lens, the critic and its
+validator, and the finalizer. Fast and standard create eighteen cards by adding
+style, observability, orientation, diagram, and one validator for each. Launch
+seals the source review manifest, a base-to-source Git patch for terminal-free
+review profiles, graph, generated gates, card
 instructions, role contracts, profile fingerprints, revisions, and limits
 before the first card. `materialization.json` is a derived task-ID receipt, not
 a lifecycle database. Re-running identical input reconciles native Hermes
@@ -443,6 +445,13 @@ sealed urgency, and use a posture consistent with its blocking tiers. Typed
 orientation and diagram evidence receive the same validator-task, producer,
 stage, artifact, and digest checks. Orientation is a complete Markdown section;
 diagram snapshots remain durable referenced artifacts in every rendered result.
+Enabled style and observability lenses are validator-owned supplemental
+evidence. Their semantic measurements, paths, and digests appear in structured,
+Markdown, HTML, and draft outputs without bypassing critic-authored review
+comments or comment caps. A blocking optional lens raises a merge-ready critic
+posture to merge-after-fixes. Fast and standard results require all four typed
+supplements; hotfix results require none. Finalization also checks that every
+supplement has exactly one artifact of the declared kind and content shape.
 
 Finalization applies the urgency floor, then per-tier caps, then the total
 comment cap in stable severity and critic order. It derives each finding ID
@@ -480,6 +489,7 @@ artifacts. It must not carry raw logs, transcripts, credentials, tokens, or
 large binary content. The validator caps total serialized inline artifact
 content at 256 KiB per handoff. File-producing profiles use absolute artifact
 pointers.
+
 Human checkpoints use `kanban_block(kind="needs_input")`, name the durable
 artifact and question,
 accept the answer as a task comment, and resume the same card.

@@ -37,6 +37,12 @@ const CONTRACT_FILES = new Map([
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 const validatorPromises = new Map();
+const REVIEW_SUPPLEMENT_KINDS = [
+  "diagram",
+  "lens:observability",
+  "lens:style",
+  "orientation",
+];
 
 async function contractValidator(schemaName) {
   if (!CONTRACT_FILES.has(schemaName)) return null;
@@ -602,6 +608,18 @@ function validateGate(document) {
         message: "must be unique within review supplements",
       });
     }
+    const expectedKinds = document.review_policy.urgency === "hotfix"
+      ? []
+      : REVIEW_SUPPLEMENT_KINDS;
+    if (!sameStringSet([...supplementKinds], expectedKinds)) {
+      errors.push({
+        instancePath: "/review_finalize/supplements",
+        keyword: "urgencySupplements",
+        message: document.review_policy.urgency === "hotfix"
+          ? "must be empty for hotfix reviews"
+          : "must contain every fast and standard review supplement",
+      });
+    }
   }
   return errors;
 }
@@ -767,6 +785,19 @@ function validateReviewResult(document) {
       message: "must match the urgency floor",
     });
   }
+  const expectedSupplementKinds = document.policy.urgency === "hotfix"
+    ? []
+    : REVIEW_SUPPLEMENT_KINDS;
+  const supplementKinds = document.supplements.map(({ kind }) => kind);
+  if (!sameStringSet(supplementKinds, expectedSupplementKinds)) {
+    errors.push({
+      instancePath: "/supplements",
+      keyword: "urgencySupplements",
+      message: document.policy.urgency === "hotfix"
+        ? "must be empty for hotfix reviews"
+        : "must contain every fast and standard review supplement",
+    });
+  }
   const ids = new Set();
   const byTier = {
     critical: 0,
@@ -875,6 +906,9 @@ function reviewPostureIsConsistent(document, counts) {
       ? document.posture === "do_not_merge"
       : document.posture === "merge_ready_with_followups";
   }
+  const failedSupplement = document.supplements?.some(
+    ({ kind, passed }) => kind.startsWith("lens:") && passed === false,
+  ) ?? false;
   switch (document.posture) {
     case "do_not_merge":
       return (
@@ -882,12 +916,16 @@ function reviewPostureIsConsistent(document, counts) {
         (counts.important > 1 && document.cluster !== null)
       );
     case "merge_after_fixes":
-      return counts.critical === 0 && counts.important > 0;
+      return counts.critical === 0 && (counts.important > 0 || failedSupplement);
     case "merge_ready_with_followups":
-      return counts.critical === 0;
+      return counts.critical === 0 && !failedSupplement;
     default:
       return false;
   }
+}
+
+function sameStringSet(left, right) {
+  return left.length === right.length && setsEqual(new Set(left), new Set(right));
 }
 
 function reviewFindingId(finding) {

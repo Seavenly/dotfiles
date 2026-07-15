@@ -37,6 +37,7 @@
     "counts": { "$ref": "#/$defs/counts" },
     "supplements": {
       "type": "array",
+      "maxItems": 4,
       "items": { "$ref": "#/$defs/supplement" }
     }
   },
@@ -110,9 +111,17 @@
     "supplement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "validation_path", "artifact_path", "sha256"],
+      "required": ["kind", "passed", "validation_path", "artifact_path", "sha256"],
       "properties": {
-        "kind": { "enum": ["orientation", "diagram"] },
+        "kind": {
+          "enum": [
+            "lens:style",
+            "lens:observability",
+            "orientation",
+            "diagram"
+          ]
+        },
+        "passed": { "type": "boolean" },
         "validation_path": { "$ref": "#/$defs/absolutePath" },
         "artifact_path": { "$ref": "#/$defs/absolutePath" },
         "sha256": { "$ref": "#/$defs/sha256" }

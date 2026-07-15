@@ -12,8 +12,8 @@ output="$("$root/bin/agent-flow" launch review 2>&1)"
 status=$?
 set -e
 assert_status "$status" 2
-assert_contains "$output" 'Unknown command: launch'
-echo "ok - Phase 1 agent-flow exposes only profile doctoring"
+assert_contains "$output" 'Usage: agent-flow launch review --manifest'
+echo "ok - Phase 2 agent-flow exposes review launching"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

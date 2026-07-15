@@ -35,7 +35,7 @@ function captureStream() {
 }
 
 function healthyDoctor() {
-  const names = ["flow-controller", "analyst", "critic", "gate"];
+  const names = ["flow-controller", "analyst", "artifact", "critic", "gate"];
   return {
     ok: true,
     profileSetFingerprint: `sha256:${PROFILE_SHA}`,
@@ -253,6 +253,110 @@ test("launch review seals a hotfix run before safely materializing its graph", a
   ]);
 });
 
+test("launch review materializes fast optional lenses and supplements", async (t) => {
+  const fixture = await reviewFixture(
+    t,
+    "review-launch-fast",
+    { urgency: "fast" },
+  );
+  const adapter = new FakeHermesAdapter();
+  const stderr = captureStream();
+
+  assert.equal(
+    await launch(fixture, adapter, { stderr }),
+    0,
+    stderr.value(),
+  );
+  assert.equal(adapter.tasks.size, 18);
+
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  assert.deepEqual(run.profiles.required, [
+    "analyst",
+    "artifact",
+    "critic",
+    "flow-controller",
+    "gate",
+  ]);
+  assert.equal(run.inputs.filter(({ kind }) => kind === "gate").length, 9);
+  assert.equal(run.inputs.filter(({ kind }) => kind === "skill").length, 7);
+  assert.equal(run.inputs.filter(({ kind }) => kind === "role-contract").length, 5);
+
+  const finalizeGate = JSON.parse(await readFile(
+    run.inputs.find(({ kind, name }) =>
+      kind === "gate" && name === "finalize.json"
+    ).sealed_path,
+  ));
+  assert.equal(finalizeGate.review_policy.urgency, "fast");
+  assert.equal(finalizeGate.review_policy.minimum_tier, "important");
+  assert.deepEqual(
+    finalizeGate.review_finalize.supplements.map(({ kind }) => kind),
+    ["diagram", "lens:observability", "lens:style", "orientation"],
+  );
+  assert.equal(finalizeGate.inputs.length, 5);
+
+  const critic = taskForStage(adapter, "critic");
+  assert.deepEqual(
+    critic.parents.map((id) => adapter.tasks.get(id).title).sort(),
+    [
+      "validate-handoff:lens:correctness",
+      "validate-handoff:lens:security",
+      "validate-handoff:lens:tests",
+    ].map((stage) => `[${fixture.review.run_id}/${stage}]`).sort(),
+  );
+  const finalize = taskForStage(adapter, "finalize");
+  assert.deepEqual(
+    finalize.parents.map((id) => adapter.tasks.get(id).title).sort(),
+    [
+      "validate-handoff:critic",
+      "validate-handoff:diagram",
+      "validate-handoff:lens:observability",
+      "validate-handoff:lens:style",
+      "validate-handoff:orientation",
+    ].map((stage) => `[${fixture.review.run_id}/${stage}]`).sort(),
+  );
+  assert.match(
+    taskForStage(adapter, "orientation").body,
+    /metadata\.handoff\.artifacts\[0\]\.inline \(review-orientation\)/,
+  );
+  assert.match(
+    taskForStage(adapter, "diagram").body,
+    /metadata\.handoff\.artifacts\[0\]\.inline \(review-diagram\)/,
+  );
+  const taskIds = [...adapter.tasks.keys()];
+  assert.equal(await launch(fixture, adapter), 0);
+  assert.deepEqual([...adapter.tasks.keys()], taskIds);
+});
+
+test("launch review seals the standard urgency floor", async (t) => {
+  const fixture = await reviewFixture(
+    t,
+    "review-launch-standard",
+    { urgency: "standard" },
+  );
+  const adapter = new FakeHermesAdapter();
+  const stderr = captureStream();
+
+  assert.equal(
+    await launch(fixture, adapter, { stderr }),
+    0,
+    stderr.value(),
+  );
+  assert.equal(adapter.tasks.size, 18);
+
+  const run = JSON.parse(await readFile(fixture.runManifestPath, "utf8"));
+  const finalizeGate = JSON.parse(await readFile(
+    run.inputs.find(({ kind, name }) =>
+      kind === "gate" && name === "finalize.json"
+    ).sealed_path,
+  ));
+  assert.equal(finalizeGate.review_policy.urgency, "standard");
+  assert.equal(finalizeGate.review_policy.minimum_tier, "nit");
+  assert.deepEqual(
+    finalizeGate.review_policy.per_tier_caps,
+    fixture.review.automated_review.per_tier_caps,
+  );
+});
+
 test("duplicate and interrupted review launches converge without releasing an incomplete root", async (t) => {
   const fixture = await reviewFixture(t, "review-launch-recovery");
   const adapter = new FakeHermesAdapter({ failAfterCreates: 4 });
@@ -331,6 +435,39 @@ test("launch review rejects unhealthy required profiles before any mutation", as
     1,
   );
   assert.match(stderr.value(), /required Hermes profiles are unhealthy/);
+  assert.equal(adapter.tasks.size, 0);
+  await assert.rejects(readFile(fixture.runManifestPath), { code: "ENOENT" });
+});
+
+test("fast review requires the artifact profile before mutation", async (t) => {
+  const fixture = await reviewFixture(
+    t,
+    "review-launch-artifact-profile-failure",
+    { urgency: "fast" },
+  );
+  const adapter = new FakeHermesAdapter();
+  const report = healthyDoctor();
+  report.profiles.find(({ name }) => name === "artifact").available = false;
+  const stderr = captureStream();
+
+  assert.equal(
+    await runCli(["launch", "review", "--manifest", fixture.manifestPath], {
+      adapter,
+      env: fixture.env,
+      inspectRepository: async () => ({
+        repositoryPath: fixture.repository,
+        headSha: fixture.review.head.sha,
+        diffBytes: Buffer.from("diff --git a/example b/example\n"),
+      }),
+      implementationRevision: GIT_SHA,
+      now: () => new Date("2026-07-15T12:00:00Z"),
+      runDoctor: async () => report,
+      stdout: captureStream().stream,
+      stderr: stderr.stream,
+    }),
+    1,
+  );
+  assert.match(stderr.value(), /required Hermes profiles are unhealthy: artifact/);
   assert.equal(adapter.tasks.size, 0);
   await assert.rejects(readFile(fixture.runManifestPath), { code: "ENOENT" });
 });
@@ -517,7 +654,11 @@ async function launch(
   });
 }
 
-async function reviewFixture(t, runId = "review-launch-example") {
+async function reviewFixture(
+  t,
+  runId = "review-launch-example",
+  { urgency = "hotfix" } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "agent-flow-review-launch-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const repository = join(directory, "repo");
@@ -547,7 +688,7 @@ async function reviewFixture(t, runId = "review-launch-example") {
       status: "pending",
       reviewed_head_sha: null,
       findings_path: null,
-      urgency: "hotfix",
+      urgency,
       max_comments: 12,
       per_tier_caps: { critical: 12, important: 0, recommended: 0, nit: 0 },
     },
@@ -568,6 +709,12 @@ async function reviewFixture(t, runId = "review-launch-example") {
     review,
     runManifestPath: join(state, "agent-flow", "runs", runId, "run.json"),
   };
+}
+
+function taskForStage(adapter, stage) {
+  return [...adapter.tasks.values()].find(({ title }) =>
+    title.endsWith(`/${stage}]`)
+  );
 }
 
 function aggregateFingerprint(graph, inputs) {
