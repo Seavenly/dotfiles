@@ -8,10 +8,18 @@ const CONTRACT_FILES = new Map([
   ["agent-flow.graph/v1", "agent-flow.graph.v1.schema.json"],
   ["agent-flow.gate/v1", "agent-flow.gate.v1.schema.json"],
   [
+    "agent-flow.command-result/v1",
+    "agent-flow.command-result.v1.schema.json",
+  ],
+  [
     "agent-flow.migration-receipt/v1",
     "agent-flow.migration-receipt.v1.schema.json",
   ],
   ["agent-flow.validation/v1", "agent-flow.validation.v1.schema.json"],
+  [
+    "agent-flow.task-authority/v1",
+    "agent-flow.task-authority.v1.schema.json",
+  ],
   ["agent-flow.handoff/v1", "agent-flow.handoff.v1.schema.json"],
   ["agent-flow.local-review/v1", "agent-flow.local-review.v1.schema.json"],
 ]);
@@ -99,8 +107,10 @@ function validateRunManifest(document) {
     "agent-flow.run/v1",
     "agent-flow.graph/v1",
     "agent-flow.gate/v1",
+    "agent-flow.command-result/v1",
     "agent-flow.handoff/v1",
     "agent-flow.validation/v1",
+    "agent-flow.task-authority/v1",
     "agent-flow.migration-receipt/v1",
   ];
   if (document.identity.flow === "review") {
@@ -497,6 +507,7 @@ function validateGate(document) {
       message: "must be contained by write_root",
     });
   }
+  const commandOutputs = new Set();
   for (const [index, command] of (document.commands ?? []).entries()) {
     if (command.cwd !== document.workspace) {
       errors.push({
@@ -519,6 +530,14 @@ function validateGate(document) {
         message: "must also appear in the gate outputs",
       });
     }
+    if (commandOutputs.has(command.output_path)) {
+      errors.push({
+        instancePath: `/commands/${index}/output_path`,
+        keyword: "uniqueCommandOutput",
+        message: "must be unique within the gate commands",
+      });
+    }
+    commandOutputs.add(command.output_path);
   }
   return errors;
 }

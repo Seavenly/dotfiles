@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.task-authority.v1.schema.json",
+  "title": "agent-flow.task-authority/v1",
+  "description": "Launcher-pinned run and optional gate identity embedded in one Hermes task body.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "stage",
+    "run_manifest_path",
+    "run_manifest_sha256"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.task-authority/v1" },
+    "run_id": { "$ref": "#/$defs/runId" },
+    "stage": { "$ref": "#/$defs/stageKey" },
+    "run_manifest_path": { "$ref": "#/$defs/absolutePath" },
+    "run_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "gate_spec_path": { "$ref": "#/$defs/absolutePath" },
+    "gate_spec_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "dependentRequired": {
+    "gate_spec_path": ["gate_spec_sha256"],
+    "gate_spec_sha256": ["gate_spec_path"]
+  },
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "stageKey": { "type": "string", "pattern": "^[a-z][a-z0-9:-]{0,127}$" }
+  }
+}

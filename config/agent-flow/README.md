@@ -2,8 +2,10 @@
 
 This document specifies the repository-owned design for repeatable automated
 agent flows. Phase 1 implements native profiles, machine-local routing, and
-profile doctoring. Launchers, graph materializers, registry changes, and stack
-mechanics remain phased work under the approved implementation plan.
+profile doctoring. Phase 2 now includes the machine contracts and the first
+task-pinned command-gate tracer. Launchers, graph materializers, registry
+changes, and stack mechanics remain phased work under the approved
+implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -325,9 +327,11 @@ The formal schemas are:
 - [`agent-flow.run/v1`](schemas/agent-flow.run.v1.schema.json)
 - [`agent-flow.graph/v1`](schemas/agent-flow.graph.v1.schema.json)
 - [`agent-flow.gate/v1`](schemas/agent-flow.gate.v1.schema.json)
+- [`agent-flow.command-result/v1`](schemas/agent-flow.command-result.v1.schema.json)
 - [`agent-flow.migration-receipt/v1`](schemas/agent-flow.migration-receipt.v1.schema.json)
 - [`agent-flow.handoff/v1`](schemas/agent-flow.handoff.v1.schema.json)
 - [`agent-flow.validation/v1`](schemas/agent-flow.validation.v1.schema.json)
+- [`agent-flow.task-authority/v1`](schemas/agent-flow.task-authority.v1.schema.json)
 - [`agent-flow.local-review/v1`](schemas/agent-flow.local-review.v1.schema.json)
 - `agent-flow.stack/v1`
 - `agent-flow.integration-receipt/v1`
@@ -361,6 +365,19 @@ declared workspace, inputs to declared read roots, and all outputs to one write
 root. Bundle validation also bounds those roots by the run manifest's approved
 read and artifact roots. These checks describe an executable topology before
 Hermes cards exist.
+
+The first executable Phase 2 tracer implements command gates. The CLI requires
+the current `HERMES_KANBAN_TASK`, reads launcher-pinned task authority through
+the Hermes adapter, verifies the sealed run-manifest and gate digests, and
+rejects a `--spec` path that differs from the task authority. It resolves the
+workspace, inputs, and output parents before execution to catch symlink escapes,
+runs each argv directly without a shell under one gate-wide timeout, terminates
+the command process group when execution ends, and writes classified JSON
+result evidence atomically beneath the declared write root. Every declared
+output must exist afterward and resolve beneath that root. Output directories
+must already exist. Approved roots are resolved and anchored back to the real
+run, repository, and artifact directories. This is a robust declared-path
+guard, not a filesystem sandbox against a deliberately hostile command.
 
 Metadata contains concise evidence and absolute artifact pointers, not raw
 logs, transcripts, credentials, or tokens. Human checkpoints use

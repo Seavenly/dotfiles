@@ -4,7 +4,28 @@ import { isAbsolute, relative, sep } from "node:path";
 
 import { validateContract } from "./schema-validator.mjs";
 
-export async function validateSealedGate({ adapter, taskId }) {
+export async function validateSealedGate({
+  adapter,
+  taskId,
+  requestedGateSpecPath = null,
+}) {
+  const {
+    gate: _gate,
+    manifest: _manifest,
+    ...validation
+  } = await loadSealedGate({
+    adapter,
+    taskId,
+    requestedGateSpecPath,
+  });
+  return validation;
+}
+
+export async function loadSealedGate({
+  adapter,
+  taskId,
+  requestedGateSpecPath = null,
+}) {
   const authority = await adapter.getTaskAuthority({ taskId });
   if (
     authority?.taskId !== taskId ||
@@ -16,6 +37,12 @@ export async function validateSealedGate({ adapter, taskId }) {
     !/^[0-9a-f]{64}$/.test(authority.gateSpecSha256)
   ) {
     throw new Error("Hermes adapter did not return launcher-pinned task authority");
+  }
+  if (
+    requestedGateSpecPath !== null &&
+    requestedGateSpecPath !== authority.gateSpecPath
+  ) {
+    return sealedGateError("requested gate spec is not pinned to the task");
   }
 
   const manifestBytes = await readFile(authority.runManifestPath);
@@ -36,7 +63,7 @@ export async function validateSealedGate({ adapter, taskId }) {
   }
   const gate = JSON.parse(gateBytes);
   const gateResult = await validateContract(gate);
-  if (!gateResult.valid) return gateResult;
+  if (!gateResult.valid) return { ...gateResult, gate: null, manifest: null };
   if (gate.stage !== authority.stage) {
     return sealedGateError("must match the stage pinned to the task");
   }
@@ -47,12 +74,19 @@ export async function validateSealedGate({ adapter, taskId }) {
   if (!sealedInput || sealedInput.sha256 !== sha256(gateBytes)) {
     return sealedGateError("must match a gate input sealed by the run manifest");
   }
-  return validateGateForRun(gate, manifest);
+  const validation = validateGateForRun(gate, manifest);
+  return {
+    ...validation,
+    gate: validation.valid ? gate : null,
+    manifest: validation.valid ? manifest : null,
+  };
 }
 
 function sealedGateError(message) {
   return {
     valid: false,
+    gate: null,
+    manifest: null,
     errors: [
       {
         instancePath: "",

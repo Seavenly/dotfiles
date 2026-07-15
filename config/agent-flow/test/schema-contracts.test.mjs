@@ -40,6 +40,8 @@ function validRunManifest() {
         "agent-flow.validation/v1",
         "agent-flow.migration-receipt/v1",
         "agent-flow.local-review/v1",
+        "agent-flow.task-authority/v1",
+        "agent-flow.command-result/v1",
       ],
       content_set_fingerprint: SHA256,
     },
@@ -577,6 +579,7 @@ test("gate specs pin command workspaces and read and write containment", async (
     (gate) => { gate.commands[0].output_path = "/tmp/outside.log"; },
     (gate) => { gate.commands[0].output_path = `${gate.write_root}/undeclared.log`; },
     (gate) => { gate.read_roots = ["/tmp/unrelated"]; },
+    (gate) => { gate.commands.push(structuredClone(gate.commands[0])); },
   ];
   for (const mutate of mutations) {
     const malformed = structuredClone(commandGate);
@@ -892,6 +895,8 @@ test("standalone schemas keep shared scalar definitions consistent", async () =>
     "migration-receipt",
     "validation",
     "handoff",
+    "task-authority",
+    "command-result",
   ];
   const schemas = new Map(
     await Promise.all(
@@ -910,13 +915,36 @@ test("standalone schemas keep shared scalar definitions consistent", async () =>
     new Set(schemaNames.map((name) => schemas.get(name).$defs[definition].pattern));
 
   assert.equal(
-    patterns("absolutePath", ["run", "gate", "migration-receipt", "validation", "handoff"]).size,
+    patterns("absolutePath", [
+      "run",
+      "gate",
+      "migration-receipt",
+      "validation",
+      "handoff",
+      "task-authority",
+      "command-result",
+    ]).size,
     1,
   );
   assert.equal(
-    patterns("sha256", ["run", "migration-receipt", "validation", "handoff"]).size,
+    patterns("sha256", [
+      "run",
+      "migration-receipt",
+      "validation",
+      "handoff",
+      "task-authority",
+    ]).size,
     1,
   );
-  assert.equal(patterns("stageKey", ["graph", "gate", "validation"]).size, 1);
+  assert.equal(
+    patterns("stageKey", [
+      "graph",
+      "gate",
+      "validation",
+      "task-authority",
+      "command-result",
+    ]).size,
+    1,
+  );
   assert.equal(patterns("timestamp", ["run", "migration-receipt", "validation"]).size, 1);
 });

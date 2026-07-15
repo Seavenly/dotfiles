@@ -1,7 +1,8 @@
 # Hermes agent-flow implementation plan
 
 Status: approved on 2026-07-13. Phase 1 is complete. Phase 2 contract definition
-and corrective review completed on 2026-07-14; the CLI review tracer is next.
+and corrective review completed on 2026-07-14. The task-pinned command-gate
+tracer is implemented; review-launch materialization is next.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -110,7 +111,8 @@ Entry decisions:
 
 - Approve the machine-facing `agent-flow.run/v1`, `agent-flow.graph/v1`,
   `agent-flow.gate/v1`, `agent-flow.migration-receipt/v1`, and
-  validation-envelope schemas before implementing the launcher. Briefs and
+  validation-envelope and command-result schemas, plus the launcher-authored
+  `agent-flow.task-authority/v1`, before implementing the launcher. Briefs and
   plans may remain human-readable Markdown, but their approved copies and
   digests must have an unambiguous machine contract.
 - Keep document validation and authority validation separate. A validation
