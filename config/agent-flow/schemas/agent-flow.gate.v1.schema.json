@@ -110,6 +110,38 @@
           }
         }
       ]
+    },
+    "review_finalize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comments_validation",
+        "supplements",
+        "result_output",
+        "markdown_output",
+        "html_output",
+        "draft_output"
+      ],
+      "properties": {
+        "comments_validation": { "$ref": "#/$defs/absolutePath" },
+        "supplements": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "validation"],
+            "properties": {
+              "kind": { "enum": ["orientation", "diagram"] },
+              "validation": { "$ref": "#/$defs/absolutePath" }
+            }
+          }
+        },
+        "result_output": { "$ref": "#/$defs/absolutePath" },
+        "markdown_output": { "$ref": "#/$defs/absolutePath" },
+        "html_output": { "$ref": "#/$defs/absolutePath" },
+        "draft_output": { "$ref": "#/$defs/absolutePath" }
+      }
     }
   },
   "oneOf": [
@@ -118,7 +150,8 @@
         "kind": { "const": "command" },
         "commands": true,
         "handoff_validation": false,
-        "review_policy": false
+        "review_policy": false,
+        "review_finalize": false
       },
       "required": ["kind", "commands"]
     },
@@ -128,6 +161,7 @@
         "commands": false,
         "handoff_validation": true,
         "review_policy": false,
+        "review_finalize": false,
         "outputs": { "type": "array", "minItems": 1, "maxItems": 1 }
       },
       "required": ["kind", "handoff_validation"]
@@ -137,9 +171,12 @@
         "kind": { "const": "review-finalize" },
         "commands": false,
         "handoff_validation": false,
-        "review_policy": true
+        "review_policy": true,
+        "review_finalize": true,
+        "inputs": { "type": "array", "minItems": 1 },
+        "outputs": { "type": "array", "minItems": 4, "maxItems": 4 }
       },
-      "required": ["kind", "review_policy"]
+      "required": ["kind", "review_policy", "review_finalize"]
     }
   ],
   "$defs": {

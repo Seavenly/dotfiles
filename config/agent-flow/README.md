@@ -3,9 +3,10 @@
 This document specifies the repository-owned design for repeatable automated
 agent flows. Phase 1 implements native profiles, machine-local routing, and
 profile doctoring. Phase 2 now includes the machine contracts, task-pinned
-command and handoff-validation gate tracers, and the canonical standard review
-graph. Launchers, graph materializers, registry changes, and stack mechanics
-remain phased work under the approved implementation plan.
+command, handoff-validation, and review-finalize gate tracers, plus the
+canonical standard review graph. Review launch, graph materialization, registry
+changes, and stack mechanics remain phased work under the approved
+implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -333,6 +334,8 @@ The formal schemas are:
 - [`agent-flow.validation/v1`](schemas/agent-flow.validation.v1.schema.json)
 - [`agent-flow.task-authority/v1`](schemas/agent-flow.task-authority.v1.schema.json)
 - [`agent-flow.local-review/v1`](schemas/agent-flow.local-review.v1.schema.json)
+- [`agent-flow.review-comments/v1`](schemas/agent-flow.review-comments.v1.schema.json)
+- [`agent-flow.review-result/v1`](schemas/agent-flow.review-result.v1.schema.json)
 - `agent-flow.stack/v1`
 - `agent-flow.integration-receipt/v1`
 
@@ -366,9 +369,10 @@ from Hermes, and validate the handoff's attempt ordinal against that runtime
 record. Embedding either runtime value in the pre-card gate spec would make
 immutable run sealing circular or incorrectly select one possible retry.
 
-`agent-flow gate --spec <absolute-gate.json>` executes a sealed
-`handoff-validation` gate only for its current validator card. The validator
-authority must name the sealed gate and the launcher-assigned producer task.
+`agent-flow gate --spec <absolute-gate.json>` executes a sealed gate only for
+its current task. A `handoff-validation` gate runs for its validator card. The
+validator authority must name the sealed gate and the launcher-assigned
+producer task.
 The producer and validator authorities must pin the same exact run-manifest
 path and digest. The gate then derives the producer's terminal completed
 attempt, validates it against the sealed run and graph, snapshots verified
@@ -380,6 +384,32 @@ exits unsuccessfully, so downstream dependencies remain blocked without losing
 the reason. One gate-wide deadline aborts producer lookups, regular-file reads,
 snapshots, and evidence writes; timeout remains an operational failure eligible
 for the card's native Hermes retry.
+
+A `review-finalize` gate consumes only the exact `agent-flow.validation/v1`
+paths declared in its sealed operation payload. Launcher-authored task authority
+binds each path to one validator task ID. Finalization loads that task's sealed
+handoff gate, requires its terminal completion, derives its producer task and
+terminal attempt through the Hermes adapter, and matches the evidence to the
+producer metadata, handoff identity, artifact declarations, and attempt. It
+also matches run authority, approved artifact roots, the validation snapshot
+root, stage, and current snapshot digest.
+
+Critic evidence requires a boolean semantic measurement, but both `true` and
+`false` are renderable when the critic handoff gate declares
+`require_passed: false`; review posture and findings carry the merge verdict.
+The critic snapshot must satisfy `agent-flow.review-comments/v1`, match the
+sealed urgency, and use a posture consistent with its blocking tiers. Typed
+orientation and diagram evidence receive the same validator-task, producer,
+stage, artifact, and digest checks. Orientation is a complete Markdown section;
+diagram snapshots remain durable referenced artifacts in every rendered result.
+
+Finalization applies the urgency floor, then per-tier caps, then the total
+comment cap in stable severity and critic order. It derives each finding ID
+from the finding content and emits a schema-valid `agent-flow.review-result/v1`,
+Markdown, escaped HTML, and a GitHub-compatible draft payload. The draft omits
+`event`, so finalization cannot submit a review. All four files are prepared
+before publication and must be the exact typed outputs declared by the gate.
+Re-running unchanged validated inputs produces byte-identical output.
 
 Graph contract validation requires one terminal, required flow-controller
 root; every declared stage must reach it; stage keys are unique across static

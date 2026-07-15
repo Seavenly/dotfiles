@@ -40,6 +40,8 @@ function validRunManifest() {
         "agent-flow.validation/v1",
         "agent-flow.migration-receipt/v1",
         "agent-flow.local-review/v1",
+        "agent-flow.review-comments/v1",
+        "agent-flow.review-result/v1",
         "agent-flow.task-authority/v1",
         "agent-flow.command-result/v1",
       ],
@@ -179,6 +181,8 @@ function validGraph() {
 }
 
 function validGate() {
+  const artifactRoot = "/tmp/state/runs/review-20260714-example/artifacts";
+  const commentsValidation = `${artifactRoot}/comments.validation.json`;
   return {
     schema: "agent-flow.gate/v1",
     name: "review-finalize",
@@ -190,8 +194,13 @@ function validGate() {
     read_roots: ["/tmp/state/runs/review-20260714-example"],
     write_root: "/tmp/state/runs/review-20260714-example/artifacts",
     timeout_seconds: 300,
-    inputs: ["/tmp/state/runs/review-20260714-example/artifacts/comments.json"],
-    outputs: ["/tmp/state/runs/review-20260714-example/artifacts/review.md"],
+    inputs: [commentsValidation],
+    outputs: [
+      `${artifactRoot}/review.json`,
+      `${artifactRoot}/review.md`,
+      `${artifactRoot}/review.html`,
+      `${artifactRoot}/draft-review.json`,
+    ],
     review_policy: {
       urgency: "fast",
       minimum_tier: "important",
@@ -202,6 +211,14 @@ function validGate() {
         recommended: 0,
         nit: 0,
       },
+    },
+    review_finalize: {
+      comments_validation: commentsValidation,
+      supplements: [],
+      result_output: `${artifactRoot}/review.json`,
+      markdown_output: `${artifactRoot}/review.md`,
+      html_output: `${artifactRoot}/review.html`,
+      draft_output: `${artifactRoot}/draft-review.json`,
     },
   };
 }
@@ -519,7 +536,7 @@ test("gate specs require the operation payload selected by their kind", async ()
   });
 
   const malformed = validGate();
-  delete malformed.review_policy;
+  delete malformed.review_finalize;
   const invalid = await validateContract(malformed);
 
   assert.equal(invalid.valid, false);
@@ -533,10 +550,12 @@ test("gate specs require the operation payload selected by their kind", async ()
   const handoffGate = validGate();
   handoffGate.kind = "handoff-validation";
   delete handoffGate.review_policy;
+  delete handoffGate.review_finalize;
   handoffGate.handoff_validation = {
     producer_stage: "lens:correctness",
     require_passed: true,
   };
+  handoffGate.outputs = [`${handoffGate.write_root}/validation.json`];
   assert.equal((await validateContract(handoffGate)).valid, true);
 
   handoffGate.handoff_validation.attempt = 1;
@@ -567,10 +586,25 @@ test("gate specs reject mixed operation payloads and incorrect urgency floors", 
   assert.equal((await validateContract(wrongFloor)).valid, false);
 });
 
+test("review-finalize gates bind every typed input and output", async () => {
+  const mutations = [
+    (gate) => { gate.review_finalize.comments_validation = `${gate.write_root}/other.json`; },
+    (gate) => { gate.inputs.push(`${gate.write_root}/undeclared.validation.json`); },
+    (gate) => { gate.review_finalize.markdown_output = `${gate.write_root}/other.md`; },
+    (gate) => { gate.outputs.pop(); },
+  ];
+  for (const mutate of mutations) {
+    const malformed = validGate();
+    mutate(malformed);
+    assert.equal((await validateContract(malformed)).valid, false);
+  }
+});
+
 test("gate specs pin command workspaces and read and write containment", async () => {
   const commandGate = validGate();
   commandGate.kind = "command";
   delete commandGate.review_policy;
+  delete commandGate.review_finalize;
   commandGate.commands = [
     {
       argv: ["npm", "test"],
@@ -735,7 +769,20 @@ test("completed-attempt validation derives evidence from Hermes, the manifest, a
   gate.read_roots = [runDirectory];
   gate.write_root = outputDirectory;
   gate.inputs = [artifactPath];
-  gate.outputs = [join(outputDirectory, "review.md")];
+  gate.outputs = [
+    join(outputDirectory, "review.json"),
+    join(outputDirectory, "review.md"),
+    join(outputDirectory, "review.html"),
+    join(outputDirectory, "draft-review.json"),
+  ];
+  gate.review_finalize = {
+    comments_validation: artifactPath,
+    supplements: [],
+    result_output: gate.outputs[0],
+    markdown_output: gate.outputs[1],
+    html_output: gate.outputs[2],
+    draft_output: gate.outputs[3],
+  };
   const gatePath = join(inputsDirectory, "review-finalize.json");
   const gateBytes = JSON.stringify(gate);
   await writeFile(gatePath, gateBytes);
@@ -766,7 +813,11 @@ test("completed-attempt validation derives evidence from Hermes, the manifest, a
         runManifestPath: manifestPath,
         runManifestSha256: taskAuthoritySha256,
         ...(gateTask
-          ? { gateSpecPath: gatePath, gateSpecSha256: sha256(gateBytes) }
+          ? {
+              gateSpecPath: gatePath,
+              gateSpecSha256: sha256(gateBytes),
+              inputTaskIds: { [artifactPath]: "t_input_validator" },
+            }
           : {}),
       };
     },

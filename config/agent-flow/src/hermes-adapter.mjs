@@ -32,6 +32,9 @@ export class HermesAdapter {
       ...(authority.producer_task_id
         ? { producerTaskId: authority.producer_task_id }
         : {}),
+      ...(authority.input_task_ids
+        ? { inputTaskIds: structuredClone(authority.input_task_ids) }
+        : {}),
       ...(authority.gate_spec_path
         ? {
             gateSpecPath: authority.gate_spec_path,

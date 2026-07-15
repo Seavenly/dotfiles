@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 
@@ -22,6 +23,11 @@ const CONTRACT_FILES = new Map([
   ],
   ["agent-flow.handoff/v1", "agent-flow.handoff.v1.schema.json"],
   ["agent-flow.local-review/v1", "agent-flow.local-review.v1.schema.json"],
+  [
+    "agent-flow.review-comments/v1",
+    "agent-flow.review-comments.v1.schema.json",
+  ],
+  ["agent-flow.review-result/v1", "agent-flow.review-result.v1.schema.json"],
 ]);
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
@@ -87,6 +93,8 @@ const SEMANTIC_VALIDATORS = new Map([
   ["agent-flow.gate/v1", validateGate],
   ["agent-flow.migration-receipt/v1", validateMigrationReceipt],
   ["agent-flow.validation/v1", validateValidationEnvelope],
+  ["agent-flow.review-comments/v1", validateReviewComments],
+  ["agent-flow.review-result/v1", validateReviewResult],
 ]);
 
 function validateRunManifest(document) {
@@ -114,7 +122,11 @@ function validateRunManifest(document) {
     "agent-flow.migration-receipt/v1",
   ];
   if (document.identity.flow === "review") {
-    requiredContracts.push("agent-flow.local-review/v1");
+    requiredContracts.push(
+      "agent-flow.local-review/v1",
+      "agent-flow.review-comments/v1",
+      "agent-flow.review-result/v1",
+    );
   }
   for (const contract of requiredContracts) {
     if (document.implementation.compatible_contracts.includes(contract)) continue;
@@ -539,7 +551,49 @@ function validateGate(document) {
     }
     commandOutputs.add(command.output_path);
   }
+  if (document.kind === "review-finalize") {
+    const operation = document.review_finalize;
+    const typedInputs = [
+      operation.comments_validation,
+      ...operation.supplements.map(({ validation }) => validation),
+    ];
+    const typedOutputs = [
+      operation.result_output,
+      operation.markdown_output,
+      operation.html_output,
+      operation.draft_output,
+    ];
+    validateExactPathSet(errors, "/inputs", document.inputs, typedInputs);
+    validateExactPathSet(errors, "/outputs", document.outputs, typedOutputs);
+    const supplementKinds = new Set();
+    for (const [index, supplement] of operation.supplements.entries()) {
+      if (!supplementKinds.has(supplement.kind)) {
+        supplementKinds.add(supplement.kind);
+        continue;
+      }
+      errors.push({
+        instancePath: `/review_finalize/supplements/${index}/kind`,
+        keyword: "uniqueSupplementKind",
+        message: "must be unique within review supplements",
+      });
+    }
+  }
   return errors;
+}
+
+function validateExactPathSet(errors, instancePath, declared, typed) {
+  if (
+    declared.length === typed.length &&
+    declared.every((path) => typed.includes(path)) &&
+    new Set(typed).size === typed.length
+  ) {
+    return;
+  }
+  errors.push({
+    instancePath,
+    keyword: "typedPathSet",
+    message: "must contain exactly the paths named by the operation payload",
+  });
 }
 
 function validateMigrationReceipt(document) {
@@ -652,6 +706,180 @@ function validateValidationEnvelope(document) {
     }
   }
   return [];
+}
+
+function validateReviewComments(document) {
+  const counts = countFindingTiers(document.findings);
+  if (!reviewPostureIsConsistent(document, counts)) {
+    return [{
+      instancePath: "/posture",
+      keyword: "reviewPosture",
+      message: "must agree with urgency and blocking finding tiers",
+    }];
+  }
+  const identities = document.findings.map(reviewFindingId);
+  if (new Set(identities).size === identities.length) return [];
+  return [{
+    instancePath: "/findings",
+    keyword: "uniqueFinding",
+    message: "must not contain duplicate findings",
+  }];
+}
+
+function validateReviewResult(document) {
+  const errors = [];
+  const expectedFloor = {
+    hotfix: "critical",
+    fast: "important",
+    standard: "nit",
+  }[document.policy.urgency];
+  if (document.policy.minimum_tier !== expectedFloor) {
+    errors.push({
+      instancePath: "/policy/minimum_tier",
+      keyword: "urgencyFloor",
+      message: "must match the urgency floor",
+    });
+  }
+  const ids = new Set();
+  const byTier = {
+    critical: 0,
+    important: 0,
+    recommended: 0,
+    nit: 0,
+  };
+  const tiers = Object.keys(byTier);
+  let priorTier = -1;
+  for (const [index, finding] of document.findings.entries()) {
+    const expectedId = reviewFindingId(finding);
+    if (finding.id !== expectedId || ids.has(finding.id)) {
+      errors.push({
+        instancePath: `/findings/${index}/id`,
+        keyword: "findingIdentity",
+        message: "must be the unique content-derived finding identifier",
+      });
+    }
+    ids.add(finding.id);
+    byTier[finding.tier] += 1;
+    const tierIndex = tiers.indexOf(finding.tier);
+    if (tierIndex > tiers.indexOf(expectedFloor)) {
+      errors.push({
+        instancePath: `/findings/${index}/tier`,
+        keyword: "urgencyFloor",
+        message: "must satisfy the urgency floor",
+      });
+    }
+    if (tierIndex < priorTier) {
+      errors.push({
+        instancePath: `/findings/${index}/tier`,
+        keyword: "findingOrder",
+        message: "must preserve deterministic severity order",
+      });
+    }
+    priorTier = tierIndex;
+  }
+  if (
+    document.counts.included !== document.findings.length ||
+    !setsEqualByValue(document.counts.by_tier, byTier)
+  ) {
+    errors.push({
+      instancePath: "/counts",
+      keyword: "findingCounts",
+      message: "must match the included findings",
+    });
+  }
+  const dropped = [
+    document.counts.dropped_by_urgency,
+    document.counts.dropped_by_tier_cap,
+    document.counts.dropped_by_total_cap,
+  ].reduce(
+    (total, counts) => total + Object.values(counts).reduce((sum, count) => sum + count, 0),
+    0,
+  );
+  if (document.counts.input !== document.counts.included + dropped) {
+    errors.push({
+      instancePath: "/counts/input",
+      keyword: "findingCounts",
+      message: "must equal included and dropped findings",
+    });
+  }
+  if (document.counts.included > document.policy.max_comments) {
+    errors.push({
+      instancePath: "/counts/included",
+      keyword: "totalCap",
+      message: "must not exceed policy.max_comments",
+    });
+  }
+  const inputByTier = {};
+  for (const tier of tiers) {
+    inputByTier[tier] =
+      byTier[tier] +
+      document.counts.dropped_by_urgency[tier] +
+      document.counts.dropped_by_tier_cap[tier] +
+      document.counts.dropped_by_total_cap[tier];
+  }
+  if (!reviewPostureIsConsistent(document, inputByTier)) {
+    errors.push({
+      instancePath: "/posture",
+      keyword: "reviewPosture",
+      message: "must agree with urgency and blocking finding tiers",
+    });
+  }
+  for (const tier of tiers) {
+    if (byTier[tier] <= document.policy.per_tier_caps[tier]) continue;
+    errors.push({
+      instancePath: "/counts/by_tier",
+      keyword: "tierCap",
+      message: `must not exceed the ${tier} cap`,
+    });
+  }
+  return errors;
+}
+
+function countFindingTiers(findings) {
+  const counts = { critical: 0, important: 0, recommended: 0, nit: 0 };
+  for (const finding of findings) counts[finding.tier] += 1;
+  return counts;
+}
+
+function reviewPostureIsConsistent(document, counts) {
+  const urgency = document.urgency ?? document.policy.urgency;
+  if (urgency === "hotfix") {
+    return counts.critical > 0
+      ? document.posture === "do_not_merge"
+      : document.posture === "merge_ready_with_followups";
+  }
+  switch (document.posture) {
+    case "do_not_merge":
+      return (
+        counts.critical > 0 ||
+        (counts.important > 1 && document.cluster !== null)
+      );
+    case "merge_after_fixes":
+      return counts.critical === 0 && counts.important > 0;
+    case "merge_ready_with_followups":
+      return counts.critical === 0;
+    default:
+      return false;
+  }
+}
+
+function reviewFindingId(finding) {
+  const identity = [
+    finding.path,
+    finding.line,
+    finding.side,
+    finding.tier,
+    finding.lens,
+    finding.body,
+  ];
+  const digest = createHash("sha256")
+    .update(JSON.stringify(identity))
+    .digest("hex");
+  return `finding-${digest.slice(0, 16)}`;
+}
+
+function setsEqualByValue(left, right) {
+  return Object.keys(right).every((key) => left[key] === right[key]);
 }
 
 function setsEqual(left, right) {

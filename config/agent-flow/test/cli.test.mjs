@@ -117,6 +117,8 @@ test("agent-flow gate executes the command pinned to the current task", async (t
         "agent-flow.validation/v1",
         "agent-flow.migration-receipt/v1",
         "agent-flow.local-review/v1",
+        "agent-flow.review-comments/v1",
+        "agent-flow.review-result/v1",
         "agent-flow.task-authority/v1",
         "agent-flow.command-result/v1",
       ],
@@ -480,6 +482,7 @@ test("Hermes adapter translates native completed runs at the production seam", a
     gate_spec_path: "/tmp/gate.json",
     gate_spec_sha256: SHA256,
     producer_task_id: "t_producer",
+    input_task_ids: { "/tmp/input.validation.json": "t_input_validator" },
   };
   const adapter = new HermesAdapter({
     board: "cli-test",
@@ -519,6 +522,7 @@ test("Hermes adapter translates native completed runs at the production seam", a
     gateSpecPath: "/tmp/gate.json",
     gateSpecSha256: SHA256,
     producerTaskId: "t_producer",
+    inputTaskIds: { "/tmp/input.validation.json": "t_input_validator" },
   });
   assert.deepEqual(
     await adapter.getCompletedAttempt({ taskId: "t_lens", attempt: 2 }),

@@ -6,8 +6,11 @@ tracer is implemented. The canonical standard review graph is now versioned,
 and its handoff gates bind assigned producer task IDs through launcher-created
 task authority without making pre-card run sealing circular. Runnable handoff
 validation now derives retry-safe terminal attempts and persists authoritative
-evidence. The review-finalize gate is the next prerequisite to exposing review
-launch.
+evidence. The review-finalize gate now consumes validator-owned snapshots,
+rebinds every input to launcher-pinned terminal validator and producer tasks,
+applies deterministic urgency and comment caps, assigns stable finding IDs,
+and renders structured, Markdown, HTML, and unsubmitted draft outputs. Review
+launch and materialization are the next Phase 2 tracer.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase

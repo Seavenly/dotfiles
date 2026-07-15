@@ -272,6 +272,8 @@ async function handoffGateFixture(t, { timeoutSeconds = 30 } = {}) {
         "agent-flow.validation/v1",
         "agent-flow.migration-receipt/v1",
         "agent-flow.local-review/v1",
+        "agent-flow.review-comments/v1",
+        "agent-flow.review-result/v1",
         "agent-flow.task-authority/v1",
         "agent-flow.command-result/v1",
       ],

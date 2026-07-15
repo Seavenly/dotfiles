@@ -36,10 +36,13 @@ export async function resolveGateRuntime(gate, manifest) {
   if (!readRoots.some((root) => pathIsWithin(root, workspace))) {
     throw new Error("workspace resolves outside read roots");
   }
+  const inputPathByDeclaration = new Map();
   for (const input of gate.inputs) {
     const resolvedInput = await resolveExisting(input, "gate input");
-    if (readRoots.some((root) => pathIsWithin(root, resolvedInput))) continue;
-    throw new Error("gate input resolves outside read roots");
+    if (!readRoots.some((root) => pathIsWithin(root, resolvedInput))) {
+      throw new Error("gate input resolves outside read roots");
+    }
+    inputPathByDeclaration.set(input, resolvedInput);
   }
 
   const artifactDirectory = await resolveExisting(
@@ -85,6 +88,7 @@ export async function resolveGateRuntime(gate, manifest) {
   return {
     workspace,
     writeRoot,
+    inputPathByDeclaration,
     outputPathByDeclaration,
     declaredOutputPaths: [...outputPathByDeclaration.values()],
   };
@@ -115,18 +119,63 @@ export async function writeJsonAtomically(
   value,
   { signal, beforePublish = () => {} } = {},
 ) {
-  const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  return writeFilesAtomically([{ path, bytes: `${JSON.stringify(value, null, 2)}\n` }], {
+    signal,
+    beforePublish,
+  });
+}
+
+export async function writeFilesAtomically(
+  files,
+  { signal, beforePublish = () => {} } = {},
+) {
+  const pending = files.map(({ path, bytes }) => ({
+    path,
+    bytes,
+    temporaryPath: `${path}.tmp-${process.pid}-${randomUUID()}`,
+  }));
   try {
-    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
-      mode: 0o600,
-      signal,
-    });
+    const writes = await Promise.allSettled(pending.map(({ temporaryPath, bytes }) =>
+      writeFile(temporaryPath, bytes, { mode: 0o600, signal })
+    ));
+    const failedWrite = writes.find(({ status }) => status === "rejected");
+    if (failedWrite) throw failedWrite.reason;
     throwIfAborted(signal);
     beforePublish();
-    await rename(temporaryPath, path);
+    for (const { temporaryPath, path } of pending) {
+      await rename(temporaryPath, path);
+    }
   } catch (error) {
-    await rm(temporaryPath, { force: true });
+    await Promise.all(pending.map(({ temporaryPath }) =>
+      rm(temporaryPath, { force: true })
+    ));
     throw error;
+  }
+}
+
+export async function withGateTimeout(kind, timeoutSeconds, operation) {
+  const controller = new AbortController();
+  const timeoutError = new Error(
+    `${kind} gate timed out after ${timeoutSeconds}s`,
+  );
+  let timer;
+  let committed = false;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (committed) return;
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutSeconds * 1000);
+  });
+  const commit = () => {
+    throwIfAborted(controller.signal);
+    committed = true;
+    clearTimeout(timer);
+  };
+  try {
+    return await Promise.race([operation(controller.signal, commit), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -102,6 +102,13 @@ Dependency rules:
 - `urgency: hotfix` omits orientation, diagramming, and every optional lens.
 - The finalize gate applies urgency floors, comment caps, finding identifiers,
   schema validation, and rendering deterministically.
+- Finalize consumes sealed paths to handoff-validation evidence, never mutable
+  worker artifacts. Launcher task authority binds each input path to the
+  validator task that produced it; finalize rechecks the terminal validator and
+  producer attempts through the Hermes adapter. Its typed operation payload
+  binds critic and optional side inputs plus the structured result, Markdown,
+  HTML, and unsubmitted draft outputs. The total cap is applied after urgency
+  and per-tier caps.
 - The root summary names findings, artifacts, omitted optional stages, and any
   protocol or recovery events. It never embeds raw worker logs.
 

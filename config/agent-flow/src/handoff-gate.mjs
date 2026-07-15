@@ -2,6 +2,7 @@ import { validateCompletedAttempt } from "./attempt-validator.mjs";
 import {
   resolveGateRuntime,
   validateDeclaredOutputs,
+  withGateTimeout,
   writeJsonAtomically,
 } from "./gate-runtime.mjs";
 import { validateContract } from "./schema-validator.mjs";
@@ -27,7 +28,7 @@ export async function executeHandoffValidationGate({
     throw new Error("handoff-validation gate must declare one evidence output");
   }
 
-  return withGateTimeout(gate.timeout_seconds, async (signal, commit) => {
+  return withGateTimeout(gate.kind, gate.timeout_seconds, async (signal, commit) => {
     const runtime = await resolveGateRuntime(gate, manifest);
     throwIfAborted(signal);
     const completed = await adapter.getTerminalCompletedAttempt({
@@ -59,35 +60,6 @@ export async function executeHandoffValidationGate({
       validation,
     };
   });
-}
-
-async function withGateTimeout(timeoutSeconds, operation) {
-  const controller = new AbortController();
-  const timeoutError = new Error(
-    `handoff-validation gate timed out after ${timeoutSeconds}s`,
-  );
-  let timer;
-  let committed = false;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      if (committed) return;
-      controller.abort(timeoutError);
-      reject(timeoutError);
-    }, timeoutSeconds * 1000);
-  });
-  const commit = () => {
-    throwIfAborted(controller.signal);
-    committed = true;
-    clearTimeout(timer);
-  };
-  try {
-    return await Promise.race([
-      operation(controller.signal, commit),
-      timeout,
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function throwIfAborted(signal) {

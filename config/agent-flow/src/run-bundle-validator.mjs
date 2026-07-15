@@ -76,12 +76,34 @@ export async function loadSealedGate({
     return sealedGateError("must match a gate input sealed by the run manifest");
   }
   const validation = validateGateForRun(gate, manifest);
+  if (validation.valid && gate.kind === "review-finalize") {
+    validateReviewInputAuthority(gate, authority, validation.errors);
+    validation.valid = validation.errors.length === 0;
+  }
   return {
     ...validation,
     gate: validation.valid ? gate : null,
     manifest: validation.valid ? manifest : null,
     taskAuthority: validation.valid ? authority : null,
   };
+}
+
+function validateReviewInputAuthority(gate, authority, errors) {
+  const bindings = authority.inputTaskIds;
+  const paths = bindings && typeof bindings === "object"
+    ? Object.keys(bindings)
+    : [];
+  if (
+    paths.length !== gate.inputs.length ||
+    !gate.inputs.every((path) => paths.includes(path)) ||
+    new Set(Object.values(bindings ?? {})).size !== gate.inputs.length
+  ) {
+    errors.push({
+      instancePath: "",
+      keyword: "reviewInputAuthority",
+      message: "review-finalize gate requires one unique validator task per input",
+    });
+  }
 }
 
 function sealedGateError(message) {

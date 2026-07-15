@@ -5,6 +5,7 @@ import { doctorProfiles } from "./doctor.mjs";
 import { executeHandoffValidationGate } from "./handoff-gate.mjs";
 import { HermesAdapter } from "./hermes-adapter.mjs";
 import { loadSealedGate } from "./run-bundle-validator.mjs";
+import { executeReviewFinalizeGate } from "./review-finalize-gate.mjs";
 
 export async function runCli(
   args,
@@ -111,6 +112,8 @@ async function executeSealedGate({ adapter, inheritedEnv, sealedGate }) {
       return executeCommandGate({ sealedGate, inheritedEnv });
     case "handoff-validation":
       return executeHandoffValidationGate({ adapter, sealedGate });
+    case "review-finalize":
+      return executeReviewFinalizeGate({ adapter, sealedGate });
     default:
       throw new Error(`unsupported gate kind: ${sealedGate.gate.kind}`);
   }

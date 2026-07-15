@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dotfiles.local/schemas/agent-flow.task-authority.v1.schema.json",
   "title": "agent-flow.task-authority/v1",
-  "description": "Launcher-pinned run identity plus optional gate and producer-task bindings embedded in one Hermes task body.",
+  "description": "Launcher-pinned run identity plus optional gate, producer-task, and validator-input bindings embedded in one Hermes task body.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,12 +24,23 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128
+    },
+    "input_task_ids": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/absolutePath" },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
     }
   },
   "dependentRequired": {
     "gate_spec_path": ["gate_spec_sha256"],
     "gate_spec_sha256": ["gate_spec_path"],
-    "producer_task_id": ["gate_spec_path", "gate_spec_sha256"]
+    "producer_task_id": ["gate_spec_path", "gate_spec_sha256"],
+    "input_task_ids": ["gate_spec_path", "gate_spec_sha256"]
   },
   "$defs": {
     "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
