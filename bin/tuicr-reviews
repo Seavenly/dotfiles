@@ -21,17 +21,37 @@ file="${TUICR_REVIEWS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/tuicr
 die() { echo "tuicr-reviews: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is required"
 
-ensure_file() { mkdir -p "$(dirname "$file")"; [[ -f "$file" ]] || : > "$file"; }
+# Remove leftover temp files from crashed/aborted runs. Only sweeps temps whose
+# owning PID is no longer alive, so it is safe against concurrent invocations.
+sweep_stale_tmp() {
+  local f pid
+  for f in "$file".tmp.*; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*.}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && continue
+    rm -f "$f"
+  done
+}
 
-# Emit the registry with malformed lines and vanished worktrees dropped.
+ensure_file() { mkdir -p "$(dirname "$file")"; sweep_stale_tmp; [[ -f "$file" ]] || : > "$file"; }
+
+# Emit the registry with malformed lines and vanished worktrees dropped. Must
+# always succeed: the per-line filter is an if-block (not `test && printf`, whose
+# false result on the final line would make the whole `while` - and this function
+# - exit non-zero, aborting the caller's `clean_stream > tmp; mv tmp file` under
+# `set -e` before the `mv` and jamming every registry write). The trailing
+# `return 0` is a belt-and-suspenders guarantee.
 clean_stream() {
   [[ -f "$file" ]] || return 0
   local line wt
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     wt="$(printf '%s' "$line" | jq -r '.worktree // empty' 2>/dev/null)" || continue
-    [[ -n "$wt" && -d "$wt" ]] && printf '%s\n' "$line"
+    if [[ -n "$wt" && -d "$wt" ]]; then
+      printf '%s\n' "$line"
+    fi
   done < "$file"
+  return 0
 }
 
 persist_clean() {
