@@ -30,7 +30,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "lens:correctness",
       "optional": false
@@ -50,7 +50,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "lens:security",
       "optional": false
@@ -70,7 +70,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "lens:tests",
       "optional": false
@@ -90,7 +90,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "lens:style",
       "optional": false
@@ -110,7 +110,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "lens:observability",
       "optional": false
@@ -130,7 +130,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "critic",
       "optional": false
@@ -150,7 +150,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "orientation",
       "optional": false
@@ -170,7 +170,7 @@
       "profile": "gate",
       "workspace": "run-dir",
       "skill": "handoff-validator",
-      "max_attempts": 1,
+      "max_attempts": 2,
       "semantic_measurement": false,
       "validates_handoff_for": "diagram",
       "optional": false

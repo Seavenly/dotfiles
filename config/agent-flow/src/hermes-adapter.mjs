@@ -13,8 +13,8 @@ export class HermesAdapter {
     this.run = run;
   }
 
-  async getTaskAuthority({ taskId }) {
-    const payload = await this.#show(taskId);
+  async getTaskAuthority({ taskId, signal = undefined }) {
+    const payload = await this.#show(taskId, signal);
     const match = payload.task?.body?.match(AUTHORITY_PATTERN);
     if (!match) {
       throw new Error(`task ${taskId} does not contain agent-flow authority`);
@@ -41,8 +41,8 @@ export class HermesAdapter {
     };
   }
 
-  async getCompletedAttempt({ taskId, attempt }) {
-    const payload = await this.#show(taskId);
+  async getCompletedAttempt({ taskId, attempt, signal = undefined }) {
+    const payload = await this.#show(taskId, signal);
     const runs = this.#orderedRuns(payload);
     const run = runs[attempt - 1];
     if (!run) {
@@ -51,8 +51,8 @@ export class HermesAdapter {
     return this.#attempt(taskId, attempt, run);
   }
 
-  async getTerminalCompletedAttempt({ taskId }) {
-    const payload = await this.#show(taskId);
+  async getTerminalCompletedAttempt({ taskId, signal = undefined }) {
+    const payload = await this.#show(taskId, signal);
     const runs = this.#orderedRuns(payload);
     const attempt = runs.length;
     const run = runs.at(-1);
@@ -81,8 +81,11 @@ export class HermesAdapter {
     };
   }
 
-  async #show(taskId) {
-    return this.run(this.#kanbanArgs(["show", taskId, "--json"]));
+  async #show(taskId, signal) {
+    return this.run(
+      this.#kanbanArgs(["show", taskId, "--json"]),
+      { signal },
+    );
   }
 
   #kanbanArgs(args) {
@@ -96,10 +99,11 @@ export function formatTaskAuthority(authority) {
   return `<!-- agent-flow-authority\n${JSON.stringify(authority)}\n-->`;
 }
 
-async function defaultRun(args) {
+async function defaultRun(args, { signal } = {}) {
   const { stdout } = await execFileAsync("hermes", args, {
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
+    signal,
   });
   return JSON.parse(stdout);
 }

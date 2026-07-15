@@ -2,7 +2,9 @@ import { isAbsolute } from "node:path";
 
 import { executeCommandGate } from "./command-gate.mjs";
 import { doctorProfiles } from "./doctor.mjs";
+import { executeHandoffValidationGate } from "./handoff-gate.mjs";
 import { HermesAdapter } from "./hermes-adapter.mjs";
+import { loadSealedGate } from "./run-bundle-validator.mjs";
 
 export async function runCli(
   args,
@@ -72,22 +74,44 @@ async function runGate(options, { adapter, env, stdout, stderr }) {
     return 2;
   }
   try {
-    const result = await executeCommandGate({
-      adapter: adapter ?? new HermesAdapter({
-        board: env.HERMES_KANBAN_BOARD?.trim() || null,
-      }),
-      gateSpecPath: options[1],
-      taskId,
-      inheritedEnv: env,
+    const resolvedAdapter = adapter ?? new HermesAdapter({
+      board: env.HERMES_KANBAN_BOARD?.trim() || null,
     });
+    const sealedGate = await loadSealedGate({
+      adapter: resolvedAdapter,
+      taskId,
+      requestedGateSpecPath: options[1],
+    });
+    if (!sealedGate.valid) {
+      throw new Error(
+        sealedGate.errors[0]?.message ?? "gate authority is invalid",
+      );
+    }
+    const result = await executeSealedGate({
+      adapter: resolvedAdapter,
+      inheritedEnv: env,
+      sealedGate,
+    });
+    const label = sealedGate.gate.kind;
     if (result.passed) {
-      stdout.write("ok - command gate passed\n");
+      stdout.write(`ok - ${label} gate passed\n`);
       return 0;
     }
-    stderr.write("not ok - command gate failed\n");
+    stderr.write(`not ok - ${label} gate failed\n`);
     return 1;
   } catch (error) {
     stderr.write(`agent-flow gate: ${error.message}\n`);
     return 1;
+  }
+}
+
+async function executeSealedGate({ adapter, inheritedEnv, sealedGate }) {
+  switch (sealedGate.gate.kind) {
+    case "command":
+      return executeCommandGate({ sealedGate, inheritedEnv });
+    case "handoff-validation":
+      return executeHandoffValidationGate({ adapter, sealedGate });
+    default:
+      throw new Error(`unsupported gate kind: ${sealedGate.gate.kind}`);
   }
 }

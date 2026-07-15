@@ -5,7 +5,9 @@ and corrective review completed on 2026-07-14. The task-pinned command-gate
 tracer is implemented. The canonical standard review graph is now versioned,
 and its handoff gates bind assigned producer task IDs through launcher-created
 task authority without making pre-card run sealing circular. Runnable handoff
-and finalize gates are the next prerequisite to exposing review launch.
+validation now derives retry-safe terminal attempts and persists authoritative
+evidence. The review-finalize gate is the next prerequisite to exposing review
+launch.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase

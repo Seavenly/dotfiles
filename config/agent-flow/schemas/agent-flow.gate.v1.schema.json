@@ -127,7 +127,8 @@
         "kind": { "const": "handoff-validation" },
         "commands": false,
         "handoff_validation": true,
-        "review_policy": false
+        "review_policy": false,
+        "outputs": { "type": "array", "minItems": 1, "maxItems": 1 }
       },
       "required": ["kind", "handoff_validation"]
     },

@@ -57,7 +57,12 @@ Every graph follows these rules:
    the validator to the concrete producer task without rewriting the sealed
    gate or run manifest. At execution, the validator derives the terminal
    completed attempt from Hermes and checks the handoff ordinal against it, so
-   native retries do not invalidate the sealed gate.
+   native retries do not invalidate the sealed gate. It writes exactly one
+   declared `agent-flow.validation/v1` evidence file. Producer and validator
+   authorities must pin the same run-manifest path and digest before artifacts
+   are read. Invalid metadata and a failed required measurement persist evidence
+   but fail the validator card. Timeout aborts validation as an operational
+   failure so Hermes may retry the same card.
 8. All artifact paths are absolute and live beneath an artifact root recorded
    in the run manifest. Phase 2 write roots are contained by the canonical
    run `artifacts/` directory and are disjoint from sealed authority.

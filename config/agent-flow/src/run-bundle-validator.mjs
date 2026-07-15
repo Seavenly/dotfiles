@@ -12,6 +12,7 @@ export async function validateSealedGate({
   const {
     gate: _gate,
     manifest: _manifest,
+    taskAuthority: _taskAuthority,
     ...validation
   } = await loadSealedGate({
     adapter,
@@ -79,6 +80,7 @@ export async function loadSealedGate({
     ...validation,
     gate: validation.valid ? gate : null,
     manifest: validation.valid ? manifest : null,
+    taskAuthority: validation.valid ? authority : null,
   };
 }
 

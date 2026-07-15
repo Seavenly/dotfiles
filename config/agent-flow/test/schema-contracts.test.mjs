@@ -545,6 +545,10 @@ test("gate specs require the operation payload selected by their kind", async ()
 
   handoffGate.handoff_validation.task_id = "t_12345678";
   assert.equal((await validateContract(handoffGate)).valid, false);
+
+  delete handoffGate.handoff_validation.task_id;
+  handoffGate.outputs.push(`${handoffGate.write_root}/duplicate-validation.json`);
+  assert.equal((await validateContract(handoffGate)).valid, false);
 });
 
 test("gate specs reject mixed operation payloads and incorrect urgency floors", async () => {

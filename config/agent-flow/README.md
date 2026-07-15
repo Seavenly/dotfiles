@@ -2,10 +2,10 @@
 
 This document specifies the repository-owned design for repeatable automated
 agent flows. Phase 1 implements native profiles, machine-local routing, and
-profile doctoring. Phase 2 now includes the machine contracts, the first
-task-pinned command-gate tracer, and the canonical standard review graph.
-Launchers, graph materializers, registry changes, and stack mechanics remain
-phased work under the approved implementation plan.
+profile doctoring. Phase 2 now includes the machine contracts, task-pinned
+command and handoff-validation gate tracers, and the canonical standard review
+graph. Launchers, graph materializers, registry changes, and stack mechanics
+remain phased work under the approved implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -366,6 +366,21 @@ from Hermes, and validate the handoff's attempt ordinal against that runtime
 record. Embedding either runtime value in the pre-card gate spec would make
 immutable run sealing circular or incorrectly select one possible retry.
 
+`agent-flow gate --spec <absolute-gate.json>` executes a sealed
+`handoff-validation` gate only for its current validator card. The validator
+authority must name the sealed gate and the launcher-assigned producer task.
+The producer and validator authorities must pin the same exact run-manifest
+path and digest. The gate then derives the producer's terminal completed
+attempt, validates it against the sealed run and graph, snapshots verified
+artifacts, and atomically writes exactly one declared
+`agent-flow.validation/v1` evidence file. It exits successfully only when the
+handoff is valid and any `require_passed` condition holds. Malformed metadata
+and semantic failure still produce durable invalid evidence before the command
+exits unsuccessfully, so downstream dependencies remain blocked without losing
+the reason. One gate-wide deadline aborts producer lookups, regular-file reads,
+snapshots, and evidence writes; timeout remains an operational failure eligible
+for the card's native Hermes retry.
+
 Graph contract validation requires one terminal, required flow-controller
 root; every declared stage must reach it; stage keys are unique across static
 and dynamic templates; each transition rejoins its declaring controller; and
@@ -376,18 +391,18 @@ root. Bundle validation also bounds those roots by the run manifest's approved
 read and artifact roots. These checks describe an executable topology before
 Hermes cards exist.
 
-The first executable Phase 2 tracer implements command gates. The CLI requires
-the current `HERMES_KANBAN_TASK`, reads launcher-pinned task authority through
-the Hermes adapter, verifies the sealed run-manifest and gate digests, and
-rejects a `--spec` path that differs from the task authority. It resolves the
-workspace, inputs, and output parents before execution to catch symlink escapes,
-runs each argv directly without a shell under one gate-wide timeout, terminates
-the command process group when execution ends, and writes classified JSON
-result evidence atomically beneath the declared write root. Every declared
-output must exist afterward and resolve beneath that root. Output directories
-must already exist. Approved roots are resolved and anchored back to the real
-run, repository, and artifact directories. This is a robust declared-path
-guard, not a filesystem sandbox against a deliberately hostile command.
+The command-gate tracer uses the same task-pinned CLI seam. The CLI requires the
+current `HERMES_KANBAN_TASK`, reads launcher-pinned task authority through the
+Hermes adapter, verifies the sealed run-manifest and gate digests, and rejects a
+`--spec` path that differs from the task authority. It resolves the workspace,
+inputs, and output parents before execution to catch symlink escapes, runs each
+argv directly without a shell under one gate-wide timeout, terminates the
+command process group when execution ends, and writes classified JSON result
+evidence atomically beneath the declared write root. Every declared output must
+exist afterward and resolve beneath that root. Output directories must already
+exist. Approved roots are resolved and anchored back to the real run,
+repository, and artifact directories. This is a robust declared-path guard,
+not a filesystem sandbox against a deliberately hostile command.
 
 Metadata contains concise evidence and absolute artifact pointers, not raw
 logs, transcripts, credentials, or tokens. Human checkpoints use

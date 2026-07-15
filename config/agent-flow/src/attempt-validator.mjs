@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 
 import { validateContract } from "./schema-validator.mjs";
@@ -11,18 +11,27 @@ export async function validateCompletedAttempt({
   taskId,
   stage,
   attempt,
+  requirePassed = false,
+  expectedRunAuthority = null,
   now = () => new Date(),
+  signal = undefined,
 }) {
-  const authority = await adapter.getTaskAuthority({ taskId });
+  const authority = await adapter.getTaskAuthority({ taskId, signal });
   assertTaskAuthority(authority, taskId, stage);
+  assertExpectedRunAuthority(authority, expectedRunAuthority);
   const { manifest, manifestBytes, graph } = await loadAuthority(
     authority.runManifestPath,
     authority.runManifestSha256,
+    signal,
   );
   if (manifest.identity.run_id !== authority.runId) {
     throw new Error("run manifest identity does not match task authority");
   }
-  const completed = await adapter.getCompletedAttempt({ taskId, attempt });
+  const completed = await adapter.getCompletedAttempt({
+    taskId,
+    attempt,
+    signal,
+  });
   assertExpectedAttempt(completed, taskId, attempt);
 
   const sourceMetadata = completed.metadata ?? null;
@@ -41,10 +50,18 @@ export async function validateCompletedAttempt({
     throw new Error(`stage ${stage} is not declared by the sealed graph`);
   }
   validateIdentity(handoff, handoffResult, manifest, stage, attempt, errors);
-  validateMeasurement(handoff, handoffResult, expectedStage, errors);
+  const measurementRequired =
+    expectedStage.semantic_measurement || requirePassed;
+  validateMeasurement(
+    handoff,
+    handoffResult,
+    measurementRequired,
+    requirePassed,
+    errors,
+  );
 
   const { approvedRealRoots, validationRealRoot } =
-    await loadAuthorityDirectories(manifest);
+    await loadAuthorityDirectories(manifest, signal);
   const artifacts = handoffResult.valid
     ? await validateArtifacts(
         handoff.artifacts,
@@ -54,6 +71,7 @@ export async function validateCompletedAttempt({
         taskId,
         attempt,
         errors,
+        signal,
       )
     : [];
 
@@ -78,7 +96,7 @@ export async function validateCompletedAttempt({
       attempt: handoffResult.valid ? handoff.attempt : attempt,
     },
     semantic: {
-      required: expectedStage.semantic_measurement,
+      required: measurementRequired,
       passed:
         handoffResult.valid && typeof handoff.passed === "boolean"
           ? handoff.passed
@@ -103,8 +121,25 @@ function assertTaskAuthority(authority, taskId, stage) {
   }
 }
 
-async function loadAuthority(runManifestPath, expectedRunManifestSha256) {
-  const manifestBytes = await readFile(runManifestPath);
+function assertExpectedRunAuthority(authority, expected) {
+  if (expected === null) return;
+  if (
+    authority.runId !== expected.runId ||
+    authority.runManifestPath !== expected.runManifestPath ||
+    authority.runManifestSha256 !== expected.runManifestSha256
+  ) {
+    throw new Error(
+      "producer task authority does not match validation gate run authority",
+    );
+  }
+}
+
+async function loadAuthority(
+  runManifestPath,
+  expectedRunManifestSha256,
+  signal,
+) {
+  const manifestBytes = await readFile(runManifestPath, { signal });
   if (sha256(manifestBytes) !== expectedRunManifestSha256) {
     throw new Error("run manifest digest does not match the sealed gate spec");
   }
@@ -113,7 +148,7 @@ async function loadAuthority(runManifestPath, expectedRunManifestSha256) {
     throw new Error("cannot validate an attempt against an invalid run manifest");
   }
 
-  const graphBytes = await readFile(manifest.graph.sealed_path);
+  const graphBytes = await readFile(manifest.graph.sealed_path, { signal });
   if (sha256(graphBytes) !== manifest.graph.sha256) {
     throw new Error("sealed graph digest does not match the run manifest");
   }
@@ -157,20 +192,34 @@ function validateIdentity(handoff, result, manifest, stage, attempt, errors) {
   }
 }
 
-function validateMeasurement(handoff, result, expectedStage, errors) {
+function validateMeasurement(
+  handoff,
+  result,
+  measurementRequired,
+  requirePassed,
+  errors,
+) {
   if (
     result.valid &&
-    expectedStage.semantic_measurement &&
+    measurementRequired &&
     typeof handoff.passed !== "boolean"
   ) {
     errors.push({
       code: "missing_measurement",
-      message: "semantic stage handoff must record passed",
+      message: "handoff must record passed when a measurement is required",
+    });
+    return;
+  }
+  if (result.valid && requirePassed && handoff.passed === false) {
+    errors.push({
+      code: "semantic_failure",
+      message: "handoff must pass before downstream work can be released",
     });
   }
 }
 
-async function loadAuthorityDirectories(manifest) {
+async function loadAuthorityDirectories(manifest, signal) {
+  throwIfAborted(signal);
   const runRealPath = await realpath(manifest.identity.run_directory);
   const approvedRealRoots = await Promise.all(
     manifest.approved_artifact_roots.map((root) => realpath(root)),
@@ -182,6 +231,7 @@ async function loadAuthorityDirectories(manifest) {
     recursive: true,
     mode: 0o700,
   });
+  throwIfAborted(signal);
   const validationRealRoot = await realpath(
     manifest.identity.validation_directory,
   );
@@ -199,9 +249,11 @@ async function validateArtifacts(
   taskId,
   attempt,
   errors,
+  signal,
 ) {
   const artifacts = [];
   for (const [index, artifact] of declaredArtifacts.entries()) {
+    throwIfAborted(signal);
     artifacts.push(
       await validateArtifact(
         artifact,
@@ -212,6 +264,7 @@ async function validateArtifacts(
         attempt,
         index,
         errors,
+        signal,
       ),
     );
   }
@@ -227,6 +280,7 @@ async function validateArtifact(
   attempt,
   index,
   errors,
+  signal,
 ) {
   const lexicallyContained = approvedRoots.some((root) =>
     pathIsWithin(root, artifact.path),
@@ -236,6 +290,7 @@ async function validateArtifact(
     try {
       artifactRealPath = await realpath(artifact.path);
     } catch {
+      throwIfAborted(signal);
       errors.push({
         code: "artifact_unreadable",
         message: `${artifact.path} could not be read`,
@@ -255,12 +310,33 @@ async function validateArtifact(
     return artifactEvidence(artifact, null, null, false);
   }
 
+  throwIfAborted(signal);
+  let artifactStat;
+  try {
+    artifactStat = await lstat(artifactRealPath);
+  } catch {
+    throwIfAborted(signal);
+    errors.push({
+      code: "artifact_unreadable",
+      message: `${artifact.path} could not be read`,
+    });
+    return artifactEvidence(artifact, null, null, false);
+  }
+  if (!artifactStat.isFile()) {
+    errors.push({
+      code: "artifact_unreadable",
+      message: `${artifact.path} is not a regular file`,
+    });
+    return artifactEvidence(artifact, null, null, false);
+  }
+
   let artifactBytes = null;
   let actualSha256 = null;
   try {
-    artifactBytes = await readFile(artifactRealPath);
+    artifactBytes = await readFile(artifactRealPath, { signal });
     actualSha256 = sha256(artifactBytes);
   } catch {
+    throwIfAborted(signal);
     errors.push({
       code: "artifact_unreadable",
       message: `${artifact.path} could not be read`,
@@ -281,6 +357,7 @@ async function validateArtifact(
         taskId,
         attempt,
         index,
+        signal,
       )
     : null;
   return artifactEvidence(artifact, validatedPath, actualSha256, valid);
@@ -293,7 +370,9 @@ async function snapshotArtifact(
   taskId,
   attempt,
   index,
+  signal,
 ) {
+  throwIfAborted(signal);
   const directory = join(
     validationDirectory,
     sha256(taskId).slice(0, 16),
@@ -302,9 +381,12 @@ async function snapshotArtifact(
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, `${index}-${digest}.artifact`);
   try {
-    await writeFile(path, bytes, { flag: "wx", mode: 0o400 });
+    await writeFile(path, bytes, { flag: "wx", mode: 0o400, signal });
   } catch (error) {
-    if (error.code !== "EEXIST" || sha256(await readFile(path)) !== digest) {
+    if (
+      error.code !== "EEXIST" ||
+      sha256(await readFile(path, { signal })) !== digest
+    ) {
       throw error;
     }
   }
@@ -333,4 +415,8 @@ function pathIsWithin(root, path) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason;
 }

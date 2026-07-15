@@ -117,6 +117,7 @@ function stage(
 
 function validator(producer) {
   return stage("gate", "run-dir", "handoff-validator", {
+    maxAttempts: 2,
     validatesHandoffFor: producer,
   });
 }
