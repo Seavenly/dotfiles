@@ -8,6 +8,7 @@ import {
 } from "./cancellation-audit.mjs";
 import { HermesAdapter, parseTaskAuthority } from "./hermes-adapter.mjs";
 import { materializationOrder } from "./review-topology.mjs";
+import { expandedTransitionStages, instantiateTransition } from "./graph-transition.mjs";
 import { acquireRunMutationLock } from "./run-lock.mjs";
 import { loadRunManifest } from "./run-manifest.mjs";
 import { classifyRunTerminal } from "./run-terminal.mjs";
@@ -71,7 +72,7 @@ export async function projectRunStatus({
     if (task.title !== expectedTitle) {
       issues.push(`task ${taskId} does not match stage ${stage}`);
     }
-    const expectedParents = authority.graph.dependencies
+    const expectedParents = authority.dependencies
       .filter(({ parent, child }) => child === stage && authority.tasks[parent])
       .map(({ parent }) => authority.tasks[parent]);
     if (!sameMembers(task.parents, expectedParents)) {
@@ -435,15 +436,10 @@ export async function loadRunAuthority({ runId, env = process.env }) {
     sealedInputs.set(`${input.kind}/${input.name}`, bytes);
   }
   const reviewBytes = sealedInputs.get("review-manifest/review.json");
-  if (!reviewBytes) throw new Error(`run ${runId} omits its sealed review input`);
-  const review = JSON.parse(reviewBytes.toString("utf8"));
-  if (!(await validateContract(review)).valid) {
+  const review = reviewBytes ? JSON.parse(reviewBytes.toString("utf8")) : null;
+  if (manifest.identity.flow === "review" && (!review || !(await validateContract(review)).valid)) {
     throw new Error(`run ${runId} has an invalid sealed review input`);
   }
-  const enabledStages = materializationOrder(
-    graph,
-    review.automated_review.urgency,
-  );
   const gates = new Map();
   for (const input of manifest.inputs.filter(({ kind }) => kind === "gate")) {
     const document = JSON.parse(
@@ -475,43 +471,68 @@ export async function loadRunAuthority({ runId, env = process.env }) {
   if (!validTaskMap(receiptTasks)) {
     issues.push("materialization receipt has an invalid task map");
   } else {
+    const staticStages = manifest.identity.flow === "review"
+      ? materializationOrder(graph, review.automated_review.urgency)
+      : graph.stages;
+    const permittedStages = new Map([
+      ...graph.stages,
+      ...expandedTransitionStages(graph),
+    ].map((stage) => [stage.key, stage]));
+    const enabledStages = manifest.identity.flow === "review"
+      ? staticStages
+      : Object.keys(tasks).map((key) => permittedStages.get(key)).filter(Boolean);
+    const requiredStaticKeys = new Set(staticStages.map(({ key }) => key));
     if (receipt.run_id !== runId) {
       issues.push("materialization receipt names a different run");
     }
     if (receipt.graph !== `${graph.name}/v${graph.version}`) {
       issues.push("materialization receipt names a different graph");
     }
-    const graphStages = new Set(graph.stages.map(({ key }) => key));
     for (const stage of Object.keys(tasks)) {
-      if (!graphStages.has(stage)) {
+      if (!permittedStages.has(stage)) {
         issues.push(`materialization receipt names undeclared stage ${stage}`);
       }
     }
     if (!Object.hasOwn(tasks, graph.root)) {
       issues.push(`materialization receipt omits root stage ${graph.root}`);
     }
-    const enabledKeys = enabledStages.map(({ key }) => key);
-    if (!sameMembers(Object.keys(tasks), enabledKeys)) {
-      issues.push("materialization receipt does not name the exact enabled stages");
+    if (manifest.identity.flow === "review") {
+      const enabledKeys = enabledStages.map(({ key }) => key);
+      if (!sameMembers(Object.keys(tasks), enabledKeys)) {
+        issues.push("materialization receipt does not name the exact enabled stages");
+      }
+    } else if ([...requiredStaticKeys].some((key) => !Object.hasOwn(tasks, key))) {
+      issues.push("materialization receipt omits a required static stage");
     }
-    if (Object.keys(tasks).length !== manifest.limits.max_created_cards) {
+    if (Object.keys(tasks).length > manifest.limits.max_created_cards) {
       issues.push(
         `materialization receipt has ${Object.keys(tasks).length} tasks; ` +
-          `expected ${manifest.limits.max_created_cards}`,
+          `maximum is ${manifest.limits.max_created_cards}`,
       );
     }
+    const dependencies = materializedDependencies({ graph, tasks });
+    return {
+      dependencies, enabledStages, gates, graph, issues, manifest, manifestPath,
+      manifestSha256: sha256(manifestBytes), review, tasks,
+    };
   }
   return {
-    enabledStages,
-    gates,
-    graph,
-    issues,
-    manifest,
-    manifestPath,
-    manifestSha256: sha256(manifestBytes),
-    review,
-    tasks,
+    dependencies: graph.dependencies, enabledStages: graph.stages, gates, graph,
+    issues, manifest, manifestPath, manifestSha256: sha256(manifestBytes), review, tasks,
   };
+}
+
+function materializedDependencies({ graph, tasks }) {
+  const dependencies = [...graph.dependencies];
+  for (const transition of graph.transitions ?? []) {
+    for (let ordinal = 1; ordinal <= transition.max_instances; ordinal += 1) {
+      const instance = instantiateTransition(transition, ordinal);
+      if (instance.stages.some(({ key }) => Object.hasOwn(tasks, key))) {
+        dependencies.push(...instance.dependencies);
+      }
+    }
+  }
+  return dependencies;
 }
 
 function cancellationFromComments(comments, cards, runId) {

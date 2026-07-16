@@ -75,6 +75,21 @@ _Avoid_: Merge flag, approval
 The single pull request whose merge delivers the complete external outcome and permits its tracker issue to become Done.
 _Avoid_: Stack PR, feature PR
 
+**Stack plan**:
+A human-approved review-layer topology bound to one immutable source commit,
+target SHA, and forge coordinate.
+_Avoid_: Split session, mutable stack
+
+**Active stack generation**:
+The exact verified chain of reviewed layer heads currently authorized for
+publication and delivery, derived from one stack plan without rewriting it.
+_Avoid_: Restack receipt, mutable stack
+
+**Delivery assembly**:
+The ordered replay of reviewed stack layers into the dedicated delivery branch,
+followed by exact-tree and full-verification gates.
+_Avoid_: Stack merge, completion PR
+
 ## Relationships
 
 - **Convergence** applies **managed resources** to exactly one **host**.
@@ -91,6 +106,8 @@ _Avoid_: Stack PR, feature PR
   approval or lifecycle state.
 - An **integration receipt** proves where a **review candidate** entered Git
   history before its **review manifest** advances to integrated.
+- An **active stack generation** derives from one **stack plan** and supplies
+  the canonical reviewed layers for **delivery assembly**.
 
 ## Example dialogue
 

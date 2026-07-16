@@ -60,6 +60,8 @@ expected_skills=(
   codebase-design
   diagnosing-bugs
   domain-modeling
+  epic-flow
+  feature-flow
   grill-with-docs
   grilling
   handoff
@@ -67,7 +69,9 @@ expected_skills=(
   improve-codebase-architecture
   prototype
   setup-matt-pocock-skills
+  spike-flow
   split
+  stacks
   tdd
   to-spec
   to-tickets
@@ -85,9 +89,14 @@ actual_skills="$(
 [[ "$actual_skills" == "${expected_skills[*]} " ]] \
   || fail "managed skill set differs from the approved portfolio"
 
+agent_neutral_only_skills=(epic-flow feature-flow spike-flow stacks)
 for harness_root in .agents .claude .hermes; do
   for skill in "${expected_skills[@]}"; do
     linked_skill="$home/$harness_root/skills/$skill"
+    if [[ "$harness_root" == .claude && " ${agent_neutral_only_skills[*]} " == *" $skill "* ]]; then
+      [[ ! -e "$linked_skill" ]] || fail ".claude unexpectedly exposes $skill"
+      continue
+    fi
     [[ -L "$linked_skill" ]] \
       || fail "$harness_root is missing the $skill directory link"
     [[ "$(readlink "$linked_skill")" == "$root/config/agents/skills/$skill" ]] \
@@ -99,12 +108,13 @@ echo "ok - every approved package is linked as a discoverable directory"
 expected_repository() {
   case "$1" in
     split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
+    stacks) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
     tuicr) printf '%s\n' 'https://github.com/agavra/tuicr.git' ;;
     *) printf '%s\n' 'https://github.com/mattpocock/skills.git' ;;
   esac
 }
 
-local_skills=(tuicr-reviews)
+local_skills=(epic-flow feature-flow spike-flow tuicr-reviews)
 
 for skill in "${expected_skills[@]}"; do
   package="$skills_root/$skill"

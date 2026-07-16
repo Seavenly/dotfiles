@@ -11,7 +11,7 @@ import { PROFILE_NAMES, renderProfiles } from "../src/profiles.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const expectedToolsets = {
-  "flow-controller": [],
+  "flow-controller": ["terminal"],
   analyst: ["web", "file"],
   critic: ["web", "file"],
   builder: ["terminal", "file"],
@@ -29,7 +29,7 @@ const kanbanTools = [
 ];
 const fileTools = ["patch", "read_file", "search_files", "write_file"];
 const expectedWorkerTools = {
-  "flow-controller": kanbanTools,
+  "flow-controller": [...kanbanTools, "process", "terminal"],
   analyst: [...kanbanTools, ...fileTools],
   critic: [...kanbanTools, ...fileTools],
   builder: [...kanbanTools, ...fileTools, "process", "terminal"].sort(),
@@ -170,7 +170,7 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
   assert.equal(
     report.profiles.find(({ name }) => name === "flow-controller")
       .workerSchemaCount,
-    7,
+    9,
   );
   assert.deepEqual(
     report.profiles.find(({ name }) => name === "builder").workerTools,

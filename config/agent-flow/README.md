@@ -8,13 +8,20 @@ standard review graph, a recoverable hotfix review launcher, and practical
 inline handoffs for terminal-free review workers. Review launch now supports
 hotfix, fast, and standard urgency. Run status, convergent cancellation,
 external-root uniqueness, and explicit supersession are now implemented for
-sealed review runs. Repeated review launch now performs independently derived
+all sealed runs. Repeated review launch now performs independently derived
 resume-migration comparison and durable limit admission. The sacrificial
 real-board tracer and operator dashboard review are complete; the durable
 evidence is recorded in [`PHASE-2-TRACER.md`](PHASE-2-TRACER.md). Registry
 and local-review lifecycle durability are complete in Phase 3; evidence is in
-[`PHASE-3-REVIEW-LIFECYCLE.md`](PHASE-3-REVIEW-LIFECYCLE.md). Feature graphs
-and stack mechanics remain phased work under the approved implementation plan.
+[`PHASE-3-REVIEW-LIFECYCLE.md`](PHASE-3-REVIEW-LIFECYCLE.md). The completed
+local implementation and remaining live-rollout evidence for feature, spike,
+epic, stack, and delivery flows are recorded
+in [`PHASE-4-8-IMPLEMENTATION.md`](PHASE-4-8-IMPLEMENTATION.md). Local
+contract, Git topology, restart, and fault-injection checks pass, but
+live model-backed flow runs, the opt-in remote stack prototype, live backup,
+and a fresh rendered UI inspection remain rollout evidence. Claude therefore
+remains the authoritative fallback. The current parity decision is recorded in
+[`COEXISTENCE-REVIEW.md`](COEXISTENCE-REVIEW.md).
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -60,12 +67,34 @@ Hermes and destroy locality.
 The planned external interface is path-oriented:
 
 ```text
-agent-flow doctor profiles
+agent-flow doctor profiles [--json]
 agent-flow launch review  --manifest <absolute-review.json>
-agent-flow launch feature --brief <absolute-brief> [--plan <absolute-plan>]
-agent-flow launch spike   --brief <absolute-brief> [--plan <absolute-plan>]
-agent-flow launch epic    --brief <absolute-brief> --plan <absolute-plan>
+agent-flow launch feature --manifest <absolute-feature.json>
+agent-flow launch spike   --manifest <absolute-spike.json>
+agent-flow launch epic    --manifest <absolute-epic.json>
 agent-flow gate           --spec <absolute-gate.json>
+agent-flow feature advance  --run <run-id> --controller <stage>
+agent-flow feature finalize --run <run-id>
+agent-flow spike advance    --run <run-id> --controller <stage>
+agent-flow spike finalize   --run <run-id>
+agent-flow epic wave           --run <run-id>
+agent-flow epic feature-status --run <run-id> --feature <id> --status <state>
+agent-flow epic checkpoint     --run <run-id>
+agent-flow epic integrate      --epic <absolute-epic.json> --review <absolute-review.json> --receipts <absolute-directory>
+agent-flow stacks analyze --repo <absolute-repo> --source <sha> --target <sha>
+agent-flow stacks approve --plan <absolute-plan.json> --actor <actor>
+agent-flow stacks build   --plan <absolute-plan.json>
+agent-flow stacks approve-restack --plan <absolute-plan.json> --index <zero-based> --head <sha> --generation <n> --actor <actor>
+agent-flow stacks restack --plan <absolute-plan.json> --index <zero-based> --head <sha> --generation <n>
+agent-flow stacks publish --plan <absolute-plan.json>
+agent-flow stacks review  --plan <absolute-plan.json> --layer <id> --manifest <absolute-review.json>
+agent-flow delivery init      --delivery <absolute-json> --plan <absolute-plan> --stack-state <absolute-state> --external <ref> --required-checks <comma-list> [--allow-merge-checkpoint]
+agent-flow delivery apply     --delivery <absolute-json> [--review <canonical-absolute-review>]
+agent-flow delivery verify    --delivery <absolute-json>
+agent-flow delivery open      --delivery <absolute-json>
+agent-flow delivery checkpoint --delivery <absolute-json> --actor <identity> --reason <text>
+agent-flow delivery reconcile --delivery <absolute-json>
+agent-flow delivery observe   --delivery <absolute-json>
 agent-flow review transition      --manifest <review.json> --to <state> --expected-generation <n> --actor <actor> --reason <text> --evidence <absolute-path> [--session-slug <slug>] [--head-sha <sha>] [--integration-receipt <receipt.json>]
 agent-flow review record-comments --manifest <review.json> --comments <comments.json> --expected-generation <n> --actor <actor> --reason <text> --evidence <absolute-path>
 agent-flow status         --run <run-id> [--json]
@@ -300,7 +329,7 @@ identity or filesystem isolation.
 
 | Profile | Technically enforced by effective Hermes configuration | Contract-only restrictions |
 | --- | --- | --- |
-| `flow-controller` | Kanban tools only; terminal, file, web, MCP, memory, and user profile unavailable; sole dispatch owner; auto-decomposition disabled | Creates only versioned graph transitions and always records a lifecycle call |
+| `flow-controller` | Kanban plus local terminal; file, web, MCP, memory, and user profile unavailable; sole dispatch owner; auto-decomposition disabled | Creates only versioned graph transitions and runs only card-pinned `agent-flow` controller commands; exit 3 is reserved for a transition dependency that makes Hermes retry the same card |
 | `analyst` | Bundled file and web tools; terminal, MCP, memory, and user profile unavailable; dispatch disabled | Treats the pinned target as read-only despite bundled write tools and always records a lifecycle call |
 | `critic` | Bundled file and web tools; terminal, MCP, memory, and user profile unavailable; independently routed provider; dispatch disabled | Treats the pinned target as read-only, maintains review independence beyond provider routing, and always records a lifecycle call |
 | `builder` | Bundled file and terminal tools; local terminal with real user HOME; MCP, memory, and user profile unavailable; dispatch disabled | Writes only in the assigned worktree, relies on graph dependencies to avoid concurrent writes, and always records a lifecycle call |
@@ -316,7 +345,7 @@ technical write boundary. Profile doctoring reports that limitation instead of
 claiming stronger isolation. A future custom read-only tool plugin would be a
 separate, explicitly approved security improvement.
 
-The `builder` and `gate` terminal lanes explicitly use the `local` backend with
+The `flow-controller`, `builder`, and `gate` terminal lanes explicitly use the `local` backend with
 `home_mode: real`. They inherit the real OS-user HOME, so normal CLI credential
 files and OS-keychain integrations are reachable. Hermes v0.18.2 filters its
 managed inference-provider secret environment variables from local subprocesses
@@ -437,8 +466,11 @@ sensitive or mutable Hermes data.
 
 ## Handoffs and local review
 
-Every worker ends with `kanban_complete(...)` or `kanban_block(...)`. A clean
-process exit without either call is a visible protocol violation. Operational
+Every semantic worker ends with `kanban_complete(...)` or
+`kanban_block(...)`. A clean process exit without either call is a visible
+protocol violation. A controller command may exit 3 only after it durably
+creates and links a declared transition dependency; Hermes then records the
+failed attempt and retries that same controller after its new parent. Operational
 failure uses Hermes retries and circuit breakers. A semantic measurement is a
 successful worker attempt with `passed: false` in its
 `agent-flow.handoff/v1` metadata; a controller may then instantiate a capped
@@ -459,6 +491,11 @@ The formal schemas are:
 - [`agent-flow.review-result/v1`](schemas/agent-flow.review-result.v1.schema.json)
 - [`agent-flow.review-comment-dispositions/v1`](schemas/agent-flow.review-comment-dispositions.v1.schema.json)
 - [`agent-flow.integration-receipt/v1`](schemas/agent-flow.integration-receipt.v1.schema.json)
+- [`agent-flow.feature/v1`](schemas/agent-flow.feature.v1.schema.json)
+- [`agent-flow.spike/v1`](schemas/agent-flow.spike.v1.schema.json)
+- [`agent-flow.epic/v1`](schemas/agent-flow.epic.v1.schema.json)
+- [`agent-flow.stack-plan/v1`](schemas/agent-flow.stack-plan.v1.schema.json)
+- [`agent-flow.delivery/v1`](schemas/agent-flow.delivery.v1.schema.json)
 - `agent-flow.stack/v1`
 
 Hermes accepts free-form completion metadata, so schema validity cannot be a

@@ -1,6 +1,7 @@
 platform_toolsets:
   cli:
     - kanban
+    - terminal
     - no_mcp
 memory:
   memory_enabled: false

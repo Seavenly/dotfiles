@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.epic.v1.schema.json",
+  "title": "agent-flow.epic/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "summary", "repo", "source", "target", "kanban",
+    "external_ref", "features", "verification", "limits"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.epic/v1" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "repo": { "$ref": "#/$defs/path" },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["base_ref", "base_sha", "branch"],
+      "properties": {
+        "base_ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "base_sha": { "$ref": "#/$defs/sha" },
+        "branch": { "$ref": "#/$defs/branch" }
+      }
+    },
+    "target": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "sha"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "kanban": {
+      "type": "object", "additionalProperties": false, "required": ["board", "task"],
+      "properties": {
+        "board": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "task": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "external_ref": { "type": "string", "pattern": "^(github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*|jira:[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*)$", "maxLength": 256 },
+    "supersedes": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id" }],
+      "default": null
+    },
+    "features": {
+      "type": "array", "minItems": 1, "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "summary", "depends_on", "acceptance", "slices", "verification"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "depends_on": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+          "acceptance": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 2000 } },
+          "slices": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/slice" } },
+          "verification": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/command" } }
+        }
+      }
+    },
+    "verification": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/command" } },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_feature_streams", "max_slice_retries", "max_completeness_fixes", "max_critique_fixes", "max_elapsed_seconds"],
+      "properties": {
+        "max_feature_streams": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "max_slice_retries": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_completeness_fixes": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_critique_fixes": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 60, "maximum": 2592000 }
+      }
+    }
+  },
+  "$defs": {
+    "path": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "branch": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^(?!HEAD$)(?![0-9a-f]{40,64}$)(?![-./])(?!.*(?:\\.\\.|@\\{|[~^:?*\\\\\\[\\s]))(?!.*[./]$).+$" },
+    "command": {
+      "type": "object", "additionalProperties": false, "required": ["argv"],
+      "properties": { "argv": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } } }
+    },
+    "slice": {
+      "type": "object", "additionalProperties": false, "required": ["id", "title", "verification"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "verification": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/command" } }
+      }
+    }
+  }
+}

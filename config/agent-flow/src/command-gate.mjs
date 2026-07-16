@@ -59,13 +59,12 @@ export async function executeCommandGate({
     }
     await writeJsonAtomically(outputPaths[index], evidence);
     results.push(evidence);
-    if (result.termination !== "exit" || result.exitCode !== 0) break;
   }
   const passed = results.length === gate.commands.length &&
     results.every(({ exit_code: exitCode, termination }) =>
       termination === "exit" && exitCode === 0
     );
-  if (passed) await validateDeclaredOutputs(runtime);
+  await validateDeclaredOutputs(runtime);
   return {
     passed,
     results,

@@ -284,7 +284,7 @@ export async function doctorProfiles({
             trustFailures.push(`${name}: ${failure}`);
           }
         }
-        if (name === "gate" && !inspection.terminalProbe.agentFlowPath) {
+        if (new Set(["flow-controller", "gate"]).has(name) && !inspection.terminalProbe.agentFlowPath) {
           trustFailures.push(
             `${name}: terminal cannot resolve the agent-flow command`,
           );

@@ -17,12 +17,13 @@ export const PROFILE_CONCURRENCY = {
 
 export const PROFILE_CATALOG = {
   "flow-controller": {
-    configuredToolsets: ["kanban", "no_mcp"],
-    enabledToolsets: [],
-    workerTools: kanbanTools,
-    terminal: false,
+    configuredToolsets: ["kanban", "terminal", "no_mcp"],
+    enabledToolsets: ["terminal"],
+    workerTools: [...kanbanTools, "process", "terminal"],
+    terminal: true,
     contractOnly: [
       "create only transitions declared by the selected versioned graph",
+      "run only the exact agent-flow controller command pinned by the card",
       "end every worker attempt with a Kanban lifecycle call",
     ],
   },

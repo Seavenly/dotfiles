@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stacks"
+  short_description: "Plan and build immutable review stacks safely"
+  default_prompt: "Use $stacks to plan or operate an approved immutable review stack."

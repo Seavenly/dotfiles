@@ -26,7 +26,7 @@ External-root ownership now canonicalizes GitHub and Jira identity, rejects
 active duplicates under a host-local ownership lock, and requires an explicit
 terminal predecessor for supersession. Status now validates sealed run identity
 and projects complete, running, blocked, retrying, broken, cancelling, and
-cancelled review runs from native Hermes state. Cancellation records one
+cancelled runs from native Hermes state. Cancellation records one
 audited root request and performs retry-safe, tenant-scoped reclaim and archive
 sweeps with exact survivor reporting under the shared per-run mutation lock.
 Fast and standard review launch now
@@ -42,6 +42,22 @@ comment dispositions; manifest-backed registry rows derive lifecycle, health,
 and immutable revsets; integration requires a Git-verified receipt. Evidence is
 recorded in
 [`PHASE-3-REVIEW-LIFECYCLE.md`](PHASE-3-REVIEW-LIFECYCLE.md).
+
+The local implementation for Phases 4 through 8 completed on 2026-07-16.
+Corrective review findings were closed with terminal-attempt-bound command
+evidence, full dynamic resume audits, native Hermes epic materialization,
+restart reconstruction, executable source refresh bound to passed gates,
+separately approved restack generations, exact hunk ownership, registry-bound
+canonical layer-review registration, an explicit draft-checkpoint advancement
+operation, stale-base merge rejection, and sealed forge identity reconciled
+with Git `origin`.
+The local evidence, known blockers, and release-check results are recorded
+in [`PHASE-4-8-IMPLEMENTATION.md`](PHASE-4-8-IMPLEMENTATION.md). Phase 9 has
+completed every local comparison and safety check available in the restricted
+environment, but it cannot satisfy the successful-real-run, remote-forge,
+fresh-UI, and live-backup prerequisites here. The evidence-backed coexistence decision is recorded in
+[`COEXISTENCE-REVIEW.md`](COEXISTENCE-REVIEW.md), and the separate retirement
+proposal remains intentionally unapproved.
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -107,7 +123,8 @@ Tests:
 - Run collision detection before mise creates profile links, and migrate the
   pre-marker managed layout without requiring force.
 - Spawn or inspect each profile through Hermes and assert the actual tools:
-  controller only Kanban; analyst and critic bundled file tools with a reported
+  controller Kanban plus terminal for card-pinned `agent-flow` commands;
+  analyst and critic bundled file tools with a reported
   non-enforceable read-only contract; builder code tools; artifact file tools
   with declared-path contracts; gate terminal with no direct file edit tools.
 - Prove only the flow-controller gateway dispatches and built-in decomposition
@@ -336,6 +353,9 @@ Rollback:
 
 ## Phase 4 - implement the feature graph
 
+Local implementation status: complete on 2026-07-16. Model-backed rollout
+evidence remains part of Phase 9.
+
 Depends on: Phase 3.
 
 Repository changes:
@@ -376,6 +396,9 @@ Claude feature command remains unchanged.
 
 ## Phase 5 - implement spike graphs
 
+Local implementation status: complete on 2026-07-16. Model-backed rollout
+evidence remains part of Phase 9.
+
 Depends on: Phase 2 for research-only spikes and Phase 4 for prototypes.
 
 Repository changes:
@@ -398,6 +421,9 @@ spikes create exactly one and surface every stuck slice in the report.
 Rollback: disable the skill and preserve reports and prototype branches.
 
 ## Phase 6 - implement epic control and source integration
+
+Local implementation status: complete on 2026-07-16. A live stopped-process
+restart remains rollout evidence for Phase 9.
 
 Depends on: Phases 3 and 4.
 
@@ -443,6 +469,9 @@ preserve `epic/source`. The external issue remains In Progress.
 
 ## Phase 7 - derive stacks and prove Git topology
 
+Local implementation status: complete on 2026-07-16. The opt-in
+non-production forge prototype remains rollout evidence for Phase 9.
+
 Depends on: Phase 6 source output. This phase begins with disposable prototypes,
 not production branch mutation.
 
@@ -487,6 +516,9 @@ and delete no branches automatically.
 
 ## Phase 8 - assemble delivery and enforce external completion
 
+Local implementation status: complete on 2026-07-16. A real completion PR and
+merge observation remain rollout evidence for Phase 9.
+
 Depends on: the Phase 7 merge-policy gate.
 
 Repository changes:
@@ -528,6 +560,10 @@ Rollback: stop assembly, keep source immutable, and preserve delivery and stack
 refs for inspection. Never force-push the target.
 
 ## Phase 9 - coexistence review and optional retirement
+
+Local review status: complete on 2026-07-16. Final exit criteria are blocked by
+the required real-flow, remote-forge, fresh-UI, live-backup, and separate user
+retirement-decision evidence. Claude remains unchanged.
 
 Depends on: successful real runs of review, feature, spike, epic, stacks, and
 delivery flows.

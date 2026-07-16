@@ -1033,6 +1033,46 @@ test("contract validation is deterministic during concurrent first use", async (
   assert.equal(results.every(({ valid }) => valid), true);
 });
 
+test("derived flow results and durable states are registered contracts", async () => {
+  const documents = [
+    {
+      schema: "agent-flow.spike-result/v1", run_id: "spike-one", source_sha: GIT_SHA,
+      report_path: "/tmp/report.md", prototype: null, retained_evidence: [],
+      residual_gaps: [], stuck_slices: [],
+    },
+    {
+      schema: "agent-flow.epic-state/v1", run_id: "epic-one", repository: "/tmp/repo",
+      epic_path: "/tmp/epic.json", epic_sha256: SHA256,
+      run_manifest_path: "/tmp/run.json", epic_root_task_id: "task-epic-root",
+      source_ref: "refs/heads/epic/source", source_worktree: "/tmp/source",
+      recorded_target_sha: GIT_SHA, stack_generation: 0,
+      features: {
+        feature: {
+          status: "pending", child_run_id: null, manifest_path: null,
+          root_task_id: null, worktree: null, error: null,
+        },
+      },
+      stack_checkpoints: [],
+    },
+    {
+      schema: "agent-flow.stack-state/v1", run_id: "stack-one", generation: 1,
+      plan_fingerprint: SHA256, status: "building", created_layers: [],
+      final_head_sha: null, final_tree_sha: null, prs: [], rollback_actions: [], error: null,
+    },
+    {
+      schema: "agent-flow.delivery-state/v1", run_id: "delivery-one", generation: 1,
+      status: "pending", target_sha: GIT_SHA, source_sha: GIT_SHA,
+      delivery_head_sha: null, applied_layers: [], verification: null,
+      completion_pr: null, pending_layer: null, rollback_actions: [], error: null,
+    },
+  ];
+  const results = await Promise.all(documents.map((document) => validateContract(document)));
+  assert.equal(results.every(({ valid }) => valid), true);
+
+  documents[2].status = "caller-invented";
+  assert.equal((await validateContract(documents[2])).valid, false);
+});
+
 test("standalone schemas keep shared scalar definitions consistent", async () => {
   const names = [
     "run",

@@ -201,7 +201,7 @@ test("complete routing renders native configs with restricted toolsets", async (
       "utf8",
     ),
   );
-  assert.deepEqual(controller.platform_toolsets.cli, ["kanban", "no_mcp"]);
+  assert.deepEqual(controller.platform_toolsets.cli, ["kanban", "terminal", "no_mcp"]);
   const analyst = parse(
     await readFile(
       join(paths.home, ".hermes", "profiles", "analyst", "config.yaml"),

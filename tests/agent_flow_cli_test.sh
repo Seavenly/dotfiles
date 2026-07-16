@@ -11,6 +11,11 @@ assert_contains "$help" 'agent-flow status --run'
 assert_contains "$help" 'agent-flow cancel --run'
 assert_contains "$help" 'agent-flow review transition'
 assert_contains "$help" 'agent-flow review record-comments'
+assert_contains "$help" 'agent-flow launch feature'
+assert_contains "$help" 'agent-flow launch spike'
+assert_contains "$help" 'agent-flow launch epic'
+assert_contains "$help" 'agent-flow stacks publish'
+assert_contains "$help" 'agent-flow delivery observe'
 
 set +e
 output="$("$root/bin/agent-flow" launch review 2>&1)"

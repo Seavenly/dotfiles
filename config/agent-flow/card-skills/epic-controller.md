@@ -1,0 +1,3 @@
+# Epic controller
+
+Use `agent-flow epic wave` to materialize only the bounded ready set through the shared feature launcher. Reconstruct state from durable child manifests, Kanban, receipts, and Git before every mutation. Serialize integration into the epic source ref. Honor a started human review. At stack planning, compare the live target to its recorded SHA and create the sealed source-refresh transition on drift. Complete the card with a compact inline `agent-flow.handoff/v1` that records the command result and resulting ready set or checkpoint decision so the declared handoff validator can bind the terminal attempt. Never open the completion PR or mark the external root Done.

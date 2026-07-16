@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.delivery-state.v1.schema.json",
+  "title": "agent-flow.delivery-state/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "generation", "status", "target_sha", "source_sha", "delivery_head_sha", "applied_layers", "verification", "completion_pr", "pending_layer", "rollback_actions", "error"],
+  "properties": {
+    "schema": { "const": "agent-flow.delivery-state/v1" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["pending", "assembling", "assembled", "assembly_failed", "verified", "verification_failed", "completion_open", "completion_checkpoint_required", "unsafe_intervention_required", "stale", "complete"] },
+    "target_sha": { "$ref": "#/$defs/sha" },
+    "source_sha": { "$ref": "#/$defs/sha" },
+    "delivery_head_sha": { "$ref": "#/$defs/nullableSha" },
+    "applied_layers": { "type": "array", "items": { "$ref": "#/$defs/applied" } },
+    "verification": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/verification" }] },
+    "completion_pr": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/completion" }] },
+    "pending_layer": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/pending" }] },
+    "rollback_actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+    "error": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,127}$" },
+    "path": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "nullableSha": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha" }] },
+    "action": {
+      "type": "object", "additionalProperties": false, "required": ["argv"],
+      "properties": { "argv": { "type": "array", "minItems": 1, "items": { "type": "string" } } }
+    },
+    "retarget": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "object", "additionalProperties": false, "required": ["id", "status"], "properties": { "id": { "anyOf": [{ "type": "string" }, { "type": "integer" }] }, "status": { "enum": ["pending", "complete"] } } }
+      ]
+    },
+    "applied": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "reviewed_head_sha", "resulting_head_sha", "resulting_tree_sha", "review_manifest", "retarget"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" }, "reviewed_head_sha": { "$ref": "#/$defs/sha" },
+        "resulting_head_sha": { "$ref": "#/$defs/sha" }, "resulting_tree_sha": { "$ref": "#/$defs/sha" },
+        "review_manifest": { "$ref": "#/$defs/path" }, "retarget": { "$ref": "#/$defs/retarget" }
+      }
+    },
+    "pending": {
+      "type": "object", "additionalProperties": false,
+      "required": ["base_sha", "id", "index", "review_manifest", "reviewed_head_sha"],
+      "properties": {
+        "base_sha": { "$ref": "#/$defs/sha" }, "id": { "$ref": "#/$defs/id" },
+        "index": { "type": "integer", "minimum": 0 }, "review_manifest": { "$ref": "#/$defs/path" },
+        "reviewed_head_sha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "commandResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["argv", "exit_code", "stdout", "stderr"],
+      "properties": {
+        "argv": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "exit_code": { "type": "integer" }, "stdout": { "type": "string" }, "stderr": { "type": "string" }
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["passed", "results"],
+      "properties": {
+        "passed": { "type": "boolean" }, "delivery_tree": { "$ref": "#/$defs/sha" },
+        "source_tree": { "$ref": "#/$defs/sha" },
+        "results": { "type": "array", "items": { "$ref": "#/$defs/commandResult" } }
+      }
+    },
+    "completion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "url", "target_sha", "delivery_head_sha", "status"],
+      "properties": {
+        "id": { "anyOf": [{ "type": "string" }, { "type": "integer" }] }, "url": { "type": "string", "minLength": 1 },
+        "target_sha": { "$ref": "#/$defs/sha" }, "delivery_head_sha": { "$ref": "#/$defs/sha" },
+        "status": { "enum": ["ready", "merge_checkpoint_required", "merged"] },
+        "checkpoint": {
+          "type": "object", "additionalProperties": false,
+          "required": ["actor", "approved_at", "reason", "target_sha", "delivery_head_sha"],
+          "properties": {
+            "actor": { "type": "string", "minLength": 1 },
+            "approved_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T" },
+            "reason": { "type": "string", "minLength": 1 },
+            "target_sha": { "$ref": "#/$defs/sha" },
+            "delivery_head_sha": { "$ref": "#/$defs/sha" }
+          }
+        },
+        "merge_commit_sha": { "$ref": "#/$defs/sha" }
+      }
+    }
+  }
+}
