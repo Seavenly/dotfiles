@@ -58,7 +58,7 @@ echo "ok - local tuicr reviews use pull-request merge-base semantics"
 
 : > "$tmux_log"
 PATH="$fake_bin:$PATH" TMUX_TEST_LOG="$tmux_log" REVIEW_WORKTREE="$repo" \
-  "$root/bin/tmux-tuicr-reviews"
+  "$root/bin/tmux-review-inbox"
 assert_contains "$(cat "$tmux_log")" 'tuicr -r "main...feature"'
 assert_contains "$(cat "$tmux_log")" \
   'set-option -w -t :3 @tuicr_rev main...feature'

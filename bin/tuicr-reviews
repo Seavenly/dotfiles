@@ -5,9 +5,10 @@ set -euo pipefail
 # hotkey can list them and open the right worktree. One JSON object per line.
 #
 #   tuicr-reviews add --repo R --worktree W --base B --branch BR [--slug S] [--summary "..."]
-#   tuicr-reviews list    # prune-then-print TSV: worktree base branch repo slug created summary
+#   tuicr-reviews list [--approved]   # TSV: worktree base branch repo slug created summary approved
+#   tuicr-reviews toggle-approved --worktree W --base B --branch BR
 #   tuicr-reviews prune   # drop entries whose worktree directory no longer exists
-#   tuicr-reviews rm --worktree W
+#   tuicr-reviews rm --worktree W [--base B --branch BR]   # one review, or all in W
 #
 # Entries are keyed by (worktree, base, branch) so one checkout can hold several
 # reviews (e.g. several PRs off a shared base); re-adding the same triple
@@ -20,17 +21,37 @@ file="${TUICR_REVIEWS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/tuicr
 die() { echo "tuicr-reviews: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is required"
 
-ensure_file() { mkdir -p "$(dirname "$file")"; [[ -f "$file" ]] || : > "$file"; }
+# Remove leftover temp files from crashed/aborted runs. Only sweeps temps whose
+# owning PID is no longer alive, so it is safe against concurrent invocations.
+sweep_stale_tmp() {
+  local f pid
+  for f in "$file".tmp.*; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*.}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && continue
+    rm -f "$f"
+  done
+}
 
-# Emit the registry with malformed lines and vanished worktrees dropped.
+ensure_file() { mkdir -p "$(dirname "$file")"; sweep_stale_tmp; [[ -f "$file" ]] || : > "$file"; }
+
+# Emit the registry with malformed lines and vanished worktrees dropped. Must
+# always succeed: the per-line filter is an if-block (not `test && printf`, whose
+# false result on the final line would make the whole `while` - and this function
+# - exit non-zero, aborting the caller's `clean_stream > tmp; mv tmp file` under
+# `set -e` before the `mv` and jamming every registry write). The trailing
+# `return 0` is a belt-and-suspenders guarantee.
 clean_stream() {
   [[ -f "$file" ]] || return 0
   local line wt
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     wt="$(printf '%s' "$line" | jq -r '.worktree // empty' 2>/dev/null)" || continue
-    [[ -n "$wt" && -d "$wt" ]] && printf '%s\n' "$line"
+    if [[ -n "$wt" && -d "$wt" ]]; then
+      printf '%s\n' "$line"
+    fi
   done < "$file"
+  return 0
 }
 
 persist_clean() {
@@ -66,30 +87,63 @@ case "$cmd" in
       'select(.worktree != $wt or .base != $base or .branch != $branch)' > "$tmp"
     jq -cn --arg repo "$repo" --arg wt "$worktree" --arg base "$base" \
            --arg branch "$branch" --arg slug "$slug" --arg created "$created" --arg summary "$summary" \
-      '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created, summary:$summary}' >> "$tmp"
+      '{repo:$repo, worktree:$wt, base:$base, branch:$branch, slug:$slug, created:$created, summary:$summary, approved:false}' >> "$tmp"
     mv "$tmp" "$file"
     ;;
   list)
+    only_approved=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in --approved) only_approved=1; shift;; *) die "unknown arg: $1";; esac
+    done
     persist_clean
-    jq -r '[.worktree, .base, .branch, .repo, (.slug // ""), (.created // ""), (.summary // "")] | @tsv' "$file" \
+    jq -r --argjson ao "$only_approved" '
+      select($ao == 0 or (.approved == true))
+      | [.worktree, .base, .branch, .repo, (.slug // ""), (.created // ""), (.summary // ""), (.approved // false)] | @tsv' "$file" \
       | sort -t "$(printf '\t')" -k6,6r
+    ;;
+  toggle-approved)
+    worktree="" base="" branch=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --worktree) worktree="$2"; shift 2;;
+        --base) base="$2"; shift 2;;
+        --branch) branch="$2"; shift 2;;
+        *) die "unknown arg: $1";;
+      esac
+    done
+    [[ -n "$worktree" && -n "$base" && -n "$branch" ]] || die "toggle-approved needs --worktree, --base, --branch"
+    ensure_file
+    tmp="$file.tmp.$$"
+    clean_stream | jq -c --arg wt "$worktree" --arg base "$base" --arg branch "$branch" \
+      'if (.worktree == $wt and .base == $base and .branch == $branch) then .approved = ((.approved // false) | not) else . end' > "$tmp"
+    mv "$tmp" "$file"
     ;;
   prune)
     persist_clean
     ;;
   rm)
-    worktree=""
+    worktree="" base="" branch=""
     while [[ $# -gt 0 ]]; do
-      case "$1" in --worktree) worktree="$2"; shift 2;; *) die "unknown arg: $1";; esac
+      case "$1" in
+        --worktree) worktree="$2"; shift 2;;
+        --base) base="$2"; shift 2;;
+        --branch) branch="$2"; shift 2;;
+        *) die "unknown arg: $1";;
+      esac
     done
-    [[ -n "$worktree" ]] || die "rm needs --worktree"
+    [[ -n "$worktree" ]] || die "rm needs --worktree (add --base --branch to drop just one review)"
     ensure_file
     tmp="$file.tmp.$$"
-    clean_stream | jq -c --arg wt "$worktree" 'select(.worktree != $wt)' > "$tmp"
+    if [[ -n "$base" && -n "$branch" ]]; then
+      clean_stream | jq -c --arg wt "$worktree" --arg base "$base" --arg branch "$branch" \
+        'select(.worktree != $wt or .base != $base or .branch != $branch)' > "$tmp"
+    else
+      clean_stream | jq -c --arg wt "$worktree" 'select(.worktree != $wt)' > "$tmp"
+    fi
     mv "$tmp" "$file"
     ;;
   ""|-h|--help)
-    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR==1 { next } /^#/ { started=1; sub(/^# ?/, ""); print; next } started { exit }' "$0"
     ;;
   *) die "unknown command: $cmd";;
 esac

@@ -73,6 +73,7 @@ expected_skills=(
   to-tickets
   triage
   tuicr
+  tuicr-reviews
   wayfinder
   write-a-skill
 )
@@ -103,10 +104,16 @@ expected_repository() {
   esac
 }
 
+local_skills=(tuicr-reviews)
+
 for skill in "${expected_skills[@]}"; do
   package="$skills_root/$skill"
   lineage="$package/LINEAGE.md"
   [[ -s "$package/SKILL.md" ]] || fail "$skill is missing SKILL.md"
+  if [[ " ${local_skills[*]} " == *" $skill "* ]]; then
+    [[ ! -e "$lineage" ]] || fail "$skill is local but unexpectedly has LINEAGE.md"
+    continue
+  fi
   [[ -s "$lineage" ]] || fail "$skill is missing LINEAGE.md"
   assert_contains "$(cat "$lineage")" 'schema_version: 1'
   kind="$(awk '/^kind: / { print $2; exit }' "$lineage")"
@@ -123,7 +130,7 @@ for skill in "${expected_skills[@]}"; do
       || fail "$skill has invalid upstream revision: $revision"
   done <<< "$revisions"
 done
-echo "ok - approved skills have valid source lineage"
+echo "ok - externally sourced skills have valid lineage and local skills are explicit"
 
 [[ ! -d "$skills_root/caveman" ]] || fail "retired caveman skill is managed"
 [[ ! -d "$skills_root/grill-me" ]] || fail "retired grill-me skill is managed"

@@ -35,12 +35,12 @@ wrappers are mirrored with their executable bit set.
 - The `tuicr` binary is managed through mise's GitHub backend
   (`github:agavra/tuicr` in `mise.toml`); these wrappers require it on `PATH`.
 - Personal tmux review hotkeys live outside this skill and need no GitHub PR:
-  `prefix + r` (`bin/tmux-tuicr-reviews`) picks a recorded review from the
-  `bin/tuicr-reviews` registry - which the `feature-flow` command populates on
-  wrap-up - and opens it in its worktree; `prefix + b` (`bin/tmux-tuicr
-  --pick-base`) reviews any fzf-picked branch against a chosen base. The
-  upstream `tuicr-wrapper.sh` here is the agent-facing launcher the skill
-  documents, and it stays distinct from these wrappers.
+  `prefix + r` (`bin/tmux-review-inbox`) is a combined review inbox - local
+  agent reviews from the `bin/tuicr-reviews` registry plus coworker PRs - and
+  `prefix + b` (`bin/tmux-tuicr --pick-base`) reviews any branch against a
+  chosen base. The registry/merge workflow is documented in the separate
+  `tuicr-reviews` skill. The upstream `tuicr-wrapper.sh` here is the agent-facing
+  launcher this skill documents, and it stays distinct from those wrappers.
 
 ## Update policy
 
