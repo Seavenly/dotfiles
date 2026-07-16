@@ -8,6 +8,17 @@ dynamic workflow to implement it. The autonomous build (plan → TDD →
 critic → synthesize) lives in the workflow; you handle the interview,
 worktree/setup, the optional plan gate, and the wrap-up.
 
+> **⚠️ DELIVERY MODE — LOCAL REVIEW ONLY (overrides the PR steps in wrap-up).**
+> The finished branch is delivered to the **local `tuicr` review inbox**, NOT as a
+> GitHub PR. In Step 6: **register the review with `tuicr-reviews add`** and leave
+> the local branch + worktree in place — then stop. **Do NOT `git push` and do NOT
+> `gh pr create`** (not even a draft), even when `--story` is given. Since nothing
+> hits GitHub, there is no PR link to auto-transition Jira: leave the story **In
+> Progress** and comment the local review handle / branch name on it instead of a
+> PR link (skip the transition-to-In-Review + PR-comment step). The human reviews
+> and integrates locally. (Rationale + scope: memory
+> `feedback-epic-flow-local-review-not-prs`.)
+
 User's invocation: `/feature-flow $ARGUMENTS`
 
 ## Read first
