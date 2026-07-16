@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export async function acquireRunMutationLock(
@@ -44,6 +44,25 @@ export async function acquireExternalOwnershipLock({
       `external ownership is being claimed; retry after it exits (${lockPath})`,
     staleMessage:
       `stale external ownership lock detected; remove ${lockPath} after confirming no launcher is active`,
+  });
+}
+
+export async function acquireBoardRegistryLock({ kanbanHome }) {
+  await mkdir(kanbanHome, { recursive: true, mode: 0o700 });
+  const boardStore = await realpath(kanbanHome);
+  const lockPath = join(
+    boardStore,
+    "agent-flow",
+    "board-registry.lock",
+  );
+  return acquireExclusiveLock({
+    busyCode: "AGENT_FLOW_BOARD_BUSY",
+    lockPath,
+    operation: "board-ownership",
+    busyMessage: () =>
+      `board ownership is being verified; retry after it exits (${lockPath})`,
+    staleMessage:
+      `stale board lock detected; remove ${lockPath} after confirming no launcher is active`,
   });
 }
 

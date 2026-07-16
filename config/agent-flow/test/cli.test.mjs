@@ -680,6 +680,86 @@ test("Hermes adapter materializes and reconciles tasks through native Kanban", a
   ]);
 });
 
+test("Hermes adapter idempotently ensures its selected named board", async () => {
+  const calls = [];
+  const adapter = new HermesAdapter({
+    board: "cli-test",
+    async run(args, options) {
+      calls.push({ args, options });
+      if (args.includes("list")) {
+        return calls.filter(({ args: prior }) => prior.includes("list")).length === 1
+          ? []
+          : [{ slug: "cli-test", default_workdir: "/tmp/worktree" }];
+      }
+      return "ok";
+    },
+  });
+
+  await adapter.ensureBoard({
+    name: "Agent Flow: review-cli-example",
+    description: "Review the candidate",
+    defaultWorkdir: "/tmp/worktree",
+  });
+
+  assert.deepEqual(calls, [{
+    args: ["kanban", "boards", "list", "--json"],
+    options: { json: true, signal: undefined },
+  }, {
+    args: [
+      "kanban", "boards", "create", "cli-test",
+      "--name", "Agent Flow: review-cli-example",
+      "--description", "Review the candidate",
+      "--default-workdir", "/tmp/worktree",
+    ],
+    options: { json: false, signal: undefined },
+  }, {
+    args: ["kanban", "boards", "list", "--json"],
+    options: { json: true, signal: undefined },
+  }]);
+});
+
+test("Hermes adapter rejects a named board bound to another repository", async () => {
+  const calls = [];
+  const adapter = new HermesAdapter({
+    board: "cli-test",
+    async run(args) {
+      calls.push(args);
+      return [{ slug: "cli-test", default_workdir: "/other/repository" }];
+    },
+  });
+
+  await assert.rejects(
+    adapter.ensureBoard({
+      name: "Agent Flow: review-cli-example",
+      description: "Review the candidate",
+      defaultWorkdir: "/tmp/worktree",
+    }),
+    /already belongs to repository \/other\/repository/,
+  );
+  assert.deepEqual(calls, [["kanban", "boards", "list", "--json"]]);
+});
+
+test("Hermes adapter rejects a second board for one repository", async () => {
+  const calls = [];
+  const adapter = new HermesAdapter({
+    board: "cli-test",
+    async run(args) {
+      calls.push(args);
+      return [{ slug: "existing-board", default_workdir: "/tmp/worktree" }];
+    },
+  });
+
+  await assert.rejects(
+    adapter.ensureBoard({
+      name: "Agent Flow: review-cli-example",
+      description: "Review the candidate",
+      defaultWorkdir: "/tmp/worktree",
+    }),
+    /repository \/tmp\/worktree already belongs to board existing-board/,
+  );
+  assert.deepEqual(calls, [["kanban", "boards", "list", "--json"]]);
+});
+
 test("Hermes adapter exposes tenant lifecycle operations through native Kanban", async () => {
   const calls = [];
   const adapter = new HermesAdapter({

@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { validateContract } from "./schema-validator.mjs";
@@ -7,10 +9,69 @@ const execFileAsync = promisify(execFile);
 const AUTHORITY_PATTERN =
   /<!-- agent-flow-authority\n(?<document>\{[\s\S]*?\})\n-->/;
 
+async function canonicalWorkdir(path) {
+  if (typeof path !== "string") return null;
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 export class HermesAdapter {
   constructor({ board = null, run = defaultRun } = {}) {
     this.board = board;
     this.run = run;
+  }
+
+  async ensureBoard({ name, description, defaultWorkdir, signal = undefined }) {
+    if (this.board === null) return;
+    const boards = await this.#listBoards(signal);
+    const selectedWorkdir = await canonicalWorkdir(defaultWorkdir);
+    for (const board of boards) {
+      if (
+        board.slug !== this.board &&
+        (await canonicalWorkdir(board.default_workdir)) === selectedWorkdir
+      ) {
+        throw new Error(
+          `repository ${defaultWorkdir} already belongs to board ${board.slug}`,
+        );
+      }
+    }
+    const existing = boards.find(
+      ({ slug }) => slug === this.board,
+    );
+    if (existing) {
+      if (
+        (await canonicalWorkdir(existing.default_workdir)) !== selectedWorkdir
+      ) {
+        throw new Error(
+          `board ${this.board} already belongs to repository ` +
+            `${existing.default_workdir ?? "<unset>"}`,
+        );
+      }
+      return;
+    }
+    await this.run([
+      "kanban",
+      "boards",
+      "create",
+      this.board,
+      "--name",
+      name,
+      "--description",
+      description,
+      "--default-workdir",
+      defaultWorkdir,
+    ], { signal, json: false });
+    const created = (await this.#listBoards(signal)).find(
+      ({ slug }) => slug === this.board,
+    );
+    if (created?.default_workdir !== defaultWorkdir) {
+      throw new Error(
+        `board ${this.board} was not created for repository ${defaultWorkdir}`,
+      );
+    }
   }
 
   async createTask({
@@ -188,6 +249,17 @@ export class HermesAdapter {
       this.#kanbanArgs(["show", taskId, "--json"]),
       { signal },
     );
+  }
+
+  async #listBoards(signal) {
+    const boards = await this.run(
+      ["kanban", "boards", "list", "--json"],
+      { signal, json: true },
+    );
+    if (!Array.isArray(boards)) {
+      throw new Error("Hermes adapter did not return a board list");
+    }
+    return boards;
   }
 
   #kanbanArgs(args) {

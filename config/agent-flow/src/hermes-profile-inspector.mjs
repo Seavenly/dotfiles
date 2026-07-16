@@ -28,6 +28,7 @@ probe_env = _make_run_env({})
 probe_code = """
 import json
 import os
+import shutil
 home = os.environ.get("HOME", "")
 print(json.dumps({
     "home": home,
@@ -37,6 +38,7 @@ print(json.dumps({
     ),
     "providerSecretFilteredByDefault": "OPENAI_API_KEY" not in os.environ,
     "gatewaySecretFiltered": "GATEWAY_RELAY_SECRET" not in os.environ,
+    "agentFlowPath": shutil.which("agent-flow"),
 }))
 """
 probe_result = subprocess.run(
@@ -92,8 +94,8 @@ function hermesPython(versionOutput) {
   return join(installDirectory.trim(), "venv", "bin", "python");
 }
 
-async function inspectHermesProfile({ home, name, python }) {
-  const profileHome = join(home, ".hermes", "profiles", name);
+async function inspectHermesProfile({ hermesHome, home, name, python }) {
+  const profileHome = join(hermesHome, "profiles", name);
   const { stdout } = await execFileAsync(python, ["-c", INSPECT_PROFILE], {
     encoding: "utf8",
     env: {
@@ -119,6 +121,10 @@ async function inspectHermesProfile({ home, name, python }) {
     typeof inspection.userProfileEnabled !== "boolean" ||
     !inspection.terminalProbe ||
     typeof inspection.terminalProbe.home !== "string" ||
+    !(
+      inspection.terminalProbe.agentFlowPath === null ||
+      typeof inspection.terminalProbe.agentFlowPath === "string"
+    ) ||
     [
       "homeReadable",
       "ordinaryEnvInherited",
@@ -136,7 +142,11 @@ async function inspectHermesProfile({ home, name, python }) {
   return inspection;
 }
 
-export function createHermesProfileInspector({ home, versionOutput }) {
+export function createHermesProfileInspector({
+  hermesHome = join(home, ".hermes"),
+  home,
+  versionOutput,
+}) {
   const python = hermesPython(versionOutput);
-  return (name) => inspectHermesProfile({ home, name, python });
+  return (name) => inspectHermesProfile({ hermesHome, home, name, python });
 }

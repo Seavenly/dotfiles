@@ -9,8 +9,11 @@ inline handoffs for terminal-free review workers. Review launch now supports
 hotfix, fast, and standard urgency. Run status, convergent cancellation,
 external-root uniqueness, and explicit supersession are now implemented for
 sealed review runs. Repeated review launch now performs independently derived
-resume-migration comparison and durable limit admission. Registry changes and
-stack mechanics remain phased work under the approved implementation plan.
+resume-migration comparison and durable limit admission. The sacrificial
+real-board tracer and operator dashboard review are complete; the durable
+evidence is recorded in [`PHASE-2-TRACER.md`](PHASE-2-TRACER.md). Registry
+changes and stack mechanics remain phased work under the approved
+implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -103,7 +106,12 @@ incompletely cancelled projection exits nonzero.
 
 - One repository maps to one named board. The launcher derives the default
   slug from the forge coordinate and records it in the run manifest. A caller
-  may select an existing board explicitly.
+  may select a board explicitly. After sealing the run and before creating its
+  first card, launch idempotently ensures that selected named board exists with
+  the repository as its default work directory. An existing board bound to a
+  different work directory is rejected, as is a second board for the same
+  canonical repository. A Hermes-store registry lock serializes this ownership
+  check and first creation across different run IDs and caller state homes.
 - A standalone flow uses its `run_id` as the Kanban tenant. Feature streams
   beneath an epic share the epic tenant so one filter shows the complete graph.
 - Every card title begins with `[<run-id>/<stage-key>]`. Its body names the flow
@@ -397,18 +405,25 @@ stable contracts. Credentials remain in Hermes-owned `.env` and `auth.json`
 files and never enter the overlay or run metadata.
 
 Profile doctoring supports only explicitly validated Hermes releases, initially
-v0.18.2. It constructs each profile through Hermes' offline native loading path
+v0.18.2. It honors Hermes' native `HERMES_HOME` override so isolated
+installations are inspected at the same profile and dispatcher roots Hermes
+uses. It constructs each profile through Hermes' offline native loading path
 without making a model request, then compares the exact worker tool names,
 dispatch ownership, decomposition setting, terminal backend, HOME mode, memory
 settings, and concurrency limits with the managed catalog. For terminal lanes,
 it also launches a harmless sentinel subprocess through Hermes' local terminal
 environment construction to verify real-HOME access, ordinary environment
 inheritance, default provider-secret filtering, and unconditional
-gateway-secret filtering. Its trust-posture report separates technically
+gateway-secret filtering. The gate lane must also resolve the declared
+`agent-flow` command through the same effective terminal environment, so a
+missing command link fails preflight instead of relying on worker discovery.
+Its trust-posture report separates technically
 enforced restrictions from contract-only worker rules and states that local
 profiles are not filesystem sandboxes. It also verifies credentials for every
 primary and fallback provider, including custom-provider `key_env` declarations
-and explicitly keyless endpoints.
+and explicitly keyless endpoints. OpenAI Codex credentials count only when
+Hermes can read them from its environment or auth stores; a separate Codex CLI
+auth file is not sufficient.
 
 The JSON report includes a stable SHA-256 fingerprint for each effective
 profile and one aggregate `profileSetFingerprint`. The fingerprint covers the

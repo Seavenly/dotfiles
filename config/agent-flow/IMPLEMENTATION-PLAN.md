@@ -1,6 +1,9 @@
 # Hermes agent-flow implementation plan
 
-Status: approved on 2026-07-13. Phase 1 is complete. Phase 2 contract definition
+Status: approved on 2026-07-13. Phase 1 is complete. Phase 2 completed on
+2026-07-15, including its sacrificial real-board tracer, cancellation recovery,
+immutable-run evidence, and operator dashboard review. The durable evidence is
+recorded in [`PHASE-2-TRACER.md`](PHASE-2-TRACER.md). Phase 2 contract definition
 and corrective review completed on 2026-07-14. The task-pinned command-gate
 tracer is implemented. The canonical standard review graph is now versioned,
 and its handoff gates bind assigned producer task IDs through launcher-created
@@ -18,8 +21,7 @@ Hermes v0.18.2's non-atomic idempotency race. Interrupted, duplicate, and
 concurrent launches cannot create duplicate work. Resume now independently
 recomputes implementation, contract, profile, graph, gate, input, skill, and
 role-contract compatibility deltas, requires an exact append-only approval for
-incompatible runs, and blocks continuation after a durable limit overrun. The
-remaining Phase 2 work is the sacrificial real-board tracer and review gate.
+incompatible runs, and blocks continuation after a durable limit overrun.
 External-root ownership now canonicalizes GitHub and Jira identity, rejects
 active duplicates under a host-local ownership lock, and requires an explicit
 terminal predecessor for supersession. Status now validates sealed run identity
@@ -256,8 +258,9 @@ Exit criteria:
   cancellation reaches an auditable terminal state without stopping unrelated
   runs in the normal case and reports exact survivors when it cannot converge.
 
-Review gate: inspect the tracer, cancellation recovery, immutable-run evidence,
-and dashboard before broadening the CLI.
+Review gate: completed on 2026-07-15 after inspection of the tracer,
+cancellation recovery, immutable-run evidence, and dashboard. See
+[`PHASE-2-TRACER.md`](PHASE-2-TRACER.md).
 
 Deferred hardening is evidence-driven and does not block later phases. Revisit
 a restricted Hermes plugin or kernel primitive only after an undeclared

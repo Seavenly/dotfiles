@@ -7,7 +7,7 @@ const PROVIDER_ENV = {
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
   ],
-  "openai-codex": ["OPENAI_CODEX_TOKEN"],
+  "openai-codex": [],
   openai: ["OPENAI_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
   nous: ["NOUS_API_KEY"],
@@ -98,12 +98,17 @@ function credentialRequirement(config, provider) {
   };
 }
 
-async function credentialAvailable({ home, profileHome, requirement }) {
+async function credentialAvailable({
+  hermesHome,
+  home,
+  profileHome,
+  requirement,
+}) {
   if (!requirement.required) return true;
   for (const provider of requirement.authProviders) {
     if (await authStoreHasProvider(join(profileHome, "auth.json"), provider))
       return true;
-    if (await authStoreHasProvider(join(home, ".hermes", "auth.json"), provider))
+    if (await authStoreHasProvider(join(hermesHome, "auth.json"), provider))
       return true;
   }
 
@@ -113,7 +118,7 @@ async function credentialAvailable({ home, profileHome, requirement }) {
   }
   for (const envFile of [
     join(profileHome, ".env"),
-    join(home, ".hermes", ".env"),
+    join(hermesHome, ".env"),
   ]) {
     try {
       const present = envValues(await readFile(envFile, "utf8"));
@@ -125,12 +130,6 @@ async function credentialAvailable({ home, profileHome, requirement }) {
   }
 
   if (
-    requirement.provider === "openai-codex" &&
-    (await credentialFileHasValue(join(home, ".codex", "auth.json")))
-  ) {
-    return true;
-  }
-  if (
     requirement.provider === "anthropic" &&
     (await credentialFileHasValue(join(home, ".claude", ".credentials.json")))
   ) {
@@ -139,7 +138,12 @@ async function credentialAvailable({ home, profileHome, requirement }) {
   return false;
 }
 
-export async function inspectProfileCredentials({ config, home, profileHome }) {
+export async function inspectProfileCredentials({
+  config,
+  home,
+  hermesHome = join(home, ".hermes"),
+  profileHome,
+}) {
   const primaryProvider = config.model?.provider;
   const providers = primaryProvider
     ? [
@@ -153,7 +157,12 @@ export async function inspectProfileCredentials({ config, home, profileHome }) {
   const failures = [];
   for (const selected of providers) {
     const requirement = credentialRequirement(config, selected.provider);
-    if (!(await credentialAvailable({ home, profileHome, requirement }))) {
+    if (!(await credentialAvailable({
+      hermesHome,
+      home,
+      profileHome,
+      requirement,
+    }))) {
       failures.push(
         `no credential source found for ${selected.role} provider ${selected.provider}`,
       );

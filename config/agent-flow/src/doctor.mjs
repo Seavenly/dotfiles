@@ -6,6 +6,7 @@ import {
   createHermesProfileInspector,
   defaultHermesRunner,
 } from "./hermes-profile-inspector.mjs";
+import { resolveHermesRoot } from "./hermes-home.mjs";
 import {
   PROFILE_CATALOG,
   PROFILE_CONCURRENCY,
@@ -64,7 +65,7 @@ function terminalCredentialPosture({
   );
 }
 
-async function activeDispatchOwners(home, runHermes) {
+async function activeDispatchOwners(hermesHome, runHermes) {
   const output = await runHermes(["gateway", "list"]);
   const activeProfiles = output
     .split("\n")
@@ -74,8 +75,8 @@ async function activeDispatchOwners(home, runHermes) {
   for (const name of activeProfiles) {
     const profileHome =
       name === "default"
-        ? join(home, ".hermes")
-        : join(home, ".hermes", "profiles", name);
+        ? hermesHome
+        : join(hermesHome, "profiles", name);
     let config = {};
     try {
       config = await readYaml(join(profileHome, "config.yaml"));
@@ -89,12 +90,14 @@ async function activeDispatchOwners(home, runHermes) {
 
 export async function doctorProfiles({
   home = process.env.HOME,
+  hermesHome = process.env.HERMES_HOME,
   runHermes = defaultHermesRunner(
     process.env.AGENT_FLOW_HERMES_BIN ?? "hermes",
   ),
   inspectProfile,
 } = {}) {
   if (!home) throw new Error("HOME is required");
+  hermesHome = resolveHermesRoot({ hermesHome, home });
   const checks = [];
   const profiles = [];
 
@@ -140,6 +143,7 @@ export async function doctorProfiles({
     try {
       effectiveProfileInspector = createHermesProfileInspector({
         home,
+        hermesHome,
         versionOutput,
       });
     } catch (error) {
@@ -150,7 +154,7 @@ export async function doctorProfiles({
   }
   for (const name of PROFILE_NAMES) {
     const contract = PROFILE_CATALOG[name];
-    const profileHome = join(home, ".hermes", "profiles", name);
+    const profileHome = join(hermesHome, "profiles", name);
     let config;
     try {
       config = await readYaml(join(profileHome, "config.yaml"));
@@ -280,6 +284,11 @@ export async function doctorProfiles({
             trustFailures.push(`${name}: ${failure}`);
           }
         }
+        if (name === "gate" && !inspection.terminalProbe.agentFlowPath) {
+          trustFailures.push(
+            `${name}: terminal cannot resolve the agent-flow command`,
+          );
+        }
       }
     } catch (error) {
       toolFailures.push(
@@ -295,6 +304,7 @@ export async function doctorProfiles({
 
     const credentials = await inspectProfileCredentials({
       config,
+      hermesHome,
       home,
       profileHome,
     });
@@ -363,6 +373,10 @@ export async function doctorProfiles({
         homeReadable: inspection?.terminalProbe?.homeReadable ?? null,
         ordinaryEnvironmentInherited,
         normalCliCredentialsReachable,
+        agentFlowCommandReachable:
+          terminalEnabled && inspection
+            ? Boolean(inspection.terminalProbe.agentFlowPath)
+            : null,
         providerSecretsFilteredByDefault:
           terminalEnabled && inspection
             ? providerSecretsFilteredByDefault
@@ -468,7 +482,7 @@ export async function doctorProfiles({
     );
   }
   try {
-    const activeOwners = await activeDispatchOwners(home, runHermes);
+    const activeOwners = await activeDispatchOwners(hermesHome, runHermes);
     if (!sameMembers(activeOwners, ["flow-controller"])) {
       dispatchFailures.push(
         `active dispatch owners: ${activeOwners.join(", ") || "none"}`,

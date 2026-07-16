@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { formatTaskAuthority, HermesAdapter } from "./hermes-adapter.mjs";
+import { resolveHermesKanbanHome } from "./hermes-home.mjs";
 import { parseExternalRef } from "./external-root.mjs";
 import { parseCancellationAudit } from "./cancellation-audit.mjs";
 import {
@@ -21,6 +22,7 @@ import {
   requireMigrationApproval,
 } from "./migration-compatibility.mjs";
 import {
+  acquireBoardRegistryLock,
   acquireExternalOwnershipLock,
   acquireRunMutationLock,
 } from "./run-lock.mjs";
@@ -83,6 +85,7 @@ export async function launchReview({
   const stateHome = env.XDG_STATE_HOME?.trim() ||
     (env.HOME ? join(env.HOME, ".local", "state") : null);
   if (!stateHome) throw new Error("HOME or XDG_STATE_HOME is required");
+  const kanbanHome = resolveHermesKanbanHome({ env });
   const runDirectory = join(
     stateHome,
     "agent-flow",
@@ -90,6 +93,7 @@ export async function launchReview({
     review.run_id,
   );
   let releaseLaunchLock = null;
+  let releaseBoardLock = null;
   let releaseOwnershipLock = null;
   try {
     const graphSource = await loadReviewGraph(
@@ -123,6 +127,9 @@ export async function launchReview({
         stateHome,
       });
     }
+    releaseBoardLock = await acquireBoardRegistryLock({
+      kanbanHome,
+    });
     await assertExternalOwnershipAvailable({
       adapterForBoard: (board) => board === review.kanban.board
         ? resolvedAdapter
@@ -144,6 +151,11 @@ export async function launchReview({
       runDirectory,
       now,
       graphSource,
+    });
+    await resolvedAdapter.ensureBoard({
+      name: `Agent Flow: ${review.run_id}`,
+      description: review.summary,
+      defaultWorkdir: repository.repositoryPath,
     });
     if (bundle.resumed) {
       const status = await projectRunStatus({
@@ -185,7 +197,11 @@ export async function launchReview({
     try {
       if (releaseLaunchLock) await releaseLaunchLock();
     } finally {
-      if (releaseOwnershipLock) await releaseOwnershipLock();
+      try {
+        if (releaseBoardLock) await releaseBoardLock();
+      } finally {
+        if (releaseOwnershipLock) await releaseOwnershipLock();
+      }
     }
   }
 }

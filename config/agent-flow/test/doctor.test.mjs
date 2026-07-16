@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { doctorProfiles } from "../src/doctor.mjs";
+import { inspectProfileCredentials } from "../src/profile-credentials.mjs";
 import { PROFILE_NAMES, renderProfiles } from "../src/profiles.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -112,6 +113,7 @@ function fakeProfileInspector(overrides = {}) {
       providerSecretFilteredByDefault: true,
       gatewaySecretFiltered: true,
       homeIsOsUserHome: true,
+      agentFlowPath: "/Users/test/.local/bin/agent-flow",
     },
   });
 }
@@ -199,6 +201,32 @@ test("profile doctor verifies routing, credentials, tools, and dispatcher owners
   assert.equal(repeated.profileSetFingerprint, report.profileSetFingerprint);
 });
 
+test("profile doctor honors the native Hermes home", async () => {
+  const paths = await fixture();
+  const hermesHome = join(paths.home, "isolated-hermes");
+  await rename(join(paths.home, ".hermes"), hermesHome);
+  for (const name of PROFILE_NAMES) {
+    const profileHome = join(hermesHome, "profiles", name);
+    const provider = name === "critic" ? "anthropic" : "openai-codex";
+    await writeFile(
+      join(profileHome, "auth.json"),
+      JSON.stringify({
+        providers: { [provider]: { access_token: "test-only" } },
+      }),
+      { mode: 0o600 },
+    );
+  }
+
+  const report = await doctorProfiles({
+    home: paths.home,
+    hermesHome,
+    runHermes: fakeHermes(),
+    inspectProfile: fakeProfileInspector(),
+  });
+
+  assert.equal(report.ok, true);
+});
+
 test("profile doctor rejects drift in host trust and concurrency posture", async () => {
   const paths = await fixture();
   const report = await doctorProfiles({
@@ -214,6 +242,7 @@ test("profile doctor rejects drift in host trust and concurrency posture", async
           providerSecretFilteredByDefault: false,
           gatewaySecretFiltered: true,
           homeIsOsUserHome: true,
+          agentFlowPath: null,
         },
       },
       "flow-controller": {
@@ -234,6 +263,7 @@ test("profile doctor rejects drift in host trust and concurrency posture", async
     /gate.*default provider-secret filtering/,
   );
   assert.match(trust.details.join("\n"), /flow-controller.*max_in_progress=12/);
+  assert.match(trust.details.join("\n"), /gate.*agent-flow command/);
 });
 
 test("profile doctor rejects unexpected worker tools even when the count matches", async () => {
@@ -339,6 +369,71 @@ test("profile doctor rejects structurally empty credential stores", async () => 
   });
 
   assert.equal(report.checks.find(({ id }) => id === "credentials").ok, false);
+});
+
+test("credential preflight accepts only Hermes-readable Codex auth", { concurrency: false }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "agent-flow-codex-credential-"));
+  const profileHome = join(home, ".hermes", "profiles", "critic");
+  await mkdir(join(home, ".codex"), { recursive: true });
+  await mkdir(profileHome, { recursive: true });
+  await writeFile(
+    join(home, ".codex", "auth.json"),
+    JSON.stringify({ tokens: { access_token: "codex-only" } }),
+  );
+  const priorToken = process.env.OPENAI_CODEX_TOKEN;
+  process.env.OPENAI_CODEX_TOKEN = "unsupported-environment-token";
+  t.after(() => {
+    if (priorToken === undefined) delete process.env.OPENAI_CODEX_TOKEN;
+    else process.env.OPENAI_CODEX_TOKEN = priorToken;
+  });
+
+  const result = await inspectProfileCredentials({
+    config: { model: { provider: "openai-codex", default: "gpt-5.3-codex" } },
+    home,
+    profileHome,
+  });
+
+  assert.equal(result.available, false);
+  assert.match(result.failures.join("\n"), /openai-codex/);
+});
+
+test("credential preflight reads shared auth from the selected Hermes home", async () => {
+  const home = await mkdtemp(join(tmpdir(), "agent-flow-hermes-home-auth-"));
+  const hermesHome = join(home, "isolated-hermes");
+  const profileHome = join(hermesHome, "profiles", "critic");
+  await mkdir(join(home, ".hermes"), { recursive: true });
+  await mkdir(profileHome, { recursive: true });
+  await writeFile(
+    join(home, ".hermes", "auth.json"),
+    JSON.stringify({
+      providers: { "openai-codex": { access_token: "wrong-root" } },
+    }),
+  );
+  const config = {
+    model: { provider: "openai-codex", default: "test-model" },
+  };
+
+  const unavailable = await inspectProfileCredentials({
+    config,
+    hermesHome,
+    home,
+    profileHome,
+  });
+  assert.equal(unavailable.available, false);
+
+  await writeFile(
+    join(hermesHome, "auth.json"),
+    JSON.stringify({
+      providers: { "openai-codex": { access_token: "selected-root" } },
+    }),
+  );
+  const available = await inspectProfileCredentials({
+    config,
+    hermesHome,
+    home,
+    profileHome,
+  });
+  assert.equal(available.available, true);
 });
 
 test("profile doctor accepts Hermes credential pools", async () => {

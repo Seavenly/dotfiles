@@ -20,6 +20,8 @@ import {
   inspectReviewRepository,
   materializationOrder,
 } from "../src/review-launch.mjs";
+import { resolveHermesKanbanHome } from "../src/hermes-home.mjs";
+import { acquireBoardRegistryLock } from "../src/run-lock.mjs";
 import { validateContract } from "../src/schema-validator.mjs";
 
 const GIT_SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -62,6 +64,10 @@ class FakeHermesAdapter {
     this.events = [];
     this.nextId = 1;
     this.unarchivableTaskIds = new Set();
+  }
+
+  async ensureBoard(spec) {
+    this.events.push({ type: "ensure-board", spec: structuredClone(spec) });
   }
 
   async createTask(spec) {
@@ -197,6 +203,14 @@ test("launch review seals a hotfix run before safely materializing its graph", a
       "root: t_1\n",
   );
   assert.equal(adapter.tasks.size, 10);
+  assert.deepEqual(adapter.events[0], {
+    type: "ensure-board",
+    spec: {
+      name: `Agent Flow: ${fixture.review.run_id}`,
+      description: fixture.review.summary,
+      defaultWorkdir: fixture.repository,
+    },
+  });
   assert.deepEqual(
     [...adapter.tasks.values()].map(({ title }) => title),
     [
@@ -1494,7 +1508,7 @@ test("fast review requires the artifact profile before mutation", async (t) => {
   await assert.rejects(readFile(fixture.runManifestPath), { code: "ENOENT" });
 });
 
-test("concurrent review launches serialize native Hermes materialization", async (t) => {
+test("concurrent review launches serialize board ownership and native Hermes materialization", async (t) => {
   const fixture = await reviewFixture(t, "review-launch-concurrent");
   const adapter = new FakeHermesAdapter({ createDelayMs: 10 });
   const errors = [captureStream(), captureStream()];
@@ -1509,11 +1523,89 @@ test("concurrent review launches serialize native Hermes materialization", async
   if (results.includes(1)) {
     assert.match(
       errors.find((stream) => stream.value()).value(),
-      /another launcher is active/,
+      /board ownership is being verified|another launcher is active/,
     );
   } else {
     assert.deepEqual(results, [0, 0]);
   }
+});
+
+test("board registry serialization follows the Hermes store", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "agent-flow-board-lock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const kanbanHome = join(directory, "hermes");
+  await mkdir(kanbanHome);
+  const release = await acquireBoardRegistryLock({
+    kanbanHome,
+  });
+  t.after(release);
+
+  await assert.rejects(
+    acquireBoardRegistryLock({
+      kanbanHome,
+    }),
+    /board ownership is being verified/,
+  );
+});
+
+test("profile homes and Kanban overrides share the native board lock", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "agent-flow-profile-lock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const hermesRoot = join(directory, "hermes");
+  await mkdir(join(hermesRoot, "profiles", "controller"), { recursive: true });
+  await mkdir(join(hermesRoot, "profiles", "worker"), { recursive: true });
+  const controllerHome = resolveHermesKanbanHome({
+    env: {
+      HOME: directory,
+      HERMES_HOME: join(hermesRoot, "profiles", "controller"),
+    },
+  });
+  const workerHome = resolveHermesKanbanHome({
+    env: {
+      HOME: directory,
+      HERMES_HOME: join(directory, "unrelated-profile-root"),
+      HERMES_KANBAN_HOME: hermesRoot,
+    },
+  });
+  assert.equal(controllerHome, hermesRoot);
+  assert.equal(workerHome, hermesRoot);
+  const release = await acquireBoardRegistryLock({
+    kanbanHome: controllerHome,
+  });
+  t.after(release);
+
+  await assert.rejects(
+    acquireBoardRegistryLock({ kanbanHome: workerHome }),
+    /board ownership is being verified/,
+  );
+});
+
+test("concurrent launches cannot assign one repository to two boards", async (t) => {
+  const first = await reviewFixture(t, "review-board-race-one");
+  const second = await replacementFixture(first, "review-board-race-two");
+  second.review.kanban.board = "review-launch-other";
+  await writeFile(
+    second.manifestPath,
+    `${JSON.stringify(second.review, null, 2)}\n`,
+  );
+  const adapters = [
+    new FakeHermesAdapter({ createDelayMs: 5 }),
+    new FakeHermesAdapter({ createDelayMs: 5 }),
+  ];
+  const errors = [captureStream(), captureStream()];
+
+  const results = await Promise.all([
+    launch(first, adapters[0], { stderr: errors[0] }),
+    launch(second, adapters[1], { stderr: errors[1] }),
+  ]);
+
+  assert.equal(results.filter((result) => result === 0).length, 1);
+  assert.equal(results.filter((result) => result === 1).length, 1);
+  assert.match(
+    errors.find((stream) => stream.value()).value(),
+    /board ownership is being verified/,
+  );
+  assert.equal(adapters[0].tasks.size + adapters[1].tasks.size, 10);
 });
 
 test("resume rejects a self-consistent invalid sealed graph", async (t) => {
