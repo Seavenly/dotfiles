@@ -119,6 +119,8 @@ test("agent-flow gate executes the command pinned to the current task", async (t
         "agent-flow.local-review/v1",
         "agent-flow.review-comments/v1",
         "agent-flow.review-result/v1",
+        "agent-flow.review-comment-dispositions/v1",
+        "agent-flow.integration-receipt/v1",
         "agent-flow.task-authority/v1",
         "agent-flow.command-result/v1",
       ],

@@ -50,14 +50,14 @@ clip() {
 build_header() {
   local esc=$'\033' legend h
   legend="${esc}[36m●${esc}[0m open  ${esc}[32m✓${esc}[0m approved  ${esc}[31m✗${esc}[0m changes  ${esc}[33m•${esc}[0m comments"
-  h="enter open · ctrl-a approve · ctrl-y copy id · ctrl-x ctrl-x delete      ${legend}"
+  h="enter open · ctrl-a legacy approve · ctrl-y copy id · ctrl-x ctrl-x delete      ${legend}"
   [[ -s "$coworker_file" ]] && h="$h      feed $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
   printf '%s' "$h"
 }
 
 if [[ "${1:-}" == "--approve" ]]; then
   shift
-  if [[ "${1:-}" == "local" && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]]; then
+  if [[ "${1:-}" == "local" && "${5:-}" == "legacy" && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]]; then
     "$reviews_bin" toggle-approved --worktree "$2" --base "$3" --branch "$4"
   fi
   exit 0
@@ -81,15 +81,19 @@ fi
 # re-arms/clears - only local reviews can be deleted, and only tuicr-reviews
 # state is touched (persisted tuicr sessions are left alone by design).
 if [[ "${1:-}" == "--maybe-delete" ]]; then
-  daction="${2:-}" dwt="${3:-}" dbase="${4:-}" dbranch="${5:-}"
+  daction="${2:-}" dwt="${3:-}" dbase="${4:-}" dbranch="${5:-}" dkind="${6:-}" dmanifest="${7:-}"
   if [[ "$daction" != "local" ]]; then
     rm -f "$armfile"
     printf 'change-header(only local agent reviews can be deleted)'
     exit 0
   fi
-  key="$dwt"$'\t'"$dbase"$'\t'"$dbranch"
+  key="$dkind"$'\t'"${dmanifest:-$dwt}"$'\t'"$dbase"$'\t'"$dbranch"
   if [[ -f "$armfile" && "$(cat "$armfile" 2>/dev/null)" == "$key" ]]; then
-    "$reviews_bin" rm --worktree "$dwt" --base "$dbase" --branch "$dbranch" >/dev/null 2>&1 || true
+    if [[ "$dkind" == "manifest" && -n "$dmanifest" ]]; then
+      "$reviews_bin" rm --manifest "$dmanifest" >/dev/null 2>&1 || true
+    else
+      "$reviews_bin" rm --worktree "$dwt" --base "$dbase" --branch "$dbranch" >/dev/null 2>&1 || true
+    fi
     rm -f "$armfile"
     printf 'reload(%s --lines)+change-header(%s)' "$self" "$(build_header)"
   else
@@ -128,16 +132,20 @@ build_lines() {
                (s=="changes_requested" || s=="changes") ? col("31","✗") : \
                (s=="commented" || s=="comments") ? col("33","•") : " "
       }
-      function emitrow(st2,kind,repo,ref,text,action,a,b,c,d,   disp) {
+      function emitrow(st2,kind,repo,ref,text,action,a,b,c,d,e,f,g,h,i,j,k,l,   disp) {
         disp = st2 " " col("2", pad(kind,wkind)) gap pad(repo,wrepo) gap pad(ref,wref)
         if (text != "") disp = disp gap text
-        printf "%s\t%s\t%s\t%s\t%s\t%s\n", disp, action, a, b, c, d
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", disp, action, a, b, c, d, e, f, g, h, i, j, k, l
       }
       $1 == "O" { isopen[$2 SUBSEP $3] = 1; next }
       $1 == "L" {
         nl++; Lwt[nl]=$2; Lbase[nl]=$3; Lbranch[nl]=$4; Lslug[nl]=$6; Lsum[nl]=$8; Lappr[nl]=($9=="true")
+        Llife[nl]=$10; Lhealth[nl]=$11; LbaseSha[nl]=$12; LheadSha[nl]=$13
+        Lrun[nl]=$14; Lsession[nl]=$15; LentryKind[nl]=$16; Lmanifest[nl]=$17
+        if (LbaseSha[nl]=="") LbaseSha[nl]=Lbase[nl]
+        if (LheadSha[nl]=="") LheadSha[nl]=Lbranch[nl]
         m=split($5,p,"/"); Lrepo[nl]=p[m]; Lref[nl]=$3 "..." $4
-        Lopen[nl]=(isopen[$2 SUBSEP ($3 "..." $4)] ? 1 : 0)
+        Lopen[nl]=(isopen[$2 SUBSEP (LbaseSha[nl] "..." LheadSha[nl])] ? 1 : 0)
         if (length(Lrepo[nl])>wrepo) wrepo=length(Lrepo[nl])
         if (length(Lref[nl])>wref)   wref=length(Lref[nl])
         if (5>wkind) wkind=5
@@ -156,8 +164,15 @@ build_lines() {
         for (pass=1; pass<=2; pass++)
           for (i=1;i<=nl;i++) {
             if ((pass==1) != (Lopen[i]==1)) continue
-            st2=(Lopen[i]?col("36","●"):" ") (Lappr[i]?col("32","✓"):" ")
-            emitrow(st2,"agent",Lrepo[i],Lref[i],Lsum[i],"local",Lwt[i],Lbase[i],Lbranch[i],(Lslug[i]!=""?Lslug[i]:Lbranch[i]))
+            broken=(Lhealth[i]!="" && Lhealth[i]!="current")
+            st2=(Lopen[i]?col("36","●"):" ") (broken?col("31","✗"):(Lappr[i]?col("32","✓"):" "))
+            meta=Llife[i]
+            if (Lhealth[i]!="" && Lhealth[i]!="current") meta=meta "/" Lhealth[i]
+            if (Lrun[i]!="") meta=meta " run=" Lrun[i]
+            if (Lsession[i]!="") meta=meta " session=" Lsession[i]
+            text=Lsum[i]
+            if (meta!="") text=(text!=""?text "  [" meta "]":"[" meta "]")
+            emitrow(st2,"agent",Lrepo[i],Lref[i],text,"local",Lwt[i],LbaseSha[i],LheadSha[i],(Lslug[i]!=""?Lslug[i]:Lbranch[i]),LentryKind[i],Lbase[i],Lbranch[i],Lmanifest[i],Llife[i],Lhealth[i],Lrun[i],Lsession[i])
           }
         if (np>0) {
           printf "%s\t%s\t\t\t\t\n", col("242","── external ──"), "sep"
@@ -206,9 +221,9 @@ selection="$(
     --header-border=rounded \
     --color='list-border:242,header-border:242,list-label:bold' \
     --prompt='› ' --header="$hdr" \
-    --bind "ctrl-a:execute-silent($self --approve {2} {3} {4} {5})+reload($self --lines)" \
+    --bind "ctrl-a:execute-silent($self --approve {2} {3} {8} {9} {7})+reload($self --lines)" \
     --bind "ctrl-y:transform($self --copy {6})" \
-    --bind "ctrl-x:transform($self --maybe-delete {2} {3} {4} {5})"
+    --bind "ctrl-x:transform($self --maybe-delete {2} {3} {8} {9} {7} {10})"
 )" || exit 0
 [[ -z "$selection" ]] && exit 0
 
@@ -223,6 +238,7 @@ case "$action" in
     worktree="$(printf '%s' "$selection" | cut -f3)"
     base="$(printf '%s' "$selection" | cut -f4)"
     branch="$(printf '%s' "$selection" | cut -f5)"
+    branch_name="$(printf '%s' "$selection" | cut -f9)"
     if [[ -z "$worktree" || ! -d "$worktree" ]]; then
       echo "tmux-review-inbox: worktree is missing: $worktree" >&2; sleep 2; exit 0
     fi
@@ -232,7 +248,7 @@ case "$action" in
     if [[ -n "$existing" ]]; then
       tmux select-window -t ":$existing"
     else
-      idx="$(tmux new-window -P -F '#{window_index}' -c "$worktree" -n "tuicr:${branch}" \
+      idx="$(tmux new-window -P -F '#{window_index}' -c "$worktree" -n "tuicr:${branch_name:-$branch}" \
         "zsh -i -c 'tuicr -r \"${revset}\"'")"
       tmux set-option -w -t ":$idx" @tuicr_wt "$worktree"
       tmux set-option -w -t ":$idx" @tuicr_rev "$revset"

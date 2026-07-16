@@ -9,6 +9,8 @@ help="$("$root/bin/agent-flow" --help)"
 assert_contains "$help" 'agent-flow doctor profiles'
 assert_contains "$help" 'agent-flow status --run'
 assert_contains "$help" 'agent-flow cancel --run'
+assert_contains "$help" 'agent-flow review transition'
+assert_contains "$help" 'agent-flow review record-comments'
 
 set +e
 output="$("$root/bin/agent-flow" launch review 2>&1)"
@@ -17,6 +19,14 @@ set -e
 assert_status "$status" 2
 assert_contains "$output" 'Usage: agent-flow launch review --manifest'
 echo "ok - Phase 2 agent-flow exposes review launching"
+
+set +e
+output="$("$root/bin/agent-flow" review transition 2>&1)"
+status=$?
+set -e
+assert_status "$status" 2
+assert_contains "$output" 'Usage: agent-flow review transition'
+echo "ok - Phase 3 agent-flow exposes explicit review mutation commands"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

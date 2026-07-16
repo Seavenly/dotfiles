@@ -232,16 +232,20 @@ not a hidden autonomous graph:
 ```text
 review_ready -> reviewing -> changes_requested -> review_ready
              -> approved -> integrated -> archived
+                 |
+                 +-> reviewing  (new comments invalidate approval)
 
 review_ready -> integrated
   only when human review is optional, no tuicr session was started,
   no human issue comment exists, and automated review passed
 ```
 
-Derived health can be `current`, `approval_stale`, `head_mismatch`, or
-`missing_worktree`. Health never silently changes the persisted lifecycle
-state. Any health other than `current` blocks integration and is displayed by
-the registry and `agent-flow status`.
+Derived health can be `current`, `head_mismatch`, or `missing_worktree`.
+Health never silently changes the persisted lifecycle state. Any health other
+than `current` blocks integration and is displayed by the registry and
+`agent-flow status`. An unaudited edit that makes an approved manifest's
+reviewed head disagree with its current head is contract-invalid rather than a
+separate health state.
 
 Tuicr interaction proceeds as follows:
 
@@ -272,6 +276,11 @@ including a head created by merging the latest `epic/source`; verification and
 review run again before integration. Review transitions use an expected
 manifest generation, and integration records a validated
 `agent-flow.integration-receipt/v1` before the lifecycle advances.
+
+The session slug is recorded through an explicit operator transition after
+tuicr creates the interactive session. Agent Flow relies only on tuicr's
+documented comment command as session authority; it does not couple lifecycle
+truth to tuicr's private persisted-session file format.
 
 ## Spike flow
 

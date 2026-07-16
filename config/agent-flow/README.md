@@ -12,8 +12,9 @@ sealed review runs. Repeated review launch now performs independently derived
 resume-migration comparison and durable limit admission. The sacrificial
 real-board tracer and operator dashboard review are complete; the durable
 evidence is recorded in [`PHASE-2-TRACER.md`](PHASE-2-TRACER.md). Registry
-changes and stack mechanics remain phased work under the approved
-implementation plan.
+and local-review lifecycle durability are complete in Phase 3; evidence is in
+[`PHASE-3-REVIEW-LIFECYCLE.md`](PHASE-3-REVIEW-LIFECYCLE.md). Feature graphs
+and stack mechanics remain phased work under the approved implementation plan.
 
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
@@ -65,8 +66,8 @@ agent-flow launch feature --brief <absolute-brief> [--plan <absolute-plan>]
 agent-flow launch spike   --brief <absolute-brief> [--plan <absolute-plan>]
 agent-flow launch epic    --brief <absolute-brief> --plan <absolute-plan>
 agent-flow gate           --spec <absolute-gate.json>
-agent-flow review transition      --manifest <review.json> --to <state>
-agent-flow review record-comments --manifest <review.json> --comments <comments.json>
+agent-flow review transition      --manifest <review.json> --to <state> --expected-generation <n> --actor <actor> --reason <text> --evidence <absolute-path> [--session-slug <slug>] [--head-sha <sha>] [--integration-receipt <receipt.json>]
+agent-flow review record-comments --manifest <review.json> --comments <comments.json> --expected-generation <n> --actor <actor> --reason <text> --evidence <absolute-path>
 agent-flow status         --run <run-id> [--json]
 agent-flow cancel         --run <run-id> --reason <text>
 agent-flow prune          --run <run-id> [--apply]
@@ -456,8 +457,9 @@ The formal schemas are:
 - [`agent-flow.local-review/v1`](schemas/agent-flow.local-review.v1.schema.json)
 - [`agent-flow.review-comments/v1`](schemas/agent-flow.review-comments.v1.schema.json)
 - [`agent-flow.review-result/v1`](schemas/agent-flow.review-result.v1.schema.json)
+- [`agent-flow.review-comment-dispositions/v1`](schemas/agent-flow.review-comment-dispositions.v1.schema.json)
+- [`agent-flow.integration-receipt/v1`](schemas/agent-flow.integration-receipt.v1.schema.json)
 - `agent-flow.stack/v1`
-- `agent-flow.integration-receipt/v1`
 
 Hermes accepts free-form completion metadata, so schema validity cannot be a
 worker convention. Every machine-consumed worker handoff passes through a
@@ -582,7 +584,11 @@ accept the answer as a task comment, and resume the same card.
 The review manifest is the source for immutable base and head SHAs. Branch
 names are display and refresh inputs only. A tuicr picker opens the pinned SHA
 range. A tuicr session exists only after the interactive TUI creates one and
-its slug is then recorded separately from the flow run ID.
+its slug is then recorded separately from the flow run ID by an explicit
+operator transition. The slug is operator-supplied at that boundary and is
+verified through tuicr's documented comment interface before comment recording,
+approval, or integration. Agent Flow does not inspect tuicr's private session
+storage format.
 
 Approval always names exactly one head SHA. Any head change, including a clean
 merge of a newer `epic/source`, makes approval stale and requires verification
@@ -599,6 +605,31 @@ and durable evidence. Integration becomes durable only when an
 assembly entered the named target ref at a recorded commit and tree. Git success
 followed by a manifest-write failure is reconciled from that receipt and Git;
 the manifest is never advanced merely because an integration command started.
+If the target advances afterward, reconciliation remains valid only while the
+recorded integration commit and tree still exist and that commit is an ancestor
+of the live target.
+
+Comment recording and human-reviewed approval read the authoritative tuicr
+session named by `review.session_slug`. Disposition IDs and types must match
+the live snapshot, every newly observed ID must have durable disposition
+evidence, and approval or integration fails if a new unconsumed comment appears
+after the prior snapshot.
+
+`tuicr-reviews add --manifest <absolute-review.json>` stores the manifest path
+and a rebuildable projection snapshot. `list` preserves the legacy first seven
+TSV columns and appends approval, lifecycle, health, immutable SHAs, run ID,
+session slug, entry kind, and manifest path. `list --json` is the preferred new
+interface. Manifest projection is recalculated on read, so registry fields
+cannot override lifecycle truth. Missing worktrees remain visible with
+`missing_worktree`; `prune` removes only archived manifest entries. The legacy
+`add --repo ...` form remains available and is marked `kind: legacy` for the
+Claude feature flow. Its checkbox approval is not applied to manifest entries.
+
+The tmux review inbox displays lifecycle, derived health, run ID, and the
+separate tuicr session slug. It opens `base.sha...head.sha`, never the moving
+branch names. Copy-token and two-press deletion remain available. Approval
+toggling is intentionally limited to legacy rows; manifest approval uses the
+audited `agent-flow review transition` command.
 
 ## Workspace and write serialization
 

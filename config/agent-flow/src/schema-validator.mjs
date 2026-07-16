@@ -9,6 +9,7 @@ import {
   serializeInlineArtifact,
 } from "./inline-artifact.mjs";
 import { isCanonicalExternalRoot } from "./external-root.mjs";
+import { REVIEW_TRANSITIONS } from "./review-lifecycle.mjs";
 
 const CONTRACT_FILES = new Map([
   ["agent-flow.run/v1", "agent-flow.run.v1.schema.json"],
@@ -34,6 +35,14 @@ const CONTRACT_FILES = new Map([
     "agent-flow.review-comments.v1.schema.json",
   ],
   ["agent-flow.review-result/v1", "agent-flow.review-result.v1.schema.json"],
+  [
+    "agent-flow.review-comment-dispositions/v1",
+    "agent-flow.review-comment-dispositions.v1.schema.json",
+  ],
+  [
+    "agent-flow.integration-receipt/v1",
+    "agent-flow.integration-receipt.v1.schema.json",
+  ],
 ]);
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
@@ -109,7 +118,40 @@ const SEMANTIC_VALIDATORS = new Map([
   ["agent-flow.local-review/v1", validateLocalReview],
   ["agent-flow.review-comments/v1", validateReviewComments],
   ["agent-flow.review-result/v1", validateReviewResult],
+  [
+    "agent-flow.review-comment-dispositions/v1",
+    validateReviewCommentDispositions,
+  ],
 ]);
+
+function validateReviewCommentDispositions(document) {
+  const errors = [];
+  const seen = new Set();
+  const allowed = {
+    issue: new Set(["implemented"]),
+    suggestion: new Set(["implemented", "declined"]),
+    note: new Set(["answered", "acknowledged"]),
+    praise: new Set(["no_action"]),
+  };
+  for (const [index, comment] of document.comments.entries()) {
+    if (seen.has(comment.id)) {
+      errors.push({
+        instancePath: `/comments/${index}/id`,
+        keyword: "uniqueCommentId",
+        message: "comment IDs must be unique",
+      });
+    }
+    seen.add(comment.id);
+    if (!allowed[comment.comment_type].has(comment.disposition)) {
+      errors.push({
+        instancePath: `/comments/${index}/disposition`,
+        keyword: "commentDisposition",
+        message: `is not durable for ${comment.comment_type} comments`,
+      });
+    }
+  }
+  return errors;
+}
 
 function validateLocalReview(document) {
   const errors = [];
@@ -125,6 +167,213 @@ function validateLocalReview(document) {
       instancePath: "/supersedes",
       keyword: "distinctRun",
       message: "must not supersede the current run",
+    });
+  }
+  const extended = [
+    "generation",
+    "events",
+    "comment_dispositions",
+    "integration_receipts",
+  ];
+  const present = extended.filter((field) => Object.hasOwn(document.review, field));
+  if (present.length !== 0 && present.length !== extended.length) {
+    errors.push({
+      instancePath: "/review",
+      keyword: "completeDurableState",
+      message: "durable review state fields must be added together",
+    });
+  }
+  if (present.length === 0 && document.review.status !== "review_ready") {
+    errors.push({
+      instancePath: "/review/status",
+      keyword: "durableLifecycle",
+      message: "lifecycle beyond review_ready requires durable generation state",
+    });
+  }
+  if (present.length === extended.length) {
+    let prior = 0;
+    let lifecycle = "review_ready";
+    const commentEvents = new Map();
+    const receiptEvents = new Map();
+    const legalTransitions = new Set(
+      REVIEW_TRANSITIONS.map(([from, to]) => `${from}:${to}`),
+    );
+    let latestApprovalHead = null;
+    for (const [index, event] of document.review.events.entries()) {
+      if (
+        event.prior_generation !== prior ||
+        event.generation !== prior + 1
+      ) {
+        errors.push({
+          instancePath: `/review/events/${index}/generation`,
+          keyword: "generationChain",
+          message: "events must form a contiguous generation chain",
+        });
+        break;
+      }
+      if (
+        (event.kind === "transition") !==
+          (event.from !== null && event.to !== null)
+      ) {
+        errors.push({
+          instancePath: `/review/events/${index}`,
+          keyword: "eventShape",
+          message: "transition events require from and to; comment events require neither",
+        });
+      }
+      if (event.kind === "transition") {
+        if (
+          event.from !== lifecycle ||
+          !legalTransitions.has(`${event.from}:${event.to}`) ||
+          event.comment_ids.length !== 0 ||
+          (event.to === "integrated") !== (event.integration_receipt !== null)
+        ) {
+          errors.push({
+            instancePath: `/review/events/${index}`,
+            keyword: "lifecycleEvent",
+            message: "must record the next legal lifecycle edge and its required receipt",
+          });
+        }
+        lifecycle = event.to;
+        if (event.to === "approved") latestApprovalHead = event.head_sha;
+        if (event.integration_receipt) {
+          receiptEvents.set(
+            event.integration_receipt.receipt_id,
+            JSON.stringify(event.integration_receipt),
+          );
+        }
+      } else {
+        if (event.comment_ids.length === 0 || event.integration_receipt !== null) {
+          errors.push({
+            instancePath: `/review/events/${index}`,
+            keyword: "commentEvent",
+            message: "must record comment IDs without an integration receipt",
+          });
+        }
+        for (const id of event.comment_ids) {
+          if (commentEvents.has(id)) {
+            errors.push({
+              instancePath: `/review/events/${index}/comment_ids`,
+              keyword: "uniqueCommentEvent",
+              message: `comment ${id} must be recorded by exactly one event`,
+            });
+          } else {
+            commentEvents.set(id, event.generation);
+          }
+        }
+      }
+      prior = event.generation;
+    }
+    if (
+      document.review.generation !== prior ||
+      document.review.events.length !== document.review.generation
+    ) {
+      errors.push({
+        instancePath: "/review/generation",
+        keyword: "generationChain",
+        message: "must equal the last durable event generation",
+      });
+    }
+    if (lifecycle !== document.review.status) {
+      errors.push({
+        instancePath: "/review/status",
+        keyword: "lifecycleEvent",
+        message: "must equal the latest durable transition state",
+      });
+    }
+    const finalEvent = document.review.events.at(-1);
+    if (finalEvent && finalEvent.head_sha !== document.head.sha) {
+      errors.push({
+        instancePath: "/review/events",
+        keyword: "currentEventHead",
+        message: "the latest event must be bound to the current manifest head",
+      });
+    }
+    if (
+      document.review.reviewed_head_sha !== null &&
+      latestApprovalHead !== document.review.reviewed_head_sha
+    ) {
+      errors.push({
+        instancePath: "/review/reviewed_head_sha",
+        keyword: "approvalEventHead",
+        message: "reviewed head must equal the latest approval event head",
+      });
+    }
+    const dispositions = new Set(
+      document.review.comment_dispositions.map(({ id }) => id),
+    );
+    if (
+      dispositions.size !== document.review.comment_dispositions.length ||
+      dispositions.size !== document.review.consumed_comment_ids.length ||
+      document.review.consumed_comment_ids.some((id) => !dispositions.has(id))
+    ) {
+      errors.push({
+        instancePath: "/review/consumed_comment_ids",
+        keyword: "durableCommentDisposition",
+        message: "must exactly match unique durable comment dispositions",
+      });
+    }
+    for (const disposition of document.review.comment_dispositions) {
+      if (commentEvents.get(disposition.id) !== disposition.recorded_generation) {
+        errors.push({
+          instancePath: "/review/comment_dispositions",
+          keyword: "commentEvent",
+          message: "each disposition must be bound to its comments_recorded event",
+        });
+        break;
+      }
+    }
+    const receiptIds = document.review.integration_receipts.map(
+      ({ receipt_id }) => receipt_id,
+    );
+    if (new Set(receiptIds).size !== receiptIds.length) {
+      errors.push({
+        instancePath: "/review/integration_receipts",
+        keyword: "uniqueReceipt",
+        message: "integration receipt IDs must be unique",
+      });
+    }
+    if (document.review.integration_receipts.some(
+      (receipt) => receiptEvents.get(receipt.receipt_id) !== JSON.stringify(receipt),
+    )) {
+      errors.push({
+        instancePath: "/review/integration_receipts",
+        keyword: "receiptEvent",
+        message: "each receipt must be bound to an integrated transition event",
+      });
+    }
+    if (
+      ["integrated", "archived"].includes(document.review.status) &&
+      receiptIds.length === 0
+    ) {
+      errors.push({
+        instancePath: "/review/integration_receipts",
+        keyword: "requiredReceipt",
+        message: "integrated review state requires a durable integration receipt",
+      });
+    }
+  }
+  if (
+    document.review.status === "approved" &&
+    document.review.reviewed_head_sha !== document.head.sha
+  ) {
+    errors.push({
+      instancePath: "/review/reviewed_head_sha",
+      keyword: "approvedHead",
+      message: "approval must be bound to the current manifest head",
+    });
+  }
+  if (
+    ["approved", "integrated", "archived"].includes(document.review.status) &&
+    (
+      document.automated_review.status !== "passed" ||
+      document.automated_review.reviewed_head_sha !== document.head.sha
+    )
+  ) {
+    errors.push({
+      instancePath: "/automated_review",
+      keyword: "currentAutomatedReview",
+      message: "approved and integrated lifecycle requires automated review of the current head",
     });
   }
   return errors;

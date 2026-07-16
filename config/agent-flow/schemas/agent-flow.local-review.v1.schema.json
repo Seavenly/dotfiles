@@ -36,6 +36,10 @@
       "minLength": 1,
       "maxLength": 500
     },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    },
     "repo": {
       "$ref": "#/$defs/absolutePath"
     },
@@ -189,6 +193,25 @@
             "maxLength": 256
           },
           "uniqueItems": true
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "$ref": "#/$defs/reviewEvent" }
+        },
+        "comment_dispositions": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "$ref": "#/$defs/commentDisposition" }
+        },
+        "integration_receipts": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/receiptReference" }
         }
       },
       "allOf": [
@@ -237,7 +260,8 @@
         "branch": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 256
+          "maxLength": 256,
+          "pattern": "^(?!HEAD$)(?![0-9a-f]{40,64}$)(?![-./])(?!.*(?:\\.\\.|@\\{|[~^:?*\\\\\\[\\s]))(?!.*[./]$).+$"
         },
         "sha": {
           "type": "string",
@@ -248,6 +272,94 @@
     "runId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "receiptReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_id", "path", "sha256"],
+      "properties": {
+        "receipt_id": { "$ref": "#/$defs/runId" },
+        "path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "reviewEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "generation", "prior_generation", "actor", "recorded_at",
+        "head_sha", "reason", "evidence", "from", "to", "comment_ids",
+        "integration_receipt"
+      ],
+      "properties": {
+        "kind": { "enum": ["transition", "comments_recorded"] },
+        "generation": { "type": "integer", "minimum": 1 },
+        "prior_generation": { "type": "integer", "minimum": 0 },
+        "actor": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "recorded_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+        },
+        "head_sha": { "$ref": "#/$defs/gitSha" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence": { "$ref": "#/$defs/evidenceReference" },
+        "from": {
+          "oneOf": [
+            { "enum": ["review_ready", "reviewing", "changes_requested", "approved", "integrated", "archived"] },
+            { "type": "null" }
+          ]
+        },
+        "to": {
+          "oneOf": [
+            { "enum": ["review_ready", "reviewing", "changes_requested", "approved", "integrated", "archived"] },
+            { "type": "null" }
+          ]
+        },
+        "comment_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "uniqueItems": true
+        },
+        "integration_receipt": {
+          "oneOf": [
+            { "$ref": "#/$defs/receiptReference" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "commentDisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "comment_type", "disposition", "reason", "evidence",
+        "recorded_generation"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "comment_type": { "enum": ["issue", "suggestion", "note", "praise"] },
+        "disposition": { "enum": ["implemented", "declined", "answered", "acknowledged", "no_action"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence": { "$ref": "#/$defs/evidenceReference" },
+        "recorded_generation": { "type": "integer", "minimum": 1 }
+      }
     }
   }
 }

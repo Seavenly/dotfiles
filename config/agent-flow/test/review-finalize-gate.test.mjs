@@ -559,6 +559,8 @@ async function reviewFinalizeFixture(
         "agent-flow.local-review/v1",
         "agent-flow.review-comments/v1",
         "agent-flow.review-result/v1",
+        "agent-flow.review-comment-dispositions/v1",
+        "agent-flow.integration-receipt/v1",
       ],
       content_set_fingerprint: SHA256,
     },

@@ -57,6 +57,20 @@ _Avoid_: Card, task
 A verified local branch plus immutable comparison points and review artifacts, ready for agent or human review but not yet delivered.
 _Avoid_: Pull request, review session
 
+**Review manifest**:
+The durable identity, lifecycle generation, evidence history, and immutable Git
+comparison points for one review candidate.
+_Avoid_: Registry entry, tuicr session
+
+**Review projection**:
+A rebuildable, derived view of a review manifest for discovery and display.
+_Avoid_: Review state, approval record
+
+**Integration receipt**:
+Durable evidence binding a reviewed head to the exact target ref, resulting
+commit, and resulting tree after Git integration.
+_Avoid_: Merge flag, approval
+
 **Completion PR**:
 The single pull request whose merge delivers the complete external outcome and permits its tracker issue to become Done.
 _Avoid_: Stack PR, feature PR
@@ -73,6 +87,10 @@ _Avoid_: Stack PR, feature PR
   **Kanban cards**.
 - A **review candidate** becomes externally complete only through its
   **completion PR**.
+- A **review projection** derives from one **review manifest** and never owns
+  approval or lifecycle state.
+- An **integration receipt** proves where a **review candidate** entered Git
+  history before its **review manifest** advances to integrated.
 
 ## Example dialogue
 

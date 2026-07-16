@@ -11,6 +11,10 @@ import {
 } from "./review-launch.mjs";
 import { executeReviewFinalizeGate } from "./review-finalize-gate.mjs";
 import {
+  recordReviewComments,
+  transitionReview,
+} from "./review-manifest.mjs";
+import {
   cancelRun,
   projectRunStatus,
   renderCancellation,
@@ -28,6 +32,7 @@ export async function runCli(
     inspectRepository = inspectReviewRepository,
     implementationRevision = null,
     now = () => new Date(),
+    readReviewComments = undefined,
   } = {},
 ) {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
@@ -58,6 +63,22 @@ export async function runCli(
   if (args[0] === "cancel") {
     return runCancel(args.slice(1), { adapter, env, now, stderr, stdout });
   }
+  if (args[0] === "review" && args[1] === "transition") {
+    return runReviewTransition(args.slice(2), {
+      now,
+      readReviewComments,
+      stderr,
+      stdout,
+    });
+  }
+  if (args[0] === "review" && args[1] === "record-comments") {
+    return runReviewRecordComments(args.slice(2), {
+      now,
+      readReviewComments,
+      stderr,
+      stdout,
+    });
+  }
   stderr.write(`Unknown command: ${args[0]}\n`);
   usage(stderr);
   return 2;
@@ -70,8 +91,129 @@ function usage(stream) {
       "  agent-flow launch review --manifest <absolute-review.json>\n" +
       "  agent-flow status --run <run-id> [--json]\n" +
       "  agent-flow cancel --run <run-id> --reason <text>\n" +
+      "  agent-flow review transition --manifest <review.json> --to <state> --expected-generation <n> --actor <actor> --reason <text> --evidence <path> [--session-slug <slug>] [--head-sha <sha>] [--integration-receipt <path>]\n" +
+      "  agent-flow review record-comments --manifest <review.json> --comments <comments.json> --expected-generation <n> --actor <actor> --reason <text> --evidence <path>\n" +
       "  agent-flow gate --spec <absolute-gate.json>\n",
   );
+}
+
+async function runReviewTransition(
+  options,
+  { now, readReviewComments, stderr, stdout },
+) {
+  const usage = "Usage: agent-flow review transition --manifest <review.json> --to <state> --expected-generation <n> --actor <actor> --reason <text> --evidence <path> [--session-slug <slug>] [--head-sha <sha>] [--integration-receipt <path>]\n";
+  let parsed;
+  try {
+    parsed = parseNamedOptions(options, new Set([
+      "--manifest",
+      "--to",
+      "--expected-generation",
+      "--actor",
+      "--reason",
+      "--evidence",
+      "--session-slug",
+      "--head-sha",
+      "--integration-receipt",
+    ]));
+  } catch {
+    stderr.write(usage);
+    return 2;
+  }
+  const required = ["--manifest", "--to", "--expected-generation", "--actor", "--reason", "--evidence"];
+  if (required.some((name) => !parsed.has(name))) {
+    stderr.write(usage);
+    return 2;
+  }
+  try {
+    const result = await transitionReview({
+      actor: parsed.get("--actor"),
+      evidencePath: parsed.get("--evidence"),
+      expectedGeneration: parseGeneration(parsed.get("--expected-generation")),
+      headSha: parsed.get("--head-sha") ?? null,
+      integrationReceiptPath: parsed.get("--integration-receipt") ?? null,
+      manifestPath: parsed.get("--manifest"),
+      now,
+      readComments: readReviewComments,
+      reason: parsed.get("--reason"),
+      sessionSlug: parsed.get("--session-slug") ?? null,
+      to: parsed.get("--to"),
+    });
+    stdout.write(
+      `${result.changed ? "ok" : "ok - unchanged"} - review ${result.manifest.run_id} ${result.manifest.review.status} generation ${result.manifest.review.generation}\n`,
+    );
+    return 0;
+  } catch (error) {
+    stderr.write(`agent-flow review transition: ${error.message}\n`);
+    return 1;
+  }
+}
+
+async function runReviewRecordComments(
+  options,
+  { now, readReviewComments, stderr, stdout },
+) {
+  const usage = "Usage: agent-flow review record-comments --manifest <review.json> --comments <comments.json> --expected-generation <n> --actor <actor> --reason <text> --evidence <path>\n";
+  let parsed;
+  try {
+    parsed = parseNamedOptions(options, new Set([
+      "--manifest",
+      "--comments",
+      "--expected-generation",
+      "--actor",
+      "--reason",
+      "--evidence",
+    ]));
+  } catch {
+    stderr.write(usage);
+    return 2;
+  }
+  const required = ["--manifest", "--comments", "--expected-generation", "--actor", "--reason", "--evidence"];
+  if (required.some((name) => !parsed.has(name))) {
+    stderr.write(usage);
+    return 2;
+  }
+  try {
+    const result = await recordReviewComments({
+      actor: parsed.get("--actor"),
+      commentsPath: parsed.get("--comments"),
+      evidencePath: parsed.get("--evidence"),
+      expectedGeneration: parseGeneration(parsed.get("--expected-generation")),
+      manifestPath: parsed.get("--manifest"),
+      now,
+      readComments: readReviewComments,
+      reason: parsed.get("--reason"),
+    });
+    stdout.write(
+      `${result.changed ? "ok" : "ok - unchanged"} - review ${result.manifest.run_id} comments generation ${result.manifest.review.generation}\n`,
+    );
+    return 0;
+  } catch (error) {
+    stderr.write(`agent-flow review record-comments: ${error.message}\n`);
+    return 1;
+  }
+}
+
+function parseNamedOptions(options, allowed) {
+  if (options.length === 0 || options.length % 2 !== 0) throw new Error("invalid options");
+  const parsed = new Map();
+  for (let index = 0; index < options.length; index += 2) {
+    const name = options[index];
+    const value = options[index + 1];
+    if (!allowed.has(name) || parsed.has(name) || value === undefined || value.length === 0) {
+      throw new Error("invalid options");
+    }
+    parsed.set(name, value);
+  }
+  return parsed;
+}
+
+function parseGeneration(value) {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error("expected generation must be a non-negative integer");
+  const generation = Number(value);
+  if (!Number.isSafeInteger(generation)) {
+    throw new Error("expected generation exceeds the safe integer range");
+  }
+  return generation;
 }
 
 async function runCancel(options, { adapter, env, now, stderr, stdout }) {

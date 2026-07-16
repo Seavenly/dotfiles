@@ -36,7 +36,12 @@ diagram supplements, before the Phase 2 review gate. Terminal-free handoff
 authoring is now
 executable through inline completion metadata: the validator owns stable
 serialization, a 256 KiB aggregate content cap, digesting, snapshotting, and
-the authoritative attempt ordinal.
+the authoritative attempt ordinal. Phase 3 completed on 2026-07-15. Durable
+review manifests now use atomic generation-checked transitions and stable-ID
+comment dispositions; manifest-backed registry rows derive lifecycle, health,
+and immutable revsets; integration requires a Git-verified receipt. Evidence is
+recorded in
+[`PHASE-3-REVIEW-LIFECYCLE.md`](PHASE-3-REVIEW-LIFECYCLE.md).
 
 This plan sequences small, reversible tracer bullets. Each phase ends with a
 reviewable commit and must satisfy its exit criteria before the next phase
@@ -273,7 +278,7 @@ Rollback:
 - Stop dispatch, archive the sacrificial board, and remove the new command
   link. Preserve the board and run directory until the tracer review finishes.
 
-## Phase 3 - make the review manifest and registry durable
+## Phase 3 - make the review manifest and registry durable (complete 2026-07-15)
 
 Depends on: the Phase 2 review gate.
 
