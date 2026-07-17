@@ -379,9 +379,9 @@ stack approval.
 
 ## Stacks and delivery
 
-The user-facing `stacks` skill proposes coherent review layers from a fixed
-source commit and fixed target SHA and blocks for approval before any branch or
-PR mutation.
+The user-facing `agent-flow-stacks` skill proposes coherent review layers from
+a fixed source commit and fixed target SHA and blocks for approval before any
+branch or PR mutation.
 Deterministic helpers then construct and validate the stack in a temporary
 worktree.
 

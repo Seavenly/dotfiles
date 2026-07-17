@@ -1,4 +1,0 @@
-interface:
-  display_name: "Epic Flow"
-  short_description: "Coordinate dependent features into a verified source branch"
-  default_prompt: "Use $epic-flow to coordinate this epic without completing the external issue early."

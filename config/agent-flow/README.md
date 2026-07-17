@@ -23,6 +23,9 @@ and a fresh rendered UI inspection remain rollout evidence. Claude therefore
 remains the authoritative fallback. The current parity decision is recorded in
 [`COEXISTENCE-REVIEW.md`](COEXISTENCE-REVIEW.md).
 
+Open [`ARCHITECTURE.html`](ARCHITECTURE.html) for an interactive system map,
+end-to-end walkthrough, and skill-by-skill explanation.
+
 This directory owns the `agent-flow` orchestration module built on Hermes. It
 is not a source mirror for global `~/.hermes/config.yaml`. Native Hermes profile
 adapters live beside their shared contracts under
@@ -49,7 +52,7 @@ The other modules stay deliberately narrow:
 
 | Module | Interface | Owns | Must not own |
 | --- | --- | --- | --- |
-| Flow skill | `/feature-flow`, `/review-flow`, `/spike-flow`, or `/epic-flow` | Interview, grill, durable brief, external issue work, approval | Autonomous scheduling or polling |
+| Flow skill | `agent-flow-feature`, `agent-flow-review`, `agent-flow-spike`, `agent-flow-epic`, or `agent-flow-stacks` | Interview, grill, durable brief, external issue work, approval | Autonomous scheduling or polling |
 | `agent-flow` | Durable paths passed to a small CLI | Validation, worktrees, graph materialization, deterministic gates, status, pruning | A state database, worker polling, or a general workflow language |
 | Graph definition | Versioned named graph selected by flow | Allowed stages, dependencies, caps, and controller transitions | Runtime lifecycle state |
 | Hermes Kanban | Native CLI and `kanban_*` tools | Dispatch, dependencies, attempts, retries, blocking, recovery, history | External issue acceptance or delivery policy |
@@ -106,6 +109,12 @@ Flow skills invoke this interface. Worker prompts invoke only the exact
 `agent-flow gate --spec ...` or review command named by their card. Status is
 derived from the Kanban board and durable manifests. No command waits for a
 worker or advances a card by polling.
+
+The shared Agent Flow skills use an `agent-flow-<type>` namespace and are
+exposed to Claude, Hermes, and agent-neutral consumers. The namespace keeps
+them distinct from Claude's legacy `/feature-flow`, `/review-flow`, and
+`/spike-flow` commands. `agent-flow-review` accepts immutable local candidates
+only; a remote PR adapter remains future work.
 
 The implemented `launch review` tracer accepts `hotfix`, `fast`, and `standard`
 urgency with either `external_ref: null`,
@@ -749,10 +758,10 @@ policy that permits an unverified stale merge is unsupported.
 
 The existing Claude commands and dynamic workflows remain unchanged and usable
 through every implementation phase. New shared flow skills are authored under
-`config/agents/skills/`, exposed to Hermes and the agent-neutral scope first,
-and intentionally not linked into Claude while same-named Claude commands
-exist. After explicit parity review, Claude may invoke the shared skills and
-Hermes control plane, or the existing commands may remain as the rollback path.
+`config/agents/skills/` with an `agent-flow-<type>` namespace and are exposed
+to Claude, Hermes, and the agent-neutral scope. Claude's existing same-purpose
+commands remain separate under their legacy names and continue to provide the
+rollback path until explicit parity review.
 
 Rollback stops the dispatch-owning gateway, removes only managed profile links,
 ownership markers, rendered configs, and the new command links, and restores

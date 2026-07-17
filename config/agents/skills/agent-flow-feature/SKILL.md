@@ -1,9 +1,9 @@
 ---
-name: feature-flow
+name: agent-flow-feature
 description: Turn an approved brief or user request into a durable Hermes feature run that produces a verified local review candidate without pushing or opening a PR. Use when the user asks to implement a feature through agent-flow, resume a feature run, inspect capped retries or completeness findings, or prepare local work for tuicr review.
 ---
 
-# Feature Flow
+# Agent Flow Feature
 
 Create or resume one feature run. Keep every implementation writer in the one
 launcher-created worktree and leave remote mutation to a later explicit flow.

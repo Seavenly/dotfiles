@@ -24,8 +24,8 @@ Implemented:
   evidence, local-review manifest creation, and registry insertion.
 - Terminal Hermes producer and validator attempts are rebound at finalization,
   and review manifests consume immutable validator-owned artifact snapshots.
-- Shared `feature-flow` skill exposure for Hermes and agent-neutral consumers,
-  without a conflicting Claude link.
+- Shared `agent-flow-feature` skill exposure for every supported harness
+  without colliding with Claude's legacy command.
 
 Local evidence covers worktree pinning, serialized dependencies, retry
 exhaustion, non-testable gates, incomplete acceptance, missing critic verdicts,
@@ -50,7 +50,7 @@ Implemented:
   serialized feature slice chain under an experiment path.
 - Terminal synthesis evidence is rebound to Hermes attempts and the final
   result consumes the validator-owned report snapshot.
-- Shared `spike-flow` skill exposure without a Claude command collision.
+- Shared `agent-flow-spike` skill exposure without a Claude command collision.
 
 Local evidence covers parallel joins, bounded gap-specific revision, cap
 behavior, evidence retention, residual-gap synthesis, the absence of a
@@ -82,7 +82,7 @@ Implemented:
   projection reconstructed from child run authority, Hermes lifecycle, Git,
   and integration receipts before each wave.
 - One-comment external progress projection.
-- Shared `epic-flow` skill exposure without a Claude command collision.
+- Shared `agent-flow-epic` skill exposure without a Claude command collision.
 
 Local evidence covers dependency cycles, wave caps, duplicate resume, source
 movement, review invalidation after head movement, integration receipt
@@ -98,7 +98,8 @@ and resumed model-backed epic is still required as rollout evidence.
 
 Implemented:
 
-- The upstream `split` skill remains unchanged. The derivative `stacks` skill
+- The upstream `split` skill remains unchanged. The derivative
+  `agent-flow-stacks` skill
   records its upstream revision and semantic differences in `LINEAGE.md`.
 - Deterministic hunk analysis, exact assignment validation, stable plan
   fingerprints, and explicit human approval bound to one generation.

@@ -214,6 +214,10 @@ Repository changes:
   `cancel` in this phase. Launch rejects a second nonterminal owner for the same
   repository and external root unless it explicitly supersedes a terminal prior
   run.
+- Add the locally authored shared `agent-flow-review` skill for all supported
+  harnesses. Its namespace avoids Claude's existing `/review-flow` command,
+  and it remains limited to immutable local candidates until a remote PR
+  adapter exists.
 - Add `agent-flow.graph/v1` review graph data and gate specs for deterministic
   finding caps and rendering.
 - Insert deterministic handoff-validation gates before every machine consumer.
@@ -360,11 +364,11 @@ Depends on: Phase 3.
 
 Repository changes:
 
-- Add the locally authored shared `feature-flow` skill under
+- Add the locally authored shared `agent-flow-feature` skill under
   `config/agents/skills/`. It needs no `LINEAGE.md` unless upstream material is
-  incorporated. Expose it to Hermes and the agent-neutral scope, but not to
-  Claude while the same-named Claude command exists. Update portfolio tests to
-  encode this deliberate harness exposure matrix.
+  incorporated. Expose it to every supported harness; its namespace keeps it
+  distinct from Claude's legacy `/feature-flow` command. Update portfolio tests
+  to encode this harness exposure matrix.
 - Implement approved-slice static materialization and the planner fallback.
 - Implement tester -> builder -> gate -> controller chains, capped semantic
   retries, completeness checks, independent critique, capped fix slices,
@@ -403,8 +407,8 @@ Depends on: Phase 2 for research-only spikes and Phase 4 for prototypes.
 
 Repository changes:
 
-- Add the shared `spike-flow` skill without creating a Claude command
-  collision.
+- Add the shared `agent-flow-spike` skill without replacing Claude's legacy
+  `/spike-flow` command.
 - Implement quick research -> synthesis and deep parallel angles -> gap critic
   -> capped angle revision -> synthesis.
 - Reuse the feature slice module for an optional dedicated prototype worktree.
@@ -429,7 +433,7 @@ Depends on: Phases 3 and 4.
 
 Repository changes:
 
-- Add the shared `epic-flow` skill and its external-root adapter.
+- Add the shared `agent-flow-epic` skill and its external-root adapter.
 - Validate the feature dependency graph and materialize only bounded ready
   waves. Reuse the feature graph instead of embedding feature implementation.
 - Give each feature one worktree, require automated review, honor any started
@@ -478,8 +482,8 @@ not production branch mutation.
 Repository changes:
 
 - Preserve the upstream `split` mirror unchanged.
-- Create a derivative `stacks` skill with lineage pointing to `split` and
-  documenting every local semantic change.
+- Create a derivative `agent-flow-stacks` skill with lineage pointing to
+  `split` and documenting every local semantic change.
 - Add deterministic helpers for hunk plans, true linear branch construction in
   a temporary worktree, exact tree checks, durable stack manifests, PR
   creation and retargeting, owning-layer review changes, suffix restacking, and

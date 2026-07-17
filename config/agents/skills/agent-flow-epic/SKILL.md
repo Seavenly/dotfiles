@@ -1,12 +1,12 @@
 ---
-name: epic-flow
+name: agent-flow-epic
 description: Coordinate a bounded dependency graph of local feature flows into an immutable epic/source branch while preserving review, target-drift, receipt, and external-progress authority. Use when the user asks to implement or resume a multi-feature epic, inspect ready waves, refresh source against a moving target, or prepare stack planning without opening the completion PR.
 ---
 
-# Epic Flow
+# Agent Flow Epic
 
 Validate the feature dependency DAG before mutation. Materialize only the
-bounded ready wave and reuse `feature-flow` for each child; never embed a second
+bounded ready wave and reuse `agent-flow-feature` for each child; never embed a second
 feature implementation protocol.
 
 Give every feature one worktree. Independent features may run concurrently,

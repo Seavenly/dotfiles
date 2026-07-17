@@ -1,9 +1,9 @@
 ---
-name: spike-flow
+name: agent-flow-spike
 description: Run a bounded quick or deep investigation through Hermes, preserving evidence, residual gaps, and optional prototype work without treating research as production implementation. Use when the user asks for a spike, technical investigation, option comparison, feasibility study, or disposable prototype through agent-flow.
 ---
 
-# Spike Flow
+# Agent Flow Spike
 
 Choose the smallest mode that answers the decision:
 

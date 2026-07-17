@@ -1,4 +1,0 @@
-interface:
-  display_name: "Feature Flow"
-  short_description: "Run a durable local feature implementation flow"
-  default_prompt: "Use $feature-flow to implement this feature as a verified local review candidate."

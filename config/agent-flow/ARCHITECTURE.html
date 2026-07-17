@@ -1,0 +1,1860 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Agent Flow Architecture</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Agent Flow Architecture" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Agent Flow Architecture&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;main id=&quot;agent-flow-architecture&quot;&gt;
+  &lt;style&gt;
+    #agent-flow-architecture {
+      --af-line: color-mix(in srgb, var(--border) 82%, transparent);
+      --af-soft-1: color-mix(in srgb, var(--viz-series-1) 13%, transparent);
+      --af-soft-2: color-mix(in srgb, var(--viz-series-2) 13%, transparent);
+      --af-soft-3: color-mix(in srgb, var(--viz-series-3) 13%, transparent);
+      --af-soft-4: color-mix(in srgb, var(--viz-series-4) 13%, transparent);
+      --af-soft-5: color-mix(in srgb, var(--viz-series-5) 13%, transparent);
+      color: var(--foreground);
+      display: grid;
+      gap: 2.5rem;
+      padding: 1rem 0 3rem;
+    }
+
+    #agent-flow-architecture * {
+      box-sizing: border-box;
+    }
+
+    #agent-flow-architecture section {
+      display: grid;
+      gap: 1rem;
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-hero {
+      gap: 1.25rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-eyebrow {
+      color: var(--muted-foreground);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    #agent-flow-architecture .af-lead {
+      max-width: 64ch;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    #agent-flow-architecture .af-stat-grid .card {
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-section-heading {
+      display: grid;
+      gap: 0.25rem;
+    }
+
+    #agent-flow-architecture .af-section-heading p {
+      color: var(--muted-foreground);
+      max-width: 68ch;
+    }
+
+    #agent-flow-architecture .af-system-map {
+      display: grid;
+      gap: 0.65rem;
+      padding: 0.5rem 0;
+    }
+
+    #agent-flow-architecture .af-layer {
+      display: grid;
+      grid-template-columns: 8.5rem minmax(0, 1fr);
+      align-items: stretch;
+      gap: 0.75rem;
+    }
+
+    #agent-flow-architecture .af-layer-label {
+      display: flex;
+      align-items: center;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-layer-body {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+      gap: 0.5rem;
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-node {
+      display: grid;
+      gap: 0.25rem;
+      padding: 0.75rem;
+      border-left: 3px solid var(--border);
+      background: var(--muted);
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-node strong {
+      font-weight: 500;
+    }
+
+    #agent-flow-architecture .af-node span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-node[data-kind=&quot;human&quot;] {
+      border-color: var(--viz-series-1);
+      background: var(--af-soft-1);
+    }
+
+    #agent-flow-architecture .af-node[data-kind=&quot;contract&quot;] {
+      border-color: var(--viz-series-2);
+      background: var(--af-soft-2);
+    }
+
+    #agent-flow-architecture .af-node[data-kind=&quot;runtime&quot;] {
+      border-color: var(--viz-series-3);
+      background: var(--af-soft-3);
+    }
+
+    #agent-flow-architecture .af-node[data-kind=&quot;evidence&quot;] {
+      border-color: var(--viz-series-4);
+      background: var(--af-soft-4);
+    }
+
+    #agent-flow-architecture .af-node[data-kind=&quot;delivery&quot;] {
+      border-color: var(--viz-series-5);
+      background: var(--af-soft-5);
+    }
+
+    #agent-flow-architecture .af-down {
+      display: grid;
+      grid-template-columns: 8.5rem minmax(0, 1fr);
+      gap: 0.75rem;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-down span:last-child {
+      padding-left: 1rem;
+    }
+
+    #agent-flow-architecture .af-authority {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    #agent-flow-architecture .af-authority th,
+    #agent-flow-architecture .af-authority td {
+      padding: 0.7rem 0.5rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-authority th {
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+
+    #agent-flow-architecture .af-lifecycle {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 0.25rem;
+      align-items: stretch;
+    }
+
+    #agent-flow-architecture .af-step {
+      display: grid;
+      align-content: start;
+      gap: 0.25rem;
+      padding: 0.65rem 0.45rem;
+      border-top: 3px solid var(--viz-series-2);
+      background: var(--af-soft-2);
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-step span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-skill-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    #agent-flow-architecture .af-skill-stage {
+      display: grid;
+      gap: 1rem;
+      padding-top: 0.5rem;
+    }
+
+    #agent-flow-architecture .af-skill-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+      gap: 1rem;
+      align-items: start;
+    }
+
+    #agent-flow-architecture .af-flow-line {
+      display: flex;
+      align-items: stretch;
+      gap: 0.35rem;
+      overflow: hidden;
+    }
+
+    #agent-flow-architecture .af-flow-node {
+      flex: 1 1 0;
+      display: grid;
+      place-content: center;
+      gap: 0.2rem;
+      min-width: 0;
+      min-height: 5.5rem;
+      padding: 0.55rem 0.35rem;
+      text-align: center;
+      background: var(--muted);
+      border-top: 3px solid var(--viz-series-3);
+    }
+
+    #agent-flow-architecture .af-flow-node span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-flow-arrow {
+      display: grid;
+      place-content: center;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-skill-facts {
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    #agent-flow-architecture .af-fact {
+      display: grid;
+      grid-template-columns: 6.5rem minmax(0, 1fr);
+      gap: 0.65rem;
+      padding-bottom: 0.55rem;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-fact dt {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-fact dd {
+      margin: 0;
+    }
+
+    #agent-flow-architecture .af-command {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    #agent-flow-architecture .af-role-grid,
+    #agent-flow-architecture .af-contract-grid,
+    #agent-flow-architecture .af-risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem 1rem;
+    }
+
+    #agent-flow-architecture .af-role,
+    #agent-flow-architecture .af-contract,
+    #agent-flow-architecture .af-risk {
+      display: grid;
+      grid-template-columns: 2.25rem minmax(0, 1fr);
+      gap: 0.65rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-index {
+      display: grid;
+      place-content: center;
+      width: 2rem;
+      height: 2rem;
+      color: var(--foreground);
+      background: var(--muted);
+      border-radius: 50%;
+    }
+
+    #agent-flow-architecture .af-role p,
+    #agent-flow-architecture .af-contract p,
+    #agent-flow-architecture .af-risk p {
+      color: var(--muted-foreground);
+      margin-top: 0.2rem;
+    }
+
+    #agent-flow-architecture .af-evidence-chain {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.35rem;
+      align-items: stretch;
+    }
+
+    #agent-flow-architecture .af-evidence-link {
+      display: grid;
+      gap: 0.3rem;
+      padding: 0.65rem 0.45rem;
+      background: var(--af-soft-4);
+      border-bottom: 3px solid var(--viz-series-4);
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-evidence-link span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-journey {
+      display: grid;
+      gap: 0;
+      counter-reset: journey;
+    }
+
+    #agent-flow-architecture .af-journey li {
+      counter-increment: journey;
+      list-style: none;
+      display: grid;
+      grid-template-columns: 2.5rem minmax(0, 1fr);
+      gap: 0.75rem;
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-journey li::before {
+      content: counter(journey);
+      display: grid;
+      place-content: center;
+      width: 2rem;
+      height: 2rem;
+      color: var(--primary-foreground);
+      background: var(--primary);
+      border-radius: 50%;
+    }
+
+    #agent-flow-architecture details {
+      border-bottom: 1px solid var(--af-line);
+      padding: 0.55rem 0;
+    }
+
+    #agent-flow-architecture summary {
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    #agent-flow-architecture details p,
+    #agent-flow-architecture details ul {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-status {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    #agent-flow-architecture .af-status-column {
+      border-top: 3px solid var(--viz-series-2);
+      padding-top: 0.75rem;
+    }
+
+    #agent-flow-architecture .af-status-column:last-child {
+      border-color: var(--viz-series-5);
+    }
+
+    #agent-flow-architecture .af-status-column ul {
+      padding-left: 1.25rem;
+    }
+
+    #agent-flow-architecture .af-footer {
+      color: var(--muted-foreground);
+      border-top: 1px solid var(--af-line);
+      padding-top: 1rem;
+    }
+
+    @media (max-width: 680px) {
+      #agent-flow-architecture .af-stat-grid,
+      #agent-flow-architecture .af-role-grid,
+      #agent-flow-architecture .af-contract-grid,
+      #agent-flow-architecture .af-risk-grid,
+      #agent-flow-architecture .af-status,
+      #agent-flow-architecture .af-skill-summary {
+        grid-template-columns: 1fr;
+      }
+
+      #agent-flow-architecture .af-layer,
+      #agent-flow-architecture .af-down {
+        grid-template-columns: 1fr;
+      }
+
+      #agent-flow-architecture .af-down span:first-child {
+        display: none;
+      }
+
+      #agent-flow-architecture .af-lifecycle {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      #agent-flow-architecture .af-flow-line,
+      #agent-flow-architecture .af-evidence-chain {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      #agent-flow-architecture .af-flow-arrow {
+        transform: rotate(90deg);
+      }
+
+      #agent-flow-architecture .af-authority {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+
+    @media print {
+      #agent-flow-architecture .af-skill-controls {
+        display: none;
+      }
+
+      #agent-flow-architecture details {
+        break-inside: avoid;
+      }
+    }
+  &lt;/style&gt;
+
+  &lt;header class=&quot;af-hero&quot;&gt;
+    &lt;div class=&quot;af-eyebrow text-small&quot;&gt;Agent Flow system map&lt;/div&gt;
+    &lt;h1&gt;Durable multi-agent execution without building a second scheduler&lt;/h1&gt;
+    &lt;p class=&quot;af-lead&quot;&gt;
+      Agent Flow turns an approved software outcome into immutable contracts,
+      versioned execution graphs, Hermes Kanban cards, validated evidence, and
+      explicit review and delivery checkpoints. The system is local-first:
+      implementation can be automated, but publication and completion remain
+      deliberate.
+    &lt;/p&gt;
+    &lt;div class=&quot;af-stat-grid&quot;&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Automation control plane&lt;/div&gt;
+        &lt;div class=&quot;viz-stat-value&quot;&gt;Hermes Kanban&lt;/div&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Cards, attempts, dependencies, retries, blocking, recovery&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Durable authority&lt;/div&gt;
+        &lt;div class=&quot;viz-stat-value&quot;&gt;Sealed manifests&lt;/div&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Pinned inputs, graphs, profiles, limits, revisions, hashes&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Delivery invariant&lt;/div&gt;
+        &lt;div class=&quot;viz-stat-value&quot;&gt;Exact trees&lt;/div&gt;
+        &lt;div class=&quot;text-muted&quot;&gt;Reviewed layers replay to the same final source tree&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/header&gt;
+
+  &lt;section aria-labelledby=&quot;system-map-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;system-map-heading&quot;&gt;The architecture at a glance&lt;/h2&gt;
+      &lt;p&gt;Each layer has one narrow authority. The seams are intentional: skills prepare, the CLI seals, Hermes executes, gates verify, and manifests preserve truth.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-system-map&quot; role=&quot;img&quot; aria-label=&quot;Agent Flow architecture from human intent through skills, Agent Flow contracts, Hermes execution, evidence, review, stacks, and delivery&quot;&gt;
+      &lt;div class=&quot;af-layer&quot;&gt;
+        &lt;div class=&quot;af-layer-label&quot;&gt;Intent and approval&lt;/div&gt;
+        &lt;div class=&quot;af-layer-body&quot;&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;human&quot;&gt;&lt;strong&gt;User or tracker issue&lt;/strong&gt;&lt;span&gt;Intent, acceptance, priority&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;human&quot;&gt;&lt;strong&gt;Agent Flow skill&lt;/strong&gt;&lt;span&gt;Interview, brief, manifest, explicit approvals&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;af-down&quot;&gt;&lt;span&gt;&lt;/span&gt;&lt;span&gt;↓ durable absolute paths&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-layer&quot;&gt;
+        &lt;div class=&quot;af-layer-label&quot;&gt;Repository module&lt;/div&gt;
+        &lt;div class=&quot;af-layer-body&quot;&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;contract&quot;&gt;&lt;strong&gt;&lt;code&gt;agent-flow&lt;/code&gt; CLI&lt;/strong&gt;&lt;span&gt;Validation, sealing, worktrees, graph materialization&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;contract&quot;&gt;&lt;strong&gt;Versioned graph&lt;/strong&gt;&lt;span&gt;Stages, dependencies, transitions, caps&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;contract&quot;&gt;&lt;strong&gt;Run manifest&lt;/strong&gt;&lt;span&gt;Immutable inputs, digests, profiles, Git SHAs&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;af-down&quot;&gt;&lt;span&gt;&lt;/span&gt;&lt;span&gt;↓ idempotent cards and dependencies&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-layer&quot;&gt;
+        &lt;div class=&quot;af-layer-label&quot;&gt;Runtime&lt;/div&gt;
+        &lt;div class=&quot;af-layer-body&quot;&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;runtime&quot;&gt;&lt;strong&gt;Hermes Kanban&lt;/strong&gt;&lt;span&gt;Only scheduler and lifecycle database&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;runtime&quot;&gt;&lt;strong&gt;Role profiles&lt;/strong&gt;&lt;span&gt;Analyst, builder, critic, artifact, gate, controller&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;runtime&quot;&gt;&lt;strong&gt;Worker attempts&lt;/strong&gt;&lt;span&gt;Native retry, recovery, human blocking, audit history&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;af-down&quot;&gt;&lt;span&gt;&lt;/span&gt;&lt;span&gt;↓ completed attempt metadata&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-layer&quot;&gt;
+        &lt;div class=&quot;af-layer-label&quot;&gt;Evidence boundary&lt;/div&gt;
+        &lt;div class=&quot;af-layer-body&quot;&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;evidence&quot;&gt;&lt;strong&gt;Handoff validator&lt;/strong&gt;&lt;span&gt;Loads the terminal Hermes attempt and checks authority&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;evidence&quot;&gt;&lt;strong&gt;Validated snapshots&lt;/strong&gt;&lt;span&gt;Immutable bytes beneath the run directory&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;evidence&quot;&gt;&lt;strong&gt;Deterministic gates&lt;/strong&gt;&lt;span&gt;Commands, results, rendering, exact-tree checks&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;af-down&quot;&gt;&lt;span&gt;&lt;/span&gt;&lt;span&gt;↓ review manifests, receipts, stack generations&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-layer&quot;&gt;
+        &lt;div class=&quot;af-layer-label&quot;&gt;Review and delivery&lt;/div&gt;
+        &lt;div class=&quot;af-layer-body&quot;&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;delivery&quot;&gt;&lt;strong&gt;Local review lifecycle&lt;/strong&gt;&lt;span&gt;Immutable head, comments, approval, integration receipt&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;delivery&quot;&gt;&lt;strong&gt;Review stack&lt;/strong&gt;&lt;span&gt;Approved layers, safe suffix restacks, no force-push&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-node&quot; data-kind=&quot;delivery&quot;&gt;&lt;strong&gt;Completion PR&lt;/strong&gt;&lt;span&gt;One final delivery branch and external completion point&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;authority-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;authority-heading&quot;&gt;Who owns what&lt;/h2&gt;
+      &lt;p&gt;The system stays maintainable because no component is allowed to absorb a neighboring component&#x27;s authority.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;table class=&quot;af-authority&quot;&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Component&lt;/th&gt;&lt;th&gt;Owns&lt;/th&gt;&lt;th&gt;Must not own&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td&gt;Agent Flow skill&lt;/td&gt;&lt;td&gt;Preparation, questioning, durable inputs, human approval&lt;/td&gt;&lt;td&gt;Scheduling, polling, hidden lifecycle changes&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;&lt;code&gt;agent-flow&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Contracts, worktrees, topology, deterministic operations, status&lt;/td&gt;&lt;td&gt;A state database or general workflow engine&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Versioned graph&lt;/td&gt;&lt;td&gt;Allowed stages, dependencies, caps, controller transitions&lt;/td&gt;&lt;td&gt;Live card or attempt state&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Hermes Kanban&lt;/td&gt;&lt;td&gt;Dispatch, attempts, retries, dependencies, blocking, history&lt;/td&gt;&lt;td&gt;External acceptance or delivery policy&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Review manifest&lt;/td&gt;&lt;td&gt;Review identity, lifecycle generation, immutable SHAs, evidence&lt;/td&gt;&lt;td&gt;A tuicr session or scheduler&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;&lt;code&gt;tuicr-reviews&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Rebuildable discovery projection&lt;/td&gt;&lt;td&gt;Approval truth or comment interpretation&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Stacks and delivery&lt;/td&gt;&lt;td&gt;Reviewed layers, Git topology, exact trees, completion PR&lt;/td&gt;&lt;td&gt;Product implementation or premature issue completion&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;lifecycle-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;lifecycle-heading&quot;&gt;What happens when a flow launches&lt;/h2&gt;
+      &lt;p&gt;A launch is preparation plus materialization. It never becomes a polling loop.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-lifecycle&quot; role=&quot;list&quot; aria-label=&quot;Agent Flow launch lifecycle&quot;&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;1. Prepare&lt;/strong&gt;&lt;span&gt;Skill creates approved durable inputs.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;2. Doctor&lt;/strong&gt;&lt;span&gt;Profiles and runtime posture are fingerprinted.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;3. Seal&lt;/strong&gt;&lt;span&gt;Run manifest copies inputs and records digests.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;4. Validate&lt;/strong&gt;&lt;span&gt;Topology, paths, roots, caps, and revisions are checked.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;5. Materialize&lt;/strong&gt;&lt;span&gt;Root starts blocked; all cards and links are created.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;6. Execute&lt;/strong&gt;&lt;span&gt;Hermes dispatches attempts and native retries.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-step&quot; role=&quot;listitem&quot;&gt;&lt;strong&gt;7. Finalize&lt;/strong&gt;&lt;span&gt;Validated evidence produces durable outputs and status.&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;skills-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;skills-heading&quot;&gt;Walk through each Agent Flow skill&lt;/h2&gt;
+      &lt;p&gt;Select a skill to see its execution shape, authority boundaries, outputs, and handoff to the next part of the system.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-skill-controls&quot; role=&quot;group&quot; aria-label=&quot;Select an Agent Flow skill&quot;&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-skill=&quot;feature&quot; aria-pressed=&quot;true&quot;&gt;Feature&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-skill=&quot;review&quot; aria-pressed=&quot;false&quot;&gt;Review&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-skill=&quot;spike&quot; aria-pressed=&quot;false&quot;&gt;Spike&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-skill=&quot;epic&quot; aria-pressed=&quot;false&quot;&gt;Epic&lt;/button&gt;
+      &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-skill=&quot;stacks&quot; aria-pressed=&quot;false&quot;&gt;Stacks&lt;/button&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-skill-stage&quot; aria-live=&quot;polite&quot;&gt;
+      &lt;div class=&quot;af-section-heading&quot;&gt;
+        &lt;h3 id=&quot;skill-title&quot;&gt;&lt;/h3&gt;
+        &lt;p id=&quot;skill-purpose&quot;&gt;&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;af-flow-line&quot; id=&quot;skill-flow&quot; role=&quot;img&quot;&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-skill-summary&quot;&gt;
+        &lt;dl class=&quot;af-skill-facts&quot;&gt;
+          &lt;div class=&quot;af-fact&quot;&gt;&lt;dt&gt;Starts with&lt;/dt&gt;&lt;dd id=&quot;skill-input&quot;&gt;&lt;/dd&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-fact&quot;&gt;&lt;dt&gt;Parallelism&lt;/dt&gt;&lt;dd id=&quot;skill-parallel&quot;&gt;&lt;/dd&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-fact&quot;&gt;&lt;dt&gt;Produces&lt;/dt&gt;&lt;dd id=&quot;skill-output&quot;&gt;&lt;/dd&gt;&lt;/div&gt;
+          &lt;div class=&quot;af-fact&quot;&gt;&lt;dt&gt;Stops before&lt;/dt&gt;&lt;dd id=&quot;skill-stop&quot;&gt;&lt;/dd&gt;&lt;/div&gt;
+        &lt;/dl&gt;
+        &lt;div class=&quot;card&quot;&gt;
+          &lt;div class=&quot;text-muted&quot;&gt;Primary command path&lt;/div&gt;
+          &lt;pre class=&quot;af-command&quot;&gt;&lt;code id=&quot;skill-command&quot;&gt;&lt;/code&gt;&lt;/pre&gt;
+          &lt;div class=&quot;text-muted&quot;&gt;Key guarantee&lt;/div&gt;
+          &lt;p id=&quot;skill-guarantee&quot;&gt;&lt;/p&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;roles-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;roles-heading&quot;&gt;The six runtime roles&lt;/h2&gt;
+      &lt;p&gt;Profiles define stable capabilities and constraints. Cards pin the exact skill and workspace for one stage.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-role-grid&quot;&gt;
+      &lt;div class=&quot;af-role&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;A&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Analyst&lt;/strong&gt;&lt;p&gt;Read-only research, orientation, evidence, and plans from pinned inputs.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-role&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;B&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Builder&lt;/strong&gt;&lt;p&gt;Serialized product changes inside the one launcher-owned worktree.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-role&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;C&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Critic&lt;/strong&gt;&lt;p&gt;Independent, read-only adversarial review using a distinct provider lane.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-role&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;R&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Artifact&lt;/strong&gt;&lt;p&gt;Reports, diagrams, and synthesis at declared artifact paths only.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-role&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;G&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Gate&lt;/strong&gt;&lt;p&gt;Exact deterministic commands, outputs, and pass/fail evidence without reinterpretation.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-role&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;F&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Flow controller&lt;/strong&gt;&lt;p&gt;Declared Kanban transitions only; a narrow pinned terminal command bridges Hermes v0.18.2.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;evidence-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;evidence-heading&quot;&gt;Why worker output is not trusted directly&lt;/h2&gt;
+      &lt;p&gt;The critical security and correctness boundary is the completed-attempt evidence chain.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-evidence-chain&quot; role=&quot;img&quot; aria-label=&quot;Worker handoff evidence chain from Hermes attempt through validation snapshot to consumer&quot;&gt;
+      &lt;div class=&quot;af-evidence-link&quot;&gt;&lt;strong&gt;Worker completes&lt;/strong&gt;&lt;span&gt;Structured handoff plus artifact claims&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-evidence-link&quot;&gt;&lt;strong&gt;Hermes records&lt;/strong&gt;&lt;span&gt;Terminal attempt identity and ordinal&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-evidence-link&quot;&gt;&lt;strong&gt;Validator checks&lt;/strong&gt;&lt;span&gt;Run, task, stage, roots, schema, hashes&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-evidence-link&quot;&gt;&lt;strong&gt;Snapshot freezes&lt;/strong&gt;&lt;span&gt;Verified bytes under &lt;code&gt;validated/&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-evidence-link&quot;&gt;&lt;strong&gt;Consumer reads&lt;/strong&gt;&lt;span&gt;Only validator-owned evidence&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-contract-grid&quot;&gt;
+      &lt;div class=&quot;af-contract&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;1&lt;/span&gt;&lt;div&gt;&lt;strong&gt;&lt;code&gt;agent-flow.run/v1&lt;/code&gt;&lt;/strong&gt;&lt;p&gt;The immutable identity and content set for the complete run.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-contract&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;2&lt;/span&gt;&lt;div&gt;&lt;strong&gt;&lt;code&gt;agent-flow.graph/v1&lt;/code&gt;&lt;/strong&gt;&lt;p&gt;The complete executable topology and declared dynamic transitions.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-contract&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;3&lt;/span&gt;&lt;div&gt;&lt;strong&gt;&lt;code&gt;agent-flow.task-authority/v1&lt;/code&gt;&lt;/strong&gt;&lt;p&gt;Binds a concrete Hermes card to sealed run and gate authority.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-contract&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;4&lt;/span&gt;&lt;div&gt;&lt;strong&gt;&lt;code&gt;agent-flow.validation/v1&lt;/code&gt;&lt;/strong&gt;&lt;p&gt;Durable proof that the authoritative attempt and its bytes were checked.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-contract&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;5&lt;/span&gt;&lt;div&gt;&lt;strong&gt;&lt;code&gt;agent-flow.local-review/v1&lt;/code&gt;&lt;/strong&gt;&lt;p&gt;Immutable candidate identity plus audited review lifecycle.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-contract&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;6&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Receipts and state&lt;/strong&gt;&lt;p&gt;Migration, integration, stack generation, and delivery evidence for recovery.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;failure-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;failure-heading&quot;&gt;How the system fails safely&lt;/h2&gt;
+      &lt;p&gt;Resilience is mostly durable visibility and bounded recovery, not invisible self-healing.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-risk-grid&quot;&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;↻&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Worker or gateway restart&lt;/strong&gt;&lt;p&gt;Hermes retains cards, dependencies, attempts, and retry history. Resume uses the same run and IDs.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;!&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Semantic failure&lt;/strong&gt;&lt;p&gt;The attempt completes with &lt;code&gt;passed: false&lt;/code&gt;; a controller may create only a capped declared revision.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;×&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Malformed handoff&lt;/strong&gt;&lt;p&gt;The validation card records why it failed and blocks every downstream consumer.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;#&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Changed sealed input&lt;/strong&gt;&lt;p&gt;Resume derives the full compatibility delta and requires an exact append-only migration receipt.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;⏸&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Human decision needed&lt;/strong&gt;&lt;p&gt;The same controller blocks with &lt;code&gt;needs_input&lt;/code&gt;, naming the artifact and exact question.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;∆&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Branch or target drift&lt;/strong&gt;&lt;p&gt;Approval becomes stale; verification, review, stack generation, and approval are repeated explicitly.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;■&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Cancellation race&lt;/strong&gt;&lt;p&gt;Tenant-scoped sweeps reclaim and archive cards, while status reports any exact survivors.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;af-risk&quot;&gt;&lt;span class=&quot;af-index&quot;&gt;≠&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Partial Git delivery&lt;/strong&gt;&lt;p&gt;Durable receipts reconcile completed mutations without repeating or pretending the operation finished.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;journey-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;journey-heading&quot;&gt;A complete outcome, end to end&lt;/h2&gt;
+      &lt;p&gt;This is the longest path through the system: a multi-feature epic delivered through a reviewed stack.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;ol class=&quot;af-journey&quot;&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;The epic skill seals intent.&lt;/strong&gt;&lt;p&gt;A feature dependency DAG, source branch, target SHA, limits, and tracker root become durable inputs.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Hermes admits bounded ready waves.&lt;/strong&gt;&lt;p&gt;Independent features may execute concurrently, but every feature owns a separate worktree.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Each feature runs serialized TDD slices.&lt;/strong&gt;&lt;p&gt;Tester, builder, deterministic gate, and controller chains repeat within one worktree until verification passes or a cap blocks.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Completeness and independent critique close gaps.&lt;/strong&gt;&lt;p&gt;Only declared capped fix slices may re-enter implementation. &lt;code&gt;RE_PLAN&lt;/code&gt; requires a human.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;A local review manifest freezes the candidate.&lt;/strong&gt;&lt;p&gt;The exact base and head SHAs, validation evidence, artifacts, and lifecycle generation become review truth.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Reviewed features integrate into &lt;code&gt;epic/source&lt;/code&gt;.&lt;/strong&gt;&lt;p&gt;Integration is serialized and receipt-backed. Any changed head invalidates review.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Target drift is checked before stack planning.&lt;/strong&gt;&lt;p&gt;A moved target creates an explicit source-refresh graph, new verification, and a new stack generation.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;The stacks skill proposes exact review layers.&lt;/strong&gt;&lt;p&gt;Every hunk belongs to one layer; no branch or PR mutation happens before approval of the fixed plan.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Each layer is reviewed and safe restacks preserve the prefix.&lt;/strong&gt;&lt;p&gt;Changes apply to the earliest owning layer. Only the unmerged suffix receives new generation refs.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;Delivery replays reviewed layers.&lt;/strong&gt;&lt;p&gt;&lt;code&gt;epic/delivery&lt;/code&gt; must reproduce the exact source tree and pass full verification.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;div&gt;&lt;strong&gt;One completion PR delivers the outcome.&lt;/strong&gt;&lt;p&gt;Only its verified merge can complete the external tracker issue.&lt;/p&gt;&lt;/div&gt;&lt;/li&gt;
+    &lt;/ol&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;details-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;details-heading&quot;&gt;Important design choices&lt;/h2&gt;
+      &lt;p&gt;These choices keep the system deep enough to be useful without turning it into a generic orchestration platform.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;details&gt;
+      &lt;summary&gt;Why Hermes is the only control plane&lt;/summary&gt;
+      &lt;p&gt;Duplicating card state, retries, blocking, and recovery inside &lt;code&gt;agent-flow&lt;/code&gt; would create two lifecycle authorities. The CLI prepares and audits; Hermes owns runtime state.&lt;/p&gt;
+    &lt;/details&gt;
+    &lt;details&gt;
+      &lt;summary&gt;Why controller terminal access exists&lt;/summary&gt;
+      &lt;p&gt;Hermes v0.18.2 has no per-command plugin capability for repository transition helpers. Controllers receive terminal access contractually limited to the exact sealed &lt;code&gt;agent-flow&lt;/code&gt; command on their card. This is narrow but not a filesystem sandbox.&lt;/p&gt;
+    &lt;/details&gt;
+    &lt;details&gt;
+      &lt;summary&gt;Why worktrees are serialized&lt;/summary&gt;
+      &lt;p&gt;One feature has one worktree. Dependencies ensure only one tester, builder, retry, or fix slice writes at a time. Epic concurrency happens across independent feature worktrees, never within one feature worktree.&lt;/p&gt;
+    &lt;/details&gt;
+    &lt;details&gt;
+      &lt;summary&gt;Why approval is bound to a SHA&lt;/summary&gt;
+      &lt;p&gt;A branch name can move. Review approval therefore names exactly one head SHA. Any head change, even a clean source merge, requires fresh verification and review.&lt;/p&gt;
+    &lt;/details&gt;
+    &lt;details&gt;
+      &lt;summary&gt;Why stacks use deterministic replay&lt;/summary&gt;
+      &lt;p&gt;Replay makes each reviewed layer delta explicit, supports safe suffix restacking, preserves a reviewed prefix, and proves the final delivery tree equals the source tree without depending on commit identity.&lt;/p&gt;
+    &lt;/details&gt;
+    &lt;details&gt;
+      &lt;summary&gt;Why Claude legacy flows still coexist&lt;/summary&gt;
+      &lt;p&gt;The local implementation and tests are complete, but live model-backed runs, real forge behavior, fresh UI inspection, and operational rollback evidence remain. The new &lt;code&gt;agent-flow-*&lt;/code&gt; skill namespace allows both systems to coexist without naming collisions.&lt;/p&gt;
+    &lt;/details&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;status-heading&quot;&gt;
+    &lt;div class=&quot;af-section-heading&quot;&gt;
+      &lt;h2 id=&quot;status-heading&quot;&gt;Current implementation posture&lt;/h2&gt;
+      &lt;p&gt;The repository implementation is complete through delivery; rollout confidence is intentionally tracked separately.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;af-status&quot;&gt;
+      &lt;div class=&quot;af-status-column&quot;&gt;
+        &lt;h3&gt;Implemented and locally verified&lt;/h3&gt;
+        &lt;ul&gt;
+          &lt;li&gt;Profiles, doctoring, immutable run bundles, graph validation&lt;/li&gt;
+          &lt;li&gt;Review, feature, spike, epic, stacks, and delivery operations&lt;/li&gt;
+          &lt;li&gt;Handoff validation, deterministic gates, receipts, recovery&lt;/li&gt;
+          &lt;li&gt;Local review lifecycle and tuicr projection&lt;/li&gt;
+          &lt;li&gt;Exact hunk ownership, safe suffix restacks, exact-tree delivery&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;af-status-column&quot;&gt;
+        &lt;h3&gt;Rollout evidence still needed&lt;/h3&gt;
+        &lt;ul&gt;
+          &lt;li&gt;Final model-backed sacrificial runs for every Hermes flow&lt;/li&gt;
+          &lt;li&gt;Non-production remote stack and delivery prototype&lt;/li&gt;
+          &lt;li&gt;Fresh dashboard and picker inspection on the final revision&lt;/li&gt;
+          &lt;li&gt;Live backup and non-destructive prune rehearsal&lt;/li&gt;
+          &lt;li&gt;Separate decision before retiring Claude&#x27;s established flows&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;footer class=&quot;af-footer text-small&quot;&gt;
+    Based on the Agent Flow README, versioned flow graphs, profile contracts,
+    implementation evidence, coexistence review, and ADRs 0004-0006. Updated
+    for the &lt;code&gt;agent-flow-feature&lt;/code&gt;, &lt;code&gt;agent-flow-review&lt;/code&gt;,
+    &lt;code&gt;agent-flow-spike&lt;/code&gt;, &lt;code&gt;agent-flow-epic&lt;/code&gt;, and
+    &lt;code&gt;agent-flow-stacks&lt;/code&gt; skill namespace.
+  &lt;/footer&gt;
+
+  &lt;script&gt;
+    (() =&gt; {
+      const root = document.getElementById(&quot;agent-flow-architecture&quot;);
+      const skills = {
+        feature: {
+          title: &quot;agent-flow-feature&quot;,
+          purpose: &quot;Implements one approved feature as a verified local review candidate in a single serialized worktree.&quot;,
+          nodes: [
+            [&quot;Plan&quot;, &quot;approved slices or planner&quot;],
+            [&quot;Slices&quot;, &quot;tester → builder → gate&quot;],
+            [&quot;Coverage&quot;, &quot;completeness critic&quot;],
+            [&quot;Critique&quot;, &quot;independent review&quot;],
+            [&quot;Finalize&quot;, &quot;clean head + review manifest&quot;]
+          ],
+          input: &quot;A feature manifest with acceptance criteria, verification commands, optional approved slices, and bounded retry/fix caps.&quot;,
+          parallel: &quot;No concurrent writers inside the feature. All implementation cards share one worktree and are dependency-serialized.&quot;,
+          output: &quot;A clean committed branch, verification evidence, review summary, journal, and registered local-review manifest.&quot;,
+          stop: &quot;Push, PR creation, external issue completion, worktree deletion, or bypassing a failed gate.&quot;,
+          command: &quot;agent-flow launch feature --manifest &lt;absolute-feature.json&gt;\nagent-flow status --run &lt;run-id&gt; --json&quot;,
+          guarantee: &quot;Every acceptance gap and blocking critique is either fixed through a capped declared slice or remains visibly blocked or deferred.&quot;
+        },
+        review: {
+          title: &quot;agent-flow-review&quot;,
+          purpose: &quot;Runs a durable automated review over an immutable local base-to-head SHA range.&quot;,
+          nodes: [
+            [&quot;Lenses&quot;, &quot;parallel required reviews&quot;],
+            [&quot;Critic&quot;, &quot;dedupe and posture&quot;],
+            [&quot;Side work&quot;, &quot;orientation + diagram&quot;],
+            [&quot;Finalize&quot;, &quot;floors, caps, stable IDs&quot;],
+            [&quot;Artifacts&quot;, &quot;JSON + Markdown + HTML + draft&quot;]
+          ],
+          input: &quot;A local-review manifest with canonical repository/worktree paths, pinned SHAs, urgency, and explicit comment caps.&quot;,
+          parallel: &quot;Required lenses run together. Fast and standard also run optional lenses, orientation, and a diagram.&quot;,
+          output: &quot;Validated findings, deterministic rendering, absolute artifact paths, and an unsubmitted GitHub-compatible draft.&quot;,
+          stop: &quot;Posting feedback, opening or modifying a PR, starting tuicr implicitly, or treating automated findings as human approval.&quot;,
+          command: &quot;agent-flow doctor profiles\nagent-flow launch review --manifest &lt;absolute-review.json&gt;\nagent-flow status --run &lt;run-id&gt; --json&quot;,
+          guarantee: &quot;Finalization reads only validator-owned evidence and applies urgency floors, per-tier caps, then the total cap deterministically.&quot;
+        },
+        spike: {
+          title: &quot;agent-flow-spike&quot;,
+          purpose: &quot;Answers a bounded technical question while preserving evidence, uncertainty, rejected options, and optional disposable code.&quot;,
+          nodes: [
+            [&quot;Choose mode&quot;, &quot;quick or deep&quot;],
+            [&quot;Research&quot;, &quot;one pass or parallel angles&quot;],
+            [&quot;Gap critic&quot;, &quot;deep mode only&quot;],
+            [&quot;Prototype&quot;, &quot;optional single worktree&quot;],
+            [&quot;Synthesis&quot;, &quot;evidence + residual gaps&quot;]
+          ],
+          input: &quot;A spike manifest naming the question, mode, research angles, revision cap, and optional experiment path.&quot;,
+          parallel: &quot;Deep research angles may run together. Prototype implementation is serialized in one dedicated worktree.&quot;,
+          output: &quot;A durable report distinguishing evidence, inference, rejected choices, residual gaps, and any stuck prototype slice.&quot;,
+          stop: &quot;Production promotion, product ref mutation for research-only spikes, push, or PR creation.&quot;,
+          command: &quot;agent-flow launch spike --manifest &lt;absolute-spike.json&gt;\nagent-flow status --run &lt;run-id&gt; --json&quot;,
+          guarantee: &quot;Cap exhaustion preserves useful prior evidence and becomes a visible residual gap rather than erasing the investigation.&quot;
+        },
+        epic: {
+          title: &quot;agent-flow-epic&quot;,
+          purpose: &quot;Coordinates dependency-ready feature flows into a verified immutable epic/source branch.&quot;,
+          nodes: [
+            [&quot;Epic plan&quot;, &quot;feature DAG + caps&quot;],
+            [&quot;Ready wave&quot;, &quot;bounded concurrent features&quot;],
+            [&quot;Reviews&quot;, &quot;automated + optional human&quot;],
+            [&quot;Integrate&quot;, &quot;serialized receipts&quot;],
+            [&quot;Checkpoint&quot;, &quot;target drift + stack readiness&quot;]
+          ],
+          input: &quot;An epic manifest with a feature dependency DAG, source and target revisions, external root, and concurrency limits.&quot;,
+          parallel: &quot;Independent feature worktrees may run concurrently. Integration into epic/source is always one feature at a time.&quot;,
+          output: &quot;Every feature integrated into epic/source, verification evidence, aggregate progress, and sealed source/target identities for stacking.&quot;,
+          stop: &quot;Stack branch creation, pushing, opening PRs, or declaring the tracker issue complete.&quot;,
+          command: &quot;agent-flow launch epic --manifest &lt;absolute-epic.json&gt;\nagent-flow epic wave --run &lt;run-id&gt;\nagent-flow epic checkpoint --run &lt;run-id&gt;&quot;,
+          guarantee: &quot;Readiness is reconstructed from child run authority, Hermes lifecycle, Git, and receipts; target drift creates a fresh explicit generation.&quot;
+        },
+        stacks: {
+          title: &quot;agent-flow-stacks&quot;,
+          purpose: &quot;Turns a verified source diff into approved immutable review layers and safely maintains their active generation.&quot;,
+          nodes: [
+            [&quot;Analyze&quot;, &quot;assign every hunk&quot;],
+            [&quot;Approve&quot;, &quot;fixed plan digest&quot;],
+            [&quot;Build&quot;, &quot;true linear branches&quot;],
+            [&quot;Review&quot;, &quot;canonical manifests&quot;],
+            [&quot;Restack&quot;, &quot;new suffix generation&quot;]
+          ],
+          input: &quot;A fixed source commit, fixed target SHA, forge coordinate, proposed hunk ownership, layer messages, and verification commands.&quot;,
+          parallel: &quot;This is an interactive deterministic CLI flow, not a Hermes graph. Branch construction and mutations are intentionally ordered.&quot;,
+          output: &quot;A stack plan, built layer refs, exact-tree proof, canonical layer reviews, active generation, and rollback receipts.&quot;,
+          stop: &quot;Completion PR creation or merge. Delivery is a separate deterministic Agent Flow boundary.&quot;,
+          command: &quot;agent-flow stacks analyze --repo &lt;repo&gt; --source &lt;sha&gt; --target &lt;sha&gt;\nagent-flow stacks approve --plan &lt;plan.json&gt; --actor &lt;actor&gt;\nagent-flow stacks build --plan &lt;plan.json&gt;&quot;,
+          guarantee: &quot;Every hunk belongs to exactly one layer; reviewed prefixes are never force-pushed, and only an approved changed suffix receives new refs.&quot;
+        }
+      };
+
+      const title = root.querySelector(&quot;#skill-title&quot;);
+      const purpose = root.querySelector(&quot;#skill-purpose&quot;);
+      const flow = root.querySelector(&quot;#skill-flow&quot;);
+      const input = root.querySelector(&quot;#skill-input&quot;);
+      const parallel = root.querySelector(&quot;#skill-parallel&quot;);
+      const output = root.querySelector(&quot;#skill-output&quot;);
+      const stop = root.querySelector(&quot;#skill-stop&quot;);
+      const command = root.querySelector(&quot;#skill-command&quot;);
+      const guarantee = root.querySelector(&quot;#skill-guarantee&quot;);
+      const buttons = [...root.querySelectorAll(&quot;[data-skill]&quot;)];
+
+      function renderSkill(key) {
+        const skill = skills[key];
+        title.textContent = skill.title;
+        purpose.textContent = skill.purpose;
+        input.textContent = skill.input;
+        parallel.textContent = skill.parallel;
+        output.textContent = skill.output;
+        stop.textContent = skill.stop;
+        command.textContent = skill.command;
+        guarantee.textContent = skill.guarantee;
+        flow.setAttribute(&quot;aria-label&quot;, `${skill.title} flow: ${skill.nodes.map(node =&gt; node[0]).join(&quot; then &quot;)}`);
+        flow.replaceChildren();
+        skill.nodes.forEach((node, index) =&gt; {
+          if (index &gt; 0) {
+            const arrow = document.createElement(&quot;div&quot;);
+            arrow.className = &quot;af-flow-arrow&quot;;
+            arrow.setAttribute(&quot;aria-hidden&quot;, &quot;true&quot;);
+            arrow.textContent = &quot;→&quot;;
+            flow.appendChild(arrow);
+          }
+          const item = document.createElement(&quot;div&quot;);
+          item.className = &quot;af-flow-node&quot;;
+          const strong = document.createElement(&quot;strong&quot;);
+          strong.textContent = node[0];
+          const span = document.createElement(&quot;span&quot;);
+          span.textContent = node[1];
+          item.append(strong, span);
+          flow.appendChild(item);
+        });
+        buttons.forEach(button =&gt; {
+          button.setAttribute(&quot;aria-pressed&quot;, String(button.dataset.skill === key));
+        });
+      }
+
+      buttons.forEach(button =&gt; {
+        button.addEventListener(&quot;click&quot;, () =&gt; renderSkill(button.dataset.skill));
+      });
+
+      renderSkill(&quot;feature&quot;);
+    })();
+  &lt;/script&gt;
+&lt;/main&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>
