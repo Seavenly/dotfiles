@@ -57,3 +57,6 @@ mise.local.lock
 
 # Claude Code working dirs (worktrees, local scratch)
 .claude/
+
+# Codex thread-local visualization artifacts
+.codex/visualizations/
