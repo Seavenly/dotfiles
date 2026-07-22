@@ -6,7 +6,7 @@ the complete final assistant messages without scraping terminal output?
 
 This is a throwaway feasibility prototype. It targets the locally installed
 Herdr 0.7.5 CLI and reads the harness-owned JSONL transcripts after Herdr reports
-each agent idle.
+each agent settled as `idle`, `done`, or `blocked`.
 
 ## Observed result
 
@@ -16,6 +16,10 @@ single-turn design is feasible.
 
 Two boundaries remain before treating this as a production control plane:
 
+- Herdr 0.7.5 does not expose a dedicated detached `session create` command.
+  The prototype invokes the normal named-session launcher without a terminal;
+  its client exits after spawning the detached server, and the command verifies
+  that server before continuing.
 - Herdr obtains session identity from the Codex and Claude Code integrations,
   but its lifecycle authority for those harnesses still depends on terminal
   screen detection. Permission and unusual blocked states need adversarial

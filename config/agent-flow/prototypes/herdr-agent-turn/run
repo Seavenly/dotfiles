@@ -38,14 +38,17 @@ start_session() {
   fi
 
   state "session=$session_name state=starting"
-  nohup herdr --session "$session_name" server \
-    </dev/null >"$scratch/server.log" 2>&1 &
+  # Herdr 0.7.5 has no explicit detached `session create` command. Its normal
+  # launcher creates the detached server before initializing the TUI client.
+  # With no terminal the client exits nonzero, but the server remains alive.
+  herdr --session "$session_name" \
+    </dev/null >"$scratch/session-launch.log" 2>&1 || true
 
   attempts=0
   until session_running; do
     attempts=$((attempts + 1))
     if (( attempts >= 100 )); then
-      command cat "$scratch/server.log" >&2
+      command cat "$scratch/session-launch.log" >&2
       return 1
     fi
     sleep 0.1
@@ -111,7 +114,6 @@ submit_prompts() {
   state "agent=codex state=submitting"
   herdr_session agent prompt "$codex_name" "$prompt" \
     --wait \
-    --until idle \
     --timeout "$timeout_ms" \
     >"$scratch/codex-prompt.json" &
   codex_pid=$!
@@ -119,15 +121,14 @@ submit_prompts() {
   state "agent=claude state=submitting"
   herdr_session agent prompt "$claude_name" "$prompt" \
     --wait \
-    --until idle \
     --timeout "$timeout_ms" \
     >"$scratch/claude-prompt.json" &
   claude_pid=$!
 
   wait "$codex_pid"
-  state "agent=codex state=idle"
+  state "agent=codex state=settled"
   wait "$claude_pid"
-  state "agent=claude state=idle"
+  state "agent=claude state=settled"
 }
 
 locate_transcript() {
@@ -150,12 +151,15 @@ locate_transcript() {
 
 extract_results() {
   local codex_record claude_record codex_session claude_session
+  local codex_status claude_status
   local codex_transcript claude_transcript
 
   codex_record="$(agent_record "$codex_name")"
   claude_record="$(agent_record "$claude_name")"
   codex_session="$(jq -r '.agent_session.value' <<<"$codex_record")"
   claude_session="$(jq -r '.agent_session.value' <<<"$claude_record")"
+  codex_status="$(jq -r '.agent_status' <<<"$codex_record")"
+  claude_status="$(jq -r '.agent_status' <<<"$claude_record")"
 
   codex_transcript="$(locate_transcript "$codex_home/sessions" "$codex_session")"
   claude_transcript="$(locate_transcript "$claude_home/projects" "$claude_session")"
@@ -171,6 +175,8 @@ extract_results() {
     --arg prompt "$prompt" \
     --arg codex_session "$codex_session" \
     --arg claude_session "$claude_session" \
+    --arg codex_status "$codex_status" \
+    --arg claude_status "$claude_status" \
     --slurpfile codex_response "$scratch/codex-response.json" \
     --slurpfile claude_response "$scratch/claude-response.json" \
     '{
@@ -179,12 +185,12 @@ extract_results() {
       agents: {
         codex: {
           session_id: $codex_session,
-          status: "idle",
+          status: $codex_status,
           response: $codex_response[0]
         },
         claude: {
           session_id: $claude_session,
-          status: "idle",
+          status: $claude_status,
           response: $claude_response[0]
         }
       }
@@ -198,4 +204,3 @@ start_session
 create_agents_if_missing
 submit_prompts
 extract_results
-
