@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prototype:herdr-turn": "./prototypes/herdr-agent-turn/run",
     "test": "node --test"
   },
   "dependencies": {
