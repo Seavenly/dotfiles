@@ -1,0 +1,10 @@
+schema = "drovr.capability/v1"
+
+[codex]
+sandbox = "read-only"
+approval = "never"
+search = false
+
+[claude]
+permission_mode = "dontAsk"
+allowed_tools = ["Read", "Glob", "Grep", "Bash"]

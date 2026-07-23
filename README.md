@@ -137,6 +137,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
+| `tools/drovr/` | Harness-neutral delegated agent runtime over Herdr |
 
 Configuration is organized by concern rather than mirroring the destination
 layout under `$HOME`. Native mise dotfiles create explicit symlinks from these
