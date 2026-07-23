@@ -13,6 +13,11 @@ const CAPABILITIES = [
   "unrestricted",
 ];
 const EFFORTS = ["low", "medium", "high", "xhigh"];
+const HARNESSES = ["claude", "codex"];
+const HARNESS_DEFAULTS = {
+  claude: { model: "sonnet", effort: "high" },
+  codex: { model: "gpt-5.6-sol", effort: "high" },
+};
 const CODEX_CAPABILITY_CONTRACT = {
   "read-only": {
     sandbox: "read-only",
@@ -44,6 +49,25 @@ const CODEX_CAPABILITY_CONTRACT = {
     approval: "never",
     search: false,
   },
+};
+const CLAUDE_CAPABILITY_CONTRACT = {
+  "read-only": {
+    permission_mode: "dontAsk",
+    allowed_tools: [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+    ],
+  },
+  "on-approve": { permission_mode: "default" },
+  "workspace-write": { permission_mode: "acceptEdits" },
+  auto: { permission_mode: "auto" },
+  unrestricted: { permission_mode: "bypassPermissions" },
 };
 
 function stripComment(line) {
@@ -139,6 +163,14 @@ function validateCapability(name, document, path) {
       `${path}: Codex mapping does not match the ${name} contract`,
     );
   }
+  if (
+    JSON.stringify(document.claude) !==
+    JSON.stringify(CLAUDE_CAPABILITY_CONTRACT[name])
+  ) {
+    throw new DrovrError(
+      `${path}: Claude mapping does not match the ${name} contract`,
+    );
+  }
 }
 
 export function configurationDirectory(env = process.env) {
@@ -156,9 +188,9 @@ export async function loadConfiguration({ env = process.env } = {}) {
     throw new DrovrError(`${rootPath}: expected schema drovr.config/v1`);
   }
   const defaults = root.document.defaults ?? {};
-  if (defaults.harness !== "codex") {
+  if (!HARNESSES.includes(defaults.harness)) {
     throw new DrovrError(
-      `${rootPath}: the initial slice supports default harness codex`,
+      `${rootPath}: invalid default harness`,
     );
   }
   if (!defaults.model || !EFFORTS.includes(defaults.effort)) {
@@ -204,7 +236,10 @@ export async function loadConfiguration({ env = process.env } = {}) {
       throw new DrovrError(`${rolePath}: expected schema drovr.role/v1`);
     }
     const roleDefaults = loaded.document.defaults ?? {};
-    if (roleDefaults.harness && roleDefaults.harness !== "codex") {
+    if (
+      roleDefaults.harness &&
+      !HARNESSES.includes(roleDefaults.harness)
+    ) {
       throw new DrovrError(`${rolePath}: unsupported default harness`);
     }
     if (roleDefaults.effort && !EFFORTS.includes(roleDefaults.effort)) {
@@ -216,15 +251,16 @@ export async function loadConfiguration({ env = process.env } = {}) {
     ) {
       throw new DrovrError(`${rolePath}: invalid capability default`);
     }
-    const instructionPaths = [
-      join(roleDirectory, "instructions.md"),
-      join(roleDirectory, "codex.md"),
+    const instructionFiles = [
+      { key: "shared", path: join(roleDirectory, "instructions.md") },
+      { key: "codex", path: join(roleDirectory, "codex.md") },
+      { key: "claude", path: join(roleDirectory, "claude.md") },
     ];
-    const instructions = [];
-    for (const path of instructionPaths) {
+    const instructions = {};
+    for (const { key, path } of instructionFiles) {
       try {
         const source = await readFile(path, "utf8");
-        instructions.push(source.trim());
+        instructions[key] = source.trim();
         fingerprints[path] = createHash("sha256").update(source).digest("hex");
       } catch (error) {
         if (path.endsWith("instructions.md") || error.code !== "ENOENT") {
@@ -239,7 +275,7 @@ export async function loadConfiguration({ env = process.env } = {}) {
       .digest("hex");
     roles[entry.name] = {
       defaults: roleDefaults,
-      instructions: instructions.filter(Boolean).join("\n\n"),
+      instructions,
     };
   }
 
@@ -264,26 +300,38 @@ export function resolveLaunchSpecification(configuration, options = {}) {
   const roleDefaults = role?.defaults ?? {};
   const harness =
     options.harness ?? roleDefaults.harness ?? configuration.defaults.harness;
-  const model =
-    options.model ?? roleDefaults.model ?? configuration.defaults.model;
-  const effort =
-    options.effort ?? roleDefaults.effort ?? configuration.defaults.effort;
-  const capability =
-    options.capability ??
-    roleDefaults.capability ??
-    configuration.defaults.capability;
-  if (harness !== "codex") {
-    throw new DrovrError("this slice supports only --harness codex", {
+  if (!HARNESSES.includes(harness)) {
+    throw new DrovrError(`unsupported harness: ${harness}`, {
       outcome: "unsupported_configuration",
       code: 0,
     });
   }
+  const matchingRoleDefaults =
+    !roleDefaults.harness || roleDefaults.harness === harness
+      ? roleDefaults
+      : {};
+  const selectedHarnessDefaults =
+    harness === configuration.defaults.harness
+      ? configuration.defaults
+      : HARNESS_DEFAULTS[harness];
+  const model =
+    options.model ??
+    matchingRoleDefaults.model ??
+    selectedHarnessDefaults?.model;
+  const effort =
+    options.effort ??
+    matchingRoleDefaults.effort ??
+    selectedHarnessDefaults?.effort;
+  const capability =
+    options.capability ??
+    roleDefaults.capability ??
+    configuration.defaults.capability;
   if (
     !model ||
     !EFFORTS.includes(effort) ||
     !configuration.capabilities[capability]
   ) {
-    throw new DrovrError("unsupported Codex launch configuration", {
+    throw new DrovrError(`unsupported ${harness} launch configuration`, {
       outcome: "unsupported_configuration",
       code: 0,
     });
@@ -296,14 +344,20 @@ export function resolveLaunchSpecification(configuration, options = {}) {
         (options.role && path.includes(`/roles/${options.role}/`)),
     ),
   );
+  const instructions = [
+    role?.instructions.shared,
+    role?.instructions[harness],
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   return {
     harness,
     role: options.role ?? null,
-    instructions: role?.instructions ?? "",
+    instructions,
     model,
     effort,
     capability,
-    native: configuration.capabilities[capability].codex,
+    native: configuration.capabilities[capability][harness],
     catalog_fingerprints: selectedFingerprints,
   };
 }

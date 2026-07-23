@@ -13,7 +13,7 @@ const HELP = `Usage:
 
 Commands:
   doctor    Diagnose configuration and runtime prerequisites
-  delegate  Run one complete logical turn with a managed Codex agent
+  delegate  Run one complete logical turn with a managed Claude or Codex agent
   attach    Interactively attach to a managed agent
 `;
 

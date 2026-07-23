@@ -9,17 +9,20 @@ import {
   readJsonlRecordsAfterCursor,
 } from "./transcript.mjs";
 
-export async function locateCodexTranscript(root, sessionId) {
+const ADAPTER = "claude-jsonl/v1";
+
+export async function locateClaudeTranscript(root, sessionId) {
   return locateJsonlTranscript({
     root,
     sessionId,
-    harness: "Codex",
-    matchesSession: (path, candidate) => path.includes(candidate),
+    harness: "Claude",
+    matchesSession: (path, candidate) =>
+      path.endsWith(`/${candidate}.jsonl`),
   });
 }
 
-export async function captureTranscriptCursor(path) {
-  return captureJsonlCursor(path, "codex-jsonl/v1");
+export async function captureClaudeTranscriptCursor(path) {
+  return captureJsonlCursor(path, ADAPTER);
 }
 
 async function readSessionMetadata(path) {
@@ -31,20 +34,24 @@ async function readSessionMetadata(path) {
   } finally {
     await handle.close();
   }
-  const firstLine = buffer
+  for (const line of buffer
     .subarray(0, bytesRead)
     .toString("utf8")
     .split(/\r?\n/u)
-    .find(Boolean);
-  try {
-    const record = JSON.parse(firstLine);
-    return record?.type === "session_meta" ? record : null;
-  } catch {
-    return null;
+    .filter(Boolean)) {
+    try {
+      const record = JSON.parse(line);
+      if (record?.sessionId && record?.cwd) {
+        return { native_session: record.sessionId, cwd: record.cwd };
+      }
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
-export async function captureTranscriptInventory(
+export async function captureClaudeTranscriptInventory(
   root,
   cwd,
   capturedAt = new Date().toISOString(),
@@ -53,14 +60,14 @@ export async function captureTranscriptInventory(
   for (const path of await walkFiles(root)) {
     if (!path.endsWith(".jsonl")) continue;
     const metadata = await readSessionMetadata(path);
-    if (metadata?.payload?.cwd !== cwd || !metadata.payload.id) continue;
+    if (metadata?.cwd !== cwd || !metadata.native_session) continue;
     candidates.push({
-      native_session: metadata.payload.id,
-      ...(await captureTranscriptCursor(path)),
+      native_session: metadata.native_session,
+      ...(await captureClaudeTranscriptCursor(path)),
     });
   }
   return {
-    adapter: "codex-jsonl/v1",
+    adapter: ADAPTER,
     transcript_root: root,
     cwd,
     captured_at: capturedAt,
@@ -70,14 +77,14 @@ export async function captureTranscriptInventory(
   };
 }
 
-export async function resolveInventoryCursor(cursor, path, sessionId) {
+export async function resolveClaudeInventoryCursor(cursor, path, sessionId) {
   const candidate = cursor.candidates.find(
     ({ native_session: nativeSession }) => nativeSession === sessionId,
   );
   if (candidate) {
     if (candidate.path !== path) {
       throw new DrovrError(
-        "reported Codex session moved to a different transcript path",
+        "reported Claude session moved to a different transcript path",
         { outcome: "uncertain" },
       );
     }
@@ -85,56 +92,49 @@ export async function resolveInventoryCursor(cursor, path, sessionId) {
     return resolved;
   }
 
-  const firstRecord = await readSessionMetadata(path);
-  if (
-    firstRecord?.payload?.id !== sessionId ||
-    firstRecord.payload?.cwd !== cursor.cwd
-  ) {
+  const metadata = await readSessionMetadata(path);
+  if (metadata?.native_session !== sessionId || metadata.cwd !== cursor.cwd) {
     throw new DrovrError(
-      "Codex transcript header does not match the reported session",
+      "Claude transcript metadata does not match the reported session",
       { outcome: "uncertain" },
     );
   }
-  return initialJsonlCursor("codex-jsonl/v1", path, cursor.captured_at);
+  return initialJsonlCursor(ADAPTER, path, cursor.captured_at);
 }
 
-function messageText(content, type) {
+function messageText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .filter((item) => item?.type === type && typeof item.text === "string")
+    .filter((item) => item?.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("");
 }
 
 function userText(record) {
-  if (record?.type === "event_msg" && record.payload?.type === "user_message") {
-    return record.payload.message;
-  }
-  if (
-    record?.type === "response_item" &&
-    record.payload?.type === "message" &&
-    record.payload?.role === "user"
-  ) {
-    return messageText(record.payload.content, "input_text");
-  }
-  return null;
+  if (record?.type !== "user" || record.message?.role !== "user") return null;
+  return messageText(record.message.content);
 }
 
 function finalAssistantText(record) {
   if (
-    record?.type !== "response_item" ||
-    record.payload?.type !== "message" ||
-    record.payload?.role !== "assistant" ||
-    (record.payload.phase ?? "final_answer") !== "final_answer"
-  )
+    record?.type !== "assistant" ||
+    record.message?.role !== "assistant" ||
+    record.message.stop_reason !== "end_turn"
+  ) {
     return null;
-  return messageText(record.payload.content, "output_text");
+  }
+  return messageText(record.message.content);
 }
 
-export async function extractCodexTurn(cursor, inputs) {
-  const records = await readJsonlRecordsAfterCursor(cursor, "Codex");
-
+export async function extractClaudeTurn(cursor, inputs) {
+  if (cursor.adapter !== ADAPTER) {
+    throw new DrovrError(
+      `unsupported Claude transcript cursor adapter: ${cursor.adapter}`,
+      { outcome: "unsupported_transcript" },
+    );
+  }
+  const records = await readJsonlRecordsAfterCursor(cursor, "Claude");
   let recordIndex = -1;
   for (const input of inputs) {
     recordIndex = records.findIndex(
@@ -143,9 +143,7 @@ export async function extractCodexTurn(cursor, inputs) {
     if (recordIndex < 0) {
       throw new DrovrError(
         "submitted input was not observed after the transcript cursor",
-        {
-          outcome: "uncertain",
-        },
+        { outcome: "uncertain" },
       );
     }
   }
@@ -155,10 +153,8 @@ export async function extractCodexTurn(cursor, inputs) {
     .filter((text) => text !== null);
   if (messages.length === 0) {
     throw new DrovrError(
-      "no completed Codex assistant result followed the final input",
-      {
-        outcome: "uncertain",
-      },
+      "no completed Claude assistant result followed the final input",
+      { outcome: "uncertain" },
     );
   }
   return { text: messages.at(-1), messages };

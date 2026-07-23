@@ -352,3 +352,144 @@ esac
     `drovr attach ${blocked.result.agent.id}`,
   );
 });
+
+test("delegate returns the correlated final Claude Code message", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-delegate-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const claudeHome = join(scratch, "claude");
+  const stateHome = join(scratch, "state");
+  const cwd = join(scratch, "work");
+  const herdrState = join(scratch, "herdr-state");
+  const nativeSession = "11111111-2222-4333-8444-555555555555";
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  const canonicalCwd = await realpath(cwd);
+  await mkdir(herdrState, { recursive: true });
+  await executable(
+    join(fakeBin, "claude"),
+    `touch ${JSON.stringify(join(herdrState, "claude-validated"))}
+printf '%s\n' '--model --effort --permission-mode manual dontAsk acceptEdits auto bypassPermissions --allowedTools --append-system-prompt --allow-dangerously-skip-permissions'
+`,
+  );
+  const transcriptDirectory = join(claudeHome, "projects", "-test-work");
+  await mkdir(transcriptDirectory, { recursive: true });
+  const transcript = join(transcriptDirectory, `${nativeSession}.jsonl`);
+  const oldTranscript = join(transcriptDirectory, "old-session.jsonl");
+  await writeFile(
+    oldTranscript,
+    `${[
+      {
+        type: "user",
+        sessionId: "old-session",
+        cwd: canonicalCwd,
+        message: { role: "user", content: "old request" },
+      },
+      {
+        type: "assistant",
+        sessionId: "old-session",
+        cwd: canonicalCwd,
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "STALE" }],
+        },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n")}\n`,
+  );
+  await executable(
+    join(fakeBin, "herdr"),
+    `herdrState=${JSON.stringify(herdrState)}
+transcript=${JSON.stringify(transcript)}
+taskCwd=${JSON.stringify(canonicalCwd)}
+nativeSession=${JSON.stringify(nativeSession)}
+if [[ \${1:-} == session && \${2:-} == list ]]; then
+  printf '{"sessions":[{"name":"delegates","running":true}]}\\n'
+  exit
+fi
+[[ \${1:-} == --session ]] || exit 1
+shift 2
+case "\${1:-} \${2:-}" in
+  "workspace create")
+    printf '{"result":{"workspace":{"workspace_id":"workspace-1"},"root_pane":{"pane_id":"pane-1"}}}\\n'
+    ;;
+  "pane get")
+    printf '{"result":{"pane":{"pane_id":"pane-1","tab_id":"tab-1"}}}\\n'
+    ;;
+  "tab rename"|"pane rename") ;;
+  "pane process-info")
+    printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
+    ;;
+  "agent start")
+    printf '%s\\n' "$*" > "$herdrState/start-args"
+    touch "$herdrState/agent"
+    printf '{"result":{"agent":{"name":"managed"}}}\\n'
+    ;;
+  "agent list")
+    if [[ -f "$herdrState/agent" ]]; then
+      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+      printf '{"result":{"agents":[{"name":"%s","agent_status":"idle","agent_session":{"value":"%s"}}]}}\\n' "$name" "$nativeSession"
+    else
+      printf '{"result":{"agents":[]}}\\n'
+    fi
+    ;;
+  "agent prompt")
+    prompt=\${4}
+    jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
+    jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:"CLAUDE DELEGATED"}]}}' >> "$transcript"
+    printf '{"result":{"status":"idle"}}\\n'
+    ;;
+  *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
+esac
+`,
+  );
+
+  const { stdout } = await execFileAsync(
+    drovr,
+    [
+      "delegate",
+      "--task-key",
+      "claude-feature",
+      "--agent-key",
+      "builder",
+      "--cwd",
+      cwd,
+      "--harness",
+      "claude",
+      "--capability",
+      "read-only",
+      "Reply with exactly CLAUDE DELEGATED",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const report = JSON.parse(stdout);
+
+  assert.equal(report.schema, "drovr.command/v1");
+  assert.equal(report.command, "delegate");
+  assert.equal(report.ok, true);
+  assert.equal(report.result.status, "completed");
+  assert.equal(report.result.agent.harness, "claude");
+  assert.equal(report.result.agent.model, "sonnet");
+  assert.equal(report.result.agent.effort, "high");
+  assert.equal(report.result.agent.capability, "read-only");
+  assert.equal(report.result.turn.result.text, "CLAUDE DELEGATED");
+  const startArgs = await readFile(join(herdrState, "start-args"), "utf8");
+  assert.match(startArgs, /--kind claude/);
+  assert.match(startArgs, /--model sonnet/);
+  assert.match(startArgs, /--effort high/);
+  assert.match(startArgs, /--permission-mode dontAsk/);
+  assert.doesNotMatch(startArgs, /--allowedTools Read,Glob,Grep,Bash(?:\s|$)/u);
+  assert.match(startArgs, /Bash\(git diff \*\)/u);
+  await readFile(join(herdrState, "claude-validated"));
+});

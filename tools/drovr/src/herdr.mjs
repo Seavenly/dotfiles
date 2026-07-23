@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 
+import { claudeAgentArguments } from "./claude.mjs";
 import { DrovrError } from "./errors.mjs";
 import { execute } from "./process.mjs";
 
@@ -181,6 +182,25 @@ export class HerdrClient {
       name,
       "--kind",
       "codex",
+      "--pane",
+      paneId,
+      "--timeout",
+      "120000",
+      "--",
+      ...agentArgs,
+    ]);
+    await this.sessionCommand(["pane", "rename", paneId, label]);
+  }
+
+  async startClaudeAgent({ name, paneId, label, specification }) {
+    await this.waitForShell(paneId);
+    const agentArgs = claudeAgentArguments(specification);
+    await this.sessionCommand([
+      "agent",
+      "start",
+      name,
+      "--kind",
+      "claude",
       "--pane",
       paneId,
       "--timeout",

@@ -2,6 +2,14 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import {
+  captureClaudeTranscriptCursor,
+  captureClaudeTranscriptInventory,
+  extractClaudeTurn,
+  locateClaudeTranscript,
+  resolveClaudeInventoryCursor,
+} from "./claude-transcript.mjs";
+import { validateClaudeLaunchSpecification } from "./claude.mjs";
 import { loadConfiguration, resolveLaunchSpecification } from "./config.mjs";
 import {
   captureTranscriptCursor,
@@ -29,11 +37,45 @@ async function persistTurn(registryDirectory, turn, changes) {
   await writeRecord(registryDirectory, "turns", turn);
 }
 
+function harnessAdapter(harness, env) {
+  const home = env.HOME ?? homedir();
+  if (harness === "claude") {
+    return {
+      label: "Claude",
+      root: join(
+        env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"),
+        "projects",
+      ),
+      locate: locateClaudeTranscript,
+      captureCursor: captureClaudeTranscriptCursor,
+      captureInventory: captureClaudeTranscriptInventory,
+      resolveInventory: resolveClaudeInventoryCursor,
+      extract: extractClaudeTurn,
+      inventoryBeforeDelivery: true,
+      startAgent: (herdr, options) => herdr.startClaudeAgent(options),
+      validate: validateClaudeLaunchSpecification,
+    };
+  }
+  return {
+    label: "Codex",
+    root: join(env.CODEX_HOME ?? join(home, ".codex"), "sessions"),
+    locate: locateCodexTranscript,
+    captureCursor: captureTranscriptCursor,
+    captureInventory: captureTranscriptInventory,
+    resolveInventory: resolveInventoryCursor,
+    extract: extractCodexTurn,
+    startAgent: (herdr, options) => herdr.startCodexAgent(options),
+    validate: async () => {},
+  };
+}
+
 export async function delegate(options, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const configuration = await loadConfiguration({ env });
   const specification = resolveLaunchSpecification(configuration, options);
+  const adapter = harnessAdapter(specification.harness, env);
+  await adapter.validate(specification, { env, run: dependencies.run });
   const identity = await resolveTaskIdentity({
     cwd: options.cwd,
     groupKey: options.group,
@@ -175,7 +217,7 @@ export async function delegate(options, dependencies = {}) {
       if (!agent) {
         const id = randomUUID();
         const managedName = `drovr-${id.replaceAll("-", "").slice(0, 26)}`;
-        await herdr.startCodexAgent({
+        await adapter.startAgent(herdr, {
           name: managedName,
           paneId: task.herdr.root_pane_id,
           label: options.agentLabel ?? options.agentKey,
@@ -198,19 +240,19 @@ export async function delegate(options, dependencies = {}) {
         await writeRecord(registryDirectory, "agents", agent);
       }
 
-      const codexRoot = join(
-        env.CODEX_HOME ?? join(env.HOME ?? homedir(), ".codex"),
-        "sessions",
-      );
       let cursor;
-      if (agent.native_session) {
-        const transcriptPath = await locateCodexTranscript(
-          codexRoot,
+      if (agent.native_session && !adapter.inventoryBeforeDelivery) {
+        const transcriptPath = await adapter.locate(
+          adapter.root,
           agent.native_session,
         );
-        cursor = await captureTranscriptCursor(transcriptPath);
+        cursor = await adapter.captureCursor(transcriptPath);
       } else {
-        cursor = await captureTranscriptInventory(codexRoot, task.cwd, now());
+        cursor = await adapter.captureInventory(
+          adapter.root,
+          task.cwd,
+          now(),
+        );
       }
       const turn = {
         schema: "drovr.turn/v1",
@@ -255,7 +297,7 @@ export async function delegate(options, dependencies = {}) {
   ) {
     await persistTurn(registryDirectory, prepared.turn, {
       status: "uncertain",
-      error: "Herdr reported a different Codex native session identity",
+      error: `Herdr reported a different ${adapter.label} native session identity`,
       settled_at: now(),
     });
     return commandResult("uncertain", { group, task, ...prepared });
@@ -264,21 +306,23 @@ export async function delegate(options, dependencies = {}) {
     if (!observedNativeSession) {
       await persistTurn(registryDirectory, prepared.turn, {
         status: "uncertain",
-        error: "Herdr did not report the Codex native session identity",
+        error: `Herdr did not report the ${adapter.label} native session identity`,
         settled_at: now(),
       });
       return commandResult("uncertain", { group, task, ...prepared });
     }
     prepared.agent.native_session = observedNativeSession;
     await writeRecord(registryDirectory, "agents", prepared.agent);
-    const transcriptPath = await locateCodexTranscript(
+  }
+  if (prepared.turn.transcript_cursor.transcript_root) {
+    const transcriptPath = await adapter.locate(
       prepared.turn.transcript_cursor.transcript_root,
-      observedNativeSession,
+      prepared.agent.native_session,
     );
-    prepared.turn.transcript_cursor = await resolveInventoryCursor(
+    prepared.turn.transcript_cursor = await adapter.resolveInventory(
       prepared.turn.transcript_cursor,
       transcriptPath,
-      observedNativeSession,
+      prepared.agent.native_session,
     );
     await persistTurn(registryDirectory, prepared.turn, {});
   }
@@ -311,7 +355,7 @@ export async function delegate(options, dependencies = {}) {
 
   let result;
   try {
-    result = await extractCodexTurn(prepared.turn.transcript_cursor, [
+    result = await adapter.extract(prepared.turn.transcript_cursor, [
       options.prompt,
     ]);
   } catch (error) {
