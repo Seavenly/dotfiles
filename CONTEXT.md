@@ -41,6 +41,26 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Delegated agent runtime**:
+A host-local execution substrate that launches and observes durable agent harnesses without owning flow policy or scheduling.
+_Avoid_: Orchestrator, workflow engine
+
+**Delegation group**:
+A named collection of related delegated tasks that share one runtime workspace.
+_Avoid_: Epic, project
+
+**Delegated task**:
+One independently delegated body of work with its own runtime tab, cwd, and managed agents.
+_Avoid_: Kanban card, flow run
+
+**Managed agent**:
+A durable harness conversation assigned to one delegated task and retained across logical turns until explicitly retired.
+_Avoid_: Worker attempt, pane
+
+**Logical turn**:
+One request to a managed agent, including any ordered steering inputs and the final settled assistant result.
+_Avoid_: Native harness turn, prompt
+
 **Tracker issue**:
 An externally visible GitHub or Jira commitment that owns intent and acceptance criteria.
 _Avoid_: Kanban task, card
@@ -98,6 +118,10 @@ _Avoid_: Stack merge, completion PR
 - The **recorder** extends **convergence** only when explicitly enabled.
 - A **flow run** executes **Kanban cards**, each of which may have multiple
   **worker attempts**.
+- A **flow** may use a **delegated agent runtime**, but that runtime never owns
+  the flow's scheduling or policy.
+- A **delegation group** contains **delegated tasks**; each delegated task owns
+  **managed agents**, and each managed agent processes **logical turns**.
 - A **tracker issue** may own one **flow run** without exposing its internal
   **Kanban cards**.
 - A **review candidate** becomes externally complete only through its
