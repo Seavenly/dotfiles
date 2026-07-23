@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  acknowledgeBlockRecord,
+  blockAwaitsWorkingObservation,
+  blockRepresentsActiveTransition,
+  createBlockRecord,
+  herdrStateChangedSinceBlock,
+  observeBlockWorking,
+  resolveBlockRecord,
+  supersedeBlockRecord,
+} from "./block-record.mjs";
 import { DrovrError } from "./errors.mjs";
 import { harnessAdapter } from "./harness-adapter.mjs";
 import { HerdrClient } from "./herdr.mjs";
@@ -170,9 +180,22 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const clock = dependencies.clock ?? Date.now;
+  const delay =
+    dependencies.delay ??
+    ((milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const registryDirectory = stateDirectory(env);
   let context = await turnContext(registryDirectory, turnId);
-  if (context.turn.status !== "working") return context;
+  let acknowledgedBlock;
+  if (options.afterBlockId) {
+    ({ context, block: acknowledgedBlock } = await acknowledgeCurrentBlock({
+      registryDirectory,
+      turnId,
+      blockId: options.afterBlockId,
+      acknowledgedAt: now(),
+    }));
+  }
+  if (!acknowledgedBlock && context.turn.status !== "working") return context;
 
   const herdr = client(owningSession(context.group), env, dependencies);
   const deadline =
@@ -180,12 +203,103 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   let correlationDeadline;
   for (;;) {
     context = await turnContext(registryDirectory, turnId);
-    if (context.turn.status !== "working") return context;
+    if (acknowledgedBlock) {
+      const currentBlock = await currentBlockForTurn(
+        registryDirectory,
+        context.turn,
+      );
+      if (currentBlock.id !== acknowledgedBlock.id) {
+        return { ...context, block: currentBlock };
+      }
+      acknowledgedBlock = currentBlock;
+      if (
+        context.turn.status !== "working" &&
+        acknowledgedBlock.working_observed_at
+      ) {
+        return context;
+      }
+    } else if (context.turn.status !== "working") {
+      return context;
+    }
     const observedInputCount = context.turn.inputs.length;
     const remaining =
       deadline === undefined ? undefined : Math.max(0, deadline - clock());
     if (remaining === 0) {
       return { ...context, wait_status: "still_running" };
+    }
+    if (blockAwaitsWorkingObservation(acknowledgedBlock)) {
+      const observed = await herdr.agentRecord(context.agent.herdr.name);
+      if (observed?.agent_status === "working") {
+        const recorded = await recordBlockWorkingObservation({
+          registryDirectory,
+          turnId,
+          blockId: acknowledgedBlock.id,
+          observedAt: now(),
+          observation: "herdr_working_status",
+        });
+        if (recorded.currentBlock.id !== acknowledgedBlock.id) {
+          return { ...context, block: recorded.currentBlock };
+        }
+        acknowledgedBlock = recorded.block;
+        continue;
+      }
+      if (
+        ["idle", "done"].includes(observed?.agent_status) &&
+        herdrStateChangedSinceBlock(
+          acknowledgedBlock,
+          observed.state_change_seq,
+        )
+      ) {
+        const recorded = await recordBlockWorkingObservation({
+          registryDirectory,
+          turnId,
+          blockId: acknowledgedBlock.id,
+          observedAt: now(),
+          observation: "herdr_state_changed_before_settlement",
+        });
+        if (recorded.currentBlock.id !== acknowledgedBlock.id) {
+          return { ...context, block: recorded.currentBlock };
+        }
+        acknowledgedBlock = recorded.block;
+        continue;
+      }
+      if (observed?.agent_status === "blocked") {
+        if (
+          !blockRepresentsActiveTransition(acknowledgedBlock, {
+            herdrStateChangeSeq: observed.state_change_seq,
+          })
+        ) {
+          const blockedExcerpt = await herdr.agentExcerpt(
+            context.agent.herdr.name,
+          );
+          const reconciled = await withResourceLock(
+            registryDirectory,
+            `turn:${turnId}`,
+            async () =>
+              reconcileSettledObservation({
+                registryDirectory,
+                turnId,
+                observed,
+                observedInputCount,
+                blockedExcerpt,
+                env,
+                now,
+                retryCorrelation: true,
+              }),
+          );
+          if (!reconciled.retry_wait) return reconciled;
+          continue;
+        }
+        const currentBlock = await currentBlockForTurn(
+          registryDirectory,
+          context.turn,
+        );
+        if (currentBlock?.id !== acknowledgedBlock.id) {
+          return { ...context, block: currentBlock };
+        }
+      }
+      await delay(Math.min(25, remaining ?? 25));
+      continue;
     }
     const observed = await herdr.waitForAgent(
       context.agent.herdr.name,
@@ -194,6 +308,10 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     if (observed?.drovr_status === "still_running") {
       return { ...context, wait_status: "still_running" };
     }
+    const blockedExcerpt =
+      observed?.agent_status === "blocked"
+        ? await herdr.agentExcerpt(context.agent.herdr.name)
+        : undefined;
 
     const reconciled = await withResourceLock(
       registryDirectory,
@@ -204,7 +322,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
           turnId,
           observed,
           observedInputCount,
-          herdr,
+          blockedExcerpt,
           env,
           now,
           retryCorrelation:
@@ -215,8 +333,87 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     if (reconciled.correlation_pending && correlationDeadline === undefined) {
       correlationDeadline = clock() + TRANSCRIPT_SETTLE_GRACE_MS;
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await delay(25);
   }
+}
+
+async function acknowledgeCurrentBlock({
+  registryDirectory,
+  turnId,
+  blockId,
+  acknowledgedAt,
+}) {
+  return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+    const context = await turnContext(registryDirectory, turnId);
+    const blocks = await readRecords(registryDirectory, "blocks");
+    const currentBlockId = context.turn.block_ids?.at(-1);
+    const block = blocks.find(({ id }) => id === blockId);
+    if (!block && currentBlockId === blockId) {
+      corruptRelationship("block", blockId, context.turn.id);
+    }
+    if (!block) invalidIdentifier("block", blockId);
+    if (block.turn_id !== turnId) {
+      throw new DrovrError(
+        `block ${blockId} belongs to another logical turn`,
+        { code: 2, outcome: "invalid_arguments" },
+      );
+    }
+    if (currentBlockId !== blockId || block.status === "superseded") {
+      const detail =
+        block.status === "superseded"
+          ? "has already been superseded"
+          : "is not the current block";
+      throw new DrovrError(`block ${blockId} ${detail}`, {
+        code: 2,
+        outcome: "invalid_arguments",
+      });
+    }
+    if (block.status === "open") {
+      acknowledgeBlockRecord(block, { acknowledgedAt });
+      await writeRecord(registryDirectory, "blocks", block);
+    }
+    return { context, block };
+  });
+}
+
+async function recordBlockWorkingObservation({
+  registryDirectory,
+  turnId,
+  blockId,
+  observedAt,
+  observation,
+}) {
+  return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+    const context = await turnContext(registryDirectory, turnId);
+    const currentBlock = await currentBlockForTurn(
+      registryDirectory,
+      context.turn,
+    );
+    if (currentBlock.id !== blockId) {
+      return { block: null, currentBlock };
+    }
+    const blocks = await readRecords(registryDirectory, "blocks");
+    const block = blocks.find(({ id }) => id === blockId);
+    if (!block) corruptRelationship("block", blockId, context.turn.id);
+    observeBlockWorking(block, { observedAt, observation });
+    await writeRecord(registryDirectory, "blocks", block);
+    return { block, currentBlock: block };
+  });
+}
+
+async function currentBlockForTurn(registryDirectory, turn) {
+  const currentBlockId = turn.block_ids?.at(-1);
+  if (!currentBlockId) return null;
+  const blocks = await readRecords(registryDirectory, "blocks");
+  const block = blocks.find(({ id }) => id === currentBlockId);
+  if (!block) corruptRelationship("block", currentBlockId, turn.id);
+  if (block.turn_id !== turn.id) {
+    throw new DrovrError(
+      `registry turn ${turn.id} references block ${currentBlockId} owned by turn ${block.turn_id}`,
+      { code: 5, outcome: "corrupt_registry" },
+    );
+  }
+  return block;
 }
 
 async function reconcileSettledObservation({
@@ -224,7 +421,7 @@ async function reconcileSettledObservation({
   turnId,
   observed,
   observedInputCount,
-  herdr,
+  blockedExcerpt,
   env,
   now,
   retryCorrelation,
@@ -290,21 +487,30 @@ async function reconcileSettledObservation({
   }
 
   if (observed?.agent_status === "blocked") {
-    const blocks = await readRecords(registryDirectory, "blocks");
-    let block = blocks.find(({ id }) => id === context.turn.block_ids?.at(-1));
-    if (!block) {
-      block = {
-        schema: "drovr.block/v1",
-        id: randomUUID(),
-        turn_id: context.turn.id,
-        agent_id: context.agent.id,
-        task_id: context.task.id,
+    let block = await currentBlockForTurn(registryDirectory, context.turn);
+    if (
+      !blockRepresentsActiveTransition(block, {
+        herdrStateChangeSeq: observed.state_change_seq,
+      })
+    ) {
+      const blockId = randomUUID();
+      if (block) {
+        supersedeBlockRecord(block, {
+          supersededAt: now(),
+          supersededBy: blockId,
+        });
+        await writeRecord(registryDirectory, "blocks", block);
+      }
+      block = createBlockRecord({
+        id: blockId,
+        turnId: context.turn.id,
+        agentId: context.agent.id,
+        taskId: context.task.id,
         harness: context.agent.launch.harness,
-        status: "open",
-        excerpt: await herdr.agentExcerpt(context.agent.herdr.name),
-        attach: { command: `drovr attach ${context.agent.id}` },
-        created_at: now(),
-      };
+        excerpt: blockedExcerpt,
+        herdrStateChangeSeq: observed.state_change_seq,
+        createdAt: now(),
+      });
       context.turn.block_ids = [...(context.turn.block_ids ?? []), block.id];
       await writeRecord(registryDirectory, "turns", context.turn);
       await writeRecord(registryDirectory, "blocks", block);
@@ -313,6 +519,13 @@ async function reconcileSettledObservation({
   }
   if (!["idle", "done"].includes(observed?.agent_status)) {
     return settleUncertain(registryDirectory, context, null, now());
+  }
+  const currentBlock = await currentBlockForTurn(
+    registryDirectory,
+    context.turn,
+  );
+  if (blockAwaitsWorkingObservation(currentBlock)) {
+    return { ...context, retry_wait: true };
   }
 
   let result;
@@ -339,6 +552,10 @@ async function reconcileSettledObservation({
     settledAt: now(),
   });
   await writeRecord(registryDirectory, "turns", context.turn);
+  if (currentBlock && currentBlock.status !== "superseded") {
+    resolveBlockRecord(currentBlock, { resolvedAt: now() });
+    await writeRecord(registryDirectory, "blocks", currentBlock);
+  }
   return context;
 }
 

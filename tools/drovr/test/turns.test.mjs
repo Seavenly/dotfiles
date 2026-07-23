@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  access,
+  appendFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
+import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
 import { waitForTurn } from "../src/turns.mjs";
@@ -160,6 +169,524 @@ test("wait allows Herdr's native session identity to appear after delivery", asy
   assert.equal(context.turn.result.text, "identified native result");
 });
 
+test("ordinary waits reuse one block record while the blocked transition remains active", async (t) => {
+  const fixture = await turnFixture(t);
+  const herdr = {
+    async waitForAgent() {
+      return {
+        agent_status: "blocked",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async agentExcerpt() {
+      return "Approval required\n";
+    },
+  };
+
+  const first = await waitForTurn(fixture.turn.id, {}, { env: fixture.env, herdr });
+  const second = await waitForTurn(fixture.turn.id, {}, { env: fixture.env, herdr });
+  const blocks = await readRecords(fixture.registryDirectory, "blocks");
+
+  assert.equal(first.block.id, second.block.id);
+  assert.equal(blocks.length, 1);
+  assert.equal(first.block.turn_id, fixture.turn.id);
+  assert.equal(first.block.agent_id, fixture.turn.agent_id);
+  assert.equal(first.block.task_id, fixture.turn.task_id);
+  assert.equal(first.block.harness, "codex");
+  assert.equal(first.block.excerpt, "Approval required\n");
+  assert.deepEqual(first.block.attach, { command: "drovr attach agent-1" });
+});
+
+test("blocked excerpts are captured without holding the turn registry lock", async (t) => {
+  const fixture = await turnFixture(t);
+  const safeKey = createHash("sha256")
+    .update(`turn:${fixture.turn.id}`)
+    .digest("hex");
+  const lockPath = join(fixture.registryDirectory, "locks", safeKey);
+  const herdr = {
+    async waitForAgent() {
+      return {
+        agent_status: "blocked",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async agentExcerpt() {
+      await assert.rejects(access(lockPath), { code: "ENOENT" });
+      return "Approval required\n";
+    },
+  };
+
+  const result = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr },
+  );
+
+  assert.equal(result.block.excerpt, "Approval required\n");
+});
+
+test("after-block durably acknowledges the current block and observes working before settlement", async (t) => {
+  const fixture = await turnFixture(t);
+  const blockedHerdr = {
+    async waitForAgent() {
+      return {
+        agent_status: "blocked",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async agentExcerpt() {
+      return "Approve in Codex\n";
+    },
+  };
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr: blockedHerdr },
+  );
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("native result after approval"),
+  );
+  const statuses = ["blocked", "idle", "working"];
+  let agentRecordCalls = 0;
+  const resumedHerdr = {
+    async agentRecord() {
+      const agent_status = statuses[Math.min(agentRecordCalls, statuses.length - 1)];
+      agentRecordCalls += 1;
+      return {
+        agent_status,
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async waitForAgent() {
+      return {
+        agent_status: "idle",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+  };
+
+  const completed = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1000 },
+    {
+      env: fixture.env,
+      herdr: resumedHerdr,
+      delay: async () => {},
+      now: () => "2026-07-23T10:00:05.000Z",
+    },
+  );
+  const [block] = await readRecords(fixture.registryDirectory, "blocks");
+
+  assert.equal(completed.turn.status, "completed");
+  assert.equal(completed.turn.result.text, "native result after approval");
+  assert.equal(agentRecordCalls, 3);
+  assert.equal(block.status, "resolved");
+  assert.equal(block.acknowledged_at, "2026-07-23T10:00:05.000Z");
+  assert.equal(block.working_observed_at, "2026-07-23T10:00:05.000Z");
+  assert.equal(block.resolved_at, "2026-07-23T10:00:05.000Z");
+});
+
+test("after-block accepts durable resume evidence when resolution finished before waiting", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    {
+      env: fixture.env,
+      herdr: blockedHerdr("Approve in Codex\n", 20),
+    },
+  );
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("native result already settled after approval"),
+  );
+  let agentRecordCalls = 0;
+  const resumedHerdr = {
+    async agentRecord() {
+      agentRecordCalls += 1;
+      return {
+        agent_status: "idle",
+        state_change_seq: 22,
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async waitForAgent() {
+      return {
+        agent_status: "idle",
+        state_change_seq: 22,
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+  };
+
+  const completed = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1000 },
+    {
+      env: fixture.env,
+      herdr: resumedHerdr,
+      delay: async () => {},
+      now: () => "2026-07-23T10:00:05.000Z",
+    },
+  );
+  const [block] = await readRecords(fixture.registryDirectory, "blocks");
+
+  assert.equal(agentRecordCalls, 1);
+  assert.equal(completed.turn.status, "completed");
+  assert.equal(
+    completed.turn.result.text,
+    "native result already settled after approval",
+  );
+  assert.equal(block.status, "resolved");
+  assert.equal(
+    block.working_observation,
+    "herdr_state_changed_before_settlement",
+  );
+});
+
+test("a later blocked transition supersedes the acknowledged block with a new ID", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    {
+      env: fixture.env,
+      herdr: blockedHerdr("First approval\n"),
+    },
+  );
+  let excerptCalls = 0;
+  const herdr = {
+    async agentRecord() {
+      return {
+        agent_status: "working",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async waitForAgent() {
+      return {
+        agent_status: "blocked",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async agentExcerpt() {
+      excerptCalls += 1;
+      return "Second approval\n";
+    },
+  };
+
+  const second = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1000 },
+    { env: fixture.env, herdr },
+  );
+  const blocks = await readRecords(fixture.registryDirectory, "blocks");
+  const firstRecord = blocks.find(({ id }) => id === surfaced.block.id);
+
+  assert.equal(second.turn.status, "working");
+  assert.notEqual(second.block.id, surfaced.block.id);
+  assert.equal(second.block.excerpt, "Second approval\n");
+  assert.equal(excerptCalls, 1);
+  assert.equal(firstRecord.status, "superseded");
+  assert.equal(firstRecord.superseded_by, second.block.id);
+  assert.equal(blocks.length, 2);
+});
+
+test("a changed Herdr state token surfaces a fast later blocked transition", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    {
+      env: fixture.env,
+      herdr: blockedHerdr("First approval\n", 10),
+    },
+  );
+  const herdr = {
+    async agentRecord() {
+      return {
+        agent_status: "blocked",
+        state_change_seq: 12,
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async agentExcerpt() {
+      return "Second approval\n";
+    },
+  };
+
+  const second = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1000 },
+    { env: fixture.env, herdr },
+  );
+  const blocks = await readRecords(fixture.registryDirectory, "blocks");
+  const firstRecord = blocks.find(({ id }) => id === surfaced.block.id);
+
+  assert.notEqual(second.block.id, surfaced.block.id);
+  assert.deepEqual(second.block.herdr, { state_change_seq: 12 });
+  assert.equal(second.block.excerpt, "Second approval\n");
+  assert.equal(firstRecord.status, "superseded");
+  assert.equal(firstRecord.superseded_by, second.block.id);
+});
+
+test("after-block reloads a working observation persisted by another waiter", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr: blockedHerdr("Approval\n") },
+  );
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("native result after concurrent wait"),
+  );
+  let agentRecordCalls = 0;
+  const herdr = {
+    async agentRecord() {
+      agentRecordCalls += 1;
+      const [block] = await readRecords(fixture.registryDirectory, "blocks");
+      block.working_observed_at = "2026-07-23T10:00:07.000Z";
+      await writeRecord(fixture.registryDirectory, "blocks", block);
+      return {
+        agent_status: "idle",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async waitForAgent() {
+      return {
+        agent_status: "idle",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+  };
+
+  const completed = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1000 },
+    { env: fixture.env, herdr, delay: async () => {} },
+  );
+
+  assert.equal(agentRecordCalls, 1);
+  assert.equal(completed.turn.status, "completed");
+  assert.equal(completed.turn.result.text, "native result after concurrent wait");
+});
+
+test("an ordinary waiter cannot settle an acknowledged block before working is observed", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr: blockedHerdr("Approval\n") },
+  );
+  const acknowledgementClock = [0, 1];
+  await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1 },
+    {
+      env: fixture.env,
+      herdr: { async agentRecord() {} },
+      clock: () => acknowledgementClock.shift(),
+    },
+  );
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("must not settle yet"),
+  );
+  const ordinaryClock = [0, 0, 1];
+  const result = await waitForTurn(
+    fixture.turn.id,
+    { timeoutMs: 1 },
+    {
+      env: fixture.env,
+      herdr: {
+        async waitForAgent() {
+          return {
+            agent_status: "idle",
+            agent_session: { value: "codex-session-1" },
+          };
+        },
+      },
+      clock: () => ordinaryClock.shift(),
+      delay: async () => {},
+    },
+  );
+
+  assert.equal(result.wait_status, "still_running");
+  assert.equal(result.turn.status, "working");
+  assert.equal(result.turn.result, undefined);
+});
+
+test("after-block surfaces a newer block created while recording working", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr: blockedHerdr("First approval\n") },
+  );
+  const newer = createBlockRecord({
+    id: "newer-block",
+    turnId: fixture.turn.id,
+    agentId: fixture.turn.agent_id,
+    taskId: fixture.turn.task_id,
+    harness: "codex",
+    excerpt: "Second approval\n",
+    createdAt: "2026-07-23T10:00:08.000Z",
+  });
+  const herdr = {
+    async agentRecord() {
+      const [turn] = await readRecords(fixture.registryDirectory, "turns");
+      turn.block_ids.push(newer.id);
+      await writeRecord(fixture.registryDirectory, "turns", turn);
+      await writeRecord(fixture.registryDirectory, "blocks", newer);
+      return {
+        agent_status: "working",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+  };
+
+  const result = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1000 },
+    { env: fixture.env, herdr },
+  );
+
+  assert.equal(result.block.id, newer.id);
+  assert.equal(result.block.excerpt, "Second approval\n");
+});
+
+test("after-block rejects unknown, cross-turn, non-current, and superseded block IDs", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr: blockedHerdr("Approval\n") },
+  );
+
+  await assert.rejects(
+    () =>
+      waitForTurn(
+        fixture.turn.id,
+        { afterBlockId: "unknown-block" },
+        { env: fixture.env },
+      ),
+    { message: "block not found: unknown-block", outcome: "invalid_arguments" },
+  );
+
+  await writeRecord(fixture.registryDirectory, "blocks", {
+    ...surfaced.block,
+    id: "another-turn-block",
+    turn_id: "turn-2",
+  });
+  await assert.rejects(
+    () =>
+      waitForTurn(
+        fixture.turn.id,
+        { afterBlockId: "another-turn-block" },
+        { env: fixture.env },
+      ),
+    {
+      message: "block another-turn-block belongs to another logical turn",
+      outcome: "invalid_arguments",
+    },
+  );
+
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.block_ids.push("newer-current-block");
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  await assert.rejects(
+    () =>
+      waitForTurn(
+        fixture.turn.id,
+        { afterBlockId: surfaced.block.id },
+        { env: fixture.env },
+      ),
+    {
+      message: `block ${surfaced.block.id} is not the current block`,
+      outcome: "invalid_arguments",
+    },
+  );
+
+  const blocks = await readRecords(fixture.registryDirectory, "blocks");
+  const original = blocks.find(({ id }) => id === surfaced.block.id);
+  original.status = "superseded";
+  await writeRecord(fixture.registryDirectory, "blocks", original);
+  await assert.rejects(
+    () =>
+      waitForTurn(
+        fixture.turn.id,
+        { afterBlockId: surfaced.block.id },
+        { env: fixture.env },
+      ),
+    {
+      message: `block ${surfaced.block.id} has already been superseded`,
+      outcome: "invalid_arguments",
+    },
+  );
+});
+
+test("a turn that references a missing current block is corrupt registry state", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.block_ids = ["missing-block"];
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+
+  await assert.rejects(
+    () =>
+      waitForTurn(
+        fixture.turn.id,
+        { afterBlockId: "missing-block" },
+        { env: fixture.env },
+      ),
+    {
+      message: `registry record ${fixture.turn.id} references missing block missing-block`,
+      outcome: "corrupt_registry",
+    },
+  );
+});
+
+test("after-block timeout preserves the acknowledged turn for a later waiter", async (t) => {
+  const fixture = await turnFixture(t);
+  const surfaced = await waitForTurn(
+    fixture.turn.id,
+    {},
+    { env: fixture.env, herdr: blockedHerdr("Approval\n") },
+  );
+  const clockValues = [0, 1];
+  const timed = await waitForTurn(
+    fixture.turn.id,
+    { afterBlockId: surfaced.block.id, timeoutMs: 1 },
+    {
+      env: fixture.env,
+      herdr: {
+        async agentRecord() {
+          throw new Error("the expired waiter must not touch Herdr");
+        },
+      },
+      clock: () => clockValues.shift(),
+      now: () => "2026-07-23T10:00:06.000Z",
+    },
+  );
+  const [acknowledged] = await readRecords(
+    fixture.registryDirectory,
+    "blocks",
+  );
+
+  assert.equal(timed.wait_status, "still_running");
+  assert.equal(timed.turn.status, "working");
+  assert.equal(acknowledged.status, "acknowledged");
+  assert.equal(
+    acknowledged.acknowledged_at,
+    "2026-07-23T10:00:06.000Z",
+  );
+  assert.equal(acknowledged.working_observed_at, undefined);
+});
+
 async function turnFixture(t) {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-turn-race-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -252,6 +779,23 @@ function assistantMessage(text) {
       role: "assistant",
       phase: "final_answer",
       content: [{ type: "output_text", text }],
+    },
+  };
+}
+
+function blockedHerdr(excerpt, stateChangeSeq) {
+  return {
+    async waitForAgent() {
+      return {
+        agent_status: "blocked",
+        ...(stateChangeSeq === undefined
+          ? {}
+          : { state_change_seq: stateChangeSeq }),
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async agentExcerpt() {
+      return excerpt;
     },
   };
 }

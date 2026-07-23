@@ -301,12 +301,15 @@ export class HerdrClient {
     if (timeoutMs !== undefined) {
       args.push("--timeout", String(timeoutMs));
     }
+    let output;
     try {
-      await this.sessionCommand(args);
+      output = await this.sessionCommand(args);
     } catch (error) {
       if (isTimeout(error)) return { drovr_status: "still_running" };
       throw error;
     }
+    const observed = parseJson(output, "agent wait").result?.agent;
+    if (observed) return observed;
     return this.agentRecord(name);
   }
 }

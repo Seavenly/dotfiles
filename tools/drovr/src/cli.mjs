@@ -21,7 +21,7 @@ const HELP = `Usage:
   drovr ask AGENT_ID [options] [PROMPT]
   drovr turn start AGENT_ID [options] [PROMPT]
   drovr turn send TURN_ID [options] [PROMPT]
-  drovr turn wait TURN_ID [--timeout DURATION]
+  drovr turn wait TURN_ID [--after-block BLOCK_ID] [--timeout DURATION]
   drovr turn get TURN_ID [--include-messages]
   drovr turn list [filters]
   drovr attach AGENT_ID [--takeover]
@@ -225,11 +225,17 @@ async function runTurnCommand(argv) {
     if (!turnId) invalidArguments("turn wait requires TURN_ID");
     const { options, positional } = parseOptions(
       argv.slice(2),
-      new Map([["--timeout", "timeout"]]),
+      new Map([
+        ["--after-block", "afterBlockId"],
+        ["--timeout", "timeout"],
+      ]),
       "turn wait",
     );
     if (positional.length) invalidArguments("turn wait accepts no prompt");
     const context = await waitForTurn(turnId, {
+      ...(options.afterBlockId
+        ? { afterBlockId: options.afterBlockId }
+        : {}),
       ...(options.timeout ? { timeoutMs: parseDuration(options.timeout) } : {}),
     });
     process.stdout.write(

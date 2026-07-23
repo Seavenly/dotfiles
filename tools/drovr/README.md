@@ -55,12 +55,17 @@ an active turn, and discover durable turn IDs:
 drovr turn start AGENT_ID "Begin the review."
 drovr turn send TURN_ID "Prioritize correctness."
 drovr turn wait TURN_ID --timeout 5m
+drovr turn wait TURN_ID --after-block BLOCK_ID --timeout 5m
 drovr turn get TURN_ID --include-messages
 drovr turn list --agent AGENT_ID
 ```
 
 Wait timeouts are non-destructive. Completion is accepted only after every
 recorded input appears in order in the native transcript and a complete
-assistant result follows the final input. Cleanup, cancellation, restart
-reconciliation, and native-session recovery belong to later tracer bullets.
-`drovr attach` remains the direct path for a blocked delegate.
+assistant result follows the final input. After `drovr attach` resolves a
+blocked native harness, `--after-block` durably acknowledges that exact block
+and waits for the agent to return to working before accepting later settlement.
+If resolution settles before the later waiter starts, an advanced Herdr state
+token plus the correlated native transcript provides the durable resume evidence.
+Cleanup, cancellation, restart reconciliation, and native-session recovery
+belong to later tracer bullets.

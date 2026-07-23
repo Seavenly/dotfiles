@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
+  appendFile,
   chmod,
   cp,
   mkdir,
@@ -35,7 +36,10 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr ask AGENT_ID \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr turn start AGENT_ID \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr turn send TURN_ID \[options\] \[PROMPT\]/);
-  assert.match(stdout, /drovr turn wait TURN_ID \[--timeout DURATION\]/);
+  assert.match(
+    stdout,
+    /drovr turn wait TURN_ID \[--after-block BLOCK_ID\] \[--timeout DURATION\]/,
+  );
   assert.match(stdout, /drovr turn get TURN_ID \[--include-messages\]/);
   assert.match(stdout, /drovr turn list \[filters\]/);
   assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
@@ -280,12 +284,19 @@ case "\${1:-} \${2:-}" in
       fi
       touch "$herdrState/agent-registration-ready"
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+      stateChangeSeq=2
       if [[ -f "$herdrState/out-of-band-working" ]]; then
         status=working
       elif [[ ! -f "$herdrState/startup-settled" && ! -f "$herdrState/prompted" ]]; then
         status=working
       elif [[ -f "$herdrState/blocked" ]]; then
-        status=blocked
+        if [[ -f "$herdrState/resume-block" ]]; then
+          status=idle
+          stateChangeSeq=12
+        else
+          status=blocked
+          stateChangeSeq=10
+        fi
       elif [[ -f "$herdrState/steering" && ! -f "$herdrState/steering-settled" ]]; then
         status=working
       else
@@ -296,7 +307,7 @@ case "\${1:-} \${2:-}" in
       else
         session=''
       fi
-      printf '{"result":{"agents":[{"name":"%s","agent_status":"%s"%s}]}}\\n' "$name" "$status" "$session"
+      printf '{"result":{"agents":[{"name":"%s","agent_status":"%s","state_change_seq":%s%s}]}}\\n' "$name" "$status" "$stateChangeSeq" "$session"
     else
       printf '{"result":{"agents":[]}}\\n'
     fi
@@ -342,6 +353,15 @@ case "\${1:-} \${2:-}" in
     if [[ " $* " == *" --timeout 1 "* ]]; then
       printf '{"code":"timeout"}\\n' >&2
       exit 1
+    fi
+    if [[ -f "$herdrState/blocked" && ! -f "$herdrState/resume-block" ]]; then
+      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+      printf '{"result":{"type":"agent_info","agent":{"name":"%s","agent_status":"blocked","state_change_seq":10,"agent_session":{"value":"codex-session-1"}}}}\\n' "$name"
+      exit
+    fi
+    if [[ -f "$herdrState/resume-block" && ! -f "$herdrState/block-result" ]]; then
+      jq -nc '{type:"response_item",payload:{type:"message",role:"assistant",phase:"final_answer",content:[{type:"output_text",text:"NATIVE AFTER BLOCK"}]}}' >> "$transcript"
+      touch "$herdrState/block-result"
     fi
     if [[ -f "$herdrState/steering" && ! -f "$herdrState/steering-settled" ]]; then
       jq -nc '{type:"response_item",payload:{type:"message",role:"assistant",phase:"final_answer",content:[{type:"output_text",text:"NATIVE STEERED"}]}}' >> "$transcript"
@@ -650,6 +670,68 @@ esac
     blocked.result.block.attach.command,
     `drovr attach ${blocked.result.agent.id}`,
   );
+
+  const { stdout: repeatedBlockedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "wait", blocked.result.turn.id, "--timeout", "5s"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const repeatedBlocked = JSON.parse(repeatedBlockedOutput);
+  assert.equal(repeatedBlocked.result.status, "needs_input");
+  assert.equal(repeatedBlocked.result.block.id, blocked.result.block.id);
+
+  await writeFile(join(herdrState, "resume-block"), "");
+  await appendFile(
+    transcript,
+    `${JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: "NATIVE AFTER BLOCK" }],
+      },
+    })}\n`,
+  );
+  await writeFile(join(herdrState, "block-result"), "");
+  const { stdout: resumedOutput } = await execFileAsync(
+    drovr,
+    [
+      "turn",
+      "wait",
+      blocked.result.turn.id,
+      "--after-block",
+      blocked.result.block.id,
+      "--timeout",
+      "5s",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const resumed = JSON.parse(resumedOutput);
+  assert.equal(resumed.result.status, "completed");
+  assert.equal(resumed.result.turn.result.text, "NATIVE AFTER BLOCK");
+  assert.notEqual(
+    resumed.result.turn.result.text,
+    blocked.result.block.excerpt.trim(),
+  );
 });
 
 test("delegate returns the correlated final Claude Code message", async (t) => {
@@ -729,7 +811,19 @@ case "\${1:-} \${2:-}" in
   "agent list")
     if [[ -f "$herdrState/agent" ]]; then
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
-      printf '{"result":{"agents":[{"name":"%s","agent_status":"idle","agent_session":{"value":"%s"}}]}}\\n' "$name" "$nativeSession"
+      stateChangeSeq=2
+      if [[ -f "$herdrState/blocked" ]]; then
+        if [[ -f "$herdrState/resume-block" ]]; then
+          status=idle
+          stateChangeSeq=12
+        else
+          status=blocked
+          stateChangeSeq=10
+        fi
+      else
+        status=idle
+      fi
+      printf '{"result":{"agents":[{"name":"%s","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"%s"}}]}}\\n' "$name" "$status" "$stateChangeSeq" "$nativeSession"
     else
       printf '{"result":{"agents":[]}}\\n'
     fi
@@ -743,7 +837,11 @@ case "\${1:-} \${2:-}" in
       printf '%s' "$result" > "$herdrState/pending-result"
     else
       jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
-      jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
+      if [[ $prompt == "BLOCK CLAUDE" ]]; then
+        touch "$herdrState/blocked"
+      else
+        jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
+      fi
     fi
     printf '{"result":{"status":"idle"}}\\n'
     ;;
@@ -760,7 +858,19 @@ case "\${1:-} \${2:-}" in
       jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
       touch "$herdrState/initial-transcript-delivered"
     fi
+    if [[ -f "$herdrState/blocked" && ! -f "$herdrState/resume-block" ]]; then
+      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+      printf '{"result":{"type":"agent_info","agent":{"name":"%s","agent_status":"blocked","state_change_seq":10,"agent_session":{"value":"%s"}}}}\\n' "$name" "$nativeSession"
+      exit
+    fi
+    if [[ -f "$herdrState/resume-block" && ! -f "$herdrState/block-result" ]]; then
+      jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:"CLAUDE NATIVE AFTER BLOCK"}]}}' >> "$transcript"
+      touch "$herdrState/block-result"
+    fi
     printf '{"result":{"status":"idle"}}\\n'
+    ;;
+  "agent read")
+    printf 'Claude approval required\\n'
     ;;
   *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
 esac
@@ -833,4 +943,79 @@ esac
   assert.equal(asked.result.status, "completed");
   assert.equal(asked.result.agent.harness, "claude");
   assert.equal(asked.result.turn.result.text, "CLAUDE ASKED");
+
+  const { stdout: blockedOutput } = await execFileAsync(
+    drovr,
+    ["ask", report.result.agent.id, "BLOCK CLAUDE"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const blocked = JSON.parse(blockedOutput);
+  assert.equal(blocked.command, "ask");
+  assert.equal(blocked.result.status, "needs_input");
+  assert.equal(blocked.result.block.harness, "claude");
+  assert.equal(blocked.result.block.turn_id, blocked.result.turn.id);
+  assert.equal(blocked.result.block.agent_id, blocked.result.agent.id);
+  assert.equal(blocked.result.block.task_id, blocked.result.task.id);
+  assert.equal(blocked.result.block.excerpt, "Claude approval required\n");
+  assert.equal(
+    blocked.result.block.attach.command,
+    `drovr attach ${blocked.result.agent.id}`,
+  );
+
+  await writeFile(join(herdrState, "resume-block"), "");
+  await appendFile(
+    transcript,
+    `${JSON.stringify({
+      type: "assistant",
+      sessionId: nativeSession,
+      cwd: canonicalCwd,
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "CLAUDE NATIVE AFTER BLOCK" }],
+      },
+    })}\n`,
+  );
+  await writeFile(join(herdrState, "block-result"), "");
+  const { stdout: resumedOutput } = await execFileAsync(
+    drovr,
+    [
+      "turn",
+      "wait",
+      blocked.result.turn.id,
+      "--after-block",
+      blocked.result.block.id,
+      "--timeout",
+      "5s",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const resumed = JSON.parse(resumedOutput);
+  assert.equal(resumed.result.status, "completed");
+  assert.equal(
+    resumed.result.turn.result.text,
+    "CLAUDE NATIVE AFTER BLOCK",
+  );
+  assert.notEqual(
+    resumed.result.turn.result.text,
+    blocked.result.block.excerpt.trim(),
+  );
 });
