@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import {
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -24,13 +25,19 @@ async function executable(path, source) {
   await chmod(path, 0o755);
 }
 
-test("public command advertises doctor and delegate", async () => {
+test("public command advertises durable turn commands", async () => {
   const { stdout } = await execFileAsync(drovr, ["--help"], {
     encoding: "utf8",
   });
 
   assert.match(stdout, /drovr doctor/);
   assert.match(stdout, /drovr delegate \[options\] \[PROMPT\]/);
+  assert.match(stdout, /drovr ask AGENT_ID \[options\] \[PROMPT\]/);
+  assert.match(stdout, /drovr turn start AGENT_ID \[options\] \[PROMPT\]/);
+  assert.match(stdout, /drovr turn send TURN_ID \[options\] \[PROMPT\]/);
+  assert.match(stdout, /drovr turn wait TURN_ID \[--timeout DURATION\]/);
+  assert.match(stdout, /drovr turn get TURN_ID \[--include-messages\]/);
+  assert.match(stdout, /drovr turn list \[filters\]/);
   assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
 });
 
@@ -130,6 +137,7 @@ test("delegate returns the correlated final Codex message", async (t) => {
   const stateHome = join(scratch, "state");
   const cwd = join(scratch, "work");
   const herdrState = join(scratch, "herdr-state");
+  const driftConfig = join(scratch, "drift-config");
   await mkdir(fakeBin, { recursive: true });
   await mkdir(join(codexHome, "sessions", "2026", "07", "23"), {
     recursive: true,
@@ -137,6 +145,26 @@ test("delegate returns the correlated final Codex message", async (t) => {
   await mkdir(cwd, { recursive: true });
   const canonicalCwd = await realpath(cwd);
   await mkdir(herdrState, { recursive: true });
+  await mkdir(driftConfig, { recursive: true });
+  await cp(
+    join(root, "config", "drovr", "capabilities"),
+    join(driftConfig, "capabilities"),
+    { recursive: true },
+  );
+  await writeFile(
+    join(driftConfig, "config.toml"),
+    [
+      'schema = "drovr.config/v1"',
+      'session = "drifted-session"',
+      "",
+      "[defaults]",
+      'harness = "codex"',
+      'model = "gpt-5.6-sol"',
+      'effort = "high"',
+      'capability = "on-approve"',
+      "",
+    ].join("\n"),
+  );
   const transcript = join(
     codexHome,
     "sessions",
@@ -191,13 +219,21 @@ if [[ \${1:-} != --session ]]; then
   touch "$herdrState/running"
   exit 1
 fi
+[[ \${2:-} == delegates ]] || {
+  printf 'unexpected Herdr session: %s\\n' "\${2:-}" >&2
+  exit 1
+}
 shift 2
 case "\${1:-} \${2:-}" in
   "workspace create")
     printf '{"result":{"workspace":{"workspace_id":"workspace-1"},"root_pane":{"pane_id":"pane-1"}}}\\n'
     ;;
   "pane process-info")
-    if [[ -f "$herdrState/shell-polled" ]]; then
+    if [[ ! -f "$herdrState/pane-discovered" ]]; then
+      touch "$herdrState/pane-discovered"
+      printf '{"error":{"code":"pane_not_found","message":"pane not found"}}\\n' >&2
+      exit 1
+    elif [[ -f "$herdrState/shell-polled" ]]; then
       touch "$herdrState/shell-ready"
       printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
     else
@@ -217,6 +253,11 @@ case "\${1:-} \${2:-}" in
       printf 'agent target pane is not an available shell\\n' >&2
       exit 1
     }
+    if [[ ! -f "$herdrState/agent-start-retried" ]]; then
+      touch "$herdrState/agent-start-retried"
+      printf '{"error":{"code":"agent_pane_busy","message":"agent target pane is not an available shell"}}\\n' >&2
+      exit 1
+    fi
     [[ $(<"$herdrState/tab-label") == feature-123 ]] || {
       printf 'task tab was not labeled\\n' >&2
       exit 1
@@ -232,8 +273,24 @@ case "\${1:-} \${2:-}" in
     ;;
   "agent list")
     if [[ -f "$herdrState/agent" ]]; then
+      if [[ ! -f "$herdrState/agent-registration-polled" ]]; then
+        touch "$herdrState/agent-registration-polled"
+        printf '{"result":{"agents":[]}}\\n'
+        exit
+      fi
+      touch "$herdrState/agent-registration-ready"
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
-      if [[ -f "$herdrState/blocked" ]]; then status=blocked; else status=idle; fi
+      if [[ -f "$herdrState/out-of-band-working" ]]; then
+        status=working
+      elif [[ ! -f "$herdrState/startup-settled" && ! -f "$herdrState/prompted" ]]; then
+        status=working
+      elif [[ -f "$herdrState/blocked" ]]; then
+        status=blocked
+      elif [[ -f "$herdrState/steering" && ! -f "$herdrState/steering-settled" ]]; then
+        status=working
+      else
+        status=idle
+      fi
       if [[ -f "$herdrState/prompted" ]]; then
         session=',"agent_session":{"value":"codex-session-1"}'
       else
@@ -245,11 +302,16 @@ case "\${1:-} \${2:-}" in
     fi
     ;;
   "agent prompt")
-    [[ " $* " == *" --wait "* ]] || {
-      printf 'prompt must wait for a post-submission transition\\n' >&2
+    [[ -f "$herdrState/agent-registration-ready" ]] || {
+      printf '{"error":{"code":"agent_not_found","message":"agent target not found"}}\\n' >&2
+      exit 1
+    }
+    [[ -f "$herdrState/startup-settled" ]] || {
+      printf '{"error":{"code":"agent_starting","message":"agent target is still starting"}}\\n' >&2
       exit 1
     }
     prompt=\${4}
+    printf '%s\\n' "$*" > "$herdrState/prompt-args"
     touch "$herdrState/prompted"
     if [[ ! -f "$transcript" ]]; then
       jq -nc --arg cwd "$taskCwd" '{timestamp:(now | todate),type:"session_meta",payload:{id:"codex-session-1",cwd:$cwd}}' >> "$transcript"
@@ -257,8 +319,14 @@ case "\${1:-} \${2:-}" in
     jq -nc --arg prompt "$prompt" '{type:"event_msg",payload:{type:"user_message",message:$prompt}}' >> "$transcript"
     if [[ $prompt == BLOCK ]]; then
       touch "$herdrState/blocked"
+    elif [[ $prompt == "Begin a steerable turn" ]]; then
+      touch "$herdrState/steering"
+      jq -nc '{type:"response_item",payload:{type:"message",role:"assistant",phase:"final_answer",content:[{type:"output_text",text:"INTERMEDIATE"}]}}' >> "$transcript"
+    elif [[ -f "$herdrState/steering" && ! -f "$herdrState/steering-settled" ]]; then
+      :
     else
-      jq -nc '{type:"response_item",payload:{type:"message",role:"assistant",phase:"final_answer",content:[{type:"output_text",text:"DELEGATED"}]}}' >> "$transcript"
+      if [[ $prompt == "Reply with exactly ASKED" ]]; then result=ASKED; else result=DELEGATED; fi
+      jq -nc --arg result "$result" '{type:"response_item",payload:{type:"message",role:"assistant",phase:"final_answer",content:[{type:"output_text",text:$result}]}}' >> "$transcript"
     fi
     printf '{"result":{"status":"idle"}}\\n'
     ;;
@@ -266,6 +334,19 @@ case "\${1:-} \${2:-}" in
     printf 'Permission approval required\\n'
     ;;
   "agent wait")
+    if [[ ! -f "$herdrState/startup-settled" && ! -f "$herdrState/prompted" ]]; then
+      touch "$herdrState/startup-settled"
+      printf '{"result":{"status":"idle"}}\\n'
+      exit
+    fi
+    if [[ " $* " == *" --timeout 1 "* ]]; then
+      printf '{"code":"timeout"}\\n' >&2
+      exit 1
+    fi
+    if [[ -f "$herdrState/steering" && ! -f "$herdrState/steering-settled" ]]; then
+      jq -nc '{type:"response_item",payload:{type:"message",role:"assistant",phase:"final_answer",content:[{type:"output_text",text:"NATIVE STEERED"}]}}' >> "$transcript"
+      touch "$herdrState/steering-settled"
+    fi
     printf '{"result":{"status":"idle"}}\\n'
     ;;
   *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
@@ -318,6 +399,224 @@ esac
   assert.match(startArgs, /--kind codex/);
   assert.match(startArgs, /--sandbox read-only/);
   assert.match(startArgs, /--ask-for-approval on-request/);
+  const promptArgs = await readFile(join(herdrState, "prompt-args"), "utf8");
+  assert.doesNotMatch(promptArgs, /--wait/u);
+
+  let askedExecution;
+  try {
+    askedExecution = await execFileAsync(
+      drovr,
+      ["ask", report.result.agent.id, "Reply with exactly ASKED"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          CODEX_HOME: codexHome,
+          XDG_STATE_HOME: stateHome,
+          DROVR_CONFIG_DIR: driftConfig,
+        },
+      },
+    );
+  } catch (error) {
+    assert.fail(
+      `${error.message}\nstdout: ${error.stdout}\nstderr: ${error.stderr}`,
+    );
+  }
+  const asked = JSON.parse(askedExecution.stdout);
+  assert.equal(asked.schema, "drovr.command/v1");
+  assert.equal(asked.command, "ask");
+  assert.equal(asked.result.status, "completed");
+  assert.equal(asked.result.agent.id, report.result.agent.id);
+  assert.notEqual(asked.result.turn.id, report.result.turn.id);
+  assert.equal(asked.result.turn.result.text, "ASKED");
+
+  await writeFile(join(herdrState, "out-of-band-working"), "");
+  const { stdout: busyOutput } = await execFileAsync(
+    drovr,
+    ["ask", report.result.agent.id, "Do not deliver this"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: driftConfig,
+      },
+    },
+  );
+  const busy = JSON.parse(busyOutput);
+  assert.equal(busy.ok, true);
+  assert.equal(busy.result.status, "task_busy");
+  await rm(join(herdrState, "out-of-band-working"));
+
+  const { stdout: fetchedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "get", asked.result.turn.id],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const fetched = JSON.parse(fetchedOutput);
+  assert.equal(fetched.command, "turn get");
+  assert.equal(fetched.result.turn.result.text, "ASKED");
+  assert.equal(fetched.result.turn.result.messages, undefined);
+
+  const { stdout: listedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "list", "--agent", report.result.agent.id],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const listed = JSON.parse(listedOutput);
+  assert.equal(listed.command, "turn list");
+  assert.deepEqual(
+    listed.result.turns.map(({ id }) => id).sort(),
+    [report.result.turn.id, asked.result.turn.id].sort(),
+  );
+
+  const { stdout: startedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "start", report.result.agent.id, "Begin a steerable turn"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const started = JSON.parse(startedOutput);
+  assert.equal(started.command, "turn start");
+  assert.equal(started.result.status, "working");
+  const startedPromptArgs = await readFile(
+    join(herdrState, "prompt-args"),
+    "utf8",
+  );
+  assert.doesNotMatch(startedPromptArgs, /--wait/u);
+
+  const { stdout: timedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "wait", started.result.turn.id, "--timeout", "1ms"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const timed = JSON.parse(timedOutput);
+  assert.equal(timed.result.status, "still_running");
+  assert.equal(timed.result.turn.status, "working");
+
+  for (const [prompt, expectedCount] of [
+    ["Prioritize correctness", 2],
+    ["Then keep the answer concise", 3],
+  ]) {
+    const { stdout: sentOutput } = await execFileAsync(
+      drovr,
+      ["turn", "send", started.result.turn.id, prompt],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          CODEX_HOME: codexHome,
+          XDG_STATE_HOME: stateHome,
+          DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+        },
+      },
+    );
+    const sent = JSON.parse(sentOutput);
+    assert.equal(sent.command, "turn send");
+    assert.equal(sent.result.status, "working");
+    assert.equal(sent.result.turn.input_count, expectedCount);
+    const steeringPromptArgs = await readFile(
+      join(herdrState, "prompt-args"),
+      "utf8",
+    );
+    assert.doesNotMatch(steeringPromptArgs, /--wait/u);
+  }
+
+  const { stdout: waitedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "wait", started.result.turn.id, "--timeout", "5s"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const waited = JSON.parse(waitedOutput);
+  assert.equal(waited.command, "turn wait");
+  assert.equal(waited.result.status, "completed");
+  assert.equal(waited.result.turn.result.text, "NATIVE STEERED");
+  assert.deepEqual(waited.result.turn.result.messages, [
+    "INTERMEDIATE",
+    "NATIVE STEERED",
+  ]);
+
+  const { stdout: lateSendOutput } = await execFileAsync(
+    drovr,
+    ["turn", "send", started.result.turn.id, "Too late"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const lateSend = JSON.parse(lateSendOutput);
+  assert.equal(lateSend.command, "turn send");
+  assert.equal(lateSend.result.status, "turn_closed");
+  assert.equal(lateSend.result.turn.id, started.result.turn.id);
+
+  const { stdout: steeringFetchedOutput } = await execFileAsync(
+    drovr,
+    ["turn", "get", started.result.turn.id, "--include-messages"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const steeringFetched = JSON.parse(steeringFetchedOutput);
+  assert.equal(steeringFetched.result.turn.input_count, 3);
+  assert.deepEqual(steeringFetched.result.turn.result.messages, [
+    "INTERMEDIATE",
+    "NATIVE STEERED",
+  ]);
 
   const blockedExecution = await execFileAsync(
     drovr,
@@ -437,8 +736,30 @@ case "\${1:-} \${2:-}" in
     ;;
   "agent prompt")
     prompt=\${4}
-    jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
-    jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:"CLAUDE DELEGATED"}]}}' >> "$transcript"
+    if [[ $prompt == "Reply with exactly CLAUDE ASKED" ]]; then result="CLAUDE ASKED"; else result="CLAUDE DELEGATED"; fi
+    if [[ ! -f "$herdrState/initial-transcript-delivered" ]]; then
+      jq -nc --arg session "$nativeSession" '{type:"mode",sessionId:$session}' >> "$transcript"
+      printf '%s' "$prompt" > "$herdrState/pending-prompt"
+      printf '%s' "$result" > "$herdrState/pending-result"
+    else
+      jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
+      jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
+    fi
+    printf '{"result":{"status":"idle"}}\\n'
+    ;;
+  "agent wait")
+    if [[ -f "$herdrState/pending-prompt" && ! -f "$herdrState/initial-transcript-delivered" ]]; then
+      if [[ ! -f "$herdrState/stale-idle-observed" ]]; then
+        touch "$herdrState/stale-idle-observed"
+        printf '{"result":{"status":"idle"}}\\n'
+        exit
+      fi
+      prompt=$(<"$herdrState/pending-prompt")
+      result=$(<"$herdrState/pending-result")
+      jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
+      jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
+      touch "$herdrState/initial-transcript-delivered"
+    fi
     printf '{"result":{"status":"idle"}}\\n'
     ;;
   *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
@@ -492,4 +813,24 @@ esac
   assert.doesNotMatch(startArgs, /--allowedTools Read,Glob,Grep,Bash(?:\s|$)/u);
   assert.match(startArgs, /Bash\(git diff \*\)/u);
   await readFile(join(herdrState, "claude-validated"));
+
+  const { stdout: askedOutput } = await execFileAsync(
+    drovr,
+    ["ask", report.result.agent.id, "Reply with exactly CLAUDE ASKED"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        XDG_STATE_HOME: stateHome,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      },
+    },
+  );
+  const asked = JSON.parse(askedOutput);
+  assert.equal(asked.command, "ask");
+  assert.equal(asked.result.status, "completed");
+  assert.equal(asked.result.agent.harness, "claude");
+  assert.equal(asked.result.turn.result.text, "CLAUDE ASKED");
 });

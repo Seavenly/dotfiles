@@ -4,6 +4,7 @@ import { DrovrError } from "./errors.mjs";
 import { walkFiles } from "./files.mjs";
 import {
   captureJsonlCursor,
+  correlateTranscriptRecords,
   initialJsonlCursor,
   locateJsonlTranscript,
   readJsonlRecordsAfterCursor,
@@ -16,8 +17,7 @@ export async function locateClaudeTranscript(root, sessionId) {
     root,
     sessionId,
     harness: "Claude",
-    matchesSession: (path, candidate) =>
-      path.endsWith(`/${candidate}.jsonl`),
+    matchesSession: (path, candidate) => path.endsWith(`/${candidate}.jsonl`),
   });
 }
 
@@ -93,6 +93,12 @@ export async function resolveClaudeInventoryCursor(cursor, path, sessionId) {
   }
 
   const metadata = await readSessionMetadata(path);
+  if (!metadata) {
+    throw new DrovrError("Claude transcript metadata is not available yet", {
+      outcome: "uncertain",
+      details: { correlation_pending: true },
+    });
+  }
   if (metadata?.native_session !== sessionId || metadata.cwd !== cursor.cwd) {
     throw new DrovrError(
       "Claude transcript metadata does not match the reported session",
@@ -124,7 +130,8 @@ function finalAssistantText(record) {
   ) {
     return null;
   }
-  return messageText(record.message.content);
+  const text = messageText(record.message.content);
+  return text.length > 0 ? text : null;
 }
 
 export async function extractClaudeTurn(cursor, inputs) {
@@ -135,27 +142,9 @@ export async function extractClaudeTurn(cursor, inputs) {
     );
   }
   const records = await readJsonlRecordsAfterCursor(cursor, "Claude");
-  let recordIndex = -1;
-  for (const input of inputs) {
-    recordIndex = records.findIndex(
-      (record, index) => index > recordIndex && userText(record) === input,
-    );
-    if (recordIndex < 0) {
-      throw new DrovrError(
-        "submitted input was not observed after the transcript cursor",
-        { outcome: "uncertain" },
-      );
-    }
-  }
-  const messages = records
-    .slice(recordIndex + 1)
-    .map(finalAssistantText)
-    .filter((text) => text !== null);
-  if (messages.length === 0) {
-    throw new DrovrError(
-      "no completed Claude assistant result followed the final input",
-      { outcome: "uncertain" },
-    );
-  }
-  return { text: messages.at(-1), messages };
+  return correlateTranscriptRecords(records, inputs, {
+    harness: "Claude",
+    userText,
+    finalAssistantText,
+  });
 }

@@ -176,7 +176,7 @@ export class HerdrClient {
       );
     }
     if (native.search) agentArgs.push("--search");
-    await this.sessionCommand([
+    await this.startAgentWhenPaneReady([
       "agent",
       "start",
       name,
@@ -195,7 +195,7 @@ export class HerdrClient {
   async startClaudeAgent({ name, paneId, label, specification }) {
     await this.waitForShell(paneId);
     const agentArgs = claudeAgentArguments(specification);
-    await this.sessionCommand([
+    await this.startAgentWhenPaneReady([
       "agent",
       "start",
       name,
@@ -211,16 +211,41 @@ export class HerdrClient {
     await this.sessionCommand(["pane", "rename", paneId, label]);
   }
 
+  async startAgentWhenPaneReady(args) {
+    let lastError;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        return await this.sessionCommand(args);
+      } catch (error) {
+        if (!isAgentPaneBusy(error)) throw error;
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    throw lastError;
+  }
+
   async renameTab(tabId, label) {
     await this.sessionCommand(["tab", "rename", tabId, label]);
   }
 
   async waitForShell(paneId) {
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      const result = parseJson(
-        await this.sessionCommand(["pane", "process-info", "--pane", paneId]),
-        "pane process-info",
-      ).result?.process_info;
+      let output;
+      try {
+        output = await this.sessionCommand([
+          "pane",
+          "process-info",
+          "--pane",
+          paneId,
+        ]);
+      } catch (error) {
+        if (!isPaneNotFound(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      const result = parseJson(output, "pane process-info").result
+        ?.process_info;
       if (
         result?.shell_pid &&
         result.foreground_processes?.some(({ pid }) => pid === result.shell_pid)
@@ -267,29 +292,51 @@ export class HerdrClient {
     });
   }
 
-  async promptAndWait(name, prompt, timeoutMs) {
+  async prompt(name, prompt) {
+    return this.sessionCommand(["agent", "prompt", name, prompt]);
+  }
+
+  async waitForAgent(name, timeoutMs) {
+    const args = ["agent", "wait", name];
+    if (timeoutMs !== undefined) {
+      args.push("--timeout", String(timeoutMs));
+    }
     try {
-      await this.sessionCommand([
-        "agent",
-        "prompt",
-        name,
-        prompt,
-        "--wait",
-        "--timeout",
-        String(timeoutMs),
-      ]);
+      await this.sessionCommand(args);
     } catch (error) {
-      const adapterOutput = [
-        error.adapterFailure?.stdout,
-        error.adapterFailure?.stderr,
-      ]
-        .filter(Boolean)
-        .join("\n");
-      if (/"code"\s*:\s*"timeout"|timed? out/iu.test(adapterOutput)) {
-        return { drovr_status: "still_running" };
-      }
+      if (isTimeout(error)) return { drovr_status: "still_running" };
       throw error;
     }
     return this.agentRecord(name);
   }
+}
+
+function isTimeout(error) {
+  const adapterOutput = [
+    error.adapterFailure?.stdout,
+    error.adapterFailure?.stderr,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /"code"\s*:\s*"timeout"|timed? out/iu.test(adapterOutput);
+}
+
+function isAgentPaneBusy(error) {
+  const adapterOutput = [
+    error.adapterFailure?.stdout,
+    error.adapterFailure?.stderr,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /"code"\s*:\s*"agent_pane_busy"/u.test(adapterOutput);
+}
+
+function isPaneNotFound(error) {
+  const adapterOutput = [
+    error.adapterFailure?.stdout,
+    error.adapterFailure?.stderr,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /"code"\s*:\s*"pane_not_found"/u.test(adapterOutput);
 }

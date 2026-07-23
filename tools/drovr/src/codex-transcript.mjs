@@ -4,6 +4,7 @@ import { DrovrError } from "./errors.mjs";
 import { walkFiles } from "./files.mjs";
 import {
   captureJsonlCursor,
+  correlateTranscriptRecords,
   initialJsonlCursor,
   locateJsonlTranscript,
   readJsonlRecordsAfterCursor,
@@ -107,10 +108,14 @@ function messageText(content, type) {
     .join("");
 }
 
-function userText(record) {
+function eventUserText(record) {
   if (record?.type === "event_msg" && record.payload?.type === "user_message") {
     return record.payload.message;
   }
+  return null;
+}
+
+function responseUserText(record) {
   if (
     record?.type === "response_item" &&
     record.payload?.type === "message" &&
@@ -134,32 +139,16 @@ function finalAssistantText(record) {
 
 export async function extractCodexTurn(cursor, inputs) {
   const records = await readJsonlRecordsAfterCursor(cursor, "Codex");
+  const responseItemsAreAuthoritative = records.some(
+    (record) => responseUserText(record) !== null,
+  );
+  const observedUserText = responseItemsAreAuthoritative
+    ? responseUserText
+    : eventUserText;
 
-  let recordIndex = -1;
-  for (const input of inputs) {
-    recordIndex = records.findIndex(
-      (record, index) => index > recordIndex && userText(record) === input,
-    );
-    if (recordIndex < 0) {
-      throw new DrovrError(
-        "submitted input was not observed after the transcript cursor",
-        {
-          outcome: "uncertain",
-        },
-      );
-    }
-  }
-  const messages = records
-    .slice(recordIndex + 1)
-    .map(finalAssistantText)
-    .filter((text) => text !== null);
-  if (messages.length === 0) {
-    throw new DrovrError(
-      "no completed Codex assistant result followed the final input",
-      {
-        outcome: "uncertain",
-      },
-    );
-  }
-  return { text: messages.at(-1), messages };
+  return correlateTranscriptRecords(records, inputs, {
+    harness: "Codex",
+    userText: observedUserText,
+    finalAssistantText,
+  });
 }

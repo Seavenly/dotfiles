@@ -27,7 +27,11 @@ export async function locateJsonlTranscript({
   }
   throw new DrovrError(
     `${harness} transcript not found for native session ${sessionId}`,
-    { outcome: "unsupported_transcript", code: 4 },
+    {
+      outcome: "unsupported_transcript",
+      code: 4,
+      details: { correlation_pending: true },
+    },
   );
 }
 
@@ -94,4 +98,47 @@ export function initialJsonlCursor(adapter, path, capturedAt) {
     anchor_sha256: createHash("sha256").update("").digest("hex"),
     captured_at: capturedAt,
   };
+}
+
+export function correlateTranscriptRecords(
+  records,
+  inputs,
+  { harness, userText, finalAssistantText },
+) {
+  let recordIndex = -1;
+  let firstInputIndex = -1;
+  for (const input of inputs) {
+    recordIndex = records.findIndex(
+      (record, index) => index > recordIndex && userText(record) === input,
+    );
+    if (recordIndex < 0) {
+      throw new DrovrError(
+        "submitted input was not observed after the transcript cursor",
+        {
+          outcome: "uncertain",
+          details: { correlation_pending: true },
+        },
+      );
+    }
+    if (firstInputIndex < 0) firstInputIndex = recordIndex;
+  }
+
+  const messages = records
+    .slice(firstInputIndex + 1)
+    .map(finalAssistantText)
+    .filter((text) => text !== null);
+  const settledMessages = records
+    .slice(recordIndex + 1)
+    .map(finalAssistantText)
+    .filter((text) => text !== null);
+  if (settledMessages.length === 0) {
+    throw new DrovrError(
+      `no completed ${harness} assistant result followed the final input`,
+      {
+        outcome: "uncertain",
+        details: { correlation_pending: true },
+      },
+    );
+  }
+  return { text: settledMessages.at(-1), messages };
 }
