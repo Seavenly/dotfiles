@@ -64,6 +64,7 @@ repo: <abs repo path>
 config:
   max_slice_retries: <merged>
   max_critic_revisions: <merged>
+  max_critic_fix_files: <merged default; critic repairs above this size trigger research + RE_PLAN>
   plan_gate: <true if --gated>
   base_branch: <from --base / story / current branch>
   verify_commands: [<from --verify / story, may be empty>]
@@ -103,25 +104,37 @@ Confirm `auto` permission mode (announce; if not, ask the user to `Shift+Tab`). 
 > { "runDir":"<run_dir>","outDir":"<out_dir>","repo":"<repo>","worktree":"<wt>",
 >   "base":"<base>","briefPath":"<run_dir>/brief.md","slug":"<slug>","testCmd":"<cmd|null>",
 >   "verifyCmds":[...]|null,
->   "maxSliceRetries":<n>,"maxCriticRevisions":<n>,"acceptance":[...],
->   "planOnly":false,"slices":null }
+>   "maxSliceRetries":<n>,"maxCriticRevisions":<n>,"maxCriticFixFiles":<n>,"acceptance":[...],
+>   "priorRunStats":null,"planOnly":false,"slices":null }
 > ```
 
 **Gated (`--gated`):** two launches with the plan approved between them (a workflow can't take mid-run input):
-1. Launch with `planOnly:true`. It returns `{ slices, planPath }`. Show `plan.md` to the user; loop on edits (edit `plan.md` and adjust the slice list).
-2. On approval, launch again with `planOnly:false` and `slices:<approved slice array>` so the planner is skipped and implementation runs the approved slices.
+1. Launch with `planOnly:true`. It returns `{ slices, planPath, runStats }`. Show `plan.md` to the user; loop on edits (edit `plan.md` and adjust the slice list).
+2. On approval, launch again with `planOnly:false`, `slices:<approved slice array>`, and `priorRunStats:<step-1 runStats>` so the planner is skipped, implementation runs the approved slices, and final statistics cover both launches.
 
 Launch the saved `~/.claude/workflows/feature-flow-run.js` by name — never regenerate ad-hoc. Watch with `/workflows`.
 
 ## Step 6 — Wrap-up (after the workflow returns)
-The workflow returns `{ branch, reportPath, notesPath, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance }` (or `{ escalate:'RE_PLAN', reason }`).
+The workflow returns `{ branch, reportPath, reportContent, reportMissing, notesPath, notesContent, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance, verificationLedger, runStats }` (or `{ escalate:'RE_PLAN', reason, architectureResearch }`).
 
-- **RE_PLAN** → surface the critic's reason and stop; do not auto-replan.
+**On a normal return, persist conversation-owned artifacts first.** If
+`reportMissing` is true or `reportContent` is empty, do not create an empty
+`report.md` and do not register the review - surface the missing load-bearing
+artifact and stop. Otherwise write `reportContent` to `reportPath` and
+`notesContent` to `notesPath` with the conversation's file
+write tool. The synthesizer deliberately returns content instead of writing
+inside the workflow, so a deterministic subagent write-policy rejection cannot
+trigger an expensive guaranteed-to-fail retry. If persistence itself is denied
+or fails, surface the returned content/path and stop; do not relaunch the
+synthesizer to repeat the same write.
+
+- **RE_PLAN** → surface the critic's reason plus `architectureResearch` evidence and alternatives, then stop for the user's architecture decision; do not auto-replan or start the proposed subsystem.
 - **stuck[]** non-empty → call out which slices exhausted retries or could not produce their declared test/verification evidence, and the recorded reason.
 - **uncoveredAcceptance[]** non-empty → the completeness gate found acceptance criteria the brief asked for but the artifact still doesn't demonstrate after a fix pass — i.e. promised behavior that did **not** ship. Call these out first and prominently; they're surfaced at the top of the PR body under "Unmet acceptance criteria". This is a stronger signal than an open design finding: the feature is incomplete against its own contract.
 - **openFindings[]** non-empty → note the critic hit the revision cap with open merge-blocking findings (they're also in the PR body).
 - **deferredFindings[]** non-empty → mention the critic recorded non-blocking follow-ups; they're listed in the PR body under "Things deliberately not done".
 - **criticVerdictMissing** true → warn that the outer critique pass produced no verdict (the critic died twice); recommend a manual review before merging.
+- **runStats** → report agents, retries, full-suite executions, verification executions, and reused checks. The `verificationLedger` is the evidence record (command, validated commit SHA, exit status, and whether the command changed the tree); do not rerun a check merely to restate it during wrap-up.
 - Otherwise print:
 ```
 ✓ feature-flow complete

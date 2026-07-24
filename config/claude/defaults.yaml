@@ -8,6 +8,7 @@
 feature_flow:
   max_slice_retries: 3        # how many times implementer can retry per slice
   max_critic_revisions: 3     # how many critic-driven revision cycles allowed
+  max_critic_fix_files: 8     # larger critic repairs trigger research + RE_PLAN
   plan_gate: false            # if true, the command runs the plan workflow first
                               # and waits for user approval before implementing
                               # (the --gated two-launch split)

@@ -9,6 +9,45 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-07-24 - 2026-07-23-1849-fcc510-preview-lifecycle-cleanup (feature)
+
+The dominant signal was duplicated execution plus critic-driven architectural
+expansion. The orchestration changes preserve independent review quality while
+making verification single-owner, retries continuation-shaped, and broad
+repairs an explicit research + user-decision boundary.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Nested full-suite multiplication | AVOID | workflows/tdd-slice-loop.js + agents/tester.md + agents/implementer.md | applied - tester/implementer own focused checks; one mechanical gate owns the deduplicated full suite and verification commands for each code state |
+| Fresh-context retry loops | AVOID | workflows/tdd-slice-loop.js | applied - retries receive the current diff boundary, prior handoff, and bounded gate failure; broad brief/plan rediscovery is explicitly forbidden |
+| Architectural expansion during critic repair | AVOID | agents/critic.md + workflows/feature-flow-run.js | applied - broad repairs trigger research + RE_PLAN instead of entering the ordinary repair loop; corroborates the 2026-05-29 mid-flow architecture-research entry |
+| Unresearched custom primitives | AVOID | agents/critic.md + workflows/feature-flow-run.js | applied - custom queue/lock/scheduler/cache/protocol recommendations require current primary-source capabilities, repository mechanisms, and simpler alternatives; corroborates the 2026-07-17 capability/mechanism verification cluster |
+| Guaranteed-to-fail artifact retries | AVOID | workflows/feature-flow-run.js + agents/synthesizer.md + commands/feature-flow.md | applied - synthesizer returns structured content and the conversation persists it; deterministic write-policy failures are not retried inside the same restricted context |
+| Verification ledger | ADD | workflows/tdd-slice-loop.js + workflows/feature-flow-run.js | applied - records command, kind, validated SHA, exit status, tree mutation, environment, and bounded output; critic reuses the evidence instead of rerunning commands |
+| Critic fix-size guard | ADD | defaults.yaml + agents/critic.md + workflows/feature-flow-run.js | applied - configured eight-file behavior-bearing cap plus one-subsystem/one-seam/no-new-primitive guard; mechanical snapshots, fixtures, generated outputs, and documentation companions do not trip the file count |
+| Conditional architecture research gate | ADD | workflows/feature-flow-run.js | applied - only guard-crossing repairs launch bounded primary-source/repository research with at least two simpler alternatives; corroborates 2026-05-29 |
+| Run-level cost and time budget | ADD | commands/feature-flow.md | skipped - one occurrence and the proposed stop-for-approval cannot work inside a background workflow with no mid-run input or clock; `runStats` now surfaces agents/retries/check counts, but no new budget policy was invented |
+| Conversation-owned artifact persistence | ADD | workflows/feature-flow-run.js + agents/synthesizer.md + commands/feature-flow.md + AGENT-TEAMS.md | applied - report and notes content return to the interactive command for persistence |
+| Thin-slice discipline applies to critic findings | STRESS | agents/critic.md + workflows/feature-flow-run.js | applied - one requested outcome, subsystem, and behavioral seam per repair; split independent paths or RE_PLAN |
+| Mechanical gates need cheap, narrow execution | STRESS | workflows/tdd-slice-loop.js + workflows/feature-flow-run.js + AGENT-TEAMS.md | applied - gate/commit calls are pinned to Haiku at low effort, skip design rereads, and return bounded failure tails |
+| Blockers must stay acceptance-proportional | STRESS | agents/critic.md | applied - desirable hardening is non-blocking unless tied to a concrete correctness or safety failure on the shipped path |
+| Critic owns defect proof, not unilateral architecture | STRESS | agents/critic.md + workflows/feature-flow-run.js | applied - critic proves failure/constraints and supplies questions/directions; research gathers evidence, then the user chooses architecture |
+
+Notes:
+- No conflicts or prior reverts were found. The architecture-research items
+  strengthen the 2026-05-29 mid-flow pivot rule, and the custom-primitive rule
+  extends the 2026-07-17 primary-source requirement from review claims to
+  feature-flow architecture decisions.
+- Every applied item has a cross-PR case: test-heavy repositories duplicate
+  expensive gates; any non-trivial retry loses context; critic repairs can
+  broaden into subsystems; platform capabilities and in-repo primitives drift;
+  restricted subagents can deterministically reject writes; and broad critic
+  findings are difficult to verify atomically.
+- The cost/time budget was deliberately not encoded from one run. Existing
+  retry/revision caps remain authoritative, and the new run statistics provide
+  recurrence evidence without inventing thresholds or pretending a background
+  workflow can pause for interactive approval.
+
 ## 2026-07-17 — 2026-07-17-1306-pr-126 (review)
 
 A finding shipped at "important" that was a false positive — a mechanism

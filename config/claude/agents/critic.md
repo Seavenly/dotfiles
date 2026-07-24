@@ -109,12 +109,19 @@ verdict: APPROVE | FIX_LIST | RE_PLAN
 <one or two sentences on what's good; the team can ship>
 
 ## FIX_LIST (if applicable)
-Each item must be shaped like a vertical slice with an explicit verification
-mode. Choose `test` when a stable behavioral seam supports a meaningful red
-test. Choose `verify` for declarative infrastructure, configuration, docs,
-or changes best proven by a command, plan, preview, or artifact inspection.
-The lead routes test-mode items through tester → implementer and verify-mode
-items directly to the implementer and independent gate.
+Each item must be shaped like a **thin** vertical slice with an explicit
+verification mode. The same slice discipline used in planning applies here:
+one requested outcome, one behavioral seam, and one subsystem per item. Split
+findings that bundle independent paths or failure modes. If the defect cannot
+be repaired without coordinating multiple subsystems, introducing a new
+cross-cutting primitive, or changing several behavioral seams together, emit
+`RE_PLAN` instead of disguising an architectural change as one repair slice.
+
+Choose `test` when a stable behavioral seam supports a meaningful red test.
+Choose `verify` for declarative infrastructure, configuration, docs, or
+changes best proven by a command, plan, preview, or artifact inspection. The
+lead routes test-mode items through tester → implementer and verify-mode items
+directly to the implementer and independent gate.
 
 For each item:
 - **Severity**: critical | important
@@ -124,7 +131,10 @@ For each item:
   literal acceptance criteria.** A CI-failing finding is functionally
   blocking regardless of whether the brief named it; classify on whether
   the merge would succeed, not on the brief's stated text. Never frame a
-  CI-breaking finding as a "non-blocking observation."
+  CI-breaking finding as a "non-blocking observation." Desirable hardening
+  discovered in newly introduced machinery is not automatically blocking:
+  set `blocks-merge: false` unless you can demonstrate a concrete correctness
+  or safety failure on the shipped path.
 - **Behavior**: <the requested outcome that should hold but doesn't, in
   one sentence — e.g., "GET /profile/:id returns 404 (not 500) when the
   user id doesn't exist">
@@ -134,6 +144,13 @@ For each item:
 - **Verification idea**: for verify mode, the command or evidence that proves it
 - **Verification reason**: why the selected mode fits
 - **Suggested fix direction**: concrete pointer for the implementer
+- **Estimated files**: expected number of behavior-bearing implementation
+  and substantive test files. Exclude purely mechanical snapshots, fixtures,
+  generated outputs, and documentation companions from this tripwire.
+- **Subsystems**: concrete subsystem names; one is the normal case
+- **Behavioral seams**: how many independently verifiable paths the repair changes
+- **Introduces infrastructure primitive**: `true|false` - queue, lock,
+  scheduler, cache, protocol, coordinator, or similar cross-cutting mechanism
 
 If a finding has no behavioral seam (for example a naming issue, dead code,
 a doc correction, or declarative infrastructure), use
@@ -141,8 +158,18 @@ a doc correction, or declarative infrastructure), use
 compatibility alias only.
 
 ## RE_PLAN (if applicable — rare)
-Explain why the current approach can't be patched. Recommend a different
-slicing. Used when the design is wrong, not when individual lines are wrong.
+Use this when the current approach can't be patched as thin repair slices -
+not merely when the diff has several ordinary defects. Prove the failure
+scenario, severity, relevant constraints, and why the current design is
+insufficient, but do **not** unilaterally select a replacement architecture.
+Return bounded research questions and candidate directions for the lead.
+
+In particular, never recommend a custom queue, lock, scheduler, cache,
+protocol, coordinator, or similar infrastructure primitive from background
+knowledge alone. Platform capabilities change and repositories often already
+contain a mechanism that should be reused. A cross-cutting replacement must
+first check current first-party capabilities, existing repository mechanisms,
+and at least two simpler alternatives; the workflow owns that research gate.
 ```
 
 Hard rule: do not fabricate issues to look thorough. APPROVE is a real
