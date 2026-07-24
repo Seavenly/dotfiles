@@ -244,7 +244,10 @@ surgical edits anywhere under `~/.claude`. The key triage: a
 **judgment** problem edits a role `agents/*.md`; an **orchestration**
 problem (wiring, budgets, a spawn prompt that lives in the script) edits a
 `workflows/*.js`. The ledger is the cross-run memory that keeps single-run
-noise from thrashing the prompts.
+noise from thrashing the prompts. Because the ledger is version-controlled,
+`/retro-consume` writes only public-safe process summaries: run and work
+identifiers, internal links, and concrete incident or security details remain
+in host-local artifacts.
 
 **Discipline:** always launch the *saved* workflow by name so retro-tuned
 orchestration is used — never let Claude regenerate a workflow ad-hoc, or

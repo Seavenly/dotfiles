@@ -3,13 +3,16 @@
 Running record of process patterns surfaced by agent-teams retros and what
 was done with them. Newest entries at the top. Lets us see patterns over
 time, corroborate recurring ones, and revert changes that didn't pan out.
+This version-controlled ledger contains public-safe process summaries only.
+Run, repository, organization, and incident identifiers stay in host-local
+retro artifacts.
 
 Written by the host `/retro-consume` command. See `AGENT-TEAMS.md §Retro
 loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
-## 2026-07-24 - 2026-07-23-1849-fcc510-preview-lifecycle-cleanup (feature)
+## 2026-07-24 - feature run (sanitized)
 
 The dominant signal was duplicated execution plus critic-driven architectural
 expansion. The orchestration changes preserve independent review quality while
@@ -48,11 +51,11 @@ Notes:
   recurrence evidence without inventing thresholds or pretending a background
   workflow can pause for interactive approval.
 
-## 2026-07-17 — 2026-07-17-1306-pr-126 (review)
+## 2026-07-17 - review run (sanitized)
 
-A finding shipped at "important" that was a false positive — a mechanism
+A finding shipped at "important" that was a false positive - a mechanism
 claim ("this fails because a named resource behaves like M") asserted from
-background knowledge, caught only by the PR author's pushback. Root failure
+background knowledge, caught only by human review. Root failure
 was judgment about *what makes a finding trustworthy*, not orchestration.
 All six items **corroborate the 2026-06-08 review-flow entry** (false-positive
 pass / trusting reviewer claims without verification) — this is the recurrence
@@ -76,7 +79,7 @@ Notes:
 - Every item passes the cross-PR test: uncited mechanism claims,
   capability-absence against a knowledge cutoff, confidence-bleed in compound
   claims, and diff self-contradiction are generic LLM-reviewer failure modes,
-  not artifacts of PR #126. Corroboration with the 2026-06-08 entry satisfies
+  not artifacts of a single review. Corroboration with the 2026-06-08 entry satisfies
   the generality test independently.
 - The confidence-bleed item surfaced during a *post-run* verification in
   conversation (not inside the workflow), but the anti-pattern is general and
@@ -87,21 +90,12 @@ Notes:
 - No conflicts to surface — nothing in the ledger argues for trusting
   reviewer claims or reasoning mechanism from priors; every item reinforces
   the existing verification direction.
-- Housekeeping (not a retro edit): this session wrote
-  `.claude/settings.local.json` with `{"worktree":{"bgIsolation":"none"}}`
-  (gitignored, untracked) so the background-job worktree guard would allow
-  in-place edits — a `fresh` worktree branches from origin/main, which is 37
-  commits behind the active branch and lacks these edit regions. Remove it if
-  bg isolation is wanted for this repo.
+## 2026-06-12 - feature run (sanitized)
 
-## 2026-06-12 — 2026-06-03-1546-gateway-datadog (feature)
-
-The run's one genuine production bug: a composition-dependent behavior was
-pinned by an isolated unit test, and an adjacent component in the real chain
-overwrote its effect once composed at runtime. Four items below are that same
-root cause from different angles (tester, final-slice rule, critic,
-planner/implementer) — applied as a reinforcing set, the retro's own
-strongest recommendation.
+The dominant failure pattern was composition-dependent behavior validated only
+in isolation. Four items below address that root cause from different angles
+(tester, final-slice rule, critic, planner/implementer) and were applied as a
+reinforcing set.
 
 | Pattern | Bucket | Target | Action |
 |---|---|---|---|
@@ -109,7 +103,7 @@ strongest recommendation.
 | Real-composition test for order/wiring-dependent slices | ADD | commands/feature-flow.md (final-slice e2e prompt) | applied — same root cause as the AVOID; strengthened the `is_final_slice` tester spawn prompt to drive through actual wiring (not a hand-built subset) and confirm fail-under-wrong-wiring |
 | Critic must validate the headline path as a running system, not just a diff | STRESS | agents/critic.md (Mode A) | applied — new Mode A bullet: trace the designated e2e/headline behavior through real wiring, library behavior, and adjacent components; a passing unit test + clean diff is insufficient evidence; flag missing real-composition test as FIX_LIST |
 | Verify shared/library internals when behavior hinges on them | ADD | agents/planner.md (+ agents/implementer.md) | applied, scoped tightly — planner verifies library composition order against source before baking an ordering assumption; implementer gets a companion "black-box for comments, not for correctness" note. Bounded to decisions that *hinge* on library internals, per the retro's over-correction warning |
-| Act on verification-coverage gaps found at preflight | ADD | commands/feature-flow.md (preflight step 6) | applied · **corroborates the 2026-06-03 track-c preflight ADD** — strengthened step 6 from "note the gap" to "wire the uncovered language's own check into the inner loop now; don't defer to CI" |
+| Act on verification-coverage gaps found at preflight | ADD | commands/feature-flow.md (preflight step 6) | applied · **corroborates the 2026-06-03 preflight ADD** — strengthened step 6 from "note the gap" to "wire the uncovered language's own check into the inner loop now; don't defer to CI" |
 | Resolve the commit-vs-leave-uncommitted tension for diff-based review | ADD | commands/feature-flow.md | applied — made explicit that critic/synthesizer see only committed work via `git diff <base>...HEAD`, so all outstanding work must be committed before Phase 3; don't hand the critic an empty diff |
 | "Sandbox-green ≠ done" for infra/integration | STRESS | commands/feature-flow.md (Phase 2 note) + agents/synthesizer.md | applied · **corroborates the 2026-05-29 "sandbox not sufficient" entry** — emphasized the PR-body post-deploy checklist is load-bearing; synthesizer now must spell out concrete post-deploy checks for infra/integration features, not just the local test command |
 
@@ -121,7 +115,7 @@ Notes:
   pipelines, registration sequence) is a generic trap, not specific to this
   feature.
 - Two items corroborate prior ledger entries: preflight-coverage strengthens
-  the track-c preflight step (2026-06-03), and "sandbox-green ≠ done"
+  the preflight step (2026-06-03), and "sandbox-green ≠ done"
   reinforces the 2026-05-29 infra-not-sufficient note. Both applied with
   confidence on the strength of the corroboration.
 - The "verify library internals" ADD was applied but deliberately bounded to
@@ -131,7 +125,7 @@ Notes:
 - No conflicts to surface — every incoming item either corroborates a prior
   entry or is net-new, and none reverses a past decision.
 
-## 2026-06-08 — 2026-06-05-1532-pr-435 (review)
+## 2026-06-08 - review run (sanitized)
 
 First **review-flow** retro in the ledger (prior two were feature). Run was
 a re-run of a review on the same PR, which exercised re-run/head-drift paths
@@ -168,7 +162,7 @@ Notes:
 - No conflicts to surface — first review-flow retro, nothing to corroborate
   or contradict in prior (feature-only) entries.
 
-## 2026-06-03 — 2026-05-28-1624-track-c-gateway-app (feature)
+## 2026-06-03 - feature run (sanitized)
 
 | Pattern | Bucket | Target | Action |
 |---|---|---|---|
@@ -190,15 +184,14 @@ Notes:
   env fixes (build toolchain for race tests, broken generated dep, lint
   binary off PATH) and external-spec/ticket lookups — they motivate the
   preflight-verify ADD but aren't generic prompt changes.
-- Also omitted (retro left it out on purpose): mining the human-caught bugs
-  the approving critic missed (fail-open security gate; un-injected deploy
-  config) into critic heuristics. Too run-specific; would bloat the critic
-  into an incident checklist. The real takeaway (diff-only review misses
-  app↔deploy-config-boundary issues) is a known limitation, not a clean edit.
+- Also omitted (retro left it out on purpose): mining run-specific defects
+  missed by the approving critic into new heuristics. That would bloat the
+  critic into an incident checklist. The generic boundary-review limitation
+  was already captured by existing guidance.
 - No conflicts to surface this round — every incoming item either corroborates
   a prior entry or is net-new.
 
-## 2026-05-29 — 2026-05-27-1331-track-b-gateway-infra (feature)
+## 2026-05-29 - feature run (sanitized)
 
 | Pattern | Bucket | Target | Action |
 |---|---|---|---|
@@ -207,7 +200,7 @@ Notes:
 | Implementer adds defensive scaffolding without flagging | AVOID | agents/implementer.md | applied — "minimum is broad," covers deps/IAM/config; require handoff flag |
 | Comments referencing upstream internals | AVOID | agents/implementer.md | applied — treat deps as black boxes when commenting |
 | Sandbox verification necessary but not sufficient for infra | ADD | commands/feature-flow.md | applied — folded with AVOID #1 above |
-| Critic security pass default for infra-touching diffs | ADD | agents/critic.md + commands/feature-flow.md | applied — high-confidence (only pass that caught a deploy-blocker); auto-engaging security lens + ungated note in feature-flow |
+| Critic security pass default for infra-touching diffs | ADD | agents/critic.md + commands/feature-flow.md | applied - high-confidence based on observed review value; auto-engaging security lens + ungated note in feature-flow |
 | Mid-flow architectural pivot routes through researcher | ADD | commands/feature-flow.md | applied — new "Mid-flow architectural changes" subsection |
 | PR body is a living artifact through merge | ADD | commands/feature-flow.md + agents/synthesizer.md | applied — re-check/PATCH note in Phase 4; "living artifact" constraint in synthesizer |
 | Synthesizer PR body too long / impl-heavy | STRESS | agents/synthesizer.md | applied — louder signal: body answers what/flag/verify, rationale → code comments |
@@ -219,9 +212,8 @@ Notes:
 - The two infra-mismatch items (AVOID "no test surface" + ADD "sandbox not
   sufficient") were merged into a single Phase 2 note in feature-flow.md per
   the retro's own consumer guidance — they're one underlying mismatch.
-- The critic security-lens item is the high-confidence standout: it was the
-  only critic pass in the run that caught a deploy-blocking bug. Made it
-  auto-engaging rather than opt-in.
+- The critic security-lens item is the high-confidence standout based on its
+  observed review value. Made it auto-engaging rather than opt-in.
 - Sandbox-tooling environmental issues (host/sandbox platform mismatch,
   cross-platform native binaries, no-TTY interactive prompts) were
   deliberately left out — they're sandbox-infra concerns, not team-process
