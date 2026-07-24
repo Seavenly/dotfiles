@@ -198,7 +198,9 @@ slice has any non-trivial runtime behavior); the working rules:
   restate what the code plainly does, narrate forward-looking or future
   intent, or carry TDD-loop scaffolding. They are noise, and they go stale
   after refactors so the lead has to strip them. If a line needs no *why*,
-  it needs no comment.
+  it needs no comment. When a *why* is warranted, state it in one short
+  line — never a multi-sentence paragraph or a banner-style block header.
+  Default to deleting; earn each retained comment.
 - **No commented-out code, no `console.log` debugging artifacts** in your
   final diff. Clean before declaring done.
 - **Retry budget is hard.** If you've hit `max_slice_retries` and still

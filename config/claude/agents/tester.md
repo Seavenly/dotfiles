@@ -100,7 +100,9 @@ ones to the critic at the outer pass.
   assertion plainly does. Those are inner-loop ephemera, not shippable: they
   go stale after refactors (referencing renamed/removed symbols) and the lead
   has to strip them. A test comment earns its place only by explaining a
-  non-obvious *why*.
+  non-obvious *why*, and then in one short line — no paragraph-length
+  preambles and no per-assertion essays. A file-level header comment is
+  rarely warranted; default to none.
 - **Lint your own test files before handoff.** Run the project's
   linter/formatter on the test files you authored and clear the nits. Because
   the implementer must not edit tests, lint failures in test files otherwise
