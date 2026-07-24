@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { delegate } from "../src/delegate.mjs";
+import { retireAgent } from "../src/lifecycle.mjs";
 import {
   loadConfiguration,
   resolveLaunchSpecification,
@@ -29,6 +30,8 @@ test("delegate persists managed-agent ownership before startup readiness can fai
     DROVR_CONFIG_DIR: join(root, "config", "drovr"),
   };
   let startedName;
+  let readinessFailed = false;
+  let paneClosed = false;
   const herdr = {
     async ensureSession() {},
     async createWorkspace() {
@@ -39,10 +42,23 @@ test("delegate persists managed-agent ownership before startup readiness can fai
       startedName = name;
     },
     async agentRecord() {
-      return { agent_status: "working" };
+      return {
+        name: startedName,
+        pane_id: "pane-1",
+        agent_status: readinessFailed ? "idle" : "working",
+      };
     },
     async waitForAgent() {
+      readinessFailed = true;
       return { drovr_status: "still_running" };
+    },
+    async paneRecord() {
+      return paneClosed
+        ? null
+        : { pane_id: "pane-1", tab_id: "tab-1" };
+    },
+    async closePane() {
+      paneClosed = true;
     },
   };
 
@@ -67,6 +83,10 @@ test("delegate persists managed-agent ownership before startup readiness can fai
   assert.equal(agents[0].herdr.name, startedName);
   assert.equal(agents[0].native_session, null);
   assert.equal(agents[0].status, "active");
+
+  const retired = await retireAgent(agents[0].id, { env, herdr });
+  assert.equal(retired.status, "retired");
+  assert.equal(paneClosed, true);
 });
 
 test("reused delegate refuses a new prompt while uncertain native work continues", async (t) => {
@@ -119,6 +139,9 @@ test("reused delegate refuses a new prompt while uncertain native work continues
     async ensureSession() {},
     async agentRecords() {
       return [observed];
+    },
+    async agentRecord() {
+      return observed;
     },
     async prompt() {
       promptCalls += 1;

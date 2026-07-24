@@ -32,6 +32,8 @@ import {
   queryListCommandResult,
 } from "./queries.mjs";
 import { statusReport } from "./status.mjs";
+import { openTask, taskOpenCommandResult } from "./task-open.mjs";
+import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
 
 const HELP = `Usage:
   drovr doctor
@@ -47,9 +49,11 @@ const HELP = `Usage:
   drovr group list [--status STATUS]
   drovr group get GROUP_ID
   drovr group close GROUP_ID [--force]
+  drovr task open [options]
   drovr task list [--group GROUP_ID] [--status STATUS]
   drovr task get TASK_ID
   drovr task close TASK_ID [--force]
+  drovr agent start TASK_ID [options]
   drovr agent list [--task TASK_ID] [--status STATUS] [--harness HARNESS]
   drovr agent get AGENT_ID
   drovr agent retire AGENT_ID
@@ -62,8 +66,8 @@ Commands:
   ask       Run a later logical turn with an existing managed agent
   turn      Start, steer, wait for, get, or discover durable logical turns
   group     List, inspect, or close delegation groups
-  task      List, inspect, or close delegated tasks
-  agent     List, inspect, or retire managed agents
+  task      Open, list, inspect, or close delegated tasks
+  agent     Start, list, inspect, or retire managed agents
   attach    Interactively attach to a managed agent
 `;
 
@@ -165,6 +169,29 @@ export async function runCli(argv) {
     return 0;
   }
 
+  if (argv[0] === "task" && argv[1] === "open") {
+    const { options, positional } = parseOptions(
+      argv.slice(2),
+      new Map([
+        ["--group", "group"],
+        ["--group-label", "groupLabel"],
+        ["--key", "key"],
+        ["--label", "label"],
+        ["--cwd", "cwd"],
+      ]),
+      "task open",
+    );
+    if (positional.length) {
+      invalidArguments("task open accepts no positional arguments");
+    }
+    if (!options.key) invalidArguments("--key is required");
+    const report = taskOpenCommandResult(
+      await openTask({ ...options, cwd: options.cwd ?? process.cwd() }),
+    );
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
   if (argv[0] === "task" && argv[1] === "get") {
     if (argv.length !== 3) invalidArguments("task get requires TASK_ID");
     const report = queryGetCommandResult("task", await getTask(argv[2]));
@@ -186,6 +213,33 @@ export async function runCli(argv) {
       invalidArguments("agent list accepts no positional arguments");
     }
     const report = queryListCommandResult("agent", await listAgents(options));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "agent" && argv[1] === "start") {
+    const taskId = argv[2];
+    if (!taskId) invalidArguments("agent start requires TASK_ID");
+    const { options, positional } = parseOptions(
+      argv.slice(3),
+      new Map([
+        ["--key", "key"],
+        ["--label", "label"],
+        ["--role", "role"],
+        ["--harness", "harness"],
+        ["--model", "model"],
+        ["--effort", "effort"],
+        ["--capability", "capability"],
+      ]),
+      "agent start",
+    );
+    if (positional.length) {
+      invalidArguments("agent start accepts no positional arguments");
+    }
+    if (!options.key) invalidArguments("--key is required");
+    const report = agentStartCommandResult(
+      await startAgent(taskId, options),
+    );
     process.stdout.write(`${JSON.stringify(report)}\n`);
     return 0;
   }

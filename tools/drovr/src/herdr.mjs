@@ -215,6 +215,14 @@ export class HerdrClient {
     await this.sessionCommand(["tab", "rename", tabId, label]);
   }
 
+  async renameWorkspace(workspaceId, label) {
+    await this.sessionCommand(["workspace", "rename", workspaceId, label]);
+  }
+
+  async renamePane(paneId, label) {
+    await this.sessionCommand(["pane", "rename", paneId, label]);
+  }
+
   async waitForShell(paneId) {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       let output;
@@ -280,6 +288,48 @@ export class HerdrClient {
       if (isPaneNotFound(error)) return null;
       throw error;
     }
+  }
+
+  async paneLayout(paneId) {
+    const layout = parseJson(
+      await this.sessionCommand(["pane", "layout", "--pane", paneId]),
+      "pane layout",
+    ).result?.layout;
+    if (!layout || !Array.isArray(layout.panes)) {
+      throw new DrovrError("Herdr pane layout result omitted pane geometry", {
+        code: 4,
+        outcome: "adapter_failure",
+      });
+    }
+    return layout;
+  }
+
+  async splitPane({ paneId, direction, ratio, cwd }) {
+    const result = parseJson(
+      await this.sessionCommand([
+        "pane",
+        "split",
+        "--pane",
+        paneId,
+        "--direction",
+        direction,
+        "--ratio",
+        String(ratio),
+        "--cwd",
+        cwd,
+        "--no-focus",
+      ]),
+      "pane split",
+    ).result;
+    const createdPaneId =
+      result?.pane?.pane_id ?? result?.root_pane?.pane_id ?? result?.pane_id;
+    if (!createdPaneId) {
+      throw new DrovrError("Herdr pane split result omitted pane identity", {
+        code: 4,
+        outcome: "adapter_failure",
+      });
+    }
+    return createdPaneId;
   }
 
   async tabRecord(tabId) {

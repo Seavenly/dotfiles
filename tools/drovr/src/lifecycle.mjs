@@ -59,6 +59,19 @@ function nativeIdentityMatches(agent, observed) {
   );
 }
 
+function isUnboundAgent(agent) {
+  return !agent.native_session;
+}
+
+function managedIdentityMatches(agent, observed) {
+  return (
+    nativeIdentityMatches(agent, observed) ||
+    (isUnboundAgent(agent) &&
+      observed?.name === agent.herdr.name &&
+      observed?.pane_id === agent.herdr.pane_id)
+  );
+}
+
 async function groupLifecycleContext(registryDirectory, groupId) {
   const registry = await loadRegistryRelationships(registryDirectory);
   const context = groupRelationship(registry, groupId);
@@ -147,7 +160,10 @@ async function forceInterruptActiveTurns({
       for (const agent of agents) {
         const observed = await herdr.agentRecord(agent.herdr.name);
         observations.set(agent.id, observed);
-        if (!nativeIdentityMatches(agent, observed)) {
+        if (
+          !managedIdentityMatches(agent, observed) &&
+          !(isUnboundAgent(agent) && !observed)
+        ) {
           outcomes.set(agent.id, {
             status: "uncertain",
             error: "native session identity changed during force cleanup",
@@ -181,7 +197,7 @@ async function forceInterruptActiveTurns({
             );
             if (
               ["idle", "done"].includes(settled?.agent_status) &&
-              settled.agent_session?.value === agent.native_session
+              managedIdentityMatches(agent, settled)
             ) {
               outcomes.set(agent.id, { status: "interrupted" });
             } else {
@@ -253,26 +269,34 @@ async function preflightTaskCleanup({
   const tabIds = new Set();
   for (const agent of activeAgents) {
     const observed = await herdr.agentRecord(agent.herdr.name);
-    if (!observed) {
+    const unbound = isUnboundAgent(agent);
+    if (!observed && !unbound) {
       return { failure: { task, agent, status: "agent_lost" } };
     }
-    if (!nativeIdentityMatches(agent, observed)) {
+    if (observed && !managedIdentityMatches(agent, observed)) {
       return { failure: { task, agent, status: "recovery_blocked" } };
     }
-    if (!force && ["working", "blocked"].includes(observed.agent_status)) {
+    if (
+      !force &&
+      ["working", "blocked"].includes(observed?.agent_status)
+    ) {
       return { failure: { task, agent, status: "task_busy" } };
     }
     if (
+      observed &&
       !["idle", "done", "working", "blocked"].includes(
         observed.agent_status,
       )
     ) {
       return { failure: { task, agent, status: "uncertain" } };
     }
-    const paneId = observed.pane_id ?? agent.herdr.pane_id;
+    const paneId = observed?.pane_id ?? agent.herdr.pane_id;
     const pane = await herdr.paneRecord(paneId);
     if (!pane?.tab_id) {
-      return { failure: { task, agent, status: "agent_lost" } };
+      if (!unbound) {
+        return { failure: { task, agent, status: "agent_lost" } };
+      }
+      continue;
     }
     tabIds.add(pane.tab_id);
     agent.herdr.pane_id = paneId;
@@ -288,7 +312,7 @@ async function preflightTaskCleanup({
     }
   }
   const registeredTab = await herdr.tabRecord(tabId);
-  if (activeAgents.length && !registeredTab) {
+  if (activeAgents.some((agent) => !isUnboundAgent(agent)) && !registeredTab) {
     return { failure: { task, status: "agent_lost" } };
   }
   if (
@@ -315,7 +339,7 @@ async function executeTaskCleanup({
   herdr,
   now,
 }) {
-  if (plan.agents.length || plan.registered) {
+  if (plan.registered) {
     await herdr.closeTab(plan.tabId);
   }
   if (await herdr.tabRecord(plan.tabId)) return false;
@@ -447,7 +471,12 @@ export async function retireAgent(agentId, dependencies = {}) {
       const herdr = client(sessionFor(context.group), env, dependencies);
       await herdr.ensureSession();
       const observed = await herdr.agentRecord(context.agent.herdr.name);
-      if (observed && !nativeIdentityMatches(context.agent, observed)) {
+      const turns = await readRecords(registryDirectory, "turns");
+      const unbound = isUnboundAgent(context.agent);
+      if (
+        observed &&
+        !managedIdentityMatches(context.agent, observed)
+      ) {
         return { ...context, status: "recovery_blocked" };
       }
       if (observed) {
@@ -463,9 +492,14 @@ export async function retireAgent(agentId, dependencies = {}) {
           return { ...context, status: "uncertain" };
         }
       } else if (await herdr.paneRecord(context.agent.herdr.pane_id)) {
-        return { ...context, status: "agent_lost" };
+        if (!unbound) {
+          return { ...context, status: "agent_lost" };
+        }
+        await herdr.closePane(context.agent.herdr.pane_id);
+        if (await herdr.paneRecord(context.agent.herdr.pane_id)) {
+          return { ...context, status: "uncertain" };
+        }
       }
-      const turns = await readRecords(registryDirectory, "turns");
       for (const turn of turns.filter(
         (candidate) =>
           candidate.agent_id === context.agent.id &&

@@ -45,6 +45,112 @@ test("agent retirement closes only its managed pane and preserves durable histor
   await access(fixture.transcript);
 });
 
+test("task cleanup closes a persisted startup pane without native identity", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  fixture.agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", fixture.agent);
+  await rm(join(fixture.registryDirectory, "turns", "turn-1.json"));
+  let tabClosed = false;
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return null;
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return tabClosed
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async closeTab(tabId) {
+        assert.equal(tabId, "tab-task-1");
+        tabClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  assert.equal(tabClosed, true);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "retired");
+});
+
+test("task cleanup closes an identity-less agent after an uncertain first turn", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  fixture.agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", fixture.agent);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.status = "uncertain";
+  turn.error = "native session identity never appeared";
+  delete turn.result;
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let tabClosed = false;
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return tabClosed
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async closeTab() {
+        tabClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  assert.equal(tabClosed, true);
+});
+
+test("task cleanup finalizes an identity-less agent with no native resources", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  fixture.agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", fixture.agent);
+  let mutations = 0;
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return null;
+      },
+      async paneRecord() {
+        return null;
+      },
+      async tabRecord() {
+        return null;
+      },
+      async closeTab() {
+        mutations += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  assert.equal(mutations, 0);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "retired");
+});
+
 test("agent retirement targets the restored pane bound to its native session", async (t) => {
   const fixture = await lifecycleFixture(t);
   const closed = [];

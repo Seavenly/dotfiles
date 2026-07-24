@@ -116,17 +116,33 @@ export async function startTurn(agentId, options, dependencies = {}) {
     registryDirectory,
     taskLifecycleLockKey(initial.task.id),
     async () => {
-      const availability = await reconcileOrRecoverAgent(agentId, {
-        ...dependencies,
-        env,
-        herdr,
-        now,
-      });
-      if (!["reconciled", "recovered"].includes(availability.status)) {
-        throw new DrovrError(
-          `agent ${agentId} cannot be recovered safely (${availability.reason})`,
-          { code: 0, outcome: availability.status },
-        );
+      if (initial.agent.native_session) {
+        const availability = await reconcileOrRecoverAgent(agentId, {
+          ...dependencies,
+          env,
+          herdr,
+          now,
+        });
+        if (!["reconciled", "recovered"].includes(availability.status)) {
+          throw new DrovrError(
+            `agent ${agentId} cannot be recovered safely (${availability.reason})`,
+            { code: 0, outcome: availability.status },
+          );
+        }
+      } else {
+        const observed = await herdr.agentRecord(initial.agent.herdr.name);
+        if (!observed) {
+          throw new DrovrError(
+            `Herdr did not report managed agent ${initial.agent.herdr.name}`,
+            { code: 0, outcome: "uncertain" },
+          );
+        }
+        if (!["idle", "done"].includes(observed.agent_status)) {
+          throw new DrovrError(
+            `agent ${agentId} is not settled in Herdr`,
+            { code: 0, outcome: "task_busy" },
+          );
+        }
       }
       const context = await withResourceLock(
         registryDirectory,
@@ -160,18 +176,28 @@ export async function startTurn(agentId, options, dependencies = {}) {
           }
           const observedNativeSession = observed.agent_session?.value;
           if (
-            !observedNativeSession ||
-            (current.agent.native_session &&
-              current.agent.native_session !== observedNativeSession)
+            current.agent.native_session &&
+            current.agent.native_session !== observedNativeSession
           ) {
             throw new DrovrError(
               `Herdr did not confirm the expected native session for agent ${agentId}`,
               { code: 0, outcome: "uncertain" },
             );
           }
-          if (!current.agent.native_session) {
+          if (!current.agent.native_session && observedNativeSession) {
             current.agent.native_session = observedNativeSession;
             await writeRecord(registryDirectory, "agents", current.agent);
+          }
+          if (
+            !current.agent.native_session &&
+            turns.some(({ agent_id: candidateAgentId }) =>
+              candidateAgentId === agentId
+            )
+          ) {
+            throw new DrovrError(
+              `Herdr did not confirm a native session for reused agent ${agentId}`,
+              { code: 0, outcome: "uncertain" },
+            );
           }
 
           const adapter = harnessAdapter(current.agent.launch.harness, env);
@@ -182,6 +208,8 @@ export async function startTurn(agentId, options, dependencies = {}) {
             adapter,
             prompt: options.prompt,
             now,
+            inventoryBeforeDelivery:
+              adapter.inventoryBeforeDelivery || !current.agent.native_session,
           });
           return { ...current, turn };
         },

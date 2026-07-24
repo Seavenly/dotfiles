@@ -39,6 +39,37 @@ drovr delegate \
 may be selected with `--role`, `--harness`, `--model`, `--effort`, and
 `--capability`; tracked defaults live under `config/drovr/`.
 
+Advanced callers can create the durable resources without starting a turn:
+
+```sh
+drovr task open \
+  --group EPIC-123 \
+  --group-label "Authentication overhaul" \
+  --key FEATURE-456 \
+  --label "Add passkey login" \
+  --cwd /path/to/existing/directory
+
+drovr agent start TASK_ID \
+  --key critic \
+  --label "Implementation review" \
+  --role reviewer \
+  --harness codex \
+  --model gpt-5.6-sol \
+  --effort high \
+  --capability read-only
+```
+
+Task keys are stable within a group and agent keys are stable within a task.
+Repeated identical opens and starts return the existing immutable IDs. Labels
+may be changed later, but an active agent's resolved role, harness, model,
+effort, capability, native settings, and catalog fingerprints are immutable.
+Omitted launch fields resolve from the selected role and then the tracked
+global or harness defaults. Closed task keys and retired agent keys are not
+replaced in the initial release.
+
+`delegate` composes these same task-open and agent-start paths with turn start,
+wait, and result retrieval. It does not maintain a parallel creation path.
+
 Prompt-bearing commands accept exactly one positional prompt,
 `--prompt-file`, or standard input. Non-interactive output is one
 `drovr.command/v1` JSON document on standard output. Durable local records live
@@ -65,8 +96,10 @@ drovr turn cancel TURN_ID
 drovr status
 drovr group list --status active
 drovr group get GROUP_ID
+drovr task open --key TASK_KEY --cwd /path/to/existing/directory
 drovr task list --group GROUP_ID --status active
 drovr task get TASK_ID
+drovr agent start TASK_ID --key AGENT_KEY
 drovr agent list --task TASK_ID --status active --harness codex
 drovr agent get AGENT_ID
 drovr agent retire AGENT_ID

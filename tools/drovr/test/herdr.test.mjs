@@ -102,3 +102,66 @@ test("native recovery resumes the registered Codex and Claude sessions", async (
     if (harness === "codex") assert.equal(resumeIndex, 0);
   }
 });
+
+test("pane placement uses Herdr layout and split commands with exact resources", async () => {
+  const calls = [];
+  const layout = {
+    workspace_id: "workspace-1",
+    tab_id: "tab-1",
+    zoomed: false,
+    area: { x: 0, y: 0, width: 120, height: 40 },
+    focused_pane_id: "pane-1",
+    panes: [
+      {
+        pane_id: "pane-1",
+        focused: true,
+        rect: { x: 0, y: 0, width: 120, height: 40 },
+      },
+    ],
+    splits: [],
+  };
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("layout")) {
+        return JSON.stringify({ result: { type: "pane_layout", layout } });
+      }
+      return JSON.stringify({
+        result: {
+          type: "pane_created",
+          pane: { pane_id: "pane-2", tab_id: "tab-1" },
+        },
+      });
+    },
+  });
+
+  assert.deepEqual(await client.paneLayout("pane-1"), layout);
+  assert.equal(
+    await client.splitPane({
+      paneId: "pane-1",
+      direction: "right",
+      ratio: 0.5,
+      cwd: "/work",
+    }),
+    "pane-2",
+  );
+  assert.deepEqual(calls, [
+    ["--session", "delegates", "pane", "layout", "--pane", "pane-1"],
+    [
+      "--session",
+      "delegates",
+      "pane",
+      "split",
+      "--pane",
+      "pane-1",
+      "--direction",
+      "right",
+      "--ratio",
+      "0.5",
+      "--cwd",
+      "/work",
+      "--no-focus",
+    ],
+  ]);
+});
