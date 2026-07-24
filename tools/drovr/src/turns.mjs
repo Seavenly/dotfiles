@@ -615,7 +615,10 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       if (context.turn.status !== "working") {
         return { ...context, command_status: "turn_closed" };
       }
-      if (context.turn.cancellation_requested_at) {
+      if (
+        context.turn.cancellation_requested_at ||
+        context.turn.cleanup_requested_at
+      ) {
         return { ...context, command_status: "task_busy" };
       }
       const observed = await herdr.agentRecord(context.agent.herdr.name);
@@ -655,6 +658,9 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   if (initial.turn.status !== "working") {
     return { ...initial, command_status: "turn_closed" };
   }
+  if (initial.turn.cleanup_requested_at) {
+    return { ...initial, command_status: "task_busy" };
+  }
   const herdr = client(owningSession(initial.group), env, dependencies);
   await herdr.ensureSession?.();
   const availability = await reconcileOrRecoverAgent(initial.agent.id, {
@@ -689,13 +695,25 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     return { ...current, command_status: "uncertain" };
   }
 
-  await withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
-    const context = await turnContext(registryDirectory, turnId);
-    if (context.turn.status === "working") {
+  const cancellation = await withResourceLock(
+    registryDirectory,
+    `turn:${turnId}`,
+    async () => {
+      const context = await turnContext(registryDirectory, turnId);
+      if (context.turn.status !== "working") {
+        return { ...context, command_status: "turn_closed" };
+      }
+      if (context.turn.cleanup_requested_at) {
+        return { ...context, command_status: "task_busy" };
+      }
       context.turn.cancellation_requested_at ??= now();
       await writeRecord(registryDirectory, "turns", context.turn);
-    }
-  });
+      return context;
+    },
+  );
+  if (cancellation.command_status) {
+    return cancellation;
+  }
 
   try {
     await herdr.interruptAgent(initial.agent.herdr.name);

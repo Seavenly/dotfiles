@@ -75,6 +75,17 @@ case "\${1:-} \${2:-}" in
     fi
     printf '{"result":{"tab":{"tab_id":"tab-task-1","workspace_id":"workspace-1"}}}\\n'
     ;;
+  "workspace close")
+    [[ \${3:-} == workspace-1 ]]
+    printf '%s\\n' "\${3}" > "$state/closed-workspace"
+    ;;
+  "workspace get")
+    if [[ -f "$state/closed-workspace" ]]; then
+      printf '{"error":{"code":"workspace_not_found"}}\\n' >&2
+      exit 1
+    fi
+    printf '{"result":{"workspace":{"workspace_id":"workspace-1"}}}\\n'
+    ;;
   *) printf 'unexpected fake Herdr call: %s\\n' "$*" >&2; exit 1 ;;
 esac
 `,
@@ -143,5 +154,21 @@ esac
   assert.equal(closed.command, "task close");
   assert.equal(closed.result.status, "closed");
   assert.equal((await readFile(join(herdrState, "closed-tab"), "utf8")).trim(), "tab-task-1");
+  const groupClosed = JSON.parse(
+    (
+      await execFileAsync(
+        drovr,
+        ["group", "close", "group-1", "--force"],
+        { env },
+      )
+    ).stdout,
+  );
+  assert.equal(groupClosed.command, "group close");
+  assert.equal(groupClosed.result.status, "closed");
+  assert.equal(groupClosed.result.group.id, "group-1");
+  assert.equal(
+    (await readFile(join(herdrState, "closed-workspace"), "utf8")).trim(),
+    "workspace-1",
+  );
   await access(callerFile);
 });

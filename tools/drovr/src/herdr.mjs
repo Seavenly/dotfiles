@@ -45,24 +45,7 @@ export class HerdrClient {
   }
 
   async ensureSession() {
-    const running = async () => {
-      let output;
-      try {
-        output = await this.run("herdr", ["session", "list", "--json"], {
-          env: this.env,
-        });
-      } catch (error) {
-        throw new DrovrError(`Herdr session list failed: ${error.message}`, {
-          code: 4,
-          outcome: "adapter_failure",
-        });
-      }
-      const sessions = parseJson(output, "session list");
-      return sessions.sessions?.some(
-        ({ name, running: isRunning }) => name === this.session && isRunning,
-      );
-    };
-    if (await running()) return;
+    if (await this.sessionRunning()) return;
 
     await new Promise((resolve) => {
       const child = spawn("herdr", ["--session", this.session], {
@@ -73,13 +56,33 @@ export class HerdrClient {
       child.once("close", resolve);
     });
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (await running()) return;
+      if (await this.sessionRunning()) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     throw new DrovrError(`Herdr session ${this.session} did not start`, {
       code: 4,
       outcome: "adapter_failure",
     });
+  }
+
+  async sessionRunning() {
+    let output;
+    try {
+      output = await this.run("herdr", ["session", "list", "--json"], {
+        env: this.env,
+      });
+    } catch (error) {
+      throw new DrovrError(`Herdr session list failed: ${error.message}`, {
+        code: 4,
+        outcome: "adapter_failure",
+      });
+    }
+    const sessions = parseJson(output, "session list");
+    return Boolean(
+      sessions.sessions?.some(
+        ({ name, running }) => name === this.session && running,
+      ),
+    );
   }
 
   async createWorkspace({ cwd, label }) {
@@ -291,6 +294,18 @@ export class HerdrClient {
     }
   }
 
+  async workspaceRecord(workspaceId) {
+    try {
+      return parseJson(
+        await this.sessionCommand(["workspace", "get", workspaceId]),
+        "workspace get",
+      ).result?.workspace;
+    } catch (error) {
+      if (isWorkspaceNotFound(error)) return null;
+      throw error;
+    }
+  }
+
   async closePane(paneId) {
     try {
       return await this.sessionCommand(["pane", "close", paneId]);
@@ -304,6 +319,14 @@ export class HerdrClient {
       return await this.sessionCommand(["tab", "close", tabId]);
     } catch (error) {
       if (!isTabNotFound(error)) throw error;
+    }
+  }
+
+  async closeWorkspace(workspaceId) {
+    try {
+      return await this.sessionCommand(["workspace", "close", workspaceId]);
+    } catch (error) {
+      if (!isWorkspaceNotFound(error)) throw error;
     }
   }
 
@@ -359,51 +382,40 @@ export class HerdrClient {
 }
 
 function isTimeout(error) {
-  const adapterOutput = [
-    error.adapterFailure?.stdout,
-    error.adapterFailure?.stderr,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const adapterOutput = adapterFailureOutput(error);
   return /"code"\s*:\s*"timeout"|timed? out/iu.test(adapterOutput);
 }
 
 function isAgentPaneBusy(error) {
-  const adapterOutput = [
-    error.adapterFailure?.stdout,
-    error.adapterFailure?.stderr,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const adapterOutput = adapterFailureOutput(error);
   return /"code"\s*:\s*"agent_pane_busy"/u.test(adapterOutput);
 }
 
 function isAgentNotFound(error) {
-  const adapterOutput = [
-    error.adapterFailure?.stdout,
-    error.adapterFailure?.stderr,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const adapterOutput = adapterFailureOutput(error);
   return /"code"\s*:\s*"agent_not_found"/u.test(adapterOutput);
 }
 
 function isPaneNotFound(error) {
-  const adapterOutput = [
-    error.adapterFailure?.stdout,
-    error.adapterFailure?.stderr,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const adapterOutput = adapterFailureOutput(error);
   return /"code"\s*:\s*"pane_not_found"/u.test(adapterOutput);
 }
 
 function isTabNotFound(error) {
-  const adapterOutput = [
+  const adapterOutput = adapterFailureOutput(error);
+  return /"code"\s*:\s*"tab_not_found"/u.test(adapterOutput);
+}
+
+function isWorkspaceNotFound(error) {
+  const adapterOutput = adapterFailureOutput(error);
+  return /"code"\s*:\s*"workspace_not_found"/u.test(adapterOutput);
+}
+
+function adapterFailureOutput(error) {
+  return [
     error.adapterFailure?.stdout,
     error.adapterFailure?.stderr,
   ]
     .filter(Boolean)
     .join("\n");
-  return /"code"\s*:\s*"tab_not_found"/u.test(adapterOutput);
 }

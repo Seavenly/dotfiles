@@ -10,6 +10,10 @@ import {
   withResourceLock,
   writeRecord,
 } from "./registry.mjs";
+import {
+  agentRelationship,
+  loadRegistryRelationships,
+} from "./registry-relationships.mjs";
 import { settleTurnRecord } from "./turn-record.mjs";
 
 export async function reconcileOrRecoverAgent(
@@ -197,19 +201,15 @@ async function recoverySafetyFailure(context, env, herdr) {
 }
 
 async function recoveryContext(registryDirectory, agentId) {
-  const agents = await readRecords(registryDirectory, "agents");
-  const agent = agents.find((candidate) => candidate.id === agentId);
-  const tasks = await readRecords(registryDirectory, "tasks");
-  const task = agent && tasks.find((candidate) => candidate.id === agent.task_id);
-  const groups = await readRecords(registryDirectory, "groups");
-  const group = task && groups.find((candidate) => candidate.id === task.group_id);
-  if (!agent || !task || !group) {
+  const registry = await loadRegistryRelationships(registryDirectory);
+  const context = agentRelationship(registry, agentId);
+  if (!context) {
     throw new DrovrError(`active agent not found: ${agentId}`, {
       code: 2,
       outcome: "invalid_arguments",
     });
   }
-  return { group, task, agent };
+  return context;
 }
 
 function blocked(context, reason) {

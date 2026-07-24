@@ -4,8 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { closeTask, retireAgent } from "../src/lifecycle.mjs";
-import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
+import { closeGroup, closeTask, retireAgent } from "../src/lifecycle.mjs";
+import {
+  readRecords,
+  stateDirectory,
+  taskLifecycleLockKey,
+  withResourceLock,
+  writeRecord,
+} from "../src/registry.mjs";
 import { startTurn } from "../src/turns.mjs";
 
 test("agent retirement closes only its managed pane and preserves durable history", async (t) => {
@@ -141,7 +147,9 @@ test("task cleanup closes its exact managed tab and retains caller-owned files",
         closed.push(tabId);
       },
       async tabRecord() {
-        return null;
+        return closed.length
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
       },
     },
   });
@@ -178,8 +186,9 @@ test("task cleanup rebinds restored pane and tab identities before closing", asy
       async closeTab(tabId) {
         closed.push(tabId);
       },
-      async tabRecord() {
-        return null;
+      async tabRecord(tabId) {
+        if (tabId === "tab-task-1" || closed.length) return null;
+        return { tab_id: "restored-tab", workspace_id: "workspace-1" };
       },
     },
   });
@@ -190,11 +199,44 @@ test("task cleanup rebinds restored pane and tab identities before closing", asy
   assert.equal(task.herdr.tab_id, "restored-tab");
 });
 
+test("task cleanup refuses an agent moved from its still-registered tab", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let mutations = 0;
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          pane_id: "moved-pane",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "moved-pane", tab_id: "unregistered-tab" };
+      },
+      async tabRecord(tabId) {
+        return { tab_id: tabId, workspace_id: "workspace-1" };
+      },
+      async closeTab() {
+        mutations += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "recovery_blocked");
+  assert.equal(mutations, 0);
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  assert.equal(task.herdr.tab_id, "tab-task-1");
+});
+
 test("task cleanup excludes a concurrent new turn before preflight and closure", async (t) => {
   const fixture = await lifecycleFixture(t);
   let releaseClose;
   let closeStarted;
   let promptCalls = 0;
+  let tabClosed = false;
   const closeStartedPromise = new Promise((resolve) => {
     closeStarted = resolve;
   });
@@ -221,9 +263,12 @@ test("task cleanup excludes a concurrent new turn before preflight and closure",
     async closeTab() {
       closeStarted();
       await releaseClosePromise;
+      tabClosed = true;
     },
     async tabRecord() {
-      return null;
+      return tabClosed
+        ? null
+        : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
     },
     async prompt() {
       promptCalls += 1;
@@ -244,6 +289,447 @@ test("task cleanup excludes a concurrent new turn before preflight and closure",
   assert.equal((await closing).status, "closed");
   await assert.rejects(starting, { outcome: "recovery_blocked" });
   assert.equal(promptCalls, 0);
+});
+
+test("non-force group cleanup preflights every task before mutating resources", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  await writeRecord(fixture.registryDirectory, "tasks", {
+    schema: "drovr.task/v1",
+    id: "task-2",
+    group_id: fixture.group.id,
+    key: "busy-task",
+    label: "Busy task",
+    cwd: fixture.task.cwd,
+    status: "active",
+    herdr: { tab_id: "tab-task-2", root_pane_id: "pane-agent-2" },
+  });
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-2",
+    task_id: "task-2",
+    key: "busy-agent",
+    label: "Busy agent",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent-2", pane_id: "pane-agent-2" },
+    native_session: "native-2",
+  });
+  await writeRecord(fixture.registryDirectory, "turns", {
+    schema: "drovr.turn/v1",
+    id: "turn-2",
+    agent_id: "agent-2",
+    task_id: "task-2",
+    status: "working",
+    inputs: [{ sequence: 1, text: "still working" }],
+  });
+  let mutations = 0;
+
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord(name) {
+        return {
+          name,
+          pane_id: name === "managed-agent" ? "pane-agent-1" : "pane-agent-2",
+          agent_status: name === "managed-agent" ? "idle" : "working",
+          agent_session: {
+            value: name === "managed-agent" ? "native-1" : "native-2",
+          },
+        };
+      },
+      async paneRecord(paneId) {
+        return {
+          pane_id: paneId,
+          tab_id: paneId === "pane-agent-1" ? "tab-task-1" : "tab-task-2",
+        };
+      },
+      async tabRecord(tabId) {
+        return { tab_id: tabId, workspace_id: "workspace-1" };
+      },
+      async closeTab() {
+        mutations += 1;
+      },
+      async closeWorkspace() {
+        mutations += 1;
+      },
+      async interruptAgent() {
+        mutations += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "task_busy");
+  assert.equal(result.task.id, "task-2");
+  assert.equal(mutations, 0);
+  const tasks = await readRecords(fixture.registryDirectory, "tasks");
+  assert.equal(tasks.every(({ status }) => status === "active"), true);
+});
+
+test("group cleanup locks tasks created while it waits for the group lock", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const closedTabs = new Set();
+  let workspaceClosed = false;
+  let taskLockEntered = false;
+  let competingLock;
+  const herdr = {
+    async ensureSession() {},
+    async agentRecord() {
+      return {
+        pane_id: "pane-agent-1",
+        agent_status: "idle",
+        agent_session: { value: "native-1" },
+      };
+    },
+    async paneRecord() {
+      return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+    },
+    async tabRecord(tabId) {
+      return closedTabs.has(tabId)
+        ? null
+        : { tab_id: tabId, workspace_id: "workspace-1" };
+    },
+    async closeTab(tabId) {
+      if (!competingLock) {
+        competingLock = withResourceLock(
+          fixture.registryDirectory,
+          taskLifecycleLockKey("task-2"),
+          async () => {
+            taskLockEntered = true;
+          },
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(taskLockEntered, false);
+      }
+      closedTabs.add(tabId);
+    },
+    async closeWorkspace() {
+      workspaceClosed = true;
+    },
+    async workspaceRecord() {
+      return workspaceClosed ? null : { workspace_id: "workspace-1" };
+    },
+  };
+  let closing;
+  await withResourceLock(
+    fixture.registryDirectory,
+    `group-key:${fixture.group.key}`,
+    async () => {
+      closing = closeGroup(fixture.group.id, {
+        env: fixture.env,
+        herdr,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await writeRecord(fixture.registryDirectory, "tasks", {
+        schema: "drovr.task/v1",
+        id: "task-2",
+        group_id: fixture.group.id,
+        key: "late-task",
+        label: "Late task",
+        cwd: fixture.task.cwd,
+        status: "active",
+        herdr: { tab_id: "tab-task-2", root_pane_id: "pane-task-2" },
+      });
+    },
+  );
+
+  const result = await closing;
+  assert.equal(result.status, "closed");
+  await competingLock;
+  assert.equal(taskLockEntered, true);
+});
+
+test("force task cleanup interrupts active work and preserves durable history", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.status = "working";
+  turn.block_ids = ["block-1"];
+  delete turn.result;
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  await writeRecord(fixture.registryDirectory, "blocks", {
+    schema: "drovr.block/v1",
+    id: "block-1",
+    turn_id: turn.id,
+    agent_id: fixture.agent.id,
+    task_id: fixture.task.id,
+    status: "open",
+    created_at: "2026-07-23T10:30:00.000Z",
+  });
+  const interrupted = [];
+  const closed = [];
+  let tabClosed = false;
+  let turnLockEntered = false;
+  let competingTurnLock;
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    force: true,
+    now: () => "2026-07-23T11:30:00.000Z",
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "blocked",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return tabClosed
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async interruptAgent(name) {
+        interrupted.push(name);
+        competingTurnLock = withResourceLock(
+          fixture.registryDirectory,
+          `turn:${turn.id}`,
+          async () => {
+            turnLockEntered = true;
+          },
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(turnLockEntered, false);
+      },
+      async waitForAgent() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async closeTab(tabId) {
+        closed.push(tabId);
+        tabClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  await competingTurnLock;
+  assert.equal(turnLockEntered, true);
+  assert.deepEqual(interrupted, ["managed-agent"]);
+  assert.deepEqual(closed, ["tab-task-1"]);
+  const [storedTurn] = await readRecords(fixture.registryDirectory, "turns");
+  const [block] = await readRecords(fixture.registryDirectory, "blocks");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(storedTurn.status, "interrupted");
+  assert.equal(storedTurn.settled_at, "2026-07-23T11:30:00.000Z");
+  assert.equal(block.status, "resolved");
+  assert.equal(block.resolution, "force_cleanup");
+  assert.equal(task.status, "closed");
+  assert.equal(agent.status, "retired");
+  await access(fixture.callerFile);
+  await access(fixture.transcript);
+});
+
+test("force cleanup records uncertain when interruption settlement is unconfirmed", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.status = "working";
+  delete turn.result;
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let tabClosed = false;
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    force: true,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          pane_id: "pane-agent-1",
+          agent_status: "working",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return tabClosed
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async interruptAgent() {},
+      async waitForAgent() {
+        return { drovr_status: "still_running" };
+      },
+      async closeTab() {
+        tabClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  const [storedTurn] = await readRecords(fixture.registryDirectory, "turns");
+  assert.equal(storedTurn.status, "uncertain");
+  assert.match(storedTurn.error, /settlement could not be confirmed/u);
+});
+
+test("force cleanup revalidates native identity before interruption", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.status = "working";
+  delete turn.result;
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let observations = 0;
+  let mutations = 0;
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    force: true,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        observations += 1;
+        return {
+          pane_id: "pane-agent-1",
+          agent_status: "working",
+          agent_session: {
+            value: observations === 1 ? "native-1" : "native-rebound",
+          },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async interruptAgent() {
+        mutations += 1;
+      },
+      async closeTab() {
+        mutations += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "recovery_blocked");
+  assert.equal(mutations, 0);
+  const [storedTurn] = await readRecords(fixture.registryDirectory, "turns");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(storedTurn.status, "uncertain");
+  assert.match(storedTurn.error, /native session identity changed/u);
+  assert.equal(task.status, "active");
+  assert.equal(agent.status, "active");
+});
+
+test("force group cleanup closes only exact managed resources after interrupting work", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const secondCwd = join(fixture.task.cwd, "second-task");
+  const secondCallerFile = join(secondCwd, "keep-too.txt");
+  await mkdir(secondCwd);
+  await writeFile(secondCallerFile, "keep too\n");
+  await writeRecord(fixture.registryDirectory, "tasks", {
+    schema: "drovr.task/v1",
+    id: "task-2",
+    group_id: fixture.group.id,
+    key: "busy-task",
+    label: "Busy task",
+    cwd: secondCwd,
+    status: "active",
+    herdr: { tab_id: "tab-task-2", root_pane_id: "pane-agent-2" },
+  });
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-2",
+    task_id: "task-2",
+    key: "busy-agent",
+    label: "Busy agent",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent-2", pane_id: "pane-agent-2" },
+    native_session: "native-2",
+  });
+  await writeRecord(fixture.registryDirectory, "turns", {
+    schema: "drovr.turn/v1",
+    id: "turn-2",
+    agent_id: "agent-2",
+    task_id: "task-2",
+    status: "working",
+    inputs: [{ sequence: 1, text: "still working" }],
+  });
+  const interrupted = [];
+  const closedTabs = [];
+  const closedWorkspaces = [];
+  const closedTabIds = new Set();
+  let workspaceClosed = false;
+
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    force: true,
+    now: () => "2026-07-23T12:00:00.000Z",
+    herdr: {
+      async ensureSession() {},
+      async agentRecord(name) {
+        const second = name === "managed-agent-2";
+        return {
+          name,
+          pane_id: second ? "pane-agent-2" : "pane-agent-1",
+          agent_status: second ? "working" : "idle",
+          agent_session: { value: second ? "native-2" : "native-1" },
+        };
+      },
+      async paneRecord(paneId) {
+        return {
+          pane_id: paneId,
+          tab_id: paneId === "pane-agent-2" ? "tab-task-2" : "tab-task-1",
+        };
+      },
+      async tabRecord(tabId) {
+        return closedTabIds.has(tabId)
+          ? null
+          : { tab_id: tabId, workspace_id: "workspace-1" };
+      },
+      async interruptAgent(name) {
+        interrupted.push(name);
+      },
+      async waitForAgent(name) {
+        return {
+          name,
+          agent_status: "idle",
+          agent_session: { value: "native-2" },
+        };
+      },
+      async closeTab(tabId) {
+        closedTabs.push(tabId);
+        closedTabIds.add(tabId);
+      },
+      async closeWorkspace(workspaceId) {
+        closedWorkspaces.push(workspaceId);
+        workspaceClosed = true;
+      },
+      async workspaceRecord() {
+        return workspaceClosed ? null : { workspace_id: "workspace-1" };
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  assert.deepEqual(interrupted, ["managed-agent-2"]);
+  assert.deepEqual(closedTabs, ["tab-task-1", "tab-task-2"]);
+  assert.deepEqual(closedWorkspaces, ["workspace-1"]);
+  const groups = await readRecords(fixture.registryDirectory, "groups");
+  const tasks = await readRecords(fixture.registryDirectory, "tasks");
+  const agents = await readRecords(fixture.registryDirectory, "agents");
+  const turns = await readRecords(fixture.registryDirectory, "turns");
+  assert.equal(groups[0].status, "closed");
+  assert.equal(tasks.every(({ status }) => status === "closed"), true);
+  assert.equal(agents.every(({ status }) => status === "retired"), true);
+  assert.equal(turns.find(({ id }) => id === "turn-1").status, "completed");
+  assert.equal(turns.find(({ id }) => id === "turn-2").status, "interrupted");
+  await access(fixture.callerFile);
+  await access(secondCallerFile);
+  await access(fixture.transcript);
 });
 
 async function lifecycleFixture(t) {

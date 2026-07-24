@@ -66,6 +66,29 @@ test("cancel explicitly interrupts, confirms settlement, and leaves the agent re
   assert.equal(started.turn.inputs[0].text, "later explicit work");
 });
 
+test("cancel does not interrupt a turn already owned by force cleanup", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.cleanup_requested_at = "2026-07-23T10:00:01.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let herdrCalls = 0;
+
+  const result = await cancelTurn(fixture.turn.id, {}, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {
+        herdrCalls += 1;
+      },
+      async interruptAgent() {
+        herdrCalls += 1;
+      },
+    },
+  });
+
+  assert.equal(result.command_status, "task_busy");
+  assert.equal(herdrCalls, 0);
+});
+
 test("failed interruption and ambiguous settlement never report cancellation", async (t) => {
   await t.test("failed interruption is uncertain", async (t) => {
     const fixture = await turnFixture(t);

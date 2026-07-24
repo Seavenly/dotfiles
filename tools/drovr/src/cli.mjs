@@ -6,6 +6,7 @@ import { DrovrError } from "./errors.mjs";
 import { readFile } from "node:fs/promises";
 import { attach } from "./attach.mjs";
 import {
+  closeGroup,
   closeTask,
   lifecycleCommandResult,
   retireAgent,
@@ -20,9 +21,21 @@ import {
   turnListCommandResult,
   waitForTurn,
 } from "./turns.mjs";
+import {
+  getAgent,
+  getGroup,
+  getTask,
+  listAgents,
+  listGroups,
+  listTasks,
+  queryGetCommandResult,
+  queryListCommandResult,
+} from "./queries.mjs";
+import { statusReport } from "./status.mjs";
 
 const HELP = `Usage:
   drovr doctor
+  drovr status
   drovr delegate [options] [PROMPT]
   drovr ask AGENT_ID [options] [PROMPT]
   drovr turn start AGENT_ID [options] [PROMPT]
@@ -31,17 +44,26 @@ const HELP = `Usage:
   drovr turn get TURN_ID [--include-messages]
   drovr turn list [filters]
   drovr turn cancel TURN_ID
+  drovr group list [--status STATUS]
+  drovr group get GROUP_ID
+  drovr group close GROUP_ID [--force]
+  drovr task list [--group GROUP_ID] [--status STATUS]
+  drovr task get TASK_ID
+  drovr task close TASK_ID [--force]
+  drovr agent list [--task TASK_ID] [--status STATUS] [--harness HARNESS]
+  drovr agent get AGENT_ID
   drovr agent retire AGENT_ID
-  drovr task close TASK_ID
   drovr attach AGENT_ID [--takeover]
 
 Commands:
   doctor    Diagnose configuration and runtime prerequisites
+  status    Summarize durable state and current Herdr observations
   delegate  Run one complete logical turn with a managed Claude or Codex agent
   ask       Run a later logical turn with an existing managed agent
   turn      Start, steer, wait for, get, or discover durable logical turns
-  agent     Retire a managed agent
-  task      Close a settled delegated task
+  group     List, inspect, or close delegation groups
+  task      List, inspect, or close delegated tasks
+  agent     List, inspect, or retire managed agents
   attach    Interactively attach to a managed agent
 `;
 
@@ -55,6 +77,11 @@ export async function runCli(argv) {
     const report = await diagnose();
     process.stdout.write(`${JSON.stringify(report)}\n`);
     return report.ok ? 0 : 3;
+  }
+
+  if (argv[0] === "status" && argv.length === 1) {
+    process.stdout.write(`${JSON.stringify(await statusReport())}\n`);
+    return 0;
   }
 
   if (argv[0] === "delegate") {
@@ -83,6 +110,93 @@ export async function runCli(argv) {
     return runTurnCommand(argv.slice(1));
   }
 
+  if (argv[0] === "group" && argv[1] === "list") {
+    const { options, positional } = parseOptions(
+      argv.slice(2),
+      new Map([["--status", "status"]]),
+      "group list",
+    );
+    if (positional.length) {
+      invalidArguments("group list accepts no positional arguments");
+    }
+    const report = queryListCommandResult(
+      "group",
+      await listGroups(options),
+    );
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "group" && argv[1] === "get") {
+    if (argv.length !== 3) invalidArguments("group get requires GROUP_ID");
+    const report = queryGetCommandResult("group", await getGroup(argv[2]));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "group" && argv[1] === "close") {
+    const options = parseCloseArguments(
+      argv.slice(2),
+      "group close",
+      "GROUP_ID",
+    );
+    const report = lifecycleCommandResult(
+      "group close",
+      await closeGroup(options.id, { force: options.force }),
+    );
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "task" && argv[1] === "list") {
+    const { options, positional } = parseOptions(
+      argv.slice(2),
+      new Map([
+        ["--group", "groupId"],
+        ["--status", "status"],
+      ]),
+      "task list",
+    );
+    if (positional.length) {
+      invalidArguments("task list accepts no positional arguments");
+    }
+    const report = queryListCommandResult("task", await listTasks(options));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "task" && argv[1] === "get") {
+    if (argv.length !== 3) invalidArguments("task get requires TASK_ID");
+    const report = queryGetCommandResult("task", await getTask(argv[2]));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "agent" && argv[1] === "list") {
+    const { options, positional } = parseOptions(
+      argv.slice(2),
+      new Map([
+        ["--task", "taskId"],
+        ["--status", "status"],
+        ["--harness", "harness"],
+      ]),
+      "agent list",
+    );
+    if (positional.length) {
+      invalidArguments("agent list accepts no positional arguments");
+    }
+    const report = queryListCommandResult("agent", await listAgents(options));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "agent" && argv[1] === "get") {
+    if (argv.length !== 3) invalidArguments("agent get requires AGENT_ID");
+    const report = queryGetCommandResult("agent", await getAgent(argv[2]));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
   if (argv[0] === "agent" && argv[1] === "retire") {
     if (argv.length !== 3) invalidArguments("agent retire requires AGENT_ID");
     const report = lifecycleCommandResult(
@@ -94,10 +208,14 @@ export async function runCli(argv) {
   }
 
   if (argv[0] === "task" && argv[1] === "close") {
-    if (argv.length !== 3) invalidArguments("task close requires TASK_ID");
+    const options = parseCloseArguments(
+      argv.slice(2),
+      "task close",
+      "TASK_ID",
+    );
     const report = lifecycleCommandResult(
       "task close",
-      await closeTask(argv[2]),
+      await closeTask(options.id, { force: options.force }),
     );
     process.stdout.write(`${JSON.stringify(report)}\n`);
     return 0;
@@ -114,6 +232,19 @@ export async function runCli(argv) {
   }
 
   invalidArguments(`unsupported command: ${argv[0]}`);
+}
+
+function parseCloseArguments(argv, command, identifier) {
+  const id = argv[0];
+  if (!id) invalidArguments(`${command} requires ${identifier}`);
+  const trailing = argv.slice(1);
+  if (trailing.some((argument) => argument !== "--force")) {
+    invalidArguments(`unknown ${command} option: ${trailing[0]}`);
+  }
+  if (trailing.length > 1) {
+    invalidArguments("--force may be supplied once");
+  }
+  return { id, force: trailing.includes("--force") };
 }
 
 const DELEGATE_OPTIONS = new Map([
@@ -381,7 +512,7 @@ try {
   const command =
     process.argv[2] === "turn" && process.argv[3]
       ? `turn ${process.argv[3]}`
-      : ["agent", "task"].includes(process.argv[2]) && process.argv[3]
+      : ["agent", "group", "task"].includes(process.argv[2]) && process.argv[3]
         ? `${process.argv[2]} ${process.argv[3]}`
         : (process.argv[2] ?? null);
   const report = expected

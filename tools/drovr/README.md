@@ -1,10 +1,11 @@
 # Drovr
 
 Drovr is the host-local delegated agent runtime described in [SPEC.md](SPEC.md).
-The current tracer bullet provides configuration validation, `doctor`, complete
-Claude Code and Codex `delegate` paths, durable multi-turn reuse, cancellation,
-retirement, safe task cleanup, Herdr restart reconciliation, and conservative
-native-session recovery.
+The current implementation provides configuration validation, `doctor`,
+complete Claude Code and Codex `delegate` paths, durable multi-turn reuse,
+registry discovery, status observation, cancellation, retirement, task and
+group cleanup, Herdr restart reconciliation, and conservative native-session
+recovery.
 
 After convergence, diagnose the local runtime:
 
@@ -50,7 +51,8 @@ drovr ask AGENT_ID "Review the result from your previous turn."
 ```
 
 Advanced callers can separate delivery and observation across processes, steer
-an active turn, and discover durable turn IDs:
+an active turn, discover durable resources, and inspect current reconciliation
+warnings:
 
 ```sh
 drovr turn start AGENT_ID "Begin the review."
@@ -60,8 +62,18 @@ drovr turn wait TURN_ID --after-block BLOCK_ID --timeout 5m
 drovr turn get TURN_ID --include-messages
 drovr turn list --agent AGENT_ID
 drovr turn cancel TURN_ID
+drovr status
+drovr group list --status active
+drovr group get GROUP_ID
+drovr task list --group GROUP_ID --status active
+drovr task get TASK_ID
+drovr agent list --task TASK_ID --status active --harness codex
+drovr agent get AGENT_ID
 drovr agent retire AGENT_ID
 drovr task close TASK_ID
+drovr task close TASK_ID --force
+drovr group close GROUP_ID
+drovr group close GROUP_ID --force
 ```
 
 Wait timeouts are non-destructive. Completion is accepted only after every
@@ -72,8 +84,11 @@ and waits for the agent to return to working before accepting later settlement.
 If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
 Cancellation reports `cancelled` only after native interruption and confirmed
-settlement. Task cleanup refuses working or blocked resources, preserves
-durable history, and never deletes caller-owned cwd or transcript files.
-Mutating commands may recover a confirmed-down native session only when every
-persisted safety check succeeds; read-only commands report loss without
-launching anything.
+settlement. Non-force cleanup refuses working or blocked resources, and group
+cleanup preflights every task before mutating any of them. Force cleanup
+interrupts active work, records each unfinished turn as `interrupted` or
+`uncertain` according to the observed settlement, and closes only the exact
+registered tabs and workspace. All cleanup preserves durable history and never
+deletes caller-owned cwd or transcript files. Mutating commands may recover a
+confirmed-down native session only when every persisted safety check succeeds;
+`status` and `agent get` report observed loss without launching anything.
