@@ -1,12 +1,23 @@
 ---
-description: Implement a feature with a dynamic workflow — interview → brief → worktree (one native install) → planner/TDD/critic/synthesizer workflow → PR-ready branch. Works for non-TDD (infra) stories via --verify gates. Args — goal statement and optional flags (--gated, --grill, --max-retries N, --max-revisions N, --context path, --repo path, --base branch, --verify "cmd", --story JIRA-KEY).
+description: Implement a feature with a dynamic workflow — interview → brief → worktree (one native install) → planner/test-or-verify/critic/synthesizer workflow → PR-ready branch. Supports declarative infra/config stories via first-class verification-mode slices and --verify gates. Args — goal statement and optional flags (--gated, --grill, --max-retries N, --max-revisions N, --context path, --repo path, --base branch, --verify "cmd", --story JIRA-KEY).
 ---
 
 You run a feature-flow: interview the user, draft a brief, set up a
 worktree with deps installed once, then launch the `feature-flow-run`
-dynamic workflow to implement it. The autonomous build (plan → TDD →
+dynamic workflow to implement it. The autonomous build (plan → test or verify →
 critic → synthesize) lives in the workflow; you handle the interview,
 worktree/setup, the optional plan gate, and the wrap-up.
+
+> **⚠️ DELIVERY MODE — LOCAL REVIEW ONLY (overrides the PR steps in wrap-up).**
+> The finished branch is delivered to the **local `tuicr` review inbox**, NOT as a
+> GitHub PR. In Step 6: **register the review with `tuicr-reviews add`** and leave
+> the local branch + worktree in place — then stop. **Do NOT `git push` and do NOT
+> `gh pr create`** (not even a draft), even when `--story` is given. Since nothing
+> hits GitHub, there is no PR link to auto-transition Jira: leave the story **In
+> Progress** and comment the local review handle / branch name on it instead of a
+> PR link (skip the transition-to-In-Review + PR-comment step). The human reviews
+> and integrates locally. (Rationale + scope: memory
+> `feedback-epic-flow-local-review-not-prs`.)
 
 User's invocation: `/feature-flow $ARGUMENTS`
 
@@ -22,7 +33,7 @@ User's invocation: `/feature-flow $ARGUMENTS`
 - `--context <path>` (repeatable) → copy into the run's `context/`.
 - `--repo <path>` → target repo (default: CWD).
 - `--base <branch>` → branch the worktree from this branch and target the PR at it (integration-branch workflows). Default: the branch the user is on.
-- `--verify "<cmd>"` (repeatable) → verification command(s) the slice gate runs *in addition to* the test suite (e.g. `pulumi preview --stack dev`). This is the gate for `nonTestable` (infra/config) slices, which have no failing test to drive them.
+- `--verify "<cmd>"` (repeatable) → approved verification command(s) the gate runs for verification-mode slices and once after the final slice (e.g. `pulumi preview --stack dev`). Declarative infra/config/docs use verification mode when there is no stable behavioral seam; a failing test must never be manufactured. Destructive or credentialed live commands such as `pulumi up` and `pulumi destroy` remain explicit human gates unless the user separately authorizes them.
 - `--story <JIRA-KEY>` → fetch the Jira issue (Atlassian MCP) and use its summary/description as the goal and acceptance criteria; on wrap-up, open the PR and update the story (see Step 6). A story description may carry its own `Verify:` and `Base branch:` lines — treat those as defaults that explicit flags override.
 
 If `$ARGUMENTS` is empty or `help`, explain usage and stop.
@@ -53,6 +64,7 @@ repo: <abs repo path>
 config:
   max_slice_retries: <merged>
   max_critic_revisions: <merged>
+  max_critic_fix_files: <merged default; critic repairs above this size trigger research + RE_PLAN>
   plan_gate: <true if --gated>
   base_branch: <from --base / story / current branch>
   verify_commands: [<from --verify / story, may be empty>]
@@ -92,25 +104,37 @@ Confirm `auto` permission mode (announce; if not, ask the user to `Shift+Tab`). 
 > { "runDir":"<run_dir>","outDir":"<out_dir>","repo":"<repo>","worktree":"<wt>",
 >   "base":"<base>","briefPath":"<run_dir>/brief.md","slug":"<slug>","testCmd":"<cmd|null>",
 >   "verifyCmds":[...]|null,
->   "maxSliceRetries":<n>,"maxCriticRevisions":<n>,"acceptance":[...],
->   "planOnly":false,"slices":null }
+>   "maxSliceRetries":<n>,"maxCriticRevisions":<n>,"maxCriticFixFiles":<n>,"acceptance":[...],
+>   "priorRunStats":null,"planOnly":false,"slices":null }
 > ```
 
 **Gated (`--gated`):** two launches with the plan approved between them (a workflow can't take mid-run input):
-1. Launch with `planOnly:true`. It returns `{ slices, planPath }`. Show `plan.md` to the user; loop on edits (edit `plan.md` and adjust the slice list).
-2. On approval, launch again with `planOnly:false` and `slices:<approved slice array>` so the planner is skipped and implementation runs the approved slices.
+1. Launch with `planOnly:true`. It returns `{ slices, planPath, runStats }`. Show `plan.md` to the user; loop on edits (edit `plan.md` and adjust the slice list).
+2. On approval, launch again with `planOnly:false`, `slices:<approved slice array>`, and `priorRunStats:<step-1 runStats>` so the planner is skipped, implementation runs the approved slices, and final statistics cover both launches.
 
 Launch the saved `~/.claude/workflows/feature-flow-run.js` by name — never regenerate ad-hoc. Watch with `/workflows`.
 
 ## Step 6 — Wrap-up (after the workflow returns)
-The workflow returns `{ branch, reportPath, notesPath, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance }` (or `{ escalate:'RE_PLAN', reason }`).
+The workflow returns `{ branch, reportPath, reportContent, reportMissing, notesPath, notesContent, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance, verificationLedger, runStats }` (or `{ escalate:'RE_PLAN', reason, architectureResearch }`).
 
-- **RE_PLAN** → surface the critic's reason and stop; do not auto-replan.
-- **stuck[]** non-empty → call out which slices exhausted retries (or never got a behaviorally-failing test) and the recorded reason.
+**On a normal return, persist conversation-owned artifacts first.** If
+`reportMissing` is true or `reportContent` is empty, do not create an empty
+`report.md` and do not register the review - surface the missing load-bearing
+artifact and stop. Otherwise write `reportContent` to `reportPath` and
+`notesContent` to `notesPath` with the conversation's file
+write tool. The synthesizer deliberately returns content instead of writing
+inside the workflow, so a deterministic subagent write-policy rejection cannot
+trigger an expensive guaranteed-to-fail retry. If persistence itself is denied
+or fails, surface the returned content/path and stop; do not relaunch the
+synthesizer to repeat the same write.
+
+- **RE_PLAN** → surface the critic's reason plus `architectureResearch` evidence and alternatives, then stop for the user's architecture decision; do not auto-replan or start the proposed subsystem.
+- **stuck[]** non-empty → call out which slices exhausted retries or could not produce their declared test/verification evidence, and the recorded reason.
 - **uncoveredAcceptance[]** non-empty → the completeness gate found acceptance criteria the brief asked for but the artifact still doesn't demonstrate after a fix pass — i.e. promised behavior that did **not** ship. Call these out first and prominently; they're surfaced at the top of the PR body under "Unmet acceptance criteria". This is a stronger signal than an open design finding: the feature is incomplete against its own contract.
 - **openFindings[]** non-empty → note the critic hit the revision cap with open merge-blocking findings (they're also in the PR body).
 - **deferredFindings[]** non-empty → mention the critic recorded non-blocking follow-ups; they're listed in the PR body under "Things deliberately not done".
 - **criticVerdictMissing** true → warn that the outer critique pass produced no verdict (the critic died twice); recommend a manual review before merging.
+- **runStats** → report agents, retries, full-suite executions, verification executions, and reused checks. The `verificationLedger` is the evidence record (command, validated commit SHA, exit status, and whether the command changed the tree); do not rerun a check merely to restate it during wrap-up.
 - Otherwise print:
 ```
 ✓ feature-flow complete

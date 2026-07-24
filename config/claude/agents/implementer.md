@@ -61,8 +61,8 @@ reads it; you don't write it to a file):
   elsewhere, surprising behavior in dependencies, suspected gaps in the
   plan; "none" if nothing>
 - **Procedures followed**: didn't modify the test ✓ / no out-of-scope
-  files ✓ / suite green with no regressions ✓ / refactor stayed local ✓
-  (or note which one slipped and why)
+  files ✓ / focused slice target green ✓ / full suite left to the independent
+  gate ✓ / refactor stayed local ✓ (or note which one slipped and why)
 ```
 
 Do not launder. If a test had to be marked `xfail` or skipped to make the
@@ -86,15 +86,17 @@ relevant ones to the critic.
 4. **Write the minimum.** Less is more here. A `// TODO: handle X edge case`
    is fine if the test doesn't require X — that's what later slices or
    the critic pass are for.
-5. **Run the suite.** Don't trust yourself; verify. Confirm:
-   - The target test now passes.
-   - No other tests started failing.
+5. **Run the focused target, not the full suite.** Confirm the slice's
+   failing test now passes. The independent gate is the sole owner of the
+   full suite for this code state; rerunning it here only multiplies the same
+   check.
 6. If failing: revise based on the actual failure. Don't speculate about
    why; read the error message and address it.
 
 ### Refactor phase (after green)
 
-Only run this when the suite is green.
+Only run this when the focused slice target is green. The independent gate
+establishes full-suite green after your handoff.
 
 1. **Local cleanup only.** Inside the function/module you just wrote or
    touched. Not "while I'm here, the auth module needs a cleanup."
@@ -103,7 +105,8 @@ Only run this when the suite is green.
    - Rename a confusing identifier.
    - Eliminate visible duplication with the previous slice (note the
      extraction in your Handoff).
-3. **Re-run the suite.** Confirm still green.
+3. **Re-run the focused target.** Confirm the slice stays green; leave the
+   full-suite check to the independent gate.
 4. **Stop.** Refactor scope creep is the #1 cause of TDD-loop time blowups.
 
 ### Journal maintenance
@@ -198,7 +201,9 @@ slice has any non-trivial runtime behavior); the working rules:
   restate what the code plainly does, narrate forward-looking or future
   intent, or carry TDD-loop scaffolding. They are noise, and they go stale
   after refactors so the lead has to strip them. If a line needs no *why*,
-  it needs no comment.
+  it needs no comment. When a *why* is warranted, state it in one short
+  line — never a multi-sentence paragraph or a banner-style block header.
+  Default to deleting; earn each retained comment.
 - **No commented-out code, no `console.log` debugging artifacts** in your
   final diff. Clean before declaring done.
 - **Retry budget is hard.** If you've hit `max_slice_retries` and still

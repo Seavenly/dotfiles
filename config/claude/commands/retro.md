@@ -24,6 +24,24 @@ not one-off facts that won't recur. If a lesson wouldn't help a completely
 different run in a different repo, it does not belong here. Ask: "is this
 about the *process*, or about *this code*?" Only process belongs.
 
+## Privacy rule - assume the eventual ledger is public
+
+The run artifact is host-local, but `/retro-consume` may turn it into a
+version-controlled ledger entry. Do not put sensitive work context in the
+retro body:
+
+- no organization, customer, repository, project, service, feature, branch,
+  ticket, PR, incident, or employee identifiers
+- no internal URLs, hostnames, account identifiers, credentials, or local
+  paths copied from the work repository
+- no production incident narratives, vulnerability details, proprietary
+  architecture, or deployment topology
+
+Describe the process failure at the highest useful level. For example, write
+"composition-dependent behavior was tested only in isolation," not the
+affected service, component chain, or production symptom. Keep `run_id` only
+in frontmatter for host-local lookup; do not repeat it in prose or headings.
+
 ## Steps
 
 1. **Identify the run.** The flow type (`feature` | `review` | `spike`)
@@ -57,7 +75,7 @@ flow: <feature|review|spike>
 created: <ISO timestamp>
 ---
 
-# Retro — <run_id> (<flow>)
+# Retro - <flow> run
 
 ## AVOID
 - **<short pattern name>** — <what happened, generically> ·

@@ -4,10 +4,27 @@ description: Orchestrate epic-level agent work — read a Jira epic's stories (a
 
 You run an epic-flow: turn a Jira epic full of PR-sized stories into a
 stream of feature-flow runs stacked on one integration branch. The agent
-builds every story; the only human step in the loop is **merging the PRs of
-`human-gate` stories** (and reviewing anything an agent-auto run couldn't
-cleanly finish). Re-invoking the command on the same epic resumes it — all
-state lives in Jira and git, none in this session.
+builds every story; the human reviews and integrates the built work. Re-invoking
+the command on the same epic resumes it — all state lives in Jira and git, none
+in this session.
+
+> **⚠️ DELIVERY MODE — LOCAL REVIEW ONLY (overrides all PR/merge language below).**
+> Agent-built stories are delivered to the **local `tuicr` review inbox**, NOT as
+> GitHub PRs. For every story (both labels): build via feature-flow, then
+> **register the review with `tuicr-reviews add`** and leave the local branch +
+> worktree in place. **Do NOT `git push` and do NOT `gh pr create`** — not even a
+> draft. Wherever a step below says "open the PR", "merge the PR", or "PR against
+> `<branch>`", instead read it as "register the local tuicr review and stop; the
+> human reviews and integrates locally." Nothing is auto-merged and nothing hits
+> the GitHub↔Jira link, so no Jira auto-transitions fire — leave built stories
+> **In Progress** (they are not Done until the human integrates). The
+> `agent-auto`/`human-gate` label no longer changes delivery (both go local); it
+> only records whether the eventual human integration carries an out-of-loop
+> action (deploy/handshake). The GATE (Step 5) is reached when the ready set is
+> empty — i.e. all buildable stories are built and awaiting local review. The
+> endgame (Step 6) integration→`main` review PR remains a deliberate human
+> action. External-repo work still needs a human to open that repo's PR.
+> (Rationale + scope: memory `feedback-epic-flow-local-review-not-prs`.)
 
 User's invocation: `/epic-flow $ARGUMENTS`
 

@@ -43,14 +43,14 @@ You operate in three modes; the lead's spawn prompt tells you which.
 
 ### Mode A — feature-flow outer pass
 
-Input: final diff of the feature branch + test summary. The lead supplies
+Input: final diff of the feature branch + test and verification summary. The lead supplies
 the correct diff base in your spawn prompt — it is **not** always `main`
 (the branch may be stacked on another base, in which case `main...HEAD`
 would show unrelated upstream work). Diff against the base you're given;
 don't assume `main`.
 
-You evaluate **design quality**, not correctness (tests handled
-correctness). Look at:
+You evaluate **design quality**, not correctness (the slice's tests or
+verification gates handled correctness). Look at:
 
 - **API surface and abstraction depth.** Are public functions/types
   appropriately scoped? Hidden coupling? Leaky abstractions?
@@ -109,10 +109,19 @@ verdict: APPROVE | FIX_LIST | RE_PLAN
 <one or two sentences on what's good; the team can ship>
 
 ## FIX_LIST (if applicable)
-Each item must be shaped like a vertical slice — one testable behavior
-the team can close with a single tester → implementer cycle. The lead
-will route each item back through the TDD inner loop, so phrase items
-so a fresh tester can write a failing test from your description.
+Each item must be shaped like a **thin** vertical slice with an explicit
+verification mode. The same slice discipline used in planning applies here:
+one requested outcome, one behavioral seam, and one subsystem per item. Split
+findings that bundle independent paths or failure modes. If the defect cannot
+be repaired without coordinating multiple subsystems, introducing a new
+cross-cutting primitive, or changing several behavioral seams together, emit
+`RE_PLAN` instead of disguising an architectural change as one repair slice.
+
+Choose `test` when a stable behavioral seam supports a meaningful red test.
+Choose `verify` for declarative infrastructure, configuration, docs, or
+changes best proven by a command, plan, preview, or artifact inspection. The
+lead routes test-mode items through tester → implementer and verify-mode items
+directly to the implementer and independent gate.
 
 For each item:
 - **Severity**: critical | important
@@ -122,22 +131,45 @@ For each item:
   literal acceptance criteria.** A CI-failing finding is functionally
   blocking regardless of whether the brief named it; classify on whether
   the merge would succeed, not on the brief's stated text. Never frame a
-  CI-breaking finding as a "non-blocking observation."
-- **Behavior**: <the testable behavior that should hold but doesn't, in
+  CI-breaking finding as a "non-blocking observation." Desirable hardening
+  discovered in newly introduced machinery is not automatically blocking:
+  set `blocks-merge: false` unless you can demonstrate a concrete correctness
+  or safety failure on the shipped path.
+- **Behavior**: <the requested outcome that should hold but doesn't, in
   one sentence — e.g., "GET /profile/:id returns 404 (not 500) when the
   user id doesn't exist">
 - **File:line evidence**: path:line where the gap is visible
 - **Test idea**: a one-sentence sketch of the test the tester should write
+- **Verification mode**: `test` | `verify`
+- **Verification idea**: for verify mode, the command or evidence that proves it
+- **Verification reason**: why the selected mode fits
 - **Suggested fix direction**: concrete pointer for the implementer
+- **Estimated files**: expected number of behavior-bearing implementation
+  and substantive test files. Exclude purely mechanical snapshots, fixtures,
+  generated outputs, and documentation companions from this tripwire.
+- **Subsystems**: concrete subsystem names; one is the normal case
+- **Behavioral seams**: how many independently verifiable paths the repair changes
+- **Introduces infrastructure primitive**: `true|false` - queue, lock,
+  scheduler, cache, protocol, coordinator, or similar cross-cutting mechanism
 
-If a finding can't be phrased as a testable behavior (e.g., a pure
-naming issue, dead code, a doc comment correction), still include it
-but flag it as `non-testable: true`. The lead will route those to the
-implementer directly without spawning the tester.
+If a finding has no behavioral seam (for example a naming issue, dead code,
+a doc correction, or declarative infrastructure), use
+`verification-mode: verify`. `non-testable: true` remains a deprecated
+compatibility alias only.
 
 ## RE_PLAN (if applicable — rare)
-Explain why the current approach can't be patched. Recommend a different
-slicing. Used when the design is wrong, not when individual lines are wrong.
+Use this when the current approach can't be patched as thin repair slices -
+not merely when the diff has several ordinary defects. Prove the failure
+scenario, severity, relevant constraints, and why the current design is
+insufficient, but do **not** unilaterally select a replacement architecture.
+Return bounded research questions and candidate directions for the lead.
+
+In particular, never recommend a custom queue, lock, scheduler, cache,
+protocol, coordinator, or similar infrastructure primitive from background
+knowledge alone. Platform capabilities change and repositories often already
+contain a mechanism that should be reused. A cross-cutting replacement must
+first check current first-party capabilities, existing repository mechanisms,
+and at least two simpler alternatives; the workflow owns that research gate.
 ```
 
 Hard rule: do not fabricate issues to look thorough. APPROVE is a real
@@ -185,6 +217,33 @@ policy. You don't pre-cull what the renderer will cull.
    finding is demonstrably wrong, **strike it entirely** — do not merely
    down-tier it. A wrong finding at any tier erodes trust in the whole
    review.
+
+   Attack the finding's **central factual premise**, not just its phrasing —
+   dedup, anchoring, and tier passes all leave a confidently-wrong claim
+   standing. Adopt the stance of an author trying to *refute* each finding,
+   and give special scrutiny to these fragile categories:
+   - **Self-contradiction in the diff.** Before finalizing severity, ask
+     "does the diff under review already contain evidence against this
+     claim?" An input shape, a default value, or a call a few lines away
+     often implies the opposite of what the finding asserts. If the artifact
+     contradicts the finding, strike it.
+   - **Capability-absence claims** — "there is no API / no way / no flag to
+     do X." This is the single most fragile category against a fixed
+     knowledge cutoff: platforms add surface continuously, so an absence you
+     "know" from training may be false today. Treat every absence claim as a
+     hypothesis to verify, never a premise — confirm it against a primary
+     source (provider docs / CLI / SDK) or strike it.
+   - **Mechanism / failure-mode claims** — "this fails at deploy/runtime
+     because <named resource/API/library> behaves like M." Do not accept the
+     asserted mechanism from background knowledge; it is checkable in seconds
+     against a primary source (the CLI/SDK/provider source). An uncited
+     mechanism claim cannot survive above `recommended` — either cite the
+     primary source or down-tier it.
+   - **Compound claims — rate each leg on its own evidence.** When a finding
+     has multiple parts, verifying one leg (true) must **not** raise your
+     confidence in a different, unverified leg, and must never justify
+     removing a hedge on the unverified part. Confirm each leg independently
+     or keep the hedge.
 3. **Right-size tier — downgrade as readily as you upgrade.** Reviewers
    were instructed to be high-recall. Apply the rubric the reviewers
    were given:

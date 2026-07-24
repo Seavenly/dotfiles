@@ -30,6 +30,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 home="$tmp/home"
 mkdir -p \
+  "$home/.config" \
+  "$home/.local/state" \
   "$home/.agents/skills/local-only" \
   "$home/.claude/skills/local-only" \
   "$home/.hermes/skills/local-only"
@@ -39,7 +41,8 @@ for harness_root in .agents .claude .hermes; do
 done
 
 for _ in 1 2; do
-  HOME="$home" MISE_TRUSTED_CONFIG_PATHS="$root" \
+  HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+    XDG_STATE_HOME="$home/.local/state" MISE_TRUSTED_CONFIG_PATHS="$root" \
     mise -C "$root" -E linux bootstrap dotfiles apply --yes \
     >/dev/null 2>&1
 done
@@ -68,6 +71,7 @@ expected_skills=(
   grill-with-docs
   grilling
   handoff
+  i-have-adhd
   implement
   improve-codebase-architecture
   prototype
@@ -105,6 +109,7 @@ expected_repository() {
   case "$1" in
     split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
     agent-flow-stacks) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
+    i-have-adhd) printf '%s\n' 'https://github.com/ayghri/i-have-adhd.git' ;;
     tuicr) printf '%s\n' 'https://github.com/agavra/tuicr.git' ;;
     *) printf '%s\n' 'https://github.com/mattpocock/skills.git' ;;
   esac

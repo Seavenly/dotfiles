@@ -9,7 +9,7 @@ A homegrown system for handing off recurring software-engineering tasks to
 a team of Claude Code subagents, orchestrated by **dynamic workflows** and
 run **entirely on the local machine** (no sandbox). Three flows:
 
-- `/feature-flow` — implement a feature: plan → TDD inner loop → critic outer pass → PR-ready branch on a worktree.
+- `/feature-flow` — implement a feature: plan → per-slice test-or-verify loop → critic outer pass → PR-ready branch on a worktree.
 - `/review-flow` — review an open PR: parallel reviewers across lenses (security, correctness, style, tests, observability) → critic dedupes/right-sizes/anchors → rendered review.md/.html + optional pending draft on GitHub.
 - `/spike-flow` — investigate a question: researcher(s) → critic gap-analysis → optional in-repo prototype → spike report.
 
@@ -52,7 +52,7 @@ cross-check, judge panels). The interactive half *can't* be a workflow —
 the runtime takes no mid-run user input — so it stays in the command.
 
 Within a workflow, parallel work is just concurrent `agent()` calls
-(`parallel`/`pipeline`); sequential same-file work (the TDD loop) is a
+(`parallel`/`pipeline`); sequential same-file work (the test-or-verify loop) is a
 plain `for` loop. The critic/reviewers keep independent context **by
 construction** — a subagent only sees its spawn prompt — which is the
 property the old Agent Teams "teammate" gave us. Mailbox debate (the one
@@ -75,12 +75,12 @@ tier on the high-volume inner loop, the cheap tier on prescriptive assembly.
 | researcher | opus | 3–4 in parallel | High-recall finder; precision comes from the fable critic downstream |
 | diagrammer | sonnet | 0–1 | Near-checklist persona with graceful failure (skipped.txt / .mmd fallback); bump back to opus if diagrams degrade |
 | synthesizer | sonnet | 1 | Format artifacts into PR body / report — no novel reasoning |
-| gate (test-runner) | sonnet | ~1–2 per slice | Mechanical, highest-frequency call; pinned via `opts.model` in the scripts since it has no persona file |
+| gate (test-runner) | haiku / low effort | ~1–2 per slice | Mechanical command execution only; pinned in scripts, with bounded output and no design reread |
 
 Current deliberate overrides in the scripts: the review-flow **orientation**
 agent runs the researcher persona at `sonnet` (a 300-word strictly templated
-summary, not open-ended research), and the **gate** is script-pinned to
-`sonnet`. Everything else omits `opts.model` so the persona default is the
+summary, not open-ended research), and mechanical **gate/commit** calls are
+script-pinned to `haiku` at low effort. Everything else omits `opts.model` so the persona default is the
 single source of truth — don't re-add redundant pins. Caveat: `fable`
 assumes Fable access on whatever plan the run executes under; if that ever
 breaks, `opus` is the fallback for planner/critic.
@@ -111,22 +111,24 @@ once Fable is re-enabled.
 │ feature-flow-run.js:                                              │
 │   phase Plan      → agent(planner)  → slices[] (+ plan.md)        │
 │   phase Implement → workflow('tdd-slice-loop') — per slice,       │
-│        sequential (same files): tester → implementer → gate       │
-│        (run suite; commit on green), retry ≤ N                    │
+│        sequential (same files): test mode uses tester →           │
+│        implementer; verify mode uses implementer directly; both   │
+│        finish at an independent gate, retry ≤ N                   │
 │   phase Critique  → agent(critic) → APPROVE|FIX_LIST|RE_PLAN      │
 │        FIX_LIST → blocking items back through tdd-slice-loop;     │
 │        non-blocking deferred to the PR body as follow-ups;        │
+│        broad/cross-cutting repairs → research + RE_PLAN           │
 │        re-spawn critic; cap max_critic_revisions cycles           │
-│   phase Synthesize→ agent(synthesizer) → out/report.md (PR body)  │
-│   return {branch, reportPath, slices, stuck, openFindings,        │
-│           deferredFindings, ...}                                  │
+│   phase Synthesize→ agent(synthesizer) → reportContent            │
+│   return {branch, reportPath, reportContent, notesContent,        │
+│           verificationLedger, runStats, stuck, ...}               │
 └───────────────────────────────────────────────────────────────────┘
                               │ summary returns to the conversation
                               ▼
 ┌─ your session (wrap-up) ──────────────────────────────────────────┐
-│ prints branch + report path + diff command; handles RE_PLAN /     │
-│ stuck-slice / open-finding escalations. You review in the         │
-│ worktree (deps already installed), then merge. /retro optional.   │
+│ persists reportContent + notesContent to their artifact paths;    │
+│ prints branch + diff command; handles RE_PLAN / stuck / open      │
+│ findings. You review in the worktree, then merge. /retro optional.│
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -155,7 +157,7 @@ their workflow internals differ (see below).
         │   ├── feature-flow-run.js
         │   ├── review-flow-run.js
         │   ├── spike-flow-run.js
-        │   └── tdd-slice-loop.js  # shared TDD inner loop (sub-workflow, never run directly)
+        │   └── tdd-slice-loop.js  # shared test-or-verify loop (sub-workflow, never run directly)
         ├── agents/                # → ~/.claude/agents  (role personas; agentType source)
         │   ├── planner.md  tester.md  implementer.md
         │   ├── critic.md   researcher.md  synthesizer.md  diagrammer.md
@@ -176,10 +178,12 @@ State (host-local, not version-controlled):
 
 ### feature-flow
 **Command:** interview (light; `--grill` heavy; `--gated` adds a plan gate) → brief → worktree + one-time install → launch.
-**Workflow (`feature-flow-run.js`):** planner → per-slice TDD loop via the shared `tdd-slice-loop` sub-workflow (tester → implementer → independent test-gate that commits on green, retry ≤ `max_slice_retries`; tester output is sanity-checked — a missing/never-failing test gets one tester retry, then the slice is recorded stuck) → critic Mode A outer pass (only **merge-blocking** FIX_LIST items re-enter the loop; non-blocking findings are deferred to the PR body as follow-ups; re-spawn critic; cap `max_critic_revisions`; RE_PLAN escalates; a critic that returns nothing gets one re-spawn, then the run ships flagged `criticVerdictMissing`) → synthesizer PR body.
+**Workflow (`feature-flow-run.js`):** planner selects `test` or `verify` per slice → shared `tdd-slice-loop` sub-workflow (test mode: tester → implementer; verify mode: implementer directly; both end at an independent low-cost gate that deduplicates commands, records a verification ledger, and commits on green; tester/implementer run only focused checks, so the gate owns the full suite; retry ≤ `max_slice_retries`; implementation retries receive a compact current-diff/handoff/failure packet instead of repeating broad orientation) → critic Mode A outer pass (only **merge-blocking** FIX_LIST items re-enter the loop; non-blocking hardening is deferred; each repair must stay within the configured file cap, one subsystem, and one behavioral seam; broader or primitive-introducing changes trigger bounded primary-source/repository research and `RE_PLAN`; re-spawn critic; cap `max_critic_revisions`; a critic that returns nothing gets one re-spawn, then the run ships flagged `criticVerdictMissing`) → synthesizer returns PR-body content for conversation-side persistence. Declarative infrastructure, configuration, and docs are first-class verify-mode work; the workflow must not manufacture source-text or tautological tests to create a red phase. Credentialed/destructive live commands remain explicit human gates.
 **`--gated`:** the command launches twice — `planOnly:true` returns the plan for your approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).
-**Notes journal:** carried as a list of entry blocks in a script variable, folded from each agent's structured handoff. Inner-loop prompts see a capped view (most recent ~40 entries) so a long run doesn't tax every prompt; the critic and synthesizer get the full journal, and the synthesizer persists it verbatim to `out/notes.md` for auditability.
-**E2E discipline:** the final slice's tester drives the feature end-to-end through the real wiring.
+**Notes journal:** carried as a list of entry blocks in a script variable, folded from each agent's structured handoff. Inner-loop prompts see a capped view (most recent ~40 entries) so a long run doesn't tax every prompt; the critic and synthesizer get the full journal, and the workflow returns it as `notesContent` for the conversation-side command to persist verbatim to `out/notes.md`.
+**Verification ownership:** each check has one owner for a code state. Tester and implementer use focused targets; the mechanical gate runs each distinct suite/verification command once, records command + validated SHA + exit + tree-mutation status, and later critics reuse that evidence instead of rerunning it.
+**Artifact ownership:** synthesizers draft content; the interactive command persists feature artifacts. A deterministic subagent write-policy failure is surfaced, never retried by repeating the same file write.
+**End-to-end discipline:** the final test-mode slice drives the feature through the real wiring. For all-verify work, the final verification command or artifact evidence must cover the assembled path and blast radius.
 
 ### review-flow
 **Command:** validate PR (`gh`) → clone head ref + fetch diff into the run dir → brief → launch → on return, write `comments.json`, run `render-review.js`, optionally POST a pending draft.
@@ -240,7 +244,10 @@ surgical edits anywhere under `~/.claude`. The key triage: a
 **judgment** problem edits a role `agents/*.md`; an **orchestration**
 problem (wiring, budgets, a spawn prompt that lives in the script) edits a
 `workflows/*.js`. The ledger is the cross-run memory that keeps single-run
-noise from thrashing the prompts.
+noise from thrashing the prompts. Because the ledger is version-controlled,
+`/retro-consume` writes only public-safe process summaries: run and work
+identifiers, internal links, and concrete incident or security details remain
+in host-local artifacts.
 
 **Discipline:** always launch the *saved* workflow by name so retro-tuned
 orchestration is used — never let Claude regenerate a workflow ad-hoc, or

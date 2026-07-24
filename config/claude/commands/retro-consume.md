@@ -97,12 +97,15 @@ not exist, create it with this header first:
 Running record of process patterns surfaced by agent-teams retros and what
 was done with them. Newest entries at the top. Lets us see patterns over
 time, corroborate recurring ones, and revert changes that didn't pan out.
+This version-controlled ledger contains public-safe process summaries only.
+Run, repository, organization, and incident identifiers stay in host-local
+retro artifacts.
 ```
 
 Then prepend (newest-first) an entry of this shape:
 
 ```markdown
-## <date> — <run_id> (<flow>)
+## <date> - <flow> run (sanitized)
 
 | Pattern | Bucket | Target | Action |
 |---|---|---|---|
@@ -113,6 +116,27 @@ Then prepend (newest-first) an entry of this shape:
 
 Notes: <conflicts surfaced, reverts, anything a future consumer should know>
 ```
+
+### Public-ledger scrub
+
+Treat the ledger as content for a public personal repository. Before writing,
+rewrite the retro into a public-safe process summary:
+
+- Never copy `run_id`, organization, customer, repository, project, service,
+  feature, branch, ticket, PR, incident, or employee identifiers.
+- Never include internal URLs, hostnames, account identifiers, credentials,
+  work-repository paths, production incident narratives, vulnerability details,
+  proprietary architecture, or deployment topology.
+- Preserve dates, flow type, generic process patterns, managed `~/.claude`
+  target paths, actions, and corroboration links to other sanitized entries.
+- Generalize evidence to the minimum needed to justify the process change. If
+  an item is no longer meaningful after scrubbing, omit it rather than retaining
+  identifying evidence.
+
+Before saving, scan the proposed entry specifically for names, run IDs, ticket
+or PR number patterns, URLs, hostnames, credentials, and concrete incident or
+security details. Rewrite or remove every match. This privacy pass is required
+even when `/retro` already followed its own generic-pattern rule.
 
 ## Reverting
 
