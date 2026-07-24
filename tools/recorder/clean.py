@@ -14,17 +14,19 @@ import sys
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
+from scipy import fft, signal
 from scipy.linalg import solve_toeplitz
 
 
-FILTER_MS = 300         # Room impulse response length to model (ms)
-MAX_DELAY_MS = 500      # Max speaker->mic delay to search (ms)
-DELAY_PROBE_SEC = 30    # Seconds of audio to use for delay detection
-FRAME_MS = 32           # VAD frame size
+FILTER_MS = 300             # Room impulse response length to model (ms)
+FILTER_TRAIN_SEC = 120      # Enough audio for a stationary room response
+MAX_DELAY_MS = 500          # Max speaker->mic delay to search (ms)
+DELAY_PROBE_SEC = 30        # Seconds of audio to use for delay detection
+FRAME_MS = 32               # VAD frame size
 # Residual suppression
 STFT_NFFT = 1024
 STFT_HOP = 256
+STFT_BLOCK_FRAMES = 1024
 RES_ALPHA_ECHO_ONLY = 8.0   # Aggressive when user is silent
 RES_ALPHA_DOUBLETALK = 2.0  # Gentle when user is speaking
 RES_FLOOR = 0.03            # Minimum gain
@@ -82,65 +84,155 @@ def echo_only_mask(mic, ref, rate, frame_samples):
 def wiener_filter(mic, ref, filter_len):
     """FIR filter w minimizing ||mic - ref * w||^2."""
     n = max(len(mic), len(ref))
-    n_fft = 1 << (2 * n - 1).bit_length()
+    n_fft = fft.next_fast_len(2 * n - 1)
 
-    R = np.fft.rfft(ref, n=n_fft)
-    M = np.fft.rfft(mic, n=n_fft)
+    R = fft.rfft(ref, n=n_fft)
+    M = fft.rfft(mic, n=n_fft)
 
-    auto = np.fft.irfft(R * np.conj(R))[:filter_len].astype(np.float64)
-    cross = np.fft.irfft(M * np.conj(R))[:filter_len].astype(np.float64)
+    auto = fft.irfft(R * np.conj(R))[:filter_len].astype(np.float64)
+    cross = fft.irfft(M * np.conj(R))[:filter_len].astype(np.float64)
 
     auto[0] += 1e-4 * auto[0]  # Regularize
     w = solve_toeplitz(auto, cross)
     return w.astype(np.float32)
 
 
+def _stft_frames(samples, first_frame, frame_count, sample_count):
+    """Return one zero-padded block of overlapping analysis frames."""
+    half_window = STFT_NFFT // 2
+    first_sample = first_frame * STFT_HOP - half_window
+    block_length = (frame_count - 1) * STFT_HOP + STFT_NFFT
+    block = np.zeros(block_length, dtype=np.float32)
+    source_start = max(first_sample, 0)
+    source_end = min(first_sample + block_length, sample_count)
+    if source_end > source_start:
+        dest_start = source_start - first_sample
+        block[dest_start : dest_start + source_end - source_start] = (
+            samples[source_start:source_end]
+        )
+    return np.lib.stride_tricks.sliding_window_view(
+        block, STFT_NFFT
+    )[::STFT_HOP]
+
+
+def _accumulate_overlap_add(output, frames, first_frame):
+    """Add a block of synthesized frames without iterating over every frame."""
+    overlap = STFT_NFFT // STFT_HOP
+    for residue in range(overlap):
+        local_start = (residue - first_frame) % overlap
+        residue_frames = frames[local_start::overlap]
+        if not len(residue_frames):
+            continue
+        output_start = (first_frame + local_start) * STFT_HOP
+        flattened = residue_frames.reshape(-1)
+        output[output_start : output_start + len(flattened)] += flattened
+
+
+def _normalize_overlap_add(output, sample_count, frame_count, window):
+    """Normalize periodic overlap and the finite recording edges in place."""
+    half_window = STFT_NFFT // 2
+    cleaned = output[half_window : half_window + sample_count]
+    normalization = np.array(
+        [np.sum(window[offset::STFT_HOP] ** 2) for offset in range(STFT_HOP)],
+        dtype=np.float32,
+    )
+    left_edge_end = min(
+        sample_count, STFT_NFFT - STFT_HOP - half_window
+    )
+    right_edge_start = max(
+        left_edge_end, (frame_count * STFT_HOP) - half_window
+    )
+
+    def normalize_edge(start, end):
+        if end <= start:
+            return
+        coordinates = np.arange(start + half_window, end + half_window)
+        denominator = np.zeros(end - start, dtype=np.float32)
+        first_touching_frame = max(
+            0, (coordinates[0] - STFT_NFFT) // STFT_HOP
+        )
+        last_touching_frame = min(
+            frame_count - 1, coordinates[-1] // STFT_HOP
+        )
+        for frame_index in range(
+            first_touching_frame, last_touching_frame + 1
+        ):
+            window_indexes = coordinates - frame_index * STFT_HOP
+            valid = (window_indexes >= 0) & (window_indexes < STFT_NFFT)
+            denominator[valid] += window[window_indexes[valid]] ** 2
+        cleaned[start:end] /= denominator
+
+    normalize_edge(0, left_edge_end)
+    normalize_edge(right_edge_start, sample_count)
+    for residue in range(STFT_HOP):
+        start = left_edge_end + (
+            residue - (left_edge_end + half_window)
+        ) % STFT_HOP
+        cleaned[start:right_edge_start:STFT_HOP] /= normalization[residue]
+    return cleaned
+
+
 def residual_suppression(mic_clean, echo_est, rate):
-    """STFT-domain Wiener gain with double-talk-aware time-varying aggressiveness."""
+    """Apply a bounded-memory STFT Wiener gain with temporal continuity."""
     n = min(len(mic_clean), len(echo_est))
     mic_clean = mic_clean[:n]
     echo_est = echo_est[:n]
 
-    f, t, Y = signal.stft(
-        mic_clean, fs=rate, nperseg=STFT_NFFT, noverlap=STFT_NFFT - STFT_HOP
-    )
-    _, _, E = signal.stft(
-        echo_est, fs=rate, nperseg=STFT_NFFT, noverlap=STFT_NFFT - STFT_HOP
-    )
+    window = signal.get_window("hann", STFT_NFFT).astype(np.float32)
+    frame_count = (n + STFT_HOP - 1) // STFT_HOP + 1
+    padded_length = (frame_count - 1) * STFT_HOP + STFT_NFFT
+    output = np.zeros(padded_length, dtype=np.float32)
+    previous_gain = np.ones(STFT_NFFT // 2 + 1, dtype=np.float32)
 
-    Y_pow = np.abs(Y) ** 2
-    E_pow = np.abs(E) ** 2
+    for first_frame in range(0, frame_count, STFT_BLOCK_FRAMES):
+        block_frame_count = min(STFT_BLOCK_FRAMES, frame_count - first_frame)
+        mic_frames = _stft_frames(
+            mic_clean, first_frame, block_frame_count, n
+        )
+        echo_frames = _stft_frames(
+            echo_est, first_frame, block_frame_count, n
+        )
 
-    # Per-frame signal-to-echo ratio (SER): if mic power clearly exceeds echo,
-    # user is likely speaking — use gentle alpha. Otherwise, aggressive.
-    Y_energy = Y_pow.sum(axis=0)
-    E_energy = E_pow.sum(axis=0)
-    # Sigmoid between aggressive and gentle alpha based on log SER
-    log_ratio = np.log((Y_energy + 1e-12) / (E_energy + 1e-12))
-    # Blend: 0 = full echo-only (aggressive), 1 = full double-talk (gentle)
-    blend = 1.0 / (1.0 + np.exp(-(log_ratio - 1.0) * 2.0))
-    alpha_per_frame = (
-        RES_ALPHA_ECHO_ONLY * (1 - blend) + RES_ALPHA_DOUBLETALK * blend
-    )
+        mic_spectrum = fft.rfft(mic_frames * window, axis=1)
+        echo_spectrum = fft.rfft(echo_frames * window, axis=1)
+        mic_power = mic_spectrum.real**2 + mic_spectrum.imag**2
+        echo_power = echo_spectrum.real**2 + echo_spectrum.imag**2
 
-    raw_gain = Y_pow / (Y_pow + alpha_per_frame[np.newaxis, :] * E_pow + 1e-12)
+        mic_energy = mic_power.sum(axis=1)
+        echo_energy = echo_power.sum(axis=1)
+        log_ratio = np.log((mic_energy + 1e-12) / (echo_energy + 1e-12))
+        blend = 1.0 / (1.0 + np.exp(-(log_ratio - 1.0) * 2.0))
+        alpha_per_frame = (
+            RES_ALPHA_ECHO_ONLY * (1 - blend)
+            + RES_ALPHA_DOUBLETALK * blend
+        )
 
-    # Temporal smoothing: asymmetric attack/release
-    smoothed = np.zeros_like(raw_gain)
-    prev = np.ones(raw_gain.shape[0], dtype=raw_gain.dtype)
-    for i in range(raw_gain.shape[1]):
-        cur = raw_gain[:, i]
-        alpha = np.where(cur < prev, RES_ATTACK, RES_RELEASE)
-        prev = alpha * prev + (1 - alpha) * cur
-        smoothed[:, i] = prev
+        echo_power *= alpha_per_frame[:, np.newaxis]
+        echo_power += mic_power
+        echo_power += 1e-12
+        np.divide(mic_power, echo_power, out=mic_power)
 
-    gain = np.maximum(smoothed, RES_FLOOR)
+        for frame_index in range(block_frame_count):
+            current_gain = mic_power[frame_index]
+            smoothing = np.where(
+                current_gain < previous_gain, RES_ATTACK, RES_RELEASE
+            )
+            previous_gain = (
+                smoothing * previous_gain + (1 - smoothing) * current_gain
+            )
+            current_gain[:] = previous_gain
 
-    Y_clean = Y * gain
-    _, out = signal.istft(
-        Y_clean, fs=rate, nperseg=STFT_NFFT, noverlap=STFT_NFFT - STFT_HOP
-    )
-    return out[:n].astype(np.float32)
+        np.maximum(mic_power, RES_FLOOR, out=mic_power)
+        mic_spectrum *= mic_power
+        cleaned_frames = fft.irfft(
+            mic_spectrum, n=STFT_NFFT, axis=1
+        ).astype(np.float32)
+        cleaned_frames *= window
+
+        _accumulate_overlap_add(output, cleaned_frames, first_frame)
+
+    cleaned = _normalize_overlap_add(output, n, frame_count, window)
+    return cleaned.astype(np.float32, copy=False)
 
 
 def apply_makeup_gain(orig_mic, cleaned, ref_aligned, rate):
@@ -215,12 +307,21 @@ def clean_mic(mic_path, system_path, output_path):
         train_mic = mic[sample_mask]
         train_ref = ref_aligned[sample_mask]
 
+    max_train_samples = rate * FILTER_TRAIN_SEC
+    if len(train_mic) > max_train_samples:
+        print(
+            f"Limiting Wiener filter training to {FILTER_TRAIN_SEC}s "
+            "to bound memory use."
+        )
+        train_mic = train_mic[:max_train_samples]
+        train_ref = train_ref[:max_train_samples]
+
     filter_len = int(rate * FILTER_MS / 1000)
     print(f"Computing {filter_len}-tap Wiener filter on {len(train_mic) / rate:.1f}s...")
     w = wiener_filter(train_mic, train_ref, filter_len)
 
     # Synthesize echo estimate over the full recording
-    echo_est = signal.fftconvolve(ref_aligned, w)[:n].astype(np.float32)
+    echo_est = signal.oaconvolve(ref_aligned, w)[:n].astype(np.float32)
     linear_clean = mic - echo_est
 
     before = 20 * np.log10(np.sqrt(np.mean(mic**2)) + 1e-12)
