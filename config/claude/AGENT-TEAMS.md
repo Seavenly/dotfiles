@@ -9,7 +9,7 @@ A homegrown system for handing off recurring software-engineering tasks to
 a team of Claude Code subagents, orchestrated by **dynamic workflows** and
 run **entirely on the local machine** (no sandbox). Three flows:
 
-- `/feature-flow` — implement a feature: plan → TDD inner loop → critic outer pass → PR-ready branch on a worktree.
+- `/feature-flow` — implement a feature: plan → per-slice test-or-verify loop → critic outer pass → PR-ready branch on a worktree.
 - `/review-flow` — review an open PR: parallel reviewers across lenses (security, correctness, style, tests, observability) → critic dedupes/right-sizes/anchors → rendered review.md/.html + optional pending draft on GitHub.
 - `/spike-flow` — investigate a question: researcher(s) → critic gap-analysis → optional in-repo prototype → spike report.
 
@@ -52,7 +52,7 @@ cross-check, judge panels). The interactive half *can't* be a workflow —
 the runtime takes no mid-run user input — so it stays in the command.
 
 Within a workflow, parallel work is just concurrent `agent()` calls
-(`parallel`/`pipeline`); sequential same-file work (the TDD loop) is a
+(`parallel`/`pipeline`); sequential same-file work (the test-or-verify loop) is a
 plain `for` loop. The critic/reviewers keep independent context **by
 construction** — a subagent only sees its spawn prompt — which is the
 property the old Agent Teams "teammate" gave us. Mailbox debate (the one
@@ -111,8 +111,9 @@ once Fable is re-enabled.
 │ feature-flow-run.js:                                              │
 │   phase Plan      → agent(planner)  → slices[] (+ plan.md)        │
 │   phase Implement → workflow('tdd-slice-loop') — per slice,       │
-│        sequential (same files): tester → implementer → gate       │
-│        (run suite; commit on green), retry ≤ N                    │
+│        sequential (same files): test mode uses tester →           │
+│        implementer; verify mode uses implementer directly; both   │
+│        finish at an independent gate, retry ≤ N                   │
 │   phase Critique  → agent(critic) → APPROVE|FIX_LIST|RE_PLAN      │
 │        FIX_LIST → blocking items back through tdd-slice-loop;     │
 │        non-blocking deferred to the PR body as follow-ups;        │
@@ -155,7 +156,7 @@ their workflow internals differ (see below).
         │   ├── feature-flow-run.js
         │   ├── review-flow-run.js
         │   ├── spike-flow-run.js
-        │   └── tdd-slice-loop.js  # shared TDD inner loop (sub-workflow, never run directly)
+        │   └── tdd-slice-loop.js  # shared test-or-verify loop (sub-workflow, never run directly)
         ├── agents/                # → ~/.claude/agents  (role personas; agentType source)
         │   ├── planner.md  tester.md  implementer.md
         │   ├── critic.md   researcher.md  synthesizer.md  diagrammer.md
@@ -176,10 +177,10 @@ State (host-local, not version-controlled):
 
 ### feature-flow
 **Command:** interview (light; `--grill` heavy; `--gated` adds a plan gate) → brief → worktree + one-time install → launch.
-**Workflow (`feature-flow-run.js`):** planner → per-slice TDD loop via the shared `tdd-slice-loop` sub-workflow (tester → implementer → independent test-gate that commits on green, retry ≤ `max_slice_retries`; tester output is sanity-checked — a missing/never-failing test gets one tester retry, then the slice is recorded stuck) → critic Mode A outer pass (only **merge-blocking** FIX_LIST items re-enter the loop; non-blocking findings are deferred to the PR body as follow-ups; re-spawn critic; cap `max_critic_revisions`; RE_PLAN escalates; a critic that returns nothing gets one re-spawn, then the run ships flagged `criticVerdictMissing`) → synthesizer PR body.
+**Workflow (`feature-flow-run.js`):** planner selects `test` or `verify` per slice → shared `tdd-slice-loop` sub-workflow (test mode: tester → implementer; verify mode: implementer directly; both end at an independent gate that commits on green, retry ≤ `max_slice_retries`; tester output is sanity-checked — a missing/never-failing test gets one tester retry, then the slice is recorded stuck) → critic Mode A outer pass (only **merge-blocking** FIX_LIST items re-enter the loop; non-blocking findings are deferred to the PR body as follow-ups; re-spawn critic; cap `max_critic_revisions`; RE_PLAN escalates; a critic that returns nothing gets one re-spawn, then the run ships flagged `criticVerdictMissing`) → synthesizer PR body. Declarative infrastructure, configuration, and docs are first-class verify-mode work; the workflow must not manufacture source-text or tautological tests to create a red phase. Credentialed/destructive live commands remain explicit human gates.
 **`--gated`:** the command launches twice — `planOnly:true` returns the plan for your approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).
 **Notes journal:** carried as a list of entry blocks in a script variable, folded from each agent's structured handoff. Inner-loop prompts see a capped view (most recent ~40 entries) so a long run doesn't tax every prompt; the critic and synthesizer get the full journal, and the synthesizer persists it verbatim to `out/notes.md` for auditability.
-**E2E discipline:** the final slice's tester drives the feature end-to-end through the real wiring.
+**End-to-end discipline:** the final test-mode slice drives the feature through the real wiring. For all-verify work, the final verification command or artifact evidence must cover the assembled path and blast radius.
 
 ### review-flow
 **Command:** validate PR (`gh`) → clone head ref + fetch diff into the run dir → brief → launch → on return, write `comments.json`, run `render-review.js`, optionally POST a pending draft.

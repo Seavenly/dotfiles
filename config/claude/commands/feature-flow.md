@@ -1,10 +1,10 @@
 ---
-description: Implement a feature with a dynamic workflow — interview → brief → worktree (one native install) → planner/TDD/critic/synthesizer workflow → PR-ready branch. Works for non-TDD (infra) stories via --verify gates. Args — goal statement and optional flags (--gated, --grill, --max-retries N, --max-revisions N, --context path, --repo path, --base branch, --verify "cmd", --story JIRA-KEY).
+description: Implement a feature with a dynamic workflow — interview → brief → worktree (one native install) → planner/test-or-verify/critic/synthesizer workflow → PR-ready branch. Supports declarative infra/config stories via first-class verification-mode slices and --verify gates. Args — goal statement and optional flags (--gated, --grill, --max-retries N, --max-revisions N, --context path, --repo path, --base branch, --verify "cmd", --story JIRA-KEY).
 ---
 
 You run a feature-flow: interview the user, draft a brief, set up a
 worktree with deps installed once, then launch the `feature-flow-run`
-dynamic workflow to implement it. The autonomous build (plan → TDD →
+dynamic workflow to implement it. The autonomous build (plan → test or verify →
 critic → synthesize) lives in the workflow; you handle the interview,
 worktree/setup, the optional plan gate, and the wrap-up.
 
@@ -33,7 +33,7 @@ User's invocation: `/feature-flow $ARGUMENTS`
 - `--context <path>` (repeatable) → copy into the run's `context/`.
 - `--repo <path>` → target repo (default: CWD).
 - `--base <branch>` → branch the worktree from this branch and target the PR at it (integration-branch workflows). Default: the branch the user is on.
-- `--verify "<cmd>"` (repeatable) → verification command(s) the slice gate runs *in addition to* the test suite (e.g. `pulumi preview --stack dev`). This is the gate for `nonTestable` (infra/config) slices, which have no failing test to drive them.
+- `--verify "<cmd>"` (repeatable) → approved verification command(s) the gate runs for verification-mode slices and once after the final slice (e.g. `pulumi preview --stack dev`). Declarative infra/config/docs use verification mode when there is no stable behavioral seam; a failing test must never be manufactured. Destructive or credentialed live commands such as `pulumi up` and `pulumi destroy` remain explicit human gates unless the user separately authorizes them.
 - `--story <JIRA-KEY>` → fetch the Jira issue (Atlassian MCP) and use its summary/description as the goal and acceptance criteria; on wrap-up, open the PR and update the story (see Step 6). A story description may carry its own `Verify:` and `Base branch:` lines — treat those as defaults that explicit flags override.
 
 If `$ARGUMENTS` is empty or `help`, explain usage and stop.
@@ -117,7 +117,7 @@ Launch the saved `~/.claude/workflows/feature-flow-run.js` by name — never reg
 The workflow returns `{ branch, reportPath, notesPath, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance }` (or `{ escalate:'RE_PLAN', reason }`).
 
 - **RE_PLAN** → surface the critic's reason and stop; do not auto-replan.
-- **stuck[]** non-empty → call out which slices exhausted retries (or never got a behaviorally-failing test) and the recorded reason.
+- **stuck[]** non-empty → call out which slices exhausted retries or could not produce their declared test/verification evidence, and the recorded reason.
 - **uncoveredAcceptance[]** non-empty → the completeness gate found acceptance criteria the brief asked for but the artifact still doesn't demonstrate after a fix pass — i.e. promised behavior that did **not** ship. Call these out first and prominently; they're surfaced at the top of the PR body under "Unmet acceptance criteria". This is a stronger signal than an open design finding: the feature is incomplete against its own contract.
 - **openFindings[]** non-empty → note the critic hit the revision cap with open merge-blocking findings (they're also in the PR body).
 - **deferredFindings[]** non-empty → mention the critic recorded non-blocking follow-ups; they're listed in the PR body under "Things deliberately not done".

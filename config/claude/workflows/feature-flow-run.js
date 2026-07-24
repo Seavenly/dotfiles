@@ -1,10 +1,10 @@
 export const meta = {
   name: 'feature-flow-run',
-  description: 'Execution engine for /feature-flow (launched by the command): planner → per-slice TDD inner loop (tester → implementer → independent test gate, with retries) → completeness gate (each acceptance criterion mapped to evidence) → critic outer pass with revision loop → synthesizer PR body. Supports the --gated split via planOnly.',
+  description: 'Execution engine for /feature-flow (launched by the command): planner → per-slice test-or-verify inner loop → completeness gate (each acceptance criterion mapped to evidence) → critic outer pass with revision loop → synthesizer PR body. Supports the --gated split via planOnly.',
   phases: [
     { title: 'Plan', detail: 'planner decomposes the brief into vertical slices' },
-    { title: 'Implement', detail: 'per-slice TDD via the tdd-slice-loop sub-workflow' },
-    { title: 'Completeness', detail: 'completeness-critic maps each acceptance criterion to evidence; uncovered ones route back through TDD' },
+    { title: 'Implement', detail: 'per-slice behavior testing or command verification via the tdd-slice-loop sub-workflow' },
+    { title: 'Completeness', detail: 'completeness-critic maps each acceptance criterion to evidence; uncovered ones retain their test or verify strategy' },
     { title: 'Critique', detail: 'critic reviews the final diff; revision loop' },
     { title: 'Synthesize', detail: 'synthesizer writes the PR body' },
   ],
@@ -12,7 +12,7 @@ export const meta = {
 
 // args (built by the host command before launch):
 //   runDir, outDir, repo, worktree, base, briefPath, slug, testCmd|null
-//   verifyCmds|null — extra gate commands (e.g. `pulumi preview`); the gate for nonTestable slices
+//   verifyCmds|null — approved gate commands (e.g. `pulumi preview`); the primary gate for verify-mode slices
 //   maxSliceRetries, maxCriticRevisions, acceptance[]
 //   planOnly (bool — gated step 1 stops after planning)
 //   slices (array|null — gated step 2 passes the approved slices to skip planning)
@@ -26,14 +26,17 @@ const PLAN_SCHEMA = {
   type: 'object', required: ['slices'],
   properties: {
     slices: { type: 'array', items: {
-      type: 'object', required: ['title', 'behavior', 'testIdea'],
+      type: 'object', required: ['title', 'behavior', 'verificationMode', 'verificationReason'],
       properties: {
         title: { type: 'string' },
         behavior: { type: 'string' },
-        testIdea: { type: 'string' },
+        verificationMode: { type: 'string', enum: ['test', 'verify'], description: 'test when a stable behavioral seam supports red-green TDD; verify for declarative infra/config/docs' },
+        testIdea: { type: 'string', description: 'required by the planner only for test mode' },
+        verificationIdea: { type: 'string', description: 'required by the planner only for verify mode' },
+        verificationReason: { type: 'string', description: 'why this mode fits the slice and what stable seam or artifact is being checked' },
         files: { type: 'string' },
         dependsOn: { type: 'string' },
-        nonTestable: { type: 'boolean', description: 'true for infra/config slices with no behavioral test surface — route implementer-only' },
+        nonTestable: { type: 'boolean', description: 'deprecated compatibility alias for verificationMode=verify' },
       },
     } },
     outOfScope: { type: 'array', items: { type: 'string' } },
@@ -49,13 +52,16 @@ const COMPLETENESS_SCHEMA = {
     verdict: { type: 'string', enum: ['COMPLETE', 'GAPS'] },
     coverageMap: { type: 'array', items: { type: 'string' }, description: 'one line per acceptance criterion: covered | partial | uncovered + evidence' },
     gaps: { type: 'array', items: {
-      type: 'object', required: ['criterion', 'behavior'],
+      type: 'object', required: ['criterion', 'behavior', 'verificationMode', 'verificationReason'],
       properties: {
         criterion: { type: 'string' },
         status: { type: 'string', enum: ['partial', 'uncovered'] },
         blocksMerge: { type: 'boolean' },
         behavior: { type: 'string' },
         testIdea: { type: 'string' },
+        verificationIdea: { type: 'string' },
+        verificationMode: { type: 'string', enum: ['test', 'verify'] },
+        verificationReason: { type: 'string' },
         evidence: { type: 'string' },
         fixDirection: { type: 'string' },
       },
@@ -69,15 +75,18 @@ const VERDICT_SCHEMA = {
     note: { type: 'string' },
     reason: { type: 'string', description: 'for RE_PLAN' },
     items: { type: 'array', items: {
-      type: 'object', required: ['behavior'],
+      type: 'object', required: ['behavior', 'verificationMode', 'verificationReason'],
       properties: {
         severity: { type: 'string', enum: ['critical', 'important'] },
         blocksMerge: { type: 'boolean' },
         behavior: { type: 'string' },
         evidence: { type: 'string' },
         testIdea: { type: 'string' },
+        verificationIdea: { type: 'string' },
+        verificationMode: { type: 'string', enum: ['test', 'verify'] },
+        verificationReason: { type: 'string' },
         fixDirection: { type: 'string' },
-        nonTestable: { type: 'boolean' },
+        nonTestable: { type: 'boolean', description: 'deprecated compatibility alias for verificationMode=verify' },
       },
     } },
   },
@@ -116,7 +125,7 @@ let slices = a.slices || null
 if (!slices) {
   phase('Plan')
   const plan = await agent(
-    `${inWorktree}\nRead the brief at ${a.briefPath}. Produce a vertical-slice plan: each slice is ONE testable behavior in dependency order, as thin as possible. Write the human-readable plan to ${a.outDir}/plan.md (and an acceptance summary). Follow the planner role exactly. Also return the slices via the structured-output tool. Flag any slice with no behavioral test surface (infra/config) as nonTestable.`,
+    `${inWorktree}\nRead the brief at ${a.briefPath}. Produce a vertical-slice plan in dependency order, as thin as possible. For each slice choose verificationMode=test only when there is a stable behavioral seam that can fail for the intended reason; choose verificationMode=verify for declarative infrastructure, configuration, documentation, or any slice where a test would merely inspect the shipped artifact. Never manufacture a test to satisfy the workflow. Include testIdea for test mode or verificationIdea for verify mode, plus verificationReason. Write the human-readable plan to ${a.outDir}/plan.md (and an acceptance summary). Follow the planner role exactly. Also return the slices via the structured-output tool.`,
     { label: 'planner', phase: 'Plan', agentType: 'planner', schema: PLAN_SCHEMA }
   )
   slices = (plan && plan.slices) || []
@@ -126,7 +135,7 @@ if (!slices) {
 }
 if (!slices.length) return { error: 'no slices produced', branch: a.worktree }
 
-// ── Phase: Implement (sequential — same-file TDD, never parallel) ──
+// ── Phase: Implement (sequential same-file test-or-verify work) ──
 phase('Implement')
 const stuck = []
 stuck.push(...await runSliceLoop(slices, 'Implement', E2E_NOTE))
@@ -148,7 +157,8 @@ let criticVerdictMissing = false
 // the brief promised actually arrive? That gap survives a green suite and
 // a clean design review because the run journal only records what the team
 // chose to write down: a criterion no slice ever touched leaves no trace.
-// Uncovered criteria route back through the TDD loop (one fix pass), then a
+// Uncovered criteria route back through their declared test-or-verify loop
+// (one fix pass), then a
 // single re-check; anything still uncovered is surfaced, not looped again.
 phase('Completeness')
 let uncoveredAcceptance = []
@@ -169,14 +179,17 @@ if ((a.acceptance || []).length) {
     for (const g of gaps) {
       const behavior = g.behavior || g.criterion
       if (g.blocksMerge === false && !deferred.some((d) => d.behavior === behavior)) {
-        deferred.push({ behavior, evidence: g.evidence, severity: 'important', nonTestable: false })
+        deferred.push({ behavior, evidence: g.evidence, severity: 'important', verificationMode: g.verificationMode || 'test' })
       }
     }
     if (blockingGaps.length) {
-      log(`completeness: ${blockingGaps.length} uncovered acceptance criterion/criteria — routing through the TDD loop`)
+      log(`completeness: ${blockingGaps.length} uncovered acceptance criterion/criteria — routing through the declared test-or-verify loop`)
       const gapSlices = blockingGaps.map((g) => ({
         title: `cover: ${g.behavior || g.criterion}`, behavior: g.behavior || g.criterion,
-        testIdea: g.testIdea, fixDirection: g.fixDirection, evidence: g.evidence,
+        testIdea: g.testIdea, verificationIdea: g.verificationIdea,
+        verificationMode: g.verificationMode || (g.nonTestable ? 'verify' : 'test'),
+        verificationReason: g.verificationReason,
+        fixDirection: g.fixDirection, evidence: g.evidence,
       }))
       stuck.push(...await runSliceLoop(gapSlices, 'Completeness', null))
       // Re-commit anything the fix pass left staged so the re-check and design critic see it.
@@ -225,7 +238,7 @@ while (true) {
     break
   }
 
-  // Only merge-blocking items re-enter the TDD loop; the rest become PR-body
+  // Only merge-blocking items re-enter the test-or-verify loop; the rest become PR-body
   // follow-ups (the synthesizer lists them under "Things deliberately not done").
   const blocking = items.filter((it) => !(it.blocksMerge === false && it.severity !== 'critical'))
   for (const it of items) {
@@ -242,6 +255,9 @@ while (true) {
   }
   const fixSlices = blocking.map((it) => ({
     title: `fix: ${it.behavior}`, behavior: it.behavior, testIdea: it.testIdea,
+    verificationIdea: it.verificationIdea,
+    verificationMode: it.verificationMode || (it.nonTestable ? 'verify' : 'test'),
+    verificationReason: it.verificationReason,
     nonTestable: it.nonTestable, fixDirection: it.fixDirection, evidence: it.evidence,
   }))
   stuck.push(...await runSliceLoop(fixSlices, 'Critique', null))

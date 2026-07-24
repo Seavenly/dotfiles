@@ -61,9 +61,11 @@ prompt names the concrete paths for this run. Your complete input set:
    is there but the criterion's named edge case is untested), or
    `uncovered` (no evidence at all).
 
-4. **Emit the gaps.** `partial` and `uncovered` criteria become FIX_LIST
-   items, each shaped like a vertical slice so a fresh tester can write a
-   failing test from your description.
+4. **Emit the gaps with a verification mode.** `partial` and `uncovered`
+   criteria become FIX_LIST items. Choose `test` only when a stable
+   behavioral seam supports a meaningful failing test. Choose `verify` for
+   declarative infrastructure, configuration, docs, or artifact evidence.
+   Never manufacture a test to route a gap through the workflow.
 
 ## Output
 
@@ -89,8 +91,11 @@ For each partial/uncovered criterion:
   brief actually asked for is `true` (the feature is incomplete). A
   `partial` where the happy path works but a secondary edge case is
   merely untested may be `false` — judge honestly.
-- **Behavior**: <the testable behavior that should hold, in one sentence>
-- **Test idea**: <one-sentence sketch of the test that would prove it>
+- **Behavior**: <the requested outcome that should hold, in one sentence>
+- **Verification mode**: test | verify
+- **Test idea**: <test mode only; one-sentence sketch of the test>
+- **Verification idea**: <verify mode only; command, preview, schema check, or artifact evidence>
+- **Verification reason**: <why the selected mode fits>
 - **Evidence of absence**: <where you looked and what you didn't find —
   e.g. "no test in tests/auth_test.py references the lockout path; login
   handler at src/auth.py:88 has no attempt counter">

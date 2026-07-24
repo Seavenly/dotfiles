@@ -43,14 +43,14 @@ You operate in three modes; the lead's spawn prompt tells you which.
 
 ### Mode A — feature-flow outer pass
 
-Input: final diff of the feature branch + test summary. The lead supplies
+Input: final diff of the feature branch + test and verification summary. The lead supplies
 the correct diff base in your spawn prompt — it is **not** always `main`
 (the branch may be stacked on another base, in which case `main...HEAD`
 would show unrelated upstream work). Diff against the base you're given;
 don't assume `main`.
 
-You evaluate **design quality**, not correctness (tests handled
-correctness). Look at:
+You evaluate **design quality**, not correctness (the slice's tests or
+verification gates handled correctness). Look at:
 
 - **API surface and abstraction depth.** Are public functions/types
   appropriately scoped? Hidden coupling? Leaky abstractions?
@@ -109,10 +109,12 @@ verdict: APPROVE | FIX_LIST | RE_PLAN
 <one or two sentences on what's good; the team can ship>
 
 ## FIX_LIST (if applicable)
-Each item must be shaped like a vertical slice — one testable behavior
-the team can close with a single tester → implementer cycle. The lead
-will route each item back through the TDD inner loop, so phrase items
-so a fresh tester can write a failing test from your description.
+Each item must be shaped like a vertical slice with an explicit verification
+mode. Choose `test` when a stable behavioral seam supports a meaningful red
+test. Choose `verify` for declarative infrastructure, configuration, docs,
+or changes best proven by a command, plan, preview, or artifact inspection.
+The lead routes test-mode items through tester → implementer and verify-mode
+items directly to the implementer and independent gate.
 
 For each item:
 - **Severity**: critical | important
@@ -123,17 +125,20 @@ For each item:
   blocking regardless of whether the brief named it; classify on whether
   the merge would succeed, not on the brief's stated text. Never frame a
   CI-breaking finding as a "non-blocking observation."
-- **Behavior**: <the testable behavior that should hold but doesn't, in
+- **Behavior**: <the requested outcome that should hold but doesn't, in
   one sentence — e.g., "GET /profile/:id returns 404 (not 500) when the
   user id doesn't exist">
 - **File:line evidence**: path:line where the gap is visible
 - **Test idea**: a one-sentence sketch of the test the tester should write
+- **Verification mode**: `test` | `verify`
+- **Verification idea**: for verify mode, the command or evidence that proves it
+- **Verification reason**: why the selected mode fits
 - **Suggested fix direction**: concrete pointer for the implementer
 
-If a finding can't be phrased as a testable behavior (e.g., a pure
-naming issue, dead code, a doc comment correction), still include it
-but flag it as `non-testable: true`. The lead will route those to the
-implementer directly without spawning the tester.
+If a finding has no behavioral seam (for example a naming issue, dead code,
+a doc correction, or declarative infrastructure), use
+`verification-mode: verify`. `non-testable: true` remains a deprecated
+compatibility alias only.
 
 ## RE_PLAN (if applicable — rare)
 Explain why the current approach can't be patched. Recommend a different
