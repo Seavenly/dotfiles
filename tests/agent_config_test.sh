@@ -63,6 +63,7 @@ expected_skills=(
   grill-with-docs
   grilling
   handoff
+  i-have-adhd
   implement
   improve-codebase-architecture
   prototype
