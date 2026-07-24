@@ -8,7 +8,44 @@ import {
   captureClaudeTranscriptCursor,
   extractClaudeTurn,
   resolveClaudeInventoryCursor,
+  validateClaudeTranscript,
 } from "../src/claude-transcript.mjs";
+
+test("Claude recovery validation binds transcript metadata to session and cwd", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-recovery-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const transcript = join(
+    scratch,
+    "11111111-2222-4333-8444-555555555555.jsonl",
+  );
+  await writeFile(
+    transcript,
+    `${JSON.stringify({
+      type: "user",
+      sessionId: "11111111-2222-4333-8444-555555555555",
+      cwd: scratch,
+      message: { role: "user", content: "request" },
+    })}\n`,
+  );
+
+  assert.equal(
+    await validateClaudeTranscript(
+      transcript,
+      "11111111-2222-4333-8444-555555555555",
+      scratch,
+    ),
+    true,
+  );
+  await assert.rejects(
+    () =>
+      validateClaudeTranscript(
+        transcript,
+        "11111111-2222-4333-8444-555555555555",
+        "/wrong/cwd",
+      ),
+    { outcome: "recovery_blocked" },
+  );
+});
 
 test("Claude inventory resolution distinguishes startup metadata still being written", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-startup-"));

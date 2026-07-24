@@ -7,7 +7,30 @@ import test from "node:test";
 import {
   captureTranscriptCursor,
   extractCodexTurn,
+  validateCodexTranscript,
 } from "../src/codex-transcript.mjs";
+
+test("Codex recovery validation binds transcript metadata to session and cwd", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-codex-recovery-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const transcript = join(scratch, "rollout-native-1.jsonl");
+  await writeFile(
+    transcript,
+    `${JSON.stringify({
+      type: "session_meta",
+      payload: { id: "native-1", cwd: scratch },
+    })}\n`,
+  );
+
+  assert.equal(
+    await validateCodexTranscript(transcript, "native-1", scratch),
+    true,
+  );
+  await assert.rejects(
+    () => validateCodexTranscript(transcript, "native-1", "/wrong/cwd"),
+    { outcome: "recovery_blocked" },
+  );
+});
 
 test("Codex adapter returns the complete final message after the captured cursor", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-transcript-"));

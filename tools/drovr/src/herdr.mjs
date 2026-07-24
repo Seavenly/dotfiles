@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { claudeAgentArguments } from "./claude.mjs";
+import { codexAgentArguments } from "./codex.mjs";
 import { DrovrError } from "./errors.mjs";
 import { execute } from "./process.mjs";
 
@@ -144,38 +145,10 @@ export class HerdrClient {
     return { tabId, paneId };
   }
 
-  async startCodexAgent({ name, paneId, label, specification }) {
+  async startCodexAgent({ name, paneId, label, specification, resume }) {
     await this.waitForShell(paneId);
-    const native = specification.native;
-    const agentArgs = [
-      "--model",
-      specification.model,
-      "--sandbox",
-      native.sandbox,
-      "--ask-for-approval",
-      native.approval,
-      "-c",
-      `model_reasoning_effort=${JSON.stringify(specification.effort)}`,
-    ];
-    if (native.approvals_reviewer) {
-      agentArgs.push(
-        "-c",
-        `approvals_reviewer=${JSON.stringify(native.approvals_reviewer)}`,
-      );
-    }
-    if (specification.instructions) {
-      agentArgs.push(
-        "-c",
-        `developer_instructions=${JSON.stringify(specification.instructions)}`,
-      );
-    }
-    if (native.network_access !== undefined) {
-      agentArgs.push(
-        "-c",
-        `sandbox_workspace_write.network_access=${native.network_access}`,
-      );
-    }
-    if (native.search) agentArgs.push("--search");
+    const agentArgs = codexAgentArguments(specification);
+    if (resume) agentArgs.unshift("resume", resume);
     await this.startAgentWhenPaneReady([
       "agent",
       "start",
@@ -192,9 +165,14 @@ export class HerdrClient {
     await this.sessionCommand(["pane", "rename", paneId, label]);
   }
 
-  async startClaudeAgent({ name, paneId, label, specification }) {
+  async resumeCodexAgent(options) {
+    return this.startCodexAgent({ ...options, resume: options.nativeSession });
+  }
+
+  async startClaudeAgent({ name, paneId, label, specification, resume }) {
     await this.waitForShell(paneId);
     const agentArgs = claudeAgentArguments(specification);
+    if (resume) agentArgs.push("--resume", resume);
     await this.startAgentWhenPaneReady([
       "agent",
       "start",
@@ -209,6 +187,11 @@ export class HerdrClient {
       ...agentArgs,
     ]);
     await this.sessionCommand(["pane", "rename", paneId, label]);
+  }
+
+
+  async resumeClaudeAgent(options) {
+    return this.startClaudeAgent({ ...options, resume: options.nativeSession });
   }
 
   async startAgentWhenPaneReady(args) {
@@ -261,11 +244,67 @@ export class HerdrClient {
   }
 
   async agentRecord(name) {
+    return (await this.agentRecords()).find((agent) => agent.name === name);
+  }
+
+  async agentRecords() {
     const result = parseJson(
       await this.sessionCommand(["agent", "list"]),
       "agent list",
     ).result;
-    return result?.agents?.find((agent) => agent.name === name);
+    return result?.agents ?? [];
+  }
+
+  async paneProcessInfo(paneId) {
+    return parseJson(
+      await this.sessionCommand([
+        "pane",
+        "process-info",
+        "--pane",
+        paneId,
+      ]),
+      "pane process-info",
+    ).result?.process_info;
+  }
+
+  async paneRecord(paneId) {
+    try {
+      return parseJson(
+        await this.sessionCommand(["pane", "get", paneId]),
+        "pane get",
+      ).result?.pane;
+    } catch (error) {
+      if (isPaneNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  async tabRecord(tabId) {
+    try {
+      return parseJson(
+        await this.sessionCommand(["tab", "get", tabId]),
+        "tab get",
+      ).result?.tab;
+    } catch (error) {
+      if (isTabNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  async closePane(paneId) {
+    try {
+      return await this.sessionCommand(["pane", "close", paneId]);
+    } catch (error) {
+      if (!isPaneNotFound(error)) throw error;
+    }
+  }
+
+  async closeTab(tabId) {
+    try {
+      return await this.sessionCommand(["tab", "close", tabId]);
+    } catch (error) {
+      if (!isTabNotFound(error)) throw error;
+    }
   }
 
   async agentExcerpt(name) {
@@ -296,6 +335,10 @@ export class HerdrClient {
     return this.sessionCommand(["agent", "prompt", name, prompt]);
   }
 
+  async interruptAgent(name) {
+    return this.sessionCommand(["agent", "send-keys", name, "ctrl-c"]);
+  }
+
   async waitForAgent(name, timeoutMs) {
     const args = ["agent", "wait", name];
     if (timeoutMs !== undefined) {
@@ -306,6 +349,7 @@ export class HerdrClient {
       output = await this.sessionCommand(args);
     } catch (error) {
       if (isTimeout(error)) return { drovr_status: "still_running" };
+      if (isAgentNotFound(error)) return { drovr_status: "agent_lost" };
       throw error;
     }
     const observed = parseJson(output, "agent wait").result?.agent;
@@ -334,6 +378,16 @@ function isAgentPaneBusy(error) {
   return /"code"\s*:\s*"agent_pane_busy"/u.test(adapterOutput);
 }
 
+function isAgentNotFound(error) {
+  const adapterOutput = [
+    error.adapterFailure?.stdout,
+    error.adapterFailure?.stderr,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /"code"\s*:\s*"agent_not_found"/u.test(adapterOutput);
+}
+
 function isPaneNotFound(error) {
   const adapterOutput = [
     error.adapterFailure?.stdout,
@@ -342,4 +396,14 @@ function isPaneNotFound(error) {
     .filter(Boolean)
     .join("\n");
   return /"code"\s*:\s*"pane_not_found"/u.test(adapterOutput);
+}
+
+function isTabNotFound(error) {
+  const adapterOutput = [
+    error.adapterFailure?.stdout,
+    error.adapterFailure?.stderr,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /"code"\s*:\s*"tab_not_found"/u.test(adapterOutput);
 }

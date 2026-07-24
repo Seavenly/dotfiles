@@ -51,6 +51,20 @@ async function readSessionMetadata(path) {
   return null;
 }
 
+export async function validateClaudeTranscript(path, sessionId, cwd) {
+  const metadata = await readSessionMetadata(path);
+  if (
+    metadata?.native_session !== sessionId ||
+    metadata.cwd !== cwd
+  ) {
+    throw new DrovrError(
+      "Claude transcript metadata does not match the registered session and cwd",
+      { outcome: "recovery_blocked" },
+    );
+  }
+  return true;
+}
+
 export async function captureClaudeTranscriptInventory(
   root,
   cwd,

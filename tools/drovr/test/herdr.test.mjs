@@ -44,3 +44,61 @@ test("agent wait returns Herdr's atomic settled agent observation", async () => 
     ],
   ]);
 });
+
+test("native recovery resumes the registered Codex and Claude sessions", async () => {
+  for (const [harness, resume, expected] of [
+    ["codex", "resumeCodexAgent", ["resume", "native-session-1"]],
+    ["claude", "resumeClaudeAgent", ["--resume", "native-session-1"]],
+  ]) {
+    const calls = [];
+    const client = new HerdrClient({
+      session: "delegates",
+      async run(_file, args) {
+        calls.push(args);
+        if (args.includes("process-info")) {
+          return JSON.stringify({
+            result: {
+              process_info: {
+                shell_pid: 10,
+                foreground_processes: [{ pid: 10, name: "zsh" }],
+              },
+            },
+          });
+        }
+        return JSON.stringify({ result: {} });
+      },
+    });
+    const specification = {
+      harness,
+      model: harness === "codex" ? "gpt-5.6-luna" : "haiku",
+      effort: "low",
+      instructions: "",
+      native:
+        harness === "codex"
+          ? { sandbox: "read-only", approval: "never", search: false }
+          : { permission_mode: "dontAsk" },
+    };
+
+    await client[resume]({
+      name: `managed-${harness}`,
+      paneId: `pane-${harness}`,
+      label: harness,
+      specification,
+      nativeSession: "native-session-1",
+    });
+
+    const start = calls.find(
+      (args) => args.includes("agent") && args.includes("start"),
+    );
+    const separator = start.indexOf("--");
+    const nativeArguments = start.slice(separator + 1);
+    assert.equal(start[start.indexOf("--kind") + 1], harness);
+    const resumeIndex = nativeArguments.indexOf(expected[0]);
+    assert.notEqual(resumeIndex, -1);
+    assert.deepEqual(
+      nativeArguments.slice(resumeIndex, resumeIndex + expected.length),
+      expected,
+    );
+    if (harness === "codex") assert.equal(resumeIndex, 0);
+  }
+});

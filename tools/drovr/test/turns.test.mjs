@@ -17,9 +17,155 @@ import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
-import { waitForTurn } from "../src/turns.mjs";
+import { cancelTurn, startTurn, waitForTurn } from "../src/turns.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
+
+test("cancel explicitly interrupts, confirms settlement, and leaves the agent reusable", async (t) => {
+  const fixture = await turnFixture(t);
+  let interrupted = false;
+  const herdr = {
+    async ensureSession() {},
+    async agentRecord() {
+      return {
+        agent_status: interrupted ? "idle" : "working",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async interruptAgent(name) {
+      assert.equal(name, "managed-agent");
+      interrupted = true;
+    },
+    async waitForAgent() {
+      return {
+        agent_status: "idle",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async prompt() {},
+  };
+
+  const cancelled = await cancelTurn(
+    fixture.turn.id,
+    {},
+    {
+      env: fixture.env,
+      herdr,
+      now: () => "2026-07-23T10:00:02.000Z",
+    },
+  );
+
+  assert.equal(cancelled.turn.status, "cancelled");
+  assert.equal(cancelled.turn.settled_at, "2026-07-23T10:00:02.000Z");
+  const started = await startTurn(
+    fixture.turn.agent_id,
+    { prompt: "later explicit work" },
+    { env: fixture.env, herdr },
+  );
+  assert.equal(started.turn.status, "working");
+  assert.equal(started.turn.inputs[0].text, "later explicit work");
+});
+
+test("failed interruption and ambiguous settlement never report cancellation", async (t) => {
+  await t.test("failed interruption is uncertain", async (t) => {
+    const fixture = await turnFixture(t);
+    const result = await cancelTurn(fixture.turn.id, {}, {
+      env: fixture.env,
+      herdr: {
+        async ensureSession() {},
+        async agentRecord() {
+          return {
+            agent_status: "working",
+            agent_session: { value: "codex-session-1" },
+          };
+        },
+        async interruptAgent() {
+          throw new Error("delivery failed");
+        },
+      },
+    });
+    assert.equal(result.turn.status, "uncertain");
+    assert.match(result.turn.error, /could not be delivered/u);
+  });
+
+  await t.test("settlement timeout is interrupted", async (t) => {
+    const fixture = await turnFixture(t);
+    const herdr = {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          agent_status: "working",
+          agent_session: { value: "codex-session-1" },
+        };
+      },
+      async interruptAgent() {},
+      async waitForAgent() {
+        return { drovr_status: "still_running" };
+      },
+    };
+    const result = await cancelTurn(fixture.turn.id, { timeoutMs: 1 }, {
+      env: fixture.env,
+      herdr,
+    });
+    assert.equal(result.turn.status, "interrupted");
+    assert.notEqual(result.turn.status, "cancelled");
+    await assert.rejects(
+      () =>
+        startTurn(
+          fixture.turn.agent_id,
+          { prompt: "must not overlap native work" },
+          { env: fixture.env, herdr },
+        ),
+      { outcome: "task_busy" },
+    );
+  });
+
+  await t.test("different native settlement is uncertain", async (t) => {
+    const fixture = await turnFixture(t);
+    const result = await cancelTurn(fixture.turn.id, {}, {
+      env: fixture.env,
+      herdr: {
+        async ensureSession() {},
+        async agentRecord() {
+          return {
+            agent_status: "working",
+            agent_session: { value: "codex-session-1" },
+          };
+        },
+        async interruptAgent() {},
+        async waitForAgent() {
+          return {
+            agent_status: "idle",
+            agent_session: { value: "different-session" },
+          };
+        },
+      },
+    });
+    assert.equal(result.turn.status, "uncertain");
+    assert.notEqual(result.turn.status, "cancelled");
+  });
+});
+
+test("read-only wait reports agent loss without launching recovery", async (t) => {
+  const fixture = await turnFixture(t);
+  let launches = 0;
+  const result = await waitForTurn(fixture.turn.id, {}, {
+    env: fixture.env,
+    herdr: {
+      async waitForAgent() {
+        return { drovr_status: "agent_lost" };
+      },
+      async resumeCodexAgent() {
+        launches += 1;
+      },
+    },
+  });
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+
+  assert.equal(result.wait_status, "agent_lost");
+  assert.equal(turn.status, "working");
+  assert.equal(launches, 0);
+});
 
 test("wait retries when a steering input is recorded after settlement observation begins", async (t) => {
   const fixture = await turnFixture(t);

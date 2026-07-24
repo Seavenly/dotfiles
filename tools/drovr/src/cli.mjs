@@ -6,6 +6,12 @@ import { DrovrError } from "./errors.mjs";
 import { readFile } from "node:fs/promises";
 import { attach } from "./attach.mjs";
 import {
+  closeTask,
+  lifecycleCommandResult,
+  retireAgent,
+} from "./lifecycle.mjs";
+import {
+  cancelTurn,
   getTurn,
   listTurns,
   sendToTurn,
@@ -24,6 +30,9 @@ const HELP = `Usage:
   drovr turn wait TURN_ID [--after-block BLOCK_ID] [--timeout DURATION]
   drovr turn get TURN_ID [--include-messages]
   drovr turn list [filters]
+  drovr turn cancel TURN_ID
+  drovr agent retire AGENT_ID
+  drovr task close TASK_ID
   drovr attach AGENT_ID [--takeover]
 
 Commands:
@@ -31,6 +40,8 @@ Commands:
   delegate  Run one complete logical turn with a managed Claude or Codex agent
   ask       Run a later logical turn with an existing managed agent
   turn      Start, steer, wait for, get, or discover durable logical turns
+  agent     Retire a managed agent
+  task      Close a settled delegated task
   attach    Interactively attach to a managed agent
 `;
 
@@ -70,6 +81,26 @@ export async function runCli(argv) {
 
   if (argv[0] === "turn") {
     return runTurnCommand(argv.slice(1));
+  }
+
+  if (argv[0] === "agent" && argv[1] === "retire") {
+    if (argv.length !== 3) invalidArguments("agent retire requires AGENT_ID");
+    const report = lifecycleCommandResult(
+      "agent retire",
+      await retireAgent(argv[2]),
+    );
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "task" && argv[1] === "close") {
+    if (argv.length !== 3) invalidArguments("task close requires TASK_ID");
+    const report = lifecycleCommandResult(
+      "task close",
+      await closeTask(argv[2]),
+    );
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
   }
 
   if (argv[0] === "attach") {
@@ -287,6 +318,16 @@ async function runTurnCommand(argv) {
     );
     return 0;
   }
+  if (subcommand === "cancel") {
+    const turnId = argv[1];
+    if (!turnId) invalidArguments("turn cancel requires TURN_ID");
+    if (argv.length !== 2) invalidArguments("turn cancel accepts no options");
+    const context = await cancelTurn(turnId);
+    process.stdout.write(
+      `${JSON.stringify(turnCommandResult("turn cancel", context))}\n`,
+    );
+    return 0;
+  }
   invalidArguments(`unsupported turn command: ${subcommand ?? ""}`);
 }
 
@@ -340,7 +381,9 @@ try {
   const command =
     process.argv[2] === "turn" && process.argv[3]
       ? `turn ${process.argv[3]}`
-      : (process.argv[2] ?? null);
+      : ["agent", "task"].includes(process.argv[2]) && process.argv[3]
+        ? `${process.argv[2]} ${process.argv[3]}`
+        : (process.argv[2] ?? null);
   const report = expected
     ? {
         schema: "drovr.command/v1",

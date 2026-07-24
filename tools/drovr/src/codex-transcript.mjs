@@ -45,6 +45,20 @@ async function readSessionMetadata(path) {
   }
 }
 
+export async function validateCodexTranscript(path, sessionId, cwd) {
+  const metadata = await readSessionMetadata(path);
+  if (
+    metadata?.payload?.id !== sessionId ||
+    metadata.payload?.cwd !== cwd
+  ) {
+    throw new DrovrError(
+      "Codex transcript metadata does not match the registered session and cwd",
+      { outcome: "recovery_blocked" },
+    );
+  }
+  return true;
+}
+
 export async function captureTranscriptInventory(
   root,
   cwd,

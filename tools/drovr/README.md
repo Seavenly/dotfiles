@@ -2,8 +2,9 @@
 
 Drovr is the host-local delegated agent runtime described in [SPEC.md](SPEC.md).
 The current tracer bullet provides configuration validation, `doctor`, complete
-Claude Code and Codex `delegate` paths, and durable multi-turn reuse through
-Herdr and the harnesses' native transcripts.
+Claude Code and Codex `delegate` paths, durable multi-turn reuse, cancellation,
+retirement, safe task cleanup, Herdr restart reconciliation, and conservative
+native-session recovery.
 
 After convergence, diagnose the local runtime:
 
@@ -58,6 +59,9 @@ drovr turn wait TURN_ID --timeout 5m
 drovr turn wait TURN_ID --after-block BLOCK_ID --timeout 5m
 drovr turn get TURN_ID --include-messages
 drovr turn list --agent AGENT_ID
+drovr turn cancel TURN_ID
+drovr agent retire AGENT_ID
+drovr task close TASK_ID
 ```
 
 Wait timeouts are non-destructive. Completion is accepted only after every
@@ -67,5 +71,9 @@ blocked native harness, `--after-block` durably acknowledges that exact block
 and waits for the agent to return to working before accepting later settlement.
 If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
-Cleanup, cancellation, restart reconciliation, and native-session recovery
-belong to later tracer bullets.
+Cancellation reports `cancelled` only after native interruption and confirmed
+settlement. Task cleanup refuses working or blocked resources, preserves
+durable history, and never deletes caller-owned cwd or transcript files.
+Mutating commands may recover a confirmed-down native session only when every
+persisted safety check succeeds; read-only commands report loss without
+launching anything.

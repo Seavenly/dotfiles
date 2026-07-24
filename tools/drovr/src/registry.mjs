@@ -21,6 +21,10 @@ export function stateDirectory(env = process.env) {
   return join(stateHome, "drovr");
 }
 
+export function taskLifecycleLockKey(taskId) {
+  return `task-lifecycle:${taskId}`;
+}
+
 async function ensureStateDirectory(directory) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);

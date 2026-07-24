@@ -7,11 +7,13 @@ import { resolveTaskIdentity } from "./identity.mjs";
 import {
   readRecords,
   stateDirectory,
+  taskLifecycleLockKey,
   withResourceLock,
   writeRecord,
 } from "./registry.mjs";
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { turnCommandResult, waitForTurn } from "./turns.mjs";
+import { reconcileOrRecoverAgent } from "./recovery.mjs";
 
 function sameLaunchSpecification(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -152,96 +154,142 @@ export async function delegate(options, dependencies = {}) {
 
   const prepared = await withResourceLock(
     registryDirectory,
-    `agent-key:${task.id}:${options.agentKey}`,
+    taskLifecycleLockKey(task.id),
     async () => {
-      const turns = await readRecords(registryDirectory, "turns");
-      const agents = await readRecords(registryDirectory, "agents");
-      let agent = agents.find(
+      const currentTask = (
+        await readRecords(registryDirectory, "tasks")
+      ).find(({ id }) => id === task.id);
+      if (currentTask?.status !== "active") {
+        throw new DrovrError(`task ${task.id} is closed`, {
+          code: 0,
+          outcome: "task_closed",
+        });
+      }
+      const existingAgent = (
+        await readRecords(registryDirectory, "agents")
+      ).find(
         (candidate) =>
           candidate.task_id === task.id &&
           candidate.key === options.agentKey &&
           candidate.status === "active",
       );
-      if (agent && !sameLaunchSpecification(agent.launch, specification)) {
-        throw new DrovrError(
-          `agent key ${options.agentKey} already has a different launch specification`,
-          { code: 0, outcome: "configuration_conflict" },
-        );
-      }
-      if (
-        agent &&
-        turns.some(
-          (turn) => turn.agent_id === agent.id && turn.status === "working",
-        )
-      ) {
-        throw new DrovrError(
-          `agent ${agent.id} already has an open logical turn`,
-          {
-            code: 0,
-            outcome: "task_busy",
-          },
-        );
-      }
-      if (agent && !agent.native_session) {
-        const observed = await waitForNewAgentReady(herdr, agent.herdr.name);
-        const nativeSession = observed?.agent_session?.value;
-        if (nativeSession) {
-          agent.native_session = nativeSession;
-          await writeRecord(registryDirectory, "agents", agent);
-        }
-      }
-
-      if (!agent) {
-        const id = randomUUID();
-        const managedName = `drovr-${id.replaceAll("-", "").slice(0, 26)}`;
-        await adapter.startAgent(herdr, {
-          name: managedName,
-          paneId: task.herdr.root_pane_id,
-          label: options.agentLabel ?? options.agentKey,
-          specification,
+      if (existingAgent) {
+        const availability = await reconcileOrRecoverAgent(existingAgent.id, {
+          ...dependencies,
+          env,
+          herdr,
+          now,
         });
-        agent = {
-          schema: "drovr.agent/v1",
-          id,
-          task_id: task.id,
-          key: options.agentKey,
-          label: options.agentLabel ?? options.agentKey,
-          status: "active",
-          launch: specification,
-          herdr: { name: managedName, pane_id: task.herdr.root_pane_id },
-          native_session: null,
-          created_at: now(),
-        };
-        await writeRecord(registryDirectory, "agents", agent);
-        const observed = await waitForNewAgentReady(herdr, managedName);
-        const nativeSession = observed?.agent_session?.value;
-        if (nativeSession) {
-          agent.native_session = nativeSession;
-          await writeRecord(registryDirectory, "agents", agent);
+        if (!["reconciled", "recovered"].includes(availability.status)) {
+          throw new DrovrError(
+            `agent ${existingAgent.id} cannot be recovered safely (${availability.reason})`,
+            { code: 0, outcome: availability.status },
+          );
+        }
+        if (
+          !["idle", "done"].includes(availability.observed?.agent_status)
+        ) {
+          throw new DrovrError(
+            `agent ${existingAgent.id} is not settled in Herdr`,
+            { code: 0, outcome: "task_busy" },
+          );
         }
       }
-
-      const turn = await prepareTurn({
+      const outcome = await withResourceLock(
         registryDirectory,
-        agent,
-        task,
-        adapter,
+        `agent-key:${task.id}:${options.agentKey}`,
+        async () => {
+          const turns = await readRecords(registryDirectory, "turns");
+          const agents = await readRecords(registryDirectory, "agents");
+          let agent = agents.find(
+            (candidate) =>
+              candidate.task_id === task.id &&
+              candidate.key === options.agentKey &&
+              candidate.status === "active",
+          );
+          if (agent && !sameLaunchSpecification(agent.launch, specification)) {
+            throw new DrovrError(
+              `agent key ${options.agentKey} already has a different launch specification`,
+              { code: 0, outcome: "configuration_conflict" },
+            );
+          }
+          if (
+            agent &&
+            turns.some(
+              (turn) =>
+                turn.agent_id === agent.id && turn.status === "working",
+            )
+          ) {
+            throw new DrovrError(
+              `agent ${agent.id} already has an open logical turn`,
+              { code: 0, outcome: "task_busy" },
+            );
+          }
+          if (agent && !agent.native_session) {
+            const observed = await waitForNewAgentReady(
+              herdr,
+              agent.herdr.name,
+            );
+            const nativeSession = observed?.agent_session?.value;
+            if (nativeSession) {
+              agent.native_session = nativeSession;
+              await writeRecord(registryDirectory, "agents", agent);
+            }
+          }
+
+          if (!agent) {
+            const id = randomUUID();
+            const managedName = `drovr-${id.replaceAll("-", "").slice(0, 26)}`;
+            await adapter.startAgent(herdr, {
+              name: managedName,
+              paneId: task.herdr.root_pane_id,
+              label: options.agentLabel ?? options.agentKey,
+              specification,
+            });
+            agent = {
+              schema: "drovr.agent/v1",
+              id,
+              task_id: task.id,
+              key: options.agentKey,
+              label: options.agentLabel ?? options.agentKey,
+              status: "active",
+              launch: specification,
+              herdr: { name: managedName, pane_id: task.herdr.root_pane_id },
+              native_session: null,
+              created_at: now(),
+            };
+            await writeRecord(registryDirectory, "agents", agent);
+            const observed = await waitForNewAgentReady(herdr, managedName);
+            const nativeSession = observed?.agent_session?.value;
+            if (nativeSession) {
+              agent.native_session = nativeSession;
+              await writeRecord(registryDirectory, "agents", agent);
+            }
+          }
+
+          const turn = await prepareTurn({
+            registryDirectory,
+            agent,
+            task,
+            adapter,
+            prompt: options.prompt,
+            now,
+            inventoryBeforeDelivery: adapter.inventoryBeforeDelivery,
+          });
+          return { agent, turn };
+        },
+      );
+      await deliverTurn({
+        registryDirectory,
+        agent: outcome.agent,
+        turn: outcome.turn,
         prompt: options.prompt,
+        herdr,
         now,
-        inventoryBeforeDelivery: adapter.inventoryBeforeDelivery,
       });
-      return { agent, turn };
+      return outcome;
     },
   );
-
-  await deliverTurn({
-    registryDirectory,
-    agent: prepared.agent,
-    turn: prepared.turn,
-    prompt: options.prompt,
-    herdr,
-    now,
-  });
   const settled = await waitForTurn(
     prepared.turn.id,
     { timeoutMs: options.timeoutMs },
