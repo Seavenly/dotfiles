@@ -1,0 +1,12 @@
+{
+  "name": "dotfiles-agent-flow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "yaml": "2.9.0"
+  }
+}

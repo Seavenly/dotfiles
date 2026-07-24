@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Pick a local branch with fzf and open a tuicr review of it. tuicr's `-r` is a
-# commit range, so `base..branch` reviews the commits the branch introduced
-# since it forked from base - the file set a PR against that base would show.
+# commit range, so `base...branch` compares from their merge base - the file
+# set a pull request against that base would show.
 # Everything stays local; no GitHub PR is required.
 #
 # Modes:
@@ -20,7 +20,7 @@ set -euo pipefail
 #      committed first.
 #
 # Review windows are tagged with a `@tuicr_review` user option set to the exact
-# `base..branch` revset, so reopening the same review reuses its window (keyed
+# `base...branch` revset, so reopening the same review reuses its window (keyed
 # per base) and the ordering above survives tmux's automatic-rename.
 #
 # Intended to run inside a `tmux display-popup` (fzf needs a TTY).
@@ -40,7 +40,8 @@ fzf_pick() { fzf --no-preview --reverse --delimiter=$'\t' --nth=2 "$@"; }
 
 # Resolve the default branch: prefer the remote's HEAD, then a local
 # main/master, then a bare "main".
-default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+default_branch="${default_branch#origin/}"
 if [[ -z "$default_branch" ]]; then
   for candidate in main master; do
     if git show-ref --verify --quiet "refs/heads/$candidate"; then
@@ -62,7 +63,7 @@ else
 fi
 selection="$(
   {
-    tmux list-windows -F '#{@tuicr_review}' 2>/dev/null | awk 'NF { sub(/^.*\.\./, ""); print "O", $0 }'
+    tmux list-windows -F '#{@tuicr_review}' 2>/dev/null | awk 'NF { sub(/^.*\.\.\./, ""); print "O", $0 }'
     git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/ \
       | awk -v d="$default_branch" '$0 != d { print "C", $0 }'
   } | awk -v current="$current_branch" '
@@ -101,7 +102,7 @@ if [[ "$base" == "$branch" ]]; then
   exit 0
 fi
 
-revset="${base}..${branch}"
+revset="${base}...${branch}"
 if [[ "$base" == "$default_branch" ]]; then
   window_name="tuicr:${branch}"
 else

@@ -30,7 +30,7 @@ if [[ ${1:-} == --version ]]; then
   echo "2026.7.5 linux-x64"
   exit 0
 fi
-printf '%s\n' "$*" >> "$MISE_TEST_LOG"
+printf 'force=%s args=%s\n' "${DOTFILES_FORCE:-unset}" "$*" >> "$MISE_TEST_LOG"
 EOF
 chmod +x "$fake_mise"
 
@@ -41,6 +41,7 @@ HOME="$home" XDG_CONFIG_HOME="$config_home" XDG_STATE_HOME="$state_home" \
   "$root/dotfiles" install --dry-run --yes --force >/dev/null
 
 assert_contains "$(cat "$mise_log")" '--dry-run --yes --force-dotfiles'
+assert_contains "$(cat "$mise_log")" 'force=1'
 [[ ! -e "$config_home/dotfiles" ]] || fail "dry-run created machine-local configuration"
 [[ ! -e "$state_home/dotfiles" ]] || fail "dry-run created migration state"
 echo "ok - install dry-run forwards force without changing host state"

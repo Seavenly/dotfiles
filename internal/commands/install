@@ -95,6 +95,7 @@ export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
 export DOTFILES_ROOT="$ROOT"
 export DOTFILES_YES="$assume_yes"
 export DOTFILES_RECORDER="$recorder"
+export DOTFILES_FORCE="$force"
 
 if [[ "$os" == Darwin ]]; then
   case "$dry_run:$recorder" in

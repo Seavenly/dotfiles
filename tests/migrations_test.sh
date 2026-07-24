@@ -83,6 +83,15 @@ printf '\n# user edit\n' >> "$aliases"
 assert_contains "$(cat "$aliases")" '# user edit'
 echo "ok - completed migrations preserve machine-local edits"
 
+printf ': 1:0;echo existing history\n' > "$HOME/.zsh_history"
+dry_run_output="$(PATH=/usr/bin:/bin "$root/internal/migrate" --dry-run)"
+assert_contains "$dry_run_output" \
+  'Atuin history import is available from the existing Zsh history.'
+[[ ! -e "$XDG_STATE_HOME/dotfiles/migrations/003-atuin-history" ]] \
+  || fail "dry-run recorded the deferred Atuin migration"
+echo "ok - dry-run reports deferred Atuin history import without the tool installed"
+rm -f "$HOME/.zsh_history"
+
 legacy_link="$HOME/.config/zshrc"
 mkdir -p "$(dirname "$legacy_link")"
 ln -s "$root/zshrc" "$legacy_link"
@@ -92,6 +101,48 @@ rm -f "$XDG_STATE_HOME/dotfiles/migrations/006-legacy-broken-links"
 [[ -f "$XDG_STATE_HOME/dotfiles/migrations/006-legacy-broken-links" ]] \
   || fail "legacy link migration was not recorded"
 echo "ok - migrations remove only known legacy links"
+
+layout_marker="$XDG_STATE_HOME/dotfiles/migrations/013-layout-symlinks"
+rm -f "$layout_marker"
+legacy_layout_pairs=(
+  "$HOME/.tmux.conf|$root/tmux.conf"
+  "$HOME/.config/nvim|$root/nvim"
+  "$HOME/.claude/agents|$root/claude/agents"
+  "$HOME/.claude/commands|$root/claude/commands"
+  "$HOME/.claude/scripts|$root/claude/scripts"
+  "$HOME/.claude/workflows|$root/claude/workflows"
+)
+for pair in "${legacy_layout_pairs[@]}"; do
+  link="${pair%%|*}"
+  target="${pair#*|}"
+  mkdir -p "$(dirname "$link")"
+  ln -s "$target" "$link"
+done
+"$root/internal/migrate"
+for pair in "${legacy_layout_pairs[@]}"; do
+  link="${pair%%|*}"
+  [[ ! -L "$link" ]] || fail "stale layout link was not removed: $link"
+done
+[[ -f "$layout_marker" ]] || fail "layout symlink migration was not recorded"
+echo "ok - migrations remove only exact stale layout links"
+
+rm -f "$layout_marker"
+ln -s "$root/config/tmux/tmux.conf" "$HOME/.tmux.conf"
+ln -s "$root/config/nvim" "$HOME/.config/nvim"
+mkdir -p "$HOME/.claude/agents"
+unmanaged_target="$tmp/unmanaged-commands"
+mkdir -p "$unmanaged_target"
+ln -s "$unmanaged_target" "$HOME/.claude/commands"
+"$root/internal/migrate"
+[[ "$(readlink "$HOME/.tmux.conf")" == "$root/config/tmux/tmux.conf" ]] \
+  || fail "layout migration removed the converged tmux link"
+[[ "$(readlink "$HOME/.config/nvim")" == "$root/config/nvim" ]] \
+  || fail "layout migration removed the converged Neovim link"
+[[ -d "$HOME/.claude/agents" && ! -L "$HOME/.claude/agents" ]] \
+  || fail "layout migration altered a real Claude agents directory"
+[[ "$(readlink "$HOME/.claude/commands")" == "$unmanaged_target" ]] \
+  || fail "layout migration removed an unmanaged Claude commands link"
+echo "ok - migrations preserve converged and unmanaged layout targets"
 
 [[ "$(cat "$XDG_STATE_HOME/dotfiles/revisions/sketchybar-app-font")" == font-revision ]] \
   || fail "font revision was not preserved"

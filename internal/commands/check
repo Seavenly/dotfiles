@@ -58,11 +58,18 @@ run "sesh TTY handoff" bash -c 'rg -q '\''exec </dev/tty'\'' "$1/config/zsh/zshr
 # shellcheck disable=SC2016
 run "project picker matching" bash -c 'tmp=$(mktemp -d); trap '\''rm -rf "$tmp"'\'' EXIT; mkdir -p "$tmp/dev/notes/.git" "$tmp/dev/personal/.git"; result=$(PROJECTS_DIR="$tmp/dev" "$1/bin/tmux-sessionizer" --filter=notes); [[ "$result" == "$tmp/dev/notes" ]]' _ "$root"
 # shellcheck disable=SC2016
-run "tmux lazygit focus" bash -c 'tmp=$(mktemp -d); trap '\''rm -rf "$tmp"'\'' EXIT; printf '\''#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$TMUX_TEST_LOG"\n[[ $1 != list-panes ]] || printf "lazygit:test:1.0\\n"\n'\'' > "$tmp/tmux"; chmod +x "$tmp/tmux"; TMUX_TEST_LOG="$tmp/log" PATH="$tmp:$PATH" "$1/bin/tmux-lazygit"; printf '\''list-panes -a -F #{pane_title}:#{session_name}:#{window_index}.#{pane_index}\nswitch-client -t test\nselect-window -t test:1\nselect-pane -t test:1.0\n'\'' > "$tmp/expected"; diff -u "$tmp/expected" "$tmp/log"' _ "$root"
+run "tmux lazygit focus" bash -c 'tmp=$(mktemp -d); trap '\''rm -rf "$tmp"'\'' EXIT; printf '\''#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$TMUX_TEST_LOG"\n[[ $1 != list-panes ]] || printf "lazygit:1.0\\n"\n'\'' > "$tmp/tmux"; chmod +x "$tmp/tmux"; TMUX_TEST_LOG="$tmp/log" PATH="$tmp:$PATH" "$1/bin/tmux-lazygit"; printf '\''list-panes -s -F #{pane_title}:#{window_index}.#{pane_index}\nselect-window -t 1\nselect-pane -t 1.0\n'\'' > "$tmp/expected"; diff -u "$tmp/expected" "$tmp/log"' _ "$root"
 # shellcheck disable=SC2016
 run "tmux extended keys" bash -c 'rg -q '\''^set-option -s extended-keys on$'\'' "$1/config/tmux/tmux.conf" && rg -q '\''xterm-ghostty:extkeys'\'' "$1/config/tmux/tmux.conf" && rg -q '\''^bind-key -n S-Enter send-keys Escape "\[13;2u"$'\'' "$1/config/tmux/tmux.conf"' _ "$root"
 # shellcheck disable=SC2016
-run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ "$root/config/nvim/nvim-pack-lock.json" "$root/config/claude/scripts/package.json" "$root/config/claude/scripts/package-lock.json"
+run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
+  "$root/config/nvim/nvim-pack-lock.json" \
+  "$root/config/claude/scripts/package.json" \
+  "$root/config/claude/scripts/package-lock.json" \
+  "$root/config/agent-flow/package.json" \
+  "$root/config/agent-flow/package-lock.json" \
+  "$root/config/agent-flow/schemas/agent-flow.handoff.v1.schema.json" \
+  "$root/config/agent-flow/schemas/agent-flow.local-review.v1.schema.json"
 run "TOML (macOS)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E macos config ls
 run "TOML (Linux)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E linux config ls
 # shellcheck disable=SC2016

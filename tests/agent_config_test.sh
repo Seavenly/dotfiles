@@ -30,6 +30,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 home="$tmp/home"
 mkdir -p \
+  "$home/.config" \
+  "$home/.local/state" \
   "$home/.agents/skills/local-only" \
   "$home/.claude/skills/local-only" \
   "$home/.hermes/skills/local-only"
@@ -39,7 +41,8 @@ for harness_root in .agents .claude .hermes; do
 done
 
 for _ in 1 2; do
-  HOME="$home" MISE_TRUSTED_CONFIG_PATHS="$root" \
+  HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+    XDG_STATE_HOME="$home/.local/state" MISE_TRUSTED_CONFIG_PATHS="$root" \
     mise -C "$root" -E linux bootstrap dotfiles apply --yes \
     >/dev/null 2>&1
 done
@@ -56,6 +59,11 @@ echo "ok - skill convergence is idempotent and preserves unmanaged entries"
 
 skills_root="$root/config/agents/skills"
 expected_skills=(
+  agent-flow-epic
+  agent-flow-feature
+  agent-flow-review
+  agent-flow-spike
+  agent-flow-stacks
   code-review
   codebase-design
   diagnosing-bugs
@@ -68,10 +76,13 @@ expected_skills=(
   improve-codebase-architecture
   prototype
   setup-matt-pocock-skills
+  split
   tdd
   to-spec
   to-tickets
   triage
+  tuicr
+  tuicr-reviews
   wayfinder
   write-a-skill
 )
@@ -94,17 +105,39 @@ for harness_root in .agents .claude .hermes; do
 done
 echo "ok - every approved package is linked as a discoverable directory"
 
+expected_repository() {
+  case "$1" in
+    split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
+    agent-flow-stacks) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
+    i-have-adhd) printf '%s\n' 'https://github.com/ayghri/i-have-adhd.git' ;;
+    tuicr) printf '%s\n' 'https://github.com/agavra/tuicr.git' ;;
+    *) printf '%s\n' 'https://github.com/mattpocock/skills.git' ;;
+  esac
+}
+
+local_skills=(
+  agent-flow-epic
+  agent-flow-feature
+  agent-flow-review
+  agent-flow-spike
+  tuicr-reviews
+)
+
 for skill in "${expected_skills[@]}"; do
   package="$skills_root/$skill"
   lineage="$package/LINEAGE.md"
   [[ -s "$package/SKILL.md" ]] || fail "$skill is missing SKILL.md"
+  if [[ " ${local_skills[*]} " == *" $skill "* ]]; then
+    [[ ! -e "$lineage" ]] || fail "$skill is local but unexpectedly has LINEAGE.md"
+    continue
+  fi
   [[ -s "$lineage" ]] || fail "$skill is missing LINEAGE.md"
   assert_contains "$(cat "$lineage")" 'schema_version: 1'
   kind="$(awk '/^kind: / { print $2; exit }' "$lineage")"
   [[ "$kind" =~ ^(mirror|derivative|composite)$ ]] \
     || fail "$skill has invalid lineage kind: $kind"
   assert_contains "$(cat "$lineage")" \
-    'repository: https://github.com/mattpocock/skills.git'
+    "repository: $(expected_repository "$skill")"
   grep -Eq '^    path: skills/' "$lineage" \
     || fail "$skill lineage has no upstream path"
   revisions="$(awk '/^    revision: / { print $2 }' "$lineage")"
@@ -114,7 +147,7 @@ for skill in "${expected_skills[@]}"; do
       || fail "$skill has invalid upstream revision: $revision"
   done <<< "$revisions"
 done
-echo "ok - approved skills have valid source lineage"
+echo "ok - externally sourced skills have valid lineage and local skills are explicit"
 
 [[ ! -d "$skills_root/caveman" ]] || fail "retired caveman skill is managed"
 [[ ! -d "$skills_root/grill-me" ]] || fail "retired grill-me skill is managed"

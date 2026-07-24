@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.run.v1.schema.json",
+  "title": "agent-flow.run/v1",
+  "description": "Immutable identity, compatibility, inputs, and limits for one flow run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract_version",
+    "implementation",
+    "identity",
+    "graph",
+    "approved_read_roots",
+    "approved_artifact_roots",
+    "inputs",
+    "profiles",
+    "limits",
+    "revisions",
+    "sealed_at"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.run/v1" },
+    "contract_version": { "const": 1 },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "compatible_contracts", "content_set_fingerprint"],
+      "properties": {
+        "revision": { "$ref": "#/$defs/gitRevision" },
+        "compatible_contracts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "content_set_fingerprint": {
+          "description": "Aggregate digest of the sealed graph and every machine-consumed input.",
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_directory",
+        "artifact_directory",
+        "validation_directory",
+        "flow",
+        "repository",
+        "board",
+        "tenant",
+        "parent_run_id",
+        "external_root",
+        "supersedes"
+      ],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "run_directory": { "$ref": "#/$defs/absolutePath" },
+        "artifact_directory": { "$ref": "#/$defs/absolutePath" },
+        "validation_directory": { "$ref": "#/$defs/absolutePath" },
+        "flow": { "$ref": "#/$defs/flow" },
+        "repository": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "forge_coordinate"],
+          "properties": {
+            "path": { "$ref": "#/$defs/absolutePath" },
+            "worktree": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/absolutePath" }
+              ]
+            },
+            "forge_coordinate": {
+              "type": ["string", "null"],
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        },
+        "board": { "$ref": "#/$defs/board" },
+        "tenant": { "$ref": "#/$defs/runId" },
+        "parent_run_id": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/runId" }
+          ]
+        },
+        "external_root": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["system", "id"],
+              "properties": {
+                "system": { "enum": ["github", "jira"] },
+                "id": { "type": "string", "minLength": 1, "maxLength": 256 }
+              }
+            }
+          ]
+        },
+        "supersedes": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/runId" }
+          ]
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "flow", "sealed_path", "sha256"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "integer", "minimum": 1 },
+        "flow": { "$ref": "#/$defs/flow" },
+        "sealed_path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "approved_read_roots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
+    },
+    "approved_artifact_roots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/absolutePath" }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_set_fingerprint", "required", "fingerprints"],
+      "properties": {
+        "profile_set_fingerprint": { "$ref": "#/$defs/sha256" },
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+        },
+        "fingerprints": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/sha256" },
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_created_cards",
+        "max_worker_attempts",
+        "max_elapsed_seconds",
+        "max_feature_streams"
+      ],
+      "properties": {
+        "max_created_cards": { "type": "integer", "minimum": 1 },
+        "max_worker_attempts": { "type": "integer", "minimum": 1 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 1 },
+        "max_feature_streams": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "revisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "source", "target"],
+      "properties": {
+        "base": { "$ref": "#/$defs/nullableGitRevision" },
+        "source": { "$ref": "#/$defs/nullableGitRevision" },
+        "target": { "$ref": "#/$defs/nullableGitRevision" }
+      }
+    },
+    "sealed_at": { "$ref": "#/$defs/timestamp" }
+  },
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "board": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+    "flow": { "enum": ["review", "feature", "spike", "epic", "stacks", "delivery"] },
+    "gitRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "nullableGitRevision": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/gitRevision" }
+      ]
+    },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "source_path", "sealed_path", "sha256"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "review-manifest",
+            "brief",
+            "plan",
+            "gate",
+            "skill",
+            "role-contract",
+            "machine-input"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "source_path": { "$ref": "#/$defs/absolutePath" },
+        "sealed_path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

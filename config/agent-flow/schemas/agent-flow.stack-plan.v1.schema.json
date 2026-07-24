@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.stack-plan.v1.schema.json",
+  "title": "agent-flow.stack-plan/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "generation", "repo", "forge_coordinate", "source", "target",
+    "delivery_branch", "assembly_policy", "layers", "verification",
+    "plan_fingerprint", "approval"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.stack-plan/v1" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "repo": { "$ref": "#/$defs/absolutePath" },
+    "forge_coordinate": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", "maxLength": 256 },
+    "source": { "$ref": "#/$defs/revision" },
+    "target": { "$ref": "#/$defs/revision" },
+    "delivery_branch": { "$ref": "#/$defs/branch" },
+    "assembly_policy": { "const": "replay" },
+    "layers": {
+      "type": "array", "minItems": 2, "maxItems": 20,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "branch", "title", "commit_message", "changes"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "branch": { "$ref": "#/$defs/branch" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "commit_message": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "changes": {
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["path", "old_path", "change_type", "hunks"],
+              "properties": {
+                "path": { "$ref": "#/$defs/relativePath" },
+                "old_path": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/relativePath" }] },
+                "change_type": { "enum": ["A", "M", "D", "R", "B"] },
+                "hunks": {
+                  "oneOf": [
+                    { "const": "all" },
+                    { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 0 } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "verification": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/command" } },
+    "plan_fingerprint": { "$ref": "#/$defs/digest" },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "actor", "approved_at", "plan_fingerprint"],
+      "properties": {
+        "status": { "enum": ["proposed", "approved", "stale"] },
+        "actor": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+        "approved_at": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$" }] },
+        "plan_fingerprint": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "relativePath": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "branch": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^(?!HEAD$)(?![0-9a-f]{40,64}$)(?![-./])(?!.*(?:\\.\\.|@\\{|[~^:?*\\\\\\[\\s]))(?!.*[./]$).+$" },
+    "revision": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "sha"],
+      "properties": { "ref": { "type": "string", "minLength": 1, "maxLength": 256 }, "sha": { "$ref": "#/$defs/sha" } }
+    },
+    "command": {
+      "type": "object", "additionalProperties": false, "required": ["argv"],
+      "properties": { "argv": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } } }
+    }
+  }
+}

@@ -1,102 +1,139 @@
 ---
 name: tuicr-reviews
-description: Operate the local tuicr review registry - resolve a review token handed off from the inbox, list approved reviews, merge an approved branch into its base, and remove reviews once merged. Use when the user pastes/names a review token and asks you to review it or address its comments, or asks to merge approved/reviewed branches, act on the tuicr review list, or clean up reviews. Distinct from the `tuicr` skill, which is about in-session review comments.
+description: Operate the local tuicr review projection, resolve inbox tokens, record durable comment dispositions, integrate manifest-approved immutable heads with receipts, and preserve legacy reviews. Use when the user names a review token, asks to address tuicr comments, merge an approved local review, inspect the review inbox, or clean up completed reviews. Use the separate tuicr skill for direct session comment reads and writes.
 ---
 
 # tuicr review registry
 
-Nathan reviews agent work locally with tuicr instead of GitHub draft PRs. The
-work under review is tracked in the **tuicr-reviews registry** - a JSONL store
-managed only through `tuicr-reviews` (`bin/tuicr-reviews`). Each entry is one
-review keyed by `(worktree, base, branch)`: reviewing the commits `branch` adds
-over `base`, opened with `tuicr -r base..branch` in `worktree`.
+Use `tuicr-reviews` for discovery and projection. For entries whose `kind` is
+`manifest`, treat the referenced `agent-flow.local-review/v1` manifest as
+lifecycle and approval truth. Treat registry approval as truth only for entries
+explicitly marked `legacy`.
 
-- `feature-flow` records a job on wrap-up. In the `prefix + r` inbox
-  (`bin/tmux-review-inbox`) the human can: `ctrl-a` toggle the approved `✓`,
-  `ctrl-y` copy the review's **token** to the clipboard (to hand to an agent),
-  and `ctrl-x` twice remove the review from the inbox.
-- This registry - NOT the `tuicr` session JSON or `tuicr review` CLI - is the
-  source of truth for what is approved.
+The `prefix + r` inbox opens reviews only after a human presses Enter. It opens
+manifest reviews by immutable `base_sha...head_sha`, shows lifecycle and health,
+copies the run/session token with `ctrl-y`, and requires two `ctrl-x` presses to
+remove a row. `ctrl-a` toggles approval only for legacy rows. A missing worktree
+remains visible and blocks opening and integration.
 
-## Resolving a review handed off from the inbox
+## Resolve a token
 
-The human copies a review's **token** from the inbox with `ctrl-y` - a bare
-string like `fcc439` (the registry `slug`, or the branch name when no slug was
-set). When the user says "review `<token>`" or "address the comments on
-`<token>`", resolve it here first:
+Run:
 
-1. Run `tuicr-reviews list` and find the row whose `slug` equals the token
-   (fall back to matching the `branch` column). Columns:
-   `worktree  base  branch  repo  slug  created  summary  approved`.
-2. That row gives you the `worktree` and the `base..branch` revset - the unit
-   under review. Everything below runs against that checkout.
+```bash
+tuicr-reviews list --json
+```
 
-Then act through the **`tuicr` skill** (it owns comment read/add), passing
-`--repo <worktree>`:
+Match the token against `slug`, then `run_id`, `session_slug`, or `branch`.
+Require one unambiguous match. Check `kind`, `lifecycle`, `health`, `manifest`,
+`worktree`, `base_sha`, and `head_sha` before acting.
 
-- **Read comments** (to address feedback): discover the session with
-  `tuicr review list --repo <worktree>`, matching `anchor` to the branch; then
-  `tuicr review comments --repo <worktree> --session <session-slug>`.
-- **Add review comments** (an agent reviewing on the human's behalf): same
-  discovery, then `tuicr review add ... --username "<agent name>"`.
+The TSV interface remains available for older callers. Its first seven columns
+are `worktree base branch repo slug created summary`; later columns are
+`approved lifecycle health base_sha head_sha run_id session_slug kind manifest`.
 
-Two properties of tuicr sessions to work with, not against:
+## Read and disposition comments
 
-- **Materialize-once.** `tuicr review add` only appends to a session that
-  already exists, and only opening the review in the TUI creates one (headless
-  export does not create the matching snapshot). If
-  `tuicr review list --repo <worktree>` shows no session for the branch, the
-  review has not been opened yet - ask the human to open it once from the inbox
-  (Enter on the row) before an agent can comment. Reading and merging need no
-  session.
-- **Snapshots, not threads.** After the implementer pushes fix-up commits the
-  revset resolves to a new commit range, so the next inbox open shows a fresh
-  session; earlier comments stay on the old snapshot and are not carried
-  forward. When addressing feedback, read the session that actually holds those
-  comments (the one the human reviewed / highest `comment_count`), not
-  necessarily the newest.
+Use the `tuicr` skill to read comments from the recorded `session_slug`. Compare
+stable comment `id` values with the manifest's `consumed_comment_ids`.
 
-## Merging approved reviews (the usual agent task)
+For a manifest entry, create an
+`agent-flow.review-comment-dispositions/v1` file containing the run ID, session
+slug, reviewed head SHA, and each new comment's type, disposition, reason, and
+absolute durable evidence path. Use these allowed dispositions:
 
-1. **List what's approved - never guess:**
+- `issue`: `implemented`
+- `suggestion`: `implemented` or `declined`
+- `note`: `answered` or `acknowledged`
+- `praise`: `no_action`
+
+Record only after the implementation, answer, acknowledgement, or decision is
+durable:
+
+```bash
+agent-flow review record-comments \
+  --manifest <review.json> \
+  --comments <dispositions.json> \
+  --expected-generation <generation> \
+  --actor <actor> \
+  --reason <reason> \
+  --evidence <absolute-evidence-path>
+```
+
+A repeated identical file is idempotent. A conflicting disposition or stale
+generation must stop the workflow. Issue comments require a revision cycle
+before approval.
+
+## Integrate approved reviews
+
+Start with `tuicr-reviews list --approved --json`. It returns only current
+approvals. If it is empty, report that nothing is approved.
+
+For `legacy` entries, preserve the established branch workflow:
+
+```bash
+git -C <worktree> switch <base>
+git -C <worktree> merge --no-ff <branch>
+tuicr-reviews rm --worktree <worktree> --base <base> --branch <branch>
+```
+
+For `manifest` entries:
+
+1. Re-read the manifest and require `review.status == approved`,
+   `review.reviewed_head_sha == head.sha`, and projection `health == current`.
+2. Re-read the tuicr comments for `review.session_slug` and stop if any ID is
+   absent from `consumed_comment_ids`. This pre-Git check narrows the race; the
+   lifecycle transition repeats it after Git succeeds.
+3. Confirm the named base branch is the intended local target. Do not push.
+4. Merge the immutable `<head_sha>`, never the moving branch name:
+
+   ```bash
+   git -C <repo> switch <base-branch>
+   git -C <repo> merge --no-ff <head_sha>
    ```
-   tuicr-reviews list --approved
-   ```
-   TSV columns: `worktree  base  branch  repo  slug  created  summary  approved`.
-   If it's empty, tell the user nothing is approved and stop.
 
-2. **Merge each approved review into its base**, in that review's `worktree`:
-   ```
-   git -C <worktree> switch <base>
-   git -C <worktree> merge --no-ff <branch>
-   ```
-   - Confirm `<base>` is the intended integration target - it is usually an
-     integration branch (`env-topology`, `epic/...`), NOT `main`.
-   - On conflict, stop and report; never force.
-   - These are local branches (the draft PRs were closed); do not open/reopen a
-     PR.
-   - **Do not push** unless the user asks. Pushing shared integration branches
-     is the human's call, and origin needs the Seavenly account (see the
-     push-account note), so surface it rather than pushing silently.
+   When `<repo>` and `<worktree>` are the same checkout, switching to the target
+   branch is expected. Receipt reconciliation accepts that checkout movement
+   only when Git proves the immutable feature ref and resulting target commit.
 
-3. **Remove the review from the registry once it is merged** - per review:
-   ```
-   tuicr-reviews rm --worktree <worktree> --base <base> --branch <branch>
-   ```
-   Passing only `--worktree` drops EVERY review in that checkout; do that only
-   if the user wants to clear all of them.
+5. After Git succeeds, write an `agent-flow.integration-receipt/v1` beside the
+   review artifacts. Record the review run ID, repository, reviewed head SHA,
+   optional approved assembly SHA, full `refs/heads/<target>` name, resulting
+   commit and tree SHAs, actor, and UTC timestamp.
+6. Advance the manifest using its current generation and the receipt as both
+   receipt and evidence:
 
-## Guardrails
-- Removing a review only drops the registry entry (the inbox row). The `ctrl-x`
-  twice inbox action and `tuicr-reviews rm` are equivalent; both leave tuicr's
-  persisted sessions/comments alone, since those are keyed to commit snapshots
-  and kept by design. Removal is for reviews you have merged, or that the human
-  is done with - it is not a way to clean up tuicr's session store.
-- The `prefix + r` review inbox (`bin/tmux-review-inbox`) also lists coworker
-  PRs, which open to GitHub. This skill concerns only the local registry
-  reviews - never try to merge a coworker PR.
-- Only act on reviews the user has approved. Never merge an unapproved review.
-- One checkout can hold several reviews, so always remove by the full
-  `(worktree, base, branch)` triple, not by worktree alone.
-- Vanished worktrees self-prune on `list`/`prune`; no manual cleanup needed for
-  those.
+   ```bash
+   agent-flow review transition \
+     --manifest <review.json> \
+     --to integrated \
+     --expected-generation <generation> \
+     --actor <actor> \
+     --reason <reason> \
+     --evidence <integration-receipt.json> \
+     --integration-receipt <integration-receipt.json>
+   ```
+
+7. If the manifest write fails after Git succeeds, do not merge again. Retry
+   with the same receipt after inspecting Git and the manifest. The command
+   verifies the target commit, tree, and ancestry and treats the same recorded
+   receipt idempotently.
+   The target may have advanced after the receipt was written only when the
+   recorded integration commit remains its ancestor.
+8. Transition `integrated -> archived`, then run `tuicr-reviews prune` when the
+   retained artifacts satisfy the user's cleanup intent.
+
+Stop on conflicts, stale health, branch drift, receipt mismatch, or stale
+generation. Never force, create a PR, reopen a draft PR, or push unless the user
+explicitly asks.
+
+## Registry maintenance
+
+- Add manifest reviews with `tuicr-reviews add --manifest <absolute-review.json>`.
+- Keep Claude feature-flow compatibility through the explicitly legacy
+  `add --repo ... --worktree ... --base ... --branch ...` form.
+- Rebuild manifest projections with `tuicr-reviews rebuild --root <directory>`.
+- Remove one manifest row with `tuicr-reviews rm --manifest <review.json>`.
+- Treat removal as projection cleanup only. It does not delete manifests,
+  tuicr sessions, comments, branches, worktrees, or Git history.
+- Never remove a broken missing-worktree row to make integration appear safe.
