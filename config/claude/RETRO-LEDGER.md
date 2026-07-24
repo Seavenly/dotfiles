@@ -9,6 +9,52 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-07-17 — 2026-07-17-1306-pr-126 (review)
+
+A finding shipped at "important" that was a false positive — a mechanism
+claim ("this fails because a named resource behaves like M") asserted from
+background knowledge, caught only by the PR author's pushback. Root failure
+was judgment about *what makes a finding trustworthy*, not orchestration.
+All six items **corroborate the 2026-06-08 review-flow entry** (false-positive
+pass / trusting reviewer claims without verification) — this is the recurrence
+that theme predicted, so the whole cluster was applied with confidence.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Mechanism claims from priors (uncited "how a named API/resource behaves") | AVOID | workflows/review-flow-run.js (reviewer spawn prompt) | applied — new "Don't assert mechanism from memory" doctrine: a claim about how a named API/resource/library behaves (network path, failure mode, capability existence) can't carry critical/important on background knowledge; cite a primary source or down-tier and say it's unverified |
+| Capability-absence stated as fact | AVOID | agents/critic.md (Mode B step 2) | applied · **corroborates 2026-06-08 false-positive pass** — new fragile-category bullet: "there is no API/way to do X" is the most fragile claim against a fixed knowledge cutoff; treat every absence as a hypothesis, confirm against a primary source or strike |
+| Confidence bleed across a compound claim | AVOID | agents/critic.md (Mode B step 2) | applied — new "compound claims — rate each leg on its own evidence" bullet: verifying one leg must not raise confidence in a different unverified leg, and must never justify removing its hedge |
+| Self-contradiction scan before severity | ADD | agents/critic.md (Mode B step 2) | applied — new bullet: before finalizing severity, ask "does the diff itself contradict this claim?"; an input shape/default/adjacent call often implies the opposite — strike if so |
+| Primary-source gate for failure-mode findings | ADD | workflows/review-flow-run.js (critic spawn prompt) | applied · **corroborates 2026-06-08 false-positive pass** — critic Mode B instruction now requires "fails-at-deploy/runtime-because-mechanism-M" findings to carry a primary-source citation to survive above `recommended`; strike/down-tier uncited mechanism/absence claims |
+| Adversarial verify should attack the central factual premise | STRESS | agents/critic.md (Mode B step 2) | applied · **corroborates 2026-06-08 false-positive pass** — step 2 now opens by directing the critic to adopt an author-trying-to-refute stance on each finding's central premise, extending the strike-if-wrong pass beyond dedup/anchoring/right-sizing |
+
+Notes:
+- All four `agents/critic.md` items were folded into the existing Mode B
+  step 2 (the "spot-verify and strike" step the 2026-06-08 retro created) as
+  a coherent "attack the central factual premise" block with four
+  fragile-category bullets, rather than scattered across the mode — same
+  failure mode, same home.
+- Every item passes the cross-PR test: uncited mechanism claims,
+  capability-absence against a knowledge cutoff, confidence-bleed in compound
+  claims, and diff self-contradiction are generic LLM-reviewer failure modes,
+  not artifacts of PR #126. Corroboration with the 2026-06-08 entry satisfies
+  the generality test independently.
+- The confidence-bleed item surfaced during a *post-run* verification in
+  conversation (not inside the workflow), but the anti-pattern is general and
+  belongs wherever severity/confidence is assigned — encoded in the critic.
+- Gate kept proportional per the retro: the primary-source requirement binds
+  hardest on high-severity mechanism/failure-mode claims (can't survive above
+  `recommended` uncited), not on style/subjective findings.
+- No conflicts to surface — nothing in the ledger argues for trusting
+  reviewer claims or reasoning mechanism from priors; every item reinforces
+  the existing verification direction.
+- Housekeeping (not a retro edit): this session wrote
+  `.claude/settings.local.json` with `{"worktree":{"bgIsolation":"none"}}`
+  (gitignored, untracked) so the background-job worktree guard would allow
+  in-place edits — a `fresh` worktree branches from origin/main, which is 37
+  commits behind the active branch and lacks these edit regions. Remove it if
+  bg isolation is wanted for this repo.
+
 ## 2026-06-12 — 2026-06-03-1546-gateway-datadog (feature)
 
 The run's one genuine production bug: a composition-dependent behavior was

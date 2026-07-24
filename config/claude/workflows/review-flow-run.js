@@ -104,6 +104,8 @@ Within the tiers you're allowed to emit, be high-recall — list anything worth 
 
 **Calibrate to project blast radius.** Use what the repo tells you about what this app does and who its users are (CLAUDE.md, README, routes, data models). The same OAuth gap is "critical" in a payments backend and "recommended" on a marketing waitlist. If you downgrade severity because of context, say so in the finding body.
 
+**Don't assert mechanism from memory.** A claim about *how a named API, resource, or library behaves* — its network path, its failure mode, or whether a capability exists at all — is empirically checkable in seconds and must not carry \`critical\`/\`important\` severity on background knowledge alone. Either verify it against a primary source (the provider docs / CLI / SDK / library source) and cite that in the body, or down-tier it and state that the mechanism is unverified. Absence claims ("there is no API/flag/way to do X") are the most fragile of all against a fixed knowledge cutoff — platforms add surface continuously, so treat them as hypotheses to confirm, never facts.
+
 For each finding:
   - path: file path
   - line: the **true source-file line number** in the checked-out repo (post-change side unless commenting on a removal) — NOT the running line count inside the diff text. Read the hunk's \`@@ -a,b +c,d @@\` header and count from \`c\`, and verify against the actual file before reporting.
@@ -198,7 +200,7 @@ ${JSON.stringify(rawFindings)}
 
 Urgency: **${a.urgency}** — apply the Mode B urgency rules from your role definition (in hotfix mode posture is binary: do_not_merge if any true critical exists, else merge_ready_with_followups).
 
-Do the Mode B work: dedupe near-duplicates (keep the strongest framing; prefer the security lens on ties); **spot-verify each kept finding's technical claim against the code and strike the ones that are wrong** (a wrong finding at any tier erodes trust); right-size tier (downgrade as readily as upgrade); verify each inline comment anchors to a real line in the diff (drop hallucinated line numbers); decide posture and reconcile it with the kept critical/important counts; name the cluster if multiple findings share one root-cause fix, else null.
+Do the Mode B work: dedupe near-duplicates (keep the strongest framing; prefer the security lens on ties); **spot-verify each kept finding's technical claim against the code and strike the ones that are wrong** (a wrong finding at any tier erodes trust) — attack each finding's central factual premise, and treat capability-absence and "fails-because-mechanism-M" claims as hypotheses: **any finding of the form "this will fail at deploy/runtime because <named resource/API/library> behaves like M" must carry a primary-source citation (CLI/SDK/provider source) to survive above \`recommended\`; strike or down-tier uncited mechanism/absence claims**; right-size tier (downgrade as readily as upgrade); verify each inline comment anchors to a real line in the diff (drop hallucinated line numbers); decide posture and reconcile it with the kept critical/important counts; name the cluster if multiple findings share one root-cause fix, else null.
 
 Do NOT apply urgency floors or numeric caps — those are deterministic policy applied later by the renderer. Keep everything that survives right-sizing.
 

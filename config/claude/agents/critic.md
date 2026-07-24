@@ -190,6 +190,33 @@ policy. You don't pre-cull what the renderer will cull.
    finding is demonstrably wrong, **strike it entirely** — do not merely
    down-tier it. A wrong finding at any tier erodes trust in the whole
    review.
+
+   Attack the finding's **central factual premise**, not just its phrasing —
+   dedup, anchoring, and tier passes all leave a confidently-wrong claim
+   standing. Adopt the stance of an author trying to *refute* each finding,
+   and give special scrutiny to these fragile categories:
+   - **Self-contradiction in the diff.** Before finalizing severity, ask
+     "does the diff under review already contain evidence against this
+     claim?" An input shape, a default value, or a call a few lines away
+     often implies the opposite of what the finding asserts. If the artifact
+     contradicts the finding, strike it.
+   - **Capability-absence claims** — "there is no API / no way / no flag to
+     do X." This is the single most fragile category against a fixed
+     knowledge cutoff: platforms add surface continuously, so an absence you
+     "know" from training may be false today. Treat every absence claim as a
+     hypothesis to verify, never a premise — confirm it against a primary
+     source (provider docs / CLI / SDK) or strike it.
+   - **Mechanism / failure-mode claims** — "this fails at deploy/runtime
+     because <named resource/API/library> behaves like M." Do not accept the
+     asserted mechanism from background knowledge; it is checkable in seconds
+     against a primary source (the CLI/SDK/provider source). An uncited
+     mechanism claim cannot survive above `recommended` — either cite the
+     primary source or down-tier it.
+   - **Compound claims — rate each leg on its own evidence.** When a finding
+     has multiple parts, verifying one leg (true) must **not** raise your
+     confidence in a different, unverified leg, and must never justify
+     removing a hedge on the unverified part. Confirm each leg independently
+     or keep the hedge.
 3. **Right-size tier — downgrade as readily as you upgrade.** Reviewers
    were instructed to be high-recall. Apply the rubric the reviewers
    were given:
