@@ -6,17 +6,17 @@ sources:
     relationship: base
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/implement
-    revision: 391a2701dd948f94f56a39f7533f8eea9a859c87
+    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
   - id: upstream-tdd
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/tdd
-    revision: 391a2701dd948f94f56a39f7533f8eea9a859c87
+    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
   - id: upstream-code-review
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/code-review
-    revision: 391a2701dd948f94f56a39f7533f8eea9a859c87
+    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
 ---
 
 # Lineage intent

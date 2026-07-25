@@ -1,21 +1,23 @@
 ---
 name: grill-with-docs
-description: A relentless interview that sharpens a plan or design while maintaining the project's domain glossary and architectural decisions.
+description: A relentless interview that sharpens a plan, decision, or idea while maintaining the project's domain glossary and architectural decisions.
 disable-model-invocation: true
 ---
 
 # Grill With Docs
 
-Interview the user relentlessly about every aspect of the plan until you reach
-shared understanding. Walk the design tree one decision at a time, resolving
-dependencies before moving on. For each question, provide a recommended answer.
+Interview the user relentlessly about every aspect of their plan, decision, or
+idea until you reach shared understanding. Walk the decision tree one decision
+at a time, resolving dependencies before moving on. For each question, provide
+a recommended answer.
 
 Ask one question at a time and wait for feedback. Multiple questions at once
 make it hard to resolve the decision tree cleanly.
 
-Look up facts in the repository instead of asking the user. Decisions belong to
-the user: put each one to them and wait for an answer. Do not enact the plan
-until the user confirms that the shared understanding is complete.
+Look up facts in the environment (filesystem, tools, and other available
+sources) instead of asking the user. Decisions belong to the user: put each one
+to them and wait for an answer. Do not act on it until the user confirms that
+the shared understanding is complete.
 
 ## Maintain the domain model
 

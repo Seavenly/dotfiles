@@ -6,17 +6,17 @@ sources:
     relationship: base
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/grill-with-docs
-    revision: 391a2701dd948f94f56a39f7533f8eea9a859c87
+    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
   - id: upstream-grilling
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/productivity/grilling
-    revision: 391a2701dd948f94f56a39f7533f8eea9a859c87
+    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
   - id: upstream-domain-modeling
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/domain-modeling
-    revision: 391a2701dd948f94f56a39f7533f8eea9a859c87
+    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
 ---
 
 # Lineage intent
