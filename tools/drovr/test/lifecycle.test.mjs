@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { closeGroup, closeTask, retireAgent } from "../src/lifecycle.mjs";
+import {
+  closeGroup,
+  closeTask as closeTaskLifecycle,
+  retireAgent,
+} from "../src/lifecycle.mjs";
 import {
   readRecords,
   stateDirectory,
@@ -14,9 +18,20 @@ import {
 } from "../src/registry.mjs";
 import { startTurn } from "../src/turns.mjs";
 
+function closeTask(taskId, dependencies = {}) {
+  if (!dependencies.herdr || dependencies.herdr.createTab) {
+    return closeTaskLifecycle(taskId, dependencies);
+  }
+  return closeTaskLifecycle(taskId, {
+    ...dependencies,
+    herdr: withIdleTabSupport(dependencies.herdr),
+  });
+}
+
 test("agent retirement closes only its managed pane and preserves durable history", async (t) => {
   const fixture = await lifecycleFixture(t);
   const closed = [];
+  let paneClosed = false;
   const result = await retireAgent(fixture.agent.id, {
     env: fixture.env,
     now: () => "2026-07-23T11:00:00.000Z",
@@ -27,9 +42,12 @@ test("agent retirement closes only its managed pane and preserves durable histor
       },
       async closePane(paneId) {
         closed.push(paneId);
+        paneClosed = true;
       },
       async paneRecord() {
-        return null;
+        return paneClosed
+          ? null
+          : { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
       },
     },
   });
@@ -195,6 +213,9 @@ test("non-force task cleanup refuses busy agents before mutating resources", asy
       async ensureSession() {},
       async agentRecord() {
         return { agent_status: "blocked", agent_session: { value: "native-1" } };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
       },
       async closeTab() {
         mutations += 1;
@@ -472,6 +493,259 @@ test("non-force group cleanup preflights every task before mutating resources", 
   assert.equal(tasks.every(({ status }) => status === "active"), true);
 });
 
+test("group cleanup closes a one-tab group through its exact workspace", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const closedTabs = [];
+  const closedWorkspaces = [];
+  let workspaceClosed = false;
+
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return workspaceClosed
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async closeTab(tabId) {
+        closedTabs.push(tabId);
+        throw new Error("cannot close the last tab in a workspace");
+      },
+      async closeWorkspace(workspaceId) {
+        closedWorkspaces.push(workspaceId);
+        workspaceClosed = true;
+      },
+      async workspaceRecord() {
+        return workspaceClosed ? null : { workspace_id: "workspace-1" };
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  assert.deepEqual(closedTabs, []);
+  assert.deepEqual(closedWorkspaces, ["workspace-1"]);
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(group.status, "closed");
+  assert.equal(task.status, "closed");
+  assert.equal(agent.status, "retired");
+});
+
+test("group cleanup finalizes a bound agent whose exact process and pane are absent", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let workspaceClosed = false;
+
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    force: true,
+    herdr: {
+      async ensureSession() {},
+      async agentRecords() {
+        return [];
+      },
+      async agentRecord() {
+        return null;
+      },
+      async paneRecord() {
+        return null;
+      },
+      async tabRecord() {
+        return workspaceClosed
+          ? null
+          : { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async workspaceRecord() {
+        return workspaceClosed ? null : { workspace_id: "workspace-1" };
+      },
+      async closeWorkspace(workspaceId) {
+        assert.equal(workspaceId, "workspace-1");
+        workspaceClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(group.status, "closed");
+  assert.equal(task.status, "closed");
+  assert.equal(agent.status, "retired");
+});
+
+test("group cleanup refuses a surviving pane whose bound agent is absent before mutation", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let mutations = 0;
+
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    force: true,
+    herdr: {
+      async ensureSession() {},
+      async agentRecords() {
+        return [];
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async workspaceRecord() {
+        return { workspace_id: "workspace-1" };
+      },
+      async closeWorkspace() {
+        mutations += 1;
+      },
+      async interruptAgent() {
+        mutations += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "agent_lost");
+  assert.equal(mutations, 0);
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(group.status, "active");
+  assert.equal(task.status, "active");
+  assert.equal(agent.status, "active");
+});
+
+test("group cleanup refuses duplicate native-session ownership before mutation", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let mutations = 0;
+
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    force: true,
+    herdr: {
+      async ensureSession() {},
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_status: "idle",
+            agent_session: { value: "native-1" },
+          },
+          {
+            name: "ambiguous-owner",
+            pane_id: "pane-unrelated",
+            agent_status: "idle",
+            agent_session: { value: "native-1" },
+          },
+        ];
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async tabRecord() {
+        return { tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async workspaceRecord() {
+        return { workspace_id: "workspace-1" };
+      },
+      async closeWorkspace() {
+        mutations += 1;
+      },
+      async interruptAgent() {
+        mutations += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "recovery_blocked");
+  assert.equal(mutations, 0);
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(group.status, "active");
+  assert.equal(task.status, "active");
+  assert.equal(agent.status, "active");
+});
+
+test("closing the final task keeps its group active through an exact idle tab", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const tabs = new Set(["tab-task-1"]);
+  const createdTabs = [];
+  const closedTabs = [];
+
+  const result = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord(paneId) {
+        if (paneId === "pane-agent-1" && tabs.has("tab-task-1")) {
+          return { pane_id: paneId, tab_id: "tab-task-1" };
+        }
+        if (paneId === "pane-idle" && tabs.has("tab-idle")) {
+          return { pane_id: paneId, tab_id: "tab-idle" };
+        }
+        return null;
+      },
+      async tabRecord(tabId) {
+        return tabs.has(tabId)
+          ? { tab_id: tabId, workspace_id: "workspace-1" }
+          : null;
+      },
+      async workspaceRecord() {
+        return { workspace_id: "workspace-1" };
+      },
+      async createTab(options) {
+        assert.equal(options.workspaceId, "workspace-1");
+        createdTabs.push(options);
+        tabs.add("tab-idle");
+        return { tabId: "tab-idle", paneId: "pane-idle" };
+      },
+      async closeTab(tabId) {
+        if (tabs.size === 1) {
+          throw new Error("cannot close the last tab in a workspace");
+        }
+        closedTabs.push(tabId);
+        tabs.delete(tabId);
+      },
+    },
+  });
+
+  assert.equal(result.status, "closed");
+  assert.equal(createdTabs.length, 1);
+  assert.deepEqual(closedTabs, ["tab-task-1"]);
+  assert.deepEqual([...tabs], ["tab-idle"]);
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(group.status, "active");
+  assert.deepEqual(group.herdr.idle_tab, {
+    tab_id: "tab-idle",
+    root_pane_id: "pane-idle",
+  });
+  assert.equal(task.status, "closed");
+  assert.equal(agent.status, "retired");
+});
+
 test("group cleanup locks tasks created while it waits for the group lock", async (t) => {
   const fixture = await lifecycleFixture(t);
   const closedTabs = new Set();
@@ -491,25 +765,23 @@ test("group cleanup locks tasks created while it waits for the group lock", asyn
       return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
     },
     async tabRecord(tabId) {
-      return closedTabs.has(tabId)
+      return workspaceClosed || closedTabs.has(tabId)
         ? null
         : { tab_id: tabId, workspace_id: "workspace-1" };
     },
     async closeTab(tabId) {
-      if (!competingLock) {
-        competingLock = withResourceLock(
-          fixture.registryDirectory,
-          taskLifecycleLockKey("task-2"),
-          async () => {
-            taskLockEntered = true;
-          },
-        );
-        await new Promise((resolve) => setImmediate(resolve));
-        assert.equal(taskLockEntered, false);
-      }
       closedTabs.add(tabId);
     },
     async closeWorkspace() {
+      competingLock = withResourceLock(
+        fixture.registryDirectory,
+        taskLifecycleLockKey("task-2"),
+        async () => {
+          taskLockEntered = true;
+        },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(taskLockEntered, false);
       workspaceClosed = true;
     },
     async workspaceRecord() {
@@ -792,7 +1064,7 @@ test("force group cleanup closes only exact managed resources after interrupting
         };
       },
       async tabRecord(tabId) {
-        return closedTabIds.has(tabId)
+        return workspaceClosed || closedTabIds.has(tabId)
           ? null
           : { tab_id: tabId, workspace_id: "workspace-1" };
       },
@@ -807,8 +1079,9 @@ test("force group cleanup closes only exact managed resources after interrupting
         };
       },
       async closeTab(tabId) {
-        closedTabs.push(tabId);
-        closedTabIds.add(tabId);
+        throw new Error(
+          `group cleanup must not close task tab ${tabId} individually`,
+        );
       },
       async closeWorkspace(workspaceId) {
         closedWorkspaces.push(workspaceId);
@@ -822,7 +1095,7 @@ test("force group cleanup closes only exact managed resources after interrupting
 
   assert.equal(result.status, "closed");
   assert.deepEqual(interrupted, ["managed-agent-2"]);
-  assert.deepEqual(closedTabs, ["tab-task-1", "tab-task-2"]);
+  assert.deepEqual(closedTabs, []);
   assert.deepEqual(closedWorkspaces, ["workspace-1"]);
   const groups = await readRecords(fixture.registryDirectory, "groups");
   const tasks = await readRecords(fixture.registryDirectory, "tasks");
@@ -895,4 +1168,31 @@ async function lifecycleFixture(t) {
   await writeRecord(registryDirectory, "agents", agent);
   await writeRecord(registryDirectory, "turns", turn);
   return { env, registryDirectory, group, task, agent, callerFile, transcript };
+}
+
+function withIdleTabSupport(herdr) {
+  let idleTabCreated = false;
+  return {
+    ...herdr,
+    async workspaceRecord(workspaceId) {
+      if (herdr.workspaceRecord) return herdr.workspaceRecord(workspaceId);
+      return { workspace_id: workspaceId };
+    },
+    async createTab({ workspaceId }) {
+      idleTabCreated = true;
+      return { tabId: "tab-idle", paneId: "pane-idle" };
+    },
+    async tabRecord(tabId) {
+      if (idleTabCreated && tabId === "tab-idle") {
+        return { tab_id: tabId, workspace_id: "workspace-1" };
+      }
+      return herdr.tabRecord?.(tabId) ?? null;
+    },
+    async paneRecord(paneId) {
+      if (idleTabCreated && paneId === "pane-idle") {
+        return { pane_id: paneId, tab_id: "tab-idle" };
+      }
+      return herdr.paneRecord?.(paneId) ?? null;
+    },
+  };
 }

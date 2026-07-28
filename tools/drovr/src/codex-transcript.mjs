@@ -124,7 +124,9 @@ function messageText(content, type) {
 
 function eventUserText(record) {
   if (record?.type === "event_msg" && record.payload?.type === "user_message") {
-    return record.payload.message;
+    return typeof record.payload.message === "string"
+      ? record.payload.message
+      : null;
   }
   return null;
 }
@@ -135,7 +137,15 @@ function responseUserText(record) {
     record.payload?.type === "message" &&
     record.payload?.role === "user"
   ) {
-    return messageText(record.payload.content, "input_text");
+    const content = record.payload.content;
+    if (typeof content === "string") return content;
+    if (
+      !Array.isArray(content) ||
+      !content.some((item) => item?.type === "input_text")
+    ) {
+      return null;
+    }
+    return messageText(content, "input_text");
   }
   return null;
 }

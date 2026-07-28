@@ -223,3 +223,39 @@ test("Claude adapter correlates ordered steering before accepting the final resu
   assert.equal(result.text, "settled");
   assert.deepEqual(result.messages, ["intermediate", "settled"]);
 });
+
+test("Claude adapter rejects an assistant result after an unrelated later input", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-boundary-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const transcript = join(
+    scratch,
+    "11111111-2222-4333-8444-555555555555.jsonl",
+  );
+  await writeFile(transcript, "");
+  const cursor = await captureClaudeTranscriptCursor(transcript);
+  await appendFile(
+    transcript,
+    [
+      { type: "user", message: { role: "user", content: "recorded input" } },
+      { type: "user", message: { role: "user", content: "unrelated input" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "unrelated result" }],
+        },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n") + "\n",
+  );
+
+  await assert.rejects(
+    () => extractClaudeTurn(cursor, ["recorded input"]),
+    {
+      message: "no completed Claude assistant result followed the final input",
+      outcome: "uncertain",
+    },
+  );
+});

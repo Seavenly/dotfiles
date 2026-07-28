@@ -17,7 +17,7 @@ import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
-import { cancelTurn, startTurn, waitForTurn } from "../src/turns.mjs";
+import { cancelTurn, getTurn, startTurn, waitForTurn } from "../src/turns.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -298,6 +298,106 @@ test("wait allows the native final result to flush after Herdr reports idle", as
   assert.equal(waitCalls, 2);
   assert.equal(context.turn.status, "completed");
   assert.equal(context.turn.result.text, "flushed native result");
+});
+
+test("wait grants transcript flush time after the actual native settlement", async (t) => {
+  const fixture = await turnFixture(t);
+  let waitCalls = 0;
+  let clockMs = 0;
+  const herdr = {
+    async waitForAgent() {
+      waitCalls += 1;
+      if (waitCalls === 2) {
+        clockMs += 70_000;
+        await appendTranscript(fixture.transcript, userMessage("initial"));
+      }
+      if (waitCalls === 3) {
+        await appendTranscript(
+          fixture.transcript,
+          assistantMessage("flushed after actual settlement"),
+        );
+      }
+      return {
+        agent_status: "idle",
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+  };
+
+  const context = await waitForTurn(
+    fixture.turn.id,
+    { timeoutMs: 120_000 },
+    {
+      env: fixture.env,
+      herdr,
+      clock: () => clockMs,
+      delay: async () => {},
+    },
+  );
+
+  assert.equal(waitCalls, 3);
+  assert.equal(context.turn.status, "completed");
+  assert.equal(
+    context.turn.result.text,
+    "flushed after actual settlement",
+  );
+});
+
+test("get discovers a late result only after the exact recorded inputs", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  appendTurnInput(turn, {
+    text: "steer",
+    submittedAt: "2026-07-23T10:00:01.000Z",
+  });
+  turn.status = "uncertain";
+  turn.error = "no completed Codex assistant result followed the final input";
+  turn.settled_at = "2026-07-23T10:00:02.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("intermediate"),
+    userMessage("steer"),
+    assistantMessage("late settled result"),
+  );
+
+  const context = await getTurn(fixture.turn.id, { env: fixture.env });
+  const [stored] = await readRecords(fixture.registryDirectory, "turns");
+
+  assert.equal(context.turn.status, "uncertain");
+  assert.equal(context.late_result.text, "late settled result");
+  assert.deepEqual(context.late_result.messages, [
+    "intermediate",
+    "late settled result",
+  ]);
+  assert.equal(stored.status, "uncertain");
+  assert.equal(stored.result, undefined);
+});
+
+test("get rejects a late result when an unrecorded input interrupts the recorded order", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  appendTurnInput(turn, {
+    text: "steer",
+    submittedAt: "2026-07-23T10:00:01.000Z",
+  });
+  turn.status = "uncertain";
+  turn.error = "no completed Codex assistant result followed the final input";
+  turn.settled_at = "2026-07-23T10:00:02.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    userMessage("unrecorded input"),
+    userMessage("steer"),
+    assistantMessage("unrelated later result"),
+  );
+
+  const context = await getTurn(fixture.turn.id, { env: fixture.env });
+
+  assert.equal(context.turn.status, "uncertain");
+  assert.equal(context.late_result, undefined);
 });
 
 test("wait allows Herdr's native session identity to appear after delivery", async (t) => {

@@ -36,6 +36,9 @@ async function ensureStateDirectory(directory) {
     await mkdir(path, { recursive: true, mode: 0o700 });
     await chmod(path, 0o700);
   }
+  const launchDocuments = join(directory, "launch-documents");
+  await mkdir(launchDocuments, { recursive: true, mode: 0o700 });
+  await chmod(launchDocuments, 0o700);
 }
 
 function recordPath(directory, kind, id) {
@@ -56,6 +59,22 @@ export async function writeRecord(directory, kind, record) {
     await handle.close();
   }
   await rename(temporary, path);
+}
+
+export async function writeLaunchDocument(directory, key, contents) {
+  await ensureStateDirectory(directory);
+  const safeKey = createHash("sha256").update(key).digest("hex");
+  const path = join(directory, "launch-documents", `${safeKey}.txt`);
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, path);
+  return path;
 }
 
 export async function readRecords(directory, kind) {

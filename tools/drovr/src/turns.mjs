@@ -252,6 +252,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   const deadline =
     options.timeoutMs === undefined ? undefined : clock() + options.timeoutMs;
   let correlationDeadline;
+  let correlationStage;
   for (;;) {
     context = await turnContext(registryDirectory, turnId);
     if (acknowledgedBlock) {
@@ -382,10 +383,15 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
           now,
           retryCorrelation:
             correlationDeadline === undefined || clock() < correlationDeadline,
+          correlationStage,
         }),
     );
     if (!reconciled.retry_wait) return reconciled;
-    if (reconciled.correlation_pending && correlationDeadline === undefined) {
+    if (
+      reconciled.correlation_pending &&
+      reconciled.correlation_stage !== correlationStage
+    ) {
+      correlationStage = reconciled.correlation_stage;
       correlationDeadline = clock() + TRANSCRIPT_SETTLE_GRACE_MS;
     }
     await delay(25);
@@ -480,6 +486,7 @@ async function reconcileSettledObservation({
   env,
   now,
   retryCorrelation,
+  correlationStage,
 }) {
   const context = await turnContext(registryDirectory, turnId);
   if (context.turn.status !== "working") return context;
@@ -528,14 +535,26 @@ async function reconcileSettledObservation({
       );
       await writeRecord(registryDirectory, "turns", context.turn);
     } catch (error) {
-      if (error.details?.correlation_pending && retryCorrelation) {
-        return { ...context, retry_wait: true, correlation_pending: true };
+      const pendingStage = error.details?.correlation_stage ?? "transcript";
+      if (
+        error.details?.correlation_pending &&
+        (retryCorrelation || pendingStage !== correlationStage)
+      ) {
+        return {
+          ...context,
+          retry_wait: true,
+          correlation_pending: true,
+          correlation_stage: pendingStage,
+        };
       }
       settleTurnRecord(context.turn, {
         status: error.outcome ?? "uncertain",
         error: error.message,
         settledAt: now(),
       });
+      if (error.details?.correlation_pending) {
+        context.turn.late_result_recovery = "exact_transcript_correlation";
+      }
       await writeRecord(registryDirectory, "turns", context.turn);
       return context;
     }
@@ -590,14 +609,26 @@ async function reconcileSettledObservation({
       context.turn.inputs.map(({ text }) => text),
     );
   } catch (error) {
-    if (error.details?.correlation_pending && retryCorrelation) {
-      return { ...context, retry_wait: true, correlation_pending: true };
+    const pendingStage = error.details?.correlation_stage ?? "transcript";
+    if (
+      error.details?.correlation_pending &&
+      (retryCorrelation || pendingStage !== correlationStage)
+    ) {
+      return {
+        ...context,
+        retry_wait: true,
+        correlation_pending: true,
+        correlation_stage: pendingStage,
+      };
     }
     settleTurnRecord(context.turn, {
       status: error.outcome ?? "uncertain",
       error: error.message,
       settledAt: now(),
     });
+    if (error.details?.correlation_pending) {
+      context.turn.late_result_recovery = "exact_transcript_correlation";
+    }
     await writeRecord(registryDirectory, "turns", context.turn);
     return context;
   }
@@ -826,7 +857,41 @@ async function settleUncertain(registryDirectory, context, error, settledAt) {
 }
 
 export async function getTurn(turnId, { env = process.env } = {}) {
-  return turnContext(stateDirectory(env), turnId);
+  const context = await turnContext(stateDirectory(env), turnId);
+  if (!lateResultRecoveryEligible(context.turn)) return context;
+  const adapter = harnessAdapter(context.agent.launch.harness, env);
+  let cursor = context.turn.transcript_cursor;
+  try {
+    if (cursor.transcript_root) {
+      const transcriptPath = await adapter.locate(
+        cursor.transcript_root,
+        context.agent.native_session,
+      );
+      cursor = await adapter.resolveInventory(
+        cursor,
+        transcriptPath,
+        context.agent.native_session,
+      );
+    }
+    const lateResult = await adapter.extract(
+      cursor,
+      context.turn.inputs.map(({ text }) => text),
+    );
+    return { ...context, late_result: lateResult };
+  } catch {
+    return context;
+  }
+}
+
+function lateResultRecoveryEligible(turn) {
+  if (turn.status !== "uncertain" || turn.result) return false;
+  if (turn.late_result_recovery === "exact_transcript_correlation") return true;
+  return (
+    turn.error === "submitted input was not observed after the transcript cursor" ||
+    /^no completed (?:Claude|Codex) assistant result followed the final input$/u.test(
+      turn.error ?? "",
+    )
+  );
 }
 
 export async function listTurns(filters = {}, { env = process.env } = {}) {
@@ -859,7 +924,10 @@ export function turnCommandResult(command, context, options = {}) {
       group: summarizeGroup(context.group),
       task: summarizeTask(context.task),
       agent: summarizeAgent(context.agent),
-      turn: summarizeTurn(context.turn, options),
+      turn: summarizeTurn(context.turn, {
+        ...options,
+        lateResult: context.late_result,
+      }),
       ...(context.block ? { block: summarizeBlock(context.block) } : {}),
       ...(context.recovery_reason
         ? { recovery: { reason: context.recovery_reason } }
@@ -907,7 +975,7 @@ function summarizeAgent(agent) {
 
 function summarizeTurn(
   turn,
-  { includeMessages = false, compact = false } = {},
+  { includeMessages = false, compact = false, lateResult } = {},
 ) {
   const result = turn.result
     ? {
@@ -920,6 +988,14 @@ function summarizeTurn(
     status: turn.status,
     input_count: turn.inputs.length,
     ...(result ? { result } : {}),
+    ...(lateResult
+      ? {
+          late_result: {
+            text: lateResult.text,
+            ...(includeMessages ? { messages: lateResult.messages } : {}),
+          },
+        }
+      : {}),
     ...(turn.error ? { error: turn.error } : {}),
   };
   if (compact) return summary;

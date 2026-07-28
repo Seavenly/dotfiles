@@ -86,12 +86,17 @@ export async function reconcileOrRecoverAgent(
     return blocked(initial, "launch_unsatisfied");
   }
   try {
+    const launchRuntime = await adapter.prepareLaunch(
+      registryDirectory,
+      initial.agent,
+    );
     await adapter.resumeAgent(herdr, {
       name: initial.agent.herdr.name,
       paneId: initial.agent.herdr.pane_id,
       label: initial.agent.label ?? initial.agent.key,
       specification: initial.agent.launch,
       nativeSession: initial.agent.native_session,
+      ...launchRuntime,
     });
   } catch (error) {
     return uncertain(initial, "resume_failed", error.message);

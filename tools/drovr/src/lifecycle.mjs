@@ -72,6 +72,55 @@ function managedIdentityMatches(agent, observed) {
   );
 }
 
+async function liveAgentRecords(herdr, agents) {
+  if (agents.length === 0) return [];
+  if (herdr.agentRecords) return herdr.agentRecords();
+  const records = [];
+  for (const agent of agents) {
+    const observed = await herdr.agentRecord(agent.herdr.name);
+    if (observed) {
+      records.push({
+        ...observed,
+        name: observed.name ?? agent.herdr.name,
+      });
+    }
+  }
+  return records;
+}
+
+async function classifyManagedAgent({ agent, herdr, liveAgents }) {
+  const namedAgents = liveAgents.filter(
+    ({ name }) => name === agent.herdr.name,
+  );
+  const nativeOwners = agent.native_session
+    ? liveAgents.filter(
+        (candidate) =>
+          candidate.agent_session?.value === agent.native_session,
+      )
+    : [];
+  if (
+    namedAgents.length > 1 ||
+    nativeOwners.length > 1 ||
+    (nativeOwners[0] && nativeOwners[0].name !== agent.herdr.name)
+  ) {
+    return { failure: { agent, status: "recovery_blocked" } };
+  }
+  const observed = namedAgents[0];
+  if (observed && !managedIdentityMatches(agent, observed)) {
+    return { failure: { agent, status: "recovery_blocked" } };
+  }
+
+  const paneId = observed?.pane_id ?? agent.herdr.pane_id;
+  const pane = await herdr.paneRecord(paneId);
+  if (!observed && pane && !isUnboundAgent(agent)) {
+    return { failure: { agent, status: "agent_lost" } };
+  }
+  if (observed && !pane?.tab_id && !isUnboundAgent(agent)) {
+    return { failure: { agent, status: "agent_lost" } };
+  }
+  return { observed, pane, paneId };
+}
+
 async function groupLifecycleContext(registryDirectory, groupId) {
   const registry = await loadRegistryRelationships(registryDirectory);
   const context = groupRelationship(registry, groupId);
@@ -160,10 +209,7 @@ async function forceInterruptActiveTurns({
       for (const agent of agents) {
         const observed = await herdr.agentRecord(agent.herdr.name);
         observations.set(agent.id, observed);
-        if (
-          !managedIdentityMatches(agent, observed) &&
-          !(isUnboundAgent(agent) && !observed)
-        ) {
+        if (observed && !managedIdentityMatches(agent, observed)) {
           outcomes.set(agent.id, {
             status: "uncertain",
             error: "native session identity changed during force cleanup",
@@ -258,6 +304,7 @@ async function preflightTaskCleanup({
   turns,
   group,
   herdr,
+  liveAgents,
   force,
 }) {
   const activeAgents = agents.filter(({ status }) => status === "active");
@@ -267,15 +314,19 @@ async function preflightTaskCleanup({
   }
 
   const tabIds = new Set();
+  let observedBoundAgent = false;
   for (const agent of activeAgents) {
-    const observed = await herdr.agentRecord(agent.herdr.name);
+    const classification = await classifyManagedAgent({
+      agent,
+      herdr,
+      liveAgents,
+    });
+    if (classification.failure) {
+      return { failure: { task, ...classification.failure } };
+    }
+    const { observed, pane, paneId } = classification;
     const unbound = isUnboundAgent(agent);
-    if (!observed && !unbound) {
-      return { failure: { task, agent, status: "agent_lost" } };
-    }
-    if (observed && !managedIdentityMatches(agent, observed)) {
-      return { failure: { task, agent, status: "recovery_blocked" } };
-    }
+    observedBoundAgent ||= Boolean(observed && !unbound);
     if (
       !force &&
       ["working", "blocked"].includes(observed?.agent_status)
@@ -290,12 +341,7 @@ async function preflightTaskCleanup({
     ) {
       return { failure: { task, agent, status: "uncertain" } };
     }
-    const paneId = observed?.pane_id ?? agent.herdr.pane_id;
-    const pane = await herdr.paneRecord(paneId);
     if (!pane?.tab_id) {
-      if (!unbound) {
-        return { failure: { task, agent, status: "agent_lost" } };
-      }
       continue;
     }
     tabIds.add(pane.tab_id);
@@ -312,7 +358,7 @@ async function preflightTaskCleanup({
     }
   }
   const registeredTab = await herdr.tabRecord(tabId);
-  if (activeAgents.some((agent) => !isUnboundAgent(agent)) && !registeredTab) {
+  if (observedBoundAgent && !registeredTab) {
     return { failure: { task, status: "agent_lost" } };
   }
   if (
@@ -343,6 +389,11 @@ async function executeTaskCleanup({
     await herdr.closeTab(plan.tabId);
   }
   if (await herdr.tabRecord(plan.tabId)) return false;
+  await finalizeTaskCleanup({ registryDirectory, plan, now });
+  return true;
+}
+
+async function finalizeTaskCleanup({ registryDirectory, plan, now }) {
   for (const agent of plan.agents) {
     agent.status = "retired";
     agent.retired_at = now();
@@ -352,7 +403,51 @@ async function executeTaskCleanup({
   plan.task.closed_at = now();
   plan.task.herdr.tab_id = plan.tabId;
   await writeRecord(registryDirectory, "tasks", plan.task);
-  return true;
+}
+
+async function preflightIdleTab({ group, task, herdr }) {
+  const workspaceId = group.herdr.workspace_id;
+  if (!workspaceId || !(await herdr.workspaceRecord(workspaceId))) {
+    return { failure: { status: "recovery_blocked" } };
+  }
+  const idleTab = group.herdr.idle_tab;
+  if (!idleTab) return { plan: { create: true } };
+  if (idleTab.tab_id === task.herdr.tab_id) {
+    return { failure: { status: "recovery_blocked" } };
+  }
+  const [tab, pane] = await Promise.all([
+    herdr.tabRecord(idleTab.tab_id),
+    herdr.paneRecord(idleTab.root_pane_id),
+  ]);
+  if (
+    tab?.workspace_id !== workspaceId ||
+    pane?.tab_id !== idleTab.tab_id
+  ) {
+    return { failure: { status: "recovery_blocked" } };
+  }
+  return { plan: { create: false } };
+}
+
+async function ensureIdleTab({ registryDirectory, group, task, herdr }) {
+  if (group.herdr.idle_tab) return true;
+  const created = await herdr.createTab({
+    workspaceId: group.herdr.workspace_id,
+    cwd: task.cwd,
+    label: `${group.label} idle`,
+  });
+  group.herdr.idle_tab = {
+    tab_id: created.tabId,
+    root_pane_id: created.paneId,
+  };
+  await writeRecord(registryDirectory, "groups", group);
+  const [tab, pane] = await Promise.all([
+    herdr.tabRecord(created.tabId),
+    herdr.paneRecord(created.paneId),
+  ]);
+  return (
+    tab?.workspace_id === group.herdr.workspace_id &&
+    pane?.tab_id === created.tabId
+  );
 }
 
 export async function closeGroup(groupId, dependencies = {}) {
@@ -387,6 +482,10 @@ export async function closeGroup(groupId, dependencies = {}) {
 
           const herdr = client(sessionFor(context.group), env, dependencies);
           await herdr.ensureSession();
+          const activeAgents = context.agents.filter(
+            ({ status }) => status === "active",
+          );
+          const observedAgents = await liveAgentRecords(herdr, activeAgents);
           const plans = [];
           for (const task of context.tasks.filter(
             ({ status }) => status === "active",
@@ -400,6 +499,7 @@ export async function closeGroup(groupId, dependencies = {}) {
               turns: context.turns,
               group: context.group,
               herdr,
+              liveAgents: observedAgents,
               force,
             });
             if (preflight.failure) {
@@ -408,12 +508,20 @@ export async function closeGroup(groupId, dependencies = {}) {
             plans.push(preflight.plan);
           }
 
+          const workspaceId = context.group.herdr.workspace_id;
+          if (!workspaceId) corruptRelationship("group", context.group.id);
+          const registeredWorkspace = await herdr.workspaceRecord(workspaceId);
+          if (
+            !registeredWorkspace &&
+            plans.some(({ registered }) => registered)
+          ) {
+            return { ...context, status: "recovery_blocked" };
+          }
+
           const interruption = force
             ? await forceInterruptActiveTurns({
                 registryDirectory,
-                agents: context.agents.filter(
-                  ({ status }) => status === "active",
-                ),
+                agents: activeAgents,
                 turns: context.turns,
                 herdr,
                 now,
@@ -424,22 +532,17 @@ export async function closeGroup(groupId, dependencies = {}) {
             return { ...context, ...interruption.failure };
           }
 
+          if (registeredWorkspace) await herdr.closeWorkspace(workspaceId);
+          if (await herdr.workspaceRecord(workspaceId)) {
+            return { ...context, status: "uncertain" };
+          }
           for (const plan of plans) {
-            if (
-              !(await executeTaskCleanup({
-                registryDirectory,
-                plan,
-                herdr,
-                now,
-              }))
-            ) {
+            if (await herdr.tabRecord(plan.tabId)) {
               return { ...context, task: plan.task, status: "uncertain" };
             }
           }
-          const workspaceId = context.group.herdr.workspace_id;
-          if (workspaceId) await herdr.closeWorkspace(workspaceId);
-          if (workspaceId && (await herdr.workspaceRecord(workspaceId))) {
-            return { ...context, status: "uncertain" };
+          for (const plan of plans) {
+            await finalizeTaskCleanup({ registryDirectory, plan, now });
           }
           context.group.status = "closed";
           context.group.closed_at = now();
@@ -470,18 +573,18 @@ export async function retireAgent(agentId, dependencies = {}) {
       }
       const herdr = client(sessionFor(context.group), env, dependencies);
       await herdr.ensureSession();
-      const observed = await herdr.agentRecord(context.agent.herdr.name);
-      const turns = await readRecords(registryDirectory, "turns");
-      const unbound = isUnboundAgent(context.agent);
-      if (
-        observed &&
-        !managedIdentityMatches(context.agent, observed)
-      ) {
-        return { ...context, status: "recovery_blocked" };
+      const observedAgents = await liveAgentRecords(herdr, [context.agent]);
+      const classification = await classifyManagedAgent({
+        agent: context.agent,
+        herdr,
+        liveAgents: observedAgents,
+      });
+      if (classification.failure) {
+        return { ...context, status: classification.failure.status };
       }
+      const { observed, pane, paneId } = classification;
+      const turns = await readRecords(registryDirectory, "turns");
       if (observed) {
-        const paneId = observed.pane_id ?? context.agent.herdr.pane_id;
-        const pane = await herdr.paneRecord(paneId);
         if (pane?.tab_id && pane.tab_id !== context.task.herdr.tab_id) {
           context.task.herdr.tab_id = pane.tab_id;
           await writeRecord(registryDirectory, "tasks", context.task);
@@ -491,12 +594,9 @@ export async function retireAgent(agentId, dependencies = {}) {
         if (await herdr.paneRecord(paneId)) {
           return { ...context, status: "uncertain" };
         }
-      } else if (await herdr.paneRecord(context.agent.herdr.pane_id)) {
-        if (!unbound) {
-          return { ...context, status: "agent_lost" };
-        }
-        await herdr.closePane(context.agent.herdr.pane_id);
-        if (await herdr.paneRecord(context.agent.herdr.pane_id)) {
+      } else if (pane) {
+        await herdr.closePane(paneId);
+        if (await herdr.paneRecord(paneId)) {
           return { ...context, status: "uncertain" };
         }
       }
@@ -524,63 +624,104 @@ export async function closeTask(taskId, dependencies = {}) {
   const initial = await lifecycleContext(registryDirectory, "task", taskId);
   return withResourceLock(
     registryDirectory,
-    taskLifecycleLockKey(taskId),
-    async () => {
-      const context = await lifecycleContext(
+    `group-key:${initial.group.key}`,
+    () =>
+      withResourceLock(
         registryDirectory,
-        "task",
-        taskId,
-      );
-      if (context.task.status !== "active") {
-        return { ...context, status: "task_closed" };
-      }
-      const turns = await readRecords(registryDirectory, "turns");
-      if (!force && workingTurnsFor(context.agents, turns).length) {
-        return { ...context, status: "task_busy" };
-      }
-      const herdr = client(sessionFor(context.group), env, dependencies);
-      await herdr.ensureSession();
-      const preflight = await preflightTaskCleanup({
-        task: context.task,
-        agents: context.agents,
-        turns,
-        group: context.group,
-        herdr,
-        force,
-      });
-      if (preflight.failure) {
-        return { ...context, ...preflight.failure };
-      }
-      const { plan } = preflight;
-      const interruption = force
-        ? await forceInterruptActiveTurns({
+        taskLifecycleLockKey(taskId),
+        async () => {
+          const context = await lifecycleContext(
             registryDirectory,
-            agents: plan.agents,
-            turns: plan.workingTurns,
+            "task",
+            taskId,
+          );
+          if (context.task.status !== "active") {
+            return { ...context, status: "task_closed" };
+          }
+          const [turns, tasks] = await Promise.all([
+            readRecords(registryDirectory, "turns"),
+            readRecords(registryDirectory, "tasks"),
+          ]);
+          if (!force && workingTurnsFor(context.agents, turns).length) {
+            return { ...context, status: "task_busy" };
+          }
+          const herdr = client(sessionFor(context.group), env, dependencies);
+          await herdr.ensureSession();
+          const activeAgents = context.agents.filter(
+            ({ status }) => status === "active",
+          );
+          const observedAgents = await liveAgentRecords(herdr, activeAgents);
+          const preflight = await preflightTaskCleanup({
+            task: context.task,
+            agents: context.agents,
+            turns,
+            group: context.group,
             herdr,
-            now,
-            timeoutMs: dependencies.interruptTimeoutMs,
-          })
-        : { turns: [] };
-      if (interruption.failure) {
-        return { ...context, ...interruption.failure };
-      }
-      if (
-        !(await executeTaskCleanup({
-          registryDirectory,
-          plan,
-          herdr,
-          now,
-        }))
-      ) {
-        return { ...context, status: "uncertain" };
-      }
-      return {
-        ...context,
-        status: "closed",
-        ...(force ? { turn_outcomes: interruption.turns } : {}),
-      };
-    },
+            liveAgents: observedAgents,
+            force,
+          });
+          if (preflight.failure) {
+            return { ...context, ...preflight.failure };
+          }
+          const finalActiveTask = !tasks.some(
+            (candidate) =>
+              candidate.group_id === context.group.id &&
+              candidate.id !== context.task.id &&
+              candidate.status === "active",
+          );
+          const idlePreflight = finalActiveTask
+            ? await preflightIdleTab({
+                group: context.group,
+                task: context.task,
+                herdr,
+              })
+            : null;
+          if (idlePreflight?.failure) {
+            return { ...context, ...idlePreflight.failure };
+          }
+          const { plan } = preflight;
+          const interruption = force
+            ? await forceInterruptActiveTurns({
+                registryDirectory,
+                agents: plan.agents,
+                turns: plan.workingTurns,
+                herdr,
+                now,
+                timeoutMs: dependencies.interruptTimeoutMs,
+              })
+            : { turns: [] };
+          if (interruption.failure) {
+            return { ...context, ...interruption.failure };
+          }
+          if (
+            finalActiveTask &&
+            idlePreflight.plan.create &&
+            !(await ensureIdleTab({
+              registryDirectory,
+              group: context.group,
+              task: context.task,
+              herdr,
+            }))
+          ) {
+            return { ...context, status: "uncertain" };
+          }
+          if (
+            !(await executeTaskCleanup({
+              registryDirectory,
+              plan,
+              herdr,
+              now,
+            }))
+          ) {
+            return { ...context, status: "uncertain" };
+          }
+          return {
+            ...context,
+            status: "closed",
+            ...(force ? { turn_outcomes: interruption.turns } : {}),
+          };
+        },
+      ),
   );
 }
 

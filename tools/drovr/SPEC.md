@@ -418,8 +418,19 @@ Completion requires:
 2. A completed assistant response occurs after the final input.
 3. Herdr reports the agent settled.
 
+The transcript adapter treats any unrecorded native input as a correlation
+boundary. It never skips such an input to select a later assistant response.
+Correlation grace is bounded per observed stage of progress, including input
+appearance and final-result appearance, rather than from the first possibly
+stale settled observation.
+
 The primary result is the last settled assistant message. Intermediate
 assistant messages are retained and available through `--include-messages`.
+If a transcript-correlatable result appears only after a turn was durably
+settled as `uncertain`, `turn get` may expose it as a non-durable `late_result`
+projection. Exact ordered inputs and the absence of an intervening unrecorded
+native input are required. Discovery never changes the terminal status or
+writes a result into the durable turn record.
 
 ### Blocked agents
 
@@ -467,6 +478,12 @@ settlement, or final-message correlation cannot be established, it returns an
 explicit uncertain or unsupported state rather than selecting the latest screen
 or transcript message.
 
+When Claude role instructions are non-empty, Drovr writes their exact resolved
+bytes to a private launch document beneath the state directory and supplies its
+path through Claude's native system-prompt file option. The launch document is
+derived from the persisted immutable specification and recreated for recovery.
+Drovr does not inline multiline role text or bypass Herdr's shell-safety checks.
+
 Transcript knowledge is isolated behind versioned Claude Code and Codex
 adapters. Executable versions, Herdr integration versions, and adapter versions
 are persisted diagnostically. Compatibility is determined through supported
@@ -490,6 +507,10 @@ Registry requirements:
 - No exclusive lock held for the duration of `turn wait`.
 - Private state-directory and file permissions.
 - No flow scheduling, tracker, worktree-ownership, or merge state.
+
+Private launch documents derived from immutable launch specifications live
+beside the registry with owner-only permissions. They are runtime inputs, not a
+second source of launch authority.
 
 Authority is divided deliberately:
 
@@ -530,15 +551,28 @@ prompt or assumes tool side effects did not occur.
 
 `task close` retires its agents, closes its managed tab, and preserves durable
 history. It refuses when an agent is working or blocked unless `--force` is
-supplied.
+supplied. When the task is the group's final active task, Drovr first creates
+one exact group-owned idle tab in the registered workspace so Herdr can close
+the task tab without violating its final-tab constraint. The idle tab remains
+registered to the group until `group close`; it is not a delegated task and
+does not change the group's lifetime.
 
 `group close` preflights every task before mutation. Without `--force`, any busy
 task prevents the whole group closure. With `--force`, active work is
-interrupted, unfinished turns are marked accordingly, agents are retired, tabs
-are closed, and the group workspace is closed.
+interrupted and unfinished turns are marked accordingly. Group cleanup closes
+the exact registered workspace as one topology operation, verifies that
+workspace and its registered task tabs are absent, and then retires agents and
+closes tasks in the durable registry. It does not close task tabs individually.
+
+Cleanup may finalize a stale bound agent only after confirming that its exact
+managed name and exact registered pane are both absent and that no other live
+agent owns its native session. A surviving registered pane, duplicate managed
+name, native-session mismatch, or duplicate native-session owner fails closed
+before topology mutation.
 
 Closing the last task does not implicitly close an explicit group. The inferred
-standalone workspace remains persistent by default.
+standalone workspace also remains persistent by default; both use the same
+group-owned idle-tab behavior.
 
 Drovr never deletes task worktrees or other caller-owned directories.
 

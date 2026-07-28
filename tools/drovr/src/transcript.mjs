@@ -108,27 +108,43 @@ export function correlateTranscriptRecords(
   let recordIndex = -1;
   let firstInputIndex = -1;
   for (const input of inputs) {
-    recordIndex = records.findIndex(
-      (record, index) => index > recordIndex && userText(record) === input,
+    const nextInputIndex = records.findIndex(
+      (record, index) =>
+        index > recordIndex && userText(record) !== null,
     );
+    recordIndex = nextInputIndex;
     if (recordIndex < 0) {
       throw new DrovrError(
         "submitted input was not observed after the transcript cursor",
         {
           outcome: "uncertain",
-          details: { correlation_pending: true },
+          details: {
+            correlation_pending: true,
+            correlation_stage: "recorded_inputs",
+          },
         },
+      );
+    }
+    if (userText(records[recordIndex]) !== input) {
+      throw new DrovrError(
+        "recorded input order was interrupted by an unrelated native input",
+        { outcome: "uncertain" },
       );
     }
     if (firstInputIndex < 0) firstInputIndex = recordIndex;
   }
 
+  const nextInputIndex = records.findIndex(
+    (record, index) => index > recordIndex && userText(record) !== null,
+  );
+  const conversationEnd = nextInputIndex < 0 ? records.length : nextInputIndex;
+
   const messages = records
-    .slice(firstInputIndex + 1)
+    .slice(firstInputIndex + 1, conversationEnd)
     .map(finalAssistantText)
     .filter((text) => text !== null);
   const settledMessages = records
-    .slice(recordIndex + 1)
+    .slice(recordIndex + 1, conversationEnd)
     .map(finalAssistantText)
     .filter((text) => text !== null);
   if (settledMessages.length === 0) {
@@ -136,7 +152,10 @@ export function correlateTranscriptRecords(
       `no completed ${harness} assistant result followed the final input`,
       {
         outcome: "uncertain",
-        details: { correlation_pending: true },
+        details: {
+          correlation_pending: true,
+          correlation_stage: "assistant_result",
+        },
       },
     );
   }

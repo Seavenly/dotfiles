@@ -133,7 +133,12 @@ function messageText(content) {
 
 function userText(record) {
   if (record?.type !== "user" || record.message?.role !== "user") return null;
-  return messageText(record.message.content);
+  const content = record.message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || !content.some((item) => item?.type === "text")) {
+    return null;
+  }
+  return messageText(content);
 }
 
 function finalAssistantText(record) {

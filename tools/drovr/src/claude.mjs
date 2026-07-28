@@ -1,5 +1,6 @@
 import { DrovrError } from "./errors.mjs";
 import { execute } from "./process.mjs";
+import { writeLaunchDocument } from "./registry.mjs";
 
 export function claudePermissionMode(native) {
   return native.permission_mode === "default"
@@ -7,7 +8,10 @@ export function claudePermissionMode(native) {
     : native.permission_mode;
 }
 
-export function claudeAgentArguments(specification) {
+export function claudeAgentArguments(
+  specification,
+  { systemPromptFile } = {},
+) {
   const native = specification.native;
   const permissionMode = claudePermissionMode(native);
   const args = [
@@ -25,9 +29,26 @@ export function claudeAgentArguments(specification) {
     args.push("--allow-dangerously-skip-permissions");
   }
   if (specification.instructions) {
-    args.push("--append-system-prompt", specification.instructions);
+    if (!systemPromptFile) {
+      throw new DrovrError(
+        "Claude role instructions require a prepared launch document",
+        { code: 5, outcome: "internal_error" },
+      );
+    }
+    args.push("--append-system-prompt-file", systemPromptFile);
   }
   return args;
+}
+
+export async function prepareClaudeLaunch(registryDirectory, agent) {
+  if (!agent.launch.instructions) return {};
+  return {
+    systemPromptFile: await writeLaunchDocument(
+      registryDirectory,
+      `claude-system-prompt:${agent.id}`,
+      agent.launch.instructions,
+    ),
+  };
 }
 
 export async function validateClaudeLaunchSpecification(
@@ -51,7 +72,13 @@ export async function validateClaudeLaunchSpecification(
   if (permissionMode === "bypassPermissions") {
     required.push("--allow-dangerously-skip-permissions");
   }
-  if (specification.instructions) required.push("--append-system-prompt");
+  if (
+    specification.instructions &&
+    !help.includes("--append-system-prompt-file") &&
+    !help.includes("--append-system-prompt[-file]")
+  ) {
+    required.push("--append-system-prompt-file");
+  }
   const missing = required.filter((capability) => !help.includes(capability));
   if (missing.length) {
     throw new DrovrError(

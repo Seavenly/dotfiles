@@ -172,9 +172,18 @@ export class HerdrClient {
     return this.startCodexAgent({ ...options, resume: options.nativeSession });
   }
 
-  async startClaudeAgent({ name, paneId, label, specification, resume }) {
+  async startClaudeAgent({
+    name,
+    paneId,
+    label,
+    specification,
+    systemPromptFile,
+    resume,
+  }) {
     await this.waitForShell(paneId);
-    const agentArgs = claudeAgentArguments(specification);
+    const agentArgs = claudeAgentArguments(specification, {
+      systemPromptFile,
+    });
     if (resume) agentArgs.push("--resume", resume);
     await this.startAgentWhenPaneReady([
       "agent",

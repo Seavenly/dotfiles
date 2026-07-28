@@ -116,12 +116,29 @@ blocked native harness, `--after-block` durably acknowledges that exact block
 and waits for the agent to return to working before accepting later settlement.
 If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
+Transcript-flush grace follows correlation progress, so a stale idle observation
+before prompt delivery cannot consume the grace needed after actual settlement.
+An `uncertain` turn remains terminal, but `turn get` reports a non-durable
+`late_result` when the transcript later contains the exact recorded inputs in
+order and a complete result before any unrecorded native input. This discovery
+does not rewrite the durable turn or promote it to `completed`.
 Cancellation reports `cancelled` only after native interruption and confirmed
 settlement. Non-force cleanup refuses working or blocked resources, and group
 cleanup preflights every task before mutating any of them. Force cleanup
 interrupts active work, records each unfinished turn as `interrupted` or
-`uncertain` according to the observed settlement, and closes only the exact
-registered tabs and workspace. All cleanup preserves durable history and never
-deletes caller-owned cwd or transcript files. Mutating commands may recover a
-confirmed-down native session only when every persisted safety check succeeds;
+`uncertain` according to the observed settlement. Group cleanup closes the
+exact registered workspace directly instead of closing its task tabs first.
+Closing a final task keeps its group workspace active through one exact
+group-owned idle tab, satisfying Herdr's final-tab constraint without changing
+group lifetime. Stale agents converge only when their exact process and pane
+are absent and native-session ownership is unambiguous. All cleanup preserves
+durable history and never deletes caller-owned cwd or transcript files.
+Mutating commands may recover a confirmed-down native session only when every
+persisted safety check succeeds;
 `status` and `agent get` report observed loss without launching anything.
+
+Claude role instructions are materialized from the immutable launch
+specification into a private `0600` file beneath Drovr state and passed through
+Claude's native system-prompt file option. This preserves exact multiline and
+shell-sensitive text without weakening Herdr's command-argument safety checks;
+the file is recreated from the persisted specification during safe recovery.

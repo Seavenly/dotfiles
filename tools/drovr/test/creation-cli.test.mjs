@@ -32,6 +32,7 @@ test("task open creates an explicit task idempotently through the public CLI", a
   const otherCwd = join(scratch, "other-work");
   const calls = join(scratch, "herdr-calls");
   const tabClosed = join(scratch, "tab-closed");
+  const idleTabCreated = join(scratch, "idle-tab-created");
   const workspaceClosed = join(scratch, "workspace-closed");
   await mkdir(fakeBin, { recursive: true });
   await mkdir(cwd);
@@ -50,14 +51,29 @@ case "\${1:-} \${2:-}" in
     printf '{"result":{"workspace":{"workspace_id":"workspace-1"},"root_pane":{"pane_id":"pane-1"}}}\n'
     ;;
   "pane get")
-    printf '{"result":{"pane":{"pane_id":"pane-1","tab_id":"tab-1"}}}\n'
+    if [[ \${3:-} == pane-idle && -f ${JSON.stringify(idleTabCreated)} ]]; then
+      printf '{"result":{"pane":{"pane_id":"pane-idle","tab_id":"tab-idle"}}}\n'
+    else
+      printf '{"result":{"pane":{"pane_id":"pane-1","tab_id":"tab-1"}}}\n'
+    fi
+    ;;
+  "tab create")
+    touch ${JSON.stringify(idleTabCreated)}
+    printf '{"result":{"tab":{"tab_id":"tab-idle"},"root_pane":{"pane_id":"pane-idle"}}}\n'
     ;;
   "tab get")
-    if [[ -f ${JSON.stringify(tabClosed)} ]]; then
+    if [[ -f ${JSON.stringify(workspaceClosed)} ]]; then
       printf '{"error":{"code":"tab_not_found","message":"tab not found"}}\n' >&2
       exit 1
     fi
-    printf '{"result":{"tab":{"tab_id":"tab-1"}}}\n'
+    if [[ \${3:-} == tab-1 && ! -f ${JSON.stringify(tabClosed)} ]]; then
+      printf '{"result":{"tab":{"tab_id":"tab-1","workspace_id":"workspace-1"}}}\n'
+    elif [[ \${3:-} == tab-idle && -f ${JSON.stringify(idleTabCreated)} ]]; then
+      printf '{"result":{"tab":{"tab_id":"tab-idle","workspace_id":"workspace-1"}}}\n'
+    else
+      printf '{"error":{"code":"tab_not_found","message":"tab not found"}}\n' >&2
+      exit 1
+    fi
     ;;
   "tab close") touch ${JSON.stringify(tabClosed)} ;;
   "workspace get")
@@ -175,15 +191,19 @@ esac
     ).stdout,
   );
   assert.equal(unchangedGroup.result.group.label, "Identity program");
-  const closed = JSON.parse(
-    (
-      await execFileAsync(
-        drovr,
-        ["task", "close", first.result.task.id],
-        { encoding: "utf8", env },
-      )
-    ).stdout,
-  );
+  let closeExecution;
+  try {
+    closeExecution = await execFileAsync(
+      drovr,
+      ["task", "close", first.result.task.id],
+      { encoding: "utf8", env },
+    );
+  } catch (error) {
+    assert.fail(
+      `${error.message}\nstdout: ${error.stdout}\nstderr: ${error.stderr}`,
+    );
+  }
+  const closed = JSON.parse(closeExecution.stdout);
   assert.equal(closed.result.status, "closed");
   const reopened = JSON.parse(
     (await execFileAsync(drovr, argv, { encoding: "utf8", env })).stdout,

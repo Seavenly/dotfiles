@@ -9,7 +9,10 @@ import {
   resolveClaudeInventoryCursor,
   validateClaudeTranscript,
 } from "./claude-transcript.mjs";
-import { validateClaudeLaunchSpecification } from "./claude.mjs";
+import {
+  prepareClaudeLaunch,
+  validateClaudeLaunchSpecification,
+} from "./claude.mjs";
 import { validateCodexLaunchSpecification } from "./codex.mjs";
 import {
   captureTranscriptCursor,
@@ -33,6 +36,7 @@ export function harnessAdapter(harness, env = process.env) {
       resolveInventory: resolveClaudeInventoryCursor,
       extract: extractClaudeTurn,
       inventoryBeforeDelivery: true,
+      prepareLaunch: prepareClaudeLaunch,
       startAgent: (herdr, options) => herdr.startClaudeAgent(options),
       resumeAgent: (herdr, options) => herdr.resumeClaudeAgent(options),
       validate: validateClaudeLaunchSpecification,
@@ -47,6 +51,7 @@ export function harnessAdapter(harness, env = process.env) {
     captureInventory: captureTranscriptInventory,
     resolveInventory: resolveInventoryCursor,
     extract: extractCodexTurn,
+    prepareLaunch: async () => ({}),
     startAgent: (herdr, options) => herdr.startCodexAgent(options),
     resumeAgent: (herdr, options) => herdr.resumeCodexAgent(options),
     validate: validateCodexLaunchSpecification,

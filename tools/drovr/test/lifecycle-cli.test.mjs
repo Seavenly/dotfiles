@@ -45,6 +45,10 @@ fi
 shift 2
 case "\${1:-} \${2:-}" in
   "agent list")
+    if [[ -f "$state/closed-pane" ]]; then
+      printf '{"result":{"agents":[]}}\\n'
+      exit
+    fi
     if [[ -f "$state/interrupted" ]]; then status=idle; else status=working; fi
     printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","agent_session":{"value":"native-1"}}]}}\\n' "$status"
     ;;
@@ -61,19 +65,36 @@ case "\${1:-} \${2:-}" in
     printf '%s\\n' "\${3}" > "$state/closed-pane"
     ;;
   "pane get")
-    printf '{"error":{"code":"pane_not_found"}}\\n' >&2
-    exit 1
+    if [[ \${3:-} == pane-agent-1 && ! -f "$state/closed-pane" ]]; then
+      printf '{"result":{"pane":{"pane_id":"pane-agent-1","tab_id":"tab-task-1"}}}\\n'
+    elif [[ \${3:-} == pane-idle && -f "$state/created-idle" && ! -f "$state/closed-workspace" ]]; then
+      printf '{"result":{"pane":{"pane_id":"pane-idle","tab_id":"tab-idle"}}}\\n'
+    else
+      printf '{"error":{"code":"pane_not_found"}}\\n' >&2
+      exit 1
+    fi
+    ;;
+  "tab create")
+    touch "$state/created-idle"
+    printf '{"result":{"tab":{"tab_id":"tab-idle"},"root_pane":{"pane_id":"pane-idle"}}}\\n'
     ;;
   "tab close")
     [[ \${3:-} == tab-task-1 ]]
     printf '%s\\n' "\${3}" > "$state/closed-tab"
     ;;
   "tab get")
-    if [[ -f "$state/closed-tab" ]]; then
+    if [[ -f "$state/closed-workspace" ]]; then
       printf '{"error":{"code":"tab_not_found"}}\\n' >&2
       exit 1
     fi
-    printf '{"result":{"tab":{"tab_id":"tab-task-1","workspace_id":"workspace-1"}}}\\n'
+    if [[ \${3:-} == tab-task-1 && ! -f "$state/closed-tab" ]]; then
+      printf '{"result":{"tab":{"tab_id":"tab-task-1","workspace_id":"workspace-1"}}}\\n'
+    elif [[ \${3:-} == tab-idle && -f "$state/created-idle" ]]; then
+      printf '{"result":{"tab":{"tab_id":"tab-idle","workspace_id":"workspace-1"}}}\\n'
+    else
+      printf '{"error":{"code":"tab_not_found"}}\\n' >&2
+      exit 1
+    fi
     ;;
   "workspace close")
     [[ \${3:-} == workspace-1 ]]

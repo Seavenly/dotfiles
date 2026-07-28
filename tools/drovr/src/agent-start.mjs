@@ -277,11 +277,16 @@ export async function startAgent(taskId, options, dependencies = {}) {
         } else {
           observed = await herdr.agentRecord(agent.herdr.name);
           if (!observed) {
+            const launchRuntime = await adapter.prepareLaunch(
+              registryDirectory,
+              agent,
+            );
             await adapter.startAgent(herdr, {
               name: agent.herdr.name,
               paneId: agent.herdr.pane_id,
               label: agent.label,
               specification: agent.launch,
+              ...launchRuntime,
             });
           }
           observed = await waitForNewAgentReady(
@@ -326,11 +331,16 @@ export async function startAgent(taskId, options, dependencies = {}) {
         created_at: now(),
       };
       await writeRecord(registryDirectory, "agents", agent);
+      const launchRuntime = await adapter.prepareLaunch(
+        registryDirectory,
+        agent,
+      );
       await adapter.startAgent(herdr, {
         name: managedName,
         paneId: agent.herdr.pane_id,
         label: agent.label,
         specification,
+        ...launchRuntime,
       });
       const observed = await waitForNewAgentReady(
         herdr,

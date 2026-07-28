@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +27,176 @@ import { openTask } from "../src/task-open.mjs";
 import { closeTask } from "../src/lifecycle.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
+
+test("Claude role instructions launch through a private durable prompt file", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-role-launch-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const cwd = join(scratch, "work");
+  const configDirectory = join(scratch, "config");
+  const roleDirectory = join(configDirectory, "roles", "shell-reviewer");
+  const stateHome = join(scratch, "state");
+  const instructions = [
+    "Review the requested change.",
+    "Preserve shell text literally: $HOME; 'single' \"double\" $(literal) && pipe | glob *.",
+  ].join("\n");
+  await mkdir(cwd);
+  await cp(join(root, "config", "drovr"), configDirectory, { recursive: true });
+  await mkdir(roleDirectory, { recursive: true });
+  await writeFile(
+    join(roleDirectory, "role.toml"),
+    [
+      'schema = "drovr.role/v1"',
+      "",
+      "[defaults]",
+      'harness = "claude"',
+      'capability = "read-only"',
+      "",
+    ].join("\n"),
+  );
+  await writeFile(join(roleDirectory, "instructions.md"), `${instructions}\n`);
+  const env = {
+    ...process.env,
+    XDG_STATE_HOME: stateHome,
+    DROVR_CONFIG_DIR: configDirectory,
+  };
+  let started = false;
+  let startArguments;
+  const run = async (file, args) => {
+    if (file === "claude") {
+      return "--model --effort --permission-mode dontAsk --allowedTools --append-system-prompt-file";
+    }
+    assert.equal(file, "herdr");
+    if (args[0] === "session") {
+      return JSON.stringify({ sessions: [{ name: "delegates", running: true }] });
+    }
+    const command = args.slice(2);
+    if (command[0] === "workspace" && command[1] === "create") {
+      return JSON.stringify({
+        result: {
+          workspace: { workspace_id: "workspace-1" },
+          root_pane: { pane_id: "pane-1" },
+        },
+      });
+    }
+    if (command[0] === "pane" && command[1] === "get") {
+      return JSON.stringify({
+        result: { pane: { pane_id: "pane-1", tab_id: "tab-1" } },
+      });
+    }
+    if (
+      (command[0] === "tab" || command[0] === "pane") &&
+      command[1] === "rename"
+    ) {
+      return JSON.stringify({ result: {} });
+    }
+    if (command[0] === "pane" && command[1] === "process-info") {
+      return JSON.stringify({
+        result: {
+          process_info: {
+            shell_pid: 10,
+            foreground_processes: [{ pid: 10, name: "zsh" }],
+          },
+        },
+      });
+    }
+    if (command[0] === "agent" && command[1] === "start") {
+      startArguments = command;
+      started = true;
+      return JSON.stringify({ result: { agent: { name: command[2] } } });
+    }
+    if (command[0] === "agent" && command[1] === "list") {
+      return JSON.stringify({
+        result: {
+          agents: started
+            ? [
+                {
+                  name: startArguments[2],
+                  pane_id: "pane-1",
+                  agent_status: "idle",
+                  agent_session: { value: "native-claude-1" },
+                },
+              ]
+            : [],
+        },
+      });
+    }
+    throw new Error(`unexpected command: ${command.join(" ")}`);
+  };
+  const dependencies = { env, run, delay: async () => {} };
+  const opened = await openTask(
+    { group: "role-launch", key: "task", cwd },
+    dependencies,
+  );
+
+  await startAgent(
+    opened.task.id,
+    { key: "reviewer", role: "shell-reviewer" },
+    dependencies,
+  );
+
+  const separator = startArguments.indexOf("--");
+  const nativeArguments = startArguments.slice(separator + 1);
+  const promptFileIndex = nativeArguments.indexOf("--append-system-prompt-file");
+  assert.notEqual(promptFileIndex, -1);
+  assert.equal(nativeArguments.includes("--append-system-prompt"), false);
+  assert.equal(nativeArguments.includes(instructions), false);
+  const promptPath = nativeArguments[promptFileIndex + 1];
+  assert.equal(await readFile(promptPath, "utf8"), instructions);
+  assert.equal((await stat(promptPath)).mode & 0o777, 0o600);
+  assert.ok(promptPath.startsWith(join(stateHome, "drovr")));
+});
+
+test("a genuinely failed start preserves its immutable launch reservation", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-failed-reservation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const cwd = join(scratch, "work");
+  await mkdir(cwd);
+  const env = {
+    ...process.env,
+    XDG_STATE_HOME: join(scratch, "state"),
+    DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+  };
+  const herdr = {
+    async ensureSession() {},
+    async createWorkspace() {
+      return {
+        workspaceId: "workspace-1",
+        paneId: "pane-1",
+        tabId: "tab-1",
+      };
+    },
+    async renameTab() {},
+    async paneRecord(paneId) {
+      return { pane_id: paneId, tab_id: "tab-1" };
+    },
+    async startCodexAgent() {
+      throw new Error("native start failed");
+    },
+  };
+  const dependencies = { env, herdr, run: async () => "" };
+  const opened = await openTask(
+    { group: "failed-start", key: "task", cwd },
+    dependencies,
+  );
+
+  await assert.rejects(
+    () => startAgent(opened.task.id, { key: "builder" }, dependencies),
+    { message: "native start failed" },
+  );
+  await assert.rejects(
+    () =>
+      startAgent(
+        opened.task.id,
+        { key: "builder", effort: "low" },
+        dependencies,
+      ),
+    { outcome: "configuration_conflict" },
+  );
+  const [agent] = await readRecords(stateDirectory(env), "agents");
+  assert.equal(agent.key, "builder");
+  assert.equal(agent.native_session, null);
+  assert.equal(agent.launch.effort, "high");
+});
 
 test("agent start balances additional panes using registered task topology", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-agent-layout-"));
@@ -262,6 +440,7 @@ test("task close waits for concurrent agent start and retires the created agent"
   });
   let observedAgent;
   let tabClosed = false;
+  let idleTabCreated = false;
   const herdr = {
     async ensureSession() {},
     async createWorkspace() {
@@ -286,14 +465,27 @@ test("task close waits for concurrent agent start and retires the created agent"
       return observedAgent?.name === name ? observedAgent : null;
     },
     async paneRecord(paneId) {
+      if (paneId === "pane-idle" && idleTabCreated) {
+        return { pane_id: paneId, tab_id: "tab-idle" };
+      }
       return paneId === "pane-1" && !tabClosed
         ? { pane_id: paneId, tab_id: "tab-1" }
         : null;
     },
     async tabRecord(tabId) {
+      if (tabId === "tab-idle" && idleTabCreated) {
+        return { tab_id: tabId, workspace_id: "workspace-1" };
+      }
       return tabId === "tab-1" && !tabClosed
         ? { tab_id: tabId, workspace_id: "workspace-1" }
         : null;
+    },
+    async workspaceRecord() {
+      return { workspace_id: "workspace-1" };
+    },
+    async createTab() {
+      idleTabCreated = true;
+      return { tabId: "tab-idle", paneId: "pane-idle" };
     },
     async closeTab(tabId) {
       assert.equal(tabId, "tab-1");
@@ -347,6 +539,7 @@ test("task open waits for concurrent close before applying a mutable label", asy
   });
   let blockClose = false;
   let tabClosed = false;
+  let idleTabCreated = false;
   const renamedTabs = [];
   let ensureCalls = 0;
   let reportReopenEnsured;
@@ -369,6 +562,9 @@ test("task open waits for concurrent close before applying a mutable label", asy
       renamedTabs.push({ tabId, label });
     },
     async tabRecord(tabId) {
+      if (tabId === "tab-idle" && idleTabCreated) {
+        return { tab_id: tabId, workspace_id: "workspace-1" };
+      }
       if (blockClose) {
         blockClose = false;
         closeEntered();
@@ -377,6 +573,18 @@ test("task open waits for concurrent close before applying a mutable label", asy
       return tabId === "tab-1" && !tabClosed
         ? { tab_id: tabId, workspace_id: "workspace-1" }
         : null;
+    },
+    async paneRecord(paneId) {
+      return paneId === "pane-idle" && idleTabCreated
+        ? { pane_id: paneId, tab_id: "tab-idle" }
+        : null;
+    },
+    async workspaceRecord() {
+      return { workspace_id: "workspace-1" };
+    },
+    async createTab() {
+      idleTabCreated = true;
+      return { tabId: "tab-idle", paneId: "pane-idle" };
     },
     async closeTab(tabId) {
       assert.equal(tabId, "tab-1");
@@ -395,11 +603,12 @@ test("task open waits for concurrent close before applying a mutable label", asy
     { group: "race", key: "task", label: "Too late", cwd },
     dependencies,
   );
-  await reopenEnsured;
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ensureCalls, 2);
   releaseClose();
 
   assert.equal((await closing).status, "closed");
+  await reopenEnsured;
   await assert.rejects(reopening, { outcome: "task_closed" });
   assert.deepEqual(renamedTabs, [{ tabId: "tab-1", label: "Original" }]);
 });
