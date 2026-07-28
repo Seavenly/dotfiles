@@ -25,6 +25,22 @@ in this session.
 > endgame (Step 6) integration→`main` review PR remains a deliberate human
 > action. External-repo work still needs a human to open that repo's PR.
 > (Rationale + scope: memory `feedback-epic-flow-local-review-not-prs`.)
+>
+> **One wave per invocation (consequence of the above).** Because the agent
+> never marks a story Done in this mode, the ready set (Step 4.1 — status To Do
+> with every blocker Done) only ever contains stories whose blockers were
+> *already* Done when the invocation started. So a single `/epic-flow <KEY>` run
+> builds exactly the currently-unblocked wave, registers each story's tuicr
+> review, leaves them In Progress, and stops at the gate. It does **NOT**
+> auto-stack the whole dependency tree in one run. Downstream waves unblock only
+> **across invocations**: after reviewing the wave locally, the human integrates
+> each story into `epic/<key>`, **marks it Done**, and re-invokes
+> `/epic-flow <KEY>` — the next wave's stories then branch from the real,
+> reviewed `origin/epic/<key>` tip. Expect roughly one invocation per dependency
+> layer. Do not attempt to build stories whose blockers are still un-Done, and do
+> not locally merge built branches into the integration branch to fake-unblock
+> dependents — that base advance and its review gate are the human's to perform.
+> (Rationale: memory `feedback-epic-flow-local-mode-one-wave-per-invocation`.)
 
 User's invocation: `/epic-flow $ARGUMENTS`
 
@@ -81,6 +97,8 @@ Repeat until no story is launchable:
 The gate is now at **merge**, not pick-up: the agent builds `human-gate` stories, but their PRs sit open until a human merges them. The loop pauses when it can make no further progress without a human merge — i.e. the ready set is empty and every remaining To-Do story is blocked by a story whose PR is open-but-unmerged (a `human-gate` PR, or an `agent-auto` PR left open because its run didn't finish cleanly). Post a gate summary (which PRs await a human merge, what each needs — e.g. deploy / cross-team handshake / review — and what's blocked behind them), then stop the loop. The human merges those PRs (merging marks the story Done and unblocks its dependents); re-invoking `/epic-flow <KEY>` resumes from live state.
 
 Idempotency: Done stories are skipped. A story with an **open PR** (a `human-gate` PR, or an agent-auto PR awaiting review) is *awaiting merge* — do not re-run or re-open it. An In Progress story with **no live run and no open PR** is treated as To Do. A `human-gate` story whose deliverable is already merged/complete should be marked **Done**, not left In Progress, or the loop will re-run it.
+
+**In LOCAL-REVIEW-ONLY mode**, built stories are In Progress with **no PR** — so the "In Progress with no open PR → treat as To Do" rule above does not apply. Instead, treat a story as *already built and awaiting local integration* (do NOT re-run it) when it is In Progress **and** has a registered tuicr review — check `tuicr-reviews` for an entry whose branch is `agt/feature-<key-slug>` (or whose worktree/summary names the story). Only an In Progress story with neither a live run nor a registered tuicr review is genuinely un-built and treated as To Do.
 
 ## Step 6 — Endgame
 When every story is Done: open the integration→main PR titled from the epic (`<KEY>: <epic summary>`), with a body that links every story PR in merge order. Recommend `/review-flow <pr-number>` for the whole-epic review — don't run it automatically. Comment the PR link on the epic.
