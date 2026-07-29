@@ -64,6 +64,11 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
   'printf "%s\n" "$*" >> "$HERDR_TEST_LOG"' \
+  'if [[ -n "${HERDR_ARGV_LOG:-}" ]]; then' \
+  '  printf "argc=%s" "$#" >> "$HERDR_ARGV_LOG"' \
+  '  printf "\t<%s>" "$@" >> "$HERDR_ARGV_LOG"' \
+  '  printf "\n" >> "$HERDR_ARGV_LOG"' \
+  'fi' \
   'case "$1 $2" in' \
   '  "workspace list")' \
   '    if [[ -n "${HERDR_WORKSPACES_JSON:-}" ]]; then printf "%s\n" "$HERDR_WORKSPACES_JSON"; else printf '\''%s\n'\'' '\''{"result":{"workspaces":[]}}'\''; fi' \
@@ -109,6 +114,15 @@ assert_contains "$(cat "$herdr_log")" \
   "workspace create --cwd $project --label owner/project --focus"
 echo "ok - project switcher creates a missing Herdr workspace"
 
+: > "$herdr_log"
+direct_project="$(cd -P "$project" && pwd)"
+PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" \
+  HERDR_WORKSPACES_JSON="{\"result\":{\"workspaces\":[{\"workspace_id\":\"workspace-direct\",\"worktree\":{\"checkout_path\":\"$direct_project\"}}]}}" \
+  "$root/bin/project-switcher" --backend herdr --project "$project"
+assert_contains "$(cat "$herdr_log")" 'workspace focus workspace-direct'
+assert_not_contains "$(cat "$herdr_log")" 'workspace create'
+echo "ok - project switcher directly opens a requested Herdr project"
+
 tmux_log="$tmp/tmux.log"
 : > "$tmux_log"
 (
@@ -142,7 +156,9 @@ echo "ok - manifest-backed reviews open their immutable SHA range"
 base_sha="$(git -C "$repo" rev-parse main)"
 head_sha="$(git -C "$repo" rev-parse feature)"
 : > "$herdr_log"
-PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" \
+herdr_argv_log="$tmp/herdr-argv.log"
+: > "$herdr_argv_log"
+PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" HERDR_ARGV_LOG="$herdr_argv_log" \
   HERDR_ACTIVE_WORKSPACE_ID=workspace-current REVIEW_WORKTREE="$repo" \
   BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
   "$root/bin/review-inbox" --backend herdr
@@ -150,8 +166,10 @@ assert_contains "$(cat "$herdr_log")" \
   "tab create --workspace workspace-current --cwd $repo --label tuicr:feature --focus"
 assert_contains "$(cat "$herdr_log")" \
   "pane report-metadata pane-new --source dotfiles-review-inbox --token review_worktree=$repo --token review_revset=$base_sha...$head_sha"
-assert_contains "$(cat "$herdr_log")" "pane run pane-new zsh -i -c"
-assert_contains "$(cat "$herdr_log")" "$base_sha...$head_sha"
+assert_contains "$(cat "$herdr_log")" \
+  "pane run pane-new exec tuicr -r $base_sha...$head_sha"
+assert_contains "$(cat "$herdr_argv_log")" \
+  $'argc=4\t<pane>\t<run>\t<pane-new>\t<exec tuicr -r '"$base_sha...$head_sha"'>'
 echo "ok - review inbox creates and identifies Herdr review tabs"
 
 : > "$herdr_log"

@@ -12,6 +12,11 @@ type = "pane"
 command = "lazygit"
 
 [[keys.command]]
+key = "prefix+ctrl+d"
+type = "shell"
+command = "project-switcher --backend herdr --project \"$(dotfiles-root)\""
+
+[[keys.command]]
 key = "prefix+ctrl+r"
 type = "popup"
 command = "review-inbox --backend herdr"

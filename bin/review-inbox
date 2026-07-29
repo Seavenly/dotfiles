@@ -108,7 +108,7 @@ open_review_rows() {
 
 open_local_review() {
   local worktree="$1" revset="$2" label="$3"
-  local existing created pane_id workspace_id panes
+  local existing created pane_id workspace_id panes tuicr_command
 
   if [[ "$backend" == "tmux" ]]; then
     existing="$(tmux list-windows -F '#{window_index}'$'\t''#{@tuicr_wt}'$'\t''#{@tuicr_rev}' \
@@ -172,7 +172,8 @@ open_local_review() {
     --source dotfiles-review-inbox \
     --token "review_worktree=$worktree" \
     --token "review_revset=$revset" >/dev/null
-  herdr pane run "$pane_id" zsh -i -c "exec tuicr -r \"$revset\"" >/dev/null
+  printf -v tuicr_command 'exec tuicr -r %q' "$revset"
+  herdr pane run "$pane_id" "$tuicr_command" >/dev/null
 }
 
 if [[ "${1:-}" == "--approve" ]]; then

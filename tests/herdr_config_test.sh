@@ -24,3 +24,8 @@ conflicting_keys="$(
 [[ -z "$conflicting_keys" ]] \
   || fail "Herdr prefix Alt bindings conflict with AeroSpace: ${conflicting_keys//$'\n'/, }"
 echo "ok - Herdr custom keys avoid AeroSpace global bindings"
+
+assert_contains "$(cat "$root/config/herdr/config.toml")" 'key = "prefix+ctrl+d"'
+assert_contains "$(cat "$root/config/herdr/config.toml")" \
+  'command = "project-switcher --backend herdr --project \"$(dotfiles-root)\""'
+echo "ok - Herdr opens the dotfiles project with prefix Ctrl-D"

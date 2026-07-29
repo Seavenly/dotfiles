@@ -3,6 +3,7 @@ set -euo pipefail
 
 root="$("$(dirname "${BASH_SOURCE[0]}")/dotfiles-root")"
 backend="auto"
+project=""
 picker_args=()
 
 while (($#)); do
@@ -14,6 +15,15 @@ while (($#)); do
       ;;
     --backend=*)
       backend="${1#*=}"
+      shift
+      ;;
+    --project)
+      [[ $# -ge 2 ]] || { echo "project-switcher: --project requires a value" >&2; exit 2; }
+      project="$2"
+      shift 2
+      ;;
+    --project=*)
+      project="${1#*=}"
       shift
       ;;
     --)
@@ -42,10 +52,18 @@ case "$backend" in
   *) echo "project-switcher: backend must be auto, tmux, or herdr" >&2; exit 2 ;;
 esac
 
-if ((${#picker_args[@]})); then
-  project="$("$root/bin/project-selector" "${picker_args[@]}")" || exit 1
+if [[ -n "$project" ]]; then
+  ((${#picker_args[@]} == 0)) \
+    || { echo "project-switcher: --project cannot be combined with picker arguments" >&2; exit 2; }
+  [[ -d "$project" ]] \
+    || { echo "project-switcher: project directory does not exist: $project" >&2; exit 1; }
+  project="$(cd -P "$project" && pwd)"
 else
-  project="$("$root/bin/project-selector")" || exit 1
+  if ((${#picker_args[@]})); then
+    project="$("$root/bin/project-selector" "${picker_args[@]}")" || exit 1
+  else
+    project="$("$root/bin/project-selector")" || exit 1
+  fi
 fi
 [[ -n "$project" ]] || exit 0
 
