@@ -11,6 +11,7 @@ export async function prepareTurn({
   prompt,
   now,
   inventoryBeforeDelivery = false,
+  herdrStateChangeSeq,
 }) {
   let cursor;
   if (agent.native_session && !inventoryBeforeDelivery) {
@@ -30,6 +31,7 @@ export async function prepareTurn({
     prompt,
     submittedAt,
     transcriptCursor: cursor,
+    herdrStateChangeSeq,
   });
   await writeRecord(registryDirectory, "turns", turn);
   return turn;

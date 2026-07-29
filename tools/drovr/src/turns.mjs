@@ -20,7 +20,11 @@ import {
   withResourceLock,
   writeRecord,
 } from "./registry.mjs";
-import { appendTurnInput, settleTurnRecord } from "./turn-record.mjs";
+import {
+  appendTurnInput,
+  settleTurnRecord,
+  turnAwaitsPostDeliverySettlement,
+} from "./turn-record.mjs";
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { reconcileOrRecoverAgent } from "./recovery.mjs";
 
@@ -210,6 +214,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
             now,
             inventoryBeforeDelivery:
               adapter.inventoryBeforeDelivery || !current.agent.native_session,
+            herdrStateChangeSeq: observed.state_change_seq,
           });
           return { ...current, turn };
         },
@@ -590,6 +595,15 @@ async function reconcileSettledObservation({
       await writeRecord(registryDirectory, "blocks", block);
     }
     return { ...context, block };
+  }
+  if (
+    ["idle", "done"].includes(observed?.agent_status) &&
+    turnAwaitsPostDeliverySettlement(
+      context.turn,
+      observed.state_change_seq,
+    )
+  ) {
+    return { ...context, retry_wait: true };
   }
   if (!["idle", "done"].includes(observed?.agent_status)) {
     return settleUncertain(registryDirectory, context, null, now());

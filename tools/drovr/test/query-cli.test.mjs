@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +19,17 @@ import { stateDirectory, writeRecord } from "../src/registry.mjs";
 
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
+
+test("group list reads absent state without initializing the registry", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-empty-query-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const env = { ...process.env, XDG_STATE_HOME: join(scratch, "state") };
+
+  const report = await runDrovr(env, ["group", "list"]);
+
+  assert.deepEqual(report.result.groups, []);
+  await assert.rejects(stat(stateDirectory(env)), { code: "ENOENT" });
+});
 
 test("group list filters durable records and group get uses immutable identity", async (t) => {
   const fixture = await queryFixture(t);

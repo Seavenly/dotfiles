@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -47,6 +48,33 @@ function recordPath(directory, kind, id) {
   return join(directory, kind, `${id}.json`);
 }
 
+async function validatePrivateDirectory(path) {
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+  if (!metadata.isDirectory() || (metadata.mode & 0o077) !== 0) {
+    throw new DrovrError(
+      `unsafe registry directory ${path}: expected owner-only permissions`,
+      { code: 3, outcome: "unsafe_state_permissions" },
+    );
+  }
+  return true;
+}
+
+async function validatePrivateFile(path) {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) {
+    throw new DrovrError(
+      `unsafe registry record ${path}: expected owner-only permissions`,
+      { code: 3, outcome: "unsafe_state_permissions" },
+    );
+  }
+}
+
 export async function writeRecord(directory, kind, record) {
   await ensureStateDirectory(directory);
   const path = recordPath(directory, kind, record.id);
@@ -78,14 +106,24 @@ export async function writeLaunchDocument(directory, key, contents) {
 }
 
 export async function readRecords(directory, kind) {
-  await ensureStateDirectory(directory);
-  const paths = await readdir(join(directory, kind));
+  if (!(await validatePrivateDirectory(directory))) return [];
+  const kindDirectory = join(directory, kind);
+  if (!(await validatePrivateDirectory(kindDirectory))) return [];
+  let paths;
+  try {
+    paths = await readdir(kindDirectory);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
   const records = [];
   for (const name of paths.filter((entry) => entry.endsWith(".json")).sort()) {
     const path = join(directory, kind, name);
     try {
+      await validatePrivateFile(path);
       records.push(JSON.parse(await readFile(path, "utf8")));
     } catch (error) {
+      if (error instanceof DrovrError) throw error;
       throw new DrovrError(
         `corrupt registry record ${path}: ${error.message}`,
         {

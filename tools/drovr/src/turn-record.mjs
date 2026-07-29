@@ -7,6 +7,7 @@ export function createTurnRecord({
   prompt,
   submittedAt,
   transcriptCursor,
+  herdrStateChangeSeq,
 }) {
   return {
     schema: "drovr.turn/v1",
@@ -16,8 +17,24 @@ export function createTurnRecord({
     status: "working",
     inputs: [{ sequence: 1, text: prompt, submitted_at: submittedAt }],
     transcript_cursor: transcriptCursor,
+    ...(Number.isSafeInteger(herdrStateChangeSeq)
+      ? { herdr: { state_change_seq_before_delivery: herdrStateChangeSeq } }
+      : {}),
     created_at: submittedAt,
   };
+}
+
+export function turnAwaitsPostDeliverySettlement(
+  turn,
+  herdrStateChangeSeq,
+) {
+  const stateChangeSeqBeforeDelivery =
+    turn.herdr?.state_change_seq_before_delivery;
+  return (
+    Number.isSafeInteger(stateChangeSeqBeforeDelivery) &&
+    Number.isSafeInteger(herdrStateChangeSeq) &&
+    herdrStateChangeSeq <= stateChangeSeqBeforeDelivery
+  );
 }
 
 export function appendTurnInput(turn, { text, submittedAt }) {

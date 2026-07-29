@@ -9,6 +9,7 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -48,6 +49,24 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr agent retire AGENT_ID/);
   assert.match(stdout, /drovr task close TASK_ID/);
   assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
+});
+
+test("delegate help documents options without initializing state", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-delegate-help-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+
+  const { stdout } = await execFileAsync(drovr, ["delegate", "--help"], {
+    encoding: "utf8",
+    env: { ...process.env, XDG_STATE_HOME: join(scratch, "state") },
+  });
+
+  assert.match(stdout, /^Usage:\n  drovr delegate \[options\] \[PROMPT\]/u);
+  assert.match(stdout, /--task-key KEY/u);
+  assert.match(stdout, /--capability CAPABILITY/u);
+  assert.match(stdout, /--timeout DURATION/u);
+  await assert.rejects(stat(join(scratch, "state", "drovr")), {
+    code: "ENOENT",
+  });
 });
 
 test("convergence installs the public command and tracked configuration", async () => {
@@ -290,6 +309,9 @@ case "\${1:-} \${2:-}" in
       touch "$herdrState/agent-registration-ready"
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
       stateChangeSeq=2
+      if [[ -f "$herdrState/state-change-seq" ]]; then
+        stateChangeSeq=$(<"$herdrState/state-change-seq")
+      fi
       if [[ -f "$herdrState/out-of-band-working" ]]; then
         status=working
       elif [[ ! -f "$herdrState/startup-settled" && ! -f "$herdrState/prompted" ]]; then
@@ -297,10 +319,9 @@ case "\${1:-} \${2:-}" in
       elif [[ -f "$herdrState/blocked" ]]; then
         if [[ -f "$herdrState/resume-block" ]]; then
           status=idle
-          stateChangeSeq=12
+          stateChangeSeq=$((stateChangeSeq + 2))
         else
           status=blocked
-          stateChangeSeq=10
         fi
       elif [[ -f "$herdrState/steering" && ! -f "$herdrState/steering-settled" ]]; then
         status=working
@@ -329,6 +350,11 @@ case "\${1:-} \${2:-}" in
     prompt=\${4}
     printf '%s\\n' "$*" > "$herdrState/prompt-args"
     touch "$herdrState/prompted"
+    stateChangeSeq=2
+    if [[ -f "$herdrState/state-change-seq" ]]; then
+      stateChangeSeq=$(<"$herdrState/state-change-seq")
+    fi
+    printf '%s' $((stateChangeSeq + 2)) > "$herdrState/state-change-seq"
     if [[ ! -f "$transcript" ]]; then
       jq -nc --arg cwd "$taskCwd" '{timestamp:(now | todate),type:"session_meta",payload:{id:"codex-session-1",cwd:$cwd}}' >> "$transcript"
     fi
@@ -361,7 +387,11 @@ case "\${1:-} \${2:-}" in
     fi
     if [[ -f "$herdrState/blocked" && ! -f "$herdrState/resume-block" ]]; then
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
-      printf '{"result":{"type":"agent_info","agent":{"name":"%s","agent_status":"blocked","state_change_seq":10,"agent_session":{"value":"codex-session-1"}}}}\\n' "$name"
+      stateChangeSeq=2
+      if [[ -f "$herdrState/state-change-seq" ]]; then
+        stateChangeSeq=$(<"$herdrState/state-change-seq")
+      fi
+      printf '{"result":{"type":"agent_info","agent":{"name":"%s","agent_status":"blocked","state_change_seq":%s,"agent_session":{"value":"codex-session-1"}}}}\\n' "$name" "$stateChangeSeq"
       exit
     fi
     if [[ -f "$herdrState/resume-block" && ! -f "$herdrState/block-result" ]]; then
@@ -817,13 +847,15 @@ case "\${1:-} \${2:-}" in
     if [[ -f "$herdrState/agent" ]]; then
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
       stateChangeSeq=2
+      if [[ -f "$herdrState/state-change-seq" ]]; then
+        stateChangeSeq=$(<"$herdrState/state-change-seq")
+      fi
       if [[ -f "$herdrState/blocked" ]]; then
         if [[ -f "$herdrState/resume-block" ]]; then
           status=idle
-          stateChangeSeq=12
+          stateChangeSeq=$((stateChangeSeq + 2))
         else
           status=blocked
-          stateChangeSeq=10
         fi
       else
         status=idle
@@ -835,6 +867,11 @@ case "\${1:-} \${2:-}" in
     ;;
   "agent prompt")
     prompt=\${4}
+    stateChangeSeq=2
+    if [[ -f "$herdrState/state-change-seq" ]]; then
+      stateChangeSeq=$(<"$herdrState/state-change-seq")
+    fi
+    printf '%s' $((stateChangeSeq + 2)) > "$herdrState/state-change-seq"
     if [[ $prompt == "Reply with exactly CLAUDE ASKED" ]]; then result="CLAUDE ASKED"; else result="CLAUDE DELEGATED"; fi
     if [[ ! -f "$herdrState/initial-transcript-delivered" ]]; then
       jq -nc --arg session "$nativeSession" '{type:"mode",sessionId:$session}' >> "$transcript"
@@ -865,7 +902,11 @@ case "\${1:-} \${2:-}" in
     fi
     if [[ -f "$herdrState/blocked" && ! -f "$herdrState/resume-block" ]]; then
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
-      printf '{"result":{"type":"agent_info","agent":{"name":"%s","agent_status":"blocked","state_change_seq":10,"agent_session":{"value":"%s"}}}}\\n' "$name" "$nativeSession"
+      stateChangeSeq=2
+      if [[ -f "$herdrState/state-change-seq" ]]; then
+        stateChangeSeq=$(<"$herdrState/state-change-seq")
+      fi
+      printf '{"result":{"type":"agent_info","agent":{"name":"%s","agent_status":"blocked","state_change_seq":%s,"agent_session":{"value":"%s"}}}}\\n' "$name" "$stateChangeSeq" "$nativeSession"
       exit
     fi
     if [[ -f "$herdrState/resume-block" && ! -f "$herdrState/block-result" ]]; then

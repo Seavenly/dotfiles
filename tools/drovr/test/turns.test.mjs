@@ -266,6 +266,63 @@ test("wait rejects a stale idle observation until the submitted input reaches th
   assert.equal(context.turn.result.text, "settled after delivery");
 });
 
+test("wait starts transcript grace after a newer Herdr settlement", async (t) => {
+  const fixture = await settledClaudeAgentFixture(t);
+  let clockMs = 0;
+  let waitCalls = 0;
+  const herdr = {
+    async ensureSession() {},
+    async agentRecord() {
+      return {
+        agent_status: "idle",
+        state_change_seq: 7,
+        agent_session: { value: "claude-session-1" },
+      };
+    },
+    async prompt(_name, prompt) {
+      await appendTranscript(
+        fixture.transcript,
+        claudeUserMessage(prompt),
+      );
+    },
+    async waitForAgent() {
+      waitCalls += 1;
+      if (waitCalls === 2) clockMs += 70_000;
+      if (waitCalls === 3) {
+        await appendTranscript(
+          fixture.transcript,
+          claudeAssistantMessage("settled after actual idle"),
+        );
+      }
+      return {
+        agent_status: "idle",
+        state_change_seq: waitCalls === 1 ? 7 : 9,
+        agent_session: { value: "claude-session-1" },
+      };
+    },
+  };
+  const started = await startTurn(
+    fixture.agent.id,
+    { prompt: "initial" },
+    { env: fixture.env, herdr },
+  );
+
+  const context = await waitForTurn(
+    started.turn.id,
+    { timeoutMs: 120_000 },
+    {
+      env: fixture.env,
+      herdr,
+      clock: () => clockMs,
+      delay: async () => {},
+    },
+  );
+
+  assert.equal(waitCalls, 3);
+  assert.equal(context.turn.status, "completed");
+  assert.equal(context.turn.result.text, "settled after actual idle");
+});
+
 test("wait allows the native final result to flush after Herdr reports idle", async (t) => {
   const fixture = await turnFixture(t);
   await appendTranscript(fixture.transcript, userMessage("initial"));
@@ -1026,6 +1083,68 @@ async function turnFixture(t) {
   return { env, registryDirectory, transcript, turn };
 }
 
+async function settledClaudeAgentFixture(t) {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-turn-race-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const claudeHome = join(scratch, "claude");
+  const transcriptDirectory = join(claudeHome, "projects", "test-project");
+  await mkdir(transcriptDirectory, { recursive: true });
+  const transcript = join(transcriptDirectory, "claude-session-1.jsonl");
+  await writeFile(
+    transcript,
+    `${JSON.stringify({
+      type: "user",
+      sessionId: "claude-session-1",
+      cwd: scratch,
+      message: { role: "user", content: "earlier request" },
+    })}\n`,
+  );
+  const env = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: claudeHome,
+    XDG_STATE_HOME: join(scratch, "state"),
+    DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+  };
+  const registryDirectory = stateDirectory(env);
+  const group = {
+    schema: "drovr.group/v1",
+    id: "group-1",
+    key: "group",
+    label: "Group",
+    status: "active",
+    herdr: { session: "persisted-session", workspace_id: "workspace-1" },
+  };
+  const task = {
+    schema: "drovr.task/v1",
+    id: "task-1",
+    group_id: group.id,
+    key: "task",
+    label: "Task",
+    cwd: scratch,
+    status: "active",
+  };
+  const agent = {
+    schema: "drovr.agent/v1",
+    id: "agent-1",
+    task_id: task.id,
+    key: "agent",
+    label: "Agent",
+    status: "active",
+    launch: {
+      harness: "claude",
+      model: "opus",
+      effort: "medium",
+      capability: "read-only",
+    },
+    herdr: { name: "managed-agent" },
+    native_session: "claude-session-1",
+  };
+  await writeRecord(registryDirectory, "groups", group);
+  await writeRecord(registryDirectory, "tasks", task);
+  await writeRecord(registryDirectory, "agents", agent);
+  return { agent, env, registryDirectory, transcript };
+}
+
 async function appendTranscript(path, ...records) {
   await appendFile(
     path,
@@ -1048,6 +1167,26 @@ function assistantMessage(text) {
       role: "assistant",
       phase: "final_answer",
       content: [{ type: "output_text", text }],
+    },
+  };
+}
+
+function claudeUserMessage(text) {
+  return {
+    type: "user",
+    sessionId: "claude-session-1",
+    message: { role: "user", content: text },
+  };
+}
+
+function claudeAssistantMessage(text) {
+  return {
+    type: "assistant",
+    sessionId: "claude-session-1",
+    message: {
+      role: "assistant",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text }],
     },
   };
 }

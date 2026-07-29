@@ -71,9 +71,41 @@ Commands:
   attach    Interactively attach to a managed agent
 `;
 
+const DELEGATE_HELP = `Usage:
+  drovr delegate [options] [PROMPT]
+
+Options:
+  --group GROUP_KEY           Select an existing or stable delegation group
+  --group-label LABEL         Label a newly created delegation group
+  --task-key KEY              Set the required stable task key
+  --task-label LABEL          Set the task label
+  --agent-key KEY             Set the agent key (default: delegate)
+  --agent-label LABEL         Set the agent label
+  --cwd PATH                  Set the task working directory (default: current directory)
+  --harness HARNESS           Select claude or codex
+  --model MODEL               Select the native harness model
+  --effort EFFORT             Select low, medium, high, or xhigh
+  --capability CAPABILITY     Select the tracked capability profile
+  --role ROLE                 Select the tracked role profile
+  --prompt-file PATH          Read the prompt from a file
+  --timeout DURATION          Set the settlement timeout (default: 5m)
+  -h, --help                  Show this help
+
+Supply the prompt once as PROMPT, with --prompt-file, or on standard input.
+`;
+
 export async function runCli(argv) {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     process.stdout.write(HELP);
+    return 0;
+  }
+
+  if (
+    argv[0] === "delegate" &&
+    argv.length === 2 &&
+    (argv[1] === "--help" || argv[1] === "-h")
+  ) {
+    process.stdout.write(DELEGATE_HELP);
     return 0;
   }
 
