@@ -45,10 +45,10 @@ sesh-connect() {
     # picker exits. tmux attach requires it, so restore the controlling TTY.
     exec </dev/tty
     exec <&1
-    local session
-    session="$(tmux-sessionizer)" || return
+    local project
+    project="$(project-selector)" || return
     zle reset-prompt >/dev/null 2>&1 || true
-    [[ -n "$session" ]] && sesh connect "$session"
+    [[ -n "$project" ]] && sesh connect "$project"
   }
 }
 zle -N sesh-connect

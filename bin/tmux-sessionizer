@@ -2,31 +2,4 @@
 set -euo pipefail
 
 root="$("$(dirname "${BASH_SOURCE[0]}")/dotfiles-root")"
-# shellcheck source=internal/shell/paths.sh
-source "$root/internal/shell/paths.sh"
-dotfiles_load_paths
-projects_dir="$PROJECTS_DIR"
-
-selection="$({
-  # Scan live so newly cloned repositories are immediately selectable. The
-  # second field keeps the UI concise while fzf returns the full project path.
-  if [[ -d "$projects_dir" ]]; then
-    while IFS= read -r -d '' metadata; do
-      repo="${metadata%/*}"
-      project="${repo##*/}"
-      parent_path="${repo%/*}"
-      parent="${parent_path##*/}"
-      printf '%s\t%s/%s\n' "$repo" "$parent" "$project"
-    done < <(find "$projects_dir" -mindepth 2 -maxdepth 3 -type d \
-      -name .git -prune -print0)
-  fi
-} | FZF_DEFAULT_OPTS='' fzf \
-  --scheme=path \
-  --delimiter=$'\t' \
-  --with-nth=2 \
-  --accept-nth=1 \
-  --border=none \
-  --preview-window=hidden \
-  "$@")" || exit 1
-
-[[ -z "$selection" ]] || printf '%s\n' "$selection"
+exec "$root/bin/project-selector" "$@"

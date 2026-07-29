@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$("$(dirname "${BASH_SOURCE[0]}")/dotfiles-root")"
+backend="auto"
+picker_args=()
+
+while (($#)); do
+  case "$1" in
+    --backend)
+      [[ $# -ge 2 ]] || { echo "project-switcher: --backend requires a value" >&2; exit 2; }
+      backend="$2"
+      shift 2
+      ;;
+    --backend=*)
+      backend="${1#*=}"
+      shift
+      ;;
+    --)
+      shift
+      picker_args+=("$@")
+      break
+      ;;
+    *)
+      picker_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ "$backend" == "auto" ]]; then
+  if [[ -n "${HERDR_SOCKET_PATH:-}" || -n "${HERDR_ACTIVE_WORKSPACE_ID:-}" ]]; then
+    backend="herdr"
+  else
+    # Preserve the existing shell shortcut behavior outside a multiplexer.
+    backend="tmux"
+  fi
+fi
+
+case "$backend" in
+  tmux | herdr) ;;
+  *) echo "project-switcher: backend must be auto, tmux, or herdr" >&2; exit 2 ;;
+esac
+
+if ((${#picker_args[@]})); then
+  project="$("$root/bin/project-selector" "${picker_args[@]}")" || exit 1
+else
+  project="$("$root/bin/project-selector")" || exit 1
+fi
+[[ -n "$project" ]] || exit 0
+
+if [[ "$backend" == "tmux" ]]; then
+  exec sesh connect "$project"
+fi
+
+command -v jq >/dev/null 2>&1 \
+  || { echo "project-switcher: jq is required for the Herdr backend" >&2; exit 1; }
+
+workspaces="$(herdr workspace list)"
+workspace_id="$(
+  jq -r --arg project "$project" '
+    first(
+      .result.workspaces[]?
+      | select(.worktree.checkout_path? == $project)
+      | .workspace_id
+    ) // empty
+  ' <<<"$workspaces"
+)"
+
+if [[ -z "$workspace_id" ]]; then
+  panes="$(herdr pane list)"
+  workspace_id="$(
+    jq -r --arg project "$project" '
+      def within($root): . == $root or startswith($root + "/");
+      first(
+        .result.panes[]?
+        | select((.cwd | within($project)) or (.foreground_cwd | within($project)))
+        | .workspace_id
+      ) // empty
+    ' <<<"$panes"
+  )"
+fi
+
+if [[ -n "$workspace_id" ]]; then
+  herdr workspace focus "$workspace_id" >/dev/null
+  exit 0
+fi
+
+project_name="${project##*/}"
+parent_path="${project%/*}"
+parent_name="${parent_path##*/}"
+herdr workspace create \
+  --cwd "$project" \
+  --label "$parent_name/$project_name" \
+  --focus >/dev/null

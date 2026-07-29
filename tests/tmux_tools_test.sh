@@ -34,7 +34,11 @@ printf '%s\n' \
 # shellcheck disable=SC2016
 printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'awk '\''NF && !found { row = $0; found = 1 } END { if (found) print row }'\''' \
+  'if [[ " $* " == *" --accept-nth=1 "* ]]; then' \
+  '  awk -F '\''\t'\'' '\''NF && !found { row = $1; found = 1 } END { if (found) print row }'\''' \
+  'else' \
+  '  awk '\''NF && !found { row = $0; found = 1 } END { if (found) print row }'\''' \
+  'fi' \
   > "$fake_bin/fzf"
 # shellcheck disable=SC2016
 printf '%s\n' \
@@ -50,7 +54,60 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'cat > "$CLIPBOARD_FILE"' \
   > "$fake_bin/pbcopy"
-chmod +x "$fake_bin/tmux" "$fake_bin/fzf" "$fake_bin/tuicr-reviews" "$fake_bin/pbcopy"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "%s\n" "$*" >> "$PROJECT_SWITCH_LOG"' \
+  > "$fake_bin/sesh"
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n" "$*" >> "$HERDR_TEST_LOG"' \
+  'case "$1 $2" in' \
+  '  "workspace list")' \
+  '    if [[ -n "${HERDR_WORKSPACES_JSON:-}" ]]; then printf "%s\n" "$HERDR_WORKSPACES_JSON"; else printf '\''%s\n'\'' '\''{"result":{"workspaces":[]}}'\''; fi' \
+  '    ;;' \
+  '  "pane list")' \
+  '    if [[ -n "${HERDR_PANES_JSON:-}" ]]; then printf "%s\n" "$HERDR_PANES_JSON"; else printf '\''%s\n'\'' '\''{"result":{"panes":[]}}'\''; fi' \
+  '    ;;' \
+  '  "tab create") printf "%s\n" '\''{"result":{"root_pane":{"pane_id":"pane-new"},"tab":{"tab_id":"tab-new"}}}'\'' ;;' \
+  'esac' \
+  > "$fake_bin/herdr"
+chmod +x \
+  "$fake_bin/tmux" \
+  "$fake_bin/fzf" \
+  "$fake_bin/tuicr-reviews" \
+  "$fake_bin/pbcopy" \
+  "$fake_bin/sesh" \
+  "$fake_bin/herdr"
+
+projects="$tmp/projects"
+project="$projects/owner/project"
+mkdir -p "$project/.git"
+project_switch_log="$tmp/project-switch.log"
+: > "$project_switch_log"
+PATH="$fake_bin:$PATH" PROJECTS_DIR="$projects" \
+  PROJECT_SWITCH_LOG="$project_switch_log" \
+  "$root/bin/project-switcher" --backend tmux
+assert_contains "$(cat "$project_switch_log")" "connect $project"
+echo "ok - project switcher delegates selected projects to tmux"
+
+herdr_log="$tmp/herdr.log"
+: > "$herdr_log"
+PATH="$fake_bin:$PATH" PROJECTS_DIR="$projects" HERDR_TEST_LOG="$herdr_log" \
+  HERDR_WORKSPACES_JSON="{\"result\":{\"workspaces\":[{\"workspace_id\":\"workspace-existing\",\"worktree\":{\"checkout_path\":\"$project\"}}]}}" \
+  "$root/bin/project-switcher" --backend herdr
+assert_contains "$(cat "$herdr_log")" 'workspace focus workspace-existing'
+assert_not_contains "$(cat "$herdr_log")" 'workspace create'
+echo "ok - project switcher focuses an existing Herdr workspace"
+
+: > "$herdr_log"
+PATH="$fake_bin:$PATH" PROJECTS_DIR="$projects" HERDR_TEST_LOG="$herdr_log" \
+  "$root/bin/project-switcher" --backend herdr
+assert_contains "$(cat "$herdr_log")" \
+  "workspace create --cwd $project --label owner/project --focus"
+echo "ok - project switcher creates a missing Herdr workspace"
 
 tmux_log="$tmp/tmux.log"
 : > "$tmux_log"
@@ -81,6 +138,31 @@ assert_contains "$(cat "$tmux_log")" \
 assert_contains "$(cat "$tmux_log")" \
   "set-option -w -t :3 @tuicr_rev $(git -C "$repo" rev-parse main)...$(git -C "$repo" rev-parse feature)"
 echo "ok - manifest-backed reviews open their immutable SHA range"
+
+base_sha="$(git -C "$repo" rev-parse main)"
+head_sha="$(git -C "$repo" rev-parse feature)"
+: > "$herdr_log"
+PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" \
+  HERDR_ACTIVE_WORKSPACE_ID=workspace-current REVIEW_WORKTREE="$repo" \
+  BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
+  "$root/bin/review-inbox" --backend herdr
+assert_contains "$(cat "$herdr_log")" \
+  "tab create --workspace workspace-current --cwd $repo --label tuicr:feature --focus"
+assert_contains "$(cat "$herdr_log")" \
+  "pane report-metadata pane-new --source dotfiles-review-inbox --token review_worktree=$repo --token review_revset=$base_sha...$head_sha"
+assert_contains "$(cat "$herdr_log")" "pane run pane-new zsh -i -c"
+assert_contains "$(cat "$herdr_log")" "$base_sha...$head_sha"
+echo "ok - review inbox creates and identifies Herdr review tabs"
+
+: > "$herdr_log"
+PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" \
+  HERDR_ACTIVE_WORKSPACE_ID=workspace-current REVIEW_WORKTREE="$repo" \
+  BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
+  HERDR_PANES_JSON="{\"result\":{\"panes\":[{\"tab_id\":\"tab-existing\",\"tokens\":{\"review_worktree\":\"$repo\",\"review_revset\":\"$base_sha...$head_sha\"}}]}}" \
+  "$root/bin/review-inbox" --backend herdr
+assert_contains "$(cat "$herdr_log")" 'tab focus tab-existing'
+assert_not_contains "$(cat "$herdr_log")" 'tab create'
+echo "ok - review inbox focuses an existing Herdr review tab"
 
 clipboard="$tmp/clipboard"
 copy_result="$(PATH="$fake_bin:$PATH" CLIPBOARD_FILE="$clipboard" \
