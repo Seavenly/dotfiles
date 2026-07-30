@@ -32,6 +32,7 @@ import {
   queryListCommandResult,
 } from "./queries.mjs";
 import { statusReport } from "./status.mjs";
+import { normalizeInputText } from "./turn-record.mjs";
 import { openTask, taskOpenCommandResult } from "./task-open.mjs";
 import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
 
@@ -425,6 +426,7 @@ async function resolvePrompt(positionalPrompt, promptFile) {
     }
   }
   if (prompt === undefined && stdin.length) prompt = stdin;
+  if (prompt !== undefined) prompt = normalizeInputText(prompt);
   if (prompt === undefined || prompt.length === 0) {
     invalidArguments("no prompt was supplied", "missing_prompt");
   }

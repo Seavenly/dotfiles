@@ -1,5 +1,14 @@
 import { DrovrError } from "./errors.mjs";
 
+// A `--prompt-file` or standard-input prompt arrives with the terminating newline
+// that ends the file, which is not part of the submission and which Codex does not
+// write back into its transcript. Normalizing an input once, before it becomes
+// durable, keeps the recorded text equal to the text a harness will record, which
+// is what transcript correlation compares.
+export function normalizeInputText(text) {
+  return text.trimEnd();
+}
+
 export function createTurnRecord({
   id,
   agentId,

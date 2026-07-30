@@ -3,6 +3,7 @@ import { open, readFile, stat } from "node:fs/promises";
 
 import { DrovrError } from "./errors.mjs";
 import { walkFiles } from "./files.mjs";
+import { normalizeInputText } from "./turn-record.mjs";
 
 export async function locateJsonlTranscript({
   root,
@@ -105,15 +106,39 @@ export function correlateTranscriptRecords(
   inputs,
   { harness, userText, finalAssistantText },
 ) {
+  const observedInputText = (record) => {
+    const text = userText(record);
+    return text === null ? null : normalizeInputText(text);
+  };
+
   let recordIndex = -1;
   let firstInputIndex = -1;
   for (const input of inputs) {
-    const nextInputIndex = records.findIndex(
-      (record, index) =>
-        index > recordIndex && userText(record) !== null,
-    );
-    recordIndex = nextInputIndex;
-    if (recordIndex < 0) {
+    const expected = normalizeInputText(input);
+    // Native records that precede the first recorded input are session context
+    // the harness wrote on its own: a fresh Codex session records AGENTS.md and
+    // <environment_context> as a user-role message before the delivered prompt.
+    // They cannot be mistaken for this turn's result, which is read after the
+    // final recorded input, so skipping them is safe. Once the first input is
+    // located, ordering is strict, because a foreign input interleaved with ours
+    // would break attribution of the result that follows it.
+    const beforeFirstInput = firstInputIndex < 0;
+    let matchIndex = -1;
+    for (let index = recordIndex + 1; index < records.length; index += 1) {
+      const observed = observedInputText(records[index]);
+      if (observed === null) continue;
+      if (observed === expected) {
+        matchIndex = index;
+        break;
+      }
+      if (!beforeFirstInput) {
+        throw new DrovrError(
+          "recorded input order was interrupted by an unrelated native input",
+          { outcome: "uncertain" },
+        );
+      }
+    }
+    if (matchIndex < 0) {
       throw new DrovrError(
         "submitted input was not observed after the transcript cursor",
         {
@@ -125,12 +150,7 @@ export function correlateTranscriptRecords(
         },
       );
     }
-    if (userText(records[recordIndex]) !== input) {
-      throw new DrovrError(
-        "recorded input order was interrupted by an unrelated native input",
-        { outcome: "uncertain" },
-      );
-    }
+    recordIndex = matchIndex;
     if (firstInputIndex < 0) firstInputIndex = recordIndex;
   }
 

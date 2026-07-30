@@ -106,6 +106,29 @@ test("delegate rejects ambiguous prompt sources before touching the runtime", as
   assert.equal(report.error.outcome, "ambiguous_prompt");
 });
 
+test("delegate rejects a prompt file that holds only trailing whitespace", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-blank-prompt-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const promptFile = join(scratch, "prompt.md");
+  await writeFile(promptFile, "\n\n");
+
+  let failure;
+  try {
+    await execFileAsync(
+      drovr,
+      ["delegate", "--task-key", "prompt-test", "--prompt-file", promptFile],
+      { encoding: "utf8" },
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(failure.code, 2);
+  const report = JSON.parse(failure.stdout);
+  assert.equal(report.ok, false);
+  assert.equal(report.error.outcome, "missing_prompt");
+});
+
 test("doctor reports a compatible configured Codex runtime", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-doctor-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));

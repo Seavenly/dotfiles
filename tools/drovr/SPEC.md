@@ -350,6 +350,13 @@ Supplying multiple sources returns `ambiguous_prompt`. Supplying none returns
 `missing_prompt` immediately rather than waiting interactively. A positional
 prompt beginning with `-` follows normal `--` option termination.
 
+Trailing whitespace is removed from the resolved prompt before it becomes a
+durable input. A file or standard-input prompt is terminated by a newline that is
+not part of the submission and that Codex does not write into its transcript, so
+preserving it would durably record an input no harness can echo back and
+correlation could never match. A prompt that holds only whitespace therefore
+returns `missing_prompt`. Leading and interior text is preserved exactly.
+
 ### Machine output and exit codes
 
 Non-interactive commands emit one versioned JSON document on stdout by default.
@@ -418,8 +425,18 @@ Completion requires:
 2. A completed assistant response occurs after the final input.
 3. Herdr reports the agent settled.
 
-The transcript adapter treats any unrecorded native input as a correlation
-boundary. It never skips such an input to select a later assistant response.
+From the first recorded input onward, the transcript adapter treats any
+unrecorded native input as a correlation boundary. It never skips such an input
+to select a later assistant response, so a human message typed into the native
+harness can neither be mistaken for a recorded input nor contribute its answer to
+a recorded turn.
+
+Native records that precede the first recorded input are session context rather
+than a correlation boundary. A harness writes its own context when a session
+opens - Codex records the applicable `AGENTS.md` and an `environment_context`
+block as a user-role transcript message before the first delivered prompt - and
+that context cannot be confused with a result that is only ever read after the
+final recorded input.
 Correlation grace is bounded per observed stage of progress, including input
 appearance and final-result appearance, rather than from the first possibly
 stale settled observation.
