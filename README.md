@@ -109,6 +109,8 @@ dotfiles check                  validate scripts, configs, locks, and credential
 dotfiles upgrade                upgrade normal components
 dotfiles upgrade tools nvim     upgrade selected components only
 dotfiles upgrade mise           update the pinned mise release and checksums
+flow query legacy-inventory --json
+                                inventory retained legacy flow evidence read-only
 ```
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
@@ -134,6 +136,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `config/` | Application-owned configuration organized by concern |
 | `config/agents/` | Shared agent guidance, managed skills, and colocated profile variants |
 | `config/agent-flow/` | Hermes-backed agent-flow orchestration, schemas, and routing template |
+| `config/flow/` | Read-only compatibility inventory and replacement FlowRuntime query seam |
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
