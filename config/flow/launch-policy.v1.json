@@ -1,0 +1,19 @@
+{
+  "schema": "flow.launch-policy/v1",
+  "generation": 1,
+  "default_implementation": "legacy-claude/v1",
+  "implementations": {
+    "legacy-claude/v1": {
+      "launch_enabled": true,
+      "authority_root": "~/.agent-teams"
+    },
+    "legacy-agent-flow/v1": {
+      "launch_enabled": true,
+      "authority_root": "${XDG_STATE_HOME:-~/.local/state}/agent-flow"
+    },
+    "flow-runtime/v1": {
+      "launch_enabled": false,
+      "authority_root": "${XDG_STATE_HOME:-~/.local/state}/flow"
+    }
+  }
+}

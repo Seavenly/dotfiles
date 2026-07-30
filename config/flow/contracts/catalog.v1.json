@@ -1,0 +1,172 @@
+{
+  "schema": "flow.contract-catalog/v1",
+  "catalog_version": 1,
+  "flow_runtime": {
+    "contract": "flow.runtime/v1",
+    "operations": [
+      "prepare",
+      "launch",
+      "command",
+      "query",
+      "watch"
+    ],
+    "operation_contracts": {
+      "prepare": {
+        "authority": "non_authoritative",
+        "result": "flow.prepared-run/v1",
+        "identity": "content_addressed"
+      },
+      "launch": {
+        "authority": "RunAuthority",
+        "idempotency": "host_idempotent",
+        "input": "exact_confirmed_prepared_bundle"
+      },
+      "command": {
+        "authority": "RunAuthority",
+        "vocabulary": [
+          "checkpoint_decision",
+          "revision_decision",
+          "capability_grant",
+          "cancel",
+          "reboot_admission",
+          "recovery",
+          "terminal_disposition"
+        ],
+        "forbidden": [
+          "generic_setter",
+          "force_unlock",
+          "generic_unblock",
+          "timer_lease_takeover"
+        ]
+      },
+      "query": {
+        "authority": "read_only",
+        "result": "watermarked_authority_projection"
+      },
+      "watch": {
+        "authority": "read_only",
+        "result": "watermarked_authority_projection_stream"
+      }
+    }
+  },
+  "contracts": [
+    "flow.runtime/v1",
+    "flow.prepared-run/v1",
+    "flow.command/v1",
+    "flow.decision/v1",
+    "flow.rejection/v1",
+    "flow.effect-intent/v1",
+    "flow.effect-observation/v1",
+    "flow.effect-receipt/v1",
+    "flow.run-plan/v1",
+    "flow.resource-handoff/v1",
+    "flow.launch-policy/v1",
+    "flow.transition-ledger/v1",
+    "flow.transition-projection/v1",
+    "flow.legacy-baseline-inventory/v1",
+    "flow.delegated-agent-port/v1",
+    "work.workspace/v1",
+    "work.artifact/v1",
+    "work.review/v1",
+    "work.stack/v1"
+  ],
+  "run_plan": {
+    "contract": "flow.run-plan/v1",
+    "executor_kinds": [
+      "delegate",
+      "operation",
+      "checkpoint",
+      "subrun"
+    ]
+  },
+  "authorities": {
+    "flow_lifecycle": "RunAuthority",
+    "workspace": "WorkspaceAuthority",
+    "artifact": "ArtifactAuthority",
+    "review": "ReviewAuthority",
+    "stack": "StackAuthority"
+  },
+  "registered_work_domains": [
+    {
+      "contract": "work.workspace/v1",
+      "authority": "WorkspaceAuthority"
+    },
+    {
+      "contract": "work.artifact/v1",
+      "authority": "ArtifactAuthority"
+    },
+    {
+      "contract": "work.review/v1",
+      "authority": "ReviewAuthority"
+    },
+    {
+      "contract": "work.stack/v1",
+      "authority": "StackAuthority"
+    }
+  ],
+  "modules": {
+    "plan_compiler": {
+      "purity": "pure",
+      "ambient_reads": false
+    },
+    "lifecycle_kernel": {
+      "purity": "pure",
+      "ambient_reads": false
+    },
+    "effect_coordinator": {
+      "authority": "mechanism_only",
+      "effect_classes": [
+        "read_only",
+        "caller_idempotent",
+        "reconcilable",
+        "one_shot_uncertain"
+      ]
+    }
+  },
+  "mechanism_adapters": [
+    "git",
+    "forge",
+    "tracker",
+    "filesystem",
+    "artifact_bytes",
+    "delegated_runtime",
+    "convergence_launch_policy"
+  ],
+  "projections": [
+    "kanban",
+    "graph",
+    "timeline",
+    "trust",
+    "operator",
+    "tracker_progress",
+    "review_inbox",
+    "transition"
+  ],
+  "authority_roots": {
+    "legacy_claude": "~/.agent-teams",
+    "legacy_agent_flow": "${XDG_STATE_HOME:-~/.local/state}/agent-flow",
+    "replacement": "${XDG_STATE_HOME:-~/.local/state}/flow"
+  },
+  "legacy_import": {
+    "adapters": [],
+    "required_validations": [
+      "digest",
+      "schema",
+      "provenance",
+      "redaction",
+      "classification",
+      "retention",
+      "allowed_use"
+    ],
+    "forbidden_authority": [
+      "lifecycle_state",
+      "grants",
+      "checkpoints",
+      "approval",
+      "review_currency",
+      "integration_eligibility",
+      "effect_causation",
+      "completion"
+    ]
+  }
+}
