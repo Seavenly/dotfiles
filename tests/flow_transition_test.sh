@@ -22,11 +22,14 @@ managed_flow="$home/.config/flow"
 [[ "$(readlink "$managed_flow")" == "$root/config/flow" ]] \
   || fail "managed flow transition policy targets the wrong source"
 
-selection="$(node --input-type=module -e '
+selection="$(HOME="$home" XDG_STATE_HOME="$home/.local/state" node --input-type=module -e '
   const { queryTransition } = await import(process.argv[1]);
-  const result = await queryTransition({ configDirectory: process.argv[2] });
+  const result = await queryTransition({
+    configDirectory: process.argv[2],
+    repositoryRoot: process.argv[3],
+  });
   process.stdout.write(result.selected_implementation);
-' "$root/tools/flow/src/transition-projection.mjs" "$managed_flow")"
+' "$root/tools/flow/src/transition-projection.mjs" "$managed_flow" "$root")"
 [[ "$selection" == "legacy-claude/v1" ]] \
   || fail "repeated convergence selected replacement authority"
 

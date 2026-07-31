@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
+import { resolveAuthorityRoot } from "./authority-root.mjs";
+
 export async function resolveLaunchPolicy({
   policyPath,
   requestedImplementation,
+  homeDirectory,
+  stateDirectory,
 }) {
   const bytes = await readFile(policyPath);
   const policy = JSON.parse(bytes);
@@ -24,6 +28,10 @@ export async function resolveLaunchPolicy({
     policy_generation: policy.generation,
     policy_watermark: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
     implementation,
-    authority_root: selected.authority_root,
+    authority_root_spec: selected.authority_root,
+    authority_root: resolveAuthorityRoot(selected.authority_root, {
+      homeDirectory,
+      stateDirectory,
+    }),
   };
 }

@@ -36,4 +36,5 @@ and allowed use.
 
 This decision supersedes neither ADR-0005's immutable delivery guarantees nor
 ADR-0007's use of Drovr. ADR-0004 remains historical guidance for the frozen
-Hermes-backed baseline only.
+Hermes-backed baseline only. ADR-0006's controller terminal exception is also
+scoped exclusively to that frozen Hermes-backed baseline.

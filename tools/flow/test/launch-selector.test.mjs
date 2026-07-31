@@ -9,18 +9,27 @@ const policyPath = fileURLToPath(
 );
 
 test("repeated selection keeps the frozen legacy implementation as the default", async () => {
-  const first = await resolveLaunchPolicy({ policyPath });
-  const second = await resolveLaunchPolicy({ policyPath });
+  const environment = {
+    homeDirectory: "/test/home",
+    stateDirectory: "/test/state",
+  };
+  const first = await resolveLaunchPolicy({ policyPath, ...environment });
+  const second = await resolveLaunchPolicy({ policyPath, ...environment });
 
   assert.deepEqual(second, first);
   assert.equal(first.implementation, "legacy-claude/v1");
-  assert.equal(first.authority_root, "~/.agent-teams");
+  assert.deepEqual(first.authority_root_spec, {
+    base: "home",
+    path: ".agent-teams",
+  });
+  assert.equal(first.authority_root, "/test/home/.agent-teams");
   assert.match(first.policy_watermark, /^sha256:[0-9a-f]{64}$/);
 
   await assert.rejects(
     resolveLaunchPolicy({
       policyPath,
       requestedImplementation: "flow-runtime/v1",
+      ...environment,
     }),
     /replacement launch is disabled/,
   );

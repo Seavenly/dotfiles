@@ -7,5 +7,6 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const projection = await queryTransition({
   configDirectory: resolve(repositoryRoot, "config/flow"),
+  repositoryRoot,
 });
 process.stdout.write(`${JSON.stringify(projection, null, 2)}\n`);

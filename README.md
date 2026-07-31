@@ -149,9 +149,10 @@ directories to their platform-appropriate destinations.
 
 The future harness-neutral `flow` runtime is being built beside the frozen
 Claude-only and Hermes-backed implementations. New launches still select the
-Claude-only baseline by default. Installing replacement sources or repeating
-`dotfiles install` cannot activate replacement authority; native convergence
-applies the versioned policy from `config/flow/launch-policy.v1.json`.
+Claude-only baseline by default. Repeating `dotfiles install` reapplies the
+same versioned policy from `config/flow/launch-policy.v1.json`; it does not
+change the selector merely because replacement sources are installed. The
+future launcher remains responsible for enforcing that converged decision.
 
 The three implementations use disjoint authority roots, and existing runs
 remain owned by the implementation that created them. No legacy import adapter

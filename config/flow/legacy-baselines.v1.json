@@ -11,7 +11,10 @@
           "git_object": "880cbe13dc702d9a2cbefba2ba89a37e9fd40fda"
         }
       ],
-      "authority_root": "~/.agent-teams",
+      "authority_root": {
+        "base": "home",
+        "path": ".agent-teams"
+      },
       "launch_surfaces": [
         "/feature-flow",
         "/review-flow",
@@ -56,7 +59,10 @@
           "git_object": "57d5b3a9f058092de000213303457037750ea31a"
         }
       ],
-      "authority_root": "${XDG_STATE_HOME:-~/.local/state}/agent-flow",
+      "authority_root": {
+        "base": "state",
+        "path": "agent-flow"
+      },
       "launch_surfaces": [
         "agent-flow feature",
         "agent-flow review",

@@ -71,6 +71,8 @@ _Avoid_: Deprecated code, migration source
 The machine-readable evidence record for a flow implementation release and
 environment, including evidence digests, status, defects, exceptions,
 decisions, and timestamps.
+During Stage 0, exception entries represent unresolved deviations and fail
+closed by withholding launch actions. Approved choices belong in decisions.
 _Avoid_: Checklist, progress view
 
 **Authority watermark**:

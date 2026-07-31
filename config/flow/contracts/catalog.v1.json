@@ -143,9 +143,18 @@
     "transition"
   ],
   "authority_roots": {
-    "legacy_claude": "~/.agent-teams",
-    "legacy_agent_flow": "${XDG_STATE_HOME:-~/.local/state}/agent-flow",
-    "replacement": "${XDG_STATE_HOME:-~/.local/state}/flow"
+    "legacy_claude": {
+      "base": "home",
+      "path": ".agent-teams"
+    },
+    "legacy_agent_flow": {
+      "base": "state",
+      "path": "agent-flow"
+    },
+    "replacement": {
+      "base": "state",
+      "path": "flow"
+    }
   },
   "legacy_import": {
     "adapters": [],
@@ -157,6 +166,9 @@
       "classification",
       "retention",
       "allowed_use"
+    ],
+    "allowed_subjects": [
+      "artifact_bytes"
     ],
     "forbidden_authority": [
       "lifecycle_state",
