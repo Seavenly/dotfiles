@@ -27,6 +27,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
+    legacy_compatibility_inventory: {
+      projection: "flow.legacy-compatibility-inventory/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+  });
+  assert.ok(catalog.contracts.includes("flow.query/v1"));
+  assert.ok(catalog.contracts.includes("flow.legacy-compatibility-inventory/v1"));
+  assert.ok(catalog.projections.includes("legacy_compatibility_inventory"));
   assert.deepEqual(catalog.authority_roots, {
     legacy_claude: { base: "home", path: ".agent-teams" },
     legacy_agent_flow: { base: "state", path: "agent-flow" },
@@ -64,6 +74,20 @@ test("the public catalog rejects nested authority roots", async (t) => {
   await assert.rejects(
     loadContractCatalog({ catalogPath: nestedCatalogPath }),
     /contract catalog authority roots must be disjoint/,
+  );
+});
+
+test("the public catalog binds registered queries to published contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-query-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const invalidCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.contracts = catalog.contracts.filter((contract) => contract !== "flow.query/v1");
+  await writeFile(invalidCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: invalidCatalogPath }),
+    /registered query contracts must be published/,
   );
 });
 

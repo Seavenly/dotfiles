@@ -43,6 +43,9 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");
   }
+  if (!registeredQueriesArePublished(catalog)) {
+    throw new Error("registered query contracts must be published");
+  }
   const roots = Object.values(catalog.authority_roots ?? {});
   if (roots.length === 0 || !authorityRootsAreDisjoint(roots, {
     homeDirectory,
@@ -140,4 +143,22 @@ function isValidLegacyImportAdapter(catalog, adapter) {
       typeof subject === "string" &&
       catalog.legacy_import.allowed_subjects.includes(subject) &&
       !catalog.legacy_import.forbidden_authority.includes(subject));
+}
+
+function registeredQueriesArePublished(catalog) {
+  const registrations = catalog.flow_runtime?.operation_contracts?.query?.registered;
+  if (
+    typeof registrations !== "object" ||
+    registrations === null ||
+    Array.isArray(registrations) ||
+    Object.keys(registrations).length === 0 ||
+    !Array.isArray(catalog.projections)
+  ) {
+    return false;
+  }
+  return Object.entries(registrations).every(([name, registration]) =>
+    catalog.projections.includes(name) &&
+    [registration?.request, registration?.projection, registration?.rejection]
+      .every((contract) => catalog.contracts.includes(contract))
+  );
 }

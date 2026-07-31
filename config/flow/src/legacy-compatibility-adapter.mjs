@@ -125,15 +125,7 @@ export class FilesystemLegacyCompatibilityAdapter {
       ? join(runDirectory, "artifacts")
       : join(runDirectory, "out");
     for (const entry of await descendantEntries(artifactRoot)) {
-      const evidence = entry.kind === "file"
-        ? await fileEvidence(entry.path)
-        : entry.kind === "symlink" ? {
-            evidence_status: "uncertain",
-            reason: "symbolic_link_not_followed",
-          } : {
-            evidence_status: "unreadable",
-            reason: "directory_unreadable",
-          };
+      const evidence = await entryEvidence(entry);
       observation.artifacts.push({
         evidence_status: evidence.evidence_status,
         path: relative(root, entry.path),
@@ -145,13 +137,7 @@ export class FilesystemLegacyCompatibilityAdapter {
 
     for (const entry of await runEvidenceEntries(runDirectory)) {
       if (entry.kind !== "file") {
-        const evidence = entry.kind === "symlink" ? {
-          evidence_status: "uncertain",
-          reason: "symbolic_link_not_followed",
-        } : {
-          evidence_status: "unreadable",
-          reason: "directory_unreadable",
-        };
+        const evidence = await entryEvidence(entry);
         addUnusableDocument({
           documentPath: entry.path,
           evidence,
@@ -312,14 +298,13 @@ export class FilesystemLegacyCompatibilityAdapter {
     if (source.evidence_status !== "verified") return;
     for (const entry of await descendantEntries(root)) {
       if (entry.kind !== "file") {
+        const evidence = await entryEvidence(entry);
         addUnusableStack({
           documentPath: entry.path,
-          evidenceStatus: entry.kind === "symlink" ? "uncertain" : "unreadable",
+          evidenceStatus: evidence.evidence_status,
           implementation: "hermes-agent-flow",
           observation,
-          reason: entry.kind === "symlink"
-            ? "symbolic_link_not_followed"
-            : "directory_unreadable",
+          reason: evidence.reason,
           root,
         });
         continue;
@@ -572,6 +557,17 @@ async function jsonFileEvidence(path) {
   } catch {
     return { ...evidence, evidence_status: "unreadable", reason: "invalid_json" };
   }
+}
+
+async function entryEvidence(entry) {
+  if (entry.kind === "file") return fileEvidence(entry.path);
+  return entry.kind === "symlink" ? {
+    evidence_status: "uncertain",
+    reason: "symbolic_link_not_followed",
+  } : {
+    evidence_status: "unreadable",
+    reason: "directory_unreadable",
+  };
 }
 
 function isRetainedRecord(path, runDirectory) {

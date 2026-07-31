@@ -13,6 +13,10 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test("published Flow projections satisfy their JSON schemas", async (t) => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const querySchema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.query.v1.schema.json"),
+    "utf8",
+  ));
   const inventorySchema = JSON.parse(await readFile(
     join(root, "schemas", "flow.legacy-compatibility-inventory.v1.schema.json"),
     "utf8",
@@ -60,13 +64,17 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     status: "publish_failed",
   });
 
+  const request = {
+    schema: "flow.query/v1",
+    query: "legacy_compatibility_inventory",
+  };
   const projection = await createFlowRuntime({
     legacyRoots: {
       claudeRuns: join(scratch, "missing-claude-runs"),
       hermesRuns,
       hermesStacks: stacks,
     },
-  }).query({ schema: "flow.query/v1", query: "legacy_compatibility_inventory" });
+  }).query(request);
 
   for (const collection of [
     "active_ownership",
@@ -81,6 +89,7 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     assert.ok(projection.inventory[collection].length > 0, collection);
   }
 
+  assert.equal(ajv.validate(querySchema, request), true, ajv.errorsText());
   assert.equal(ajv.validate(inventorySchema, projection), true, ajv.errorsText());
   assert.equal(ajv.validate(rejectionSchema, {
     code: "unsupported_query",

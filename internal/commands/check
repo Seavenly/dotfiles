@@ -70,6 +70,7 @@ run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
   "$root/config/agent-flow/package-lock.json" \
   "$root/config/flow/package.json" \
   "$root/config/flow/package-lock.json" \
+  "$root/config/flow/schemas/flow.query.v1.schema.json" \
   "$root/config/flow/schemas/flow.legacy-compatibility-inventory.v1.schema.json" \
   "$root/config/flow/schemas/flow.rejection.v1.schema.json" \
   "$root/tools/drovr/package.json" \
