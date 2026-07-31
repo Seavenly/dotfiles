@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 1,
+  "catalog_version": 2,
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [
@@ -13,13 +13,15 @@
     "operation_contracts": {
       "prepare": {
         "authority": "non_authoritative",
+        "input": "flow.dynamic-plan-proposal/v1",
         "result": "flow.prepared-run/v1",
         "identity": "content_addressed"
       },
       "launch": {
         "authority": "RunAuthority",
         "idempotency": "host_idempotent",
-        "input": "exact_confirmed_prepared_bundle"
+        "input": "exact_confirmed_prepared_bundle",
+        "result": "flow.launch-receipt/v1"
       },
       "command": {
         "authority": "RunAuthority",
@@ -37,7 +39,9 @@
           "force_unlock",
           "generic_unblock",
           "timer_lease_takeover"
-        ]
+        ],
+        "result": "flow.command-receipt/v1",
+        "rejection": "flow.rejection/v1"
       },
       "query": {
         "authority": "read_only",
@@ -51,14 +55,23 @@
   },
   "contracts": [
     "flow.runtime/v1",
+    "flow.dynamic-plan-proposal/v1",
+    "flow.dynamic-plan-confirmation/v1",
+    "flow.prepared-bundle/v1",
     "flow.prepared-run/v1",
     "flow.command/v1",
+    "flow.launch-receipt/v1",
+    "flow.command-receipt/v1",
     "flow.decision/v1",
     "flow.rejection/v1",
     "flow.effect-intent/v1",
     "flow.effect-observation/v1",
     "flow.effect-receipt/v1",
     "flow.run-plan/v1",
+    "flow.run-projection/v1",
+    "flow.run-index-projection/v1",
+    "flow.checkpoint/confirmation/v1",
+    "flow.validator/checkpoint-decision/v1",
     "flow.resource-handoff/v1",
     "flow.launch-policy/v1",
     "flow.transition-ledger/v1",

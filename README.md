@@ -139,7 +139,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
 | `tools/drovr/` | Harness-neutral delegated agent runtime over Herdr |
-| `tools/flow/` | Read-only public interfaces for flow transition contracts and projections |
+| `tools/flow/` | Public flow transition interfaces and the dark replacement runtime |
 
 Configuration is organized by concern rather than mirroring the destination
 layout under `$HOME`. Native mise dotfiles create explicit symlinks from these
@@ -158,7 +158,9 @@ The three implementations use disjoint authority roots, and existing runs
 remain owned by the implementation that created them. No legacy import adapter
 ships initially. Inspect the exact transition watermark, evidence status, and
 legal next actions with `npm --silent --prefix tools/flow run status`. The
-public contracts and guardrails are documented in
+dark replacement API can prepare, confirm, launch, observe, and complete a
+finite dynamic checkpoint plan without changing the converged launch selector.
+The public contracts and guardrails are documented in
 [`tools/flow/README.md`](tools/flow/README.md) and
 [`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).
 

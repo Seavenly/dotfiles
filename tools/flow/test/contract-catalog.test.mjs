@@ -27,6 +27,18 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
+  assert.equal(catalog.catalog_version, 2);
+  for (const contract of [
+    "flow.dynamic-plan-proposal/v1",
+    "flow.dynamic-plan-confirmation/v1",
+    "flow.prepared-run/v1",
+    "flow.launch-receipt/v1",
+    "flow.command-receipt/v1",
+    "flow.run-projection/v1",
+    "flow.run-index-projection/v1",
+  ]) {
+    assert.equal(catalog.contracts.includes(contract), true, contract);
+  }
   assert.deepEqual(catalog.authority_roots, {
     legacy_claude: { base: "home", path: ".agent-teams" },
     legacy_agent_flow: { base: "state", path: "agent-flow" },

@@ -1,8 +1,46 @@
 # Flow transition contracts
 
-This directory contains the public Stage 0 contracts and read-only transition
-interfaces for the harness-neutral `flow` replacement. It does not implement
-the replacement runtime or authorize replacement launches.
+This directory contains the public transition contracts and the dark,
+harness-neutral `flow` replacement. The replacement launch policy remains
+disabled, so this API does not authorize normal replacement launches.
+
+## Dynamic checkpoint runtime
+
+`src/flow-runtime.mjs` exports `createFlowRuntime()`. The returned
+`flow.runtime/v1` Interface exposes exactly five operations:
+
+- `prepare(proposal)` compiles a complete `flow.dynamic-plan-proposal/v1` from
+  caller-supplied facts. It creates no run and returns a deeply immutable,
+  content-addressed `flow.prepared-run/v1` plus the complete confirmation view.
+  This slice accepts checkpoint executors only; later executor kinds fail
+  preparation until their owning runtime contracts are implemented.
+- `launch({ prepared, confirmation, closed_facts })` rechecks the exact closed
+  facts and confirmation, then atomically creates or adopts the content-derived
+  run. Repeating the same launch returns the same run identity and records no
+  second launch event. Launch never invokes the plan compiler or refreshes
+  identity-bearing facts.
+- `command(command)` accepts the exact legal checkpoint command projected by
+  authority. Generic setters, force unlock, generic unblock, and timer-based
+  takeover return typed `flow.rejection/v1` results without mutation.
+- `query({ run_id })` rebuilds an immutable run projection from authority. With
+  no run identity it returns the host run index.
+- `watch({ run_id })` returns an async iterator whose first item is the current
+  projection and whose later items carry new authority watermarks.
+
+The current authority mechanism is deliberately process-local. All default
+runtime Interfaces in that process share one host authority, so duplicate
+launches adopt the same run. Durable SQLite streams, cross-process fencing, and
+restart recovery belong to the next runtime ticket. This first slice proves the
+complete public checkpoint path without claiming those later guarantees.
+`PlanCompiler` and `LifecycleKernel` are pure Modules: their decisions depend
+only on their explicit arguments.
+
+The focused public contract suite is:
+
+```sh
+node --test tools/flow/test/runtime-interface.test.mjs \
+  tools/flow/test/purity-contracts.test.mjs
+```
 
 The managed sources under `config/flow/` are:
 
