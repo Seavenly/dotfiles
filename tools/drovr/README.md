@@ -118,10 +118,15 @@ If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
 Transcript-flush grace follows correlation progress, so a stale idle observation
 before prompt delivery cannot consume the grace needed after actual settlement.
-An `uncertain` turn remains terminal, but `turn get` reports a non-durable
-`late_result` when the transcript later contains the exact recorded inputs in
-order and a complete result before any unrecorded native input. This discovery
-does not rewrite the durable turn or promote it to `completed`.
+Claude multiline delivery also verifies that a settled native agent actually
+transitions after Herdr stages the prompt; a still-idle bracketed paste receives
+one guarded submit key before Drovr begins settlement. An `uncertain` turn
+remains terminal, but `turn get` reports a non-durable `late_result` when the
+transcript later contains the exact recorded inputs in order and a complete
+result before any unrecorded native input. The same projection recovers legacy
+`unsupported_transcript` records that were created when a transcript file was
+temporarily absent. Discovery does not rewrite the durable turn or promote it to
+`completed`.
 Cancellation reports `cancelled` only after native interruption and confirmed
 settlement. Non-force cleanup refuses working or blocked resources, and group
 cleanup preflights every task before mutating any of them. Force cleanup

@@ -3,6 +3,63 @@ import test from "node:test";
 
 import { HerdrClient } from "../src/herdr.mjs";
 
+test("Claude prompt delivery submits a staged multiline paste", async () => {
+  const calls = [];
+  let enterSent = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: enterSent ? "working" : "idle",
+                state_change_seq: enterSent ? 13 : 12,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("send-keys")) enterSent = true;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await client.prompt("managed-agent", "first line\nsecond line", {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
+
+  assert.equal(enterSent, true);
+  assert.deepEqual(calls, [
+    [
+      "--session",
+      "delegates",
+      "agent",
+      "prompt",
+      "managed-agent",
+      "first line\nsecond line",
+    ],
+    ["--session", "delegates", "agent", "list"],
+    [
+      "--session",
+      "delegates",
+      "agent",
+      "send-keys",
+      "managed-agent",
+      "enter",
+    ],
+    ["--session", "delegates", "agent", "list"],
+  ]);
+});
+
 test("agent wait returns Herdr's atomic settled agent observation", async () => {
   const calls = [];
   const client = new HerdrClient({

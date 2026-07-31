@@ -7,9 +7,27 @@ import test from "node:test";
 import {
   captureClaudeTranscriptCursor,
   extractClaudeTurn,
+  locateClaudeTranscript,
   resolveClaudeInventoryCursor,
   validateClaudeTranscript,
 } from "../src/claude-transcript.mjs";
+
+test("missing Claude transcript remains a recoverable correlation state", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-missing-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () =>
+      locateClaudeTranscript(
+        scratch,
+        "11111111-2222-4333-8444-555555555555",
+      ),
+    {
+      outcome: "uncertain",
+      details: { correlation_pending: true },
+    },
+  );
+});
 
 test("Claude recovery validation binds transcript metadata to session and cwd", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-claude-recovery-"));

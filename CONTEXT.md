@@ -41,6 +41,45 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Flow card**:
+One immutable executable node in an accepted finite flow run plan. Dependency
+edges determine readiness but never imply ambient data transfer.
+_Avoid_: Kanban card when discussing replacement authority
+
+**Run authority**:
+The sole fenced authority that accepts a flow plan and owns readiness,
+admission, attempts, checkpoints, blocks, revisions, cancellation, and flow-run
+finalization.
+_Avoid_: Controller, scheduler, projection
+
+**Flow implementation transition**:
+The staged change in which implementation accepts future flow launches while
+each existing run remains owned by the implementation that created it.
+_Avoid_: Host convergence, state migration
+
+**Launch policy**:
+The converged, versioned selector that names which flow implementation accepts
+new launches. Installed code and existing state never select an implementation.
+_Avoid_: Feature flag, auto-detection
+
+**Frozen legacy baseline**:
+A content-addressed legacy flow implementation that may change only for a
+critical correctness or security repair with explicit legacy evidence.
+_Avoid_: Deprecated code, migration source
+
+**Transition ledger**:
+The machine-readable evidence record for a flow implementation release and
+environment, including evidence digests, status, defects, exceptions,
+decisions, and timestamps.
+During Stage 0, exception entries represent unresolved deviations and fail
+closed by withholding launch actions. Approved choices belong in decisions.
+_Avoid_: Checklist, progress view
+
+**Authority watermark**:
+An exact version or digest identifying the authoritative state from which a
+projection was derived.
+_Avoid_: Updated time, cache version
+
 **Delegated agent runtime**:
 A host-local execution substrate that launches and observes durable agent harnesses without owning flow policy or scheduling.
 _Avoid_: Orchestrator, workflow engine
@@ -65,12 +104,15 @@ _Avoid_: Native harness turn, prompt
 An externally visible GitHub or Jira commitment that owns intent and acceptance criteria.
 _Avoid_: Kanban task, card
 
-**Kanban card**:
-An internal executable stage used by an agent to fulfill a tracker issue or a Kanban-only outcome.
-_Avoid_: Story, issue
+**Legacy Kanban card**:
+An authoritative internal executable stage in the frozen Hermes-backed flow
+baseline. In the replacement, Kanban is only a rebuildable projection of flow
+cards.
+_Avoid_: Flow card, tracker issue
 
 **Worker attempt**:
-One execution of a Kanban card, including a retry or recovery execution of the same card.
+One execution of a flow card or legacy Kanban card, including a retry or
+recovery execution of the same card.
 _Avoid_: Card, task
 
 **Review candidate**:
@@ -122,14 +164,20 @@ _Avoid_: Migration record, replacement run
 - A **host** owns exactly one set of **machine-local configuration**.
 - The **bootstrap lifecycle** runs pending **migrations** before warming derived state.
 - The **recorder** extends **convergence** only when explicitly enabled.
-- A **flow run** executes **Kanban cards**, each of which may have multiple
-  **worker attempts**.
+- A replacement **flow run** executes **flow cards**, each of which may have
+  multiple **worker attempts**.
+- A frozen Hermes-backed flow run executes **legacy Kanban cards** under its
+  original authority.
+- The **launch policy** selects an implementation only for future runs; it does
+  not transfer existing run authority.
+- A **transition ledger** supplies evidence to authority-derived transition
+  views, which expose an exact **authority watermark**.
 - A **flow** may use a **delegated agent runtime**, but that runtime never owns
   the flow's scheduling or policy.
 - A **delegation group** contains **delegated tasks**; each delegated task owns
   **managed agents**, and each managed agent processes **logical turns**.
 - A **tracker issue** may own one **flow run** without exposing its internal
-  **Kanban cards**.
+  **flow cards** or **legacy Kanban cards**.
 - A **review candidate** becomes externally complete only through its
   **completion PR**.
 - A **review projection** derives from one **review manifest** and never owns

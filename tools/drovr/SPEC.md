@@ -401,6 +401,13 @@ and does not emit the normal JSON envelope.
 delivery. It then submits the prompt through Herdr and returns a durable turn
 ID. `turn wait` may be invoked repeatedly by any later caller.
 
+For multiline Claude prompts delivered while the native agent is settled,
+Drovr verifies that Herdr observes a real post-delivery transition. If Claude's
+asynchronous bracketed-paste conversion leaves the prompt staged and the agent
+idle, Drovr sends one guarded submit key and requires transition evidence before
+continuing. Failure to confirm submission is an adapter failure and leaves the
+turn `uncertain`; it is not treated as native settlement.
+
 Wait timeout is non-destructive. It returns `still_running` and leaves the turn
 and harness untouched. Killing a waiting Drovr process also does not cancel the
 turn.
@@ -445,9 +452,10 @@ The primary result is the last settled assistant message. Intermediate
 assistant messages are retained and available through `--include-messages`.
 If a transcript-correlatable result appears only after a turn was durably
 settled as `uncertain`, `turn get` may expose it as a non-durable `late_result`
-projection. Exact ordered inputs and the absence of an intervening unrecorded
-native input are required. Discovery never changes the terminal status or
-writes a result into the durable turn record.
+projection. It also supports legacy `unsupported_transcript` records explicitly
+marked for exact transcript correlation. Exact ordered inputs and the absence
+of an intervening unrecorded native input are required. Discovery never changes
+the terminal status or writes a result into the durable turn record.
 
 ### Blocked agents
 
@@ -494,6 +502,11 @@ Drovr does not inject correlation markers into prompts. If cursor, content,
 settlement, or final-message correlation cannot be established, it returns an
 explicit uncertain or unsupported state rather than selecting the latest screen
 or transcript message.
+
+A transcript file that has not appeared yet is a temporary correlation failure
+and therefore `uncertain`. `unsupported_transcript` is reserved for an
+incompatible cursor, changed anchor, malformed JSONL record, or another format
+Drovr cannot safely interpret.
 
 When Claude role instructions are non-empty, Drovr writes their exact resolved
 bytes to a private launch document beneath the state directory and supplies its
