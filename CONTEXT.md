@@ -152,6 +152,12 @@ The ordered replay of reviewed stack layers into the dedicated delivery branch,
 followed by exact-tree and full-verification gates.
 _Avoid_: Stack merge, completion PR
 
+**Compatibility inventory**:
+A read-only, content-addressed projection of retained legacy authority and
+evidence used to qualify an implementation transition without importing legacy
+lifecycle state into replacement authority.
+_Avoid_: Migration record, replacement run
+
 ## Relationships
 
 - **Convergence** applies **managed resources** to exactly one **host**.

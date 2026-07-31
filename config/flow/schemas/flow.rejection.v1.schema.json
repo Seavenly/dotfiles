@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.rejection.v1.schema.json",
+  "title": "flow.rejection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "schema"],
+  "properties": {
+    "code": { "enum": ["inventory_unavailable", "unsupported_query"] },
+    "message": { "type": "string", "minLength": 1 },
+    "schema": { "const": "flow.rejection/v1" }
+  }
+}
