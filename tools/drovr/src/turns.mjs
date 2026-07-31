@@ -898,7 +898,12 @@ export async function getTurn(turnId, { env = process.env } = {}) {
 }
 
 function lateResultRecoveryEligible(turn) {
-  if (turn.status !== "uncertain" || turn.result) return false;
+  if (
+    !["uncertain", "unsupported_transcript"].includes(turn.status) ||
+    turn.result
+  ) {
+    return false;
+  }
   if (turn.late_result_recovery === "exact_transcript_correlation") return true;
   return (
     turn.error === "submitted input was not observed after the transcript cursor" ||

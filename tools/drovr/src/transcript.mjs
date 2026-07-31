@@ -29,7 +29,7 @@ export async function locateJsonlTranscript({
   throw new DrovrError(
     `${harness} transcript not found for native session ${sessionId}`,
     {
-      outcome: "unsupported_transcript",
+      outcome: "uncertain",
       code: 4,
       details: { correlation_pending: true },
     },
