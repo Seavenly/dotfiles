@@ -1,3 +1,7 @@
+---
+status: accepted (frozen Hermes-backed baseline only)
+---
+
 # Allow controller terminal for pinned agent-flow commands
 
 Hermes v0.18.2 has no plugin or per-command capability that lets a Kanban-only

@@ -134,14 +134,33 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `config/` | Application-owned configuration organized by concern |
 | `config/agents/` | Shared agent guidance, managed skills, and colocated profile variants |
 | `config/agent-flow/` | Hermes-backed agent-flow orchestration, schemas, and routing template |
+| `config/flow/` | Converged flow transition policy, public contract catalog, frozen legacy inventory, and evidence ledger |
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
 | `tools/drovr/` | Harness-neutral delegated agent runtime over Herdr |
+| `tools/flow/` | Read-only public interfaces for flow transition contracts and projections |
 
 Configuration is organized by concern rather than mirroring the destination
 layout under `$HOME`. Native mise dotfiles create explicit symlinks from these
 directories to their platform-appropriate destinations.
+
+## Flow implementation transition
+
+The future harness-neutral `flow` runtime is being built beside the frozen
+Claude-only and Hermes-backed implementations. New launches still select the
+Claude-only baseline by default. Repeating `dotfiles install` reapplies the
+same versioned policy from `config/flow/launch-policy.v1.json`; it does not
+change the selector merely because replacement sources are installed. The
+future launcher remains responsible for enforcing that converged decision.
+
+The three implementations use disjoint authority roots, and existing runs
+remain owned by the implementation that created them. No legacy import adapter
+ships initially. Inspect the exact transition watermark, evidence status, and
+legal next actions with `npm --silent --prefix tools/flow run status`. The
+public contracts and guardrails are documented in
+[`tools/flow/README.md`](tools/flow/README.md) and
+[`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).
 
 ## Machine-local configuration
 
