@@ -20,10 +20,17 @@ function parseJson(output, operation) {
 }
 
 export class HerdrClient {
-  constructor({ session, run = execute, env = process.env } = {}) {
+  constructor({
+    session,
+    run = execute,
+    env = process.env,
+    delay = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  } = {}) {
     this.session = session;
     this.run = run;
     this.env = env;
+    this.delay = delay;
   }
 
   async sessionCommand(args) {
@@ -413,8 +420,50 @@ export class HerdrClient {
     });
   }
 
-  async prompt(name, prompt) {
-    return this.sessionCommand(["agent", "prompt", name, prompt]);
+  async prompt(name, prompt, options = {}) {
+    const observedBeforeDelivery =
+      options.observedBeforeDelivery ?? (await this.agentRecord(name));
+    const result = await this.sessionCommand([
+      "agent",
+      "prompt",
+      name,
+      prompt,
+    ]);
+    const harness = options.harness ?? observedBeforeDelivery?.agent;
+    if (
+      harness !== "claude" ||
+      !prompt.includes("\n") ||
+      !["idle", "done"].includes(observedBeforeDelivery?.agent_status)
+    ) {
+      return result;
+    }
+
+    // Claude turns a multiline bracketed paste into an attachment token
+    // asynchronously. Herdr 0.7.5 can send the submit key before that
+    // conversion finishes, leaving the prompt staged while the agent remains
+    // idle. Give the native editor a moment, then submit once more only when
+    // Herdr still has no evidence that the turn started.
+    await this.delay(100);
+    if (
+      promptSubmissionObserved(
+        observedBeforeDelivery,
+        await this.agentRecord(name),
+      )
+    ) {
+      return result;
+    }
+    await this.sessionCommand(["agent", "send-keys", name, "enter"]);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await this.agentRecord(name);
+      if (promptSubmissionObserved(observedBeforeDelivery, observed)) {
+        return result;
+      }
+      await this.delay(25);
+    }
+    throw new DrovrError(
+      `Herdr did not confirm Claude prompt submission for ${name}`,
+      { code: 4, outcome: "adapter_failure" },
+    );
   }
 
   async interruptAgent(name) {
@@ -438,6 +487,16 @@ export class HerdrClient {
     if (observed) return observed;
     return this.agentRecord(name);
   }
+}
+
+function promptSubmissionObserved(before, after) {
+  if (["working", "blocked"].includes(after?.agent_status)) return true;
+  return (
+    ["idle", "done"].includes(after?.agent_status) &&
+    Number.isSafeInteger(before?.state_change_seq) &&
+    Number.isSafeInteger(after?.state_change_seq) &&
+    after.state_change_seq > before.state_change_seq
+  );
 }
 
 function isTimeout(error) {

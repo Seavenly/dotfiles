@@ -432,6 +432,26 @@ test("get discovers a late result only after the exact recorded inputs", async (
   assert.equal(stored.result, undefined);
 });
 
+test("get recovers legacy unsupported-transcript turns after the transcript appears", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.status = "unsupported_transcript";
+  turn.error = "Codex transcript not found for native session codex-session-1";
+  turn.late_result_recovery = "exact_transcript_correlation";
+  turn.settled_at = "2026-07-23T10:00:02.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("late legacy result"),
+  );
+
+  const context = await getTurn(fixture.turn.id, { env: fixture.env });
+
+  assert.equal(context.turn.status, "unsupported_transcript");
+  assert.equal(context.late_result.text, "late legacy result");
+});
+
 test("get rejects a late result when an unrecorded input interrupts the recorded order", async (t) => {
   const fixture = await turnFixture(t);
   const [turn] = await readRecords(fixture.registryDirectory, "turns");
