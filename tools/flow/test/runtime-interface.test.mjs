@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { digest } from "../src/canonical.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { createInMemoryRunAuthority } from "../src/run-authority.mjs";
-import { dynamicCheckpointProposal } from "../test-support/dynamic-checkpoint.mjs";
+import {
+  confirmedLaunchRequest,
+  dependencyCheckpointProposal,
+  dynamicCheckpointProposal,
+} from "../test-support/dynamic-checkpoint.mjs";
 
 test("prepare returns an immutable content-addressed dynamic graph without creating a run", () => {
   const runtime = createTestRuntime();
@@ -16,6 +21,7 @@ test("prepare returns an immutable content-addressed dynamic graph without creat
   assert.equal(prepared.kind, "dynamic");
   assert.match(prepared.bundle_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(prepared.plan_fingerprint, /^sha256:[0-9a-f]{64}$/);
+  assert.match(prepared.confirmation_digest, /^sha256:[0-9a-f]{64}$/);
   assert.deepEqual(prepared.confirmation.graph, prepared.graph);
   assert.deepEqual(
     prepared.confirmation.requested_authority,
@@ -86,6 +92,20 @@ test("prepare rejects incomplete or cyclic dynamic graphs", () => {
     () => runtime.prepare(unsupportedExecutor),
     /dynamic checkpoint plan does not support executor kind: operation/,
   );
+
+  const unknownDependency = dynamicCheckpointProposal();
+  unknownDependency.graph.cards[0].dependencies = ["missing-card"];
+  assert.throws(
+    () => runtime.prepare(unknownDependency),
+    /dynamic plan dependency is unknown: confirm-plan/,
+  );
+
+  const decoratedArray = dynamicCheckpointProposal();
+  decoratedArray.requested_authority.commands.description = "ambient metadata";
+  assert.throws(
+    () => runtime.prepare(decoratedArray),
+    /canonical arrays must not contain extra properties/,
+  );
 });
 
 test("duplicate launch adopts the exact confirmed bundle without recompiling facts", () => {
@@ -99,11 +119,7 @@ test("duplicate launch adopts the exact confirmed bundle without recompiling fac
   const request = dynamicCheckpointProposal();
   const prepared = runtime.prepare(request);
   request.explicit_facts.catalog_fingerprint = `sha256:${"9".repeat(64)}`;
-  const launchRequest = {
-    prepared,
-    confirmation: prepared.confirmation,
-    closed_facts: prepared.explicit_facts,
-  };
+  const launchRequest = confirmedLaunchRequest(prepared);
 
   const created = runtime.launch(launchRequest);
   const adopted = runtime.launch(structuredClone(launchRequest));
@@ -121,44 +137,91 @@ test("duplicate launch adopts the exact confirmed bundle without recompiling fac
 
   const tampered = structuredClone(prepared);
   tampered.graph.cards[0].inputs.prompt = "Different authority";
-  assert.throws(
-    () => runtime.launch({ ...launchRequest, prepared: tampered }),
-    /prepared (?:plan fingerprint|bundle digest) mismatch/,
+  assert.equal(
+    runtime.launch({ ...launchRequest, prepared: tampered }).code,
+    "invalid_prepared_bundle",
   );
-  assert.throws(
-    () => runtime.launch({
+  assert.equal(
+    runtime.launch({
       ...launchRequest,
       closed_facts: {
-        ...prepared.explicit_facts,
-        catalog_fingerprint: `sha256:${"8".repeat(64)}`,
+        ...launchRequest.closed_facts,
+        facts: {
+          ...prepared.explicit_facts,
+          catalog_fingerprint: `sha256:${"8".repeat(64)}`,
+        },
       },
-    }),
-    /closed identity facts differ from the prepared bundle/,
+    }).code,
+    "closed_facts_changed",
   );
 
   const forgedConfirmation = structuredClone(prepared);
   forgedConfirmation.confirmation.graph.cards[0].id = "operator-saw-another-plan";
-  assert.throws(
-    () => runtime.launch({
+  assert.equal(
+    runtime.launch({
+      ...confirmedLaunchRequest(forgedConfirmation),
       prepared: forgedConfirmation,
-      confirmation: forgedConfirmation.confirmation,
-      closed_facts: forgedConfirmation.explicit_facts,
+    }).code,
+    "invalid_prepared_bundle",
+  );
+
+  const selfConsistentUnsupported = structuredClone(prepared);
+  selfConsistentUnsupported.graph.cards[0].executor = {
+    kind: "operation",
+    contract: "flow.operation/example/v1",
+  };
+  selfConsistentUnsupported.plan_fingerprint = digest(
+    selfConsistentUnsupported.graph,
+  );
+  selfConsistentUnsupported.bundle_digest = digest({
+    schema: "flow.prepared-bundle/v1",
+    kind: selfConsistentUnsupported.kind,
+    graph: selfConsistentUnsupported.graph,
+    plan_fingerprint: selfConsistentUnsupported.plan_fingerprint,
+    requested_authority: selfConsistentUnsupported.requested_authority,
+    explicit_facts: selfConsistentUnsupported.explicit_facts,
+  });
+  selfConsistentUnsupported.confirmation = {
+    schema: "flow.dynamic-plan-confirmation/v1",
+    bundle_digest: selfConsistentUnsupported.bundle_digest,
+    graph: selfConsistentUnsupported.graph,
+    requested_authority: selfConsistentUnsupported.requested_authority,
+    explicit_facts: selfConsistentUnsupported.explicit_facts,
+  };
+  selfConsistentUnsupported.confirmation_digest = digest(
+    selfConsistentUnsupported.confirmation,
+  );
+  assert.equal(
+    runtime.launch(confirmedLaunchRequest(selfConsistentUnsupported)).code,
+    "invalid_prepared_bundle",
+  );
+
+  assert.deepEqual(
+    runtime.launch({
+      ...launchRequest,
+      confirmation: {
+        ...launchRequest.confirmation,
+        decision: "later",
+      },
     }),
-    /prepared confirmation is not bound to the bundle/,
+    {
+      schema: "flow.rejection/v1",
+      operation: "launch",
+      code: "invalid_confirmation",
+      bundle_digest: prepared.bundle_digest,
+      authority_watermark: runtime.query().watermark,
+      legal_actions: [],
+    },
   );
 });
 
-test("separate runtime interfaces share host launch idempotency", () => {
+test("runtime interfaces in one process share one host authority", () => {
   const firstRuntime = createFlowRuntime();
   const secondRuntime = createFlowRuntime();
   const request = dynamicCheckpointProposal();
   request.explicit_facts.catalog_fingerprint = `sha256:${"7".repeat(64)}`;
   const prepared = firstRuntime.prepare(request);
-  const launchRequest = {
-    prepared,
-    confirmation: prepared.confirmation,
-    closed_facts: prepared.explicit_facts,
-  };
+  const launchRequest = confirmedLaunchRequest(prepared);
 
   const created = firstRuntime.launch(launchRequest);
   const adopted = secondRuntime.launch(launchRequest);
@@ -170,11 +233,7 @@ test("separate runtime interfaces share host launch idempotency", () => {
 test("a typed checkpoint command completes the authority-derived run", () => {
   const runtime = createTestRuntime();
   const prepared = runtime.prepare(dynamicCheckpointProposal());
-  const launch = runtime.launch({
-    prepared,
-    confirmation: prepared.confirmation,
-    closed_facts: prepared.explicit_facts,
-  });
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
 
   const waiting = runtime.query({ run_id: launch.run_id });
 
@@ -199,6 +258,14 @@ test("a typed checkpoint command completes the authority-derived run", () => {
       run_id: launch.run_id,
       checkpoint_id: "confirm-plan",
       decision: "approve",
+      expected_watermark: launch.authority_watermark,
+    },
+    {
+      schema: "flow.command/v1",
+      type: "checkpoint_decision",
+      run_id: launch.run_id,
+      checkpoint_id: "confirm-plan",
+      decision: "decline",
       expected_watermark: launch.authority_watermark,
     },
   ]);
@@ -232,14 +299,148 @@ test("a typed checkpoint command completes the authority-derived run", () => {
   assert.equal(runtime.query({ run_id: launch.run_id }).watermark, completed.watermark);
 });
 
+test("declining confirmation or a checkpoint records a typed negative outcome", () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+
+  assert.deepEqual(
+    runtime.launch(confirmedLaunchRequest(prepared, { decision: "decline" })),
+    {
+      schema: "flow.rejection/v1",
+      operation: "launch",
+      code: "confirmation_declined",
+      bundle_digest: prepared.bundle_digest,
+      authority_watermark: `sha256:${"0".repeat(64)}`,
+      legal_actions: [],
+    },
+  );
+  assert.deepEqual(runtime.query().runs, []);
+
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const waiting = runtime.query({ run_id: launch.run_id });
+  const decline = waiting.legal_actions.find(({ decision }) => decision === "decline");
+  const receipt = runtime.command(decline);
+  const declined = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(receipt.accepted, true);
+  assert.equal(receipt.authority_watermark, declined.watermark);
+  assert.equal(declined.sequence, 3);
+  assert.equal(declined.phase, "declined");
+  assert.deepEqual(declined.cards, [
+    {
+      id: "confirm-plan",
+      executor_kind: "checkpoint",
+      status: "declined",
+    },
+  ]);
+  assert.deepEqual(declined.legal_actions, []);
+});
+
+test("dependency checkpoints expose only currently legal typed actions", () => {
+  const runtime = createTestRuntime();
+  const proposal = dependencyCheckpointProposal();
+  const prepared = runtime.prepare(proposal);
+  const equivalent = dependencyCheckpointProposal();
+  equivalent.graph.cards.reverse();
+  equivalent.graph.cards.find(({ id }) => id === "confirm-plan").dependencies.push(
+    "confirm-scope",
+  );
+  assert.deepEqual(runtime.prepare(equivalent), prepared);
+
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const first = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(first.cards, [
+    { id: "confirm-plan", executor_kind: "checkpoint", status: "pending" },
+    {
+      id: "confirm-scope",
+      executor_kind: "checkpoint",
+      status: "waiting_checkpoint",
+    },
+  ]);
+  assert.deepEqual(
+    [...new Set(first.legal_actions.map(({ checkpoint_id: id }) => id))],
+    ["confirm-scope"],
+  );
+
+  const premature = runtime.command({
+    schema: "flow.command/v1",
+    type: "checkpoint_decision",
+    run_id: launch.run_id,
+    checkpoint_id: "confirm-plan",
+    decision: "approve",
+    expected_watermark: first.watermark,
+  });
+  assert.equal(premature.code, "checkpoint_not_actionable");
+  assert.equal(runtime.query({ run_id: launch.run_id }).watermark, first.watermark);
+
+  runtime.command(first.legal_actions.find(({ decision }) => decision === "approve"));
+  const second = runtime.query({ run_id: launch.run_id });
+  assert.equal(second.sequence, 2);
+  assert.equal(second.phase, "active");
+  assert.deepEqual(
+    [...new Set(second.legal_actions.map(({ checkpoint_id: id }) => id))],
+    ["confirm-plan"],
+  );
+
+  runtime.command(second.legal_actions.find(({ decision }) => decision === "approve"));
+  const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(completed.sequence, 4);
+  assert.equal(completed.phase, "succeeded");
+  assert.deepEqual(completed.cards.map(({ status }) => status), [
+    "completed",
+    "completed",
+  ]);
+});
+
+test("unknown run operations return typed machine-readable outcomes", async () => {
+  const runtime = createTestRuntime();
+  const runId = `run:${"0".repeat(64)}`;
+  const watermark = `sha256:${"0".repeat(64)}`;
+  const commandRejection = runtime.command({
+    schema: "flow.command/v1",
+    type: "checkpoint_decision",
+    run_id: runId,
+    checkpoint_id: "missing",
+    decision: "approve",
+    expected_watermark: watermark,
+  });
+  assert.deepEqual(commandRejection, {
+    schema: "flow.rejection/v1",
+    operation: "command",
+    code: "unknown_run",
+    command_type: "checkpoint_decision",
+    run_id: runId,
+    authority_watermark: watermark,
+    legal_actions: [],
+  });
+  assert.deepEqual(runtime.query({ run_id: runId }), {
+    schema: "flow.rejection/v1",
+    operation: "query",
+    code: "unknown_run",
+    run_id: runId,
+    authority_watermark: watermark,
+    legal_actions: [],
+  });
+
+  const iterator = runtime.watch()[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: {
+      schema: "flow.rejection/v1",
+      operation: "watch",
+      code: "unknown_run",
+      run_id: null,
+      authority_watermark: watermark,
+      legal_actions: [],
+    },
+  });
+  assert.deepEqual(await iterator.next(), { done: true, value: undefined });
+});
+
 test("generic lifecycle controls are rejected without mutating authority", () => {
   const runtime = createTestRuntime();
   const prepared = runtime.prepare(dynamicCheckpointProposal());
-  const { run_id: runId } = runtime.launch({
-    prepared,
-    confirmation: prepared.confirmation,
-    closed_facts: prepared.explicit_facts,
-  });
+  const { run_id: runId } = runtime.launch(confirmedLaunchRequest(prepared));
   const before = runtime.query({ run_id: runId });
 
   for (const commandType of [
@@ -269,11 +470,7 @@ test("generic lifecycle controls are rejected without mutating authority", () =>
 test("watch streams the current and next watermarked authority projections", async () => {
   const runtime = createTestRuntime();
   const prepared = runtime.prepare(dynamicCheckpointProposal());
-  const launch = runtime.launch({
-    prepared,
-    confirmation: prepared.confirmation,
-    closed_facts: prepared.explicit_facts,
-  });
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
   const iterator = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
   const current = runtime.query({ run_id: launch.run_id });
 

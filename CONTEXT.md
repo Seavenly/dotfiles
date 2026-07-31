@@ -46,6 +46,27 @@ One immutable executable node in an accepted finite flow run plan. Dependency
 edges determine readiness but never imply ambient data transfer.
 _Avoid_: Kanban card when discussing replacement authority
 
+**Prepared run**:
+One immutable, content-addressed run bundle produced from a complete proposed
+plan and explicit identity-bearing facts without creating authoritative run
+state.
+_Avoid_: Draft run, pending run
+
+**Plan fingerprint**:
+The content digest of the canonical finite run-plan graph. It identifies the
+graph but not the wider prepared bundle or its explicit facts.
+_Avoid_: Run ID, version number
+
+**Dynamic plan confirmation**:
+The complete operator-visible view bound to a prepared dynamic plan, followed
+by an explicit accept or decline decision bound to that exact view and bundle.
+_Avoid_: Boolean flag, implicit approval
+
+**Checkpoint decision**:
+A typed approve or decline command for one currently actionable checkpoint,
+bound to the exact authority watermark from which it was offered.
+_Avoid_: Setter, unlock
+
 **Run authority**:
 The sole fenced authority that accepts a flow plan and owns readiness,
 admission, attempts, checkpoints, blocks, revisions, cancellation, and flow-run

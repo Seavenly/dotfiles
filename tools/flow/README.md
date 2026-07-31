@@ -14,24 +14,35 @@ disabled, so this API does not authorize normal replacement launches.
   content-addressed `flow.prepared-run/v1` plus the complete confirmation view.
   This slice accepts checkpoint executors only; later executor kinds fail
   preparation until their owning runtime contracts are implemented.
-- `launch({ prepared, confirmation, closed_facts })` rechecks the exact closed
-  facts and confirmation, then atomically creates or adopts the content-derived
-  run. Repeating the same launch returns the same run identity and records no
-  second launch event. Launch never invokes the plan compiler or refreshes
-  identity-bearing facts.
-- `command(command)` accepts the exact legal checkpoint command projected by
-  authority. Generic setters, force unlock, generic unblock, and timer-based
-  takeover return typed `flow.rejection/v1` results without mutation.
+- `launch({ prepared, confirmation, closed_facts })` accepts an explicit
+  `flow.dynamic-plan-confirmation-decision/v1` and a separately supplied
+  `flow.closed-fact-observation/v1`. It verifies both are bound to the prepared
+  bundle, then atomically creates or adopts the content-derived run. Declining
+  confirmation returns a typed rejection and creates no run. Repeating an
+  accepted launch returns the same run identity and records no second launch
+  event. Launch never invokes the plan compiler or refreshes identity-bearing
+  facts; the caller or future mechanism adapter supplies the closed
+  observation.
+  Invalid prepared bundles, confirmation decisions, and changed closed facts
+  return typed launch rejections rather than escaping as transport errors.
+- `command(command)` accepts the exact legal approve or decline checkpoint
+  command projected by authority. Generic setters, force unlock, generic
+  unblock, and timer-based takeover return typed `flow.rejection/v1` results
+  without mutation.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no run identity it returns the host run index.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks.
 
-The current authority mechanism is deliberately process-local. All default
-runtime Interfaces in that process share one host authority, so duplicate
-launches adopt the same run. Durable SQLite streams, cross-process fencing, and
-restart recovery belong to the next runtime ticket. This first slice proves the
-complete public checkpoint path without claiming those later guarantees.
+The public launch contract is host-idempotent. Its current in-memory conformance
+mechanism is deliberately process-local: all default runtime Interfaces in that
+process share one host authority, so duplicate launches adopt the same run.
+Durable SQLite streams, cross-process enforcement and fencing, and restart
+recovery belong to the next runtime ticket. This first slice proves the complete
+public checkpoint path without claiming those later mechanism guarantees.
+Direct construction of this dark Interface is a conformance seam, not a
+converged public launcher; the launch policy still selects the legacy
+implementation.
 `PlanCompiler` and `LifecycleKernel` are pure Modules: their decisions depend
 only on their explicit arguments.
 

@@ -26,6 +26,9 @@ export function canonicalize(value, ancestors = new Set()) {
         throw new Error("canonical values must use lossless JSON types");
       }
     }
+    if (Reflect.ownKeys(value).length !== value.length + 1) {
+      throw new Error("canonical arrays must not contain extra properties");
+    }
     canonical = value.map((item) => canonicalize(item, ancestors));
   } else {
     const prototype = Object.getPrototypeOf(value);

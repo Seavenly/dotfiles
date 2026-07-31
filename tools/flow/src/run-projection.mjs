@@ -1,17 +1,24 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
 
 export function foldRun(run) {
-  const completedCheckpoints = new Set(
+  const checkpointDecisions = new Map(
     run.events
       .filter(({ type }) => type === "checkpoint_decided")
-      .map(({ checkpoint_id: checkpointId }) => checkpointId),
+      .map(({ checkpoint_id: checkpointId, decision }) => [checkpointId, decision]),
+  );
+  const approvedCheckpoints = new Set(
+    [...checkpointDecisions]
+      .filter(([, decision]) => decision === "approve")
+      .map(([checkpointId]) => checkpointId),
   );
   const cards = run.prepared.graph.cards.map((card) => {
     let status = "pending";
-    if (completedCheckpoints.has(card.id)) {
+    if (checkpointDecisions.get(card.id) === "decline") {
+      status = "declined";
+    } else if (approvedCheckpoints.has(card.id)) {
       status = "completed";
     } else if (card.dependencies.every((dependency) =>
-      completedCheckpoints.has(dependency))) {
+      approvedCheckpoints.has(dependency))) {
       status = card.executor.kind === "checkpoint" ? "waiting_checkpoint" : "ready";
     }
     return {
@@ -21,21 +28,23 @@ export function foldRun(run) {
     };
   });
   const watermark = runWatermark(run);
-  const phase = run.events.some(({ type }) => type === "run_succeeded")
-    ? "succeeded"
-    : "active";
+  const phase = run.events.some(({ type }) => type === "run_declined")
+    ? "declined"
+    : run.events.some(({ type }) => type === "run_succeeded")
+      ? "succeeded"
+      : "active";
   const legalActions = phase === "active"
     ? cards
       .filter(({ executor_kind: kind, status }) =>
         kind === "checkpoint" && status === "waiting_checkpoint")
-      .map(({ id }) => ({
+      .flatMap(({ id }) => ["approve", "decline"].map((decision) => ({
         schema: "flow.command/v1",
         type: "checkpoint_decision",
         run_id: run.run_id,
         checkpoint_id: id,
-        decision: "approve",
+        decision,
         expected_watermark: watermark,
-      }))
+      })))
     : [];
 
   return freezeCanonical({

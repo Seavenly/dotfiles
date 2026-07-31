@@ -27,10 +27,12 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 2);
+  assert.equal(catalog.catalog_version, 3);
   for (const contract of [
     "flow.dynamic-plan-proposal/v1",
     "flow.dynamic-plan-confirmation/v1",
+    "flow.dynamic-plan-confirmation-decision/v1",
+    "flow.closed-fact-observation/v1",
     "flow.prepared-run/v1",
     "flow.launch-receipt/v1",
     "flow.command-receipt/v1",

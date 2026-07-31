@@ -24,7 +24,7 @@ export function createFlowRuntime({
       return runAuthority.query(runId);
     },
 
-    watch({ run_id: runId }) {
+    watch({ run_id: runId } = {}) {
       return runAuthority.watch(runId);
     },
   });

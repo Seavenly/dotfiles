@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 2,
+  "catalog_version": 3,
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [
@@ -21,7 +21,10 @@
         "authority": "RunAuthority",
         "idempotency": "host_idempotent",
         "input": "exact_confirmed_prepared_bundle",
-        "result": "flow.launch-receipt/v1"
+        "confirmation": "flow.dynamic-plan-confirmation-decision/v1",
+        "closed_facts": "flow.closed-fact-observation/v1",
+        "result": "flow.launch-receipt/v1",
+        "rejection": "flow.rejection/v1"
       },
       "command": {
         "authority": "RunAuthority",
@@ -57,6 +60,8 @@
     "flow.runtime/v1",
     "flow.dynamic-plan-proposal/v1",
     "flow.dynamic-plan-confirmation/v1",
+    "flow.dynamic-plan-confirmation-decision/v1",
+    "flow.closed-fact-observation/v1",
     "flow.prepared-bundle/v1",
     "flow.prepared-run/v1",
     "flow.command/v1",

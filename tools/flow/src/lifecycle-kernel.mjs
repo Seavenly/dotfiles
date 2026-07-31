@@ -27,13 +27,25 @@ export function decideLifecycle(fold, command) {
       checkpoint.status !== "waiting_checkpoint") {
     return reject(fold, command, "checkpoint_not_actionable");
   }
-  if (command.decision !== "approve") {
+  if (!["approve", "decline"].includes(command.decision)) {
     return reject(fold, command, "unsupported_checkpoint_decision");
+  }
+
+  if (command.decision === "decline") {
+    return decision(command, checkpoint, [{ type: "run_declined" }]);
   }
 
   const allOtherCardsComplete = fold.cards.every(
     (card) => card.id === checkpoint.id || card.status === "completed",
   );
+  return decision(
+    command,
+    checkpoint,
+    allOtherCardsComplete ? [{ type: "run_succeeded" }] : [],
+  );
+}
+
+function decision(command, checkpoint, terminalEvents) {
   return {
     schema: "flow.decision/v1",
     command_type: command.type,
@@ -43,7 +55,7 @@ export function decideLifecycle(fold, command) {
         checkpoint_id: checkpoint.id,
         decision: command.decision,
       },
-      ...(allOtherCardsComplete ? [{ type: "run_succeeded" }] : []),
+      ...terminalEvents,
     ],
     effect_intents: [],
     obligations: [],

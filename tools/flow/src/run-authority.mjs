@@ -2,6 +2,11 @@ import { isDeepStrictEqual } from "node:util";
 
 import { digest, freezeCanonical } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
+import { validateDynamicPlan } from "./plan-compiler.mjs";
+import {
+  createDynamicPlanConfirmation,
+  createPreparedBundle,
+} from "./prepared-contracts.mjs";
 import { foldRun, projectRun, runWatermark } from "./run-projection.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
@@ -13,23 +18,40 @@ export function createInMemoryRunAuthority() {
   const watchers = new Map();
 
   return Object.freeze({
-    launch({ prepared, confirmation, closed_facts: closedFacts }) {
-      assertPreparedBundle(prepared);
-      const expectedConfirmation = freezeCanonical({
-        schema: "flow.dynamic-plan-confirmation/v1",
+    launch(request = {}) {
+      const {
+        prepared,
+        confirmation,
+        closed_facts: closedFacts,
+      } = request ?? {};
+      try {
+        assertPreparedBundle(prepared);
+      } catch {
+        return launchRejection(
+          "invalid_prepared_bundle",
+          prepared,
+          authorityEvents,
+        );
+      }
+      try {
+        assertConfirmationDecision(prepared, confirmation);
+      } catch {
+        return launchRejection(
+          "invalid_confirmation",
+          prepared,
+          authorityEvents,
+        );
+      }
+      if (confirmation.decision === "decline") {
+        return launchRejection("confirmation_declined", prepared, authorityEvents);
+      }
+      const expectedClosedFacts = freezeCanonical({
+        schema: "flow.closed-fact-observation/v1",
         bundle_digest: prepared.bundle_digest,
-        graph: prepared.graph,
-        requested_authority: prepared.requested_authority,
-        explicit_facts: prepared.explicit_facts,
+        facts: prepared.explicit_facts,
       });
-      if (!isDeepStrictEqual(prepared.confirmation, expectedConfirmation)) {
-        throw new Error("prepared confirmation is not bound to the bundle");
-      }
-      if (!isDeepStrictEqual(confirmation, expectedConfirmation)) {
-        throw new Error("launch confirmation differs from the prepared bundle");
-      }
-      if (!isDeepStrictEqual(closedFacts, prepared.explicit_facts)) {
-        throw new Error("closed identity facts differ from the prepared bundle");
+      if (!isDeepStrictEqual(closedFacts, expectedClosedFacts)) {
+        return launchRejection("closed_facts_changed", prepared, authorityEvents);
       }
 
       const existingRunId = bundleRuns.get(prepared.bundle_digest);
@@ -44,6 +66,8 @@ export function createInMemoryRunAuthority() {
             type: "run_launched",
             bundle_digest: prepared.bundle_digest,
             plan_fingerprint: prepared.plan_fingerprint,
+            confirmation_digest: prepared.confirmation_digest,
+            closed_fact_observation_digest: digest(closedFacts),
           },
         ],
       };
@@ -63,7 +87,14 @@ export function createInMemoryRunAuthority() {
 
     command(command) {
       const run = runs.get(command?.run_id);
-      if (!run) throw new Error(`unknown flow run: ${command?.run_id}`);
+      if (!run) {
+        return unknownRunRejection(
+          "command",
+          command?.run_id,
+          authorityEvents,
+          command?.type,
+        );
+      }
       const fold = foldRun(run);
       const decision = decideLifecycle(fold, command);
       if (decision.schema === "flow.rejection/v1") {
@@ -91,19 +122,23 @@ export function createInMemoryRunAuthority() {
     query(runId) {
       if (runId !== undefined) {
         const run = runs.get(runId);
-        if (!run) throw new Error(`unknown flow run: ${runId}`);
+        if (!run) return unknownRunRejection("query", runId, authorityEvents);
         return projectRun(foldRun(run));
       }
-      return {
+      return freezeCanonical({
         schema: "flow.run-index-projection/v1",
         watermark: authorityWatermark(authorityEvents),
         runs: [...runs.keys()].sort(),
-      };
+      });
     },
 
     watch(runId) {
       const run = runs.get(runId);
-      if (!run) throw new Error(`unknown flow run: ${runId}`);
+      if (!run) {
+        return createOneShotWatcher(
+          unknownRunRejection("watch", runId, authorityEvents),
+        );
+      }
       const watcher = createProjectionWatcher(projectRun(foldRun(run)), () => {
         const runWatchers = watchers.get(runId);
         runWatchers?.delete(watcher);
@@ -125,16 +160,44 @@ function assertPreparedBundle(prepared) {
   if (prepared.plan_fingerprint !== digest(prepared.graph)) {
     throw new Error("prepared plan fingerprint mismatch");
   }
-  const bundleDigest = digest({
-    schema: "flow.prepared-bundle/v1",
-    kind: prepared.kind,
+  validateDynamicPlan({
+    schema: "flow.dynamic-plan-proposal/v1",
     graph: prepared.graph,
-    plan_fingerprint: prepared.plan_fingerprint,
     requested_authority: prepared.requested_authority,
     explicit_facts: prepared.explicit_facts,
   });
+  const bundleDigest = digest(createPreparedBundle({
+    kind: prepared.kind,
+    graph: prepared.graph,
+    planFingerprint: prepared.plan_fingerprint,
+    requestedAuthority: prepared.requested_authority,
+    explicitFacts: prepared.explicit_facts,
+  }));
   if (prepared.bundle_digest !== bundleDigest) {
     throw new Error("prepared bundle digest mismatch");
+  }
+  const expectedConfirmation = createDynamicPlanConfirmation({
+    bundleDigest: prepared.bundle_digest,
+    graph: prepared.graph,
+    requestedAuthority: prepared.requested_authority,
+    explicitFacts: prepared.explicit_facts,
+  });
+  if (!isDeepStrictEqual(prepared.confirmation, expectedConfirmation) ||
+      prepared.confirmation_digest !== digest(expectedConfirmation)) {
+    throw new Error("prepared confirmation is not bound to the bundle");
+  }
+}
+
+function assertConfirmationDecision(prepared, confirmation) {
+  const expected = freezeCanonical({
+    schema: "flow.dynamic-plan-confirmation-decision/v1",
+    decision: confirmation?.decision,
+    bundle_digest: prepared.bundle_digest,
+    confirmation_digest: prepared.confirmation_digest,
+  });
+  if (!["accept", "decline"].includes(confirmation?.decision) ||
+      !isDeepStrictEqual(confirmation, expected)) {
+    throw new Error("launch confirmation decision is invalid");
   }
 }
 
@@ -144,8 +207,50 @@ function launchReceipt(run, created) {
     run_id: run.run_id,
     bundle_digest: run.prepared.bundle_digest,
     plan_fingerprint: run.prepared.plan_fingerprint,
-    authority_watermark: run.launch_watermark,
+    launch_watermark: run.launch_watermark,
+    authority_watermark: runWatermark(run),
     created,
+  });
+}
+
+function unknownRunRejection(operation, runId, authorityEvents, commandType) {
+  return freezeCanonical({
+    schema: "flow.rejection/v1",
+    operation,
+    code: "unknown_run",
+    ...(commandType === undefined ? {} : { command_type: commandType }),
+    run_id: runId ?? null,
+    authority_watermark: authorityWatermark(authorityEvents),
+    legal_actions: [],
+  });
+}
+
+function launchRejection(code, prepared, authorityEvents) {
+  return freezeCanonical({
+    schema: "flow.rejection/v1",
+    operation: "launch",
+    code,
+    bundle_digest: prepared?.bundle_digest ?? null,
+    authority_watermark: authorityWatermark(authorityEvents),
+    legal_actions: [],
+  });
+}
+
+function createOneShotWatcher(result) {
+  let emitted = false;
+  return Object.freeze({
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next() {
+      if (emitted) return Promise.resolve({ done: true, value: undefined });
+      emitted = true;
+      return Promise.resolve({ done: false, value: result });
+    },
+    return() {
+      emitted = true;
+      return Promise.resolve({ done: true, value: undefined });
+    },
   });
 }
 

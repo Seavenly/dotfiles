@@ -4,9 +4,11 @@ import dns from "node:dns";
 import dnsPromises from "node:dns/promises";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
 import tls from "node:tls";
 
@@ -70,6 +72,55 @@ test("LifecycleKernel uses only the authoritative fold and typed command", () =>
   });
   assert.deepEqual({ fold, command }, unchanged);
 });
+
+test("pure module imports cannot acquire ambient capabilities", () => {
+  const sourceDirectory = resolve(import.meta.dirname, "../src");
+  assert.doesNotThrow(() => assertPureModuleGraph([
+    resolve(sourceDirectory, "plan-compiler.mjs"),
+    resolve(sourceDirectory, "lifecycle-kernel.mjs"),
+  ]));
+
+  assert.throws(
+    () => assertPureModuleGraph(["/virtual/impure.mjs"], {
+      readSource(path) {
+        assert.equal(path, "/virtual/impure.mjs");
+        return 'import { readFileSync } from "node:fs";\n';
+      },
+    }),
+    /pure module imports forbidden ambient capability: node:fs/,
+  );
+});
+
+function assertPureModuleGraph(entries, {
+  readSource = (path) => readFileSync(path, "utf8"),
+} = {}) {
+  const visited = new Set();
+  const pending = [...entries];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (visited.has(path)) continue;
+    visited.add(path);
+    const source = readSource(path);
+    if (/\bprocess\.env\b|\brequire\s*\(|\bcreateRequire\b/.test(source)) {
+      throw new Error(`pure module uses forbidden ambient access: ${path}`);
+    }
+    const specifiers = [
+      ...source.matchAll(
+        /\b(?:import|export)\s+(?:[^"'();]*?\s+from\s+)?["']([^"']+)["']/g,
+      ),
+      ...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']/g),
+    ].map((match) => match[1]);
+    for (const specifier of specifiers) {
+      if (specifier === "node:crypto") continue;
+      if (!specifier.startsWith(".")) {
+        throw new Error(
+          `pure module imports forbidden ambient capability: ${specifier}`,
+        );
+      }
+      pending.push(resolve(dirname(path), specifier));
+    }
+  }
+}
 
 function withoutAmbientReads(callback) {
   const restores = [];

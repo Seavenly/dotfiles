@@ -1,4 +1,8 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
+import {
+  createDynamicPlanConfirmation,
+  createPreparedBundle,
+} from "./prepared-contracts.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CARD_ARRAY_FIELDS = [
@@ -17,34 +21,35 @@ const FACT_ARRAY_FIELDS = [
 ];
 
 export function compileDynamicPlan(proposal) {
-  assertDynamicProposal(proposal);
+  validateDynamicPlan(proposal);
   const graph = canonicalGraph(proposal.graph);
   const planFingerprint = digest(graph);
-  const bundle = freezeCanonical({
-    schema: "flow.prepared-bundle/v1",
+  const bundle = createPreparedBundle({
     kind: "dynamic",
     graph,
-    plan_fingerprint: planFingerprint,
-    requested_authority: proposal.requested_authority,
-    explicit_facts: proposal.explicit_facts,
+    planFingerprint,
+    requestedAuthority: proposal.requested_authority,
+    explicitFacts: proposal.explicit_facts,
   });
   const bundleDigest = digest(bundle);
+  const confirmation = createDynamicPlanConfirmation({
+    bundleDigest,
+    graph,
+    requestedAuthority: proposal.requested_authority,
+    explicitFacts: proposal.explicit_facts,
+  });
+  const confirmationDigest = digest(confirmation);
 
   return freezeCanonical({
     schema: "flow.prepared-run/v1",
     kind: "dynamic",
     bundle_digest: bundleDigest,
     plan_fingerprint: planFingerprint,
+    confirmation_digest: confirmationDigest,
     graph,
     requested_authority: proposal.requested_authority,
     explicit_facts: proposal.explicit_facts,
-    confirmation: {
-      schema: "flow.dynamic-plan-confirmation/v1",
-      bundle_digest: bundleDigest,
-      graph,
-      requested_authority: proposal.requested_authority,
-      explicit_facts: proposal.explicit_facts,
-    },
+    confirmation,
   });
 }
 
@@ -52,7 +57,7 @@ export const PlanCompiler = Object.freeze({
   compile: compileDynamicPlan,
 });
 
-function assertDynamicProposal(proposal) {
+export function validateDynamicPlan(proposal) {
   if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {
     throw new Error("dynamic plan proposal contract is invalid");
   }
