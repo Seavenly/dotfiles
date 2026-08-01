@@ -6,6 +6,10 @@ import {
   createDrovrDelegatedAgentPort,
 } from "../src/drovr-delegated-agent-port.mjs";
 import { digest } from "../src/canonical.mjs";
+import {
+  rebindDescriptionDigest,
+  supportedDescription,
+} from "../test-support/delegated-agent-description.mjs";
 
 const request = {
   schema: "flow.delegated-agent-description-request/v1",
@@ -424,20 +428,3 @@ test("DelegatedAgentPort reports unavailable descriptions without inventing auth
     legal_next_actions: ["retry_delegated_runtime_description"],
   });
 });
-
-async function supportedDescription(drovrRequest, dependencies) {
-  const description = structuredClone(
-    await describeDelegatedAgent(drovrRequest, dependencies),
-  );
-  for (const feature of description.feature_advertisement.features) {
-    feature.availability = "supported";
-  }
-  rebindDescriptionDigest(description);
-  return description;
-}
-
-function rebindDescriptionDigest(description) {
-  const { description_digest: _digest, legal_actions: _actions, ...identity } =
-    description;
-  description.description_digest = digest(identity);
-}

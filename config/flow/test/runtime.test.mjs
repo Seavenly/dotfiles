@@ -13,6 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import {
+  createDrovrDelegatedAgentPort,
+} from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
+import {
+  rebindDescriptionDigest,
+  supportedDescription,
+} from "../../../tools/flow/test-support/delegated-agent-description.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
 
 test("query exposes the DelegatedAgentPort description without creating a run", async () => {
@@ -52,6 +59,85 @@ test("query exposes the DelegatedAgentPort description without creating a run", 
     caller_metadata: { run_id: "run:example", card_id: "review" },
   }), projection);
   assert.deepEqual(runtime.query(), before);
+});
+
+for (const [label, mutate, expectedFinding] of [
+  [
+    "missing",
+    (description) => description.feature_advertisement.features.shift(),
+    { feature_id: "exact_launch_description", reason: "missing" },
+  ],
+  [
+    "weakened",
+    (description) => {
+      description.feature_advertisement.features[0].guarantees.pop();
+    },
+    { feature_id: "exact_launch_description", reason: "weakened" },
+  ],
+  [
+    "contradictory",
+    (description) => {
+      description.feature_advertisement.features[0].authority =
+        "delegated_runtime";
+    },
+    { feature_id: "exact_launch_description", reason: "contradictory" },
+  ],
+]) {
+  test(`query exposes ${label} Drovr conformance and recovery`, async () => {
+    let repaired = false;
+    const delegatedAgentPort = createDrovrDelegatedAgentPort({
+      async describeDrovr(request, dependencies) {
+        const description = await supportedDescription(request, dependencies);
+        if (!repaired) {
+          mutate(description);
+          rebindDescriptionDigest(description);
+        }
+        return description;
+      },
+    });
+    const runtime = createFlowRuntime({ delegatedAgentPort });
+
+    const blocked = await runtime.query(delegatedAgentQuery());
+
+    assert.equal(blocked.status, "blocked");
+    assert.equal(
+      blocked.compatibility.code,
+      "incompatible_feature_advertisement",
+    );
+    assert.deepEqual(blocked.compatibility.findings, [expectedFinding]);
+    assert.deepEqual(blocked.legal_next_actions, [
+      "repair_delegated_runtime_contract",
+      "refresh_delegated_runtime_description",
+    ]);
+
+    repaired = true;
+    const recovered = await runtime.query(delegatedAgentQuery());
+    assert.equal(recovered.status, "compatible");
+    assert.deepEqual(recovered.compatibility.findings, []);
+  });
+}
+
+test("query exposes unavailable Drovr descriptions and recovery", async () => {
+  let repaired = false;
+  const delegatedAgentPort = createDrovrDelegatedAgentPort({
+    async describeDrovr(request, dependencies) {
+      if (!repaired) throw new Error("configuration offline");
+      return supportedDescription(request, dependencies);
+    },
+  });
+  const runtime = createFlowRuntime({ delegatedAgentPort });
+
+  const blocked = await runtime.query(delegatedAgentQuery());
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "description_unavailable");
+  assert.deepEqual(blocked.legal_next_actions, [
+    "retry_delegated_runtime_description",
+  ]);
+
+  repaired = true;
+  const recovered = await runtime.query(delegatedAgentQuery());
+  assert.equal(recovered.status, "compatible");
 });
 
 test("query inventories retained legacy runs with a stable content digest", async (t) => {
@@ -755,4 +841,21 @@ async function snapshotFiles(root) {
     }
   }
   return snapshot;
+}
+
+function delegatedAgentQuery() {
+  return {
+    schema: "flow.query/v1",
+    query: "delegated_agent_description",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      capability: "read-only",
+    },
+    caller_metadata: {
+      run_id: "run:example",
+      card_id: "review",
+      attempt: 1,
+    },
+  };
 }

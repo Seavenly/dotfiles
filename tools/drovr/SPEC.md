@@ -331,6 +331,8 @@ also carries normalized effective authority, declared capacity, an ambient
 credential-reference identity with no secret material, opaque caller ownership
 metadata, deterministic comparison keys, and the complete flow-required
 feature advertisement. The configuration-catalog watermark binds those facts.
+Declared capacity includes a 30-second Herdr observation bound, which applies
+to both session discovery and session-scoped read-only observations.
 Every feature entry carries an exact `supported` or `unavailable` availability
 state. The watermark includes the complete feature advertisement and the full
 authority-dimension catalog used to normalize effective authority.
