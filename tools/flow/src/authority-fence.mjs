@@ -22,7 +22,9 @@ export function acquireAuthorityLock({
   } catch (error) {
     database.close();
     if (error?.code === "ERR_SQLITE_ERROR" &&
-        /database is locked/u.test(error.message)) {
+        (error.errcode === 5 ||
+          (error.errcode === undefined &&
+            /database is locked/u.test(error.message)))) {
       return null;
     }
     throw error;

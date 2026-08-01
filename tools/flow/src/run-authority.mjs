@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import {
   AuthorityFenceError,
 } from "./authority-fence.mjs";
 import {
+  CanonicalValueError,
   canonicalize,
   digest,
   freezeCanonical,
@@ -265,8 +266,9 @@ export function createDurableRunAuthority({
       const { prepared, closedFacts } = validation;
 
       const runId = `run:${prepared.bundle_digest.slice("sha256:".length)}`;
-      const database = openAuthorityDatabase(databasePath);
+      let database = null;
       try {
+        database = openAuthorityDatabase(databasePath);
         assertMutationFence(lockDatabase, database, {
           authorityEpoch,
           bootId,
@@ -342,7 +344,7 @@ export function createDurableRunAuthority({
           });
           database.exec("COMMIT");
         } catch (error) {
-          database.exec("ROLLBACK");
+          if (database.isTransaction) database.exec("ROLLBACK");
           throw error;
         }
         return durableLaunchReceipt(
@@ -352,10 +354,21 @@ export function createDurableRunAuthority({
           fenceRun,
         );
       } catch (error) {
-        if (!(error instanceof AuthorityIntegrityError)) throw error;
-        return authorityIntegrityRejection("launch", error.reason);
+        if (error instanceof AuthorityFenceError) {
+          return durableMutationRejection(
+            "launch",
+            null,
+            databasePath,
+            null,
+            fenceRun,
+            prepared.bundle_digest,
+          );
+        }
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("launch", integrity.reason);
       } finally {
-        database.close();
+        database?.close();
       }
     },
 
@@ -370,8 +383,9 @@ export function createDurableRunAuthority({
           fenceRun,
         );
       }
-      const database = openAuthorityDatabase(databasePath);
+      let database = null;
       try {
+        database = openAuthorityDatabase(databasePath);
         assertMutationFence(lockDatabase, database, {
           authorityEpoch,
           bootId,
@@ -386,10 +400,17 @@ export function createDurableRunAuthority({
             command?.type,
           );
         }
-        const decision = lifecycleKernel(
-          fenceRun(database, stream),
-          command,
-        );
+        const fold = fenceRun(database, stream);
+        let canonicalCommand;
+        let commandDigest;
+        try {
+          canonicalCommand = canonicalize(command);
+          commandDigest = digest(canonicalCommand);
+        } catch (error) {
+          if (!(error instanceof CanonicalValueError)) throw error;
+          return invalidCommandRejection(fold, command);
+        }
+        const decision = lifecycleKernel(fold, canonicalCommand);
         if (decision.schema === "flow.rejection/v1") {
           return freezeCanonical(decision);
         }
@@ -400,9 +421,12 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
-          const current = readStream(database, command.run_id);
+          const current = readStream(database, canonicalCommand.run_id);
           const currentFold = fenceRun(database, current);
-          const currentDecision = lifecycleKernel(currentFold, command);
+          const currentDecision = lifecycleKernel(
+            currentFold,
+            canonicalCommand,
+          );
           if (currentDecision.schema === "flow.rejection/v1") {
             database.exec("ROLLBACK");
             return freezeCanonical(currentDecision);
@@ -415,14 +439,14 @@ export function createDurableRunAuthority({
             bindEffectIntent(intent, {
               authorityEpoch,
               bootId,
-              command,
+              commandDigest,
               decision: currentDecision,
               deferredEvents,
               prepared: current.records[0].payload.prepared,
-              runId: command.run_id,
+              runId: canonicalCommand.run_id,
             }));
           appendAuthorityEvents(database, {
-            streamId: command.run_id,
+            streamId: canonicalCommand.run_id,
             streamKind: "run",
             events: [
               ...(effectIntents.length === 0
@@ -449,7 +473,7 @@ export function createDurableRunAuthority({
                 contract: "flow.host-admission-event/v1",
                 payload: {
                   type: "run_capacity_released",
-                  run_id: command.run_id,
+                  run_id: canonicalCommand.run_id,
                 },
               }],
               authorityEpoch,
@@ -464,35 +488,45 @@ export function createDurableRunAuthority({
         }
         const projection = projectRun(fenceRun(
           database,
-          readStream(database, command.run_id),
+          readStream(database, canonicalCommand.run_id),
         ));
-        for (const watcher of watchers.get(command.run_id) ?? []) {
+        for (const watcher of watchers.get(canonicalCommand.run_id) ?? []) {
           watcher.publish(projection);
         }
         const receipt = {
           schema: "flow.command-receipt/v1",
-          command_type: command.type,
-          run_id: command.run_id,
+          command_type: canonicalCommand.type,
+          run_id: canonicalCommand.run_id,
           authority_watermark: projection.watermark,
           accepted: true,
         };
         const recordedIntents = readRecordedEffectIntents(
           database,
-          command.run_id,
-          command,
+          canonicalCommand.run_id,
+          commandDigest,
         );
         return freezeCanonical(recordedIntents.length === 0
           ? receipt
           : { ...receipt, effect_intents: recordedIntents });
       } catch (error) {
-        if (!(error instanceof AuthorityIntegrityError)) throw error;
+        if (error instanceof AuthorityFenceError) {
+          return durableMutationRejection(
+            "command",
+            command?.run_id,
+            databasePath,
+            command?.type,
+            fenceRun,
+          );
+        }
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
         return authorityIntegrityRejection(
           "command",
-          error.reason,
+          integrity.reason,
           command?.run_id,
         );
       } finally {
-        database.close();
+        database?.close();
       }
     },
 
@@ -508,30 +542,30 @@ export function createDurableRunAuthority({
           runs: [],
         });
       }
-      const database = openAuthorityDatabase(databasePath, { readOnly: true });
+      let database = null;
       try {
-        try {
-          if (runId !== undefined) {
-            const stream = readStream(database, runId);
-            if (!stream) {
-              return durableUnknownRunRejection("query", runId, database);
-            }
-            return projectRun(fenceRun(database, stream));
+        database = openAuthorityDatabase(databasePath, { readOnly: true });
+        if (runId !== undefined) {
+          const stream = readStream(database, runId);
+          if (!stream) {
+            return durableUnknownRunRejection("query", runId, database);
           }
-          const hostStream = readStream(database, "host:runs");
-          const host = hostStream?.fold ?? freezeCanonical({
-            schema: "flow.run-index-projection/v1",
-            watermark: EMPTY_WATERMARK,
-            runs: [],
-          });
-          const admission = readStream(database, "host:admission")?.fold;
-          return fencedHostProjection(host, admission, declaredCapacity);
-        } catch (error) {
-          if (!(error instanceof AuthorityIntegrityError)) throw error;
-          return authorityIntegrityRejection("query", error.reason, runId);
+          return projectRun(fenceRun(database, stream));
         }
+        const hostStream = readStream(database, "host:runs");
+        const host = hostStream?.fold ?? freezeCanonical({
+          schema: "flow.run-index-projection/v1",
+          watermark: EMPTY_WATERMARK,
+          runs: [],
+        });
+        const admission = readStream(database, "host:admission")?.fold;
+        return fencedHostProjection(host, admission, 0);
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("query", integrity.reason, runId);
       } finally {
-        database.close();
+        database?.close();
       }
     },
 
@@ -558,6 +592,12 @@ export function createDurableRunAuthority({
 
     async invokeEffect(intent, adapter) {
       assertOpen();
+      if (!lockDatabase) {
+        throw new AuthorityFenceError(
+          "mutation_authority_unavailable",
+          "effect runner does not hold mutation authority",
+        );
+      }
       if (typeof adapter?.invoke !== "function") {
         throw new TypeError("effect adapter must expose invoke");
       }
@@ -652,7 +692,7 @@ export function createDurableRunAuthority({
           const unresolved = unresolvedEffectIds(current);
           unresolved.delete(effectiveIntent.effect_id);
           const deferredEvents = unresolved.size === 0
-            ? effectiveIntent.deferred_events
+            ? pendingDeferredEvents(current)
             : [];
           appendAuthorityEvents(database, {
             streamId: effectiveIntent.run_id,
@@ -725,12 +765,18 @@ export function createDurableRunAuthority({
 }
 
 function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
-  const database = createDatabase(databasePath, { readOnly });
-  database.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 0;");
-  if (!readOnly) {
-    database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+  let database = null;
+  try {
+    database = createDatabase(databasePath, { readOnly });
+    database.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 0;");
+    if (!readOnly) {
+      database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+    }
+    return database;
+  } catch (error) {
+    database?.close();
+    throw authorityIntegrityError(error) ?? error;
   }
-  return database;
 }
 
 function initializeAuthoritySchema(database) {
@@ -810,7 +856,7 @@ function acquireAuthorityEpoch(database, {
     database.exec("COMMIT");
     return authorityEpoch;
   } catch (error) {
-    database.exec("ROLLBACK");
+    if (database.isTransaction) database.exec("ROLLBACK");
     throw error;
   }
 }
@@ -925,7 +971,7 @@ function readAdmission(database) {
 function bindEffectIntent(intent, {
   authorityEpoch,
   bootId,
-  command,
+  commandDigest,
   decision,
   deferredEvents,
   prepared,
@@ -956,7 +1002,7 @@ function bindEffectIntent(intent, {
     ...intent,
     run_id: runId,
     decision_digest: digest(decision),
-    command_digest: digest(command),
+    command_digest: commandDigest,
     deferred_events: deferredEvents,
     authority_epoch: authorityEpoch,
     authority_boot_id: bootId,
@@ -1020,13 +1066,29 @@ function adoptEffectIntent(database, intent, {
   return adopted;
 }
 
-function readRecordedEffectIntents(database, runId, command) {
-  const commandDigest = digest(command);
+function readRecordedEffectIntents(database, runId, commandDigest) {
   return readStream(database, runId).records
     .filter(({ payload }) =>
       payload.type === "effect_intent_recorded" &&
       payload.intent.command_digest === commandDigest)
     .map(({ payload }) => payload.intent);
+}
+
+function pendingDeferredEvents(stream) {
+  const events = [];
+  const seen = new Set();
+  for (const { payload } of stream.records) {
+    if (!["effect_intent_recorded", "effect_intent_adopted"].includes(
+      payload.type,
+    )) continue;
+    for (const event of payload.intent.deferred_events) {
+      const eventDigest = digest(event);
+      if (seen.has(eventDigest)) continue;
+      seen.add(eventDigest);
+      events.push(event);
+    }
+  }
+  return events;
 }
 
 function unresolvedEffectIds(stream) {
@@ -1053,6 +1115,19 @@ function authorityIntegrityRejection(operation, reason, runId = null) {
     runId: runId ?? null,
     authorityWatermark: null,
     authorityWatermarkDomain: runId ? "run" : "host",
+  });
+}
+
+function invalidCommandRejection(fold, command) {
+  return createRejection({
+    operation: "command",
+    code: "invalid_command",
+    commandType: typeof command?.type === "string" ? command.type : null,
+    runId: typeof command?.run_id === "string" ? command.run_id : null,
+    bundleDigest: fold.bundle_digest,
+    authorityWatermark: fold.watermark,
+    authorityWatermarkDomain: "run",
+    legalActions: fold.legal_actions,
   });
 }
 
@@ -1151,27 +1226,28 @@ function durableMutationRejection(
   databasePath,
   commandType,
   fenceRun,
+  fallbackBundleDigest = null,
 ) {
   let authorityWatermark = EMPTY_WATERMARK;
   let legalActions = [];
-  let bundleDigest = null;
+  let bundleDigest = fallbackBundleDigest;
   if (databaseExists(databasePath)) {
-    const database = openAuthorityDatabase(databasePath, { readOnly: true });
+    let database = null;
     try {
-      try {
-        const stream = runId ? readStream(database, runId) : null;
-        const host = durableHostProjection(database);
-        const runFold = stream ? fenceRun(database, stream) : null;
-        authorityWatermark = runFold?.watermark ?? host.watermark ??
-          EMPTY_WATERMARK;
-        legalActions = runFold?.legal_actions ?? [];
-        bundleDigest = runFold?.bundle_digest ?? null;
-      } catch (error) {
-        if (!(error instanceof AuthorityIntegrityError)) throw error;
-        return authorityIntegrityRejection(operation, error.reason, runId);
-      }
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
+      const stream = runId ? readStream(database, runId) : null;
+      const host = durableHostProjection(database);
+      const runFold = stream ? fenceRun(database, stream) : null;
+      authorityWatermark = runFold?.watermark ?? host.watermark ??
+        EMPTY_WATERMARK;
+      legalActions = runFold?.legal_actions ?? [];
+      bundleDigest = runFold?.bundle_digest ?? null;
+    } catch (error) {
+      const integrity = authorityIntegrityError(error);
+      if (!integrity) throw error;
+      return authorityIntegrityRejection(operation, integrity.reason, runId);
     } finally {
-      database.close();
+      database?.close();
     }
   }
   return createRejection({
@@ -1194,16 +1270,16 @@ function durableLaunchRejection(
 ) {
   let authorityWatermark = EMPTY_WATERMARK;
   if (databaseExists(databasePath)) {
-    const database = openAuthorityDatabase(databasePath, { readOnly: true });
+    let database = null;
     try {
-      try {
-        authorityWatermark = durableHostProjection(database).watermark;
-      } catch (error) {
-        if (!(error instanceof AuthorityIntegrityError)) throw error;
-        return authorityIntegrityRejection("launch", error.reason);
-      }
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
+      authorityWatermark = durableHostProjection(database).watermark;
+    } catch (error) {
+      const integrity = authorityIntegrityError(error);
+      if (!integrity) throw error;
+      return authorityIntegrityRejection("launch", integrity.reason);
     } finally {
-      database.close();
+      database?.close();
     }
   }
   return createRejection({
@@ -1244,17 +1320,16 @@ function fencedHostProjection(host, admission, fallbackCapacity) {
 }
 
 function databaseExists(databasePath) {
-  try {
-    const database = createDatabase(databasePath, {
-      open: false,
-      readOnly: true,
-    });
-    database.open();
-    database.close();
-    return true;
-  } catch {
-    return false;
-  }
+  return existsSync(databasePath);
+}
+
+function authorityIntegrityError(error) {
+  if (error instanceof AuthorityIntegrityError) return error;
+  if (error?.code !== "ERR_SQLITE_ERROR") return null;
+  return new AuthorityIntegrityError(
+    error.errcode === 26 ? "corrupt_store" : "store_unavailable",
+    error.message,
+  );
 }
 
 function createDatabase(path, options) {

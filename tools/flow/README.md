@@ -74,6 +74,10 @@ completion appends a durable receipt. Effect-bearing decisions cannot record a
 terminal run transition before that receipt. Same-boot recovery adopts the
 exact outstanding intent under the new epoch without changing its idempotency
 identity.
+`invokeEffect` is an internal effect-runner mechanism seam on the dark durable
+authority Adapter, not a sixth public `FlowRuntime` operation. It therefore
+signals mechanism fencing failures to its internal caller rather than extending
+the five-operation public rejection catalog.
 
 Same-boot process replacement increments the epoch and resumes from replayed
 authority. A boot identity change instead projects
@@ -81,15 +85,29 @@ authority. A boot identity change instead projects
 `reboot_admission` command. That action binds the catalog, routes, capability
 envelopes, operation and validator contracts, resource claims, time facts,
 subject generations, unresolved effects, stream generation, boot, and epoch.
-The mechanism Adapter refreshes those observations at admission; any drift
-rejects the command. Durable construction fails reboot admission closed until
-that current-observation Adapter is configured. Each run is admitted
-independently. Run
+The mechanism Adapter refreshes those observations at admission. Its
+revalidation record keeps prepared facts under `expected`, current facts under
+`observed`, and records `observed: null` when no exact current observation is
+available; any drift rejects the command. The checkpoint tracer has no
+applicable time facts or subject generations, so its exact prepared binding for
+both categories is the empty list. Durable construction fails reboot admission
+closed until that
+current-observation Adapter is configured. An unresolved effect from a prior
+boot remains deliberately fenced, keeps its capacity reservation, and requires
+a future explicit cancellation or reconciliation mechanism; this ticket does
+not infer effect completion or release capacity automatically. The shipped
+`LifecycleKernel` does not yet emit effect intents, so this recovery dead end is
+reachable only through the internal custom-kernel conformance seam until that
+future mechanism exists. Each run is admitted independently. Run
 watermarks bind the run stream generation and current authority epoch, while host
 watermarks bind both host-index and host-admission streams. Reordering,
 omission, duplication, digest conflict, unknown contracts, corrupt JSON,
-stale generations, and fold drift return `authority_integrity_failure` with no
-legal action.
+stale generations, fold drift, corrupt or unavailable stores, and missing run
+launch events return `authority_integrity_failure` with no legal action. Their
+machine reasons include `reordering`, `omission`, `duplication`,
+`digest_conflict`, `unknown_contract`, `corrupt_json`, `stale_generation`,
+`fold_mismatch`, `corrupt_store`, `store_unavailable`, and
+`missing_launch_event`.
 
 The no-argument in-memory authority remains available only for isolated pure
 contract tests. Durable construction is explicit so a read-only command never

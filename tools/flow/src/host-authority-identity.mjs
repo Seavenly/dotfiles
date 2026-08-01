@@ -12,7 +12,7 @@ export function createHostAuthorityIdentityAdapter({
   ).trim(),
   readMacBootIdentity = () => execFileSync(
     "/usr/sbin/sysctl",
-    ["-n", "kern.boottime"],
+    ["-n", "kern.bootsessionuuid"],
     { encoding: "utf8" },
   ).trim(),
   createProcessIdentity = () => `process:${process.pid}:${randomUUID()}`,

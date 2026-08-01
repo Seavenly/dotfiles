@@ -143,7 +143,10 @@ function reduceAuthorityStream(stream, records) {
   if (stream.stream_kind === "run") {
     const launch = records[0]?.payload;
     if (launch?.type !== "run_launched" || !launch.prepared) {
-      throw new Error("run authority stream is missing its launch event");
+      integrityFailure(
+        "missing_launch_event",
+        "run authority stream is missing its launch event",
+      );
     }
     const run = {
       run_id: stream.stream_id,
@@ -155,7 +158,7 @@ function reduceAuthorityStream(stream, records) {
     };
     return foldRun(run, { watermark: stream.head_digest });
   }
-  throw new Error("unknown authority stream contract");
+  integrityFailure("unknown_contract", "authority stream contract is unknown");
 }
 
 function expectedEventContract(streamKind) {

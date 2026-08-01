@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, utimes } from "node:fs/promises";
+import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -143,10 +143,9 @@ test("reboot admission rejects any drift from the complete revalidation", async 
     "resource_claims",
     "time_facts",
     "subject_generations",
-    "unresolved_effects",
   ]) {
     const changed = structuredClone(action);
-    changed.revalidation[field] = field.endsWith("fingerprint")
+    changed.revalidation.observed[field] = field.endsWith("fingerprint")
       ? `sha256:${"0".repeat(64)}`
       : field === "route_snapshot"
         ? { watermark: `sha256:${"0".repeat(64)}`, bindings: [] }
@@ -154,6 +153,15 @@ test("reboot admission rejects any drift from the complete revalidation", async 
     const rejection = rebooted.command(changed);
     assert.equal(rejection.code, "stale_reboot_admission", field);
   }
+  const changedEffects = structuredClone(action);
+  changedEffects.revalidation.unresolved_effects = [{
+    effect_id: "effect:unexpected",
+  }];
+  assert.equal(
+    rebooted.command(changedEffects).code,
+    "stale_reboot_admission",
+    "unresolved_effects",
+  );
   const incomplete = structuredClone(action);
   delete incomplete.revalidation;
   assert.equal(
@@ -229,6 +237,8 @@ test("reboot admission fails closed without a current-observation Adapter", asyn
   const action = rebooted.query({ run_id: launch.run_id }).legal_actions[0];
 
   assert.equal(action.revalidation.valid, false);
+  assert.equal(action.revalidation.observed, null);
+  assert.notEqual(action.revalidation.expected, null);
   assert.equal(
     rebooted.command(action).code,
     "reboot_revalidation_failed",
@@ -287,9 +297,28 @@ test("the advisory lock fences a competing operating-system process", async (t) 
     competitor.command(projection.legal_actions[0]).code,
     "mutation_authority_unavailable",
   );
+  assert.equal(
+    competitor.launch(confirmedLaunchRequest(
+      prepareDistinctRun(competitor, "2"),
+    )).code,
+    "mutation_authority_unavailable",
+  );
 
   owner.send("close");
   await once(owner, "exit");
+
+  competitorAuthority.close();
+  const successorAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "successor-process"),
+  });
+  t.after(() => successorAuthority.close());
+  const successor = createFlowRuntime({ runAuthority: successorAuthority });
+  assert.equal(
+    successor.command(successor.query({ run_id: runId }).legal_actions[0])
+      .accepted,
+    true,
+  );
 });
 
 test("a read-only watcher observes durable mutations from the owner", async (t) => {
@@ -438,6 +467,95 @@ test("only a complete durable effect intent is invoked and receipted", async (t)
     () => authority.invokeEffect(intent, { invoke() {} }),
     (error) => error.code === "effect_already_recorded",
   );
+});
+
+test("deferred terminal events survive out-of-order multi-effect settlement", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: multiEffectLifecycle,
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const first = runtime.command({
+    schema: "flow.command/v1",
+    type: "first_effect",
+    run_id: launch.run_id,
+  });
+  const second = runtime.command({
+    schema: "flow.command/v1",
+    type: "terminal_effect",
+    run_id: launch.run_id,
+  });
+
+  await authority.invokeEffect(second.effect_intents[0], {
+    invoke: () => "terminal-first",
+  });
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "active");
+  await authority.invokeEffect(first.effect_intents[0], {
+    invoke: () => "first-last",
+  });
+
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
+  assert.equal(runtime.query().admission.active_runs, 0);
+  const database = new DatabaseSync(
+    join(authorityDirectory, "authority.sqlite"),
+    { readOnly: true },
+  );
+  const releases = database.prepare(`
+    SELECT COUNT(*) AS count
+      FROM authority_events
+     WHERE stream_id = 'host:admission'
+       AND json_extract(payload_json, '$.type') = 'run_capacity_released'
+       AND json_extract(payload_json, '$.run_id') = ?
+  `).get(launch.run_id);
+  database.close();
+  assert.equal(Number(releases.count), 1);
+});
+
+test("an inspecting effect runner cannot create or mutate authority", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const inspector = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "inspector"),
+  });
+  t.after(() => inspector.close());
+
+  await assert.rejects(
+    () => inspector.invokeEffect({}, { invoke() {} }),
+    (error) => error.code === "mutation_authority_unavailable",
+  );
+  await assert.rejects(
+    () => stat(join(authorityDirectory, "authority.sqlite")),
+    (error) => error.code === "ENOENT",
+  );
+});
+
+test("a non-canonical command is rejected before durable mutation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const command = {
+    ...runtime.query({ run_id: launch.run_id }).legal_actions[0],
+    accidental_undefined: undefined,
+  };
+
+  const rejection = runtime.command(command);
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "invalid_command");
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "active");
 });
 
 test("a rejected asynchronous effect is not receipted", async (t) => {
@@ -776,6 +894,73 @@ test("corrupt or non-replayable run streams fail closed through query", async (t
   }
 });
 
+test("store-level corruption fails closed instead of appearing absent", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  await writeFile(join(authorityDirectory, "authority.sqlite"), "not sqlite");
+  const inspector = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "inspector"),
+  });
+  t.after(() => inspector.close());
+
+  const rejection = createFlowRuntime({ runAuthority: inspector }).query();
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "authority_integrity_failure");
+  assert.equal(rejection.reason, "corrupt_store");
+});
+
+test("host stream corruption fails closed through the run index", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  seedCompletedRun(authorityDirectory);
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  database.prepare(`
+    UPDATE authority_streams SET fold_json = '{}'
+     WHERE stream_id = 'host:runs'
+  `).run();
+  database.close();
+  const inspector = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "inspector"),
+  });
+  t.after(() => inspector.close());
+
+  const rejection = createFlowRuntime({ runAuthority: inspector }).query();
+
+  assert.equal(rejection.code, "authority_integrity_failure");
+  assert.equal(rejection.reason, "fold_mismatch");
+});
+
+test("a run stream without its launch event fails closed", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  seedCompletedRun(authorityDirectory);
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  database.prepare(`
+    INSERT INTO authority_streams(
+      stream_id, stream_kind, generation, head_sequence, head_digest
+    ) VALUES ('run:missing-launch', 'run', 1, 0, ?)
+  `).run(`sha256:${"0".repeat(64)}`);
+  database.close();
+  const inspector = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "inspector"),
+  });
+  t.after(() => inspector.close());
+
+  const rejection = createFlowRuntime({ runAuthority: inspector }).query({
+    run_id: "run:missing-launch",
+  });
+
+  assert.equal(rejection.code, "authority_integrity_failure");
+  assert.equal(rejection.reason, "missing_launch_event");
+});
+
 test("durable authority events cannot be updated or deleted", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -855,6 +1040,26 @@ function effectLifecycle(fold, command, classification = "caller_idempotent") {
           route_binding: null,
         }],
       };
+}
+
+function multiEffectLifecycle(_fold, command) {
+  const terminal = command.type === "terminal_effect";
+  return {
+    schema: "flow.decision/v1",
+    command_type: command.type,
+    events: terminal ? [{ type: "run_succeeded" }] : [],
+    effect_intents: [{
+      schema: "flow.effect-intent/v1",
+      effect_id: terminal ? "effect:terminal" : "effect:first",
+      idempotency_key: terminal ? "effect:terminal:v1" : "effect:first:v1",
+      attempt_id: terminal ? "attempt:terminal" : "attempt:first",
+      classification: "caller_idempotent",
+      operation_contract: "flow.operation/test/v1",
+      route_binding: null,
+    }],
+    obligations: [],
+    projection_hints: [],
+  };
 }
 
 function preparedRebootObservation() {

@@ -37,11 +37,11 @@ export function buildRebootRevalidation({
   } catch {
     valid = false;
   }
-  observed ??= expected;
   return freezeCanonical({
     schema: "flow.reboot-revalidation/v1",
     valid,
-    ...observed,
+    expected,
+    observed: observed ?? null,
     unresolved_effects: unresolvedEffects,
   });
 }

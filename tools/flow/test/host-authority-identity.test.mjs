@@ -24,6 +24,25 @@ test("host authority identity comes from the operating-system Adapter", () => {
   assert.equal(bootReads, 1);
 });
 
+test("macOS authority identity uses the reboot-exact boot session UUID", () => {
+  let bootReads = 0;
+  const adapter = createHostAuthorityIdentityAdapter({
+    platform: "darwin",
+    readMacBootIdentity() {
+      bootReads += 1;
+      return "BOOT-SESSION-A";
+    },
+    createProcessIdentity: () => "process-a",
+  });
+
+  assert.deepEqual(adapter.observe(), {
+    schema: "flow.host-authority-identity/v1",
+    boot_id: "darwin:BOOT-SESSION-A",
+    process_identity: "process-a",
+  });
+  assert.equal(bootReads, 1);
+});
+
 test("host authority identity fails closed on an unsupported platform", () => {
   assert.throws(
     () => createHostAuthorityIdentityAdapter({ platform: "unknown" }),
