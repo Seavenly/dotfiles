@@ -402,11 +402,20 @@ delivery. It then submits the prompt through Herdr and returns a durable turn
 ID. `turn wait` may be invoked repeatedly by any later caller.
 
 For multiline Claude prompts delivered while the native agent is settled,
-Drovr verifies that Herdr observes a real post-delivery transition. If Claude's
-asynchronous bracketed-paste conversion leaves the prompt staged and the agent
-idle, Drovr sends one guarded submit key and requires transition evidence before
-continuing. Failure to confirm submission is an adapter failure and leaves the
-turn `uncertain`; it is not treated as native settlement.
+Drovr verifies that Herdr observes `working` or `blocked`; an idle state-token
+change alone is not submission evidence. If Claude's asynchronous
+bracketed-paste conversion leaves the prompt staged and the agent idle, Drovr
+waits for a new visible Claude attachment token, sends one guarded submit key,
+and requires active-state evidence before continuing. Pane output is used only
+as delivery-readiness evidence; it is never completion authority. Failure to
+confirm submission is an adapter failure and leaves the turn `uncertain`; it is
+not treated as native settlement.
+
+Native waiting first returns an already-settled observation rather than waiting
+for another state change. If the pre-delivery state persists past the bounded
+transcript grace, Drovr makes one exact transcript-correlation attempt and then
+settles the turn `uncertain` when the recorded input is absent. This keeps legacy
+or interrupted delivery records recoverable without accepting an old result.
 
 Wait timeout is non-destructive. It returns `still_running` and leaves the turn
 and harness untouched. Killing a waiting Drovr process also does not cancel the
@@ -416,7 +425,8 @@ turn.
 the durable agent available. The logical turn becomes `cancelled` only after
 Drovr observes settlement. If interruption delivery or settlement cannot be
 confirmed, the turn becomes `uncertain` or `interrupted` rather than pretending
-success.
+success. If the native agent is already settled, cancellation reports the exact
+reconciled terminal status instead of waiting for a future native transition.
 
 `agent retire` terminates the harness process and closes its managed pane.
 
