@@ -45,21 +45,57 @@ Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `reason` identify the rejected request; `command_type`, `run_id`, and
 `bundle_digest` are null when they do not apply. `authority_watermark_domain`
 states how to interpret `authority_watermark`: `run` covers one run's lifecycle
-event stream, while `host` covers host run-index membership. The current host
-watermark changes when a run is first added, not when an existing run advances.
+stream generation plus the current authority epoch and boot, while `host`
+covers both host run-index and host-admission streams. The host watermark
+changes on authority acquisition, capacity reservation or release, and run
+registration; an unrelated run lifecycle event does not change it.
 `authority_watermark` may be null only when the authority could not be observed.
 `legal_actions` is always derived from the represented authority, or empty when
 no authority watermark is available.
 
-The public launch contract is host-idempotent. Its current in-memory conformance
-mechanism is deliberately process-local: all default runtime Interfaces in that
-process share one host authority, so duplicate launches adopt the same run.
-Durable SQLite streams, cross-process enforcement and fencing, and restart
-recovery belong to the next runtime ticket. This first slice proves the complete
-public checkpoint path without claiming those later mechanism guarantees.
-Direct construction of this dark Interface is a conformance seam, not a
-converged public launcher; the launch policy still selects the legacy
-implementation.
+The public launch contract is host-idempotent. Production-shaped conformance
+uses `createDurableRunAuthority()` with the replacement authority root beneath
+the host state directory. The Adapter stores run, host-index, and host-admission
+authority as append-only SQLite streams in WAL mode with foreign keys and full
+durability. Every write updates a replay-verifiable transactional fold in the
+same transaction. Query and watch rebuild from the streams and compare the
+result with the fold before returning a projection.
+
+Exactly one mutating runtime holds a SQLite-backed operating-system advisory
+lock. Acquiring it appends a boot-bound monotonic authority epoch. A competing
+runtime falls back to inspection and returns `mutation_authority_unavailable`
+for launch or command. Lock-file timestamps, process age, and heartbeat age are
+not takeover inputs. Production boot identity comes from a host Adapter backed
+by the operating system, rather than a caller assertion. An effect reaches its
+Adapter only when its full intent and idempotency key were durably recorded by
+the lifecycle decision; the lock and epoch are checked again immediately before
+the call, asynchronous provider settlement is awaited, and only successful
+completion appends a durable receipt. Effect-bearing decisions cannot record a
+terminal run transition before that receipt. Same-boot recovery adopts the
+exact outstanding intent under the new epoch without changing its idempotency
+identity.
+
+Same-boot process replacement increments the epoch and resumes from replayed
+authority. A boot identity change instead projects
+`suspended_after_reboot`; the sole lifecycle action is the exact typed
+`reboot_admission` command. That action binds the catalog, routes, capability
+envelopes, operation and validator contracts, resource claims, time facts,
+subject generations, unresolved effects, stream generation, boot, and epoch.
+The mechanism Adapter refreshes those observations at admission; any drift
+rejects the command. Durable construction fails reboot admission closed until
+that current-observation Adapter is configured. Each run is admitted
+independently. Run
+watermarks bind the run stream generation and current authority epoch, while host
+watermarks bind both host-index and host-admission streams. Reordering,
+omission, duplication, digest conflict, unknown contracts, corrupt JSON,
+stale generations, and fold drift return `authority_integrity_failure` with no
+legal action.
+
+The no-argument in-memory authority remains available only for isolated pure
+contract tests. Durable construction is explicit so a read-only command never
+creates replacement authority as a side effect. Direct construction of this
+dark Interface is a conformance seam, not a converged public launcher; the
+launch policy still selects the legacy implementation.
 `PlanCompiler` and `LifecycleKernel` are pure Modules: their decisions depend
 only on their explicit arguments.
 
@@ -67,6 +103,7 @@ The focused public contract suite is:
 
 ```sh
 node --test tools/flow/test/runtime-interface.test.mjs \
+  tools/flow/test/durable-authority.test.mjs \
   tools/flow/test/purity-contracts.test.mjs
 ```
 

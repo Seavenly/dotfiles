@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 
 import { authorityRootsAreDisjoint } from "./authority-root.mjs";
 import { isExactSequence } from "./validation.mjs";
@@ -43,6 +44,21 @@ const FORBIDDEN_LEGACY_AUTHORITY = [
   "effect_causation",
   "completion",
 ];
+const AUTHORITY_PERSISTENCE = {
+  contract: "flow.sqlite-authority-store/v1",
+  journal_mode: "wal",
+  synchronous: "full",
+  foreign_keys: true,
+  append_only_streams: true,
+  transactional_folds: true,
+  mutation_lock: "sqlite_os_advisory_lock",
+  takeover: "operating_system_lock_release_only",
+  authority_epoch: {
+    monotonic: true,
+    boot_bound: true,
+    effect_recheck: true,
+  },
+};
 
 export async function loadContractCatalog({ catalogPath, homeDirectory, stateDirectory }) {
   const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
@@ -55,13 +71,18 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
   const rejection = catalog.flow_runtime.rejection_contract;
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
-      rejection.watermark_domains?.host !== "host_run_index_membership" ||
-      rejection.watermark_domains?.run !== "run_lifecycle_events" ||
+      rejection.watermark_domains?.host !==
+        "host_run_index_and_admission_streams" ||
+      rejection.watermark_domains?.run !==
+        "run_lifecycle_stream_and_authority_epoch" ||
       Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
     throw new Error("contract catalog rejection contract is incomplete");
   }
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");
+  }
+  if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
+    throw new Error("contract catalog authority persistence is incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
