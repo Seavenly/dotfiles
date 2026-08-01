@@ -165,6 +165,17 @@ function delegatedAgentPortIsPublished(
       "flow.delegated-agent-description-request/v1" &&
     port.description_projection ===
       "flow.delegated-agent-description-projection/v1" &&
+    port.lifecycle_projection ===
+      "flow.delegated-agent-lifecycle-projection/v1" &&
+    isDeepStrictEqual(port.operations, {
+      dispatch: "flow.delegated-agent-dispatch-request/v1",
+      discover: "flow.delegated-agent-discover-request/v1",
+      send: "flow.delegated-agent-send-request/v1",
+      observe: "flow.delegated-agent-observe-request/v1",
+      wait: "flow.delegated-agent-wait-request/v1",
+      cancel: "flow.delegated-agent-cancel-request/v1",
+      reconcile: "flow.delegated-agent-reconcile-request/v1",
+    }) &&
     port.drovr_description === "drovr.delegated-agent-description/v1" &&
     port.required_features?.contract === REQUIRED_FEATURE_CONTRACT &&
     Object.keys(port.required_features).length === 2 &&
@@ -179,6 +190,8 @@ function delegatedAgentPortIsPublished(
       port.contract,
       port.description_request,
       port.description_projection,
+      port.lifecycle_projection,
+      ...Object.values(port.operations),
       port.drovr_description,
       publishedFeatureContract.schema,
       ...publishedFeatureContract.features.map(({ contract }) => contract),

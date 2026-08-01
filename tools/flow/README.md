@@ -169,19 +169,36 @@ only `bind_exact_launch_description` and refresh; incompatible, contradictory,
 or unavailable descriptions expose closed repair or retry actions and never
 invent a watermark.
 
+The same port exposes `dispatch`, `discover`, `send`, `observe`, `wait`,
+`cancel`, and `reconcile`. Each operation returns a
+`flow.delegated-agent-lifecycle-projection/v1` derived from Drovr's registry
+authority. Dispatch binds the exact compatible description, discovery proves
+presence or absence at an exact registry watermark, and later inputs use an
+independent caller input key. Conflict projections fail closed and expose only
+actions that preserve the existing turn identity, except that an agent with a
+missing or stale immutable launch binding must be retired after registry
+discovery confirms its exact identity. Reconciliation names an exact turn and a
+bounded timeout; it recovers the bound agent when necessary, then correlates the
+durable ordered inputs without replaying an unproven delivery.
+
 Flow owns its required baseline in the versioned
 `config/flow/contracts/drovr-required-features.v1.json` contract and pins its
 exact bytes in the public catalog. Drovr independently owns and advertises its
 implemented contracts and exact availability. The port compares those separate
-authorities. The current runtime is intentionally blocked because six
-lifecycle contracts remain unavailable; the projection exposes repair and
-refresh, but no bind action.
+authorities. The current runtime supports the complete lifecycle baseline, so
+a conforming projection exposes exact bind and refresh actions. Missing,
+weakened, or contradictory contracts still fail closed with repair and refresh
+actions.
 Invalid launch selectors produce an `invalid_description_request` block with no
 retry action. Malformed adapter output is sanitized to a schema-valid closed
 projection rather than being presented as authoritative description evidence.
 Missing Flow contract bytes or validation dependencies produce a
 `delegated_agent_port_unavailable` block with only the local
 `repair_delegated_agent_port` action.
+If registry discovery cannot produce the exact conflict projection, the port
+returns `delegated_runtime_projection_unavailable` with only
+`repair_delegated_runtime_registry`; it never recommends retirement without an
+exact delegation identity and registry watermark.
 An invalid Drovr configuration produces a `description_unavailable` block with
 repair and refresh actions, while a transient description failure exposes only
 `retry_delegated_runtime_description`.
@@ -197,8 +214,9 @@ flow query delegated-agent \
   --json
 ```
 
-This query creates no run and no Drovr resource. Future plan compilation binds
-the exact description and comparison keys; it does not refresh them implicitly.
+This query creates no run and no Drovr resource. Plan compilation binds the
+exact description and comparison keys before using the lifecycle operations;
+it does not refresh them implicitly.
 
 The managed sources under `config/flow/` are:
 
@@ -208,6 +226,9 @@ The managed sources under `config/flow/` are:
   and validation-receipt contract. Its receipt must bind the exact imported
   bytes by digest, pass every required validation, and select only the catalog's
   positive `artifact_bytes` subject.
+- `schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json` - the
+  public lifecycle result shape, including authority and discovery watermarks,
+  delegation identity, turn evidence, and legal next actions.
 - `launch-policy.v1.json` - the converged selector policy. Its default is
   `legacy-claude/v1`; `flow-runtime/v1` is disabled.
 - `legacy-baselines.v1.json` - content-addressed Git trees for both frozen

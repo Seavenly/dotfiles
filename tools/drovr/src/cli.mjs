@@ -14,11 +14,14 @@ import {
 } from "./lifecycle.mjs";
 import {
   cancelTurn,
+  discoverTurn,
+  dispatchTurn,
   getTurn,
   listTurns,
   sendToTurn,
   startTurn,
   turnCommandResult,
+  turnDiscoveryCommandResult,
   turnListCommandResult,
   waitForTurn,
 } from "./turns.mjs";
@@ -44,6 +47,8 @@ const HELP = `Usage:
   drovr delegate [options] [PROMPT]
   drovr ask AGENT_ID [options] [PROMPT]
   drovr turn start AGENT_ID [options] [PROMPT]
+  drovr turn dispatch AGENT_ID --caller-key KEY --input-key KEY --caller-metadata JSON --launch-binding JSON [PROMPT]
+  drovr turn discover CALLER_KEY
   drovr turn send TURN_ID [options] [PROMPT]
   drovr turn wait TURN_ID [--after-block BLOCK_ID] [--timeout DURATION]
   drovr turn get TURN_ID [--include-messages]
@@ -436,6 +441,10 @@ const WAITING_PROMPT_OPTIONS = new Map([
   ...PROMPT_OPTIONS,
   ["--timeout", "timeout"],
 ]);
+const CALLER_INPUT_OPTIONS = new Map([
+  ...PROMPT_OPTIONS,
+  ["--caller-key", "callerKey"],
+]);
 
 async function parseDelegateArguments(argv) {
   const { options, positional } = parseOptions(
@@ -516,11 +525,15 @@ async function resolvePrompt(positionalPrompt, promptFile) {
 async function parseAgentPromptArguments(
   argv,
   command,
-  { timeout = false } = {},
+  { timeout = false, callerInput = false } = {},
 ) {
   const id = argv[0];
   if (!id) invalidArguments(`${command} requires an identifier`);
-  const optionMap = timeout ? WAITING_PROMPT_OPTIONS : PROMPT_OPTIONS;
+  const optionMap = timeout
+    ? WAITING_PROMPT_OPTIONS
+    : callerInput
+      ? CALLER_INPUT_OPTIONS
+      : PROMPT_OPTIONS;
   const { options, positional } = parseOptions(
     argv.slice(1),
     optionMap,
@@ -547,6 +560,53 @@ async function runTurnCommand(argv) {
     const context = await startTurn(options.id, options);
     process.stdout.write(
       `${JSON.stringify(turnCommandResult("turn start", context))}\n`,
+    );
+    return 0;
+  }
+  if (subcommand === "dispatch") {
+    const id = argv[1];
+    if (!id) invalidArguments("turn dispatch requires AGENT_ID");
+    const { options, positional } = parseOptions(
+      argv.slice(2),
+      new Map([
+        ...PROMPT_OPTIONS,
+        ["--caller-key", "callerKey"],
+        ["--input-key", "inputKey"],
+        ["--caller-metadata", "callerMetadata"],
+        ["--launch-binding", "launchBinding"],
+      ]),
+      "turn dispatch",
+    );
+    if (positional.length > 1) {
+      invalidArguments("turn dispatch accepts one positional prompt");
+    }
+    if (!options.callerKey || !options.inputKey) {
+      invalidArguments("turn dispatch requires --caller-key and --input-key");
+    }
+    const context = await dispatchTurn(id, {
+      ...options,
+      callerMetadata: parseJsonOption(
+        options.callerMetadata,
+        "--caller-metadata",
+      ),
+      launchBinding: parseJsonOption(
+        options.launchBinding,
+        "--launch-binding",
+      ),
+      prompt: await resolvePrompt(positional[0], options.promptFile),
+    });
+    process.stdout.write(
+      `${JSON.stringify(turnCommandResult("turn dispatch", context))}\n`,
+    );
+    return 0;
+  }
+  if (subcommand === "discover") {
+    if (argv.length !== 2) {
+      invalidArguments("turn discover requires exactly one CALLER_KEY");
+    }
+    const discovery = await discoverTurn(argv[1]);
+    process.stdout.write(
+      `${JSON.stringify(turnDiscoveryCommandResult(argv[1], discovery))}\n`,
     );
     return 0;
   }
@@ -610,7 +670,11 @@ async function runTurnCommand(argv) {
     return 0;
   }
   if (subcommand === "send") {
-    const options = await parseAgentPromptArguments(argv.slice(1), "turn send");
+    const options = await parseAgentPromptArguments(
+      argv.slice(1),
+      "turn send",
+      { callerInput: true },
+    );
     const context = await sendToTurn(options.id, options);
     process.stdout.write(
       `${JSON.stringify(turnCommandResult("turn send", context))}\n`,
@@ -628,6 +692,15 @@ async function runTurnCommand(argv) {
     return 0;
   }
   invalidArguments(`unsupported turn command: ${subcommand ?? ""}`);
+}
+
+function parseJsonOption(value, flag) {
+  if (value === undefined) invalidArguments(`turn dispatch requires ${flag}`);
+  try {
+    return JSON.parse(value);
+  } catch {
+    invalidArguments(`${flag} must be valid JSON`);
+  }
 }
 
 async function readStandardInput() {

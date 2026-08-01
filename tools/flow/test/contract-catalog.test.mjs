@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 7);
+  assert.equal(catalog.catalog_version, 8);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -111,6 +111,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
     adapter: "drovr/v1",
     description_request: "flow.delegated-agent-description-request/v1",
     description_projection: "flow.delegated-agent-description-projection/v1",
+    lifecycle_projection: "flow.delegated-agent-lifecycle-projection/v1",
+    operations: {
+      dispatch: "flow.delegated-agent-dispatch-request/v1",
+      discover: "flow.delegated-agent-discover-request/v1",
+      send: "flow.delegated-agent-send-request/v1",
+      observe: "flow.delegated-agent-observe-request/v1",
+      wait: "flow.delegated-agent-wait-request/v1",
+      cancel: "flow.delegated-agent-cancel-request/v1",
+      reconcile: "flow.delegated-agent-reconcile-request/v1",
+    },
     drovr_description: "drovr.delegated-agent-description/v1",
     required_features: {
       contract: "flow.drovr-required-features/v1",

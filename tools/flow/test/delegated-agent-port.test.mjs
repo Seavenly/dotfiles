@@ -26,15 +26,6 @@ const request = {
   },
 };
 
-const unavailableFeatureIds = [
-  "caller_idempotent_dispatch",
-  "caller_idempotent_discovery",
-  "caller_keyed_ordered_input",
-  "terminal_proof_classification",
-  "launch_binding_settlement_proof",
-  "opaque_caller_ownership_metadata",
-];
-
 function createDrovrDelegatedAgentPort(options = {}) {
   return createProductionDrovrDelegatedAgentPort({
     dependencies: repositoryDrovrDependencies(),
@@ -42,31 +33,390 @@ function createDrovrDelegatedAgentPort(options = {}) {
   });
 }
 
-test("DelegatedAgentPort blocks the exact description until every required feature is available", async () => {
+test("DelegatedAgentPort exposes the exact compatible lifecycle description", async () => {
   const port = createDrovrDelegatedAgentPort();
 
   const projection = await port.describe(request);
 
   assert.equal(projection.schema, "flow.delegated-agent-description-projection/v1");
-  assert.equal(projection.status, "blocked");
+  assert.equal(projection.status, "compatible");
   assert.deepEqual(projection.watermark, projection.description.watermark);
   assert.deepEqual(
     projection.description.caller_metadata,
     request.caller_metadata,
   );
   assert.match(projection.description.description_digest, /^sha256:[0-9a-f]{64}$/u);
-  assert.equal(
-    projection.compatibility.code,
-    "incompatible_feature_advertisement",
-  );
-  assert.deepEqual(projection.compatibility.findings, unavailableFeatureIds.map(
-    (featureId) => ({ feature_id: featureId, reason: "unavailable" }),
-  ));
+  assert.equal(projection.compatibility.code, null);
+  assert.deepEqual(projection.compatibility.findings, []);
   assert.deepEqual(projection.legal_next_actions, [
-    "repair_delegated_runtime_contract",
+    "bind_exact_launch_description",
     "refresh_delegated_runtime_description",
   ]);
 });
+
+test("DelegatedAgentPort exposes the complete authority-derived lifecycle", async () => {
+  const calls = [];
+  const context = lifecycleContext();
+  const port = createDrovrDelegatedAgentPort({
+    async dispatchDrovr(agentId, options) {
+      calls.push(["dispatch", agentId, options]);
+      return { ...context, dispatch_status: "dispatched" };
+    },
+    async discoverDrovr(callerKey) {
+      calls.push(["discover", callerKey]);
+      return {
+        ...context,
+        discovery_status: "found",
+        discovery_watermark: registryWatermark(),
+      };
+    },
+    async sendDrovr(turnId, options) {
+      calls.push(["send", turnId, options]);
+      return context;
+    },
+    async observeDrovr(turnId) {
+      calls.push(["observe", turnId]);
+      return context;
+    },
+    async waitDrovr(turnId, options) {
+      calls.push(["wait", turnId, options]);
+      return { ...context, wait_status: "still_running" };
+    },
+    async cancelDrovr(turnId) {
+      calls.push(["cancel", turnId]);
+      return {
+        ...context,
+        turn: { ...context.turn, status: "cancelled" },
+      };
+    },
+    async reconcileDrovr(turnId, options) {
+      calls.push(["reconcile", turnId, options]);
+      return { ...context, wait_status: "still_running" };
+    },
+  });
+  const description = (await port.describe(request)).description;
+
+  const dispatched = await port.dispatch({
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: "agent:1",
+    caller_key: "run:1/card:review/attempt:1",
+    input_key: "input:1",
+    prompt: "inspect the candidate",
+    description,
+  });
+  const discovered = await port.discover({
+    schema: "flow.delegated-agent-discover-request/v1",
+    caller_key: "run:1/card:review/attempt:1",
+  });
+  const sent = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "input:2",
+    prompt: "prioritize correctness",
+  });
+  const observed = await port.observe({
+    schema: "flow.delegated-agent-observe-request/v1",
+    turn_id: "turn:1",
+  });
+  const waited = await port.wait({
+    schema: "flow.delegated-agent-wait-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+  const cancelled = await port.cancel({
+    schema: "flow.delegated-agent-cancel-request/v1",
+    turn_id: "turn:1",
+  });
+  const reconciled = await port.reconcile({
+    schema: "flow.delegated-agent-reconcile-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  for (const projection of [
+    dispatched,
+    discovered,
+    sent,
+    observed,
+    waited,
+    cancelled,
+    reconciled,
+  ]) {
+    assert.equal(
+      projection.schema,
+      "flow.delegated-agent-lifecycle-projection/v1",
+    );
+    assert.notEqual(projection.watermark, null);
+    assert.ok(projection.legal_next_actions.length > 0);
+  }
+  assert.equal(dispatched.status, "working");
+  assert.deepEqual(dispatched.delegation, {
+    agent_id: "agent:1",
+    task_id: "task:1",
+    group_id: "group:1",
+  });
+  assert.deepEqual(discovered.discovery_watermark, registryWatermark());
+  assert.equal(waited.status, "still_running");
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(reconciled.status, "still_running");
+  assert.equal(calls[0][2].launchBinding.description_digest,
+    description.description_digest);
+  assert.equal(calls[2][2].callerKey, "input:2");
+});
+
+test("DelegatedAgentPort proves caller-key absence and fails conflicts closed", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async discoverDrovr() {
+      return {
+        discovery_status: "proven_absent",
+        authority_watermark: registryWatermark(),
+      };
+    },
+    async sendDrovr() {
+      const error = new Error("input key has a different payload");
+      error.outcome = "caller_key_conflict";
+      throw error;
+    },
+    async observeDrovr() {
+      return lifecycleContext();
+    },
+  });
+
+  const absent = await port.discover({
+    schema: "flow.delegated-agent-discover-request/v1",
+    caller_key: "missing",
+  });
+  assert.equal(absent.status, "proven_absent");
+  assert.deepEqual(absent.watermark, registryWatermark());
+  assert.deepEqual(absent.legal_next_actions, [
+    "dispatch_with_same_caller_key",
+  ]);
+
+  const conflict = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "input:2",
+    prompt: "different",
+  });
+  assert.equal(conflict.status, "blocked");
+  assert.equal(conflict.compatibility.code, "caller_key_conflict");
+  assert.equal(conflict.watermark.turn_id, "turn:1");
+  assert.equal(conflict.turn.id, "turn:1");
+  assert.deepEqual(conflict.legal_next_actions, [
+    "observe_bounded",
+    "reconcile_exact_turn",
+  ]);
+});
+
+for (const outcome of ["launch_binding_missing", "launch_binding_stale"]) {
+  test(`DelegatedAgentPort points ${outcome} at the exact agent retirement`, async () => {
+    const port = createDrovrDelegatedAgentPort({
+      async dispatchDrovr() {
+        const error = new Error(outcome);
+        error.outcome = outcome;
+        error.details = {
+          delegation: {
+            agent_id: "agent:1",
+            task_id: "task:1",
+            group_id: "group:1",
+          },
+        };
+        throw error;
+      },
+      async discoverDrovr() {
+        return {
+          discovery_status: "proven_absent",
+          authority_watermark: registryWatermark(),
+        };
+      },
+    });
+    const description = (await port.describe(request)).description;
+
+    const blocked = await port.dispatch({
+      schema: "flow.delegated-agent-dispatch-request/v1",
+      agent_id: "agent:1",
+      caller_key: "run:1/card:review/attempt:1",
+      input_key: "input:1",
+      prompt: "inspect the candidate",
+      description,
+    });
+
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.compatibility.code, outcome);
+    assert.deepEqual(blocked.watermark, registryWatermark());
+    assert.deepEqual(blocked.delegation, {
+      agent_id: "agent:1",
+      task_id: "task:1",
+      group_id: "group:1",
+    });
+    assert.deepEqual(blocked.legal_next_actions, ["retire_agent"]);
+  });
+}
+
+test("DelegatedAgentPort keeps a fresh description conflict refreshable", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async dispatchDrovr() {
+      const error = new Error("description changed");
+      error.outcome = "launch_binding_conflict";
+      throw error;
+    },
+    async discoverDrovr() {
+      return {
+        discovery_status: "proven_absent",
+        authority_watermark: registryWatermark(),
+      };
+    },
+  });
+  const description = (await port.describe(request)).description;
+
+  const blocked = await port.dispatch({
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: "agent:1",
+    caller_key: "run:1/card:review/attempt:1",
+    input_key: "input:1",
+    prompt: "inspect the candidate",
+    description,
+  });
+
+  assert.equal(blocked.compatibility.code, "launch_binding_conflict");
+  assert.equal(blocked.delegation, null);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "refresh_delegated_runtime_description",
+  ]);
+});
+
+test("DelegatedAgentPort never recommends retirement without registry evidence", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async dispatchDrovr() {
+      const error = new Error("stale binding");
+      error.outcome = "launch_binding_stale";
+      error.details = {
+        delegation: {
+          agent_id: "agent:1",
+          task_id: "task:1",
+          group_id: "group:1",
+        },
+      };
+      throw error;
+    },
+    async discoverDrovr() {
+      throw new Error("registry unavailable");
+    },
+  });
+  const description = (await port.describe(request)).description;
+
+  const blocked = await port.dispatch({
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: "agent:1",
+    caller_key: "run:1/card:review/attempt:1",
+    input_key: "input:1",
+    prompt: "inspect the candidate",
+    description,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(
+    blocked.compatibility.code,
+    "delegated_runtime_projection_unavailable",
+  );
+  assert.equal(blocked.watermark, null);
+  assert.equal(blocked.delegation, null);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_runtime_registry",
+  ]);
+});
+
+test("DelegatedAgentPort closes legal actions around unproven delivery and agent loss", async () => {
+  const context = lifecycleContext();
+  const port = createDrovrDelegatedAgentPort({
+    async sendDrovr() {
+      return { ...context, input_status: "reconciling" };
+    },
+    async waitDrovr() {
+      return { ...context, wait_status: "agent_lost" };
+    },
+  });
+
+  const reconciling = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "input:2",
+    prompt: "do not duplicate this input",
+  });
+  assert.equal(reconciling.status, "reconciling");
+  assert.deepEqual(reconciling.legal_next_actions, [
+    "observe_bounded",
+    "wait_bounded",
+    "reconcile_exact_turn",
+  ]);
+
+  const lost = await port.wait({
+    schema: "flow.delegated-agent-wait-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+  assert.equal(lost.status, "agent_lost");
+  assert.deepEqual(lost.legal_next_actions, [
+    "observe_bounded",
+    "reconcile_exact_turn",
+    "retire_agent",
+  ]);
+});
+
+function lifecycleContext() {
+  return {
+    group: { id: "group:1", key: "group", label: "Group" },
+    task: {
+      id: "task:1",
+      key: "task",
+      label: "Task",
+      cwd: "/workspace",
+    },
+    agent: {
+      id: "agent:1",
+      key: "agent",
+      label: "Agent",
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6",
+        effort: "high",
+        capability: "read-only",
+      },
+    },
+    turn: {
+      id: "turn:1",
+      agent_id: "agent:1",
+      task_id: "task:1",
+      status: "working",
+      inputs: [{
+        sequence: 1,
+        caller_key: "input:1",
+        payload_sha256: digest("inspect the candidate"),
+        delivery: { status: "submitted", accepted_at: "2026-08-01T00:00:00Z" },
+      }],
+      caller: {
+        dispatch_key: "run:1/card:review/attempt:1",
+        payload_sha256: digest("dispatch"),
+        metadata: request.caller_metadata,
+      },
+      launch_binding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: digest("launch"),
+        configuration_watermark: digest("configuration"),
+        description_digest: digest("description"),
+      },
+      created_at: "2026-08-01T00:00:00Z",
+    },
+  };
+}
+
+function registryWatermark() {
+  return {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    turns_sha256: digest([]),
+  };
+}
 
 for (const [label, mutate, expectedFinding] of [
   [

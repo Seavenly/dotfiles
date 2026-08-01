@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 7,
+  "catalog_version": 8,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -110,6 +110,16 @@
     "adapter": "drovr/v1",
     "description_request": "flow.delegated-agent-description-request/v1",
     "description_projection": "flow.delegated-agent-description-projection/v1",
+    "lifecycle_projection": "flow.delegated-agent-lifecycle-projection/v1",
+    "operations": {
+      "dispatch": "flow.delegated-agent-dispatch-request/v1",
+      "discover": "flow.delegated-agent-discover-request/v1",
+      "send": "flow.delegated-agent-send-request/v1",
+      "observe": "flow.delegated-agent-observe-request/v1",
+      "wait": "flow.delegated-agent-wait-request/v1",
+      "cancel": "flow.delegated-agent-cancel-request/v1",
+      "reconcile": "flow.delegated-agent-reconcile-request/v1"
+    },
     "drovr_description": "drovr.delegated-agent-description/v1",
     "required_features": {
       "contract": "flow.drovr-required-features/v1",
@@ -154,6 +164,14 @@
     "flow.drovr-required-features/v1",
     "flow.delegated-agent-description-request/v1",
     "flow.delegated-agent-description-projection/v1",
+    "flow.delegated-agent-lifecycle-projection/v1",
+    "flow.delegated-agent-dispatch-request/v1",
+    "flow.delegated-agent-discover-request/v1",
+    "flow.delegated-agent-send-request/v1",
+    "flow.delegated-agent-observe-request/v1",
+    "flow.delegated-agent-wait-request/v1",
+    "flow.delegated-agent-cancel-request/v1",
+    "flow.delegated-agent-reconcile-request/v1",
     "drovr.delegated-agent-description-request/v1",
     "drovr.delegated-agent-description/v1",
     "drovr.launch-description/v1",

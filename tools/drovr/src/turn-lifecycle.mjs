@@ -12,6 +12,9 @@ export async function prepareTurn({
   now,
   inventoryBeforeDelivery = false,
   herdrStateChangeSeq,
+  caller,
+  inputKey,
+  launchBinding,
 }) {
   let cursor;
   if (agent.native_session && !inventoryBeforeDelivery) {
@@ -32,6 +35,9 @@ export async function prepareTurn({
     submittedAt,
     transcriptCursor: cursor,
     herdrStateChangeSeq,
+    caller,
+    inputKey,
+    launchBinding,
   });
   await writeRecord(registryDirectory, "turns", turn);
   return turn;
@@ -46,7 +52,13 @@ export async function deliverTurn({
   now,
 }) {
   try {
-    return await herdr.prompt(agent.herdr.name, prompt);
+    const result = await herdr.prompt(agent.herdr.name, prompt);
+    const input = turn.inputs.at(-1);
+    if (input?.delivery?.status === "recorded") {
+      input.delivery = { status: "submitted", accepted_at: now() };
+      await writeRecord(registryDirectory, "turns", turn);
+    }
+    return result;
   } catch (error) {
     settleTurnRecord(turn, {
       status: "uncertain",

@@ -37,6 +37,8 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr delegate \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr ask AGENT_ID \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr turn start AGENT_ID \[options\] \[PROMPT\]/);
+  assert.match(stdout, /drovr turn dispatch AGENT_ID/);
+  assert.match(stdout, /drovr turn discover CALLER_KEY/);
   assert.match(stdout, /drovr turn send TURN_ID \[options\] \[PROMPT\]/);
   assert.match(
     stdout,
@@ -87,6 +89,41 @@ test("public describe command returns an exact launch without initializing state
   assert.equal(report.result.schema, "drovr.delegated-agent-description/v1");
   assert.equal(report.result.launch.harness, "codex");
   assert.deepEqual(report.result.caller_metadata, { run_id: "run:example" });
+  await assert.rejects(stat(join(stateHome, "drovr")), { code: "ENOENT" });
+});
+
+test("public caller discovery proves absence without initializing state", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-discover-cli-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const stateHome = join(scratch, "state");
+
+  const { stdout } = await execFileAsync(
+    drovr,
+    ["turn", "discover", "run:1/card:review/attempt:1"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOTFILES_ROOT: root,
+        XDG_STATE_HOME: stateHome,
+      },
+    },
+  );
+
+  const report = JSON.parse(stdout);
+  assert.equal(report.command, "turn discover");
+  assert.equal(report.result.status, "proven_absent");
+  assert.equal(
+    report.result.authority_watermark.authority,
+    "drovr.registry",
+  );
+  assert.match(
+    report.result.authority_watermark.turns_sha256,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.deepEqual(report.result.legal_next_actions, [
+    "dispatch_with_same_caller_key",
+  ]);
   await assert.rejects(stat(join(stateHome, "drovr")), { code: "ENOENT" });
 });
 
