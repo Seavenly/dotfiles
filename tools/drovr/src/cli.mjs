@@ -70,6 +70,9 @@ Commands:
   task      Open, list, inspect, or close delegated tasks
   agent     Start, list, inspect, or retire managed agents
   attach    Interactively attach to a managed agent
+
+Waiting commands emit one JSON result after settlement or timeout. They do not
+stream progress while the process remains active.
 `;
 
 const DELEGATE_HELP = `Usage:
@@ -93,6 +96,22 @@ Options:
   -h, --help                  Show this help
 
 Supply the prompt once as PROMPT, with --prompt-file, or on standard input.
+Delegate emits one JSON result after settlement or timeout and does not stream
+progress while the process remains active.
+`;
+
+const TURN_WAIT_HELP = `Usage:
+  drovr turn wait TURN_ID [--after-block BLOCK_ID] [--timeout DURATION]
+
+Options:
+  --after-block BLOCK_ID      Wait beyond an acknowledged blocked transition
+  --timeout DURATION          Return still_running after this non-destructive bound
+  -h, --help                  Show this help
+
+Wait emits one JSON result after settlement or timeout and does not stream
+progress while the process remains active. Use "drovr turn get TURN_ID" for a
+nonblocking durable-state snapshot. If a command runner yields a live process
+handle, resume that process instead of starting another wait.
 `;
 
 export async function runCli(argv) {
@@ -107,6 +126,16 @@ export async function runCli(argv) {
     (argv[1] === "--help" || argv[1] === "-h")
   ) {
     process.stdout.write(DELEGATE_HELP);
+    return 0;
+  }
+
+  if (
+    argv[0] === "turn" &&
+    argv[1] === "wait" &&
+    argv.length === 3 &&
+    (argv[2] === "--help" || argv[2] === "-h")
+  ) {
+    process.stdout.write(TURN_WAIT_HELP);
     return 0;
   }
 

@@ -30,6 +30,7 @@ async function executable(path, source) {
 test("public command advertises durable turn commands", async () => {
   const { stdout } = await execFileAsync(drovr, ["--help"], {
     encoding: "utf8",
+    env: { ...process.env, DOTFILES_ROOT: root },
   });
 
   assert.match(stdout, /drovr doctor/);
@@ -49,6 +50,8 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr agent retire AGENT_ID/);
   assert.match(stdout, /drovr task close TASK_ID/);
   assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
+  assert.match(stdout, /Waiting commands emit one JSON result/u);
+  assert.match(stdout, /They do not\nstream progress/u);
 });
 
 test("delegate help documents options without initializing state", async (t) => {
@@ -57,13 +60,40 @@ test("delegate help documents options without initializing state", async (t) => 
 
   const { stdout } = await execFileAsync(drovr, ["delegate", "--help"], {
     encoding: "utf8",
-    env: { ...process.env, XDG_STATE_HOME: join(scratch, "state") },
+    env: {
+      ...process.env,
+      DOTFILES_ROOT: root,
+      XDG_STATE_HOME: join(scratch, "state"),
+    },
   });
 
   assert.match(stdout, /^Usage:\n  drovr delegate \[options\] \[PROMPT\]/u);
   assert.match(stdout, /--task-key KEY/u);
   assert.match(stdout, /--capability CAPABILITY/u);
   assert.match(stdout, /--timeout DURATION/u);
+  assert.match(stdout, /does not stream\nprogress/u);
+  await assert.rejects(stat(join(scratch, "state", "drovr")), {
+    code: "ENOENT",
+  });
+});
+
+test("turn wait help explains non-streaming automation behavior", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-turn-wait-help-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+
+  const { stdout } = await execFileAsync(drovr, ["turn", "wait", "--help"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DOTFILES_ROOT: root,
+      XDG_STATE_HOME: join(scratch, "state"),
+    },
+  });
+
+  assert.match(stdout, /^Usage:\n  drovr turn wait TURN_ID/u);
+  assert.match(stdout, /does not stream\nprogress/u);
+  assert.match(stdout, /drovr turn get TURN_ID/u);
+  assert.match(stdout, /yields a live process\nhandle/u);
   await assert.rejects(stat(join(scratch, "state", "drovr")), {
     code: "ENOENT",
   });

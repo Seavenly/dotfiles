@@ -430,6 +430,13 @@ Wait timeout is non-destructive. It returns `still_running` and leaves the turn
 and harness untouched. Killing a waiting Drovr process also does not cancel the
 turn.
 
+`delegate`, `ask`, and `turn wait` are non-streaming. Each writes exactly one
+command-result document after settlement or timeout and writes no intermediate
+progress output while its process remains active. `turn get` is the
+nonblocking durable-state observation command. A caller whose execution layer
+yields a live process handle resumes that process; the absence of an output
+chunk does not mean the Drovr command exited successfully.
+
 `turn cancel` explicitly interrupts the current native operation while keeping
 the durable agent available. The logical turn becomes `cancelled` only after
 Drovr observes settlement. If interruption delivery or settlement cannot be

@@ -75,6 +75,15 @@ Prompt-bearing commands accept exactly one positional prompt,
 `drovr.command/v1` JSON document on standard output. Durable local records live
 under `${XDG_STATE_HOME:-~/.local/state}/drovr/`.
 
+`delegate`, `ask`, and `turn wait` are non-streaming commands. They write their
+single JSON result only after the logical turn settles or the requested timeout
+expires; silence while the process remains active is not a successful empty
+result. If an automation runner yields a live process or session handle before
+the command exits, resume that same process instead of starting another wait.
+Use `drovr turn get TURN_ID` when a caller needs an immediate, nonblocking
+snapshot of durable turn state. Multiple concurrent waits are safe but
+unnecessary.
+
 Reuse the returned agent ID for a later logical turn:
 
 ```sh
