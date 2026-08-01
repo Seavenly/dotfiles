@@ -12,8 +12,10 @@ disabled, so this API does not authorize normal replacement launches.
 - `prepare(proposal)` compiles a complete `flow.dynamic-plan-proposal/v1` from
   caller-supplied facts. It creates no run and returns a deeply immutable,
   content-addressed `flow.prepared-run/v1` plus the complete confirmation view.
-  This slice accepts checkpoint executors only; later executor kinds fail
-  preparation until their owning runtime contracts are implemented.
+  This slice accepts only the registered `flow.checkpoint/confirmation/v1`
+  executor with `flow.validator/checkpoint-decision/v1`; other checkpoint
+  contracts and later executor kinds fail preparation until their owning
+  runtime contracts are implemented.
 - `launch({ prepared, confirmation, closed_facts })` accepts an explicit
   `flow.dynamic-plan-confirmation-decision/v1` and a separately supplied
   `flow.closed-fact-observation/v1`. It verifies both are bound to the prepared
@@ -21,8 +23,9 @@ disabled, so this API does not authorize normal replacement launches.
   confirmation returns a typed rejection and creates no run. Repeating an
   accepted launch returns the same run identity and records no second launch
   event. Launch never invokes the plan compiler or refreshes identity-bearing
-  facts; the caller or future mechanism adapter supplies the closed
-  observation.
+  facts; the caller supplies the closed observation. A live observation adapter
+  is intentionally deferred to the mechanism work that owns external fact
+  acquisition.
   Invalid prepared bundles, confirmation decisions, and changed closed facts
   return typed launch rejections rather than escaping as transport errors.
 - `command(command)` accepts the exact legal approve or decline checkpoint
@@ -32,7 +35,18 @@ disabled, so this API does not authorize normal replacement launches.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no run identity it returns the host run index.
 - `watch({ run_id })` returns an async iterator whose first item is the current
-  projection and whose later items carry new authority watermarks.
+  projection and whose later items carry new authority watermarks. Watching an
+  unknown run returns a one-shot iterator containing one typed rejection and
+  then completes.
+
+Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
+`reason` identify the rejected request; `command_type`, `run_id`, and
+`bundle_digest` are null when they do not apply. `authority_watermark_domain`
+states how to interpret `authority_watermark`: `run` covers one run's lifecycle
+event stream, while `host` covers host run-index membership. The current host
+watermark changes when a run is first added, not when an existing run advances.
+`legal_actions` is always derived from the authority represented by that
+watermark.
 
 The public launch contract is host-idempotent. Its current in-memory conformance
 mechanism is deliberately process-local: all default runtime Interfaces in that

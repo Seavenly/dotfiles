@@ -32,7 +32,9 @@ test("LifecycleKernel uses only the authoritative fold and typed command", () =>
   const fold = {
     schema: "flow.run-fold/v1",
     run_id: `run:${"3".repeat(64)}`,
+    bundle_digest: `sha256:${"2".repeat(64)}`,
     watermark: `sha256:${"4".repeat(64)}`,
+    phase: "active",
     cards: [
       {
         id: "confirm-plan",
@@ -71,6 +73,29 @@ test("LifecycleKernel uses only the authoritative fold and typed command", () =>
     projection_hints: ["operator", "graph"],
   });
   assert.deepEqual({ fold, command }, unchanged);
+
+  const decline = withoutAmbientReads(() => LifecycleKernel.decide(fold, {
+    ...command,
+    decision: "decline",
+  }));
+  assert.deepEqual(decline.events.at(-1), { type: "run_declined" });
+
+  const rejection = withoutAmbientReads(() => LifecycleKernel.decide(fold, {
+    ...command,
+    schema: "flow.command/v0",
+  }));
+  assert.deepEqual(rejection, {
+    schema: "flow.rejection/v1",
+    operation: "command",
+    code: "invalid_command",
+    reason: null,
+    command_type: "checkpoint_decision",
+    run_id: fold.run_id,
+    bundle_digest: fold.bundle_digest,
+    authority_watermark: fold.watermark,
+    authority_watermark_domain: "run",
+    legal_actions: [],
+  });
 });
 
 test("pure module imports cannot acquire ambient capabilities", () => {
@@ -89,6 +114,16 @@ test("pure module imports cannot acquire ambient capabilities", () => {
     }),
     /pure module imports forbidden ambient capability: node:fs/,
   );
+
+  assert.throws(
+    () => assertPureModuleGraph(["/virtual/time.mjs"], {
+      readSource(path) {
+        assert.equal(path, "/virtual/time.mjs");
+        return "export const observed = Date.now();\n";
+      },
+    }),
+    /pure module uses forbidden ambient access: \/virtual\/time\.mjs/,
+  );
 });
 
 function assertPureModuleGraph(entries, {
@@ -101,7 +136,16 @@ function assertPureModuleGraph(entries, {
     if (visited.has(path)) continue;
     visited.add(path);
     const source = readSource(path);
-    if (/\bprocess\.env\b|\brequire\s*\(|\bcreateRequire\b/.test(source)) {
+    const usesAmbientAccess = [
+      /\bprocess\./,
+      /\b(?:globalThis\.)?Date(?:\.now|\s*\()/,
+      /\bMath\.random\b/,
+      /\b(?:globalThis\.)?performance\.now\b/,
+      /\bfetch\s*\(/,
+      /\brequire\s*\(/,
+      /\bcreateRequire\b/,
+    ].some((pattern) => pattern.test(source));
+    if (usesAmbientAccess) {
       throw new Error(`pure module uses forbidden ambient access: ${path}`);
     }
     const specifiers = [

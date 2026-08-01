@@ -11,6 +11,18 @@ const FLOW_RUNTIME_OPERATIONS = [
   "query",
   "watch",
 ];
+const REJECTION_FIELDS = [
+  "schema",
+  "operation",
+  "code",
+  "reason",
+  "command_type",
+  "run_id",
+  "bundle_digest",
+  "authority_watermark",
+  "authority_watermark_domain",
+  "legal_actions",
+];
 const LEGACY_IMPORT_VALIDATIONS = [
   "digest",
   "schema",
@@ -39,6 +51,14 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
   }
   if (!isExactSequence(catalog.flow_runtime?.operations, FLOW_RUNTIME_OPERATIONS)) {
     throw new Error("contract catalog must expose exactly the five FlowRuntime operations");
+  }
+  const rejection = catalog.flow_runtime.rejection_contract;
+  if (rejection?.contract !== "flow.rejection/v1" ||
+      !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
+      rejection.watermark_domains?.host !== "host_run_index_membership" ||
+      rejection.watermark_domains?.run !== "run_lifecycle_events" ||
+      Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
+    throw new Error("contract catalog rejection contract is incomplete");
   }
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");

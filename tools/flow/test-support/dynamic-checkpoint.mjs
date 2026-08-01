@@ -60,6 +60,12 @@ export function dependencyCheckpointProposal() {
   return proposal;
 }
 
+export function independentCheckpointProposal() {
+  const proposal = dependencyCheckpointProposal();
+  proposal.graph.cards.find(({ id }) => id === "confirm-plan").dependencies = [];
+  return proposal;
+}
+
 export function confirmedLaunchRequest(prepared, {
   decision = "accept",
   facts = prepared.explicit_facts,

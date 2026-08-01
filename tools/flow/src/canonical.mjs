@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 
+export class CanonicalValueError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = "CanonicalValueError";
+    this.reason = reason;
+  }
+}
+
 export function canonicalize(value, ancestors = new Set()) {
   if (value === null || typeof value === "string" ||
       typeof value === "boolean") {
@@ -7,15 +15,24 @@ export function canonicalize(value, ancestors = new Set()) {
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      throw new Error("canonical values must use lossless JSON types");
+      throw new CanonicalValueError(
+        "non_lossless_json_value",
+        "canonical values must use lossless JSON types",
+      );
     }
     return value;
   }
   if (typeof value !== "object") {
-    throw new Error("canonical values must use lossless JSON types");
+    throw new CanonicalValueError(
+      "non_lossless_json_value",
+      "canonical values must use lossless JSON types",
+    );
   }
   if (ancestors.has(value)) {
-    throw new Error("canonical values must not contain cycles");
+    throw new CanonicalValueError(
+      "cyclic_canonical_value",
+      "canonical values must not contain cycles",
+    );
   }
   ancestors.add(value);
 
@@ -23,20 +40,32 @@ export function canonicalize(value, ancestors = new Set()) {
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
       if (!Object.hasOwn(value, index)) {
-        throw new Error("canonical values must use lossless JSON types");
+        throw new CanonicalValueError(
+          "sparse_canonical_array",
+          "canonical values must use lossless JSON types",
+        );
       }
     }
     if (Reflect.ownKeys(value).length !== value.length + 1) {
-      throw new Error("canonical arrays must not contain extra properties");
+      throw new CanonicalValueError(
+        "decorated_canonical_array",
+        "canonical arrays must not contain extra properties",
+      );
     }
     canonical = value.map((item) => canonicalize(item, ancestors));
   } else {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
-      throw new Error("canonical values must use plain JSON objects");
+      throw new CanonicalValueError(
+        "non_plain_canonical_object",
+        "canonical values must use plain JSON objects",
+      );
     }
     if (Reflect.ownKeys(value).length !== Object.keys(value).length) {
-      throw new Error("canonical values must use lossless JSON types");
+      throw new CanonicalValueError(
+        "non_lossless_json_value",
+        "canonical values must use lossless JSON types",
+      );
     }
     canonical = Object.fromEntries(
       Object.keys(value)

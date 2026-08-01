@@ -27,7 +27,26 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 3);
+  assert.equal(catalog.catalog_version, 4);
+  assert.deepEqual(catalog.flow_runtime.rejection_contract, {
+    contract: "flow.rejection/v1",
+    fields: [
+      "schema",
+      "operation",
+      "code",
+      "reason",
+      "command_type",
+      "run_id",
+      "bundle_digest",
+      "authority_watermark",
+      "authority_watermark_domain",
+      "legal_actions",
+    ],
+    watermark_domains: {
+      host: "host_run_index_membership",
+      run: "run_lifecycle_events",
+    },
+  });
   for (const contract of [
     "flow.dynamic-plan-proposal/v1",
     "flow.dynamic-plan-confirmation/v1",
@@ -78,6 +97,27 @@ test("the public catalog rejects nested authority roots", async (t) => {
   await assert.rejects(
     loadContractCatalog({ catalogPath: nestedCatalogPath }),
     /contract catalog authority roots must be disjoint/,
+  );
+});
+
+test("the public catalog requires the complete rejection contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-rejection-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.rejection_contract = {
+    contract: "flow.rejection/v1",
+    fields: ["schema"],
+    watermark_domains: {
+      host: "host_run_index_membership",
+      run: "run_lifecycle_events",
+    },
+  };
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    /contract catalog rejection contract is incomplete/,
   );
 });
 

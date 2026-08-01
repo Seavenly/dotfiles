@@ -11,13 +11,18 @@ export function foldRun(run) {
       .filter(([, decision]) => decision === "approve")
       .map(([checkpointId]) => checkpointId),
   );
+  const phase = run.events.some(({ type }) => type === "run_declined")
+    ? "declined"
+    : run.events.some(({ type }) => type === "run_succeeded")
+      ? "succeeded"
+      : "active";
   const cards = run.prepared.graph.cards.map((card) => {
     let status = "pending";
     if (checkpointDecisions.get(card.id) === "decline") {
       status = "declined";
     } else if (approvedCheckpoints.has(card.id)) {
       status = "completed";
-    } else if (card.dependencies.every((dependency) =>
+    } else if (phase === "active" && card.dependencies.every((dependency) =>
       approvedCheckpoints.has(dependency))) {
       status = card.executor.kind === "checkpoint" ? "waiting_checkpoint" : "ready";
     }
@@ -28,11 +33,6 @@ export function foldRun(run) {
     };
   });
   const watermark = runWatermark(run);
-  const phase = run.events.some(({ type }) => type === "run_declined")
-    ? "declined"
-    : run.events.some(({ type }) => type === "run_succeeded")
-      ? "succeeded"
-      : "active";
   const legalActions = phase === "active"
     ? cards
       .filter(({ executor_kind: kind, status }) =>

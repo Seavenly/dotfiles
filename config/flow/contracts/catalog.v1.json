@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 3,
+  "catalog_version": 4,
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [
@@ -10,6 +10,25 @@
       "query",
       "watch"
     ],
+    "rejection_contract": {
+      "contract": "flow.rejection/v1",
+      "fields": [
+        "schema",
+        "operation",
+        "code",
+        "reason",
+        "command_type",
+        "run_id",
+        "bundle_digest",
+        "authority_watermark",
+        "authority_watermark_domain",
+        "legal_actions"
+      ],
+      "watermark_domains": {
+        "host": "host_run_index_membership",
+        "run": "run_lifecycle_events"
+      }
+    },
     "operation_contracts": {
       "prepare": {
         "authority": "non_authoritative",

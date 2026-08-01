@@ -9,6 +9,7 @@ import {
   confirmedLaunchRequest,
   dependencyCheckpointProposal,
   dynamicCheckpointProposal,
+  independentCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 
 test("prepare returns an immutable content-addressed dynamic graph without creating a run", () => {
@@ -106,6 +107,31 @@ test("prepare rejects incomplete or cyclic dynamic graphs", () => {
     () => runtime.prepare(decoratedArray),
     /canonical arrays must not contain extra properties/,
   );
+
+  const privateCheckpoint = dynamicCheckpointProposal();
+  privateCheckpoint.graph.cards[0].executor.contract =
+    "flow.checkpoint/private-controller/v1";
+  assert.throws(
+    () => runtime.prepare(privateCheckpoint),
+    /unsupported checkpoint contract: flow\.checkpoint\/private-controller\/v1/,
+  );
+
+  const missingValidator = dynamicCheckpointProposal();
+  missingValidator.graph.cards[0].validators = [];
+  assert.throws(
+    () => runtime.prepare(missingValidator),
+    /unsupported checkpoint validator contract: confirm-plan/,
+  );
+
+  const privateValidator = dynamicCheckpointProposal();
+  privateValidator.graph.cards[0].validators = ["flow.validator/private/v1"];
+  privateValidator.explicit_facts.validator_contracts = [
+    "flow.validator/private/v1",
+  ];
+  assert.throws(
+    () => runtime.prepare(privateValidator),
+    /unsupported checkpoint validator contract: confirm-plan/,
+  );
 });
 
 test("duplicate launch adopts the exact confirmed bundle without recompiling facts", () => {
@@ -137,10 +163,9 @@ test("duplicate launch adopts the exact confirmed bundle without recompiling fac
 
   const tampered = structuredClone(prepared);
   tampered.graph.cards[0].inputs.prompt = "Different authority";
-  assert.equal(
-    runtime.launch({ ...launchRequest, prepared: tampered }).code,
-    "invalid_prepared_bundle",
-  );
+  const tamperedRejection = runtime.launch({ ...launchRequest, prepared: tampered });
+  assert.equal(tamperedRejection.code, "invalid_prepared_bundle");
+  assert.equal(tamperedRejection.reason, "plan_fingerprint_mismatch");
   assert.equal(
     runtime.launch({
       ...launchRequest,
@@ -157,62 +182,77 @@ test("duplicate launch adopts the exact confirmed bundle without recompiling fac
 
   const forgedConfirmation = structuredClone(prepared);
   forgedConfirmation.confirmation.graph.cards[0].id = "operator-saw-another-plan";
-  assert.equal(
-    runtime.launch({
-      ...confirmedLaunchRequest(forgedConfirmation),
-      prepared: forgedConfirmation,
-    }).code,
-    "invalid_prepared_bundle",
-  );
+  const confirmationRejection = runtime.launch({
+    ...confirmedLaunchRequest(forgedConfirmation),
+    prepared: forgedConfirmation,
+  });
+  assert.equal(confirmationRejection.code, "invalid_prepared_bundle");
+  assert.equal(confirmationRejection.reason, "confirmation_binding_mismatch");
 
   const selfConsistentUnsupported = structuredClone(prepared);
   selfConsistentUnsupported.graph.cards[0].executor = {
     kind: "operation",
     contract: "flow.operation/example/v1",
   };
-  selfConsistentUnsupported.plan_fingerprint = digest(
-    selfConsistentUnsupported.graph,
+  rebindPreparedIdentity(selfConsistentUnsupported);
+  const executorRejection = runtime.launch(
+    confirmedLaunchRequest(selfConsistentUnsupported),
   );
-  selfConsistentUnsupported.bundle_digest = digest({
-    schema: "flow.prepared-bundle/v1",
-    kind: selfConsistentUnsupported.kind,
-    graph: selfConsistentUnsupported.graph,
-    plan_fingerprint: selfConsistentUnsupported.plan_fingerprint,
-    requested_authority: selfConsistentUnsupported.requested_authority,
-    explicit_facts: selfConsistentUnsupported.explicit_facts,
-  });
-  selfConsistentUnsupported.confirmation = {
-    schema: "flow.dynamic-plan-confirmation/v1",
-    bundle_digest: selfConsistentUnsupported.bundle_digest,
-    graph: selfConsistentUnsupported.graph,
-    requested_authority: selfConsistentUnsupported.requested_authority,
-    explicit_facts: selfConsistentUnsupported.explicit_facts,
-  };
-  selfConsistentUnsupported.confirmation_digest = digest(
-    selfConsistentUnsupported.confirmation,
-  );
-  assert.equal(
-    runtime.launch(confirmedLaunchRequest(selfConsistentUnsupported)).code,
-    "invalid_prepared_bundle",
-  );
+  assert.equal(executorRejection.code, "invalid_prepared_bundle");
+  assert.equal(executorRejection.reason, "unsupported_executor_kind");
 
-  assert.deepEqual(
-    runtime.launch({
+  const invalidDecision = runtime.launch({
       ...launchRequest,
       confirmation: {
         ...launchRequest.confirmation,
         decision: "later",
       },
-    }),
-    {
-      schema: "flow.rejection/v1",
-      operation: "launch",
-      code: "invalid_confirmation",
-      bundle_digest: prepared.bundle_digest,
-      authority_watermark: runtime.query().watermark,
-      legal_actions: [],
-    },
-  );
+    });
+  assert.equal(invalidDecision.code, "invalid_confirmation");
+  assert.equal(invalidDecision.reason, "unsupported_confirmation_decision");
+});
+
+test("launch rejects a self-consistent prepared graph that is not canonical", () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(dependencyCheckpointProposal());
+  const noncanonical = structuredClone(prepared);
+  noncanonical.graph.cards.reverse();
+  rebindPreparedIdentity(noncanonical);
+
+  const rejection = runtime.launch(confirmedLaunchRequest(noncanonical));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "noncanonical_graph");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("launch returns a typed rejection for a null request", () => {
+  const runtime = createTestRuntime();
+
+  assert.deepEqual(runtime.launch(null), {
+    schema: "flow.rejection/v1",
+    operation: "launch",
+    code: "invalid_prepared_bundle",
+    reason: "invalid_prepared_contract",
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: `sha256:${"0".repeat(64)}`,
+    authority_watermark_domain: "host",
+    legal_actions: [],
+  });
+});
+
+test("launch rejects unsigned fields on the prepared envelope", () => {
+  const runtime = createTestRuntime();
+  const prepared = structuredClone(runtime.prepare(dynamicCheckpointProposal()));
+  prepared.private_controller = { command: "complete" };
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "invalid_prepared_contract");
+  assert.deepEqual(runtime.query().runs, []);
 });
 
 test("runtime interfaces in one process share one host authority", () => {
@@ -309,8 +349,12 @@ test("declining confirmation or a checkpoint records a typed negative outcome", 
       schema: "flow.rejection/v1",
       operation: "launch",
       code: "confirmation_declined",
+      reason: null,
+      command_type: null,
+      run_id: null,
       bundle_digest: prepared.bundle_digest,
       authority_watermark: `sha256:${"0".repeat(64)}`,
+      authority_watermark_domain: "host",
       legal_actions: [],
     },
   );
@@ -334,6 +378,50 @@ test("declining confirmation or a checkpoint records a typed negative outcome", 
     },
   ]);
   assert.deepEqual(declined.legal_actions, []);
+});
+
+test("a terminal run fences decisions on other independent checkpoints", () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(independentCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const active = runtime.query({ run_id: launch.run_id });
+  const decline = active.legal_actions.find(
+    ({ checkpoint_id: checkpointId, decision }) =>
+      checkpointId === "confirm-plan" && decision === "decline",
+  );
+
+  runtime.command(decline);
+  const terminal = runtime.query({ run_id: launch.run_id });
+  const otherCard = terminal.cards.find(({ id }) => id === "confirm-scope");
+  const postTerminal = runtime.command({
+    schema: "flow.command/v1",
+    type: "checkpoint_decision",
+    run_id: launch.run_id,
+    checkpoint_id: otherCard.id,
+    decision: "approve",
+    expected_watermark: terminal.watermark,
+  });
+
+  assert.equal(terminal.phase, "declined");
+  assert.equal(otherCard.status, "pending");
+  assert.deepEqual(terminal.legal_actions, []);
+  assert.equal(postTerminal.code, "run_terminal");
+  assert.deepEqual(postTerminal, {
+    schema: "flow.rejection/v1",
+    operation: "command",
+    code: "run_terminal",
+    reason: null,
+    command_type: "checkpoint_decision",
+    run_id: launch.run_id,
+    bundle_digest: prepared.bundle_digest,
+    authority_watermark: terminal.watermark,
+    authority_watermark_domain: "run",
+    legal_actions: [],
+  });
+  assert.equal(
+    runtime.query({ run_id: launch.run_id }).watermark,
+    terminal.watermark,
+  );
 });
 
 test("dependency checkpoints expose only currently legal typed actions", () => {
@@ -408,17 +496,24 @@ test("unknown run operations return typed machine-readable outcomes", async () =
     schema: "flow.rejection/v1",
     operation: "command",
     code: "unknown_run",
+    reason: null,
     command_type: "checkpoint_decision",
     run_id: runId,
+    bundle_digest: null,
     authority_watermark: watermark,
+    authority_watermark_domain: "host",
     legal_actions: [],
   });
   assert.deepEqual(runtime.query({ run_id: runId }), {
     schema: "flow.rejection/v1",
     operation: "query",
     code: "unknown_run",
+    reason: null,
+    command_type: null,
     run_id: runId,
+    bundle_digest: null,
     authority_watermark: watermark,
+    authority_watermark_domain: "host",
     legal_actions: [],
   });
 
@@ -429,8 +524,12 @@ test("unknown run operations return typed machine-readable outcomes", async () =
       schema: "flow.rejection/v1",
       operation: "watch",
       code: "unknown_run",
+      reason: null,
+      command_type: null,
       run_id: null,
+      bundle_digest: null,
       authority_watermark: watermark,
+      authority_watermark_domain: "host",
       legal_actions: [],
     },
   });
@@ -456,10 +555,14 @@ test("generic lifecycle controls are rejected without mutating authority", () =>
       expected_watermark: before.watermark,
     }), {
       schema: "flow.rejection/v1",
+      operation: "command",
       code: "forbidden_command",
+      reason: null,
       command_type: commandType,
       run_id: runId,
+      bundle_digest: prepared.bundle_digest,
       authority_watermark: before.watermark,
+      authority_watermark_domain: "run",
       legal_actions: before.legal_actions,
     });
   }
@@ -490,4 +593,24 @@ function createTestRuntime(options = {}) {
     ...options,
     runAuthority: createInMemoryRunAuthority(),
   });
+}
+
+function rebindPreparedIdentity(prepared) {
+  prepared.plan_fingerprint = digest(prepared.graph);
+  prepared.bundle_digest = digest({
+    schema: "flow.prepared-bundle/v1",
+    kind: prepared.kind,
+    graph: prepared.graph,
+    plan_fingerprint: prepared.plan_fingerprint,
+    requested_authority: prepared.requested_authority,
+    explicit_facts: prepared.explicit_facts,
+  });
+  prepared.confirmation = {
+    schema: "flow.dynamic-plan-confirmation/v1",
+    bundle_digest: prepared.bundle_digest,
+    graph: prepared.graph,
+    requested_authority: prepared.requested_authority,
+    explicit_facts: prepared.explicit_facts,
+  };
+  prepared.confirmation_digest = digest(prepared.confirmation);
 }

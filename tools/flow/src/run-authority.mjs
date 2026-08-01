@@ -1,8 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { digest, freezeCanonical } from "./canonical.mjs";
+import { CanonicalValueError, digest, freezeCanonical } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
-import { validateDynamicPlan } from "./plan-compiler.mjs";
+import {
+  canonicalizeDynamicGraph,
+  DynamicPlanValidationError,
+  validateDynamicPlan,
+} from "./plan-compiler.mjs";
 import {
   createDynamicPlanConfirmation,
   createPreparedBundle,
@@ -10,6 +14,17 @@ import {
 import { foldRun, projectRun, runWatermark } from "./run-projection.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const PREPARED_RUN_FIELDS = [
+  "schema",
+  "kind",
+  "bundle_digest",
+  "plan_fingerprint",
+  "confirmation_digest",
+  "graph",
+  "requested_authority",
+  "explicit_facts",
+  "confirmation",
+];
 
 export function createInMemoryRunAuthority() {
   const runs = new Map();
@@ -26,20 +41,24 @@ export function createInMemoryRunAuthority() {
       } = request ?? {};
       try {
         assertPreparedBundle(prepared);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof LaunchValidationError)) throw error;
         return launchRejection(
           "invalid_prepared_bundle",
           prepared,
           authorityEvents,
+          error.reason,
         );
       }
       try {
         assertConfirmationDecision(prepared, confirmation);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof LaunchValidationError)) throw error;
         return launchRejection(
           "invalid_confirmation",
           prepared,
           authorityEvents,
+          error.reason,
         );
       }
       if (confirmation.decision === "decline") {
@@ -153,28 +172,56 @@ export function createInMemoryRunAuthority() {
 }
 
 function assertPreparedBundle(prepared) {
-  if (prepared?.schema !== "flow.prepared-run/v1" ||
+  if (!isExactRecord(prepared, PREPARED_RUN_FIELDS) ||
+      prepared.schema !== "flow.prepared-run/v1" ||
       prepared.kind !== "dynamic") {
-    throw new Error("launch requires a prepared dynamic bundle");
+    invalidLaunch(
+      "invalid_prepared_contract",
+      "launch requires a prepared dynamic bundle",
+    );
   }
-  if (prepared.plan_fingerprint !== digest(prepared.graph)) {
-    throw new Error("prepared plan fingerprint mismatch");
+  let graphDigest;
+  try {
+    graphDigest = digest(prepared.graph);
+  } catch (error) {
+    translateCanonicalError(error);
   }
-  validateDynamicPlan({
-    schema: "flow.dynamic-plan-proposal/v1",
-    graph: prepared.graph,
-    requested_authority: prepared.requested_authority,
-    explicit_facts: prepared.explicit_facts,
-  });
-  const bundleDigest = digest(createPreparedBundle({
-    kind: prepared.kind,
-    graph: prepared.graph,
-    planFingerprint: prepared.plan_fingerprint,
-    requestedAuthority: prepared.requested_authority,
-    explicitFacts: prepared.explicit_facts,
-  }));
+  if (prepared.plan_fingerprint !== graphDigest) {
+    invalidLaunch("plan_fingerprint_mismatch", "prepared plan fingerprint mismatch");
+  }
+  try {
+    validateDynamicPlan({
+      schema: "flow.dynamic-plan-proposal/v1",
+      graph: prepared.graph,
+      requested_authority: prepared.requested_authority,
+      explicit_facts: prepared.explicit_facts,
+    });
+  } catch (error) {
+    if (error instanceof DynamicPlanValidationError) {
+      invalidLaunch(error.reason, error.message);
+    }
+    throw error;
+  }
+  if (!isDeepStrictEqual(prepared.graph, canonicalizeDynamicGraph(prepared.graph))) {
+    invalidLaunch(
+      "noncanonical_graph",
+      "prepared graph must use the canonical card and dependency order",
+    );
+  }
+  let bundleDigest;
+  try {
+    bundleDigest = digest(createPreparedBundle({
+      kind: prepared.kind,
+      graph: prepared.graph,
+      planFingerprint: prepared.plan_fingerprint,
+      requestedAuthority: prepared.requested_authority,
+      explicitFacts: prepared.explicit_facts,
+    }));
+  } catch (error) {
+    translateCanonicalError(error);
+  }
   if (prepared.bundle_digest !== bundleDigest) {
-    throw new Error("prepared bundle digest mismatch");
+    invalidLaunch("bundle_digest_mismatch", "prepared bundle digest mismatch");
   }
   const expectedConfirmation = createDynamicPlanConfirmation({
     bundleDigest: prepared.bundle_digest,
@@ -184,21 +231,64 @@ function assertPreparedBundle(prepared) {
   });
   if (!isDeepStrictEqual(prepared.confirmation, expectedConfirmation) ||
       prepared.confirmation_digest !== digest(expectedConfirmation)) {
-    throw new Error("prepared confirmation is not bound to the bundle");
+    invalidLaunch(
+      "confirmation_binding_mismatch",
+      "prepared confirmation is not bound to the bundle",
+    );
   }
 }
 
-function assertConfirmationDecision(prepared, confirmation) {
-  const expected = freezeCanonical({
-    schema: "flow.dynamic-plan-confirmation-decision/v1",
-    decision: confirmation?.decision,
-    bundle_digest: prepared.bundle_digest,
-    confirmation_digest: prepared.confirmation_digest,
-  });
-  if (!["accept", "decline"].includes(confirmation?.decision) ||
-      !isDeepStrictEqual(confirmation, expected)) {
-    throw new Error("launch confirmation decision is invalid");
+function isExactRecord(value, fields) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
   }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const keys = Reflect.ownKeys(value);
+  return keys.length === fields.length && keys.every((key) => fields.includes(key));
+}
+
+function assertConfirmationDecision(prepared, confirmation) {
+  if (!["accept", "decline"].includes(confirmation?.decision)) {
+    invalidLaunch(
+      "unsupported_confirmation_decision",
+      "launch confirmation decision is invalid",
+    );
+  }
+  const valid = ["accept", "decline"].some((decision) => isDeepStrictEqual(
+    confirmation,
+    freezeCanonical({
+      schema: "flow.dynamic-plan-confirmation-decision/v1",
+      decision,
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    }),
+  ));
+  if (!valid) {
+    invalidLaunch(
+      "confirmation_binding_mismatch",
+      "launch confirmation decision is invalid",
+    );
+  }
+}
+
+class LaunchValidationError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = "LaunchValidationError";
+    this.reason = reason;
+  }
+}
+
+function invalidLaunch(reason, message) {
+  throw new LaunchValidationError(reason, message);
+}
+
+function translateCanonicalError(error) {
+  if (error instanceof CanonicalValueError) {
+    invalidLaunch(error.reason, error.message);
+  }
+  throw error;
 }
 
 function launchReceipt(run, created) {
@@ -218,20 +308,27 @@ function unknownRunRejection(operation, runId, authorityEvents, commandType) {
     schema: "flow.rejection/v1",
     operation,
     code: "unknown_run",
-    ...(commandType === undefined ? {} : { command_type: commandType }),
+    reason: null,
+    command_type: commandType ?? null,
     run_id: runId ?? null,
+    bundle_digest: null,
     authority_watermark: authorityWatermark(authorityEvents),
+    authority_watermark_domain: "host",
     legal_actions: [],
   });
 }
 
-function launchRejection(code, prepared, authorityEvents) {
+function launchRejection(code, prepared, authorityEvents, reason = null) {
   return freezeCanonical({
     schema: "flow.rejection/v1",
     operation: "launch",
     code,
+    reason,
+    command_type: null,
+    run_id: null,
     bundle_digest: prepared?.bundle_digest ?? null,
     authority_watermark: authorityWatermark(authorityEvents),
+    authority_watermark_domain: "host",
     legal_actions: [],
   });
 }

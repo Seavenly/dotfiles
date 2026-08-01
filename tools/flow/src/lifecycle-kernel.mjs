@@ -18,6 +18,9 @@ export function decideLifecycle(fold, command) {
   if (command.expected_watermark !== fold.watermark) {
     return reject(fold, command, "stale_authority_watermark");
   }
+  if (fold.phase !== "active") {
+    return reject(fold, command, "run_terminal");
+  }
   if (command.type !== "checkpoint_decision") {
     return reject(fold, command, "unsupported_command");
   }
@@ -70,10 +73,14 @@ export const LifecycleKernel = Object.freeze({
 function reject(fold, command, code) {
   return {
     schema: "flow.rejection/v1",
+    operation: "command",
     code,
+    reason: null,
     command_type: command?.type ?? null,
     run_id: command?.run_id ?? null,
+    bundle_digest: fold.bundle_digest,
     authority_watermark: fold.watermark,
+    authority_watermark_domain: "run",
     legal_actions: fold.legal_actions,
   };
 }
