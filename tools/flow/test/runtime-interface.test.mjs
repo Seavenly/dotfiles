@@ -6,11 +6,504 @@ import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { createInMemoryRunAuthority } from "../src/run-authority.mjs";
 import {
+  capabilityBlockedCheckpointProposal,
   confirmedLaunchRequest,
   dependencyCheckpointProposal,
   dynamicCheckpointProposal,
   independentCheckpointProposal,
+  repeatedRevisionCheckpointProposal,
+  revisionBlockedCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+
+test("a typed capability grant resolves an exact blocked plan without losing grant history", () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(capabilityBlockedCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const blocked = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(blocked.progress, "blocked");
+  assert.deepEqual(blocked.current_revision, {
+    ordinal: 0,
+    plan_fingerprint: prepared.plan_fingerprint,
+  });
+  assert.deepEqual(blocked.cards, [{
+    id: "confirm-plan",
+    executor_kind: "checkpoint",
+    status: "blocked",
+  }]);
+  assert.deepEqual(blocked.blocks, [{
+    card_id: "confirm-plan",
+    id: "confirm-plan:repository-write",
+    schema: "flow.card-block/v1",
+    type: "capability_required",
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "capability_required",
+      code: "repository_write_required",
+    },
+    required_capabilities: ["repository:write"],
+    revision_template_ids: [],
+  }]);
+  assert.deepEqual(blocked.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "capability_grant",
+    run_id: launch.run_id,
+    grant_id: "confirm-plan:repository-write:grant",
+    capabilities: ["repository:write"],
+    card_ids: ["confirm-plan"],
+    base_plan_fingerprint: prepared.plan_fingerprint,
+    trigger: blocked.blocks[0].trigger,
+    expected_watermark: blocked.watermark,
+  }]);
+
+  const grant = runtime.command(blocked.legal_actions[0]);
+  const recovered = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(grant.accepted, true);
+  assert.equal(grant.command_type, "capability_grant");
+  assert.equal(grant.authority_watermark, recovered.watermark);
+  assert.equal(recovered.progress, "waiting");
+  assert.deepEqual(recovered.blocks, []);
+  assert.deepEqual(recovered.grants, [{
+    grant_id: "confirm-plan:repository-write:grant",
+    capabilities: ["repository:write"],
+    card_ids: ["confirm-plan"],
+    base_plan_fingerprint: prepared.plan_fingerprint,
+    trigger: blocked.blocks[0].trigger,
+  }]);
+  assert.deepEqual(
+    recovered.legal_actions.map(({ type }) => type),
+    ["checkpoint_decision", "checkpoint_decision"],
+  );
+
+  const stale = runtime.command(blocked.legal_actions[0]);
+  assert.equal(stale.code, "stale_authority_watermark");
+  assert.deepEqual(stale.legal_actions, recovered.legal_actions);
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }), recovered);
+});
+
+test("an exact plan revision atomically resolves a block without rewriting accepted history", async () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(revisionBlockedCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+  runtime.command(initial.legal_actions.find(({ type }) =>
+    type === "capability_grant"));
+  const scopeReady = runtime.query({ run_id: launch.run_id });
+  runtime.command(scopeReady.legal_actions.find(({ decision }) =>
+    decision === "approve"));
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const revisionAction = blocked.legal_actions.find(
+    ({ type }) => type === "revision_decision",
+  );
+  const originalPlan = structuredClone(blocked.active_plan);
+  const watcher = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+  assert.deepEqual(await watcher.next(), { done: false, value: blocked });
+
+  assert.equal(blocked.progress, "blocked");
+  assert.equal(revisionAction.base_plan_fingerprint, prepared.plan_fingerprint);
+  assert.deepEqual(revisionAction.trigger, blocked.blocks[0].trigger);
+  assert.deepEqual(revisionAction.changes, prepared.revision_templates[0].changes);
+
+  for (const mutate of [
+    (forged) => {
+      forged.base_plan_fingerprint = `sha256:${"9".repeat(64)}`;
+    },
+    (forged) => {
+      forged.trigger.code = "unvalidated_trigger";
+    },
+    (forged) => {
+      forged.changes.resource_additions.push({
+        kind: "workspace",
+        id: "undeclared",
+      });
+    },
+  ]) {
+    const forged = structuredClone(revisionAction);
+    mutate(forged);
+    const rejected = runtime.command(forged);
+    assert.equal(rejected.code, "revision_not_actionable");
+    assert.deepEqual(runtime.query({ run_id: launch.run_id }), blocked);
+  }
+
+  const update = watcher.next();
+  const receipt = runtime.command(revisionAction);
+  const revised = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(receipt.accepted, true);
+  assert.equal(receipt.command_type, "revision_decision");
+  assert.deepEqual(await update, { done: false, value: revised });
+  assert.deepEqual(revised.current_revision, {
+    ordinal: 1,
+    base_plan_fingerprint: prepared.plan_fingerprint,
+    plan_fingerprint: revised.plan_fingerprint,
+    trigger: blocked.blocks[0].trigger,
+  });
+  assert.notEqual(revised.plan_fingerprint, prepared.plan_fingerprint);
+  assert.deepEqual(revised.cards, [
+    { id: "confirm-plan", executor_kind: "checkpoint", status: "superseded" },
+    {
+      id: "confirm-revised-plan",
+      executor_kind: "checkpoint",
+      status: "waiting_checkpoint",
+    },
+    { id: "confirm-scope", executor_kind: "checkpoint", status: "completed" },
+  ]);
+  assert.deepEqual(revised.blocks, []);
+  assert.deepEqual(revised.active_plan.cards.find(({ id }) => id === "confirm-plan"),
+    originalPlan.cards.find(({ id }) => id === "confirm-plan"));
+  assert.deepEqual(
+    revised.active_plan.cards.find(({ id }) => id === "confirm-revised-plan")
+      .dependencies,
+    ["confirm-scope"],
+  );
+  assert.deepEqual(revised.capabilities, ["artifact:write", "scope:approve"]);
+  assert.deepEqual(revised.capability_bindings, [
+    { capability: "scope:approve", card_ids: ["confirm-scope"] },
+    { capability: "artifact:write", card_ids: ["confirm-revised-plan"] },
+  ]);
+  assert.equal(revised.plan_fingerprint, digest(revised.active_plan));
+  assert.deepEqual(revised.resource_claims, [
+    { kind: "artifact", id: "revised-plan" },
+  ]);
+  assert.deepEqual(revised.limits, {
+    max_cards: 3,
+    max_revisions: 1,
+    max_cards_per_revision: 1,
+    max_capabilities: 2,
+    max_resources: 1,
+    max_elapsed_seconds: 60,
+  });
+  assert.deepEqual(revised.revisions, [{
+    ordinal: 1,
+    template_id: "replace-confirm-plan",
+    base_plan_fingerprint: prepared.plan_fingerprint,
+    plan_fingerprint: revised.plan_fingerprint,
+    trigger: blocked.blocks[0].trigger,
+    changes: prepared.revision_templates[0].changes,
+  }]);
+  assert.deepEqual(revised.grants, [{
+    grant_id: "confirm-scope:approval:grant",
+    capabilities: ["scope:approve"],
+    card_ids: ["confirm-scope"],
+    base_plan_fingerprint: prepared.plan_fingerprint,
+    trigger: initial.blocks[0].trigger,
+  }]);
+  assert.deepEqual(
+    revised.legal_actions.map(({ checkpoint_id: id }) => id),
+    ["confirm-revised-plan", "confirm-revised-plan"],
+  );
+
+  const stale = runtime.command(revisionAction);
+  assert.equal(stale.code, "stale_authority_watermark");
+  assert.deepEqual(stale.legal_actions, revised.legal_actions);
+  runtime.command(revised.legal_actions.find(({ decision }) =>
+    decision === "approve"));
+  const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(completed.progress, "complete");
+  assert.deepEqual(completed.legal_actions, []);
+  assert.deepEqual(completed.revisions, revised.revisions);
+  assert.deepEqual(completed.grants, revised.grants);
+  await watcher.return();
+});
+
+test("repeated revisions append history and chain exact base fingerprints", () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(repeatedRevisionCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+  const originalPlan = structuredClone(initial.active_plan);
+
+  const firstAction = initial.legal_actions.find(({ template_id: id }) =>
+    id === "replace-confirm-plan");
+  runtime.command(firstAction);
+  const firstRevision = runtime.query({ run_id: launch.run_id });
+  const secondAction = firstRevision.legal_actions.find(({ template_id: id }) =>
+    id === "replace-confirm-scope");
+  runtime.command(secondAction);
+  const secondRevision = runtime.query({ run_id: launch.run_id });
+
+  assert.deepEqual(
+    secondRevision.revisions.map((revision) => ({
+      ordinal: revision.ordinal,
+      base_plan_fingerprint: revision.base_plan_fingerprint,
+      plan_fingerprint: revision.plan_fingerprint,
+    })),
+    [
+      {
+        ordinal: 1,
+        base_plan_fingerprint: prepared.plan_fingerprint,
+        plan_fingerprint: firstRevision.plan_fingerprint,
+      },
+      {
+        ordinal: 2,
+        base_plan_fingerprint: firstRevision.plan_fingerprint,
+        plan_fingerprint: secondRevision.plan_fingerprint,
+      },
+    ],
+  );
+  assert.deepEqual(
+    secondRevision.active_plan.cards.filter(({ id }) =>
+      ["confirm-plan", "confirm-scope"].includes(id)),
+    originalPlan.cards,
+  );
+  assert.deepEqual(secondRevision.cards, [
+    { id: "confirm-plan", executor_kind: "checkpoint", status: "superseded" },
+    {
+      id: "confirm-plan-revised",
+      executor_kind: "checkpoint",
+      status: "waiting_checkpoint",
+    },
+    { id: "confirm-scope", executor_kind: "checkpoint", status: "superseded" },
+    {
+      id: "confirm-scope-revised",
+      executor_kind: "checkpoint",
+      status: "waiting_checkpoint",
+    },
+  ]);
+});
+
+test("runtime admission withholds a revision beyond the declared run cap", () => {
+  const runtime = createTestRuntime();
+  const proposal = repeatedRevisionCheckpointProposal();
+  proposal.explicit_facts.limits.max_revisions = 1;
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+
+  runtime.command(initial.legal_actions.find(({ template_id: id }) =>
+    id === "replace-confirm-plan"));
+  const capped = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(capped.current_revision.ordinal, 1);
+  assert.ok(capped.blocks.some(({ card_id: id }) => id === "confirm-scope"));
+  assert.ok(!capped.legal_actions.some(({ type, decision }) =>
+    type === "revision_decision" && decision === "accept"));
+  const decline = capped.legal_actions.find(({ type, decision }) =>
+    type === "revision_decision" && decision === "decline");
+  assert.ok(decline);
+
+  const declined = runtime.command(decline);
+  const terminal = runtime.query({ run_id: launch.run_id });
+  assert.equal(declined.accepted, true);
+  assert.equal(terminal.phase, "declined");
+  assert.deepEqual(terminal.legal_actions, []);
+});
+
+test("every active checkpoint-only projection exposes a legal action", () => {
+  const capped = repeatedRevisionCheckpointProposal();
+  capped.explicit_facts.limits.max_revisions = 1;
+  for (const proposal of [
+    dynamicCheckpointProposal(),
+    capabilityBlockedCheckpointProposal(),
+    revisionBlockedCheckpointProposal(),
+    capped,
+  ]) {
+    assertEveryActiveProjectionIsActionable(proposal);
+  }
+});
+
+test("prepare rejects a revision template that could rewrite accepted upstream work", () => {
+  const runtime = createTestRuntime();
+  const proposal = revisionBlockedCheckpointProposal();
+  proposal.revision_templates[0].changes.supersede_cards.push("confirm-scope");
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    /revision supersession must be the blocked card and its pending dependent closure/,
+  );
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("prepare rejects a revised card that depends on superseded work", () => {
+  const runtime = createTestRuntime();
+  const proposal = revisionBlockedCheckpointProposal();
+  proposal.revision_templates[0].changes.add_cards[0].dependencies = [
+    "confirm-plan",
+  ];
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    /active revision card cannot depend on superseded work/,
+  );
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("prepare rejects one revision template bound to multiple card blocks", () => {
+  const runtime = createTestRuntime();
+  const proposal = revisionBlockedCheckpointProposal();
+  const observation = proposal.explicit_facts.block_observations.find(
+    ({ card_id: cardId }) => cardId === "confirm-scope",
+  );
+  observation.block.type = "plan_revision_required";
+  observation.block.trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "another_scope_revision",
+  };
+  observation.block.required_capabilities = [];
+  observation.block.revision_template_ids = ["replace-confirm-plan"];
+  rebindBlockObservation(observation);
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    /revision template is bound to multiple card blocks/,
+  );
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("prepare rejects ambiguous block identities and mismatched trigger types", () => {
+  const runtime = createTestRuntime();
+  const mismatchedTrigger = capabilityBlockedCheckpointProposal();
+  const observation = mismatchedTrigger.explicit_facts.block_observations[0];
+  observation.block.trigger.type = "plan_revision_required";
+  rebindBlockObservation(observation);
+  assert.throws(
+    () => runtime.prepare(mismatchedTrigger),
+    /dynamic plan card block is invalid: confirm-plan/,
+  );
+
+  const duplicateIdentity = revisionBlockedCheckpointProposal();
+  const [first, second] = duplicateIdentity.explicit_facts.block_observations;
+  second.block.id = first.block.id;
+  rebindBlockObservation(second);
+  assert.throws(
+    () => runtime.prepare(duplicateIdentity),
+    /dynamic plan card block identities must be unique/,
+  );
+
+  const dualModeBlock = capabilityBlockedCheckpointProposal();
+  const dualModeObservation = dualModeBlock.explicit_facts.block_observations[0];
+  dualModeObservation.block.revision_template_ids = ["replace-confirm-plan"];
+  rebindBlockObservation(dualModeObservation);
+  dualModeBlock.requested_authority.commands.push("revision_decision");
+  Object.assign(dualModeBlock.explicit_facts.limits, {
+    max_cards: 2,
+    max_revisions: 1,
+    max_cards_per_revision: 1,
+  });
+  dualModeBlock.revision_templates = [{
+    schema: "flow.plan-revision-template/v1",
+    id: "replace-confirm-plan",
+    trigger: structuredClone(dualModeObservation.block.trigger),
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [{
+        ...structuredClone(dualModeBlock.graph.cards[0]),
+        id: "confirm-revised-plan",
+      }],
+      add_edges: [],
+      supersede_cards: ["confirm-plan"],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  }];
+  assert.throws(
+    () => runtime.prepare(dualModeBlock),
+    /capability block cannot name revision templates/,
+  );
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("prepare requires digest-bound Adapter evidence before authority records a block", () => {
+  const runtime = createTestRuntime();
+  const proposal = capabilityBlockedCheckpointProposal();
+  proposal.explicit_facts.block_observations[0].evidence_digest =
+    `sha256:${"9".repeat(64)}`;
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    /card block observation evidence is invalid/,
+  );
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("a capability grant is bound to named cards", () => {
+  const runtime = createTestRuntime();
+  const proposal = capabilityBlockedCheckpointProposal();
+  const secondCard = structuredClone(proposal.graph.cards[0]);
+  secondCard.id = "confirm-second";
+  proposal.graph.cards.push(secondCard);
+  proposal.explicit_facts.limits.max_cards = 2;
+  const secondObservation = structuredClone(
+    proposal.explicit_facts.block_observations[0],
+  );
+  secondObservation.card_id = secondCard.id;
+  secondObservation.block.id = "confirm-second:repository-write";
+  rebindBlockObservation(secondObservation);
+  proposal.explicit_facts.block_observations.push(secondObservation);
+
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const grant = blocked.legal_actions.find(({ card_ids: cardIds }) =>
+    cardIds?.includes("confirm-plan"));
+  runtime.command(grant);
+  const recovered = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(
+    recovered.cards.find(({ id }) => id === "confirm-plan").status,
+    "waiting_checkpoint",
+  );
+  assert.equal(
+    recovered.cards.find(({ id }) => id === "confirm-second").status,
+    "blocked",
+  );
+  assert.deepEqual(recovered.grants[0].card_ids, ["confirm-plan"]);
+});
+
+test("revision templates and admission enforce every declared cap", () => {
+  const runtime = createTestRuntime();
+  for (const [mutate, message] of [
+    [
+      (proposal) => { proposal.explicit_facts.limits.max_resources = 0; },
+      /revision resource limit exceeded/,
+    ],
+    [
+      (proposal) => { proposal.explicit_facts.limits.max_cards_per_revision = 0; },
+      /revision card limit exceeded/,
+    ],
+    [
+      (proposal) => { proposal.explicit_facts.elapsed_seconds = 61; },
+      /explicit elapsed-time limit/,
+    ],
+    [
+      (proposal) => {
+        proposal.revision_templates[0].limits.max_applications = 0;
+      },
+      /revision template application limit is invalid/,
+    ],
+  ]) {
+    const proposal = revisionBlockedCheckpointProposal();
+    mutate(proposal);
+    assert.throws(() => runtime.prepare(proposal), message);
+  }
+
+  const capabilityBlocked = capabilityBlockedCheckpointProposal();
+  capabilityBlocked.explicit_facts.limits.max_capabilities = 0;
+  assert.throws(
+    () => runtime.prepare(capabilityBlocked),
+    /declared recovery capability limit exceeded/,
+  );
+
+  const capabilityCapped = revisionBlockedCheckpointProposal();
+  capabilityCapped.explicit_facts.limits.max_capabilities = 1;
+  capabilityCapped.revision_templates[0].changes.limit_changes.max_capabilities = 2;
+  assert.throws(
+    () => runtime.prepare(capabilityCapped),
+    /declared recovery capability limit exceeded/,
+  );
+
+  const resourceCapped = revisionBlockedCheckpointProposal();
+  resourceCapped.explicit_facts.limits.max_resources = 0;
+  resourceCapped.revision_templates[0].changes.limit_changes.max_resources = 1;
+  assert.throws(
+    () => runtime.prepare(resourceCapped),
+    /declared recovery resource limit exceeded/,
+  );
+});
 
 test("prepare returns an immutable content-addressed dynamic graph without creating a run", () => {
   const runtime = createTestRuntime();
@@ -226,6 +719,21 @@ test("launch rejects a self-consistent prepared graph that is not canonical", ()
   assert.deepEqual(runtime.query().runs, []);
 });
 
+test("launch rejects self-consistent explicit facts that are not canonical", () => {
+  const runtime = createTestRuntime();
+  const prepared = structuredClone(
+    runtime.prepare(revisionBlockedCheckpointProposal()),
+  );
+  prepared.explicit_facts.block_observations.reverse();
+  rebindPreparedIdentity(prepared);
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "noncanonical_explicit_facts");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
 test("launch returns a typed rejection for a null request", () => {
   const runtime = createTestRuntime();
 
@@ -252,6 +760,72 @@ test("launch rejects unsigned fields on the prepared envelope", () => {
 
   assert.equal(rejection.code, "invalid_prepared_bundle");
   assert.equal(rejection.reason, "invalid_prepared_contract");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("launch and command return typed rejections for non-canonical values", () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(capabilityBlockedCheckpointProposal());
+  const malformedPrepared = structuredClone(prepared);
+  malformedPrepared.explicit_facts.block_observations[0].block.trigger.code =
+    undefined;
+
+  const launchRejection = runtime.launch(
+    confirmedLaunchRequest(malformedPrepared),
+  );
+  assert.equal(launchRejection.code, "invalid_prepared_bundle");
+  assert.equal(launchRejection.reason, "non_lossless_json_value");
+  assert.deepEqual(runtime.query().runs, []);
+
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const malformedCommand = structuredClone(blocked.legal_actions[0]);
+  malformedCommand.trigger.code = undefined;
+
+  const commandRejection = runtime.command(malformedCommand);
+  assert.equal(commandRejection.code, "invalid_command");
+  assert.equal(commandRejection.reason, "non_lossless_json_value");
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }), blocked);
+});
+
+test("launch rejects a structurally malformed revision card without throwing", () => {
+  const runtime = createTestRuntime();
+  const prepared = structuredClone(
+    runtime.prepare(revisionBlockedCheckpointProposal()),
+  );
+  prepared.revision_templates[0].changes.add_cards[0].dependencies = null;
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "incomplete_revision_card");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("launch rejects null revision templates without throwing", () => {
+  const runtime = createTestRuntime();
+  const prepared = structuredClone(runtime.prepare(dynamicCheckpointProposal()));
+  prepared.revision_templates = null;
+  rebindPreparedIdentity(prepared);
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "invalid_revision_templates");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("launch canonical-value preflight protects revision processing", () => {
+  const runtime = createTestRuntime();
+  const prepared = structuredClone(
+    runtime.prepare(revisionBlockedCheckpointProposal()),
+  );
+  prepared.revision_templates[0].changes.add_cards[0].inputs.bad = () => {};
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "non_lossless_json_value");
   assert.deepEqual(runtime.query().runs, []);
 });
 
@@ -646,6 +1220,28 @@ function createTestRuntime(options = {}) {
   });
 }
 
+function assertEveryActiveProjectionIsActionable(proposal, path = []) {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  let projection = runtime.query({ run_id: launch.run_id });
+  for (const actionIndex of path) {
+    const action = projection.legal_actions[actionIndex];
+    assert.ok(action, `missing replay action at path ${path.join(",")}`);
+    runtime.command(action);
+    projection = runtime.query({ run_id: launch.run_id });
+  }
+  if (projection.phase !== "active") return;
+  assert.ok(
+    projection.legal_actions.length > 0,
+    `active projection has no legal action at path ${path.join(",")}`,
+  );
+  assert.ok(path.length < 8, "checkpoint-only action graph must be finite");
+  for (const actionIndex of projection.legal_actions.keys()) {
+    assertEveryActiveProjectionIsActionable(proposal, [...path, actionIndex]);
+  }
+}
+
 function rebindPreparedIdentity(prepared) {
   prepared.plan_fingerprint = digest(prepared.graph);
   prepared.bundle_digest = digest({
@@ -655,6 +1251,7 @@ function rebindPreparedIdentity(prepared) {
     plan_fingerprint: prepared.plan_fingerprint,
     requested_authority: prepared.requested_authority,
     explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
   });
   prepared.confirmation = {
     schema: "flow.dynamic-plan-confirmation/v1",
@@ -662,6 +1259,12 @@ function rebindPreparedIdentity(prepared) {
     graph: prepared.graph,
     requested_authority: prepared.requested_authority,
     explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
   };
   prepared.confirmation_digest = digest(prepared.confirmation);
+}
+
+function rebindBlockObservation(observation) {
+  const { schema: _schema, evidence_digest: _digest, ...evidence } = observation;
+  observation.evidence_digest = digest(evidence);
 }

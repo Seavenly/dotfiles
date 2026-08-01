@@ -67,6 +67,29 @@ A typed approve or decline command for one currently actionable checkpoint,
 bound to the exact authority watermark from which it was offered.
 _Avoid_: Setter, unlock
 
+**Card block**:
+A typed inability to advance one named flow card, admitted into run authority
+only from a validated, digest-bound Adapter observation. Its resolution is a
+closed capability grant or plan revision rather than a generic unblock.
+_Avoid_: Pause flag, lock
+
+**Capability grant**:
+An append-only authority decision that expands a confirmed capability envelope
+for named flow cards at one exact plan fingerprint, trigger, and authority
+watermark.
+_Avoid_: Global permission, toggle
+
+**Revision trigger**:
+The validated typed observation that binds one card block to the exact plan
+revision templates authority may offer.
+_Avoid_: Free-form reason, retry condition
+
+**Plan revision**:
+An append-only, exact-base change set that may add cards, edges, card-bound
+capabilities, resources, and limits while superseding only blocked pending work
+and its pending dependent closure. It never rewrites accepted upstream history.
+_Avoid_: In-place plan edit, restart
+
 **Run authority**:
 The sole fenced authority that accepts a flow plan and owns readiness,
 admission, attempts, checkpoints, blocks, revisions, cancellation, and flow-run

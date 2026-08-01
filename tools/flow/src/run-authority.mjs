@@ -4,6 +4,8 @@ import { CanonicalValueError, digest, freezeCanonical } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
 import {
   canonicalizeDynamicGraph,
+  canonicalizeExplicitFacts,
+  canonicalizeRevisionTemplates,
   DynamicPlanValidationError,
   validateDynamicPlan,
 } from "./plan-compiler.mjs";
@@ -25,6 +27,7 @@ const PREPARED_RUN_FIELDS = [
   "requested_authority",
   "explicit_facts",
   "confirmation",
+  "revision_templates",
 ];
 
 export function createInMemoryRunAuthority() {
@@ -43,6 +46,14 @@ export function createInMemoryRunAuthority() {
       try {
         assertPreparedBundle(prepared);
       } catch (error) {
+        if (error instanceof CanonicalValueError) {
+          return launchRejection(
+            "invalid_prepared_bundle",
+            prepared,
+            authorityEvents,
+            error.reason,
+          );
+        }
         if (!(error instanceof LaunchValidationError)) throw error;
         return launchRejection(
           "invalid_prepared_bundle",
@@ -54,6 +65,14 @@ export function createInMemoryRunAuthority() {
       try {
         assertConfirmationDecision(prepared, confirmation);
       } catch (error) {
+        if (error instanceof CanonicalValueError) {
+          return launchRejection(
+            "invalid_confirmation",
+            prepared,
+            authorityEvents,
+            error.reason,
+          );
+        }
         if (!(error instanceof LaunchValidationError)) throw error;
         return launchRejection(
           "invalid_confirmation",
@@ -89,6 +108,12 @@ export function createInMemoryRunAuthority() {
             confirmation_digest: prepared.confirmation_digest,
             closed_fact_observation_digest: digest(closedFacts),
           },
+          ...prepared.explicit_facts.block_observations.map((observation) => ({
+            type: "card_blocked",
+            card_id: observation.card_id,
+            block: observation.block,
+            observation_digest: observation.evidence_digest,
+          })),
         ],
       };
       const run = freezeCanonical({
@@ -116,7 +141,23 @@ export function createInMemoryRunAuthority() {
         );
       }
       const fold = foldRun(run);
-      const decision = decideLifecycle(fold, command);
+      let decision;
+      try {
+        decision = decideLifecycle(fold, command);
+      } catch (error) {
+        if (!(error instanceof CanonicalValueError)) throw error;
+        return createRejection({
+          operation: "command",
+          code: "invalid_command",
+          reason: error.reason,
+          commandType: stringOrNull(command?.type),
+          runId: run.run_id,
+          bundleDigest: fold.bundle_digest,
+          authorityWatermark: fold.watermark,
+          authorityWatermarkDomain: "run",
+          legalActions: fold.legal_actions,
+        });
+      }
       if (decision.schema === "flow.rejection/v1") {
         return freezeCanonical(decision);
       }
@@ -181,6 +222,11 @@ function assertPreparedBundle(prepared) {
       "launch requires a prepared dynamic bundle",
     );
   }
+  try {
+    digest(prepared);
+  } catch (error) {
+    translateCanonicalError(error);
+  }
   let graphDigest;
   try {
     graphDigest = digest(prepared.graph);
@@ -196,6 +242,7 @@ function assertPreparedBundle(prepared) {
       graph: prepared.graph,
       requested_authority: prepared.requested_authority,
       explicit_facts: prepared.explicit_facts,
+      revision_templates: prepared.revision_templates,
     });
   } catch (error) {
     if (error instanceof DynamicPlanValidationError) {
@@ -209,6 +256,24 @@ function assertPreparedBundle(prepared) {
       "prepared graph must use the canonical card and dependency order",
     );
   }
+  if (!isDeepStrictEqual(
+    prepared.explicit_facts,
+    canonicalizeExplicitFacts(prepared.explicit_facts),
+  )) {
+    invalidLaunch(
+      "noncanonical_explicit_facts",
+      "prepared explicit facts must use canonical ordering",
+    );
+  }
+  if (!isDeepStrictEqual(
+    prepared.revision_templates,
+    canonicalizeRevisionTemplates(prepared.revision_templates),
+  )) {
+    invalidLaunch(
+      "noncanonical_revision_templates",
+      "prepared revision templates must use canonical ordering",
+    );
+  }
   let bundleDigest;
   try {
     bundleDigest = digest(createPreparedBundle({
@@ -217,6 +282,7 @@ function assertPreparedBundle(prepared) {
       planFingerprint: prepared.plan_fingerprint,
       requestedAuthority: prepared.requested_authority,
       explicitFacts: prepared.explicit_facts,
+      revisionTemplates: prepared.revision_templates,
     }));
   } catch (error) {
     translateCanonicalError(error);
@@ -229,6 +295,7 @@ function assertPreparedBundle(prepared) {
     graph: prepared.graph,
     requestedAuthority: prepared.requested_authority,
     explicitFacts: prepared.explicit_facts,
+    revisionTemplates: prepared.revision_templates,
   });
   if (!isDeepStrictEqual(prepared.confirmation, expectedConfirmation) ||
       prepared.confirmation_digest !== digest(expectedConfirmation)) {
@@ -308,8 +375,8 @@ function unknownRunRejection(operation, runId, authorityEvents, commandType) {
   return createRejection({
     operation,
     code: "unknown_run",
-    commandType: commandType ?? null,
-    runId: runId ?? null,
+    commandType: stringOrNull(commandType),
+    runId: stringOrNull(runId),
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
   });
@@ -320,10 +387,14 @@ function launchRejection(code, prepared, authorityEvents, reason = null) {
     operation: "launch",
     code,
     reason,
-    bundleDigest: prepared?.bundle_digest ?? null,
+    bundleDigest: stringOrNull(prepared?.bundle_digest),
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
   });
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
 }
 
 function createOneShotWatcher(result) {

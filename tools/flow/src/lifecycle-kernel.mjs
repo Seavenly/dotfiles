@@ -1,3 +1,5 @@
+import { digest } from "./canonical.mjs";
+import { admitPlanRevision } from "./plan-revision.mjs";
 import { createRejection } from "./rejection.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
@@ -23,6 +25,68 @@ export function decideLifecycle(fold, command) {
   if (fold.phase !== "active") {
     return reject(fold, command, "run_terminal");
   }
+  if (command.type === "capability_grant") {
+    const legalGrant = fold.legal_actions.find((action) =>
+      action.type === "capability_grant" && digest(action) === digest(command));
+    if (!legalGrant) return reject(fold, command, "capability_grant_not_actionable");
+    return {
+      schema: "flow.decision/v1",
+      command_type: command.type,
+      events: [{
+        type: "capability_granted",
+        grant_id: command.grant_id,
+        capabilities: command.capabilities,
+        card_ids: command.card_ids,
+        base_plan_fingerprint: command.base_plan_fingerprint,
+        trigger: command.trigger,
+      }],
+      effect_intents: [],
+      obligations: [],
+      projection_hints: ["operator", "graph"],
+    };
+  }
+  if (command.type === "revision_decision") {
+    const legalRevision = fold.legal_actions.find((action) =>
+      action.type === "revision_decision" && digest(action) === digest(command));
+    if (!legalRevision) return reject(fold, command, "revision_not_actionable");
+    if (command.decision === "decline") {
+      return {
+        schema: "flow.decision/v1",
+        command_type: command.type,
+        events: [{
+          type: "plan_revision_declined",
+          template_id: command.template_id,
+          base_plan_fingerprint: command.base_plan_fingerprint,
+          trigger: command.trigger,
+        }, { type: "run_declined" }],
+        effect_intents: [],
+        obligations: [],
+        projection_hints: ["operator", "graph"],
+      };
+    }
+    const template = fold.revision_templates.find(
+      ({ id }) => id === command.template_id,
+    );
+    const revision = admitPlanRevision(fold, template);
+    if (revision.code) return reject(fold, command, revision.code);
+    return {
+      schema: "flow.decision/v1",
+      command_type: command.type,
+      events: [{
+        type: "plan_revised",
+        ordinal: revision.ordinal,
+        template_id: command.template_id,
+        base_plan_fingerprint: command.base_plan_fingerprint,
+        plan_fingerprint: revision.plan_fingerprint,
+        trigger: command.trigger,
+        changes: command.changes,
+        active_plan: revision.active_plan,
+      }],
+      effect_intents: [],
+      obligations: [],
+      projection_hints: ["operator", "graph"],
+    };
+  }
   if (command.type !== "checkpoint_decision") {
     return reject(fold, command, "unsupported_command");
   }
@@ -41,7 +105,8 @@ export function decideLifecycle(fold, command) {
   }
 
   const allOtherCardsComplete = fold.cards.every(
-    (card) => card.id === checkpoint.id || card.status === "completed",
+    (card) => card.id === checkpoint.id ||
+      ["completed", "superseded"].includes(card.status),
   );
   return decision(
     command,

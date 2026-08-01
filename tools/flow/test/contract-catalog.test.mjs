@@ -27,7 +27,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 5);
+  assert.equal(catalog.catalog_version, 7);
   assert.deepEqual(catalog.flow_runtime.rejection_contract, {
     contract: "flow.rejection/v1",
     fields: [
@@ -57,9 +57,20 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.command-receipt/v1",
     "flow.run-projection/v1",
     "flow.run-index-projection/v1",
+    "flow.card-block/v1",
+    "flow.card-block-observation/v1",
+    "flow.adapter/card-block-observation/v1",
+    "flow.validator/card-block-observation/v1",
+    "flow.revision-trigger/v1",
+    "flow.plan-revision-template/v1",
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
+  assert.equal(
+    catalog.flow_runtime.operation_contracts.prepare.block_observations,
+    "flow.card-block-observation/v1",
+  );
+  assert.ok(catalog.mechanism_adapters.includes("card_block_observation"));
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     legacy_compatibility_inventory: {
       projection: "flow.legacy-compatibility-inventory/v1",

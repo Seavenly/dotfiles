@@ -6,6 +6,7 @@ export function createPreparedBundle({
   planFingerprint,
   requestedAuthority,
   explicitFacts,
+  revisionTemplates,
 }) {
   return freezeCanonical({
     schema: "flow.prepared-bundle/v1",
@@ -14,6 +15,7 @@ export function createPreparedBundle({
     plan_fingerprint: planFingerprint,
     requested_authority: requestedAuthority,
     explicit_facts: explicitFacts,
+    revision_templates: revisionTemplates,
   });
 }
 
@@ -22,6 +24,7 @@ export function createDynamicPlanConfirmation({
   graph,
   requestedAuthority,
   explicitFacts,
+  revisionTemplates,
 }) {
   return freezeCanonical({
     schema: "flow.dynamic-plan-confirmation/v1",
@@ -29,5 +32,6 @@ export function createDynamicPlanConfirmation({
     graph,
     requested_authority: requestedAuthority,
     explicit_facts: explicitFacts,
+    revision_templates: revisionTemplates,
   });
 }

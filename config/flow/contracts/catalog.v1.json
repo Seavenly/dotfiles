@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 5,
+  "catalog_version": 7,
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [
@@ -34,7 +34,9 @@
         "authority": "non_authoritative",
         "input": "flow.dynamic-plan-proposal/v1",
         "result": "flow.prepared-run/v1",
-        "identity": "content_addressed"
+        "identity": "content_addressed",
+        "revision_templates": "flow.plan-revision-template/v1",
+        "block_observations": "flow.card-block-observation/v1"
       },
       "launch": {
         "authority": "RunAuthority",
@@ -102,6 +104,12 @@
     "flow.run-plan/v1",
     "flow.run-projection/v1",
     "flow.run-index-projection/v1",
+    "flow.card-block/v1",
+    "flow.card-block-observation/v1",
+    "flow.adapter/card-block-observation/v1",
+    "flow.validator/card-block-observation/v1",
+    "flow.revision-trigger/v1",
+    "flow.plan-revision-template/v1",
     "flow.checkpoint/confirmation/v1",
     "flow.validator/checkpoint-decision/v1",
     "flow.resource-handoff/v1",
@@ -175,6 +183,7 @@
     "tracker",
     "filesystem",
     "artifact_bytes",
+    "card_block_observation",
     "delegated_runtime",
     "convergence_launch_policy"
   ],

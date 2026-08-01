@@ -12,10 +12,20 @@ disabled, so this API does not authorize normal replacement launches.
 - `prepare(proposal)` compiles a complete `flow.dynamic-plan-proposal/v1` from
   caller-supplied facts. It creates no run and returns a deeply immutable,
   content-addressed `flow.prepared-run/v1` plus the complete confirmation view.
+  Optional `flow.plan-revision-template/v1` values are part of that confirmed
+  identity. Each template is bound to a typed card block and declares its
+  complete card, edge, supersession, capability, resource, and limit changes.
+  A block is admitted only from digest-bound
+  `flow.card-block-observation/v1` evidence naming the registered Adapter and
+  validator contracts. Revision templates declare their own application cap,
+  while the proposal declares card, per-revision card, revision, capability,
+  resource, and elapsed-time caps.
   This slice accepts only the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`; other checkpoint
   contracts and later executor kinds fail preparation until their owning
-  runtime contracts are implemented.
+  runtime contracts are implemented. External acquisition by a live Adapter
+  remains deferred; this runtime validates the exact caller-supplied Adapter
+  observation before it can become authoritative.
 - `launch({ prepared, confirmation, closed_facts })` accepts an explicit
   `flow.dynamic-plan-confirmation-decision/v1` and a separately supplied
   `flow.closed-fact-observation/v1`. It verifies both are bound to the prepared
@@ -23,19 +33,35 @@ disabled, so this API does not authorize normal replacement launches.
   confirmation returns a typed rejection and creates no run. Repeating an
   accepted launch returns the same run identity and records no second launch
   event. Launch never invokes the plan compiler or refreshes identity-bearing
-  facts; the caller supplies the closed observation. A live observation adapter
-  is intentionally deferred to the mechanism work that owns external fact
-  acquisition.
+  facts; the caller supplies the closed observation.
   Invalid prepared bundles, confirmation decisions, and changed closed facts
   return typed launch rejections rather than escaping as transport errors.
 - `command(command)` accepts the exact legal approve or decline checkpoint
-  command projected by authority. Generic setters, force unlock, generic
-  unblock, and timer-based takeover return typed `flow.rejection/v1` results
-  without mutation.
+  command projected by authority. A `flow.card-block/v1` may instead project an
+  exact `capability_grant` or `revision_decision`. Capability grants append the
+  confirmed capability, named card binding, and trigger to accepted history;
+  they do not grant that capability to unrelated cards. Revision decisions
+  cite the current plan fingerprint and validated trigger. Accepting admits
+  the template's complete change set in one authority event; declining records
+  the negative outcome and terminates the run. A capped or otherwise
+  inadmissible revision withholds acceptance but retains that exact decline
+  action, so an active checkpoint-only run is never stranded without a legal
+  operator action. A revision may
+  supersede only its blocked card and pending dependent closure; completed
+  cards, accepted checkpoint evidence, routes, grants, and earlier revisions
+  remain unchanged, and no active card may depend on superseded work. Any
+  changed field, stale watermark, stale base
+  fingerprint, undeclared trigger, template or flow limit violation, or attempt
+  to reach upstream work is rejected without mutation. Generic setters, force
+  unlock, generic unblock, and timer-based takeover return typed
+  `flow.rejection/v1` results without mutation.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
-  is the first registered query.
+  is the first registered query. Run projections include the exact current
+  revision and graph-only plan fingerprint, active plan, typed blocks,
+  append-only revision and card-bound grant history, effective capabilities,
+  resources, limits, and only the legal actions at that watermark.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and

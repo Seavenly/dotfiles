@@ -87,6 +87,12 @@ export function freezeCanonical(value) {
   return deepFreeze(canonicalize(value));
 }
 
+export function uniqueCanonical(values) {
+  const byDigest = new Map(values.map((value) => [digest(value), value]));
+  return [...byDigest].sort(([left], [right]) => left < right ? -1 : 1)
+    .map(([, value]) => value);
+}
+
 function deepFreeze(value) {
   if (value !== null && typeof value === "object") {
     for (const child of Object.values(value)) deepFreeze(child);
