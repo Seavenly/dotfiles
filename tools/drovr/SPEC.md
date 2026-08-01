@@ -423,7 +423,8 @@ or interrupted delivery records recoverable without accepting an old result.
 For a managed agent already bound to a native session, a settled observation is
 accepted only when it reports that exact session. A missing or different native
 identity settles the logical turn `uncertain` without reading or interrupting the
-reported pane.
+reported pane. Losing the managed agent while waiting likewise settles the turn
+`uncertain` without launching recovery.
 
 Wait timeout is non-destructive. It returns `still_running` and leaves the turn
 and harness untouched. Killing a waiting Drovr process also does not cancel the
@@ -444,7 +445,9 @@ the logical turn as `uncertain` and retains the typed recovery outcome.
 
 `turn send` records an ordered input and sends it to the working harness. Claude
 Code or Codex may treat the message as queued or as active-turn steering. Drovr
-models both behaviors as additional input to the same logical turn.
+models both behaviors as additional input to the same logical turn. Delivery
+revalidates the exact native-session owner after acquiring the turn lock; a
+remapped or identity-less pane receives no input.
 
 Completion requires:
 

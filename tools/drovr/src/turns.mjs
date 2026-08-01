@@ -287,7 +287,9 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     }
     if (blockAwaitsWorkingObservation(acknowledgedBlock)) {
       const observed = await herdr.agentRecord(context.agent.herdr.name);
-      if (!observed) return { ...context, wait_status: "agent_lost" };
+      if (!observed) {
+        return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
+      }
       if (observed?.agent_status === "working") {
         const recorded = await recordBlockWorkingObservation({
           registryDirectory,
@@ -365,7 +367,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       remaining,
     );
     if (observed?.drovr_status === "agent_lost" || !observed) {
-      return { ...context, wait_status: "agent_lost" };
+      return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
     }
     if (observed?.drovr_status === "still_running") {
       return { ...context, wait_status: "still_running" };
@@ -410,6 +412,21 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     }
     await delay(25);
   }
+}
+
+function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
+  return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+    const context = await turnContext(registryDirectory, turnId);
+    if (context.turn.status === "working") {
+      settleTurnRecord(context.turn, {
+        status: "uncertain",
+        error: "managed agent was lost while waiting for native settlement",
+        settledAt: now(),
+      });
+      await writeRecord(registryDirectory, "turns", context.turn);
+    }
+    return context;
+  });
 }
 
 async function acknowledgeCurrentBlock({
@@ -509,20 +526,20 @@ async function reconcileSettledObservation({
     return { ...context, retry_wait: true };
   }
   const adapter = harnessAdapter(context.agent.launch.harness, env);
-  const observedNativeSession = observed?.agent_session?.value;
-  if (
-    context.agent.native_session &&
-    context.agent.native_session !== observedNativeSession
-  ) {
+  const identityError = nativeSessionObservationError(
+    context.agent,
+    observed,
+    adapter.label,
+  );
+  if (identityError) {
     return settleUncertain(
       registryDirectory,
       context,
-      observedNativeSession
-        ? `Herdr reported a different ${adapter.label} native session identity`
-        : `Herdr did not report the ${adapter.label} native session identity`,
+      identityError,
       now(),
     );
   }
+  const observedNativeSession = observed?.agent_session?.value;
   if (!context.agent.native_session) {
     if (!observedNativeSession) {
       if (retryCorrelation) {
@@ -725,6 +742,20 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
         return { ...context, command_status: "task_busy" };
       }
       const observed = await herdr.agentRecord(context.agent.herdr.name);
+      const identityError = nativeSessionObservationError(
+        context.agent,
+        observed,
+        harnessAdapter(context.agent.launch.harness, env).label,
+      );
+      if (identityError) {
+        settleTurnRecord(context.turn, {
+          status: "uncertain",
+          error: identityError,
+          settledAt: now(),
+        });
+        await writeRecord(registryDirectory, "turns", context.turn);
+        return context;
+      }
       if (observed?.agent_status === "blocked") {
         return { ...context, reconcile_status: "needs_input" };
       }
@@ -915,6 +946,15 @@ async function settleUncertain(registryDirectory, context, error, settledAt) {
   });
   await writeRecord(registryDirectory, "turns", context.turn);
   return context;
+}
+
+function nativeSessionObservationError(agent, observed, adapterLabel) {
+  if (!agent.native_session) return null;
+  const observedNativeSession = observed?.agent_session?.value;
+  if (observedNativeSession === agent.native_session) return null;
+  return observedNativeSession
+    ? `Herdr reported a different ${adapterLabel} native session identity`
+    : `Herdr did not report the ${adapterLabel} native session identity`;
 }
 
 export async function getTurn(turnId, { env = process.env } = {}) {

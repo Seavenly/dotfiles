@@ -17,7 +17,13 @@ import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
-import { cancelTurn, getTurn, startTurn, waitForTurn } from "../src/turns.mjs";
+import {
+  cancelTurn,
+  getTurn,
+  sendToTurn,
+  startTurn,
+  waitForTurn,
+} from "../src/turns.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -235,7 +241,7 @@ test("failed interruption and ambiguous settlement never report cancellation", a
   });
 });
 
-test("read-only wait reports agent loss without launching recovery", async (t) => {
+test("read-only wait settles agent loss without launching recovery", async (t) => {
   const fixture = await turnFixture(t);
   let launches = 0;
   const result = await waitForTurn(fixture.turn.id, {}, {
@@ -251,9 +257,53 @@ test("read-only wait reports agent loss without launching recovery", async (t) =
   });
   const [turn] = await readRecords(fixture.registryDirectory, "turns");
 
-  assert.equal(result.wait_status, "agent_lost");
-  assert.equal(turn.status, "working");
+  assert.equal(result.turn.status, "uncertain");
+  assert.equal(turn.status, "uncertain");
+  assert.match(turn.error, /managed agent was lost while waiting/u);
   assert.equal(launches, 0);
+});
+
+test("turn send rejects a pane remapped after recovery validation", async (t) => {
+  const fixture = await turnFixture(t);
+  let prompts = 0;
+  const result = await sendToTurn(
+    fixture.turn.id,
+    { prompt: "must not reach the caller" },
+    {
+      env: fixture.env,
+      herdr: {
+        async ensureSession() {},
+        async agentRecords() {
+          return [
+            {
+              name: "managed-agent",
+              pane_id: "managed-pane",
+              agent_status: "working",
+              agent_session: { value: "codex-session-1" },
+            },
+          ];
+        },
+        async agentRecord() {
+          return {
+            name: "managed-agent",
+            pane_id: "caller-pane",
+            agent_status: "working",
+            agent_session: { value: "caller-native-session" },
+          };
+        },
+        async prompt() {
+          prompts += 1;
+        },
+      },
+      now: () => "2026-07-23T10:00:02.000Z",
+    },
+  );
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+
+  assert.equal(result.turn.status, "uncertain");
+  assert.match(result.turn.error, /different Codex native session/u);
+  assert.equal(turn.inputs.length, 1);
+  assert.equal(prompts, 0);
 });
 
 test("wait rejects a settled caller pane without the durable native session", async (t) => {

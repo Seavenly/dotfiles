@@ -801,6 +801,13 @@ test("delegate returns the correlated final Claude Code message", async (t) => {
   const cwd = join(scratch, "work");
   const herdrState = join(scratch, "herdr-state");
   const nativeSession = "11111111-2222-4333-8444-555555555555";
+  const callerHerdrEnvironment = {
+    HERDR_ENV: "1",
+    HERDR_PANE_ID: "caller-pane",
+    HERDR_SOCKET_PATH: "/tmp/caller-herdr.sock",
+    HERDR_TAB_ID: "caller-tab",
+    HERDR_WORKSPACE_ID: "caller-workspace",
+  };
   await mkdir(fakeBin, { recursive: true });
   await mkdir(cwd, { recursive: true });
   const canonicalCwd = await realpath(cwd);
@@ -844,6 +851,12 @@ printf '%s\n' '--model --effort --permission-mode manual dontAsk acceptEdits aut
 transcript=${JSON.stringify(transcript)}
 taskCwd=${JSON.stringify(canonicalCwd)}
 nativeSession=${JSON.stringify(nativeSession)}
+if [[ -n \${HERDR_ENV:-} || -n \${HERDR_PANE_ID:-} || -n \${HERDR_TAB_ID:-} || -n \${HERDR_WORKSPACE_ID:-} ]]; then
+  touch "$herdrState/caller-context-leaked"
+fi
+if [[ \${HERDR_SOCKET_PATH:-} != /tmp/caller-herdr.sock ]]; then
+  touch "$herdrState/socket-transport-lost"
+fi
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"delegates","running":true}]}\\n'
   exit
@@ -868,6 +881,17 @@ case "\${1:-} \${2:-}" in
     ;;
   "agent list")
     if [[ -f "$herdrState/agent" ]]; then
+      if [[ -f "$herdrState/pending-prompt" && ! -f "$herdrState/initial-transcript-delivered" ]]; then
+        if [[ ! -f "$herdrState/stale-idle-observed" ]]; then
+          touch "$herdrState/stale-idle-observed"
+        else
+          prompt=$(<"$herdrState/pending-prompt")
+          result=$(<"$herdrState/pending-result")
+          jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
+          jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
+          touch "$herdrState/initial-transcript-delivered"
+        fi
+      fi
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
       stateChangeSeq=2
       if [[ -f "$herdrState/state-change-seq" ]]; then
@@ -946,33 +970,43 @@ esac
 `,
   );
 
-  const { stdout } = await execFileAsync(
-    drovr,
-    [
-      "delegate",
-      "--task-key",
-      "claude-feature",
-      "--agent-key",
-      "builder",
-      "--cwd",
-      cwd,
-      "--harness",
-      "claude",
-      "--capability",
-      "read-only",
-      "Reply with exactly CLAUDE DELEGATED",
-    ],
-    {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${fakeBin}:${process.env.PATH}`,
-        CLAUDE_CONFIG_DIR: claudeHome,
-        XDG_STATE_HOME: stateHome,
-        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+  let delegatedExecution;
+  try {
+    delegatedExecution = await execFileAsync(
+      drovr,
+      [
+        "delegate",
+        "--task-key",
+        "claude-feature",
+        "--agent-key",
+        "builder",
+        "--cwd",
+        cwd,
+        "--harness",
+        "claude",
+        "--capability",
+        "read-only",
+        "Reply with exactly CLAUDE DELEGATED",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ...callerHerdrEnvironment,
+          DOTFILES_ROOT: root,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          CLAUDE_CONFIG_DIR: claudeHome,
+          XDG_STATE_HOME: stateHome,
+          DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+        },
       },
-    },
-  );
+    );
+  } catch (error) {
+    assert.fail(
+      `${error.message}\nstdout: ${error.stdout}\nstderr: ${error.stderr}`,
+    );
+  }
+  const { stdout } = delegatedExecution;
   const report = JSON.parse(stdout);
 
   assert.equal(report.schema, "drovr.command/v1");
@@ -992,6 +1026,7 @@ esac
   assert.doesNotMatch(startArgs, /--allowedTools Read,Glob,Grep,Bash(?:\s|$)/u);
   assert.match(startArgs, /Bash\(git diff \*\)/u);
   await readFile(join(herdrState, "claude-validated"));
+  await rm(join(herdrState, "agent"));
 
   const { stdout: askedOutput } = await execFileAsync(
     drovr,
@@ -1000,6 +1035,8 @@ esac
       encoding: "utf8",
       env: {
         ...process.env,
+        ...callerHerdrEnvironment,
+        DOTFILES_ROOT: root,
         PATH: `${fakeBin}:${process.env.PATH}`,
         CLAUDE_CONFIG_DIR: claudeHome,
         XDG_STATE_HOME: stateHome,
@@ -1012,6 +1049,14 @@ esac
   assert.equal(asked.result.status, "completed");
   assert.equal(asked.result.agent.harness, "claude");
   assert.equal(asked.result.turn.result.text, "CLAUDE ASKED");
+  const recoveryArgs = await readFile(join(herdrState, "start-args"), "utf8");
+  assert.match(recoveryArgs, new RegExp(`--resume ${nativeSession}`, "u"));
+  await assert.rejects(readFile(join(herdrState, "caller-context-leaked")), {
+    code: "ENOENT",
+  });
+  await assert.rejects(readFile(join(herdrState, "socket-transport-lost")), {
+    code: "ENOENT",
+  });
 
   const { stdout: blockedOutput } = await execFileAsync(
     drovr,
@@ -1020,6 +1065,7 @@ esac
       encoding: "utf8",
       env: {
         ...process.env,
+        DOTFILES_ROOT: root,
         PATH: `${fakeBin}:${process.env.PATH}`,
         CLAUDE_CONFIG_DIR: claudeHome,
         XDG_STATE_HOME: stateHome,
@@ -1070,6 +1116,7 @@ esac
       encoding: "utf8",
       env: {
         ...process.env,
+        DOTFILES_ROOT: root,
         PATH: `${fakeBin}:${process.env.PATH}`,
         CLAUDE_CONFIG_DIR: claudeHome,
         XDG_STATE_HOME: stateHome,

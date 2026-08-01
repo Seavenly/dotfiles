@@ -138,7 +138,9 @@ settlement. Cancelling an already-idle turn returns its exact reconciled termina
 status, including `uncertain` when prompt delivery cannot be proven. A missing or
 different native-session identity is never accepted as settlement, and blocked
 cancellation records the turn `uncertain` without interrupting the reported
-pane. Non-force
+pane. Losing the managed agent while waiting also terminally records uncertainty
+without launching recovery. Steering revalidates the exact session owner before
+recording or delivering another input. Non-force
 cleanup refuses working or blocked resources, and group
 cleanup preflights every task before mutating any of them. Force cleanup
 interrupts active work, records each unfinished turn as `interrupted` or
