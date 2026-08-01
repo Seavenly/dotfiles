@@ -19,7 +19,13 @@ disabled, so this API does not authorize normal replacement launches.
   `flow.card-block-observation/v1` evidence naming the registered Adapter and
   validator contracts. Revision templates declare their own application cap,
   while the proposal declares card, per-revision card, revision, capability,
-  resource, and elapsed-time caps.
+  resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
+  explicit preparation fact: revision admission checks a template's resulting
+  cap against that bound value and does not observe ambient wall-clock time.
+  Catalog v7 extends the exact v1 contracts by requiring
+  `explicit_facts.block_observations` on dynamic proposals and
+  `revision_templates` on prepared runs; callers must prepare a fresh bundle
+  rather than launch a pre-v7 envelope.
   This slice accepts only the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`; other checkpoint
   contracts and later executor kinds fail preparation until their owning

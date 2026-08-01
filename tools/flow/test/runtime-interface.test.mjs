@@ -496,6 +496,13 @@ test("revision templates and admission enforce every declared cap", () => {
     /declared recovery capability limit exceeded/,
   );
 
+  const capabilityLowered = revisionBlockedCheckpointProposal();
+  capabilityLowered.revision_templates[0].changes.limit_changes.max_capabilities = 1;
+  assert.throws(
+    () => runtime.prepare(capabilityLowered),
+    /revision capability limit exceeded/,
+  );
+
   const resourceCapped = revisionBlockedCheckpointProposal();
   resourceCapped.explicit_facts.limits.max_resources = 0;
   resourceCapped.revision_templates[0].changes.limit_changes.max_resources = 1;

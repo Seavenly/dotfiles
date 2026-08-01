@@ -228,14 +228,7 @@ export function validateDynamicPlan(proposal, { skipRevisionTemplates = false } 
 function validateDeclaredRecoveryCapacity(proposal) {
   const templates = proposal.revision_templates ?? [];
   const capabilityLimit = proposal.explicit_facts.limits.max_capabilities;
-  const declaredCapabilities = new Set([
-    ...proposal.requested_authority.capabilities,
-    ...proposal.explicit_facts.block_observations.flatMap(
-      ({ block }) => block.required_capabilities,
-    ),
-    ...templates.flatMap(({ changes }) =>
-      changes.capability_additions.map(({ capability }) => capability)),
-  ]);
+  const declaredCapabilities = declaredRecoveryCapabilities(proposal);
   if (declaredCapabilities.size > capabilityLimit) {
     invalidPlan(
       "declared_recovery_capability_limit",
@@ -254,6 +247,17 @@ function validateDeclaredRecoveryCapacity(proposal) {
       "declared recovery resource limit exceeded",
     );
   }
+}
+
+function declaredRecoveryCapabilities(proposal) {
+  return new Set([
+    ...proposal.requested_authority.capabilities,
+    ...proposal.explicit_facts.block_observations.flatMap(
+      ({ block }) => block.required_capabilities,
+    ),
+    ...(proposal.revision_templates ?? []).flatMap(({ changes }) =>
+      changes.capability_additions.map(({ capability }) => capability)),
+  ]);
 }
 
 function validateCardBlock(block, cardId, proposal) {
@@ -541,10 +545,7 @@ function validateRevisionChanges(proposal, template) {
   if (changes.add_cards.length > limits.max_cards_per_revision) {
     invalidPlan("revision_card_limit", "revision card limit exceeded");
   }
-  const capabilityCount = new Set([
-    ...proposal.requested_authority.capabilities,
-    ...changes.capability_additions.map(({ capability }) => capability),
-  ]).size;
+  const capabilityCount = declaredRecoveryCapabilities(proposal).size;
   if (capabilityCount > limits.max_capabilities) {
     invalidPlan("revision_capability_limit", "revision capability limit exceeded");
   }
