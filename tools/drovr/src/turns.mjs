@@ -290,6 +290,15 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       if (!observed) {
         return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
       }
+      const identityFailure = await settleUnverifiedNativeObservation({
+        registryDirectory,
+        turnId,
+        context,
+        observed,
+        env,
+        now,
+      });
+      if (identityFailure) return identityFailure;
       if (observed?.agent_status === "working") {
         const recorded = await recordBlockWorkingObservation({
           registryDirectory,
@@ -372,6 +381,15 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     if (observed?.drovr_status === "still_running") {
       return { ...context, wait_status: "still_running" };
     }
+    const identityFailure = await settleUnverifiedNativeObservation({
+      registryDirectory,
+      turnId,
+      context,
+      observed,
+      env,
+      now,
+    });
+    if (identityFailure) return identityFailure;
     const blockedExcerpt =
       observed?.agent_status === "blocked"
         ? await herdr.agentExcerpt(context.agent.herdr.name)
@@ -426,6 +444,32 @@ function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
       await writeRecord(registryDirectory, "turns", context.turn);
     }
     return context;
+  });
+}
+
+async function settleUnverifiedNativeObservation({
+  registryDirectory,
+  turnId,
+  context,
+  observed,
+  env,
+  now,
+}) {
+  const identityError = nativeSessionObservationError(
+    context.agent,
+    observed,
+    harnessAdapter(context.agent.launch.harness, env).label,
+  );
+  if (!identityError) return null;
+  return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+    const current = await turnContext(registryDirectory, turnId);
+    if (current.turn.status !== "working") return current;
+    return settleUncertain(
+      registryDirectory,
+      current,
+      identityError,
+      now(),
+    );
   });
 }
 

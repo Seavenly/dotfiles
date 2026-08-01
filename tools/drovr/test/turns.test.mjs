@@ -335,6 +335,33 @@ test("wait rejects a settled caller pane without the durable native session", as
   assert.match(result.turn.error, /did not report the Codex native session/u);
 });
 
+test("wait rejects a blocked caller pane without reading its excerpt", async (t) => {
+  const fixture = await turnFixture(t);
+  let excerptReads = 0;
+
+  const result = await waitForTurn(fixture.turn.id, {}, {
+    env: fixture.env,
+    herdr: {
+      async waitForAgent() {
+        return {
+          name: "managed-agent",
+          pane_id: "caller-pane",
+          agent_status: "blocked",
+          agent_session: { value: "caller-native-session" },
+        };
+      },
+      async agentExcerpt() {
+        excerptReads += 1;
+        return "caller pane contents";
+      },
+    },
+  });
+
+  assert.equal(result.turn.status, "uncertain");
+  assert.match(result.turn.error, /different Codex native session/u);
+  assert.equal(excerptReads, 0);
+});
+
 test("wait retries when a steering input is recorded after settlement observation begins", async (t) => {
   const fixture = await turnFixture(t);
   await appendTranscript(fixture.transcript, userMessage("initial"));
