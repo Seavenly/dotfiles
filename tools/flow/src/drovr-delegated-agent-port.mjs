@@ -108,6 +108,12 @@ export function createDrovrDelegatedAgentPort({
             legalNextActions: [],
           });
         }
+        if (error?.outcome === "invalid_configuration") {
+          return blockedProjection({
+            code: "description_unavailable",
+            legalNextActions: repairActions(),
+          });
+        }
         return blockedProjection({
           code: "description_unavailable",
           legalNextActions: ["retry_delegated_runtime_description"],
@@ -202,6 +208,13 @@ function featureConformanceFindings(description, requiredFeatures) {
       continue;
     }
     if (matches.length > 1 || matches[0].authority !== required.authority) {
+      findings.push({ feature_id: required.id, reason: "contradictory" });
+      continue;
+    }
+    if (
+      matches[0].availability !== "supported" &&
+      matches[0].availability !== "unavailable"
+    ) {
       findings.push({ feature_id: required.id, reason: "contradictory" });
       continue;
     }

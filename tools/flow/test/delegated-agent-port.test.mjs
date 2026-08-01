@@ -116,6 +116,33 @@ for (const [label, mutate, expectedFinding] of [
   });
 }
 
+test("Drovr conformance classifies invalid feature availability as contradictory", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async describeDrovr(drovrRequest, dependencies) {
+      const description = await supportedDescription(
+        drovrRequest,
+        dependencies,
+      );
+      description.feature_advertisement.features[0].availability =
+        "experimental";
+      rebindDescriptionDigest(description);
+      return description;
+    },
+  });
+
+  const blocked = await port.describe(request);
+
+  assert.equal(
+    blocked.compatibility.code,
+    "incompatible_feature_advertisement",
+  );
+  assert.deepEqual(blocked.compatibility.findings, [
+    { feature_id: "exact_launch_description", reason: "contradictory" },
+  ]);
+  assert.equal(blocked.description, null);
+  assert.equal(blocked.watermark, null);
+});
+
 test("DelegatedAgentPort classifies an unpinned Flow contract as a repairable local failure", async () => {
   const port = createDrovrDelegatedAgentPort({
     async loadRequiredFeatureContractBytes() {
@@ -423,6 +450,25 @@ test("DelegatedAgentPort reports unavailable descriptions without inventing auth
     },
     legal_next_actions: ["retry_delegated_runtime_description"],
   });
+});
+
+test("DelegatedAgentPort exposes repair actions for invalid Drovr configuration", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async describeDrovr() {
+      throw Object.assign(new Error("configuration invalid"), {
+        outcome: "invalid_configuration",
+      });
+    },
+  });
+
+  const blocked = await port.describe(request);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "description_unavailable");
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_runtime_contract",
+    "refresh_delegated_runtime_description",
+  ]);
 });
 
 async function supportedDescription(drovrRequest, dependencies) {
