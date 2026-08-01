@@ -77,6 +77,14 @@ for (const [label, mutate, expectedFinding] of [
     },
     { feature_id: "exact_launch_description", reason: "contradictory" },
   ],
+  [
+    "contradictory availability",
+    (description) => {
+      description.feature_advertisement.features[0].availability =
+        "experimental";
+    },
+    { feature_id: "exact_launch_description", reason: "contradictory" },
+  ],
 ]) {
   test(`Drovr conformance rejects ${label} advertised features and recovers after repair`, async () => {
     let broken = true;
@@ -115,33 +123,6 @@ for (const [label, mutate, expectedFinding] of [
     assert.deepEqual(recovered.compatibility.findings, []);
   });
 }
-
-test("Drovr conformance classifies invalid feature availability as contradictory", async () => {
-  const port = createDrovrDelegatedAgentPort({
-    async describeDrovr(drovrRequest, dependencies) {
-      const description = await supportedDescription(
-        drovrRequest,
-        dependencies,
-      );
-      description.feature_advertisement.features[0].availability =
-        "experimental";
-      rebindDescriptionDigest(description);
-      return description;
-    },
-  });
-
-  const blocked = await port.describe(request);
-
-  assert.equal(
-    blocked.compatibility.code,
-    "incompatible_feature_advertisement",
-  );
-  assert.deepEqual(blocked.compatibility.findings, [
-    { feature_id: "exact_launch_description", reason: "contradictory" },
-  ]);
-  assert.equal(blocked.description, null);
-  assert.equal(blocked.watermark, null);
-});
 
 test("DelegatedAgentPort classifies an unpinned Flow contract as a repairable local failure", async () => {
   const port = createDrovrDelegatedAgentPort({
@@ -463,12 +444,21 @@ test("DelegatedAgentPort exposes repair actions for invalid Drovr configuration"
 
   const blocked = await port.describe(request);
 
-  assert.equal(blocked.status, "blocked");
-  assert.equal(blocked.compatibility.code, "description_unavailable");
-  assert.deepEqual(blocked.legal_next_actions, [
-    "repair_delegated_runtime_contract",
-    "refresh_delegated_runtime_description",
-  ]);
+  assert.deepEqual(blocked, {
+    schema: "flow.delegated-agent-description-projection/v1",
+    status: "blocked",
+    watermark: null,
+    description: null,
+    compatibility: {
+      contract: "flow.delegated-agent-port/v1",
+      code: "description_unavailable",
+      findings: [],
+    },
+    legal_next_actions: [
+      "repair_delegated_runtime_contract",
+      "refresh_delegated_runtime_description",
+    ],
+  });
 });
 
 async function supportedDescription(drovrRequest, dependencies) {

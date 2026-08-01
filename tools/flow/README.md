@@ -182,6 +182,9 @@ projection rather than being presented as authoritative description evidence.
 Missing Flow contract bytes or validation dependencies produce a
 `delegated_agent_port_unavailable` block with only the local
 `repair_delegated_agent_port` action.
+An invalid Drovr configuration produces a `description_unavailable` block with
+repair and refresh actions, while a transient description failure exposes only
+`retry_delegated_runtime_description`.
 
 Operators can inspect the same projection through the five-operation runtime:
 
