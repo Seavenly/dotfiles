@@ -3,6 +3,41 @@ import test from "node:test";
 
 import { HerdrClient } from "../src/herdr.mjs";
 
+test("Herdr commands do not inherit the caller pane context", async () => {
+  const inheritedContext = {
+    PATH: "/test/bin",
+    HERDR_ENV: "1",
+    HERDR_PANE_ID: "caller-pane",
+    HERDR_SOCKET_PATH: "/tmp/caller-herdr.sock",
+    HERDR_TAB_ID: "caller-tab",
+    HERDR_WORKSPACE_ID: "caller-workspace",
+  };
+  let commandEnvironment;
+  const client = new HerdrClient({
+    session: "delegates",
+    env: inheritedContext,
+    async run(_file, _args, options) {
+      commandEnvironment = options.env;
+      return JSON.stringify({ result: { agents: [] } });
+    },
+  });
+
+  await client.agentRecords();
+
+  assert.deepEqual(commandEnvironment, {
+    PATH: "/test/bin",
+    HERDR_SOCKET_PATH: "/tmp/caller-herdr.sock",
+  });
+  assert.deepEqual(inheritedContext, {
+    PATH: "/test/bin",
+    HERDR_ENV: "1",
+    HERDR_PANE_ID: "caller-pane",
+    HERDR_SOCKET_PATH: "/tmp/caller-herdr.sock",
+    HERDR_TAB_ID: "caller-tab",
+    HERDR_WORKSPACE_ID: "caller-workspace",
+  });
+});
+
 test("Claude prompt delivery submits a staged multiline paste", async () => {
   const calls = [];
   let promptSent = false;

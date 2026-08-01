@@ -127,6 +127,10 @@ Drovr uses one configurable named Herdr session, default `delegates`. Mutating
 commands create it when missing. Read-only commands report `session_missing`
 without creating it.
 
+Drovr invokes that session without inherited caller workspace, tab, or pane
+context. The Herdr socket transport may be inherited, but caller topology never
+selects or relocates a managed agent.
+
 Drovr mutates only workspaces, tabs, and panes recorded in its registry. It does
 not remove unregistered Herdr resources that happen to exist in the same
 session.
@@ -416,6 +420,10 @@ for another state change. If the pre-delivery state persists past the bounded
 transcript grace, Drovr makes one exact transcript-correlation attempt and then
 settles the turn `uncertain` when the recorded input is absent. This keeps legacy
 or interrupted delivery records recoverable without accepting an old result.
+For a managed agent already bound to a native session, a settled observation is
+accepted only when it reports that exact session. A missing or different native
+identity settles the logical turn `uncertain` without reading or interrupting the
+reported pane.
 
 Wait timeout is non-destructive. It returns `still_running` and leaves the turn
 and harness untouched. Killing a waiting Drovr process also does not cancel the
@@ -427,6 +435,8 @@ Drovr observes settlement. If interruption delivery or settlement cannot be
 confirmed, the turn becomes `uncertain` or `interrupted` rather than pretending
 success. If the native agent is already settled, cancellation reports the exact
 reconciled terminal status instead of waiting for a future native transition.
+If identity-safe recovery is blocked before interruption, cancellation records
+the logical turn as `uncertain` and retains the typed recovery outcome.
 
 `agent retire` terminates the harness process and closes its managed pane.
 

@@ -29,7 +29,7 @@ export class HerdrClient {
   } = {}) {
     this.session = session;
     this.run = run;
-    this.env = env;
+    this.env = withoutCallerHerdrContext(env);
     this.delay = delay;
   }
 
@@ -516,6 +516,19 @@ export class HerdrClient {
     if (observed) return observed;
     return this.agentRecord(name);
   }
+}
+
+function withoutCallerHerdrContext(env) {
+  const sanitized = { ...env };
+  for (const name of [
+    "HERDR_ENV",
+    "HERDR_PANE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_WORKSPACE_ID",
+  ]) {
+    delete sanitized[name];
+  }
+  return sanitized;
 }
 
 function promptSubmissionObserved(observed) {

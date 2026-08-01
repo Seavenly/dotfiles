@@ -135,7 +135,10 @@ temporarily absent. Discovery does not rewrite the durable turn or promote it to
 `completed`.
 Cancellation reports `cancelled` only after native interruption and confirmed
 settlement. Cancelling an already-idle turn returns its exact reconciled terminal
-status, including `uncertain` when prompt delivery cannot be proven. Non-force
+status, including `uncertain` when prompt delivery cannot be proven. A missing or
+different native-session identity is never accepted as settlement, and blocked
+cancellation records the turn `uncertain` without interrupting the reported
+pane. Non-force
 cleanup refuses working or blocked resources, and group
 cleanup preflights every task before mutating any of them. Force cleanup
 interrupts active work, records each unfinished turn as `interrupted` or

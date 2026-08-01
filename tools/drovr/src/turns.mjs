@@ -512,13 +512,14 @@ async function reconcileSettledObservation({
   const observedNativeSession = observed?.agent_session?.value;
   if (
     context.agent.native_session &&
-    observedNativeSession &&
     context.agent.native_session !== observedNativeSession
   ) {
     return settleUncertain(
       registryDirectory,
       context,
-      `Herdr reported a different ${adapter.label} native session identity`,
+      observedNativeSession
+        ? `Herdr reported a different ${adapter.label} native session identity`
+        : `Herdr did not report the ${adapter.label} native session identity`,
       now(),
     );
   }
@@ -772,11 +773,22 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     now,
   });
   if (!["reconciled", "recovered"].includes(availability.status)) {
-    return {
-      ...initial,
-      command_status: availability.status,
-      recovery_reason: availability.reason,
-    };
+    return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+      const context = await turnContext(registryDirectory, turnId);
+      if (context.turn.status === "working") {
+        settleTurnRecord(context.turn, {
+          status: "uncertain",
+          error: `native cancellation could not proceed: agent recovery ${availability.status} (${availability.reason})`,
+          settledAt: now(),
+        });
+        await writeRecord(registryDirectory, "turns", context.turn);
+      }
+      return {
+        ...context,
+        command_status: availability.status,
+        recovery_reason: availability.reason,
+      };
+    });
   }
   const current = await turnContext(registryDirectory, turnId);
   if (current.turn.status !== "working") {

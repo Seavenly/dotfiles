@@ -89,6 +89,38 @@ test("cancel does not interrupt a turn already owned by force cleanup", async (t
   assert.equal(herdrCalls, 0);
 });
 
+test("cancel settles uncertain when only a different native session is observable", async (t) => {
+  const fixture = await turnFixture(t);
+  let interrupts = 0;
+
+  const result = await cancelTurn(fixture.turn.id, {}, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            pane_id: "caller-pane",
+            agent_status: "done",
+            agent_session: { value: "caller-native-session" },
+          },
+        ];
+      },
+      async interruptAgent() {
+        interrupts += 1;
+      },
+    },
+    now: () => "2026-07-23T10:00:02.000Z",
+  });
+
+  assert.equal(result.command_status, "recovery_blocked");
+  assert.equal(result.recovery_reason, "native_session_mismatch");
+  assert.equal(result.turn.status, "uncertain");
+  assert.match(result.turn.error, /cancellation could not proceed/u);
+  assert.equal(interrupts, 0);
+});
+
 test("cancel reports uncertain when an idle prompt was never delivered", async (t) => {
   const fixture = await turnFixture(t);
   const [turn] = await readRecords(fixture.registryDirectory, "turns");
@@ -222,6 +254,35 @@ test("read-only wait reports agent loss without launching recovery", async (t) =
   assert.equal(result.wait_status, "agent_lost");
   assert.equal(turn.status, "working");
   assert.equal(launches, 0);
+});
+
+test("wait rejects a settled caller pane without the durable native session", async (t) => {
+  const fixture = await turnFixture(t);
+  let clockMs = 0;
+
+  const result = await waitForTurn(
+    fixture.turn.id,
+    { timeoutMs: 1 },
+    {
+      env: fixture.env,
+      herdr: {
+        async waitForAgent() {
+          return {
+            name: "caller-agent",
+            pane_id: "caller-pane",
+            agent_status: "done",
+          };
+        },
+      },
+      clock: () => clockMs,
+      async delay(milliseconds) {
+        clockMs += milliseconds;
+      },
+    },
+  );
+
+  assert.equal(result.turn.status, "uncertain");
+  assert.match(result.turn.error, /did not report the Codex native session/u);
 });
 
 test("wait retries when a steering input is recorded after settlement observation begins", async (t) => {
