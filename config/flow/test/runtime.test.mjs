@@ -18,6 +18,7 @@ import {
 } from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
 import {
   rebindDescriptionDigest,
+  repositoryDrovrDependencies,
   supportedDescription,
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
@@ -86,6 +87,7 @@ for (const [label, mutate, expectedFinding] of [
   test(`query exposes ${label} Drovr conformance and recovery`, async () => {
     let repaired = false;
     const delegatedAgentPort = createDrovrDelegatedAgentPort({
+      dependencies: repositoryDrovrDependencies(),
       async describeDrovr(request, dependencies) {
         const description = await supportedDescription(request, dependencies);
         if (!repaired) {
@@ -120,6 +122,7 @@ for (const [label, mutate, expectedFinding] of [
 test("query exposes unavailable Drovr descriptions and recovery", async () => {
   let repaired = false;
   const delegatedAgentPort = createDrovrDelegatedAgentPort({
+    dependencies: repositoryDrovrDependencies(),
     async describeDrovr(request, dependencies) {
       if (!repaired) throw new Error("configuration offline");
       return supportedDescription(request, dependencies);

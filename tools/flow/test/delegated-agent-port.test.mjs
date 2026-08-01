@@ -3,11 +3,12 @@ import test from "node:test";
 
 import { describeDelegatedAgent } from "../../drovr/src/description.mjs";
 import {
-  createDrovrDelegatedAgentPort,
+  createDrovrDelegatedAgentPort as createProductionDrovrDelegatedAgentPort,
 } from "../src/drovr-delegated-agent-port.mjs";
 import { digest } from "../src/canonical.mjs";
 import {
   rebindDescriptionDigest,
+  repositoryDrovrDependencies,
   supportedDescription,
 } from "../test-support/delegated-agent-description.mjs";
 
@@ -33,6 +34,13 @@ const unavailableFeatureIds = [
   "launch_binding_settlement_proof",
   "opaque_caller_ownership_metadata",
 ];
+
+function createDrovrDelegatedAgentPort(options = {}) {
+  return createProductionDrovrDelegatedAgentPort({
+    dependencies: repositoryDrovrDependencies(),
+    ...options,
+  });
+}
 
 test("DelegatedAgentPort blocks the exact description until every required feature is available", async () => {
   const port = createDrovrDelegatedAgentPort();

@@ -1,5 +1,21 @@
+import { fileURLToPath } from "node:url";
+
 import { describeDelegatedAgent } from "../../drovr/src/description.mjs";
 import { digest } from "../src/canonical.mjs";
+
+const repositoryDrovrConfigDirectory = fileURLToPath(new URL(
+  "../../../config/drovr/",
+  import.meta.url,
+));
+
+export function repositoryDrovrDependencies(env = process.env) {
+  return {
+    env: {
+      ...env,
+      DROVR_CONFIG_DIR: repositoryDrovrConfigDirectory,
+    },
+  };
+}
 
 export async function supportedDescription(request, dependencies) {
   const description = structuredClone(
