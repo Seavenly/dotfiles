@@ -33,7 +33,9 @@ disabled, so this API does not authorize normal replacement launches.
   unblock, and timer-based takeover return typed `flow.rejection/v1` results
   without mutation.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
-  no run identity it returns the host run index.
+  no request it returns the host run index. Registered `flow.query/v1`
+  contracts dispatch through this same operation; the Stage 0 legacy inventory
+  is the first registered query.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
@@ -45,8 +47,9 @@ Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 states how to interpret `authority_watermark`: `run` covers one run's lifecycle
 event stream, while `host` covers host run-index membership. The current host
 watermark changes when a run is first added, not when an existing run advances.
-`legal_actions` is always derived from the authority represented by that
-watermark.
+`authority_watermark` may be null only when the authority could not be observed.
+`legal_actions` is always derived from the represented authority, or empty when
+no authority watermark is available.
 
 The public launch contract is host-idempotent. Its current in-memory conformance
 mechanism is deliberately process-local: all default runtime Interfaces in that

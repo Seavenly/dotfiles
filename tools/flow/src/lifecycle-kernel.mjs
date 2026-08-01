@@ -1,3 +1,5 @@
+import { createRejection } from "./rejection.mjs";
+
 const FORBIDDEN_COMMANDS = new Set([
   "generic_setter",
   "force_unlock",
@@ -71,16 +73,14 @@ export const LifecycleKernel = Object.freeze({
 });
 
 function reject(fold, command, code) {
-  return {
-    schema: "flow.rejection/v1",
+  return createRejection({
     operation: "command",
     code,
-    reason: null,
-    command_type: command?.type ?? null,
-    run_id: command?.run_id ?? null,
-    bundle_digest: fold.bundle_digest,
-    authority_watermark: fold.watermark,
-    authority_watermark_domain: "run",
-    legal_actions: fold.legal_actions,
-  };
+    commandType: command?.type ?? null,
+    runId: command?.run_id ?? null,
+    bundleDigest: fold.bundle_digest,
+    authorityWatermark: fold.watermark,
+    authorityWatermarkDomain: "run",
+    legalActions: fold.legal_actions,
+  });
 }

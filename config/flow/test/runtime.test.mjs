@@ -652,10 +652,54 @@ test("query rejects unsupported contracts and never repairs missing evidence", a
 
   assert.equal(projection.inventory.sources[0].evidence_status, "missing");
   assert.deepEqual(await snapshotFiles(scratch), before);
-  await assert.rejects(
-    runtime.query({ schema: "flow.query/v1", query: "repair_legacy" }),
-    { code: "unsupported_query", name: "FlowQueryRejected" },
+  assert.deepEqual(
+    await runtime.query({ schema: "flow.query/v1", query: "repair_legacy" }),
+    {
+      schema: "flow.rejection/v1",
+      operation: "query",
+      code: "unsupported_query",
+      reason: null,
+      command_type: null,
+      run_id: null,
+      bundle_digest: null,
+      authority_watermark: `sha256:${"0".repeat(64)}`,
+      authority_watermark_domain: "host",
+      legal_actions: [],
+    },
   );
+});
+
+test("registered query failures use the shared typed rejection contract", async () => {
+  const runtime = createFlowRuntime({
+    legacyAdapter: {
+      async observe() {
+        throw new Error("retained authority unavailable");
+      },
+    },
+  });
+
+  assert.deepEqual(Object.keys(runtime), [
+    "prepare",
+    "launch",
+    "command",
+    "query",
+    "watch",
+  ]);
+  assert.deepEqual(await runtime.query({
+    schema: "flow.query/v1",
+    query: "legacy_compatibility_inventory",
+  }), {
+    schema: "flow.rejection/v1",
+    operation: "query",
+    code: "inventory_unavailable",
+    reason: null,
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: `sha256:${"0".repeat(64)}`,
+    authority_watermark_domain: "host",
+    legal_actions: [],
+  });
 });
 
 async function writeJson(path, value) {

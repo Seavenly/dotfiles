@@ -63,8 +63,15 @@ test("flow CLI rejects incomplete arguments and classifies inventory failures", 
     },
   ), 1);
   assert.deepEqual(JSON.parse(stderr), {
-    code: "inventory_unavailable",
-    message: "legacy compatibility inventory is unavailable",
     schema: "flow.rejection/v1",
+    operation: "query",
+    code: "inventory_unavailable",
+    reason: null,
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: null,
+    authority_watermark_domain: "host",
+    legal_actions: [],
   });
 });

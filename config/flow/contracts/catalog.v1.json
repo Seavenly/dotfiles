@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 4,
+  "catalog_version": 5,
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [

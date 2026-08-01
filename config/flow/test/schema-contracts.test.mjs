@@ -92,9 +92,16 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
   assert.equal(ajv.validate(querySchema, request), true, ajv.errorsText());
   assert.equal(ajv.validate(inventorySchema, projection), true, ajv.errorsText());
   assert.equal(ajv.validate(rejectionSchema, {
-    code: "unsupported_query",
-    message: "unsupported FlowRuntime query",
     schema: "flow.rejection/v1",
+    operation: "query",
+    code: "unsupported_query",
+    reason: null,
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: null,
+    authority_watermark_domain: "host",
+    legal_actions: [],
   }), true, ajv.errorsText());
 });
 

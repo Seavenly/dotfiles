@@ -27,7 +27,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 4);
+  assert.equal(catalog.catalog_version, 5);
   assert.deepEqual(catalog.flow_runtime.rejection_contract, {
     contract: "flow.rejection/v1",
     fields: [

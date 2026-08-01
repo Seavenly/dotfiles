@@ -11,6 +11,7 @@ import {
   createDynamicPlanConfirmation,
   createPreparedBundle,
 } from "./prepared-contracts.mjs";
+import { createRejection } from "./rejection.mjs";
 import { foldRun, projectRun, runWatermark } from "./run-projection.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
@@ -304,32 +305,24 @@ function launchReceipt(run, created) {
 }
 
 function unknownRunRejection(operation, runId, authorityEvents, commandType) {
-  return freezeCanonical({
-    schema: "flow.rejection/v1",
+  return createRejection({
     operation,
     code: "unknown_run",
-    reason: null,
-    command_type: commandType ?? null,
-    run_id: runId ?? null,
-    bundle_digest: null,
-    authority_watermark: authorityWatermark(authorityEvents),
-    authority_watermark_domain: "host",
-    legal_actions: [],
+    commandType: commandType ?? null,
+    runId: runId ?? null,
+    authorityWatermark: authorityWatermark(authorityEvents),
+    authorityWatermarkDomain: "host",
   });
 }
 
 function launchRejection(code, prepared, authorityEvents, reason = null) {
-  return freezeCanonical({
-    schema: "flow.rejection/v1",
+  return createRejection({
     operation: "launch",
     code,
     reason,
-    command_type: null,
-    run_id: null,
-    bundle_digest: prepared?.bundle_digest ?? null,
-    authority_watermark: authorityWatermark(authorityEvents),
-    authority_watermark_domain: "host",
-    legal_actions: [],
+    bundleDigest: prepared?.bundle_digest ?? null,
+    authorityWatermark: authorityWatermark(authorityEvents),
+    authorityWatermarkDomain: "host",
   });
 }
 

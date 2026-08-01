@@ -1,4 +1,5 @@
 import { createFlowRuntime, FlowQueryRejected } from "./runtime.mjs";
+import { createRejection } from "../../../tools/flow/src/rejection.mjs";
 
 const USAGE = `Usage:
   flow query legacy-inventory --json
@@ -33,22 +34,27 @@ export async function runCli(
       schema: "flow.query/v1",
       query: "legacy_compatibility_inventory",
     });
+    if (projection.schema === "flow.rejection/v1") {
+      stderr.write(`${JSON.stringify(projection)}\n`);
+      return projection.code === "unsupported_query" ? 2 : 1;
+    }
     stdout.write(`${JSON.stringify(projection)}\n`);
     return 0;
   } catch (error) {
     if (error instanceof FlowQueryRejected) {
-      stderr.write(`${JSON.stringify({
+      stderr.write(`${JSON.stringify(createRejection({
+        operation: "query",
         code: error.code,
-        message: error.message,
-        schema: "flow.rejection/v1",
-      })}\n`);
+        reason: error.reason ?? null,
+        authorityWatermarkDomain: "host",
+      }))}\n`);
       return 2;
     }
-    stderr.write(`${JSON.stringify({
+    stderr.write(`${JSON.stringify(createRejection({
+      operation: "query",
       code: "inventory_unavailable",
-      message: "legacy compatibility inventory is unavailable",
-      schema: "flow.rejection/v1",
-    })}\n`);
+      authorityWatermarkDomain: "host",
+    }))}\n`);
     return 1;
   }
 }

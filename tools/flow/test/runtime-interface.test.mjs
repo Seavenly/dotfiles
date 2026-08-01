@@ -270,6 +270,54 @@ test("runtime interfaces in one process share one host authority", () => {
   assert.deepEqual(adopted, { ...created, created: false });
 });
 
+test("query dispatches registered contracts through the five-operation runtime", async () => {
+  const projection = {
+    schema: "flow.legacy-compatibility-inventory/v1",
+    watermark: { content_sha256: "1".repeat(64) },
+    inventory: { runs: [] },
+    legal_next_actions: ["reinventory"],
+  };
+  const runtime = createTestRuntime({
+    registeredQueries: {
+      legacy_compatibility_inventory(request) {
+        assert.deepEqual(request, {
+          schema: "flow.query/v1",
+          query: "legacy_compatibility_inventory",
+        });
+        return projection;
+      },
+    },
+  });
+
+  assert.deepEqual(Object.keys(runtime), [
+    "prepare",
+    "launch",
+    "command",
+    "query",
+    "watch",
+  ]);
+  assert.deepEqual(await runtime.query({
+    schema: "flow.query/v1",
+    query: "legacy_compatibility_inventory",
+  }), projection);
+  assert.deepEqual(await runtime.query({
+    schema: "flow.query/v1",
+    query: "private_query",
+  }), {
+    schema: "flow.rejection/v1",
+    operation: "query",
+    code: "unsupported_query",
+    reason: null,
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: `sha256:${"0".repeat(64)}`,
+    authority_watermark_domain: "host",
+    legal_actions: [],
+  });
+  assert.equal(runtime.query().schema, "flow.run-index-projection/v1");
+});
+
 test("a typed checkpoint command completes the authority-derived run", () => {
   const runtime = createTestRuntime();
   const prepared = runtime.prepare(dynamicCheckpointProposal());

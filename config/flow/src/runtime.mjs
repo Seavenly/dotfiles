@@ -1,6 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import {
+  createFlowRuntime as createCoreFlowRuntime,
+} from "../../../tools/flow/src/flow-runtime.mjs";
 import { contentDigest } from "./canonical-json.mjs";
 import {
   FilesystemLegacyCompatibilityAdapter,
@@ -14,39 +17,50 @@ export function createFlowRuntime({
   const adapter = legacyAdapter ?? new FilesystemLegacyCompatibilityAdapter({
     legacyRoots,
   });
-  return {
-    async query(request) {
-      assertLegacyInventoryQuery(request);
-      const observation = await adapter.observe();
-      const inventory = {
-        active_ownership: observation.active_ownership,
-        artifacts: observation.artifacts,
-        evidence_summary: evidenceSummary(observation),
-        reviews: observation.reviews,
-        runs: observation.runs,
-        sources: observation.sources,
-        stacks: observation.stacks,
-        transcript_pointers: observation.transcript_pointers,
-        unresolved_effects: observation.unresolved_effects,
-      };
-      const hasEvidenceGaps = ["missing", "uncertain", "unreadable"]
-        .some((status) => inventory.evidence_summary[status] > 0);
-      return {
-        schema: "flow.legacy-compatibility-inventory/v1",
-        watermark: {
-          authority: "retained-legacy-authority",
-          contract: "flow.legacy-compatibility-inventory/v1",
-          content_sha256: contentDigest(inventory),
-        },
-        inventory,
-        legal_next_actions: [
-          ...(hasEvidenceGaps ? ["inspect_legacy_evidence"] : []),
-          "record_digest_in_transition_ledger",
-          "reinventory",
-        ],
-      };
+  return createCoreFlowRuntime({
+    registeredQueries: {
+      async legacy_compatibility_inventory(request) {
+        assertLegacyInventoryQuery(request);
+        let observation;
+        try {
+          observation = await adapter.observe();
+        } catch (error) {
+          if (error instanceof FlowQueryRejected) throw error;
+          throw new FlowQueryRejected(
+            "legacy compatibility inventory is unavailable",
+            { code: "inventory_unavailable" },
+          );
+        }
+        const inventory = {
+          active_ownership: observation.active_ownership,
+          artifacts: observation.artifacts,
+          evidence_summary: evidenceSummary(observation),
+          reviews: observation.reviews,
+          runs: observation.runs,
+          sources: observation.sources,
+          stacks: observation.stacks,
+          transcript_pointers: observation.transcript_pointers,
+          unresolved_effects: observation.unresolved_effects,
+        };
+        const hasEvidenceGaps = ["missing", "uncertain", "unreadable"]
+          .some((status) => inventory.evidence_summary[status] > 0);
+        return {
+          schema: "flow.legacy-compatibility-inventory/v1",
+          watermark: {
+            authority: "retained-legacy-authority",
+            contract: "flow.legacy-compatibility-inventory/v1",
+            content_sha256: contentDigest(inventory),
+          },
+          inventory,
+          legal_next_actions: [
+            ...(hasEvidenceGaps ? ["inspect_legacy_evidence"] : []),
+            "record_digest_in_transition_ledger",
+            "reinventory",
+          ],
+        };
+      },
     },
-  };
+  });
 }
 
 export class FlowQueryRejected extends Error {

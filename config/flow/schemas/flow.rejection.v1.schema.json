@@ -4,10 +4,31 @@
   "title": "flow.rejection/v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["code", "message", "schema"],
+  "required": [
+    "schema",
+    "operation",
+    "code",
+    "reason",
+    "command_type",
+    "run_id",
+    "bundle_digest",
+    "authority_watermark",
+    "authority_watermark_domain",
+    "legal_actions"
+  ],
   "properties": {
-    "code": { "enum": ["inventory_unavailable", "unsupported_query"] },
-    "message": { "type": "string", "minLength": 1 },
-    "schema": { "const": "flow.rejection/v1" }
+    "schema": { "const": "flow.rejection/v1" },
+    "operation": { "enum": ["launch", "command", "query", "watch"] },
+    "code": { "type": "string", "minLength": 1 },
+    "reason": { "type": ["string", "null"] },
+    "command_type": { "type": ["string", "null"] },
+    "run_id": { "type": ["string", "null"] },
+    "bundle_digest": { "type": ["string", "null"] },
+    "authority_watermark": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "authority_watermark_domain": { "enum": ["host", "run"] },
+    "legal_actions": { "type": "array" }
   }
 }
