@@ -1,6 +1,6 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
 
-export function foldRun(run) {
+export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const checkpointDecisions = new Map(
     run.events
       .filter(({ type }) => type === "checkpoint_decided")
@@ -32,7 +32,6 @@ export function foldRun(run) {
       status,
     };
   });
-  const watermark = runWatermark(run);
   const legalActions = phase === "active"
     ? cards
       .filter(({ executor_kind: kind, status }) =>
@@ -70,6 +69,12 @@ export function projectRun(fold) {
     watermark: fold.watermark,
     sequence: fold.sequence,
     phase: fold.phase,
+    ...(fold.authority_epoch === undefined ? {} : {
+      admission: fold.admission,
+      authority_epoch: fold.authority_epoch,
+      authority_boot_id: fold.authority_boot_id,
+      stream_generation: fold.stream_generation,
+    }),
     bundle_digest: fold.bundle_digest,
     plan_fingerprint: fold.plan_fingerprint,
     cards: fold.cards,

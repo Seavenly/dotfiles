@@ -32,6 +32,21 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "watch",
   ]);
   assert.equal(catalog.catalog_version, 6);
+  assert.deepEqual(catalog.authority_persistence, {
+    append_only_streams: true,
+    authority_epoch: {
+      boot_bound: true,
+      effect_recheck: true,
+      monotonic: true,
+    },
+    contract: "flow.sqlite-authority-store/v1",
+    foreign_keys: true,
+    journal_mode: "wal",
+    mutation_lock: "sqlite_os_advisory_lock",
+    synchronous: "full",
+    takeover: "operating_system_lock_release_only",
+    transactional_folds: true,
+  });
   assert.deepEqual(catalog.flow_runtime.rejection_contract, {
     contract: "flow.rejection/v1",
     fields: [
@@ -47,8 +62,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "legal_actions",
     ],
     watermark_domains: {
-      host: "host_run_index_membership",
-      run: "run_lifecycle_events",
+      host: "host_run_index_and_admission_streams",
+      run: "run_lifecycle_stream_and_authority_epoch",
     },
   });
   for (const contract of [
@@ -88,7 +103,6 @@ test("the public catalog exposes the settled interface and forbids legacy import
     drovr_description: "drovr.delegated-agent-description/v1",
     required_features: {
       contract: "flow.drovr-required-features/v1",
-      source: "drovr-required-features.v1.json",
       content_sha256:
         "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896",
     },
@@ -172,8 +186,8 @@ test("the public catalog requires the complete rejection contract", async (t) =>
     contract: "flow.rejection/v1",
     fields: ["schema"],
     watermark_domains: {
-      host: "host_run_index_membership",
-      run: "run_lifecycle_events",
+      host: "host_run_index_and_admission_streams",
+      run: "run_lifecycle_stream_and_authority_epoch",
     },
   };
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
@@ -184,6 +198,20 @@ test("the public catalog requires the complete rejection contract", async (t) =>
       featureContractPath,
     }),
     /contract catalog rejection contract is incomplete/,
+  );
+});
+
+test("the public catalog requires the durable authority contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-authority-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  delete catalog.authority_persistence.authority_epoch.effect_recheck;
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    /contract catalog authority persistence is incomplete/,
   );
 });
 

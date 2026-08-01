@@ -6,13 +6,11 @@ import { isDeepStrictEqual } from "node:util";
 import { authorityRootsAreDisjoint } from "./authority-root.mjs";
 import {
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
-  FLOW_REQUIRED_DROVR_FEATURES,
 } from "./drovr-delegated-agent-port.mjs";
-import featureContract from
-  "../../../config/flow/contracts/drovr-required-features.v1.json" with {
-    type: "json",
-  };
 import { isExactSequence } from "./validation.mjs";
+
+const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
+const REQUIRED_FEATURE_CONTRACT_FILENAME = "drovr-required-features.v1.json";
 
 const FLOW_RUNTIME_OPERATIONS = [
   "prepare",
@@ -53,6 +51,22 @@ const FORBIDDEN_LEGACY_AUTHORITY = [
   "effect_causation",
   "completion",
 ];
+const AUTHORITY_PERSISTENCE = {
+  contract: "flow.sqlite-authority-store/v1",
+  journal_mode: "wal",
+  synchronous: "full",
+  foreign_keys: true,
+  append_only_streams: true,
+  transactional_folds: true,
+  mutation_lock: "sqlite_os_advisory_lock",
+  takeover: "operating_system_lock_release_only",
+  authority_epoch: {
+    monotonic: true,
+    boot_bound: true,
+    effect_recheck: true,
+  },
+};
+
 export async function loadContractCatalog({
   catalogPath,
   featureContractPath,
@@ -69,13 +83,18 @@ export async function loadContractCatalog({
   const rejection = catalog.flow_runtime.rejection_contract;
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
-      rejection.watermark_domains?.host !== "host_run_index_membership" ||
-      rejection.watermark_domains?.run !== "run_lifecycle_events" ||
+      rejection.watermark_domains?.host !==
+        "host_run_index_and_admission_streams" ||
+      rejection.watermark_domains?.run !==
+        "run_lifecycle_stream_and_authority_epoch" ||
       Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
     throw new Error("contract catalog rejection contract is incomplete");
   }
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");
+  }
+  if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
+    throw new Error("contract catalog authority persistence is incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
@@ -83,10 +102,11 @@ export async function loadContractCatalog({
   let publishedFeatureContract;
   let publishedFeatureContractBytes;
   try {
-    const source = catalog.delegated_agent_port?.required_features?.source;
-    if (source !== "drovr-required-features.v1.json") throw new Error();
     publishedFeatureContractBytes = await readFile(
-      featureContractPath ?? resolve(dirname(catalogPath), source),
+      featureContractPath ?? resolve(
+        dirname(catalogPath),
+        REQUIRED_FEATURE_CONTRACT_FILENAME,
+      ),
     );
     publishedFeatureContract = JSON.parse(publishedFeatureContractBytes);
   } catch {
@@ -146,22 +166,22 @@ function delegatedAgentPortIsPublished(
     port.description_projection ===
       "flow.delegated-agent-description-projection/v1" &&
     port.drovr_description === "drovr.delegated-agent-description/v1" &&
-    port.required_features?.contract === featureContract.schema &&
-    port.required_features?.source === "drovr-required-features.v1.json" &&
+    port.required_features?.contract === REQUIRED_FEATURE_CONTRACT &&
+    Object.keys(port.required_features).length === 2 &&
     port.required_features?.content_sha256 ===
       FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST &&
     `sha256:${createHash("sha256")
       .update(publishedFeatureContractBytes)
       .digest("hex")}` === FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST &&
-    isDeepStrictEqual(publishedFeatureContract, featureContract) &&
-    featureContract.features.length === FLOW_REQUIRED_DROVR_FEATURES.length &&
+    publishedFeatureContract.schema === REQUIRED_FEATURE_CONTRACT &&
+    Array.isArray(publishedFeatureContract.features) &&
     [
       port.contract,
       port.description_request,
       port.description_projection,
       port.drovr_description,
-      featureContract.schema,
-      ...FLOW_REQUIRED_DROVR_FEATURES.map(({ contract }) => contract),
+      publishedFeatureContract.schema,
+      ...publishedFeatureContract.features.map(({ contract }) => contract),
     ].every((contract) => contracts.includes(contract));
 }
 

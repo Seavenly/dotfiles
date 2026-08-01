@@ -151,6 +151,22 @@ test("DelegatedAgentPort classifies an unreadable Flow contract as a repairable 
   ]);
 });
 
+test("DelegatedAgentPort classifies an unreadable projection schema as a repairable local failure", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async loadProjectionSchemaBytes() {
+      throw new Error("schema missing");
+    },
+  });
+
+  const blocked = await port.describe(request);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "delegated_agent_port_unavailable");
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_agent_port",
+  ]);
+});
+
 test("DelegatedAgentPort retries a failed local validator load after repair", async () => {
   let validatorAvailable = false;
   const port = createDrovrDelegatedAgentPort({

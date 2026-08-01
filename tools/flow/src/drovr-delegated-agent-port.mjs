@@ -4,14 +4,6 @@ import { readFile } from "node:fs/promises";
 import {
   describeDelegatedAgent,
 } from "../../drovr/src/description.mjs";
-import featureContract from
-  "../../../config/flow/contracts/drovr-required-features.v1.json" with {
-    type: "json",
-  };
-import projectionSchema from
-  "../../../config/flow/schemas/flow.delegated-agent-description-projection.v1.schema.json" with {
-    type: "json",
-  };
 
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
 
@@ -23,15 +15,12 @@ const REQUIRED_FEATURE_CONTRACT_URL = new URL(
   "../../../config/flow/contracts/drovr-required-features.v1.json",
   import.meta.url,
 );
+const PROJECTION_SCHEMA_URL = new URL(
+  "../../../config/flow/schemas/flow.delegated-agent-description-projection.v1.schema.json",
+  import.meta.url,
+);
 export const FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST =
   "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896";
-
-const REQUIRED_FEATURES = freezeCanonical(
-  featureContract.features.map((required) => ({
-    ...required,
-    availability: "supported",
-  })),
-);
 const REQUIRED_AUTHORITY_DIMENSIONS = freezeCanonical({
   "read-only": {
     approvals: "never",
@@ -60,13 +49,12 @@ const REQUIRED_AUTHORITY_DIMENSIONS = freezeCanonical({
   },
 });
 
-export const FLOW_REQUIRED_DROVR_FEATURES = REQUIRED_FEATURES;
-
 export function createDrovrDelegatedAgentPort({
   describeDrovr = describeDelegatedAgent,
   dependencies = {},
   loadRequiredFeatureContractBytes = () =>
     readFile(REQUIRED_FEATURE_CONTRACT_URL),
+  loadProjectionSchemaBytes = () => readFile(PROJECTION_SCHEMA_URL),
   loadDescriptionValidator = descriptionValidator,
 } = {}) {
   return Object.freeze({
@@ -80,16 +68,14 @@ export function createDrovrDelegatedAgentPort({
         });
       }
 
-      let contractBytes;
+      let requiredFeatures;
+      let projectionSchemaBytes;
       try {
-        contractBytes = await loadRequiredFeatureContractBytes();
+        const contractBytes = await loadRequiredFeatureContractBytes();
+        if (!requiredFeatureContractIsPinned(contractBytes)) throw new Error();
+        requiredFeatures = requiredFeaturesFrom(contractBytes);
+        projectionSchemaBytes = await loadProjectionSchemaBytes();
       } catch {
-        return blockedProjection({
-          code: "delegated_agent_port_unavailable",
-          legalNextActions: ["repair_delegated_agent_port"],
-        });
-      }
-      if (!requiredFeatureContractIsPinned(contractBytes)) {
         return blockedProjection({
           code: "delegated_agent_port_unavailable",
           legalNextActions: ["repair_delegated_agent_port"],
@@ -98,7 +84,9 @@ export function createDrovrDelegatedAgentPort({
 
       let validateDescriptionStructure;
       try {
-        validateDescriptionStructure = await loadDescriptionValidator();
+        validateDescriptionStructure = await loadDescriptionValidator(
+          projectionSchemaBytes,
+        );
       } catch {
         return blockedProjection({
           code: "delegated_agent_port_unavailable",
@@ -129,7 +117,10 @@ export function createDrovrDelegatedAgentPort({
       let featureFindings;
       let contradiction;
       try {
-        featureFindings = featureConformanceFindings(description);
+        featureFindings = featureConformanceFindings(
+          description,
+          requiredFeatures,
+        );
         contradiction = descriptionContradiction(
           description,
           request,
@@ -191,10 +182,10 @@ export function createDrovrDelegatedAgentPort({
   });
 }
 
-function featureConformanceFindings(description) {
+function featureConformanceFindings(description, requiredFeatures) {
   const advertised = description?.feature_advertisement?.features;
   if (!Array.isArray(advertised)) {
-    return REQUIRED_FEATURES.map(({ id }) => ({
+    return requiredFeatures.map(({ id }) => ({
       feature_id: id,
       reason: "missing",
     }));
@@ -204,7 +195,7 @@ function featureConformanceFindings(description) {
   for (const _malformed of advertised.filter((value) => !isRecord(value))) {
     findings.push({ feature_id: null, reason: "contradictory" });
   }
-  for (const required of REQUIRED_FEATURES) {
+  for (const required of requiredFeatures) {
     const matches = validAdvertisements.filter(({ id }) => id === required.id);
     if (matches.length === 0) {
       findings.push({ feature_id: required.id, reason: "missing" });
@@ -227,7 +218,7 @@ function featureConformanceFindings(description) {
     }
   }
   for (const advertisedFeature of validAdvertisements) {
-    if (!REQUIRED_FEATURES.some(({ id }) => id === advertisedFeature.id)) {
+    if (!requiredFeatures.some(({ id }) => id === advertisedFeature.id)) {
       findings.push({
         feature_id: advertisedFeature.id ?? null,
         reason: "contradictory",
@@ -337,7 +328,22 @@ function requiredFeatureContractIsPinned(bytes) {
     FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST;
 }
 
-async function descriptionValidator() {
+function requiredFeaturesFrom(bytes) {
+  const contract = JSON.parse(bytes.toString("utf8"));
+  if (
+    contract.schema !== "flow.drovr-required-features/v1" ||
+    !Array.isArray(contract.features)
+  ) {
+    throw new Error("invalid Flow-required Drovr feature contract");
+  }
+  return freezeCanonical(contract.features.map((required) => ({
+    ...required,
+    availability: "supported",
+  })));
+}
+
+async function descriptionValidator(schemaBytes) {
+  const projectionSchema = JSON.parse(schemaBytes.toString("utf8"));
   const { default: Ajv2020 } = await import("ajv/dist/2020.js");
   return new Ajv2020({
     allErrors: true,

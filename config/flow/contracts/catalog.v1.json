@@ -1,6 +1,21 @@
 {
   "schema": "flow.contract-catalog/v1",
   "catalog_version": 6,
+  "authority_persistence": {
+    "contract": "flow.sqlite-authority-store/v1",
+    "journal_mode": "wal",
+    "synchronous": "full",
+    "foreign_keys": true,
+    "append_only_streams": true,
+    "transactional_folds": true,
+    "mutation_lock": "sqlite_os_advisory_lock",
+    "takeover": "operating_system_lock_release_only",
+    "authority_epoch": {
+      "monotonic": true,
+      "boot_bound": true,
+      "effect_recheck": true
+    }
+  },
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [
@@ -25,8 +40,8 @@
         "legal_actions"
       ],
       "watermark_domains": {
-        "host": "host_run_index_membership",
-        "run": "run_lifecycle_events"
+        "host": "host_run_index_and_admission_streams",
+        "run": "run_lifecycle_stream_and_authority_epoch"
       }
     },
     "operation_contracts": {
@@ -96,7 +111,6 @@
     "drovr_description": "drovr.delegated-agent-description/v1",
     "required_features": {
       "contract": "flow.drovr-required-features/v1",
-      "source": "drovr-required-features.v1.json",
       "content_sha256": "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896"
     }
   },
