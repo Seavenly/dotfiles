@@ -26,6 +26,22 @@ assert_contains "$(cat "$root/mise.toml")" \
   '"~/.hermes/skills/tdd" = "config/agents/skills/tdd"'
 echo "ok - managed skills are linked to supported harnesses"
 
+drovr_review="$root/config/agents/skills/drovr-review"
+assert_contains "$(cat "$drovr_review/SKILL.md")" \
+  'disable-model-invocation: true'
+assert_contains "$(cat "$drovr_review/agents/openai.yaml")" \
+  'allow_implicit_invocation: false'
+echo "ok - drovr review requires explicit invocation"
+
+implement_ticket="$root/config/agents/skills/implement-ticket"
+assert_contains "$(cat "$implement_ticket/SKILL.md")" \
+  'argument-hint: "<issue-url>"'
+assert_contains "$(cat "$implement_ticket/SKILL.md")" \
+  'disable-model-invocation: true'
+assert_contains "$(cat "$implement_ticket/agents/openai.yaml")" \
+  'allow_implicit_invocation: false'
+echo "ok - implement ticket accepts one URL and requires explicit invocation"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 home="$tmp/home"
@@ -68,11 +84,13 @@ expected_skills=(
   codebase-design
   diagnosing-bugs
   domain-modeling
+  drovr-review
   grill-with-docs
   grilling
   handoff
   i-have-adhd
   implement
+  implement-ticket
   improve-codebase-architecture
   prototype
   setup-matt-pocock-skills
@@ -120,6 +138,8 @@ local_skills=(
   agent-flow-feature
   agent-flow-review
   agent-flow-spike
+  drovr-review
+  implement-ticket
   tuicr-reviews
 )
 
