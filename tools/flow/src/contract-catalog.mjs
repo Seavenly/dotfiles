@@ -58,6 +58,17 @@ const AUTHORITY_PERSISTENCE = {
   foreign_keys: true,
   append_only_streams: true,
   transactional_folds: true,
+  schema_transition: {
+    current_version: 2,
+    transition_contract: "flow.authority-schema-transition/v1",
+    compatibility_projection: "flow.authority-schema-compatibility/v1",
+    action_contract: "flow.command/v1",
+    release: {
+      schema: "flow.runtime-release/v1",
+      id: "flow-runtime-authority-schema/v2",
+      catalog_version: 8,
+    },
+  },
   mutation_lock: "sqlite_os_advisory_lock",
   takeover: "operating_system_lock_release_only",
   authority_epoch: {
@@ -84,7 +95,7 @@ export async function loadContractCatalog({
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
       rejection.watermark_domains?.host !==
-        "host_run_index_and_admission_streams" ||
+        "host_run_index_admission_and_authority_schema" ||
       rejection.watermark_domains?.run !==
         "run_lifecycle_stream_and_authority_epoch" ||
       Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
