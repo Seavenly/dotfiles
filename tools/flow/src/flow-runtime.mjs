@@ -36,6 +36,9 @@ export function createFlowRuntime({
 }
 
 function dispatchRegisteredQuery(request, registeredQueries, runAuthority) {
+  if (!Object.hasOwn(registeredQueries, request.query)) {
+    return hostQueryRejection(runAuthority, "unsupported_query");
+  }
   const handler = registeredQueries[request.query];
   if (typeof handler !== "function") {
     return hostQueryRejection(runAuthority, "unsupported_query");

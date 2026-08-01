@@ -300,10 +300,7 @@ test("query dispatches registered contracts through the five-operation runtime",
     schema: "flow.query/v1",
     query: "legacy_compatibility_inventory",
   }), projection);
-  assert.deepEqual(await runtime.query({
-    schema: "flow.query/v1",
-    query: "private_query",
-  }), {
+  const unsupportedQuery = {
     schema: "flow.rejection/v1",
     operation: "query",
     code: "unsupported_query",
@@ -314,7 +311,13 @@ test("query dispatches registered contracts through the five-operation runtime",
     authority_watermark: `sha256:${"0".repeat(64)}`,
     authority_watermark_domain: "host",
     legal_actions: [],
-  });
+  };
+  for (const query of ["private_query", "constructor", "toString"]) {
+    assert.deepEqual(await runtime.query({
+      schema: "flow.query/v1",
+      query,
+    }), unsupportedQuery);
+  }
   assert.equal(runtime.query().schema, "flow.run-index-projection/v1");
 });
 
