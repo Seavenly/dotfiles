@@ -1,4 +1,5 @@
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
+import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
@@ -17,6 +18,23 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       .filter(({ type }) => type === "card_blocked")
       .map(({ card_id: cardId, block }) => [cardId, block]),
   );
+  const effectIntents = new Map();
+  const effectReceipts = new Map();
+  const effectObservations = new Map();
+  for (const event of run.events) {
+    if (["effect_intent_recorded", "effect_intent_adopted"].includes(
+      event.type,
+    )) {
+      effectIntents.set(event.intent.effect_id, event.intent);
+    } else if (event.type === "effect_receipt_recorded") {
+      effectReceipts.set(event.effect_id, event.receipt ?? null);
+    } else if (event.type === "effect_observation_recorded") {
+      effectObservations.set(event.effect_id, event.observation);
+    }
+  }
+  const completedOperations = new Set(run.events
+    .filter(({ type }) => type === "operation_completed")
+    .map(({ card_id: cardId }) => cardId));
   const grantEvents = run.events.filter(({ type }) => type === "capability_granted");
   const grants = grantEvents.map(({ type: _type, ...grant }) => grant);
   const revisionEvents = run.events.filter(({ type }) => type === "plan_revised");
@@ -54,12 +72,19 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     let status = "pending";
     if (supersededCards.includes(card.id)) {
       status = "superseded";
+    } else if (completedOperations.has(card.id)) {
+      status = "completed";
+    } else if ([...effectIntents.values()].some(
+      ({ card_id: cardId }) => cardId === card.id,
+    )) {
+      status = "executing";
     } else if (checkpointDecisions.get(card.id) === "decline") {
       status = "declined";
     } else if (approvedCheckpoints.has(card.id)) {
       status = "completed";
     } else if (phase === "active" && card.dependencies.every((dependency) =>
-      approvedCheckpoints.has(dependency))) {
+      approvedCheckpoints.has(dependency) ||
+      completedOperations.has(dependency))) {
       const block = observedBlocks.get(card.id);
       const capabilityBlocked = block?.type === "capability_required" &&
         !block.required_capabilities.every((capability) =>
@@ -159,12 +184,57 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       return [{ ...action, decision: "accept" }, decline];
     }),
   );
+  const operationActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "operation" && status === "ready")
+    .filter(({ id }) => !effectClassPolicy(activePlan.cards.find(
+      (card) => card.id === id,
+    ).executor.effect_classification).requires_fresh_checkpoint)
+    .map(({ id }) => ({
+      schema: "flow.command/v1",
+      type: "operation_execute",
+      run_id: run.run_id,
+      card_id: id,
+      expected_watermark: watermark,
+    }));
+  const recoveryActions = [...effectIntents.values()]
+    .filter((intent) => !effectReceipts.has(intent.effect_id))
+    .map((intent) => ({
+      schema: "flow.command/v1",
+      type: "recovery",
+      run_id: run.run_id,
+      effect_id: intent.effect_id,
+      recovery: effectClassPolicy(intent.classification).recovery,
+      expected_watermark: watermark,
+    }));
   const legalActions = phase === "active"
-    ? [...checkpointActions, ...capabilityActions, ...revisionActions]
+    ? [
+      ...checkpointActions,
+      ...capabilityActions,
+      ...revisionActions,
+      ...operationActions,
+      ...recoveryActions,
+    ]
     : [];
   const progress = phase !== "active"
     ? "complete"
-    : blocks.length > 0 ? "blocked" : "waiting";
+    : blocks.length > 0 ? "blocked"
+      : effectIntents.size > effectReceipts.size ? "executing" : "waiting";
+  const effects = [...effectIntents.values()].map((intent) => ({
+    effect_id: intent.effect_id,
+    card_id: intent.card_id ?? null,
+    attempt_id: intent.attempt_id,
+    classification: intent.classification,
+    operation_contract: intent.operation_contract,
+    idempotency_key: intent.idempotency_key,
+    route_binding: intent.route_binding,
+    status: effectReceipts.has(intent.effect_id) ? "succeeded"
+      : effectObservations.has(intent.effect_id)
+        ? effectClassPolicy(intent.classification).observed_unresolved_status
+        : "unresolved",
+    last_observation: effectObservations.get(intent.effect_id) ?? null,
+    receipt: effectReceipts.get(intent.effect_id) ?? null,
+  })).sort((left, right) => left.effect_id < right.effect_id ? -1 : 1);
 
   return freezeCanonical({
     schema: "flow.run-fold/v1",
@@ -188,7 +258,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     resource_claims: resourceClaims,
     limits,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
+    effects,
     revision_templates: run.prepared.revision_templates,
+    effect_intents: [...effectIntents.values()],
     legal_actions: legalActions,
   });
 }
@@ -222,6 +294,7 @@ export function projectRun(fold) {
     capability_bindings: fold.capability_bindings,
     resource_claims: fold.resource_claims,
     limits: fold.limits,
+    effects: fold.effects,
     legal_actions: fold.legal_actions,
   });
 }

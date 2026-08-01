@@ -7,10 +7,15 @@ import {
   createDynamicPlanConfirmation,
   createPreparedBundle,
 } from "./prepared-contracts.mjs";
+import {
+  effectClassPolicy,
+  registeredOperation,
+} from "./operation-effects.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
 const CHECKPOINT_VALIDATOR = "flow.validator/checkpoint-decision/v1";
+const OPERATION_RECEIPT_VALIDATOR = "flow.validator/operation-receipt/v1";
 const CARD_ARRAY_FIELDS = [
   "outputs",
   "success_criteria",
@@ -52,8 +57,8 @@ export class DynamicPlanValidationError extends Error {
   }
 }
 
-export function compileDynamicPlan(proposal) {
-  validateDynamicPlan(proposal);
+export function compileDynamicPlan(proposal, options = {}) {
+  validateDynamicPlan(proposal, options);
   const graph = canonicalizeDynamicGraph(proposal.graph);
   const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
   const revisionTemplates = canonicalizeRevisionTemplates(
@@ -96,7 +101,10 @@ export const PlanCompiler = Object.freeze({
   compile: compileDynamicPlan,
 });
 
-export function validateDynamicPlan(proposal, { skipRevisionTemplates = false } = {}) {
+export function validateDynamicPlan(proposal, {
+  registeredOperations = null,
+  skipRevisionTemplates = false,
+} = {}) {
   if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {
     invalidPlan("invalid_proposal_contract", "dynamic plan proposal contract is invalid");
   }
@@ -158,6 +166,15 @@ export function validateDynamicPlan(proposal, { skipRevisionTemplates = false } 
   }
 
   const cardIds = new Set();
+  const operationCards = proposal.graph.cards.filter(
+    ({ executor }) => executor?.kind === "operation",
+  );
+  if (operationCards.length > 1) {
+    invalidPlan(
+      "operation_card_limit_exceeded",
+      "this runtime slice accepts exactly one registered operation",
+    );
+  }
   for (const card of proposal.graph.cards) {
     if (!isRecord(card) || typeof card.id !== "string" || !card.id ||
         cardIds.has(card.id)) {
@@ -172,18 +189,6 @@ export function validateDynamicPlan(proposal, { skipRevisionTemplates = false } 
         !Array.isArray(card.dependencies)) {
       invalidPlan("incomplete_card", `dynamic plan card is incomplete: ${card.id}`);
     }
-    if (card.executor.kind !== "checkpoint") {
-      invalidPlan(
-        "unsupported_executor_kind",
-        `dynamic checkpoint plan does not support executor kind: ${card.executor.kind}`,
-      );
-    }
-    if (card.executor.contract !== CHECKPOINT_CONTRACT) {
-      invalidPlan(
-        "unsupported_checkpoint_contract",
-        `unsupported checkpoint contract: ${card.executor.contract}`,
-      );
-    }
     if (!isRecord(card.inputs) || !isRecord(card.limits) ||
         !CARD_ARRAY_FIELDS.every((field) => Array.isArray(card[field])) ||
         !(card.route === null || isRecord(card.route)) ||
@@ -193,12 +198,14 @@ export function validateDynamicPlan(proposal, { skipRevisionTemplates = false } 
         `dynamic plan card contract is incomplete: ${card.id}`,
       );
     }
-    if (card.validators.length !== 1 ||
-        card.validators[0] !== CHECKPOINT_VALIDATOR ||
-        !facts.validator_contracts.includes(CHECKPOINT_VALIDATOR)) {
+    if (card.executor.kind === "checkpoint") {
+      validateCheckpointCard(card, facts);
+    } else if (card.executor.kind === "operation") {
+      validateOperationCard(card, proposal, registeredOperations);
+    } else {
       invalidPlan(
-        "unsupported_checkpoint_validator",
-        `unsupported checkpoint validator contract: ${card.id}`,
+        "unsupported_executor_kind",
+        `dynamic plan does not support executor kind: ${card.executor.kind}`,
       );
     }
   }
@@ -220,7 +227,7 @@ export function validateDynamicPlan(proposal, { skipRevisionTemplates = false } 
   assertAcyclic(proposal.graph.cards);
   validateBlockObservations(proposal);
   if (!skipRevisionTemplates) {
-    validateRevisionTemplates(proposal);
+    validateRevisionTemplates(proposal, registeredOperations);
     validateDeclaredRecoveryCapacity(proposal);
   }
 }
@@ -364,7 +371,7 @@ function validateBlockObservations(proposal) {
   }
 }
 
-function validateRevisionTemplates(proposal) {
+function validateRevisionTemplates(proposal, registeredOperations) {
   const templates = proposal.revision_templates === undefined
     ? []
     : proposal.revision_templates;
@@ -421,7 +428,7 @@ function validateRevisionTemplates(proposal) {
         digest(template.trigger) !== digest(binding.trigger)) {
       invalidPlan("invalid_revision_trigger", `revision trigger is not declared: ${template.id}`);
     }
-    validateRevisionChanges(proposal, template);
+    validateRevisionChanges(proposal, template, registeredOperations);
   }
   for (const id of referencedTemplates.keys()) {
     if (!ids.has(id)) {
@@ -433,7 +440,7 @@ function validateRevisionTemplates(proposal) {
   }
 }
 
-function validateRevisionChanges(proposal, template) {
+function validateRevisionChanges(proposal, template, registeredOperations) {
   const changes = template.changes;
   const fields = [
     "add_cards",
@@ -562,7 +569,108 @@ function validateRevisionChanges(proposal, template) {
     ...proposal,
     graph: { ...proposal.graph, cards: revisedCards },
     explicit_facts: { ...proposal.explicit_facts, limits },
-  }, { skipRevisionTemplates: true });
+  }, { registeredOperations, skipRevisionTemplates: true });
+}
+
+function validateCheckpointCard(card, facts) {
+  if (card.executor.contract !== CHECKPOINT_CONTRACT) {
+    invalidPlan(
+      "unsupported_checkpoint_contract",
+      `unsupported checkpoint contract: ${card.executor.contract}`,
+    );
+  }
+  if (card.validators.length !== 1 ||
+      card.validators[0] !== CHECKPOINT_VALIDATOR ||
+      !facts.validator_contracts.includes(CHECKPOINT_VALIDATOR)) {
+    invalidPlan(
+      "unsupported_checkpoint_validator",
+      `unsupported checkpoint validator contract: ${card.id}`,
+    );
+  }
+}
+
+function validateOperationCard(card, proposal, registeredOperations) {
+  const { explicit_facts: facts } = proposal;
+  const registration = registeredOperation(registeredOperations,
+    card.executor.contract);
+  const policy = effectClassPolicy(card.executor.effect_classification);
+  if (registeredOperations !== null && !registration) {
+    invalidPlan(
+      "unregistered_operation_contract",
+      `operation contract is not registered: ${card.executor.contract}`,
+    );
+  }
+  const registrationPolicy = effectClassPolicy(registration?.classification);
+  if (registration && (typeof registration.invoke !== "function" ||
+      !registrationPolicy || registrationPolicy.requires_observation &&
+        typeof registration.observe !== "function")) {
+    invalidPlan(
+      "incomplete_operation_registration",
+      `operation adapter registration is incomplete: ${card.executor.contract}`,
+    );
+  }
+  if (!facts.operation_contracts.includes(card.executor.contract) ||
+      !proposal.requested_authority.mutations.includes(card.executor.contract)) {
+    invalidPlan(
+      "incomplete_operation_authority",
+      `operation authority is incomplete: ${card.id}`,
+    );
+  }
+  if (!card.resource_claims.every((claim) => facts.resource_claims.some(
+    (declared) => digest(declared) === digest(claim),
+  ))) {
+    invalidPlan(
+      "undeclared_operation_resource_claim",
+      `operation resource claim is outside the prepared facts: ${card.id}`,
+    );
+  }
+  if (!policy ||
+      registration?.classification !== undefined &&
+        registration.classification !== card.executor.effect_classification) {
+    invalidPlan(
+      "invalid_effect_classification",
+      `operation effect classification is invalid: ${card.id}`,
+    );
+  }
+  if (card.validators.length !== 1 ||
+      card.validators[0] !== OPERATION_RECEIPT_VALIDATOR ||
+      !facts.validator_contracts.includes(OPERATION_RECEIPT_VALIDATOR)) {
+    invalidPlan(
+      "unsupported_operation_validator",
+      `unsupported operation validator contract: ${card.id}`,
+    );
+  }
+  if (card.recovery !== card.executor.effect_classification) {
+    invalidPlan(
+      "invalid_operation_recovery",
+      `operation recovery does not match its effect class: ${card.id}`,
+    );
+  }
+  const checkpoints = proposal.graph.cards.filter((checkpoint) =>
+    card.dependencies.includes(checkpoint.id) &&
+    checkpoint.executor?.kind === "checkpoint" &&
+    checkpoint.executor.contract === CHECKPOINT_CONTRACT &&
+    checkpoint.inputs?.operation_card_id === card.id);
+  if (policy.requires_fresh_checkpoint &&
+      (checkpoints.length !== 1 || card.dependencies.length !== 1)) {
+    invalidPlan(
+      "missing_operation_checkpoint",
+      `one-shot operation requires one exact operation-bound checkpoint: ${card.id}`,
+    );
+  }
+  if (checkpoints.length === 1 && card.dependencies.length !== 1) {
+    invalidPlan(
+      "ambiguous_operation_checkpoint",
+      `checkpoint-bound operation requires one exact dependency: ${card.id}`,
+    );
+  }
+  if (checkpoints.length === 0 && (card.dependencies.length !== 0 ||
+      !proposal.requested_authority.commands.includes("operation_execute"))) {
+    invalidPlan(
+      "incomplete_operation_execution_authority",
+      `direct operation execution authority is incomplete: ${card.id}`,
+    );
+  }
 }
 
 export function canonicalizeRevisionTemplates(templates) {

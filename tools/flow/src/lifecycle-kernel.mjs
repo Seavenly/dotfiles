@@ -112,6 +112,34 @@ export function decideLifecycle(fold, command) {
       projection_hints: ["operator", "graph"],
     };
   }
+  if (command.type === "recovery") {
+    const legalRecovery = fold.legal_actions.find((action) =>
+      action.type === "recovery" && digest(action) === digest(command));
+    if (!legalRecovery) return reject(fold, command, "recovery_not_actionable");
+    const intent = fold.effect_intents.find(
+      ({ effect_id: effectId }) => effectId === command.effect_id,
+    );
+    return {
+      schema: "flow.decision/v1",
+      command_type: command.type,
+      events: [{
+        type: "effect_recovery_requested",
+        effect_id: intent.effect_id,
+        recovery: command.recovery,
+      }],
+      effect_intents: [],
+      recovery_intents: [intent],
+      obligations: [],
+      projection_hints: ["operator"],
+    };
+  }
+  if (command.type === "operation_execute") {
+    const legalExecution = fold.legal_actions.find((action) =>
+      action.type === "operation_execute" && digest(action) === digest(command));
+    if (!legalExecution) return reject(fold, command, "operation_not_actionable");
+    const operation = fold.cards.find(({ id }) => id === command.card_id);
+    return operationDecision(fold, command, operation);
+  }
   if (command.type !== "checkpoint_decision") {
     return reject(fold, command, "unsupported_command");
   }
@@ -129,6 +157,15 @@ export function decideLifecycle(fold, command) {
     return decision(command, checkpoint, [{ type: "run_declined" }]);
   }
 
+  const operation = nextOperation(fold, checkpoint.id);
+  if (operation) {
+    return operationDecision(fold, command, operation, [{
+      type: "checkpoint_decided",
+      checkpoint_id: checkpoint.id,
+      decision: command.decision,
+    }]);
+  }
+
   const allOtherCardsComplete = fold.cards.every(
     (card) => card.id === checkpoint.id ||
       ["completed", "superseded"].includes(card.status),
@@ -138,6 +175,68 @@ export function decideLifecycle(fold, command) {
     checkpoint,
     allOtherCardsComplete ? [{ type: "run_succeeded" }] : [],
   );
+}
+
+function nextOperation(fold, checkpointId) {
+  const completed = new Set(fold.cards
+    .filter(({ status }) => status === "completed")
+    .map(({ id }) => id));
+  completed.add(checkpointId);
+  return fold.cards.find((card) => card.executor_kind === "operation" &&
+    card.status === "pending" &&
+    fold.active_plan.cards.find(({ id }) => id === card.id).dependencies.every(
+      (dependency) => completed.has(dependency),
+    ) && fold.active_plan.cards.find(({ id }) => id === checkpointId)
+      .inputs?.operation_card_id === card.id);
+}
+
+function operationDecision(fold, command, operation, immediateEvents = []) {
+  const operationCard = fold.active_plan.cards.find(
+    ({ id }) => id === operation.id,
+  );
+  const attemptId = `${fold.run_id}:${operation.id}:attempt:1`;
+  const effectIdentity = digest({
+    schema: "flow.operation-effect-identity/v1",
+    run_id: fold.run_id,
+    card_id: operation.id,
+    attempt_id: attemptId,
+    operation_contract: operationCard.executor.contract,
+  });
+  const excluded = new Set([
+    operation.id,
+    ...immediateEvents
+      .filter(({ type }) => type === "checkpoint_decided")
+      .map(({ checkpoint_id: checkpointId }) => checkpointId),
+  ]);
+  const completesRun = fold.cards.every((card) => excluded.has(card.id) ||
+    ["completed", "superseded"].includes(card.status));
+  return {
+    schema: "flow.decision/v1",
+    command_type: command.type,
+    events: [
+      ...immediateEvents,
+      {
+        type: "operation_completed",
+        card_id: operation.id,
+        attempt_id: attemptId,
+      },
+      ...(completesRun ? [{ type: "run_succeeded" }] : []),
+    ],
+    effect_intents: [{
+      schema: "flow.effect-intent/v1",
+      effect_id: `effect:${effectIdentity.slice("sha256:".length)}`,
+      idempotency_key: `operation:${effectIdentity.slice("sha256:".length)}`,
+      attempt_id: attemptId,
+      card_id: operation.id,
+      classification: operationCard.executor.effect_classification,
+      operation_contract: operationCard.executor.contract,
+      operation_input: operationCard.inputs,
+      route_binding: operationCard.route,
+      resource_claims: operationCard.resource_claims,
+    }],
+    obligations: [],
+    projection_hints: ["operator", "graph"],
+  };
 }
 
 function sameCanonicalValue(left, right) {

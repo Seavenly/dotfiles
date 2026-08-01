@@ -96,6 +96,33 @@ admission, attempts, checkpoints, blocks, revisions, cancellation, and flow-run
 finalization.
 _Avoid_: Controller, scheduler, projection
 
+**Registered operation**:
+A versioned operation contract paired with an Adapter that declares one effect
+classification and implements the invocation and any required reconciliation
+observation.
+_Avoid_: Arbitrary callback, executor plugin
+
+**Effect intent**:
+The durable, authority-committed identity and complete invocation facts for one
+operation attempt. It must exist before an external effect is invoked.
+_Avoid_: Request log, retry token
+
+**Effect observation**:
+Typed reconciliation evidence about the presence, absence, or uncertainty of
+one exact effect intent. Presence requires exact causation, while absence
+requires affirmative provider evidence.
+_Avoid_: Missing receipt, provider lookup result
+
+**Effect receipt**:
+Positive, identity-bound provider evidence that settles one effect intent and
+allows its deferred operation completion to become authoritative.
+_Avoid_: Return value, successful process exit
+
+**Effect classification**:
+The declared recovery semantics for a registered operation: read-only,
+caller-idempotent, reconcilable, or one-shot uncertain.
+_Avoid_: Retry count, implementation hint
+
 **Flow implementation transition**:
 The staged change in which implementation accepts future flow launches while
 each existing run remains owned by the implementation that created it.
@@ -241,6 +268,9 @@ _Avoid_: Migration record, replacement run
 - The **recorder** extends **convergence** only when explicitly enabled.
 - A replacement **flow run** executes **flow cards**, each of which may have
   multiple **worker attempts**.
+- A **registered operation** creates one **effect intent** under **run
+  authority**; an **effect receipt** settles it, while an **effect observation**
+  supports recovery according to its **effect classification**.
 - A frozen Hermes-backed flow run executes **legacy Kanban cards** under its
   original authority.
 - The **launch policy** selects an implementation only for future runs; it does

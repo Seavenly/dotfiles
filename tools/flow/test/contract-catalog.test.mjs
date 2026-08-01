@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 7);
+  assert.equal(catalog.catalog_version, 8);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -82,6 +82,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.validator/card-block-observation/v1",
     "flow.revision-trigger/v1",
     "flow.plan-revision-template/v1",
+    "flow.registered-operation/v1",
+    "flow.validator/operation-receipt/v1",
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
@@ -90,6 +92,23 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.card-block-observation/v1",
   );
   assert.ok(catalog.mechanism_adapters.includes("card_block_observation"));
+  assert.deepEqual(catalog.flow_runtime.operation_execution, {
+    authority: "RunAuthority",
+    coordinator_authority: "mechanism_only",
+    registration: "flow.registered-operation/v1",
+    intent: "flow.effect-intent/v1",
+    observation: "flow.effect-observation/v1",
+    receipt: "flow.effect-receipt/v1",
+    receipt_validator: "flow.validator/operation-receipt/v1",
+    effect_classes: [
+      "read_only",
+      "caller_idempotent",
+      "reconcilable",
+      "one_shot_uncertain",
+    ],
+    execution_command: "operation_execute",
+    recovery_command: "recovery",
+  });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
@@ -223,6 +242,23 @@ test("the public catalog requires the durable authority contract", async (t) => 
   await assert.rejects(
     loadContractCatalog({ catalogPath: incompleteCatalogPath }),
     /contract catalog authority persistence is incomplete/,
+  );
+});
+
+test("the public catalog requires complete registered operation contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-operation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  delete catalog.flow_runtime.operation_execution.receipt_validator;
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /registered operation contracts are incomplete/,
   );
 });
 

@@ -66,6 +66,23 @@ const AUTHORITY_PERSISTENCE = {
     effect_recheck: true,
   },
 };
+const OPERATION_EXECUTION = {
+  authority: "RunAuthority",
+  coordinator_authority: "mechanism_only",
+  registration: "flow.registered-operation/v1",
+  intent: "flow.effect-intent/v1",
+  observation: "flow.effect-observation/v1",
+  receipt: "flow.effect-receipt/v1",
+  receipt_validator: "flow.validator/operation-receipt/v1",
+  effect_classes: [
+    "read_only",
+    "caller_idempotent",
+    "reconcilable",
+    "one_shot_uncertain",
+  ],
+  execution_command: "operation_execute",
+  recovery_command: "recovery",
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -95,6 +112,18 @@ export async function loadContractCatalog({
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.operation_execution,
+    OPERATION_EXECUTION,
+  ) || ![
+    OPERATION_EXECUTION.registration,
+    OPERATION_EXECUTION.intent,
+    OPERATION_EXECUTION.observation,
+    OPERATION_EXECUTION.receipt,
+    OPERATION_EXECUTION.receipt_validator,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("registered operation contracts are incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");

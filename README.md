@@ -164,9 +164,13 @@ remain owned by the implementation that created them. No legacy import adapter
 ships initially. Inspect the exact transition watermark, evidence status, and
 legal next actions with `npm --silent --prefix tools/flow run status`. The
 dark replacement API can prepare, confirm, durably launch, observe, recover,
-and complete a finite dynamic checkpoint plan without changing the converged
-launch selector. Its SQLite authority streams are fenced to one mutating
-runtime while competing processes remain read-only.
+and complete a finite dynamic plan with one registered operation without
+changing the converged launch selector. One-shot uncertain effects require a
+fresh operation-bound checkpoint; safer classes can execute from an exact
+authority-projected command. Operation
+effects use durable intent-before-effect authority, typed receipts, and
+effect-class-specific reconciliation. Its SQLite authority streams are fenced
+to one mutating runtime while competing processes remain read-only.
 The public contracts and guardrails are documented in
 [`tools/flow/README.md`](tools/flow/README.md) and
 [`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).

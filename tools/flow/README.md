@@ -22,16 +22,23 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v7 extends the exact v1 contracts by requiring
+  Catalog v8 extends the exact v1 contracts by requiring
   `explicit_facts.block_observations` on dynamic proposals and
-  `revision_templates` on prepared runs; callers must prepare a fresh bundle
-  rather than launch a pre-v7 envelope.
-  This slice accepts only the registered `flow.checkpoint/confirmation/v1`
-  executor with `flow.validator/checkpoint-decision/v1`; other checkpoint
-  contracts and later executor kinds fail preparation until their owning
-  runtime contracts are implemented. External acquisition by a live Adapter
-  remains deferred; this runtime validates the exact caller-supplied Adapter
-  observation before it can become authoritative.
+  `revision_templates` on prepared runs, and publishes registered operation
+  intent, observation, receipt, validation, effect-class, and recovery
+  contracts. Callers must prepare a fresh bundle rather than launch a pre-v8
+  envelope.
+  This slice accepts the registered `flow.checkpoint/confirmation/v1`
+  executor with `flow.validator/checkpoint-decision/v1` and one operation card.
+  A one-shot uncertain operation must be bound only to an exact fresh
+  checkpoint; safer effect classes may instead project an exact
+  `operation_execute` command without adding human approval. The operation names a registered Adapter,
+  declares its effect class, and binds its input, route, claims, validator, and
+  attempt limit in the confirmed graph. Delegate and subrun executors remain
+  unavailable until their owning runtime contracts are implemented. External
+  card-block acquisition by a live Adapter remains deferred; this runtime
+  validates exact caller-supplied block observations before they can become
+  authoritative.
 - `launch({ prepared, confirmation, closed_facts })` accepts an explicit
   `flow.dynamic-plan-confirmation-decision/v1` and a separately supplied
   `flow.closed-fact-observation/v1`. It verifies both are bound to the prepared
@@ -43,7 +50,9 @@ disabled, so this API does not authorize normal replacement launches.
   Invalid prepared bundles, confirmation decisions, and changed closed facts
   return typed launch rejections rather than escaping as transport errors.
 - `command(command)` accepts the exact legal approve or decline checkpoint
-  command projected by authority. A `flow.card-block/v1` may instead project an
+  command projected by authority. A ready operation that does not require a
+  checkpoint projects an exact `operation_execute` command. A
+  `flow.card-block/v1` may instead project an
   exact `capability_grant` or `revision_decision`. Capability grants append the
   confirmed capability, named card binding, and trigger to accepted history;
   they do not grant that capability to unrelated cards. Revision decisions
@@ -61,6 +70,15 @@ disabled, so this API does not authorize normal replacement launches.
   to reach upstream work is rejected without mutation. Generic setters, force
   unlock, generic unblock, and timer-based takeover return typed
   `flow.rejection/v1` results without mutation.
+  Approving an operation-bound checkpoint records the decision, operation
+  attempt, exact effect intent, idempotency identity, route, claims, and
+  relevant prepared facts before the registered Adapter can run. An unresolved
+  effect projects one exact `recovery` command. Read-only and caller-idempotent
+  recovery repeat the committed identity. Reconcilable recovery observes first
+  and invokes only after affirmative provider evidence of absence; positive
+  exact causation is adopted
+  without reinvocation. One-shot uncertain recovery observes but never retries,
+  and its initial invocation requires the fresh operation-bound checkpoint.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -68,7 +86,8 @@ disabled, so this API does not authorize normal replacement launches.
   include the exact current
   revision and graph-only plan fingerprint, active plan, typed blocks,
   append-only revision and card-bound grant history, effective capabilities,
-  resources, limits, and only the legal actions at that watermark.
+  resources, limits, operation attempts, effect classifications, receipts,
+  reconciliation observations, and only the legal actions at that watermark.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
@@ -107,10 +126,17 @@ completion appends a durable receipt. Effect-bearing decisions cannot record a
 terminal run transition before that receipt. Same-boot recovery adopts the
 exact outstanding intent under the new epoch without changing its idempotency
 identity.
-`invokeEffect` is an internal effect-runner mechanism seam on the dark durable
-authority Adapter, not a sixth public `FlowRuntime` operation. It therefore
-signals mechanism fencing failures to its internal caller rather than extending
-the five-operation public rejection catalog.
+`invokeEffect` and `recordEffectObservation` are internal effect-coordination
+mechanism seams on the dark durable authority Adapter, not additional public
+`FlowRuntime` operations. They therefore signal mechanism fencing failures to
+their internal caller rather than extending the five-operation public
+rejection catalog. A registered Adapter must declare one of `read_only`,
+`caller_idempotent`, `reconcilable`, or `one_shot_uncertain`, expose `invoke`,
+and expose `observe` for the latter two classes. Only a positive, identity-bound
+`flow.effect-receipt/v1` completes an operation. Missing, malformed, or negative
+receipts leave the exact effect unresolved and never prove absence.
+An observation claiming absence without affirmative provider evidence is
+normalized to indeterminate and cannot authorize invocation.
 
 Same-boot process replacement increments the epoch and resumes from replayed
 authority. A boot identity change instead projects
@@ -121,17 +147,15 @@ subject generations, unresolved effects, stream generation, boot, and epoch.
 The mechanism Adapter refreshes those observations at admission. Its
 revalidation record keeps prepared facts under `expected`, current facts under
 `observed`, and records `observed: null` when no exact current observation is
-available; any drift rejects the command. The checkpoint tracer has no
+available; any drift rejects the command. The checkpoint and operation tracer has no
 applicable time facts or subject generations, so its exact prepared binding for
 both categories is the empty list. Durable construction fails reboot admission
 closed until that
 current-observation Adapter is configured. An unresolved effect from a prior
 boot remains deliberately fenced, keeps its capacity reservation, and requires
-a future explicit cancellation or reconciliation mechanism; this ticket does
-not infer effect completion or release capacity automatically. The shipped
-`LifecycleKernel` does not yet emit effect intents, so this recovery dead end is
-reachable only through the internal custom-kernel conformance seam until that
-future mechanism exists. Each run is admitted independently. Run
+a future explicit cancellation or reconciliation mechanism. The shipped
+`LifecycleKernel` emits effect intents only for the single registered-operation
+tracer. Each run is admitted independently. Run
 watermarks bind the run stream generation and current authority epoch, while host
 watermarks bind both host-index and host-admission streams. Reordering,
 omission, duplication, digest conflict, unknown contracts, corrupt JSON,
@@ -155,6 +179,7 @@ The focused public contract suite is:
 ```sh
 node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/durable-authority.test.mjs \
+  tools/flow/test/registered-operation.test.mjs \
   tools/flow/test/purity-contracts.test.mjs
 ```
 

@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 7,
+  "catalog_version": 8,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -44,6 +44,23 @@
         "run": "run_lifecycle_stream_and_authority_epoch"
       }
     },
+    "operation_execution": {
+      "authority": "RunAuthority",
+      "coordinator_authority": "mechanism_only",
+      "registration": "flow.registered-operation/v1",
+      "intent": "flow.effect-intent/v1",
+      "observation": "flow.effect-observation/v1",
+      "receipt": "flow.effect-receipt/v1",
+      "receipt_validator": "flow.validator/operation-receipt/v1",
+      "effect_classes": [
+        "read_only",
+        "caller_idempotent",
+        "reconcilable",
+        "one_shot_uncertain"
+      ],
+      "execution_command": "operation_execute",
+      "recovery_command": "recovery"
+    },
     "operation_contracts": {
       "prepare": {
         "authority": "non_authoritative",
@@ -66,6 +83,7 @@
         "authority": "RunAuthority",
         "vocabulary": [
           "checkpoint_decision",
+          "operation_execute",
           "revision_decision",
           "capability_grant",
           "cancel",
@@ -133,6 +151,8 @@
     "flow.effect-intent/v1",
     "flow.effect-observation/v1",
     "flow.effect-receipt/v1",
+    "flow.registered-operation/v1",
+    "flow.validator/operation-receipt/v1",
     "flow.run-plan/v1",
     "flow.run-projection/v1",
     "flow.run-index-projection/v1",

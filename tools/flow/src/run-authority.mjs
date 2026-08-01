@@ -16,6 +16,7 @@ import {
   freezeCanonical,
 } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
+import { effectClassPolicy } from "./operation-effects.mjs";
 import { createHostAuthorityIdentityAdapter } from "./host-authority-identity.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import {
@@ -184,6 +185,7 @@ export function createDurableRunAuthority({
   authorityDirectory,
   access = "mutate",
   beforeEffect = () => {},
+  beforeIntentCommit = () => {},
   declaredCapacity = 4,
   hostIdentityAdapter = createHostAuthorityIdentityAdapter(),
   lifecycleKernel = decideLifecycle,
@@ -203,6 +205,11 @@ export function createDurableRunAuthority({
   }
   if (typeof beforeEffect !== "function") {
     throw new TypeError("durable run authority beforeEffect must be a function");
+  }
+  if (typeof beforeIntentCommit !== "function") {
+    throw new TypeError(
+      "durable run authority beforeIntentCommit must be a function",
+    );
   }
   if (typeof lifecycleKernel !== "function") {
     throw new TypeError("durable run authority lifecycleKernel must be a function");
@@ -467,9 +474,9 @@ export function createDurableRunAuthority({
             return freezeCanonical(currentDecision);
           }
           const deferredEvents = currentDecision.events.filter(({ type }) =>
-            ["run_declined", "run_succeeded"].includes(type));
+            ["operation_completed", "run_declined", "run_succeeded"].includes(type));
           const immediateEvents = currentDecision.events.filter(({ type }) =>
-            !["run_declined", "run_succeeded"].includes(type));
+            !["operation_completed", "run_declined", "run_succeeded"].includes(type));
           const effectIntents = currentDecision.effect_intents.map((intent) =>
             bindEffectIntent(intent, {
               authorityEpoch,
@@ -499,6 +506,12 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
+          if (effectIntents.length > 0) {
+            beforeIntentCommit({
+              run_id: canonicalCommand.run_id,
+              effect_intents: effectIntents,
+            });
+          }
           if (effectIntents.length === 0 && currentDecision.events.some(({ type }) =>
             ["run_declined", "run_succeeded"].includes(type))) {
             appendAuthorityEvents(database, {
@@ -540,9 +553,13 @@ export function createDurableRunAuthority({
           canonicalCommand.run_id,
           commandDigest,
         );
-        return freezeCanonical(recordedIntents.length === 0
+        const dispatchedIntents = [
+          ...recordedIntents,
+          ...(decision.recovery_intents ?? []),
+        ];
+        return freezeCanonical(dispatchedIntents.length === 0
           ? receipt
-          : { ...receipt, effect_intents: recordedIntents });
+          : { ...receipt, effect_intents: dispatchedIntents });
       } catch (error) {
         if (error instanceof AuthorityFenceError) {
           return durableMutationRejection(
@@ -685,9 +702,8 @@ export function createDurableRunAuthority({
           );
         }
         if (intent.authority_epoch !== authorityEpoch) {
-          if (!["read_only", "caller_idempotent"].includes(
-            intent.classification,
-          )) {
+          if (!effectClassPolicy(intent.classification)?.can_repeat_across_epoch &&
+              adapter.reconcile !== true) {
             throw new AuthorityFenceError(
               "effect_reconciliation_required",
               "effect classification cannot be retried during recovery",
@@ -739,6 +755,7 @@ export function createDurableRunAuthority({
                   type: "effect_receipt_recorded",
                   effect_id: effectiveIntent.effect_id,
                   idempotency_key: effectiveIntent.idempotency_key,
+                  ...(result === undefined ? {} : { receipt: result }),
                 },
               },
               ...deferredEvents.map((payload) => ({
@@ -776,6 +793,72 @@ export function createDurableRunAuthority({
       } finally {
         database.close();
         effectsInFlight.delete(dispatchKey);
+      }
+    },
+
+    async recordEffectObservation(intent, observation) {
+      assertOpen();
+      if (!lockDatabase) {
+        throw new AuthorityFenceError(
+          "mutation_authority_unavailable",
+          "effect observer does not hold mutation authority",
+        );
+      }
+      const database = openAuthorityDatabase(databasePath);
+      try {
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const stream = readStream(database, intent?.run_id);
+        const recorded = stream?.records.some(({ payload }) =>
+          ["effect_intent_recorded", "effect_intent_adopted"].includes(
+            payload.type,
+          ) && isDeepStrictEqual(payload.intent, intent));
+        if (!recorded) {
+          throw new AuthorityFenceError(
+            "unrecorded_effect_intent",
+            "effect observation is not bound to a recorded intent",
+          );
+        }
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          assertAuthorityEpoch(database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          appendAuthorityEvents(database, {
+            streamId: intent.run_id,
+            streamKind: "run",
+            events: [{
+              contract: "flow.run-event/v1",
+              payload: {
+                type: "effect_observation_recorded",
+                effect_id: intent.effect_id,
+                observation,
+              },
+            }],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          database.exec("COMMIT");
+        } catch (error) {
+          if (database.isTransaction) database.exec("ROLLBACK");
+          throw error;
+        }
+        const projection = projectRun(fenceRun(
+          database,
+          readStream(database, intent.run_id),
+        ));
+        for (const watcher of watchers.get(intent.run_id) ?? []) {
+          watcher.publish(projection);
+        }
+        return observation;
+      } finally {
+        database.close();
       }
     },
 
@@ -1012,19 +1095,17 @@ function bindEffectIntent(intent, {
   prepared,
   runId,
 }) {
+  const facts = prepared.explicit_facts;
+  const resourceClaims = intent?.resource_claims ?? facts.resource_claims;
   if (intent?.schema !== "flow.effect-intent/v1" ||
       typeof intent.effect_id !== "string" || intent.effect_id.length === 0 ||
       typeof intent.idempotency_key !== "string" ||
       intent.idempotency_key.length === 0 ||
       typeof intent.attempt_id !== "string" || intent.attempt_id.length === 0 ||
-      ![
-        "read_only",
-        "caller_idempotent",
-        "reconcilable",
-        "one_shot_uncertain",
-      ].includes(intent.classification) ||
+      !effectClassPolicy(intent.classification) ||
       typeof intent.operation_contract !== "string" ||
       intent.operation_contract.length === 0 ||
+      !Array.isArray(resourceClaims) ||
       !(intent.route_binding === null ||
         (typeof intent.route_binding === "object" &&
           !Array.isArray(intent.route_binding)))) {
@@ -1032,7 +1113,6 @@ function bindEffectIntent(intent, {
       "lifecycle decisions must emit identified, idempotent effect intents",
     );
   }
-  const facts = prepared.explicit_facts;
   return freezeCanonical({
     ...intent,
     run_id: runId,
@@ -1046,7 +1126,7 @@ function bindEffectIntent(intent, {
     capability_envelopes: facts.capability_envelopes,
     operation_contracts: facts.operation_contracts,
     validator_contracts: facts.validator_contracts,
-    resource_claims: facts.resource_claims,
+    resource_claims: resourceClaims,
     time_facts: [],
     subject_generations: [],
   });
