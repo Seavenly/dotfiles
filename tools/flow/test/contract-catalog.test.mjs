@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,10 +10,13 @@ import {
   authorizeLegacyImport,
   loadContractCatalog,
 } from "../src/contract-catalog.mjs";
-
 const catalogPath = fileURLToPath(
   new URL("../../../config/flow/contracts/catalog.v1.json", import.meta.url),
 );
+const featureContractPath = fileURLToPath(new URL(
+  "../../../config/flow/contracts/drovr-required-features.v1.json",
+  import.meta.url,
+));
 const subjectBytes = Buffer.from("artifact\n");
 const subjectDigest =
   "sha256:5b3513f580c8397212ff2c8f459c199efc0c90e4354a5f3533adf0a3fff3a530";
@@ -27,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 5);
+  assert.equal(catalog.catalog_version, 6);
   assert.deepEqual(catalog.flow_runtime.rejection_contract, {
     contract: "flow.rejection/v1",
     fields: [
@@ -61,6 +65,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
+    delegated_agent_description: {
+      projection: "flow.delegated-agent-description-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
     legacy_compatibility_inventory: {
       projection: "flow.legacy-compatibility-inventory/v1",
       rejection: "flow.rejection/v1",
@@ -70,6 +79,20 @@ test("the public catalog exposes the settled interface and forbids legacy import
   assert.ok(catalog.contracts.includes("flow.query/v1"));
   assert.ok(catalog.contracts.includes("flow.legacy-compatibility-inventory/v1"));
   assert.ok(catalog.projections.includes("legacy_compatibility_inventory"));
+  assert.deepEqual(catalog.delegated_agent_port, {
+    contract: "flow.delegated-agent-port/v1",
+    authority: "non_authoritative",
+    adapter: "drovr/v1",
+    description_request: "flow.delegated-agent-description-request/v1",
+    description_projection: "flow.delegated-agent-description-projection/v1",
+    drovr_description: "drovr.delegated-agent-description/v1",
+    required_features: {
+      contract: "flow.drovr-required-features/v1",
+      source: "drovr-required-features.v1.json",
+      content_sha256:
+        "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896",
+    },
+  });
   assert.deepEqual(catalog.authority_roots, {
     legacy_claude: { base: "home", path: ".agent-teams" },
     legacy_agent_flow: { base: "state", path: "agent-flow" },
@@ -93,6 +116,33 @@ test("the public catalog exposes the settled interface and forbids legacy import
   );
 });
 
+test("the public catalog rejects a weakened Drovr feature baseline", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-drovr-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const weakenedCatalogPath = join(scratch, "catalog.json");
+  const weakenedFeatureContractPath = join(
+    scratch,
+    "drovr-required-features.v1.json",
+  );
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  const weakenedFeatureContract = JSON.parse(
+    await readFile(featureContractPath, "utf8"),
+  );
+  weakenedFeatureContract.features[0].guarantees.pop();
+  const weakenedBytes = Buffer.from(
+    `${JSON.stringify(weakenedFeatureContract, null, 2)}\n`,
+  );
+  catalog.delegated_agent_port.required_features.content_sha256 =
+    `sha256:${createHash("sha256").update(weakenedBytes).digest("hex")}`;
+  await writeFile(weakenedCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  await writeFile(weakenedFeatureContractPath, weakenedBytes);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: weakenedCatalogPath }),
+    /contract catalog Drovr feature baseline is incomplete or weakened/,
+  );
+});
+
 test("the public catalog rejects nested authority roots", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-roots-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -105,7 +155,10 @@ test("the public catalog rejects nested authority roots", async (t) => {
   await writeFile(nestedCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
   await assert.rejects(
-    loadContractCatalog({ catalogPath: nestedCatalogPath }),
+    loadContractCatalog({
+      catalogPath: nestedCatalogPath,
+      featureContractPath,
+    }),
     /contract catalog authority roots must be disjoint/,
   );
 });
@@ -126,7 +179,10 @@ test("the public catalog requires the complete rejection contract", async (t) =>
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
   await assert.rejects(
-    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
     /contract catalog rejection contract is incomplete/,
   );
 });
@@ -140,7 +196,10 @@ test("the public catalog binds registered queries to published contracts", async
   await writeFile(invalidCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
   await assert.rejects(
-    loadContractCatalog({ catalogPath: invalidCatalogPath }),
+    loadContractCatalog({
+      catalogPath: invalidCatalogPath,
+      featureContractPath,
+    }),
     /registered query contracts must be published/,
   );
 });
@@ -154,7 +213,10 @@ test("the public catalog requires the complete legacy import policy", async (t) 
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
   await assert.rejects(
-    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
     /contract catalog legacy import policy is incomplete/,
   );
 
@@ -170,7 +232,10 @@ test("the public catalog requires the complete legacy import policy", async (t) 
   catalog.legacy_import.forbidden_authority.pop();
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
   await assert.rejects(
-    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
     /contract catalog legacy import policy is incomplete/,
   );
 
@@ -178,7 +243,10 @@ test("the public catalog requires the complete legacy import policy", async (t) 
   catalog.legacy_import.allowed_subjects = ["legacy_completion"];
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
   await assert.rejects(
-    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
     /contract catalog legacy import policy is incomplete/,
   );
 
@@ -186,7 +254,10 @@ test("the public catalog requires the complete legacy import policy", async (t) 
   delete catalog.contracts;
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
   await assert.rejects(
-    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
     /contract catalog contracts must be an explicit array/,
   );
 });

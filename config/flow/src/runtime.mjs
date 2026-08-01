@@ -4,6 +4,9 @@ import { join } from "node:path";
 import {
   createFlowRuntime as createCoreFlowRuntime,
 } from "../../../tools/flow/src/flow-runtime.mjs";
+import {
+  createDrovrDelegatedAgentPort,
+} from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
 import { contentDigest } from "./canonical-json.mjs";
 import {
   FilesystemLegacyCompatibilityAdapter,
@@ -11,14 +14,26 @@ import {
 
 export function createFlowRuntime({
   env = process.env,
+  delegatedAgentPort = null,
   legacyAdapter = null,
   legacyRoots = defaultLegacyRoots(env),
 } = {}) {
   const adapter = legacyAdapter ?? new FilesystemLegacyCompatibilityAdapter({
     legacyRoots,
   });
+  const delegationPort = delegatedAgentPort ?? createDrovrDelegatedAgentPort({
+    dependencies: { env },
+  });
   return createCoreFlowRuntime({
     registeredQueries: {
+      async delegated_agent_description(request) {
+        assertDelegatedAgentDescriptionQuery(request);
+        return delegationPort.describe({
+          schema: "flow.delegated-agent-description-request/v1",
+          launch: request.launch,
+          caller_metadata: request.caller_metadata,
+        });
+      },
       async legacy_compatibility_inventory(request) {
         assertLegacyInventoryQuery(request);
         let observation;
@@ -79,6 +94,24 @@ function assertLegacyInventoryQuery(request) {
   ) {
     throw new FlowQueryRejected("unsupported FlowRuntime query", {
       code: "unsupported_query",
+    });
+  }
+}
+
+function assertDelegatedAgentDescriptionQuery(request) {
+  if (
+    request?.schema !== "flow.query/v1" ||
+    request.query !== "delegated_agent_description" ||
+    request.launch === null ||
+    typeof request.launch !== "object" ||
+    Array.isArray(request.launch) ||
+    !Object.hasOwn(request, "caller_metadata") ||
+    Object.keys(request).some(
+      (key) => !["schema", "query", "launch", "caller_metadata"].includes(key),
+    )
+  ) {
+    throw new FlowQueryRejected("invalid delegated-agent description query", {
+      code: "invalid_query",
     });
   }
 }

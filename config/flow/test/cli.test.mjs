@@ -40,6 +40,99 @@ test("flow CLI exposes the watermarked legacy inventory query", async (t) => {
   assert.match(projection.watermark.content_sha256, /^[0-9a-f]{64}$/u);
 });
 
+test("flow CLI describes an exact Drovr launch through FlowRuntime query", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-cli-delegation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  let stdout = "";
+  let stderr = "";
+  const status = await runCli(
+    [
+      "query",
+      "delegated-agent",
+      "--harness",
+      "codex",
+      "--role",
+      "reviewer",
+      "--capability",
+      "read-only",
+      "--caller-metadata",
+      '{"run_id":"run:example","card_id":"review"}',
+      "--json",
+    ],
+    {
+      runtime: createFlowRuntime({
+        env: {
+          ...process.env,
+          HOME: scratch,
+          XDG_STATE_HOME: join(scratch, "state"),
+          DROVR_CONFIG_DIR: join(import.meta.dirname, "../../drovr"),
+        },
+      }),
+      stderr: { write: (chunk) => { stderr += chunk; } },
+      stdout: { write: (chunk) => { stdout += chunk; } },
+    },
+  );
+
+  assert.equal(status, 0);
+  assert.equal(stderr, "");
+  const projection = JSON.parse(stdout);
+  assert.equal(projection.schema, "flow.delegated-agent-description-projection/v1");
+  assert.equal(projection.status, "blocked");
+  assert.equal(projection.description.launch.harness, "codex");
+  assert.equal(projection.description.launch.capability, "read-only");
+  assert.deepEqual(projection.description.caller_metadata, {
+    run_id: "run:example",
+    card_id: "review",
+  });
+  assert.deepEqual(projection.legal_next_actions, [
+    "repair_delegated_runtime_contract",
+    "refresh_delegated_runtime_description",
+  ]);
+  assert.deepEqual(
+    projection.compatibility.findings.map(({ feature_id: featureId }) =>
+      featureId),
+    [
+      "caller_idempotent_dispatch",
+      "caller_idempotent_discovery",
+      "caller_keyed_ordered_input",
+      "terminal_proof_classification",
+      "launch_binding_settlement_proof",
+      "opaque_caller_ownership_metadata",
+    ],
+  );
+});
+
+test("flow CLI classifies an invalid launch selector without suggesting retry", async () => {
+  let stdout = "";
+  let stderr = "";
+
+  const status = await runCli(
+    [
+      "query",
+      "delegated-agent",
+      "--harness",
+      "bogus",
+      "--caller-metadata",
+      "{}",
+      "--json",
+    ],
+    {
+      stderr: { write: (chunk) => { stderr += chunk; } },
+      stdout: { write: (chunk) => { stdout += chunk; } },
+    },
+  );
+
+  assert.equal(status, 0);
+  assert.equal(stderr, "");
+  const projection = JSON.parse(stdout);
+  assert.equal(projection.status, "blocked");
+  assert.equal(
+    projection.compatibility.code,
+    "invalid_description_request",
+  );
+  assert.deepEqual(projection.legal_next_actions, []);
+});
+
 test("flow CLI rejects incomplete arguments and classifies inventory failures", async () => {
   let stderr = "";
   let stdout = "";

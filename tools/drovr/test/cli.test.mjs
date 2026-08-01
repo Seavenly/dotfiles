@@ -30,6 +30,7 @@ async function executable(path, source) {
 test("public command advertises durable turn commands", async () => {
   const { stdout } = await execFileAsync(drovr, ["--help"], {
     encoding: "utf8",
+    env: { ...process.env, DOTFILES_ROOT: root },
   });
 
   assert.match(stdout, /drovr doctor/);
@@ -49,6 +50,63 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr agent retire AGENT_ID/);
   assert.match(stdout, /drovr task close TASK_ID/);
   assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
+  assert.match(stdout, /drovr describe \[launch options\] --caller-metadata JSON/);
+});
+
+test("public describe command returns an exact launch without initializing state", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-describe-cli-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const stateHome = join(scratch, "state");
+
+  const { stdout } = await execFileAsync(
+    drovr,
+    [
+      "describe",
+      "--harness",
+      "codex",
+      "--capability",
+      "read-only",
+      "--caller-metadata",
+      '{"run_id":"run:example"}',
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOTFILES_ROOT: root,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+        XDG_STATE_HOME: stateHome,
+      },
+    },
+  );
+
+  const report = JSON.parse(stdout);
+  assert.equal(report.schema, "drovr.command/v1");
+  assert.equal(report.command, "describe");
+  assert.equal(report.ok, true);
+  assert.equal(report.result.schema, "drovr.delegated-agent-description/v1");
+  assert.equal(report.result.launch.harness, "codex");
+  assert.deepEqual(report.result.caller_metadata, { run_id: "run:example" });
+  await assert.rejects(stat(join(stateHome, "drovr")), { code: "ENOENT" });
+});
+
+test("describe help documents its non-mutating contract arguments", async () => {
+  const { stdout, stderr } = await execFileAsync(
+    drovr,
+    ["describe", "--help"],
+    {
+      encoding: "utf8",
+      env: { ...process.env, DOTFILES_ROOT: root },
+    },
+  );
+
+  assert.equal(stderr, "");
+  assert.match(
+    stdout,
+    /^Usage:\n  drovr describe \[launch options\] --caller-metadata JSON/u,
+  );
+  assert.match(stdout, /--caller-metadata JSON/u);
+  assert.match(stdout, /--capability CAPABILITY/u);
 });
 
 test("delegate help documents options without initializing state", async (t) => {

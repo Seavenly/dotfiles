@@ -8,6 +8,10 @@ import test from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import { createFlowRuntime } from "../src/runtime.mjs";
+import { describeDelegatedAgent } from "../../../tools/drovr/src/description.mjs";
+import {
+  createDrovrDelegatedAgentPort,
+} from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -19,6 +23,14 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
   ));
   const inventorySchema = JSON.parse(await readFile(
     join(root, "schemas", "flow.legacy-compatibility-inventory.v1.schema.json"),
+    "utf8",
+  ));
+  const delegatedDescriptionSchema = JSON.parse(await readFile(
+    join(
+      root,
+      "schemas",
+      "flow.delegated-agent-description-projection.v1.schema.json",
+    ),
     "utf8",
   ));
   const rejectionSchema = JSON.parse(await readFile(
@@ -91,6 +103,53 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
 
   assert.equal(ajv.validate(querySchema, request), true, ajv.errorsText());
   assert.equal(ajv.validate(inventorySchema, projection), true, ajv.errorsText());
+  const delegatedRequest = {
+    schema: "flow.query/v1",
+    query: "delegated_agent_description",
+    launch: { harness: "codex", capability: "read-only" },
+    caller_metadata: { run_id: "run:contract", card_id: "review" },
+  };
+  const delegatedProjection = await createFlowRuntime({
+    env: {
+      ...process.env,
+      DROVR_CONFIG_DIR: join(root, "../drovr"),
+    },
+  }).query(delegatedRequest);
+  assert.equal(
+    ajv.validate(querySchema, delegatedRequest),
+    true,
+    ajv.errorsText(),
+  );
+  assert.equal(
+    ajv.validate(delegatedDescriptionSchema, delegatedProjection),
+    true,
+    ajv.errorsText(),
+  );
+  const malformedProjection = await createDrovrDelegatedAgentPort({
+    async describeDrovr(drovrRequest, dependencies) {
+      const description = structuredClone(
+        await describeDelegatedAgent(drovrRequest, dependencies),
+      );
+      description.feature_advertisement.features[0] = null;
+      return description;
+    },
+    dependencies: {
+      env: {
+        ...process.env,
+        DROVR_CONFIG_DIR: join(root, "../drovr"),
+      },
+    },
+  }).describe({
+    schema: "flow.delegated-agent-description-request/v1",
+    launch: { harness: "codex", capability: "read-only" },
+    caller_metadata: { run_id: "run:malformed" },
+  });
+  assert.equal(malformedProjection.description, null);
+  assert.equal(
+    ajv.validate(delegatedDescriptionSchema, malformedProjection),
+    true,
+    ajv.errorsText(),
+  );
   assert.equal(ajv.validate(rejectionSchema, {
     schema: "flow.rejection/v1",
     operation: "query",

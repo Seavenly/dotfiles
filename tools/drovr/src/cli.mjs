@@ -2,6 +2,7 @@
 
 import { diagnose } from "./doctor.mjs";
 import { delegate } from "./delegate.mjs";
+import { describeDelegatedAgent } from "./description.mjs";
 import { DrovrError } from "./errors.mjs";
 import { readFile } from "node:fs/promises";
 import { attach } from "./attach.mjs";
@@ -39,6 +40,7 @@ import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
 const HELP = `Usage:
   drovr doctor
   drovr status
+  drovr describe [launch options] --caller-metadata JSON
   drovr delegate [options] [PROMPT]
   drovr ask AGENT_ID [options] [PROMPT]
   drovr turn start AGENT_ID [options] [PROMPT]
@@ -63,6 +65,7 @@ const HELP = `Usage:
 Commands:
   doctor    Diagnose configuration and runtime prerequisites
   status    Summarize durable state and current Herdr observations
+  describe  Resolve a non-mutating exact launch and feature description
   delegate  Run one complete logical turn with a managed Claude or Codex agent
   ask       Run a later logical turn with an existing managed agent
   turn      Start, steer, wait for, get, or discover durable logical turns
@@ -95,6 +98,19 @@ Options:
 Supply the prompt once as PROMPT, with --prompt-file, or on standard input.
 `;
 
+const DESCRIPTION_HELP = `Usage:
+  drovr describe [launch options] --caller-metadata JSON
+
+Options:
+  --harness HARNESS           Select claude or codex
+  --role ROLE                 Select the tracked role profile
+  --model MODEL               Select the native harness model
+  --effort EFFORT             Select low, medium, high, or xhigh
+  --capability CAPABILITY     Select the tracked capability profile
+  --caller-metadata JSON      Bind opaque caller ownership metadata
+  -h, --help                  Show this help
+`;
+
 export async function runCli(argv) {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     process.stdout.write(HELP);
@@ -110,6 +126,15 @@ export async function runCli(argv) {
     return 0;
   }
 
+  if (
+    argv[0] === "describe" &&
+    argv.length === 2 &&
+    (argv[1] === "--help" || argv[1] === "-h")
+  ) {
+    process.stdout.write(DESCRIPTION_HELP);
+    return 0;
+  }
+
   if (argv[0] === "doctor" && argv.length === 1) {
     const report = await diagnose();
     process.stdout.write(`${JSON.stringify(report)}\n`);
@@ -118,6 +143,18 @@ export async function runCli(argv) {
 
   if (argv[0] === "status" && argv.length === 1) {
     process.stdout.write(`${JSON.stringify(await statusReport())}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "describe") {
+    const request = parseDescriptionArguments(argv.slice(1));
+    const result = await describeDelegatedAgent(request);
+    process.stdout.write(`${JSON.stringify({
+      schema: "drovr.command/v1",
+      command: "describe",
+      ok: true,
+      result,
+    })}\n`);
     return 0;
   }
 
@@ -319,6 +356,49 @@ export async function runCli(argv) {
   }
 
   invalidArguments(`unsupported command: ${argv[0]}`);
+}
+
+function parseDescriptionArguments(args) {
+  const fields = new Map([
+    ["--harness", "harness"],
+    ["--role", "role"],
+    ["--model", "model"],
+    ["--effort", "effort"],
+    ["--capability", "capability"],
+  ]);
+  const launch = {};
+  let callerMetadata;
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (typeof value !== "string") {
+      invalidArguments(`describe option requires a value: ${flag ?? "missing"}`);
+    }
+    if (flag === "--caller-metadata") {
+      if (callerMetadata !== undefined) {
+        invalidArguments("describe caller metadata may be supplied only once");
+      }
+      try {
+        callerMetadata = JSON.parse(value);
+      } catch {
+        invalidArguments("describe caller metadata must be valid JSON");
+      }
+      continue;
+    }
+    const field = fields.get(flag);
+    if (!field || Object.hasOwn(launch, field)) {
+      invalidArguments(`unsupported or repeated describe option: ${flag}`);
+    }
+    launch[field] = value;
+  }
+  if (callerMetadata === undefined) {
+    invalidArguments("describe requires --caller-metadata JSON");
+  }
+  return {
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch,
+    caller_metadata: callerMetadata,
+  };
 }
 
 function parseCloseArguments(argv, command, identifier) {

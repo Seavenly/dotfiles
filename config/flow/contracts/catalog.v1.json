@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 5,
+  "catalog_version": 6,
   "flow_runtime": {
     "contract": "flow.runtime/v1",
     "operations": [
@@ -69,6 +69,11 @@
         "authority": "read_only",
         "result": "watermarked_authority_projection",
         "registered": {
+          "delegated_agent_description": {
+            "request": "flow.query/v1",
+            "projection": "flow.delegated-agent-description-projection/v1",
+            "rejection": "flow.rejection/v1"
+          },
           "legacy_compatibility_inventory": {
             "request": "flow.query/v1",
             "projection": "flow.legacy-compatibility-inventory/v1",
@@ -80,6 +85,19 @@
         "authority": "read_only",
         "result": "watermarked_authority_projection_stream"
       }
+    }
+  },
+  "delegated_agent_port": {
+    "contract": "flow.delegated-agent-port/v1",
+    "authority": "non_authoritative",
+    "adapter": "drovr/v1",
+    "description_request": "flow.delegated-agent-description-request/v1",
+    "description_projection": "flow.delegated-agent-description-projection/v1",
+    "drovr_description": "drovr.delegated-agent-description/v1",
+    "required_features": {
+      "contract": "flow.drovr-required-features/v1",
+      "source": "drovr-required-features.v1.json",
+      "content_sha256": "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896"
     }
   },
   "contracts": [
@@ -111,6 +129,30 @@
     "flow.legacy-baseline-inventory/v1",
     "flow.legacy-compatibility-inventory/v1",
     "flow.delegated-agent-port/v1",
+    "flow.drovr-required-features/v1",
+    "flow.delegated-agent-description-request/v1",
+    "flow.delegated-agent-description-projection/v1",
+    "drovr.delegated-agent-description-request/v1",
+    "drovr.delegated-agent-description/v1",
+    "drovr.launch-description/v1",
+    "drovr.effective-authority/v1",
+    "drovr.capacity/v1",
+    "drovr.credential-reference/v1",
+    "drovr.feature-advertisement/v1",
+    "drovr.feature/exact-launch-description/v1",
+    "drovr.feature/caller-idempotent-dispatch/v1",
+    "drovr.feature/caller-idempotent-discovery/v1",
+    "drovr.feature/caller-keyed-ordered-input/v1",
+    "drovr.feature/bounded-observation/v1",
+    "drovr.feature/bounded-wait/v1",
+    "drovr.feature/transcript-correlation/v1",
+    "drovr.feature/cancellation/v1",
+    "drovr.feature/reconciliation/v1",
+    "drovr.feature/terminal-proof-classification/v1",
+    "drovr.feature/late-result-correlation/v1",
+    "drovr.feature/launch-binding-settlement-proof/v1",
+    "drovr.feature/opaque-caller-ownership-metadata/v1",
+    "drovr.feature/feature-advertisement/v1",
     "work.workspace/v1",
     "work.artifact/v1",
     "work.review/v1",
@@ -187,6 +229,7 @@
     "tracker_progress",
     "review_inbox",
     "transition",
+    "delegated_agent_description",
     "legacy_compatibility_inventory"
   ],
   "authority_roots": {

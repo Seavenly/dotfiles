@@ -111,6 +111,9 @@ dotfiles upgrade tools nvim     upgrade selected components only
 dotfiles upgrade mise           update the pinned mise release and checksums
 flow query legacy-inventory --json
                                 inventory retained legacy flow evidence read-only
+flow query delegated-agent --harness codex --capability read-only \
+  --caller-metadata '{"owner":"preparation"}' --json
+                                inspect an exact non-mutating Drovr launch contract
 ```
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,

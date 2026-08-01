@@ -35,7 +35,7 @@ disabled, so this API does not authorize normal replacement launches.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
-  is the first registered query.
+  and delegated-agent description are registered queries.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
@@ -69,6 +69,45 @@ The focused public contract suite is:
 node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/purity-contracts.test.mjs
 ```
+
+## Delegated-agent preparation
+
+`createDrovrDelegatedAgentPort()` is the non-authoritative preparation seam for
+Drovr. Its `describe` operation resolves a non-mutating
+`drovr.delegated-agent-description/v1`, independently checks every required
+feature contract and description binding, and returns a
+`flow.delegated-agent-description-projection/v1`. Compatible projections expose
+only `bind_exact_launch_description` and refresh; incompatible, contradictory,
+or unavailable descriptions expose closed repair or retry actions and never
+invent a watermark.
+
+Flow owns its required baseline in the versioned
+`config/flow/contracts/drovr-required-features.v1.json` contract and pins its
+exact bytes in the public catalog. Drovr independently owns and advertises its
+implemented contracts and exact availability. The port compares those separate
+authorities. The current runtime is intentionally blocked because six
+lifecycle contracts remain unavailable; the projection exposes repair and
+refresh, but no bind action.
+Invalid launch selectors produce an `invalid_description_request` block with no
+retry action. Malformed adapter output is sanitized to a schema-valid closed
+projection rather than being presented as authoritative description evidence.
+Missing Flow contract bytes or validation dependencies produce a
+`delegated_agent_port_unavailable` block with only the local
+`repair_delegated_agent_port` action.
+
+Operators can inspect the same projection through the five-operation runtime:
+
+```sh
+flow query delegated-agent \
+  --harness codex \
+  --role reviewer \
+  --capability read-only \
+  --caller-metadata '{"run_id":"run:example","card_id":"review"}' \
+  --json
+```
+
+This query creates no run and no Drovr resource. Future plan compilation binds
+the exact description and comparison keys; it does not refresh them implicitly.
 
 The managed sources under `config/flow/` are:
 

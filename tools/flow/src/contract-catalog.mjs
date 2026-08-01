@@ -1,7 +1,17 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { authorityRootsAreDisjoint } from "./authority-root.mjs";
+import {
+  FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
+  FLOW_REQUIRED_DROVR_FEATURES,
+} from "./drovr-delegated-agent-port.mjs";
+import featureContract from
+  "../../../config/flow/contracts/drovr-required-features.v1.json" with {
+    type: "json",
+  };
 import { isExactSequence } from "./validation.mjs";
 
 const FLOW_RUNTIME_OPERATIONS = [
@@ -43,8 +53,12 @@ const FORBIDDEN_LEGACY_AUTHORITY = [
   "effect_causation",
   "completion",
 ];
-
-export async function loadContractCatalog({ catalogPath, homeDirectory, stateDirectory }) {
+export async function loadContractCatalog({
+  catalogPath,
+  featureContractPath,
+  homeDirectory,
+  stateDirectory,
+}) {
   const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
   if (catalog.schema !== "flow.contract-catalog/v1") {
     throw new Error(`unsupported contract catalog: ${catalog.schema ?? "missing"}`);
@@ -65,6 +79,29 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
+  }
+  let publishedFeatureContract;
+  let publishedFeatureContractBytes;
+  try {
+    const source = catalog.delegated_agent_port?.required_features?.source;
+    if (source !== "drovr-required-features.v1.json") throw new Error();
+    publishedFeatureContractBytes = await readFile(
+      featureContractPath ?? resolve(dirname(catalogPath), source),
+    );
+    publishedFeatureContract = JSON.parse(publishedFeatureContractBytes);
+  } catch {
+    throw new Error(
+      "contract catalog Drovr feature baseline is incomplete or weakened",
+    );
+  }
+  if (!delegatedAgentPortIsPublished(
+    catalog,
+    publishedFeatureContract,
+    publishedFeatureContractBytes,
+  )) {
+    throw new Error(
+      "contract catalog Drovr feature baseline is incomplete or weakened",
+    );
   }
   const roots = Object.values(catalog.authority_roots ?? {});
   if (roots.length === 0 || !authorityRootsAreDisjoint(roots, {
@@ -92,6 +129,40 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
     }
   }
   return catalog;
+}
+
+function delegatedAgentPortIsPublished(
+  catalog,
+  publishedFeatureContract,
+  publishedFeatureContractBytes,
+) {
+  const port = catalog.delegated_agent_port;
+  const contracts = catalog.contracts;
+  return port?.contract === "flow.delegated-agent-port/v1" &&
+    port.authority === "non_authoritative" &&
+    port.adapter === "drovr/v1" &&
+    port.description_request ===
+      "flow.delegated-agent-description-request/v1" &&
+    port.description_projection ===
+      "flow.delegated-agent-description-projection/v1" &&
+    port.drovr_description === "drovr.delegated-agent-description/v1" &&
+    port.required_features?.contract === featureContract.schema &&
+    port.required_features?.source === "drovr-required-features.v1.json" &&
+    port.required_features?.content_sha256 ===
+      FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST &&
+    `sha256:${createHash("sha256")
+      .update(publishedFeatureContractBytes)
+      .digest("hex")}` === FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST &&
+    isDeepStrictEqual(publishedFeatureContract, featureContract) &&
+    featureContract.features.length === FLOW_REQUIRED_DROVR_FEATURES.length &&
+    [
+      port.contract,
+      port.description_request,
+      port.description_projection,
+      port.drovr_description,
+      featureContract.schema,
+      ...FLOW_REQUIRED_DROVR_FEATURES.map(({ contract }) => contract),
+    ].every((contract) => contracts.includes(contract));
 }
 
 export function authorizeLegacyImport(catalog, {

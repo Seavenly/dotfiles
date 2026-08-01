@@ -38,3 +38,11 @@ References outside retained roots are not opened or fingerprinted; they remain
 explicit uncertain coverage boundaries. Because operator-supplied stack paths
 have no retained registry, the default CLI projection keeps
 `inspect_legacy_evidence` legal until that authority gap is recorded or resolved.
+
+`flow query delegated-agent ... --json` is the read-only
+`DelegatedAgentPort` preparation projection. It reads the tracked Drovr catalog,
+resolves one exact launch, verifies the complete flow-required feature baseline,
+and exposes the Drovr configuration watermark and closed legal next actions.
+It does not create a replacement run or mutate Drovr delegated work. Until all
+required lifecycle features advertise `supported`, the projection is a typed
+compatibility block with repair and refresh as its only legal actions.

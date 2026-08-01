@@ -18,5 +18,13 @@ if [[ -f "$root/config/agent-flow/package-lock.json" ]]; then
   npm ci --prefix "$root/config/agent-flow"
 fi
 
+if [[ -f "$root/config/flow/package-lock.json" ]]; then
+  npm ci --prefix "$root/config/flow"
+fi
+
+if [[ -f "$root/tools/flow/package-lock.json" ]]; then
+  npm ci --prefix "$root/tools/flow"
+fi
+
 # vim.pack and Tree-sitter both converge during headless startup.
 nvim --headless '+qa' </dev/null
