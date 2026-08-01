@@ -89,6 +89,40 @@ test("cancel does not interrupt a turn already owned by force cleanup", async (t
   assert.equal(herdrCalls, 0);
 });
 
+test("cancel reports uncertain when an idle prompt was never delivered", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.herdr = { state_change_seq_before_delivery: 7 };
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let interrupts = 0;
+  const settled = {
+    agent_status: "idle",
+    state_change_seq: 7,
+    agent_session: { value: "codex-session-1" },
+  };
+
+  const result = await cancelTurn(fixture.turn.id, {}, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return settled;
+      },
+      async waitForAgent() {
+        return settled;
+      },
+      async interruptAgent() {
+        interrupts += 1;
+      },
+    },
+    wallClock: () => Date.parse("2026-07-23T10:00:06.000Z"),
+  });
+
+  assert.equal(result.turn.status, "uncertain");
+  assert.equal(result.command_status, "uncertain");
+  assert.equal(interrupts, 0);
+});
+
 test("failed interruption and ambiguous settlement never report cancellation", async (t) => {
   await t.test("failed interruption is uncertain", async (t) => {
     const fixture = await turnFixture(t);
@@ -264,6 +298,42 @@ test("wait rejects a stale idle observation until the submitted input reaches th
   assert.equal(waitCalls, 2);
   assert.equal(context.turn.status, "completed");
   assert.equal(context.turn.result.text, "settled after delivery");
+});
+
+test("wait settles unobserved prompt delivery as uncertain after a bounded grace", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.herdr = { state_change_seq_before_delivery: 7 };
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let clockMs = 0;
+
+  const context = await waitForTurn(
+    fixture.turn.id,
+    { timeoutMs: 1 },
+    {
+      env: fixture.env,
+      herdr: {
+        async waitForAgent() {
+          return {
+            agent_status: "idle",
+            state_change_seq: 7,
+            agent_session: { value: "codex-session-1" },
+          };
+        },
+      },
+      clock: () => clockMs,
+      wallClock: () => Date.parse("2026-07-23T10:00:06.000Z"),
+      async delay(milliseconds) {
+        clockMs += milliseconds;
+      },
+    },
+  );
+
+  assert.equal(context.turn.status, "uncertain");
+  assert.match(
+    context.turn.error,
+    /submitted input was not observed after the transcript cursor/u,
+  );
 });
 
 test("wait starts transcript grace after a newer Herdr settlement", async (t) => {
