@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { confirmedLaunchRequest } from "../test-support/dynamic-checkpoint.mjs";
@@ -55,6 +56,8 @@ test("a registered caller-idempotent operation executes from committed intent", 
   );
   assert.equal(commandReceipt.accepted, true);
   assert.equal(commandReceipt.effect_intents.length, 1);
+  assert.equal(runtime.query({ run_id: launch.run_id }).watermark,
+    commandReceipt.authority_watermark);
 
   await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
   const completed = runtime.query({ run_id: launch.run_id });
@@ -441,6 +444,68 @@ test("a one-shot uncertain effect is checkpoint-bound and never retried", async 
   assert.equal(uncertain.effects[0].last_observation.presence, "absent");
 });
 
+test("one-shot recovery adopts exact presence without provider reinvocation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  let originalIntent;
+  let invocationCount = 0;
+  const firstRuntime = operationRuntime(firstAuthority, {
+    classification: "one_shot_uncertain",
+    observe: indeterminateObservation,
+    invoke(intent) {
+      originalIntent = intent;
+      invocationCount += 1;
+      throw new Error("receipt lost after one-shot effect");
+    },
+  });
+  const prepared = firstRuntime.prepare(registeredOperationProposal({
+    classification: "one_shot_uncertain",
+  }));
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstRuntime.command(firstRuntime.query({ run_id: launch.run_id })
+    .legal_actions.find(({ decision }) => decision === "approve"));
+  await until(() => invocationCount === 1);
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = operationRuntime(recoveredAuthority, {
+    classification: "one_shot_uncertain",
+    invoke() {
+      invocationCount += 1;
+      assert.fail("present one-shot effect must be adopted, not invoked");
+    },
+    observe(intent) {
+      return {
+        schema: "flow.effect-observation/v1",
+        effect_id: intent.effect_id,
+        idempotency_key: intent.idempotency_key,
+        presence: "present",
+        causation: {
+          effect_id: originalIntent.effect_id,
+          idempotency_key: originalIntent.idempotency_key,
+        },
+        provider_observation: { provider_id: "accepted-once" },
+      };
+    },
+  });
+  recoveredRuntime.command(recoveredRuntime.query({ run_id: launch.run_id })
+    .legal_actions.find(({ type }) => type === "recovery"));
+  await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+
+  assert.equal(invocationCount, 1);
+  assert.equal(recoveredRuntime.query({ run_id: launch.run_id })
+    .effects[0].receipt.provider_receipt.provider_id, "accepted-once");
+});
+
 test("a checkpoint-bound operation rejects additional dependencies", () => {
   const runtime = operationRuntime(createNoopAuthority(), {
     classification: "caller_idempotent",
@@ -582,6 +647,150 @@ test("operation settlement does not terminate a graph with pending work", async 
     checkpointId === "final-confirmation"), true);
 });
 
+test("an unresolved effect prevents terminal checkpoint decline", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  let settle;
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      return new Promise((resolve) => {
+        settle = () => resolve(operationReceipt(intent));
+      });
+    },
+  });
+  const proposal = registeredOperationProposal();
+  proposal.graph.cards.push({
+    ...structuredClone(proposal.graph.cards[0]),
+    id: "other-confirmation",
+    inputs: {},
+  });
+  proposal.explicit_facts.limits.max_cards = 3;
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ checkpoint_id: checkpointId, decision }) =>
+      checkpointId === "confirm-plan" && decision === "approve",
+  ));
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.length === 1);
+  const executing = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(executing.legal_actions.some(({ decision }) =>
+    decision === "decline"), false);
+  const rejection = runtime.command({
+    schema: "flow.command/v1",
+    type: "checkpoint_decision",
+    run_id: launch.run_id,
+    checkpoint_id: "other-confirmation",
+    decision: "decline",
+    expected_watermark: executing.watermark,
+  });
+  assert.equal(rejection.code, "effect_settlement_required");
+  assert.equal(runtime.query().admission.active_runs, 1);
+
+  settle();
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .effects[0].status === "succeeded");
+  assert.equal(runtime.query({ run_id: launch.run_id }).legal_actions.some(
+    ({ checkpoint_id: checkpointId, decision }) =>
+      checkpointId === "other-confirmation" && decision === "decline",
+  ), true);
+});
+
+test("an unresolved effect withholds terminal revision decline", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  let settle;
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      return new Promise((resolve) => {
+        settle = () => resolve(operationReceipt(intent));
+      });
+    },
+  });
+  const proposal = registeredOperationProposal();
+  const revisionCard = {
+    ...structuredClone(proposal.graph.cards[0]),
+    id: "revise-scope",
+    inputs: {},
+  };
+  proposal.graph.cards.push(revisionCard);
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "scope_revision_required",
+  };
+  const block = {
+    schema: "flow.card-block/v1",
+    id: "revise-scope:block",
+    type: "plan_revision_required",
+    trigger,
+    required_capabilities: [],
+    revision_template_ids: ["replace-revise-scope"],
+  };
+  proposal.requested_authority.commands.push("revision_decision");
+  proposal.explicit_facts.operation_contracts.push(
+    "flow.adapter/card-block-observation/v1",
+  );
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/card-block-observation/v1",
+  );
+  proposal.explicit_facts.block_observations.push(structuredClone(
+    observeCardBlock({ card_id: revisionCard.id, block }),
+  ));
+  Object.assign(proposal.explicit_facts.limits, {
+    max_cards: 4,
+    max_revisions: 1,
+    max_cards_per_revision: 1,
+  });
+  proposal.revision_templates = [{
+    schema: "flow.plan-revision-template/v1",
+    id: "replace-revise-scope",
+    trigger,
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [{
+        ...structuredClone(revisionCard),
+        id: "revised-scope",
+      }],
+      add_edges: [],
+      supersede_cards: [revisionCard.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  }];
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ checkpoint_id: checkpointId, decision }) =>
+      checkpointId === "confirm-plan" && decision === "approve",
+  ));
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.length === 1);
+
+  const executing = runtime.query({ run_id: launch.run_id });
+  assert.equal(executing.legal_actions.some(
+    ({ type, decision }) => type === "revision_decision" && decision === "accept",
+  ), true);
+  assert.equal(executing.legal_actions.some(
+    ({ type, decision }) => type === "revision_decision" && decision === "decline",
+  ), false);
+  settle();
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .effects[0].status === "succeeded");
+});
+
 test("launch rejects an operation whose adapter is not registered", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -602,6 +811,22 @@ test("launch rejects an operation whose adapter is not registered", async (t) =>
   assert.equal(rejection.schema, "flow.rejection/v1");
   assert.equal(rejection.code, "unregistered_operation_contract");
   assert.deepEqual(unregisteredRuntime.query().runs, []);
+});
+
+test("the public runtime rejects a null operation registry", () => {
+  assert.throws(
+    () => createFlowRuntime({ registeredOperations: null }),
+    /registeredOperations must be an object or Map/,
+  );
+});
+
+test("prepare rejects an operation whose adapter is not registered", () => {
+  const runtime = createFlowRuntime({ registeredOperations: {} });
+
+  assert.throws(
+    () => runtime.prepare(registeredOperationProposal()),
+    /operation contract is not registered/,
+  );
 });
 
 test("prepare rejects incomplete operation adapter registrations", () => {
@@ -660,9 +885,13 @@ test("watch publishes intent commitment and receipt settlement", async (t) => {
   const executing = (await intentUpdate).value;
   assert.equal(executing.effects[0].status, "unresolved");
 
-  const receiptUpdate = watcher.next();
+  let receiptUpdate = watcher.next();
   settle();
-  const completed = await withTimeout(receiptUpdate, 1_000);
+  let completed = await withTimeout(receiptUpdate, 1_000);
+  while (completed.value.effects[0].status !== "succeeded") {
+    receiptUpdate = watcher.next();
+    completed = await withTimeout(receiptUpdate, 1_000);
+  }
   assert.equal(completed.value.effects[0].status, "succeeded");
   assert.equal(completed.value.phase, "succeeded");
   await watcher.return();

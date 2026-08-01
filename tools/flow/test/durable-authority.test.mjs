@@ -495,6 +495,33 @@ test("only a complete durable effect intent is invoked and receipted", async (t)
   );
 });
 
+test("authority rejects kernel resource claims outside prepared facts", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel(fold, command) {
+      const decision = effectLifecycle(fold, command);
+      if (decision.schema === "flow.rejection/v1") return decision;
+      decision.effect_intents[0].resource_claims = [{
+        kind: "production-database",
+        id: "*",
+      }];
+      return decision;
+    },
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+
+  assert.throws(
+    () => runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions[0]),
+    /lifecycle decisions must emit identified, idempotent effect intents/,
+  );
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }).effects, []);
+});
+
 test("deferred terminal events survive out-of-order multi-effect settlement", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -666,6 +693,7 @@ test("settlement after lock release cannot write an effect receipt", async (t) =
     invoke: () => new Promise((resolve) => { settle = resolve; }),
   });
 
+  await Promise.resolve();
   authority.close();
   settle("provider-settled");
   await assert.rejects(
@@ -751,6 +779,62 @@ test("recovery fails closed for effects that require reconciliation", async (t) 
   await assert.rejects(
     () => recovered.invokeEffect(receipt.effect_intents[0], { invoke() {} }),
     (error) => error.code === "effect_reconciliation_required",
+  );
+  const normalized = await recovered.recordEffectObservation(
+    receipt.effect_intents[0],
+    {
+      schema: "flow.effect-observation/v1",
+      effect_id: receipt.effect_intents[0].effect_id,
+      idempotency_key: receipt.effect_intents[0].idempotency_key,
+      presence: "absent",
+      causation: null,
+      provider_observation: null,
+    },
+  );
+  assert.equal(normalized.presence, "indeterminate");
+  await assert.rejects(
+    () => recovered.invokeEffect(receipt.effect_intents[0], {
+      reconciliation: "invoke_absent",
+      invoke() {},
+    }),
+    (error) => error.code === "effect_absence_not_proven",
+  );
+  const presentWithoutEvidence = await recovered.recordEffectObservation(
+    receipt.effect_intents[0],
+    {
+      schema: "flow.effect-observation/v1",
+      effect_id: receipt.effect_intents[0].effect_id,
+      idempotency_key: receipt.effect_intents[0].idempotency_key,
+      presence: "present",
+      causation: {
+        effect_id: receipt.effect_intents[0].effect_id,
+        idempotency_key: receipt.effect_intents[0].idempotency_key,
+      },
+      provider_observation: null,
+    },
+  );
+  assert.equal(presentWithoutEvidence.presence, "indeterminate");
+  await recovered.recordEffectObservation(receipt.effect_intents[0], {
+    schema: "flow.effect-observation/v1",
+    effect_id: receipt.effect_intents[0].effect_id,
+    idempotency_key: receipt.effect_intents[0].idempotency_key,
+    presence: "absent",
+    causation: null,
+    provider_observation: { found: false },
+  });
+  await assert.rejects(
+    () => recovered.invokeEffect(receipt.effect_intents[0], {
+      reconciliation: "invoke_absent",
+      invoke() { throw new Error("receipt lost after mutation"); },
+    }),
+    /receipt lost after mutation/,
+  );
+  await assert.rejects(
+    () => recovered.invokeEffect(receipt.effect_intents[0], {
+      reconciliation: "invoke_absent",
+      invoke() { assert.fail("stale absence must not authorize invocation"); },
+    }),
+    (error) => error.code === "effect_absence_not_proven",
   );
 });
 
@@ -1064,6 +1148,7 @@ function effectLifecycle(fold, command, classification = "caller_idempotent") {
           classification,
           operation_contract: "flow.operation/test/v1",
           route_binding: null,
+          resource_claims: [],
         }],
       };
 }
@@ -1082,6 +1167,7 @@ function multiEffectLifecycle(_fold, command) {
       classification: "caller_idempotent",
       operation_contract: "flow.operation/test/v1",
       route_binding: null,
+      resource_claims: [],
     }],
     obligations: [],
     projection_hints: [],

@@ -15,6 +15,12 @@ export function createFlowRuntime({
   registeredOperations = {},
   registeredQueries = {},
 } = {}) {
+  if (registeredOperations === null ||
+      !(registeredOperations instanceof Map) &&
+      (typeof registeredOperations !== "object" ||
+       Array.isArray(registeredOperations))) {
+    throw new TypeError("registeredOperations must be an object or Map");
+  }
   const compile = planCompiler === compileDynamicPlan
     ? (proposal) => compileDynamicPlan(proposal, { registeredOperations })
     : planCompiler;

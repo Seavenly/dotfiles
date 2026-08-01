@@ -126,6 +126,15 @@ completion appends a durable receipt. Effect-bearing decisions cannot record a
 terminal run transition before that receipt. Same-boot recovery adopts the
 exact outstanding intent under the new epoch without changing its idempotency
 identity.
+RunAuthority records each provider invocation start and validates reconciliation
+observations itself. Reconcilable reinvocation requires a latest durable,
+affirmative absence observation; one-shot uncertain effects may adopt exact
+presence but never invoke again. While an effect remains unresolved, terminal
+checkpoint and revision declines are withheld and constructed checkpoint
+declines are rejected.
+If an effect cannot be settled, the run deliberately remains active and keeps
+its host capacity reservation. This slice has no abandonment or cancellation
+path that can claim the external effect did not occur.
 `invokeEffect` and `recordEffectObservation` are internal effect-coordination
 mechanism seams on the dark durable authority Adapter, not additional public
 `FlowRuntime` operations. They therefore signal mechanism fencing failures to

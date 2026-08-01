@@ -49,7 +49,7 @@ export function registeredOperation(registrations, contract) {
 }
 
 export function hasRegisteredOperation(registrations, contract) {
-  return registeredOperation(registrations, contract) !== undefined;
+  return Boolean(registeredOperation(registrations, contract));
 }
 
 export function dispatchRegisteredEffect(
@@ -66,41 +66,41 @@ export function dispatchRegisteredEffect(
   if (!registration || !policy || typeof runAuthority.invokeEffect !== "function" ||
       registration.classification !== intent.classification ||
       typeof registration.invoke !== "function") return;
-  void runAuthority.invokeEffect(intent, {
-    reconcile: recovery && policy.requires_observation,
-    async invoke(effectiveIntent) {
-      if (recovery && policy.requires_observation) {
-        const observed = await registration.observe?.(effectiveIntent);
-        const observation = normalizeEffectObservation(observed, effectiveIntent);
-        await runAuthority.recordEffectObservation?.(
-          effectiveIntent,
-          observation,
-        );
-        const presence = validateEffectObservation(observation, effectiveIntent);
-        if (presence === "present") {
-          return {
-            schema: "flow.effect-receipt/v1",
-            effect_id: effectiveIntent.effect_id,
-            idempotency_key: effectiveIntent.idempotency_key,
-            outcome: "succeeded",
-            provider_receipt: observation.provider_observation,
-          };
-        }
-        if (presence !== "absent" ||
-            effectiveIntent.classification === "one_shot_uncertain") {
-          const error = new Error("effect observation does not authorize invocation");
-          error.code = "effect_presence_indeterminate";
-          throw error;
-        }
+  void (async () => {
+    if (recovery && policy.requires_observation) {
+      const observed = await registration.observe?.(intent);
+      const observation = await runAuthority.recordEffectObservation?.(
+        intent,
+        observed,
+      );
+      const presence = validateEffectObservation(observation, intent);
+      if (presence === "present") {
+        return runAuthority.invokeEffect(intent, {
+          reconciliation: "adopt_present",
+        });
       }
-      const receipt = await registration.invoke(effectiveIntent);
-      assertEffectReceipt(receipt, effectiveIntent);
-      return receipt;
-    },
-  }).catch(() => {});
+      if (presence !== "absent" ||
+          intent.classification === "one_shot_uncertain") return;
+      return runAuthority.invokeEffect(intent, {
+        reconciliation: "invoke_absent",
+        async invoke(effectiveIntent) {
+          const receipt = await registration.invoke(effectiveIntent);
+          assertEffectReceipt(receipt, effectiveIntent);
+          return receipt;
+        },
+      });
+    }
+    return runAuthority.invokeEffect(intent, {
+      async invoke(effectiveIntent) {
+        const receipt = await registration.invoke(effectiveIntent);
+        assertEffectReceipt(receipt, effectiveIntent);
+        return receipt;
+      },
+    });
+  })().catch(() => {});
 }
 
-function normalizeEffectObservation(observation, intent) {
+export function normalizeEffectObservation(observation, intent) {
   if (validateEffectObservation(observation, intent) !== "indeterminate" ||
       observation?.schema === "flow.effect-observation/v1" &&
       observation.effect_id === intent.effect_id &&
@@ -119,7 +119,7 @@ function normalizeEffectObservation(observation, intent) {
   };
 }
 
-function validateEffectObservation(observation, intent) {
+export function validateEffectObservation(observation, intent) {
   if (observation?.schema !== "flow.effect-observation/v1" ||
       observation.effect_id !== intent.effect_id ||
       observation.idempotency_key !== intent.idempotency_key ||
@@ -130,7 +130,9 @@ function validateEffectObservation(observation, intent) {
   }
   if (observation.presence === "present" &&
       (observation.causation?.effect_id !== intent.effect_id ||
-       observation.causation?.idempotency_key !== intent.idempotency_key)) {
+       observation.causation?.idempotency_key !== intent.idempotency_key ||
+       !isRecord(observation.provider_observation) ||
+       Object.keys(observation.provider_observation).length === 0)) {
     return "indeterminate";
   }
   if (observation.presence === "absent" &&

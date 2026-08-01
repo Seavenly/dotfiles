@@ -207,11 +207,14 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       recovery: effectClassPolicy(intent.classification).recovery,
       expected_watermark: watermark,
     }));
+  const hasUnresolvedEffects = effectIntents.size > effectReceipts.size;
   const legalActions = phase === "active"
     ? [
-      ...checkpointActions,
+      ...checkpointActions.filter(({ decision }) =>
+        decision !== "decline" || !hasUnresolvedEffects),
       ...capabilityActions,
-      ...revisionActions,
+      ...revisionActions.filter(({ decision }) =>
+        decision !== "decline" || !hasUnresolvedEffects),
       ...operationActions,
       ...recoveryActions,
     ]
@@ -219,7 +222,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const progress = phase !== "active"
     ? "complete"
     : blocks.length > 0 ? "blocked"
-      : effectIntents.size > effectReceipts.size ? "executing" : "waiting";
+      : hasUnresolvedEffects ? "executing" : "waiting";
   const effects = [...effectIntents.values()].map((intent) => ({
     effect_id: intent.effect_id,
     card_id: intent.card_id ?? null,

@@ -16,7 +16,11 @@ import {
   freezeCanonical,
 } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
-import { effectClassPolicy } from "./operation-effects.mjs";
+import {
+  effectClassPolicy,
+  normalizeEffectObservation,
+  validateEffectObservation,
+} from "./operation-effects.mjs";
 import { createHostAuthorityIdentityAdapter } from "./host-authority-identity.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import {
@@ -456,6 +460,7 @@ export function createDurableRunAuthority({
         if (decision.schema === "flow.rejection/v1") {
           return freezeCanonical(decision);
         }
+        let committedDecision;
         database.exec("BEGIN IMMEDIATE");
         try {
           assertAuthorityEpoch(database, {
@@ -473,6 +478,7 @@ export function createDurableRunAuthority({
             database.exec("ROLLBACK");
             return freezeCanonical(currentDecision);
           }
+          committedDecision = currentDecision;
           const deferredEvents = currentDecision.events.filter(({ type }) =>
             ["operation_completed", "run_declined", "run_succeeded"].includes(type));
           const immediateEvents = currentDecision.events.filter(({ type }) =>
@@ -555,7 +561,7 @@ export function createDurableRunAuthority({
         );
         const dispatchedIntents = [
           ...recordedIntents,
-          ...(decision.recovery_intents ?? []),
+          ...(committedDecision.recovery_intents ?? []),
         ];
         return freezeCanonical(dispatchedIntents.length === 0
           ? receipt
@@ -650,7 +656,10 @@ export function createDurableRunAuthority({
           "effect runner does not hold mutation authority",
         );
       }
-      if (typeof adapter?.invoke !== "function") {
+      const reconciliation = adapter?.reconciliation ?? null;
+      if (![null, "adopt_present", "invoke_absent"].includes(reconciliation) ||
+          reconciliation !== "adopt_present" &&
+          typeof adapter?.invoke !== "function") {
         throw new TypeError("effect adapter must expose invoke");
       }
       const dispatchKey = [
@@ -694,6 +703,42 @@ export function createDurableRunAuthority({
           bootId,
           processIdentity,
         });
+        let latestObservation = null;
+        let latestObservationIndex = -1;
+        let latestInvocationIndex = -1;
+        stream.records.forEach(({ payload }, index) => {
+          if (payload.type === "effect_observation_recorded" &&
+              payload.effect_id === intent.effect_id) {
+            latestObservation = payload.observation;
+            latestObservationIndex = index;
+          } else if (payload.type === "effect_invocation_started" &&
+              payload.effect_id === intent.effect_id) {
+            latestInvocationIndex = index;
+          }
+        });
+        const observedPresence = validateEffectObservation(
+          latestObservation,
+          intent,
+        );
+        const observationIsFresh = latestObservationIndex > latestInvocationIndex;
+        if (reconciliation === "adopt_present" &&
+            (observedPresence !== "present" || !observationIsFresh)) {
+          throw new AuthorityFenceError(
+            "effect_presence_not_proven",
+            "effect adoption requires exact durable presence evidence",
+          );
+        }
+        if (reconciliation === "invoke_absent" &&
+            (intent.classification !== "reconcilable" ||
+             observedPresence !== "absent" || !observationIsFresh)) {
+          throw new AuthorityFenceError(
+            "effect_absence_not_proven",
+            "effect reinvocation requires exact durable absence evidence",
+          );
+        }
+        const previouslyInvoked = stream.records.some(({ payload }) =>
+          payload.type === "effect_invocation_started" &&
+          payload.effect_id === intent.effect_id);
         let effectiveIntent = intent;
         if (intent.authority_boot_id !== bootId) {
           throw new AuthorityFenceError(
@@ -703,7 +748,7 @@ export function createDurableRunAuthority({
         }
         if (intent.authority_epoch !== authorityEpoch) {
           if (!effectClassPolicy(intent.classification)?.can_repeat_across_epoch &&
-              adapter.reconcile !== true) {
+              reconciliation === null) {
             throw new AuthorityFenceError(
               "effect_reconciliation_required",
               "effect classification cannot be retried during recovery",
@@ -715,18 +760,43 @@ export function createDurableRunAuthority({
             processIdentity,
           });
         }
+        if (previouslyInvoked &&
+            !effectClassPolicy(intent.classification)?.can_repeat_across_epoch &&
+            reconciliation === null) {
+          throw new AuthorityFenceError(
+            "effect_reconciliation_required",
+            "effect classification requires reconciliation before repetition",
+          );
+        }
         assertMutationFence(lockDatabase, database, {
           authorityEpoch,
           bootId,
           processIdentity,
         });
-        beforeEffect(effectiveIntent);
-        assertMutationFence(lockDatabase, database, {
-          authorityEpoch,
-          bootId,
-          processIdentity,
-        });
-        const result = await adapter.invoke(effectiveIntent);
+        let result;
+        if (reconciliation === "adopt_present") {
+          result = {
+            schema: "flow.effect-receipt/v1",
+            effect_id: effectiveIntent.effect_id,
+            idempotency_key: effectiveIntent.idempotency_key,
+            outcome: "succeeded",
+            provider_receipt: latestObservation.provider_observation,
+          };
+        } else {
+          await Promise.resolve();
+          recordEffectInvocationStarted(database, effectiveIntent, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          beforeEffect(effectiveIntent);
+          assertMutationFence(lockDatabase, database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          result = await adapter.invoke(effectiveIntent);
+        }
         assertMutationFence(lockDatabase, database, {
           authorityEpoch,
           bootId,
@@ -822,6 +892,10 @@ export function createDurableRunAuthority({
             "effect observation is not bound to a recorded intent",
           );
         }
+        const normalizedObservation = normalizeEffectObservation(
+          observation,
+          intent,
+        );
         database.exec("BEGIN IMMEDIATE");
         try {
           assertAuthorityEpoch(database, {
@@ -837,7 +911,7 @@ export function createDurableRunAuthority({
               payload: {
                 type: "effect_observation_recorded",
                 effect_id: intent.effect_id,
-                observation,
+                observation: normalizedObservation,
               },
             }],
             authorityEpoch,
@@ -856,7 +930,7 @@ export function createDurableRunAuthority({
         for (const watcher of watchers.get(intent.run_id) ?? []) {
           watcher.publish(projection);
         }
-        return observation;
+        return normalizedObservation;
       } finally {
         database.close();
       }
@@ -1096,7 +1170,7 @@ function bindEffectIntent(intent, {
   runId,
 }) {
   const facts = prepared.explicit_facts;
-  const resourceClaims = intent?.resource_claims ?? facts.resource_claims;
+  const resourceClaims = intent?.resource_claims;
   if (intent?.schema !== "flow.effect-intent/v1" ||
       typeof intent.effect_id !== "string" || intent.effect_id.length === 0 ||
       typeof intent.idempotency_key !== "string" ||
@@ -1106,6 +1180,9 @@ function bindEffectIntent(intent, {
       typeof intent.operation_contract !== "string" ||
       intent.operation_contract.length === 0 ||
       !Array.isArray(resourceClaims) ||
+      !resourceClaims.every((claim) => facts.resource_claims.some(
+        (declared) => digest(declared) === digest(claim),
+      )) ||
       !(intent.route_binding === null ||
         (typeof intent.route_binding === "object" &&
           !Array.isArray(intent.route_binding)))) {
@@ -1179,6 +1256,40 @@ function adoptEffectIntent(database, intent, {
     throw error;
   }
   return adopted;
+}
+
+function recordEffectInvocationStarted(database, intent, {
+  authorityEpoch,
+  bootId,
+  processIdentity,
+}) {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertAuthorityEpoch(database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    appendAuthorityEvents(database, {
+      streamId: intent.run_id,
+      streamKind: "run",
+      events: [{
+        contract: "flow.run-event/v1",
+        payload: {
+          type: "effect_invocation_started",
+          effect_id: intent.effect_id,
+          authority_epoch: authorityEpoch,
+        },
+      }],
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function readRecordedEffectIntents(database, runId, commandDigest) {

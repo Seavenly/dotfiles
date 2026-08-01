@@ -154,6 +154,9 @@ export function decideLifecycle(fold, command) {
   }
 
   if (command.decision === "decline") {
+    if (fold.effects?.some(({ status }) => status !== "succeeded")) {
+      return reject(fold, command, "effect_settlement_required");
+    }
     return decision(command, checkpoint, [{ type: "run_declined" }]);
   }
 

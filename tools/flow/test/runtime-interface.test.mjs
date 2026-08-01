@@ -586,12 +586,12 @@ test("prepare rejects incomplete or cyclic dynamic graphs", () => {
 
   const unsupportedExecutor = dynamicCheckpointProposal();
   unsupportedExecutor.graph.cards[0].executor = {
-    kind: "operation",
-    contract: "flow.operation/example/v1",
+    kind: "delegate",
+    contract: "flow.delegate/example/v1",
   };
   assert.throws(
     () => runtime.prepare(unsupportedExecutor),
-    /operation contract is not registered: flow\.operation\/example\/v1/,
+    /dynamic plan does not support executor kind: delegate/,
   );
 
   const unknownDependency = dynamicCheckpointProposal();
@@ -691,15 +691,15 @@ test("duplicate launch adopts the exact confirmed bundle without recompiling fac
 
   const selfConsistentUnsupported = structuredClone(prepared);
   selfConsistentUnsupported.graph.cards[0].executor = {
-    kind: "operation",
-    contract: "flow.operation/example/v1",
+    kind: "subrun",
+    contract: "flow.subrun/example/v1",
   };
   rebindPreparedIdentity(selfConsistentUnsupported);
   const executorRejection = runtime.launch(
     confirmedLaunchRequest(selfConsistentUnsupported),
   );
   assert.equal(executorRejection.code, "invalid_prepared_bundle");
-  assert.equal(executorRejection.reason, "incomplete_operation_authority");
+  assert.equal(executorRejection.reason, "unsupported_executor_kind");
 
   const invalidDecision = runtime.launch({
       ...launchRequest,
