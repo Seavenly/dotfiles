@@ -128,6 +128,37 @@ _Avoid_: Updated time, cache version
 A host-local execution substrate that launches and observes durable agent harnesses without owning flow policy or scheduling.
 _Avoid_: Orchestrator, workflow engine
 
+**Delegated agent port**:
+The non-authoritative Flow interface that requests an exact delegated-runtime
+description and independently checks it before plan preparation may bind it.
+_Avoid_: Runtime controller, scheduler
+
+**Exact launch description**:
+A non-mutating, identity-bearing resolution of one delegated launch, including
+its native settings, effective authority, capacity, credential-reference
+identity, caller metadata, feature advertisement, and comparison keys.
+_Avoid_: Launch request, agent reservation
+
+**Feature advertisement**:
+The delegated runtime's versioned statement of each Flow-required contract and
+whether that contract is currently supported or unavailable.
+_Avoid_: Version check, best-effort capability list
+
+**Effective authority**:
+The normalized multidimensional approvals, filesystem, and network envelope
+resolved for an exact launch capability.
+_Avoid_: Scalar privilege level, sandbox flag
+
+**Delegated capacity**:
+The delegated runtime's declared concurrency and managed-agent limits, exposed
+as planning facts while admission remains owned by the caller.
+_Avoid_: Scheduler quota, available worker count
+
+**Comparison key**:
+A deterministic digest for one identity-bearing description component, used to
+compare exact launch, authority, credential-reference, and catalog bindings.
+_Avoid_: Display hash, timestamp
+
 **Delegation group**:
 A named collection of related delegated tasks that share one runtime workspace.
 _Avoid_: Epic, project
@@ -218,6 +249,9 @@ _Avoid_: Migration record, replacement run
   views, which expose an exact **authority watermark**.
 - A **flow** may use a **delegated agent runtime**, but that runtime never owns
   the flow's scheduling or policy.
+- A **delegated agent port** checks an **exact launch description**, including
+  its **effective authority**, **delegated capacity**, **feature
+  advertisement**, and **comparison keys**, without launching delegated work.
 - A **delegation group** contains **delegated tasks**; each delegated task owns
   **managed agents**, and each managed agent processes **logical turns**.
 - A **tracker issue** may own one **flow run** without exposing its internal

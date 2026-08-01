@@ -298,6 +298,7 @@ The recovery and advanced interface is:
 ```text
 drovr doctor
 drovr status
+drovr describe [launch options] --caller-metadata JSON
 
 drovr group list
 drovr group get GROUP_ID
@@ -321,6 +322,36 @@ drovr turn get TURN_ID [--include-messages]
 drovr turn list [--agent AGENT_ID] [--task TASK_ID] [--status STATUS]
 drovr turn cancel TURN_ID
 ```
+
+`describe` is the non-mutating delegated-runtime contract seam. It resolves the
+same tracked role, harness, model, effort, capability, instructions, native
+settings, and logical catalog fingerprints used by agent launch, but it never
+creates or changes a Drovr registry or Herdr resource. Its versioned result
+also carries normalized effective authority, declared capacity, an ambient
+credential-reference identity with no secret material, opaque caller ownership
+metadata, deterministic comparison keys, and the complete flow-required
+feature advertisement. The configuration-catalog watermark binds those facts.
+Every feature entry carries an exact `supported` or `unavailable` availability
+state. The watermark includes the complete feature advertisement and the full
+authority-dimension catalog used to normalize effective authority.
+
+The flow-required feature baseline is exact launch description,
+caller-idempotent dispatch and discovery, caller-keyed ordered input, bounded
+observation and wait, transcript correlation, cancellation and reconciliation,
+terminal-proof classification, late-result correlation, launch-binding
+settlement proof, opaque caller ownership metadata, and feature advertisement.
+Flow conformance compares the complete versioned guarantees, not just feature
+names or a Drovr version string. Missing, weakened, duplicate, unexpected, or
+contradictory advertisement blocks preparation until a fresh conforming
+description can be observed.
+
+The initial advertisement marks caller-idempotent dispatch and discovery,
+caller-keyed ordered input, terminal-proof classification, launch-binding
+settlement proof, and opaque caller ownership metadata unavailable. Existing
+bounded observation, bounded wait, transcript correlation, cancellation,
+reconciliation, and late-result behavior remains advertised as supported.
+Flow must therefore return a typed compatibility block and must not expose a
+launch-binding action until the missing lifecycle contracts are implemented.
 
 Creation options use stable keys and optional labels. Normal examples include:
 

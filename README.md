@@ -111,6 +111,9 @@ dotfiles upgrade tools nvim     upgrade selected components only
 dotfiles upgrade mise           update the pinned mise release and checksums
 flow query legacy-inventory --json
                                 inventory retained legacy flow evidence read-only
+flow query delegated-agent --harness codex --capability read-only \
+  --caller-metadata '{"owner":"preparation"}' --json
+                                inspect an exact non-mutating Drovr launch contract
 ```
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
@@ -160,8 +163,10 @@ The three implementations use disjoint authority roots, and existing runs
 remain owned by the implementation that created them. No legacy import adapter
 ships initially. Inspect the exact transition watermark, evidence status, and
 legal next actions with `npm --silent --prefix tools/flow run status`. The
-dark replacement API can prepare, confirm, launch, observe, and complete a
-finite dynamic checkpoint plan without changing the converged launch selector.
+dark replacement API can prepare, confirm, durably launch, observe, recover,
+and complete a finite dynamic checkpoint plan without changing the converged
+launch selector. Its SQLite authority streams are fenced to one mutating
+runtime while competing processes remain read-only.
 The public contracts and guardrails are documented in
 [`tools/flow/README.md`](tools/flow/README.md) and
 [`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).

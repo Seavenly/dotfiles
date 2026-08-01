@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { authorityRootsAreDisjoint } from "./authority-root.mjs";
+import {
+  FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
+} from "./drovr-delegated-agent-port.mjs";
 import { isExactSequence } from "./validation.mjs";
+
+const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
+const REQUIRED_FEATURE_CONTRACT_FILENAME = "drovr-required-features.v1.json";
 
 const FLOW_RUNTIME_OPERATIONS = [
   "prepare",
@@ -43,8 +51,28 @@ const FORBIDDEN_LEGACY_AUTHORITY = [
   "effect_causation",
   "completion",
 ];
+const AUTHORITY_PERSISTENCE = {
+  contract: "flow.sqlite-authority-store/v1",
+  journal_mode: "wal",
+  synchronous: "full",
+  foreign_keys: true,
+  append_only_streams: true,
+  transactional_folds: true,
+  mutation_lock: "sqlite_os_advisory_lock",
+  takeover: "operating_system_lock_release_only",
+  authority_epoch: {
+    monotonic: true,
+    boot_bound: true,
+    effect_recheck: true,
+  },
+};
 
-export async function loadContractCatalog({ catalogPath, homeDirectory, stateDirectory }) {
+export async function loadContractCatalog({
+  catalogPath,
+  featureContractPath,
+  homeDirectory,
+  stateDirectory,
+}) {
   const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
   if (catalog.schema !== "flow.contract-catalog/v1") {
     throw new Error(`unsupported contract catalog: ${catalog.schema ?? "missing"}`);
@@ -55,16 +83,45 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
   const rejection = catalog.flow_runtime.rejection_contract;
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
-      rejection.watermark_domains?.host !== "host_run_index_membership" ||
-      rejection.watermark_domains?.run !== "run_lifecycle_events" ||
+      rejection.watermark_domains?.host !==
+        "host_run_index_and_admission_streams" ||
+      rejection.watermark_domains?.run !==
+        "run_lifecycle_stream_and_authority_epoch" ||
       Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
     throw new Error("contract catalog rejection contract is incomplete");
   }
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");
   }
+  if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
+    throw new Error("contract catalog authority persistence is incomplete");
+  }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
+  }
+  let publishedFeatureContract;
+  let publishedFeatureContractBytes;
+  try {
+    publishedFeatureContractBytes = await readFile(
+      featureContractPath ?? resolve(
+        dirname(catalogPath),
+        REQUIRED_FEATURE_CONTRACT_FILENAME,
+      ),
+    );
+    publishedFeatureContract = JSON.parse(publishedFeatureContractBytes);
+  } catch {
+    throw new Error(
+      "contract catalog Drovr feature baseline is incomplete or weakened",
+    );
+  }
+  if (!delegatedAgentPortIsPublished(
+    catalog,
+    publishedFeatureContract,
+    publishedFeatureContractBytes,
+  )) {
+    throw new Error(
+      "contract catalog Drovr feature baseline is incomplete or weakened",
+    );
   }
   const roots = Object.values(catalog.authority_roots ?? {});
   if (roots.length === 0 || !authorityRootsAreDisjoint(roots, {
@@ -92,6 +149,40 @@ export async function loadContractCatalog({ catalogPath, homeDirectory, stateDir
     }
   }
   return catalog;
+}
+
+function delegatedAgentPortIsPublished(
+  catalog,
+  publishedFeatureContract,
+  publishedFeatureContractBytes,
+) {
+  const port = catalog.delegated_agent_port;
+  const contracts = catalog.contracts;
+  return port?.contract === "flow.delegated-agent-port/v1" &&
+    port.authority === "non_authoritative" &&
+    port.adapter === "drovr/v1" &&
+    port.description_request ===
+      "flow.delegated-agent-description-request/v1" &&
+    port.description_projection ===
+      "flow.delegated-agent-description-projection/v1" &&
+    port.drovr_description === "drovr.delegated-agent-description/v1" &&
+    port.required_features?.contract === REQUIRED_FEATURE_CONTRACT &&
+    Object.keys(port.required_features).length === 2 &&
+    port.required_features?.content_sha256 ===
+      FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST &&
+    `sha256:${createHash("sha256")
+      .update(publishedFeatureContractBytes)
+      .digest("hex")}` === FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST &&
+    publishedFeatureContract.schema === REQUIRED_FEATURE_CONTRACT &&
+    Array.isArray(publishedFeatureContract.features) &&
+    [
+      port.contract,
+      port.description_request,
+      port.description_projection,
+      port.drovr_description,
+      publishedFeatureContract.schema,
+      ...publishedFeatureContract.features.map(({ contract }) => contract),
+    ].every((contract) => contracts.includes(contract));
 }
 
 export function authorizeLegacyImport(catalog, {

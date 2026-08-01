@@ -25,6 +25,31 @@ export function decideLifecycle(fold, command) {
   if (fold.phase !== "active") {
     return reject(fold, command, "run_terminal");
   }
+  if (fold.admission === "suspended_after_reboot") {
+    if (command.type !== "reboot_admission") {
+      return reject(fold, command, "run_requires_reboot_admission");
+    }
+    if (command.authority_epoch !== fold.authority_epoch ||
+        command.authority_boot_id !== fold.authority_boot_id ||
+        command.expected_generation !== fold.stream_generation ||
+        !sameCanonicalValue(command.revalidation, fold.reboot_revalidation)) {
+      return reject(fold, command, "stale_reboot_admission");
+    }
+    if (fold.reboot_revalidation.valid !== true) {
+      return reject(fold, command, "reboot_revalidation_failed");
+    }
+    return {
+      schema: "flow.decision/v1",
+      command_type: command.type,
+      events: [{
+        type: "run_admitted_after_reboot",
+        revalidation_digest: digest(command.revalidation),
+      }],
+      effect_intents: [],
+      obligations: [],
+      projection_hints: ["operator"],
+    };
+  }
   if (command.type === "capability_grant") {
     const legalGrant = fold.legal_actions.find((action) =>
       action.type === "capability_grant" && digest(action) === digest(command));
@@ -113,6 +138,14 @@ export function decideLifecycle(fold, command) {
     checkpoint,
     allOtherCardsComplete ? [{ type: "run_succeeded" }] : [],
   );
+}
+
+function sameCanonicalValue(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
 }
 
 function decision(command, checkpoint, terminalEvents) {

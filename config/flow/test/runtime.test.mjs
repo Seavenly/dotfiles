@@ -15,6 +15,45 @@ import test from "node:test";
 
 import { createFlowRuntime } from "../src/runtime.mjs";
 
+test("query exposes the DelegatedAgentPort description without creating a run", async () => {
+  const projection = {
+    schema: "flow.delegated-agent-description-projection/v1",
+    status: "compatible",
+    watermark: {
+      schema: "drovr.authority-watermark/v1",
+      authority: "drovr.configuration-catalog",
+      content_sha256: `sha256:${"1".repeat(64)}`,
+    },
+    description: { description_digest: `sha256:${"2".repeat(64)}` },
+    compatibility: {
+      contract: "flow.delegated-agent-port/v1",
+      code: null,
+      findings: [],
+    },
+    legal_next_actions: ["bind_exact_launch_description"],
+  };
+  const delegatedAgentPort = {
+    async describe(request) {
+      assert.deepEqual(request, {
+        schema: "flow.delegated-agent-description-request/v1",
+        launch: { harness: "codex", capability: "read-only" },
+        caller_metadata: { run_id: "run:example", card_id: "review" },
+      });
+      return projection;
+    },
+  };
+  const runtime = createFlowRuntime({ delegatedAgentPort });
+  const before = runtime.query();
+
+  assert.deepEqual(await runtime.query({
+    schema: "flow.query/v1",
+    query: "delegated_agent_description",
+    launch: { harness: "codex", capability: "read-only" },
+    caller_metadata: { run_id: "run:example", card_id: "review" },
+  }), projection);
+  assert.deepEqual(runtime.query(), before);
+});
+
 test("query inventories retained legacy runs with a stable content digest", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-legacy-inventory-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));

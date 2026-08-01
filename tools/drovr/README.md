@@ -13,6 +13,32 @@ After convergence, diagnose the local runtime:
 drovr doctor
 ```
 
+Inspect an exact launch and the complete flow-required feature advertisement
+without creating a delegation group, task, agent, or logical turn:
+
+```sh
+drovr describe \
+  --harness codex \
+  --role reviewer \
+  --capability read-only \
+  --caller-metadata '{"run_id":"run:example","card_id":"review"}'
+```
+
+The `drovr.delegated-agent-description/v1` result contains the resolved launch
+schema and native settings, normalized effective authority, capacity facts,
+ambient credential-reference identity, logical catalog fingerprints, opaque
+caller metadata, comparison keys, and all flow-required feature contracts.
+Its `drovr.configuration-catalog` watermark binds the complete configuration
+and advertised contracts without exposing credential material. Identical
+catalog bytes and inputs produce identical identity-bearing output even when
+the catalog is installed at a different path.
+
+Each advertised contract declares `supported` or `unavailable`. The current
+runtime reports caller-idempotent dispatch and discovery, caller-keyed input,
+terminal-proof classification, launch-binding settlement proof, and durable
+opaque caller ownership metadata as unavailable. This is an exact capability
+report, so Flow blocks binding until those lifecycle contracts are supplied.
+
 Delegate one logical turn:
 
 ```sh

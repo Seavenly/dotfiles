@@ -1,7 +1,7 @@
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 
-export function foldRun(run) {
+export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const checkpointDecisions = new Map(
     run.events
       .filter(({ type }) => type === "checkpoint_decided")
@@ -75,7 +75,6 @@ export function foldRun(run) {
       status,
     };
   });
-  const watermark = runWatermark(run);
   const planFingerprint = latestRevision?.plan_fingerprint ??
     run.prepared.plan_fingerprint;
   const blocks = cards
@@ -205,6 +204,12 @@ export function projectRun(fold) {
     sequence: fold.sequence,
     phase: fold.phase,
     progress: fold.progress,
+    ...(fold.authority_epoch === undefined ? {} : {
+      admission: fold.admission,
+      authority_epoch: fold.authority_epoch,
+      authority_boot_id: fold.authority_boot_id,
+      stream_generation: fold.stream_generation,
+    }),
     bundle_digest: fold.bundle_digest,
     plan_fingerprint: fold.plan_fingerprint,
     current_revision: fold.current_revision,
