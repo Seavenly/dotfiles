@@ -20,10 +20,17 @@ function parseJson(output, operation) {
 }
 
 export class HerdrClient {
-  constructor({ session, run = execute, env = process.env } = {}) {
+  constructor({
+    session,
+    run = execute,
+    env = process.env,
+    delay = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  } = {}) {
     this.session = session;
     this.run = run;
     this.env = env;
+    this.delay = delay;
   }
 
   async sessionCommand(args) {
@@ -403,6 +410,18 @@ export class HerdrClient {
     ]);
   }
 
+  async agentVisibleText(name) {
+    return this.sessionCommand([
+      "agent",
+      "read",
+      name,
+      "--source",
+      "visible",
+      "--format",
+      "text",
+    ]);
+  }
+
   async attach(name, { takeover = false } = {}) {
     const args = ["--session", this.session, "agent", "attach", name];
     if (takeover) args.push("--takeover");
@@ -413,8 +432,63 @@ export class HerdrClient {
     });
   }
 
-  async prompt(name, prompt) {
-    return this.sessionCommand(["agent", "prompt", name, prompt]);
+  async prompt(name, prompt, options = {}) {
+    const observedBeforeDelivery =
+      options.observedBeforeDelivery ?? (await this.agentRecord(name));
+    const harness = options.harness ?? observedBeforeDelivery?.agent;
+    const guardsClaudeMultilineSubmission =
+      harness === "claude" &&
+      prompt.includes("\n") &&
+      ["idle", "done"].includes(observedBeforeDelivery?.agent_status);
+    const visibleBeforeDelivery = guardsClaudeMultilineSubmission
+      ? await this.agentVisibleText(name)
+      : undefined;
+    const result = await this.sessionCommand([
+      "agent",
+      "prompt",
+      name,
+      prompt,
+    ]);
+    if (!guardsClaudeMultilineSubmission) {
+      return result;
+    }
+
+    // Claude turns a multiline bracketed paste into an attachment token
+    // asynchronously. Herdr 0.7.5 can send the submit key before that
+    // conversion finishes, leaving the prompt staged while the agent remains
+    // idle. Use the visible pane only to wait for a new attachment token, then
+    // send one guarded submit key. Native state and transcript correlation
+    // remain authoritative for turn progress and completion.
+    let attachmentReady = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (promptSubmissionObserved(await this.agentRecord(name))) {
+        return result;
+      }
+      attachmentReady = newClaudeAttachmentTokenObserved(
+        visibleBeforeDelivery,
+        await this.agentVisibleText(name),
+      );
+      if (attachmentReady) break;
+      await this.delay(25);
+    }
+    if (!attachmentReady) {
+      throw new DrovrError(
+        `Herdr did not expose Claude's staged multiline attachment for ${name}`,
+        { code: 4, outcome: "adapter_failure" },
+      );
+    }
+    await this.sessionCommand(["agent", "send-keys", name, "enter"]);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await this.agentRecord(name);
+      if (promptSubmissionObserved(observed)) {
+        return result;
+      }
+      await this.delay(25);
+    }
+    throw new DrovrError(
+      `Herdr did not confirm Claude prompt submission for ${name}`,
+      { code: 4, outcome: "adapter_failure" },
+    );
   }
 
   async interruptAgent(name) {
@@ -422,6 +496,10 @@ export class HerdrClient {
   }
 
   async waitForAgent(name, timeoutMs) {
+    const current = await this.agentRecord(name);
+    if (["idle", "done", "blocked"].includes(current?.agent_status)) {
+      return current;
+    }
     const args = ["agent", "wait", name];
     if (timeoutMs !== undefined) {
       args.push("--timeout", String(timeoutMs));
@@ -438,6 +516,28 @@ export class HerdrClient {
     if (observed) return observed;
     return this.agentRecord(name);
   }
+}
+
+function promptSubmissionObserved(observed) {
+  return ["working", "blocked"].includes(observed?.agent_status);
+}
+
+function newClaudeAttachmentTokenObserved(before, after) {
+  const beforeCounts = claudeAttachmentTokenCounts(before);
+  for (const [token, count] of claudeAttachmentTokenCounts(after)) {
+    if (count > (beforeCounts.get(token) ?? 0)) return true;
+  }
+  return false;
+}
+
+function claudeAttachmentTokenCounts(text) {
+  const counts = new Map();
+  for (const match of String(text).matchAll(
+    /\[Pasted text #\d+(?: [^\]\r\n]*)?\]/gu,
+  )) {
+    counts.set(match[0], (counts.get(match[0]) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function isTimeout(error) {

@@ -67,7 +67,14 @@
       },
       "query": {
         "authority": "read_only",
-        "result": "watermarked_authority_projection"
+        "result": "watermarked_authority_projection",
+        "registered": {
+          "legacy_compatibility_inventory": {
+            "request": "flow.query/v1",
+            "projection": "flow.legacy-compatibility-inventory/v1",
+            "rejection": "flow.rejection/v1"
+          }
+        }
       },
       "watch": {
         "authority": "read_only",
@@ -77,6 +84,7 @@
   },
   "contracts": [
     "flow.runtime/v1",
+    "flow.query/v1",
     "flow.dynamic-plan-proposal/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
@@ -101,6 +109,7 @@
     "flow.transition-ledger/v1",
     "flow.transition-projection/v1",
     "flow.legacy-baseline-inventory/v1",
+    "flow.legacy-compatibility-inventory/v1",
     "flow.delegated-agent-port/v1",
     "work.workspace/v1",
     "work.artifact/v1",
@@ -177,7 +186,8 @@
     "operator",
     "tracker_progress",
     "review_inbox",
-    "transition"
+    "transition",
+    "legacy_compatibility_inventory"
   ],
   "authority_roots": {
     "legacy_claude": {

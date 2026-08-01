@@ -118,12 +118,25 @@ If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
 Transcript-flush grace follows correlation progress, so a stale idle observation
 before prompt delivery cannot consume the grace needed after actual settlement.
-An `uncertain` turn remains terminal, but `turn get` reports a non-durable
-`late_result` when the transcript later contains the exact recorded inputs in
-order and a complete result before any unrecorded native input. This discovery
-does not rewrite the durable turn or promote it to `completed`.
+Claude multiline delivery also verifies that a settled native agent actually
+enters `working` or `blocked` after Herdr stages the prompt; an idle state-token
+change alone does not prove submission. A still-idle bracketed paste receives
+one guarded submit key only after a new visible Claude attachment token appears;
+pane output is delivery-readiness evidence, not completion evidence. Native
+waits first return an already-settled observation instead of waiting for another
+state change. If the pre-delivery state persists beyond the bounded transcript
+grace, exact transcript correlation gets one final attempt before the turn
+becomes `uncertain`. An `uncertain` turn
+remains terminal, but `turn get` reports a non-durable `late_result` when the
+transcript later contains the exact recorded inputs in order and a complete
+result before any unrecorded native input. The same projection recovers legacy
+`unsupported_transcript` records that were created when a transcript file was
+temporarily absent. Discovery does not rewrite the durable turn or promote it to
+`completed`.
 Cancellation reports `cancelled` only after native interruption and confirmed
-settlement. Non-force cleanup refuses working or blocked resources, and group
+settlement. Cancelling an already-idle turn returns its exact reconciled terminal
+status, including `uncertain` when prompt delivery cannot be proven. Non-force
+cleanup refuses working or blocked resources, and group
 cleanup preflights every task before mutating any of them. Force cleanup
 interrupts active work, records each unfinished turn as `interrupted` or
 `uncertain` according to the observed settlement. Group cleanup closes the

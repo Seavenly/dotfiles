@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.query.v1.schema.json",
+  "title": "flow.query/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "query"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.query/v1"
+    },
+    "query": {
+      "enum": [
+        "legacy_compatibility_inventory"
+      ]
+    }
+  }
+}

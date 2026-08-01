@@ -401,6 +401,22 @@ and does not emit the normal JSON envelope.
 delivery. It then submits the prompt through Herdr and returns a durable turn
 ID. `turn wait` may be invoked repeatedly by any later caller.
 
+For multiline Claude prompts delivered while the native agent is settled,
+Drovr verifies that Herdr observes `working` or `blocked`; an idle state-token
+change alone is not submission evidence. If Claude's asynchronous
+bracketed-paste conversion leaves the prompt staged and the agent idle, Drovr
+waits for a new visible Claude attachment token, sends one guarded submit key,
+and requires active-state evidence before continuing. Pane output is used only
+as delivery-readiness evidence; it is never completion authority. Failure to
+confirm submission is an adapter failure and leaves the turn `uncertain`; it is
+not treated as native settlement.
+
+Native waiting first returns an already-settled observation rather than waiting
+for another state change. If the pre-delivery state persists past the bounded
+transcript grace, Drovr makes one exact transcript-correlation attempt and then
+settles the turn `uncertain` when the recorded input is absent. This keeps legacy
+or interrupted delivery records recoverable without accepting an old result.
+
 Wait timeout is non-destructive. It returns `still_running` and leaves the turn
 and harness untouched. Killing a waiting Drovr process also does not cancel the
 turn.
@@ -409,7 +425,8 @@ turn.
 the durable agent available. The logical turn becomes `cancelled` only after
 Drovr observes settlement. If interruption delivery or settlement cannot be
 confirmed, the turn becomes `uncertain` or `interrupted` rather than pretending
-success.
+success. If the native agent is already settled, cancellation reports the exact
+reconciled terminal status instead of waiting for a future native transition.
 
 `agent retire` terminates the harness process and closes its managed pane.
 
@@ -445,9 +462,10 @@ The primary result is the last settled assistant message. Intermediate
 assistant messages are retained and available through `--include-messages`.
 If a transcript-correlatable result appears only after a turn was durably
 settled as `uncertain`, `turn get` may expose it as a non-durable `late_result`
-projection. Exact ordered inputs and the absence of an intervening unrecorded
-native input are required. Discovery never changes the terminal status or
-writes a result into the durable turn record.
+projection. It also supports legacy `unsupported_transcript` records explicitly
+marked for exact transcript correlation. Exact ordered inputs and the absence
+of an intervening unrecorded native input are required. Discovery never changes
+the terminal status or writes a result into the durable turn record.
 
 ### Blocked agents
 
@@ -494,6 +512,11 @@ Drovr does not inject correlation markers into prompts. If cursor, content,
 settlement, or final-message correlation cannot be established, it returns an
 explicit uncertain or unsupported state rather than selecting the latest screen
 or transcript message.
+
+A transcript file that has not appeared yet is a temporary correlation failure
+and therefore `uncertain`. `unsupported_transcript` is reserved for an
+incompatible cursor, changed anchor, malformed JSONL record, or another format
+Drovr cannot safely interpret.
 
 When Claude role instructions are non-empty, Drovr writes their exact resolved
 bytes to a private launch document beneath the state directory and supplies its

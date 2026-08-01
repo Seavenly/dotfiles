@@ -1,0 +1,40 @@
+# Flow compatibility inventory
+
+`flow query legacy-inventory --json` is the read-only Stage 0 inventory for
+the frozen Claude-only and Hermes-backed flow implementations. It calls the
+`FlowRuntime.query` Interface and returns
+`flow.legacy-compatibility-inventory/v1`.
+
+The filesystem Adapter observes these retained authority roots:
+
+- `~/.agent-teams/runs` for Claude-only runs;
+- `$XDG_STATE_HOME/agent-flow/runs` for Hermes-backed runs and stack records
+  retained beneath them.
+
+Agent Flow stack plans and state may also live at operator-supplied absolute
+paths. The retained implementation has no global stack registry, so the default
+projection marks that authority uncertain instead of inventing a directory.
+Callers embedding `FlowRuntime` may provide an explicit `hermesStacks` root
+when they have authoritative local configuration for one.
+
+The inventory records runs, reviews, stacks, artifact bytes, transcript
+pointers, active ownership claims, and unresolved effects. Evidence is
+classified as:
+
+- `verified` - the observed bytes or known record are present and digestible;
+- `missing` - an authority root or referenced file is absent;
+- `unreadable` - bytes cannot be read as the expected evidence form;
+- `uncertain` - retained bytes or expected authority cannot prove the claimed
+  lifecycle fact, cannot be enumerated or linked, or use an unknown contract.
+
+`watermark.content_sha256` is the SHA-256 of the canonical `inventory` object.
+It excludes presentation and legal actions, so repeated queries over unchanged
+inputs produce the same ledger-ready digest. Host-absolute source paths are not
+emitted as projected path fields, while exact retained bytes remain bound by
+their content hashes. Ordering uses raw string comparison rather than host
+locale. The query never creates a legacy root, follows a symlink, repairs
+evidence, or imports legacy lifecycle state into replacement authority.
+References outside retained roots are not opened or fingerprinted; they remain
+explicit uncertain coverage boundaries. Because operator-supplied stack paths
+have no retained registry, the default CLI projection keeps
+`inspect_legacy_evidence` legal until that authority gap is recorded or resolved.

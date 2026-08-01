@@ -3,12 +3,197 @@ import test from "node:test";
 
 import { HerdrClient } from "../src/herdr.mjs";
 
+test("Claude prompt delivery submits a staged multiline paste", async () => {
+  const calls = [];
+  let promptSent = false;
+  let enterSent = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: enterSent ? "working" : "idle",
+                state_change_seq: enterSent ? 13 : 12,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("read")) {
+        return promptSent ? "[Pasted text #1 +1 lines]" : "";
+      }
+      if (args.includes("prompt")) promptSent = true;
+      if (args.includes("send-keys")) enterSent = true;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await client.prompt("managed-agent", "first line\nsecond line", {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
+
+  assert.equal(enterSent, true);
+  assert.deepEqual(calls, [
+    [
+      "--session",
+      "delegates",
+      "agent",
+      "read",
+      "managed-agent",
+      "--source",
+      "visible",
+      "--format",
+      "text",
+    ],
+    [
+      "--session",
+      "delegates",
+      "agent",
+      "prompt",
+      "managed-agent",
+      "first line\nsecond line",
+    ],
+    ["--session", "delegates", "agent", "list"],
+    [
+      "--session",
+      "delegates",
+      "agent",
+      "read",
+      "managed-agent",
+      "--source",
+      "visible",
+      "--format",
+      "text",
+    ],
+    [
+      "--session",
+      "delegates",
+      "agent",
+      "send-keys",
+      "managed-agent",
+      "enter",
+    ],
+    ["--session", "delegates", "agent", "list"],
+  ]);
+});
+
+test("Claude prompt delivery waits for delayed attachment conversion despite an idle state change", async () => {
+  let delaySteps = 0;
+  let promptSent = false;
+  let submissionStarted = false;
+  let enterAttempts = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {
+      if (promptSent) delaySteps += 1;
+    },
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: submissionStarted ? "working" : "idle",
+                state_change_seq: submissionStarted ? 14 : 13,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("read")) {
+        if (!promptSent) return "[Pasted text #1 +1 lines]";
+        return delaySteps >= 3
+          ? "[Pasted text #1 +1 lines]\n[Pasted text #2 +1 lines]"
+          : "[Pasted text #1 +1 lines]\nfirst line\nsecond line";
+      }
+      if (args.includes("prompt")) promptSent = true;
+      if (args.includes("send-keys")) {
+        enterAttempts += 1;
+        if (delaySteps >= 3) submissionStarted = true;
+      }
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await client.prompt("managed-agent", "first line\nsecond line", {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
+
+  assert.equal(submissionStarted, true);
+  assert.equal(enterAttempts, 1);
+  assert.equal(delaySteps, 3);
+});
+
+test("Claude prompt delivery does not send another Enter after work starts", async () => {
+  let extraEnters = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: "working",
+                state_change_seq: 13,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("read")) return "";
+      if (args.includes("send-keys")) extraEnters += 1;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await client.prompt("managed-agent", "first line\nsecond line", {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
+
+  assert.equal(extraEnters, 0);
+});
+
 test("agent wait returns Herdr's atomic settled agent observation", async () => {
   const calls = [];
   const client = new HerdrClient({
     session: "delegates",
     async run(_file, args) {
       calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: "working",
+                state_change_seq: 9,
+              },
+            ],
+          },
+        });
+      }
       return JSON.stringify({
         id: "cli:agent:wait",
         result: {
@@ -33,6 +218,7 @@ test("agent wait returns Herdr's atomic settled agent observation", async () => 
     agent_session: { value: "native-session-1" },
   });
   assert.deepEqual(calls, [
+    ["--session", "delegates", "agent", "list"],
     [
       "--session",
       "delegates",
@@ -42,6 +228,37 @@ test("agent wait returns Herdr's atomic settled agent observation", async () => 
       "--timeout",
       "5000",
     ],
+  ]);
+});
+
+test("agent wait returns an already settled observation without blocking", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: "idle",
+                state_change_seq: 13,
+              },
+            ],
+          },
+        });
+      }
+      throw new Error("blocking agent wait must not run");
+    },
+  });
+
+  const observed = await client.waitForAgent("managed-agent", 5000);
+
+  assert.equal(observed.agent_status, "idle");
+  assert.deepEqual(calls, [
+    ["--session", "delegates", "agent", "list"],
   ]);
 });
 

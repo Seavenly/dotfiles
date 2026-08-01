@@ -236,6 +236,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const clock = dependencies.clock ?? Date.now;
+  const wallClock = dependencies.wallClock ?? Date.now;
   const delay =
     dependencies.delay ??
     ((milliseconds) =>
@@ -373,6 +374,11 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       observed?.agent_status === "blocked"
         ? await herdr.agentExcerpt(context.agent.herdr.name)
         : undefined;
+    const deliveryObservationExpired = deliveryObservationGraceExpired(
+      context.turn,
+      observed?.state_change_seq,
+      wallClock(),
+    );
 
     const reconciled = await withResourceLock(
       registryDirectory,
@@ -387,8 +393,11 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
           env,
           now,
           retryCorrelation:
-            correlationDeadline === undefined || clock() < correlationDeadline,
+            !deliveryObservationExpired &&
+            (correlationDeadline === undefined ||
+              clock() < correlationDeadline),
           correlationStage,
+          deliveryObservationExpired,
         }),
     );
     if (!reconciled.retry_wait) return reconciled;
@@ -492,6 +501,7 @@ async function reconcileSettledObservation({
   now,
   retryCorrelation,
   correlationStage,
+  deliveryObservationExpired,
 }) {
   const context = await turnContext(registryDirectory, turnId);
   if (context.turn.status !== "working") return context;
@@ -601,7 +611,8 @@ async function reconcileSettledObservation({
     turnAwaitsPostDeliverySettlement(
       context.turn,
       observed.state_change_seq,
-    )
+    ) &&
+    !deliveryObservationExpired
   ) {
     return { ...context, retry_wait: true };
   }
@@ -625,6 +636,7 @@ async function reconcileSettledObservation({
   } catch (error) {
     const pendingStage = error.details?.correlation_stage ?? "transcript";
     if (
+      !deliveryObservationExpired &&
       error.details?.correlation_pending &&
       (retryCorrelation || pendingStage !== correlationStage)
     ) {
@@ -657,6 +669,23 @@ async function reconcileSettledObservation({
     await writeRecord(registryDirectory, "blocks", currentBlock);
   }
   return context;
+}
+
+function deliveryObservationGraceExpired(
+  turn,
+  herdrStateChangeSeq,
+  observedAtMs,
+) {
+  if (!turnAwaitsPostDeliverySettlement(turn, herdrStateChangeSeq)) {
+    return false;
+  }
+  const submittedAtMs = Date.parse(
+    turn.inputs[0]?.submitted_at ?? turn.created_at,
+  );
+  return (
+    Number.isFinite(submittedAtMs) &&
+    observedAtMs >= submittedAtMs + TRANSCRIPT_SETTLE_GRACE_MS
+  );
 }
 
 export async function sendToTurn(turnId, options, dependencies = {}) {
@@ -760,7 +789,13 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
       herdr,
       now,
     });
-    return { ...reconciled, command_status: "turn_closed" };
+    return {
+      ...reconciled,
+      command_status:
+        reconciled.turn.status === "completed"
+          ? "turn_closed"
+          : (reconciled.wait_status ?? reconciled.turn.status),
+    };
   }
   if (
     !["working", "blocked"].includes(availability.observed?.agent_status)
@@ -898,7 +933,12 @@ export async function getTurn(turnId, { env = process.env } = {}) {
 }
 
 function lateResultRecoveryEligible(turn) {
-  if (turn.status !== "uncertain" || turn.result) return false;
+  if (
+    !["uncertain", "unsupported_transcript"].includes(turn.status) ||
+    turn.result
+  ) {
+    return false;
+  }
   if (turn.late_result_recovery === "exact_transcript_correlation") return true;
   return (
     turn.error === "submitted input was not observed after the transcript cursor" ||
