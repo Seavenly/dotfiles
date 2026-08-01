@@ -436,11 +436,10 @@ export class HerdrClient {
     const observedBeforeDelivery =
       options.observedBeforeDelivery ?? (await this.agentRecord(name));
     const harness = options.harness ?? observedBeforeDelivery?.agent;
-    const guardsClaudeMultilineSubmission =
+    const guardsClaudeStagedSubmission =
       harness === "claude" &&
-      prompt.includes("\n") &&
       ["idle", "done"].includes(observedBeforeDelivery?.agent_status);
-    const visibleBeforeDelivery = guardsClaudeMultilineSubmission
+    const visibleBeforeDelivery = guardsClaudeStagedSubmission
       ? await this.agentVisibleText(name)
       : undefined;
     const result = await this.sessionCommand([
@@ -449,19 +448,21 @@ export class HerdrClient {
       name,
       prompt,
     ]);
-    if (!guardsClaudeMultilineSubmission) {
+    if (!guardsClaudeStagedSubmission) {
       return result;
     }
 
-    // Claude turns a multiline bracketed paste into an attachment token
-    // asynchronously. Herdr 0.7.5 can send the submit key before that
-    // conversion finishes, leaving the prompt staged while the agent remains
-    // idle. Use the visible pane only to wait for a new attachment token, then
-    // send one guarded submit key. Native state and transcript correlation
-    // remain authoritative for turn progress and completion.
+    // Claude can turn multiline and long single-line bracketed pastes into an
+    // attachment token asynchronously. Herdr 0.7.5 can send the submit key
+    // before that conversion finishes, leaving the prompt staged while the
+    // agent remains idle. Use the visible pane only to wait for a new
+    // attachment token, then send one guarded submit key. Native state and
+    // transcript correlation remain authoritative for progress and completion.
     let attachmentReady = false;
+    let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (promptSubmissionObserved(await this.agentRecord(name))) {
+      observedAfterDelivery = await this.agentRecord(name);
+      if (promptSubmissionObserved(observedAfterDelivery)) {
         return result;
       }
       attachmentReady = newClaudeAttachmentTokenObserved(
@@ -472,8 +473,17 @@ export class HerdrClient {
       await this.delay(25);
     }
     if (!attachmentReady) {
+      // A short prompt can complete before the first post-delivery poll. A new
+      // done observation proves that the native agent transitioned, while the
+      // exact transcript still remains completion authority.
+      if (
+        !prompt.includes("\n") &&
+        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
+      ) {
+        return result;
+      }
       throw new DrovrError(
-        `Herdr did not expose Claude's staged multiline attachment for ${name}`,
+        `Herdr did not expose Claude's staged attachment for ${name}`,
         { code: 4, outcome: "adapter_failure" },
       );
     }
@@ -533,6 +543,14 @@ function withoutCallerHerdrContext(env) {
 
 function promptSubmissionObserved(observed) {
   return ["working", "blocked"].includes(observed?.agent_status);
+}
+
+function promptCompletionObserved(before, after) {
+  if (after?.agent_status !== "done") return false;
+  return (
+    before?.agent_status !== after.agent_status ||
+    before?.state_change_seq !== after.state_change_seq
+  );
 }
 
 function newClaudeAttachmentTokenObserved(before, after) {

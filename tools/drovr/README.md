@@ -127,11 +127,14 @@ If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
 Transcript-flush grace follows correlation progress, so a stale idle observation
 before prompt delivery cannot consume the grace needed after actual settlement.
-Claude multiline delivery also verifies that a settled native agent actually
-enters `working` or `blocked` after Herdr stages the prompt; an idle state-token
-change alone does not prove submission. A still-idle bracketed paste receives
-one guarded submit key only after a new visible Claude attachment token appears;
-pane output is delivery-readiness evidence, not completion evidence. Native
+Claude delivery also watches a settled native agent for `working` or `blocked`
+after Herdr stages a prompt; an idle state-token change alone does not prove
+submission. A still-idle multiline or long single-line bracketed paste receives
+one guarded submit key only after a new visible Claude attachment token appears.
+A single-line prompt with no attachment token proceeds to exact native
+transcript correlation only after a new `done` observation, because a short
+turn can complete before the first poll. Pane output is delivery-readiness
+evidence, not completion evidence. Native
 waits first return an already-settled observation instead of waiting for another
 state change. If the pre-delivery state persists beyond the bounded transcript
 grace, exact transcript correlation gets one final attempt before the turn

@@ -831,6 +831,9 @@ test("delegate returns the correlated final Claude Code message", async (t) => {
   const cwd = join(scratch, "work");
   const herdrState = join(scratch, "herdr-state");
   const nativeSession = "11111111-2222-4333-8444-555555555555";
+  const delegatedPrompt = "Review the exact candidate thoroughly. "
+    .repeat(50)
+    .trim();
   const callerHerdrEnvironment = {
     HERDR_ENV: "1",
     HERDR_PANE_ID: "caller-pane",
@@ -911,17 +914,6 @@ case "\${1:-} \${2:-}" in
     ;;
   "agent list")
     if [[ -f "$herdrState/agent" ]]; then
-      if [[ -f "$herdrState/pending-prompt" && ! -f "$herdrState/initial-transcript-delivered" ]]; then
-        if [[ ! -f "$herdrState/stale-idle-observed" ]]; then
-          touch "$herdrState/stale-idle-observed"
-        else
-          prompt=$(<"$herdrState/pending-prompt")
-          result=$(<"$herdrState/pending-result")
-          jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
-          jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
-          touch "$herdrState/initial-transcript-delivered"
-        fi
-      fi
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
       stateChangeSeq=2
       if [[ -f "$herdrState/state-change-seq" ]]; then
@@ -934,10 +926,13 @@ case "\${1:-} \${2:-}" in
         else
           status=blocked
         fi
+      elif [[ -f "$herdrState/submission-started" ]]; then
+        status=working
+        rm "$herdrState/submission-started"
       else
         status=idle
       fi
-      printf '{"result":{"agents":[{"name":"%s","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"%s"}}]}}\\n' "$name" "$status" "$stateChangeSeq" "$nativeSession"
+      printf '{"result":{"agents":[{"name":"%s","agent":"claude","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"%s"}}]}}\\n' "$name" "$status" "$stateChangeSeq" "$nativeSession"
     else
       printf '{"result":{"agents":[]}}\\n'
     fi
@@ -961,8 +956,20 @@ case "\${1:-} \${2:-}" in
       else
         jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
       fi
+      touch "$herdrState/submission-started"
     fi
     printf '{"result":{"status":"idle"}}\\n'
+    ;;
+  "agent send-keys")
+    if [[ \${4:-} == enter && -f "$herdrState/pending-prompt" && ! -f "$herdrState/initial-transcript-delivered" ]]; then
+      prompt=$(<"$herdrState/pending-prompt")
+      result=$(<"$herdrState/pending-result")
+      jq -nc --arg prompt "$prompt" --arg session "$nativeSession" --arg cwd "$taskCwd" '{type:"user",sessionId:$session,cwd:$cwd,message:{role:"user",content:$prompt}}' >> "$transcript"
+      jq -nc --arg session "$nativeSession" --arg cwd "$taskCwd" --arg result "$result" '{type:"assistant",sessionId:$session,cwd:$cwd,message:{role:"assistant",stop_reason:"end_turn",content:[{type:"text",text:$result}]}}' >> "$transcript"
+      touch "$herdrState/initial-transcript-delivered"
+      touch "$herdrState/submission-started"
+      rm "$herdrState/pending-prompt" "$herdrState/pending-result"
+    fi
     ;;
   "agent wait")
     if [[ -f "$herdrState/pending-prompt" && ! -f "$herdrState/initial-transcript-delivered" ]]; then
@@ -993,7 +1000,13 @@ case "\${1:-} \${2:-}" in
     printf '{"result":{"status":"idle"}}\\n'
     ;;
   "agent read")
-    printf 'Claude approval required\\n'
+    if [[ "$*" == *"--source visible"* ]]; then
+      if [[ -f "$herdrState/pending-prompt" && ! -f "$herdrState/initial-transcript-delivered" ]]; then
+        printf '[Pasted text #1 +1 lines]\\n'
+      fi
+    else
+      printf 'Claude approval required\\n'
+    fi
     ;;
   *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
 esac
@@ -1016,7 +1029,7 @@ esac
         "claude",
         "--capability",
         "read-only",
-        "Reply with exactly CLAUDE DELEGATED",
+        delegatedPrompt,
       ],
       {
         encoding: "utf8",
@@ -1079,6 +1092,16 @@ esac
   assert.equal(asked.result.status, "completed");
   assert.equal(asked.result.agent.harness, "claude");
   assert.equal(asked.result.turn.result.text, "CLAUDE ASKED");
+  const nativeUserInputs = (await readFile(transcript, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter(({ type }) => type === "user")
+    .map(({ message }) => message.content);
+  assert.deepEqual(nativeUserInputs, [
+    delegatedPrompt,
+    "Reply with exactly CLAUDE ASKED",
+  ]);
   const recoveryArgs = await readFile(join(herdrState, "start-args"), "utf8");
   assert.match(recoveryArgs, new RegExp(`--resume ${nativeSession}`, "u"));
   await assert.rejects(readFile(join(herdrState, "caller-context-leaked")), {
