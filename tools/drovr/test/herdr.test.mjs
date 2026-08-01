@@ -2,6 +2,73 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HerdrClient } from "../src/herdr.mjs";
+import { HERDR_OBSERVATION_TIMEOUT_MS } from "../src/limits.mjs";
+
+test("Herdr observations use the advertised command bound", async () => {
+  const observedTimeouts = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args, options) {
+      observedTimeouts.push(options.timeout);
+      if (args.includes("session")) {
+        return JSON.stringify({ sessions: [] });
+      }
+      return JSON.stringify({ result: { agents: [] } });
+    },
+  });
+
+  await client.sessionRunning();
+  await client.agentRecords();
+
+  assert.deepEqual(observedTimeouts, [
+    HERDR_OBSERVATION_TIMEOUT_MS,
+    HERDR_OBSERVATION_TIMEOUT_MS,
+  ]);
+});
+
+test("Herdr mutations do not inherit the observation bound", async () => {
+  let observedTimeout;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, _args, options) {
+      observedTimeout = options.timeout;
+      return "";
+    },
+  });
+
+  await client.interruptAgent("managed-agent");
+
+  assert.equal(observedTimeout, undefined);
+});
+
+test("Herdr waits preserve their caller-selected bound", async () => {
+  const observedTimeouts = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args, options) {
+      observedTimeouts.push(options.timeout);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{ name: "managed-agent", agent_status: "working" }],
+          },
+        });
+      }
+      return JSON.stringify({
+        result: {
+          agent: { name: "managed-agent", agent_status: "idle" },
+        },
+      });
+    },
+  });
+
+  await client.waitForAgent("managed-agent", 300_000);
+
+  assert.deepEqual(observedTimeouts, [
+    HERDR_OBSERVATION_TIMEOUT_MS,
+    undefined,
+  ]);
+});
 
 test("Claude prompt delivery submits a staged multiline paste", async () => {
   const calls = [];

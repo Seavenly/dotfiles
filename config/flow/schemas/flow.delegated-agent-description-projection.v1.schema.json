@@ -209,12 +209,14 @@
           "required": [
             "schema",
             "admission_owner",
+            "observation_timeout_ms",
             "concurrent_logical_turns_per_agent",
             "managed_agents_per_task"
           ],
           "properties": {
             "schema": { "const": "drovr.capacity/v1" },
             "admission_owner": { "const": "caller" },
+            "observation_timeout_ms": { "const": 30000 },
             "concurrent_logical_turns_per_agent": { "const": 1 },
             "managed_agents_per_task": {
               "type": "object",

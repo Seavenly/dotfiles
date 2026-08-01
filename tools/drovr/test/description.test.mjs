@@ -108,6 +108,7 @@ test("description resolves an exact watermarked launch without creating delegate
   assert.deepEqual(description.capacity, {
     schema: "drovr.capacity/v1",
     admission_owner: "caller",
+    observation_timeout_ms: 30_000,
     concurrent_logical_turns_per_agent: 1,
     managed_agents_per_task: {
       hard_limit: null,

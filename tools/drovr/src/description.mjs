@@ -6,6 +6,7 @@ import {
   resolveLaunchSpecification,
 } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
+import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 
 export const DROVR_ADVERTISED_FEATURES = deepFreeze([
   feature("exact_launch_description", "supported", [
@@ -85,6 +86,7 @@ const SCHEMAS = deepFreeze({
 const CAPACITY = deepFreeze({
   schema: SCHEMAS.capacity,
   admission_owner: "caller",
+  observation_timeout_ms: HERDR_OBSERVATION_TIMEOUT_MS,
   concurrent_logical_turns_per_agent: 1,
   managed_agents_per_task: {
     hard_limit: null,

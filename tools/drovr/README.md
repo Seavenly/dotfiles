@@ -32,6 +32,8 @@ Its `drovr.configuration-catalog` watermark binds the complete configuration
 and advertised contracts without exposing credential material. Identical
 catalog bytes and inputs produce identical identity-bearing output even when
 the catalog is installed at a different path.
+The capacity facts declare a 30-second bound for each Herdr observation, and
+the runtime applies that same bound to each read-only Herdr query.
 
 Each advertised contract declares `supported` or `unavailable`. The current
 runtime reports caller-idempotent dispatch and discovery, caller-keyed input,

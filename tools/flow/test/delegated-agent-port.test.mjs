@@ -3,9 +3,14 @@ import test from "node:test";
 
 import { describeDelegatedAgent } from "../../drovr/src/description.mjs";
 import {
-  createDrovrDelegatedAgentPort,
+  createDrovrDelegatedAgentPort as createProductionDrovrDelegatedAgentPort,
 } from "../src/drovr-delegated-agent-port.mjs";
 import { digest } from "../src/canonical.mjs";
+import {
+  rebindDescriptionDigest,
+  repositoryDrovrDependencies,
+  supportedDescription,
+} from "../test-support/delegated-agent-description.mjs";
 
 const request = {
   schema: "flow.delegated-agent-description-request/v1",
@@ -29,6 +34,13 @@ const unavailableFeatureIds = [
   "launch_binding_settlement_proof",
   "opaque_caller_ownership_metadata",
 ];
+
+function createDrovrDelegatedAgentPort(options = {}) {
+  return createProductionDrovrDelegatedAgentPort({
+    dependencies: repositoryDrovrDependencies(),
+    ...options,
+  });
+}
 
 test("DelegatedAgentPort blocks the exact description until every required feature is available", async () => {
   const port = createDrovrDelegatedAgentPort();
@@ -432,7 +444,6 @@ test("DelegatedAgentPort reports unavailable descriptions without inventing auth
     legal_next_actions: ["retry_delegated_runtime_description"],
   });
 });
-
 test("DelegatedAgentPort exposes repair actions for invalid Drovr configuration", async () => {
   const port = createDrovrDelegatedAgentPort({
     async describeDrovr() {
@@ -460,20 +471,3 @@ test("DelegatedAgentPort exposes repair actions for invalid Drovr configuration"
     ],
   });
 });
-
-async function supportedDescription(drovrRequest, dependencies) {
-  const description = structuredClone(
-    await describeDelegatedAgent(drovrRequest, dependencies),
-  );
-  for (const feature of description.feature_advertisement.features) {
-    feature.availability = "supported";
-  }
-  rebindDescriptionDigest(description);
-  return description;
-}
-
-function rebindDescriptionDigest(description) {
-  const { description_digest: _digest, legal_actions: _actions, ...identity } =
-    description;
-  description.description_digest = digest(identity);
-}
