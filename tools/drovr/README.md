@@ -103,6 +103,15 @@ Prompt-bearing commands accept exactly one positional prompt,
 `drovr.command/v1` JSON document on standard output. Durable local records live
 under `${XDG_STATE_HOME:-~/.local/state}/drovr/`.
 
+`delegate`, `ask`, and `turn wait` are non-streaming commands. They write their
+single JSON result only after the logical turn settles or the requested timeout
+expires; silence while the process remains active is not a successful empty
+result. If an automation runner yields a live process or session handle before
+the command exits, resume that same process instead of starting another wait.
+Use `drovr turn get TURN_ID` when a caller needs an immediate, nonblocking
+snapshot of durable turn state. Multiple concurrent waits are safe but
+unnecessary.
+
 Reuse the returned agent ID for a later logical turn:
 
 ```sh
@@ -146,11 +155,14 @@ If resolution settles before the later waiter starts, an advanced Herdr state
 token plus the correlated native transcript provides the durable resume evidence.
 Transcript-flush grace follows correlation progress, so a stale idle observation
 before prompt delivery cannot consume the grace needed after actual settlement.
-Claude multiline delivery also verifies that a settled native agent actually
-enters `working` or `blocked` after Herdr stages the prompt; an idle state-token
-change alone does not prove submission. A still-idle bracketed paste receives
-one guarded submit key only after a new visible Claude attachment token appears;
-pane output is delivery-readiness evidence, not completion evidence. Native
+Claude delivery also watches a settled native agent for `working` or `blocked`
+after Herdr stages a prompt; an idle state-token change alone does not prove
+submission. A still-idle multiline or long single-line bracketed paste receives
+one guarded submit key only after a new visible Claude attachment token appears.
+A single-line prompt with no attachment token proceeds to exact native
+transcript correlation only after a new `done` observation, because a short
+turn can complete before the first poll. Pane output is delivery-readiness
+evidence, not completion evidence. Native
 waits first return an already-settled observation instead of waiting for another
 state change. If the pre-delivery state persists beyond the bounded transcript
 grace, exact transcript correlation gets one final attempt before the turn
@@ -163,7 +175,12 @@ temporarily absent. Discovery does not rewrite the durable turn or promote it to
 `completed`.
 Cancellation reports `cancelled` only after native interruption and confirmed
 settlement. Cancelling an already-idle turn returns its exact reconciled terminal
-status, including `uncertain` when prompt delivery cannot be proven. Non-force
+status, including `uncertain` when prompt delivery cannot be proven. A missing or
+different native-session identity is never accepted as settlement, and blocked
+cancellation records the turn `uncertain` without interrupting the reported
+pane. Losing the managed agent while waiting also terminally records uncertainty
+without launching recovery. Steering revalidates the exact session owner before
+recording or delivering another input. Non-force
 cleanup refuses working or blocked resources, and group
 cleanup preflights every task before mutating any of them. Force cleanup
 interrupts active work, records each unfinished turn as `interrupted` or
