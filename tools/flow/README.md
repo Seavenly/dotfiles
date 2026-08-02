@@ -22,7 +22,9 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v12 adds the authority-bound GitHub tracker progress operation and
+  Catalog v13 adds disposable, exactly watermarked Kanban, graph, timeline,
+  trust, and operator projections rebuilt from `RunAuthority`. Catalog v12
+  added the authority-bound GitHub tracker progress operation and
   projection. Catalog v11 combines workspace, artifact, and resource handoff interfaces
   with the delegate-attempt execution introduced in v10. Delegate contracts
   include independently validated delegate
@@ -164,6 +166,19 @@ disabled, so this API does not authorize normal replacement launches.
   Delegate projections add reserved, accepted, and quarantined attempts, exact
   route bindings, validated evidence, quarantine reasons, and bounded retry
   actions derived from the same run watermark.
+  Every run projection also contains `views` with
+  `flow.kanban-projection/v1`, `flow.graph-projection/v1`,
+  `flow.timeline-projection/v1`, `flow.trust-projection/v1`, and
+  `flow.operator-projection/v1`. These immutable views expose the exact run
+  watermark and the operator-facing lifecycle, admission, revision, readiness,
+  route, capability, checkpoint, attempt, effect, resource, handoff, and legal
+  action facts relevant to each form. They are derived on every query or watch
+  observation, are never persisted as lifecycle authority, and may be deleted
+  and rebuilt without losing or inventing run state.
+  Timeline entry kinds are `lifecycle`, `checkpoint`, `readiness`,
+  `capability`, `revision`, `effect`, `attempt`, `handoff`, and the
+  `authority_change` fallback for authority events without a more specific
+  operator category.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and

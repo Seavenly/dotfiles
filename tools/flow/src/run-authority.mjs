@@ -48,6 +48,7 @@ import {
   AuthorityIntegrityError,
   readAuthorityStream,
   replayAuthorityStream,
+  runEventsFromRecords,
 } from "./sqlite-authority-replay.mjs";
 import {
   AUTHORITY_SCHEMA_RELEASE,
@@ -178,7 +179,11 @@ export function createInMemoryRunAuthority() {
         events: [...run.events, ...decision.events],
       });
       runs.set(run.run_id, updatedRun);
-      const projection = projectRun(foldRun(updatedRun));
+      const projection = projectRun({
+        authorityEventStreamDigest: runWatermark(updatedRun),
+        fold: foldRun(updatedRun),
+        events: updatedRun.events,
+      });
       for (const watcher of watchers.get(run.run_id) ?? []) {
         watcher.publish(projection);
       }
@@ -195,7 +200,11 @@ export function createInMemoryRunAuthority() {
       if (runId !== undefined) {
         const run = runs.get(runId);
         if (!run) return unknownRunRejection("query", runId, authorityEvents);
-        return projectRun(foldRun(run));
+        return projectRun({
+          authorityEventStreamDigest: runWatermark(run),
+          fold: foldRun(run),
+          events: run.events,
+        });
       }
       return freezeCanonical({
         schema: "flow.run-index-projection/v1",
@@ -212,7 +221,11 @@ export function createInMemoryRunAuthority() {
         );
       }
       const watcher = createProjectionWatcher({
-        initialProjection: projectRun(foldRun(run)),
+        initialProjection: projectRun({
+          authorityEventStreamDigest: runWatermark(run),
+          fold: foldRun(run),
+          events: run.events,
+        }),
         close: () => {
         const runWatchers = watchers.get(runId);
         runWatchers?.delete(watcher);
@@ -742,10 +755,10 @@ export function createDurableRunAuthority({
           if (database.isTransaction) database.exec("ROLLBACK");
           throw error;
         }
-        const projection = projectRun(fenceRun(
+        const projection = projectFencedRun(database, readStream(
           database,
-          readStream(database, canonicalCommand.run_id),
-        ));
+          canonicalCommand.run_id,
+        ), fenceRun);
         for (const watcher of watchers.get(canonicalCommand.run_id) ?? []) {
           watcher.publish(projection);
         }
@@ -969,7 +982,7 @@ export function createDurableRunAuthority({
           if (!stream) {
             return durableUnknownRunRejection("query", runId, database);
           }
-          const projection = projectRun(fenceRun(database, stream));
+          const projection = projectFencedRun(database, stream, fenceRun);
           return compatibility.status === "transition_required"
             ? transitionRequiredRunProjection(projection, compatibility)
             : projection;
@@ -1378,10 +1391,10 @@ export function createDurableRunAuthority({
           if (database.isTransaction) database.exec("ROLLBACK");
           throw error;
         }
-        const projection = projectRun(fenceRun(
+        const projection = projectFencedRun(database, readStream(
           database,
-          readStream(database, intent.run_id),
-        ));
+          intent.run_id,
+        ), fenceRun);
         for (const watcher of watchers.get(intent.run_id) ?? []) {
           watcher.publish(projection);
         }
@@ -1580,7 +1593,11 @@ function queryWorkProjection(
     if (!consumerStream) {
       return { run_id: action.consumer_run_id, watermark: null, actionable: false };
     }
-    const consumer = projectRun(consumerStream.fold);
+    const consumer = projectRun({
+      authorityEventStreamDigest: consumerStream.authorityEventStreamDigest,
+      fold: consumerStream.fold,
+      events: runEventsFromRecords(consumerStream.records),
+    });
     const operationCardIds = consumer.legal_actions
       .filter(({ type }) => type === "operation_execute")
       .filter(({ card_id: cardId }) => {
@@ -2315,7 +2332,9 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
   return freezeCanonical({
     ...stream.fold,
     watermark,
-    admission: suspendedAfterReboot ? "suspended_after_reboot" : "admitted",
+    admission: suspendedAfterReboot
+      ? "suspended_after_reboot"
+      : stream.fold.phase === "active" ? "admitted" : "released",
     authority_epoch: admission.authority_epoch,
     authority_boot_id: admission.boot_id,
     stream_generation: stream.generation,
@@ -2330,6 +2349,14 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
           trackerEffectIds.has(action.effect_id)),
       },
     }),
+  });
+}
+
+function projectFencedRun(database, stream, fenceRun) {
+  return projectRun({
+    authorityEventStreamDigest: stream.authorityEventStreamDigest,
+    fold: fenceRun(database, stream),
+    events: runEventsFromRecords(stream.records),
   });
 }
 
@@ -2477,10 +2504,18 @@ function transitionRequiredRunProjection(projection, authoritySchema) {
     run_watermark: projection.watermark,
     authority_schema_watermark: authoritySchema.watermark,
   });
+  const views = Object.fromEntries(Object.entries(projection.views).map(
+    ([name, view]) => [name, {
+      ...view,
+      authority_watermark: watermark,
+      legal_actions: [],
+    }],
+  ));
   return freezeCanonical({
     ...projection,
     watermark,
     legal_actions: [],
+    views,
   });
 }
 

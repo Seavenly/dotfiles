@@ -114,6 +114,10 @@ test("a version-one store transitions without changing existing run behavior", a
     "authority_schema_transition",
   );
   assert.deepEqual(beforeRun.legal_actions, []);
+  for (const view of Object.values(beforeRun.views)) {
+    assert.equal(view.authority_watermark, beforeRun.watermark);
+    assert.deepEqual(view.legal_actions, []);
+  }
   assert.equal(
     await validatesPublishedSchema(
       "flow.authority-schema-compatibility.v1.schema.json",
@@ -494,7 +498,19 @@ function replayVisibleRun(projection) {
     watermark: _watermark,
     ...stable
   } = projection;
-  return stable;
+  return {
+    ...stable,
+    views: Object.fromEntries(Object.entries(stable.views).map(
+      ([name, view]) => {
+        const {
+          authority_watermark: _viewWatermark,
+          legal_actions: _viewActions,
+          ...stableView
+        } = view;
+        return [name, stableView];
+      },
+    )),
+  };
 }
 
 async function validatesPublishedSchema(filename, value) {

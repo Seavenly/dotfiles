@@ -25,6 +25,7 @@ import {
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
+import { withoutViewWatermarks } from "../test-support/projection-assertions.mjs";
 
 test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-authority-"));
@@ -456,9 +457,11 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
   );
   await until(() =>
     producerRuntime.query({ run_id: producer.run_id }).phase === "succeeded");
-  const [{ handoff_id: handoffId }] = producerRuntime.query({
+  const producerProjection = producerRuntime.query({
     run_id: producer.run_id,
-  }).handoffs;
+  });
+  const [{ handoff_id: handoffId }] = producerProjection.handoffs;
+  assert.equal(producerProjection.views.operator.handoffs.published.length, 1);
 
   producerAuthority.close();
   git(repository, ["update-ref", "-d", "refs/heads/producer"]);
@@ -471,6 +474,14 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     hostIdentityAdapter: fixedHostIdentity("boot-a", "consumer-process"),
   });
   t.after(() => consumerAuthority.close());
+  const rebuiltProducer = createFlowRuntime({
+    runAuthority: consumerAuthority,
+  }).query({ run_id: producer.run_id });
+  assert.deepEqual(
+    withoutViewWatermarks(rebuiltProducer.views),
+    withoutViewWatermarks(producerProjection.views),
+  );
+  assert.equal(rebuiltProducer.views.operator.handoffs.published.length, 1);
   const consumerHandoffAuthority = getResourceHandoffAuthority({
     runAuthority: consumerAuthority,
   });
