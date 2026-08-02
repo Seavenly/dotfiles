@@ -46,6 +46,16 @@ A generation-fenced managed repository workspace identified canonically and
 bound to exact Git facts, mutation epoch, and disposition by WorkspaceAuthority.
 _Avoid_: Worktree path, branch name
 
+**Workspace claim**:
+The sole durable mutation lease for one exact workspace generation and Git
+fingerprint, held by one run for explicitly named operations.
+_Avoid_: Lock file, assumed ownership
+
+**Workspace taint**:
+Durable uncertainty about a workspace mutation or destructive effect that
+survives process termination and reboot until exact evidence disposes it.
+_Avoid_: Warning flag, best-effort cleanup state
+
 **Artifact subject**:
 Immutable content identified by digest and governed with schema, provenance,
 classification, retention, pins, and byte availability by ArtifactAuthority.
@@ -55,6 +65,11 @@ _Avoid_: Artifact path, latest artifact
 An immutable generation-bound transfer that binds an exact workspace subject,
 artifact subjects, producer evidence, consumer authority, and retention duties.
 _Avoid_: Producer workspace, latest result
+
+**Resource disposition**:
+An evidence-backed authority decision that retires a resource only after its
+pins and cleanup obligations are discharged, making exact cleanup eligible.
+_Avoid_: Delete request, garbage-collection hint
 
 **Authority schema transition**:
 An atomic, versioned change to replacement authority storage, bound to one

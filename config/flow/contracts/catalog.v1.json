@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 11,
+  "catalog_version": 12,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -193,15 +193,27 @@
       "interface": "work.workspace-authority/v1",
       "contract": "work.workspace/v1",
       "projection": "work.workspace-projection/v1",
-      "commands": ["work.workspace-register-command/v1"],
-      "git_observation": "work.git-observation/v1"
+      "commands": [
+        "work.workspace-register-command/v1",
+        "work.workspace-claim-command/v1",
+        "work.workspace-claim-release-command/v1",
+        "work.workspace-taint-command/v1",
+        "work.workspace-taint-disposition-command/v1",
+        "work.workspace-risk-acceptance-command/v1"
+      ],
+      "git_observation": "work.git-observation/v1",
+      "cleanup_preview": "work.workspace-cleanup-preview/v1",
+      "cleanup_operation": "flow.operation/resource-cleanup/v1",
+      "taint_evidence_validation": "work.taint-disposition-validation/v1",
+      "human_authority_validation": "work.human-authority-validation/v1"
     },
     "artifact": {
       "authority": "ArtifactAuthority",
       "interface": "work.artifact-authority/v1",
       "contract": "work.artifact/v1",
       "projection": "work.artifact-projection/v1",
-      "commands": ["work.artifact-record-command/v1"]
+      "commands": ["work.artifact-record-command/v1"],
+      "collection_preview": "work.artifact-collection-preview/v1"
     },
     "handoff": {
       "authority": "Work_domain_authorities_with_RunAuthority_finalization",
@@ -209,10 +221,15 @@
       "contract": "flow.resource-handoff/v1",
       "publication": "flow.resource-handoff-publication/v1",
       "projection": "flow.resource-handoff-projection/v1",
+      "commands": ["flow.resource-handoff-disposition-command/v1"],
       "consumer_binding": "flow.resource-handoff-consumer-binding/v1",
+      "consumer_operation_authority": "explicit_read_only_or_mutation_per_allowed_operation",
       "mutation_authorization": "flow.resource-handoff-mutation-authorization/v1",
+      "cleanup_preview": "flow.resource-handoff-cleanup-preview/v1",
+      "cleanup_operation": "flow.operation/resource-cleanup/v1",
+      "disposition_validation": "flow.resource-handoff-disposition-validation/v1",
       "consumer_preparation": "exact_resource_claim_bound_at_launch",
-      "mutation_recheck": "operation_bound_before_adapter_invocation",
+      "mutation_recheck": "exclusive_workspace_claim_and_operation_bound_before_adapter_invocation",
       "atomic_finalization": [
         "workspace_promotion",
         "artifact_pin_transfer",
@@ -220,6 +237,14 @@
         "handoff_activation",
         "producer_run_finalization"
       ]
+    },
+    "resource_safety": {
+      "writer_fence": "exact_generation_fingerprint_and_exclusive_claim",
+      "taint_persistence": "durable_until_evidence_backed_disposition",
+      "cleanup": "exact_preview_refuses_active_dirty_uncertain_or_retained",
+      "collection_guards": ["pins", "claims", "retention", "cleanup_obligations"],
+      "forbidden_selection": "latest",
+      "exact_human_authority": ["destructive_reset", "risk_acceptance"]
     }
   },
   "contracts": [
@@ -265,11 +290,30 @@
     "flow.resource-handoff-projection/v1",
     "flow.resource-handoff-consumer-binding/v1",
     "flow.resource-handoff-mutation-authorization/v1",
+    "flow.resource-handoff-cleanup-preview/v1",
+    "flow.resource-handoff-disposition-command/v1",
+    "flow.resource-handoff-disposition-evidence/v1",
+    "flow.resource-handoff-disposition-validation/v1",
+    "flow.operation/resource-cleanup/v1",
+    "flow.resource-cleanup-request/v1",
+    "flow.resource-cleanup-receipt/v1",
     "flow.git-retention-receipt/v1",
     "flow.git-retention-observation/v1",
     "flow.legal-next-action/v1",
     "work.workspace-authority/v1",
     "work.workspace-register-command/v1",
+    "work.workspace-claim-command/v1",
+    "work.workspace-claim-release-command/v1",
+    "work.workspace-taint-command/v1",
+    "work.workspace-taint-disposition-command/v1",
+    "work.workspace-risk-acceptance-command/v1",
+    "work.workspace-cleanup-preview/v1",
+    "work.artifact-collection-preview/v1",
+    "work.human-authority/v1",
+    "work.human-authority-validation/v1",
+    "work.taint-disposition-evidence/v1",
+    "work.taint-disposition-validation/v1",
+    "work.legal-next-action/v1",
     "work.git-observation/v1",
     "work.artifact-authority/v1",
     "work.artifact-record-command/v1",
