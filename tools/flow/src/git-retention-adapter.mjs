@@ -8,6 +8,10 @@ export function createGitRetentionAdapter({ resolveRepository } = {}) {
   }
   return Object.freeze({
     retain({ repository_id: repositoryId, git }) {
+      if (!nonEmpty(repositoryId) || !validObjectId(git?.commit_sha) ||
+          !validObjectId(git?.tree_sha)) {
+        throw new TypeError("Git retention requires exact object identities");
+      }
       const repository = resolveRepository(repositoryId);
       const observedCommit = gitOutput(repository, ["rev-parse", git.commit_sha]);
       const observedTree = gitOutput(repository, ["rev-parse", `${git.commit_sha}^{tree}`]);
@@ -27,6 +31,13 @@ export function createGitRetentionAdapter({ resolveRepository } = {}) {
 
     observe(receipt) {
       try {
+        if (!nonEmpty(receipt?.repository_id) ||
+            !validObjectId(receipt?.commit_sha) ||
+            !validObjectId(receipt?.tree_sha) ||
+            receipt.retention_ref !==
+              `refs/flow/retained/${receipt.commit_sha}`) {
+          throw new TypeError("Git retention receipt is not canonical");
+        }
         const repository = resolveRepository(receipt.repository_id);
         const commit = gitOutput(repository, ["rev-parse", receipt.retention_ref]);
         const tree = gitOutput(repository, ["rev-parse", `${receipt.retention_ref}^{tree}`]);
@@ -50,7 +61,10 @@ export function createGitWorkspaceObservationAdapter() {
     observe({ workspace_path: workspacePath, ref }) {
       const commitSha = gitOutput(workspacePath, ["rev-parse", "HEAD"]);
       const treeSha = gitOutput(workspacePath, ["rev-parse", "HEAD^{tree}"]);
-      const resolvedRef = gitOutput(workspacePath, ["symbolic-ref", "HEAD"]);
+      const resolvedRef = gitOptionalOutput(
+        workspacePath,
+        ["symbolic-ref", "HEAD"],
+      ) ?? "HEAD";
       const clean = gitOutput(workspacePath, ["status", "--porcelain"]) === "";
       if (resolvedRef !== ref) {
         throw new Error("workspace Git ref does not match the observed checkout");
@@ -106,4 +120,19 @@ function gitOutput(repository, args) {
     throw new Error(result.stderr.trim() || "Git retention operation failed");
   }
   return result.stdout.trim();
+}
+
+function gitOptionalOutput(repository, args) {
+  const result = spawnSync("git", ["-C", repository, ...args], {
+    encoding: "utf8",
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function validObjectId(value) {
+  return /^[0-9a-f]{40,64}$/u.test(value ?? "");
+}
+
+function nonEmpty(value) {
+  return typeof value === "string" && value.length > 0;
 }

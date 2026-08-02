@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -423,7 +424,8 @@ export function createDurableRunAuthority({
             prepared,
             runId,
           );
-        } catch {
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
           return durableLaunchRejection(
             "invalid_resource_handoff_binding",
             prepared,
@@ -777,6 +779,14 @@ export function createDurableRunAuthority({
           processIdentity,
         });
         const currentProjection = readStream(database, identity.streamId)?.fold ?? null;
+        const structuralDecision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+        );
+        if (structuralDecision.schema === "work.rejection/v1") {
+          return structuralDecision;
+        }
         if (currentProjection === null && command.type === "workspace_register") {
           let observation;
           try {
@@ -805,12 +815,23 @@ export function createDurableRunAuthority({
         if (decision.replayed) {
           return workCommandReceipt(command, currentProjection, false);
         }
+        let createdArtifactPath = null;
         if (decision.artifactBytes !== undefined) {
-          storeArtifactBytes(
-            authorityDirectory,
-            command.artifact,
-            decision.artifactBytes,
-          );
+          try {
+            createdArtifactPath = storeArtifactBytes(
+              authorityDirectory,
+              command.artifact,
+              decision.artifactBytes,
+            );
+          } catch (error) {
+            return workRejection(
+              "command",
+              error instanceof TypeError
+                ? "artifact_bytes_mismatch"
+                : "artifact_bytes_conflict",
+              { command },
+            );
+          }
         }
         database.exec("BEGIN IMMEDIATE");
         try {
@@ -826,6 +847,7 @@ export function createDurableRunAuthority({
           );
           if (committed.schema === "work.rejection/v1") {
             database.exec("ROLLBACK");
+            if (createdArtifactPath) unlinkSync(createdArtifactPath);
             return committed;
           }
           appendAuthorityEvents(database, {
@@ -836,30 +858,10 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
-          for (const [index, artifactEvent] of
-            (committed.artifactEvents ?? []).entries()) {
-            const artifact = queryWorkProjection(
-              database,
-              authorityDirectory,
-              identity,
-              gitRetentionAdapter,
-            ).artifacts[index];
-            const artifactIdentity = workStreamIdentity(
-              "work.artifact/v1",
-              artifact.digest,
-            );
-            appendAuthorityEvents(database, {
-              streamId: artifactIdentity.streamId,
-              streamKind: artifactIdentity.streamKind,
-              events: [artifactEvent],
-              authorityEpoch,
-              bootId,
-              processIdentity,
-            });
-          }
           database.exec("COMMIT");
         } catch (error) {
           if (database.isTransaction) database.exec("ROLLBACK");
+          if (createdArtifactPath) unlinkSync(createdArtifactPath);
           throw error;
         }
         const projection = queryWorkProjection(
@@ -1671,8 +1673,23 @@ function prepareConsumerHandoffBindings(
   prepared,
   runId,
 ) {
-  return prepared.explicit_facts.resource_claims
-    .filter(({ kind }) => kind === "resource_handoff")
+  const claimsByHandoff = new Map();
+  for (const claim of prepared.explicit_facts.resource_claims
+    .filter(({ kind }) => kind === "resource_handoff")) {
+    const existing = claimsByHandoff.get(claim.id);
+    if (existing && existing.digest !== claim.digest) {
+      throw new TypeError("prepared consumer handoff claims disagree on identity");
+    }
+    claimsByHandoff.set(claim.id, {
+      ...claim,
+      operations: [...new Set([
+        ...(existing?.operations ?? []),
+        ...claim.operations,
+      ])].sort(),
+    });
+  }
+  return [...claimsByHandoff.values()]
+    .sort((left, right) => left.id.localeCompare(right.id))
     .map((claim) => {
       const identity = workStreamIdentity("flow.resource-handoff/v1", claim.id);
       if (!identity || !readStream(database, identity.streamId)) {
@@ -1729,9 +1746,10 @@ function storeArtifactBytes(authorityDirectory, artifact, encodedBytes) {
     if (!existing.equals(bytes)) {
       throw new Error("artifact digest already names different retained bytes");
     }
-    return;
+    return null;
   }
   writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+  return path;
 }
 
 function artifactBytesAvailable(authorityDirectory, artifact) {

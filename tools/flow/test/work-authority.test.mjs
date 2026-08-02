@@ -83,6 +83,10 @@ test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects",
 
   const bytes = Buffer.from("retained review candidate\n");
   const artifactDigest = sha256(bytes);
+  const mismatchedBytes = artifactRegistration(bytes, artifactDigest);
+  mismatchedBytes.bytes_base64 = Buffer.from("x".repeat(bytes.length)).toString("base64");
+  assert.equal(artifactAuthority.command(mismatchedBytes).code,
+    "artifact_bytes_mismatch");
   const artifact = artifactAuthority.command(artifactRegistration(bytes, artifactDigest));
   assert.equal(artifact.accepted, true);
   assert.equal(artifact.created, true);
@@ -119,6 +123,33 @@ test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects",
   const conflict = workspaceRegistration();
   conflict.registration.disposition = "conflicting";
   assert.equal(workspaceAuthority.command(conflict).code, "idempotency_conflict");
+  const stale = workspaceRegistration();
+  stale.command_id = "workspace-register:stale";
+  assert.equal(workspaceAuthority.command(stale).code, "stale_subject_generation");
+  assert.equal(workspaceAuthority.command({
+    schema: "work.workspace-register-command/v1",
+    contract: "work.workspace/v1",
+    type: "workspace_register",
+    subject_id: "workspace:invalid",
+  }).code, "invalid_workspace_registration");
+  assert.equal(artifactAuthority.command({
+    schema: "work.artifact-record-command/v1",
+    contract: "work.artifact/v1",
+    type: "artifact_record",
+    subject_id: `sha256:${"0".repeat(64)}`,
+  }).code, "invalid_artifact_record");
+
+  const inspector = createDurableRunAuthority({
+    access: "inspect",
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "inspector-process"),
+  });
+  t.after(() => inspector.close());
+  assert.equal(getArtifactAuthority({ runAuthority: inspector }).command(
+    artifactRegistration(Buffer.from("inspect-only\n"), sha256(Buffer.from("inspect-only\n"))),
+  ).code, "mutation_authority_unavailable");
 });
 
 test("producer promotion, pin transfer, handoff activation, and finalization commit atomically", async (t) => {
@@ -321,7 +352,10 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
   git(producerWorkspace, ["commit", "--allow-empty", "-m", "initial"]);
   const initialGit = observedGitFacts(producerWorkspace, "refs/heads/producer");
   git(producerWorkspace, ["commit", "--allow-empty", "-m", "candidate"]);
-  const candidateGit = observedGitFacts(producerWorkspace, "refs/heads/producer");
+  const candidateGit = {
+    ...observedGitFacts(producerWorkspace, "refs/heads/producer"),
+    ref: "HEAD",
+  };
   git(producerWorkspace, ["push", "origin", "producer"]);
   const gitRetentionAdapter = createGitRetentionAdapter({
     resolveRepository(repositoryId) {
@@ -329,6 +363,10 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
       return repository;
     },
   });
+  assert.throws(() => gitRetentionAdapter.retain({
+    repository_id: "example/repository",
+    git: { ...candidateGit, commit_sha: "--verify" },
+  }), /exact object identities/u);
   const producerAuthority = createDurableRunAuthority({
     authorityDirectory,
     gitRetentionAdapter,
@@ -375,7 +413,7 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     git: initialGit,
     repositoryId: "example/repository",
   }));
-  git(producerWorkspace, ["reset", "--hard", candidateGit.commit_sha]);
+  git(producerWorkspace, ["switch", "--detach", candidateGit.commit_sha]);
   producerArtifactAuthority.command(
     artifactRegistration(bytes, artifactDigest, producer.run_id),
   );
@@ -457,6 +495,30 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     "invalid_resource_handoff_binding",
   );
 
+  const splitPrepared = consumerRuntime.prepare(consumerOperationProposal(
+    handoffId,
+    retained.handoff_digest,
+    "workspace_mutation",
+    ["read_workspace", "workspace_mutation"],
+  ));
+  const splitConsumer = consumerRuntime.launch(confirmedLaunchRequest(splitPrepared));
+  assert.deepEqual(consumerHandoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  }).consumer_pins
+    .filter(({ run_id: runId }) => runId === splitConsumer.run_id)
+    .map(({ run_id: runId, operations }) => ({ run_id: runId, operations })), [{
+    run_id: splitConsumer.run_id,
+    operations: ["read_workspace", "workspace_mutation"],
+  }]);
+  consumerRuntime.command(
+    consumerRuntime.query({ run_id: splitConsumer.run_id }).legal_actions[0],
+  );
+  await until(() =>
+    consumerRuntime.query({ run_id: splitConsumer.run_id }).phase === "succeeded");
+  consumerInvocations = 0;
+  projectionAtMutation = null;
+
   const consumerPrepared = consumerRuntime.prepare(consumerOperationProposal(
     handoffId,
     retained.handoff_digest,
@@ -469,10 +531,12 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     contract: "flow.resource-handoff/v1",
     subject_id: handoffId,
   });
-  assert.deepEqual(pinned.consumer_pins.map(({ run_id: runId, operations }) => ({
-    run_id: runId,
-    operations,
-  })), [{ run_id: consumer.run_id, operations: ["workspace_mutation"] }]);
+  assert.deepEqual(pinned.consumer_pins
+    .filter(({ run_id: runId }) => runId === consumer.run_id)
+    .map(({ run_id: runId, operations }) => ({ run_id: runId, operations })), [{
+    run_id: consumer.run_id,
+    operations: ["workspace_mutation"],
+  }]);
   assert.equal(pinned.legal_actions.length, 1);
   git(repository, ["update-ref", "-d", retained.git_retention.retention_ref]);
   consumerRuntime.command(
@@ -590,7 +654,7 @@ function handoffPublication(artifactDigest, {
       contract: "work.workspace/v1",
       subject_id: "workspace:producer",
     },
-    allowed_consumer_operations: ["workspace_mutation"],
+    allowed_consumer_operations: ["read_workspace", "workspace_mutation"],
     authority_envelope: { capabilities: ["repository:write"] },
     retention: "durable_handoff",
     cleanup_obligations: ["retain_artifact_bytes"],
@@ -602,14 +666,15 @@ function consumerOperationProposal(
   handoffId,
   handoffDigest,
   operation = "workspace_mutation",
+  claimedOperations = [operation],
 ) {
   const proposal = registeredOperationProposal({ checkpointBound: false });
-  const claim = {
+  const claims = claimedOperations.map((claimedOperation) => ({
     kind: "resource_handoff",
     id: handoffId,
     digest: handoffDigest,
-    operations: [operation],
-  };
+    operations: [claimedOperation],
+  }));
   proposal.graph.cards[0].inputs = {
     resource_handoff: {
       handoff_id: handoffId,
@@ -617,9 +682,9 @@ function consumerOperationProposal(
       operation,
     },
   };
-  proposal.graph.cards[0].resource_claims.push(claim);
-  proposal.explicit_facts.resource_claims.push(claim);
-  proposal.explicit_facts.limits.max_resources = 2;
+  proposal.graph.cards[0].resource_claims.push(...claims);
+  proposal.explicit_facts.resource_claims.push(...claims);
+  proposal.explicit_facts.limits.max_resources = 1 + claims.length;
   return proposal;
 }
 
