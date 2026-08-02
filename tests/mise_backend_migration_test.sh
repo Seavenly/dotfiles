@@ -5,6 +5,11 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+# Resolve Node before isolating mise state so pre-links still exercises the real
+# profile preflight without asking the host mise shim to use the empty fixture.
+node_bin="$(mise which node)"
+node_dir="$(dirname "$node_bin")"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export HOME="$tmp/home"
@@ -14,6 +19,7 @@ export MISE_DATA_DIR="$tmp/mise-data"
 export DOTFILES_CONTEXT_OS=Linux
 export DOTFILES_CONTEXT_ARCH=x86_64
 export MISE_TEST_LOG="$tmp/mise.log"
+export PATH="$node_dir:$PATH"
 mkdir -p "$HOME/.local/bin" "$XDG_STATE_HOME/dotfiles/migrations"
 
 # shellcheck disable=SC2016
