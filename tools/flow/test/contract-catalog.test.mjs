@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 12);
+  assert.equal(catalog.catalog_version, 13);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -189,6 +189,20 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "subrun_execute",
   ));
   assert.ok(catalog.mechanism_adapters.includes("subrun"));
+  assert.deepEqual(catalog.flow_runtime.projection_builder, {
+    authority: "non_authoritative",
+    source: "RunAuthority",
+    watermark: "exact_run_authority",
+    retention: "disposable",
+    lifecycle_mutation: "forbidden",
+    forms: {
+      kanban: "flow.kanban-projection/v1",
+      graph: "flow.graph-projection/v1",
+      timeline: "flow.timeline-projection/v1",
+      trust: "flow.trust-projection/v1",
+      operator: "flow.operator-projection/v1",
+    },
+  });
   assert.ok(catalog.projections.includes("authority_schema_compatibility"));
   assert.deepEqual(catalog.work_domain_interfaces.handoff.atomic_finalization, [
     "workspace_promotion",
@@ -197,9 +211,40 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "handoff_activation",
     "producer_run_finalization",
   ]);
+  assert.equal(
+    catalog.work_domain_interfaces.handoff.consumer_operation_authority,
+    "explicit_read_only_or_mutation_per_allowed_operation",
+  );
+  assert.deepEqual(catalog.work_domain_interfaces.resource_safety, {
+    writer_fence: "exact_generation_fingerprint_and_exclusive_claim",
+    taint_persistence: "durable_until_evidence_backed_disposition",
+    cleanup: "exact_preview_refuses_active_dirty_uncertain_or_retained",
+    collection_guards: ["pins", "claims", "retention", "cleanup_obligations"],
+    forbidden_selection: "latest",
+    exact_human_authority: ["destructive_reset", "risk_acceptance"],
+  });
   for (const contract of [
     "work.workspace-authority/v1",
     "work.workspace-register-command/v1",
+    "work.workspace-claim-command/v1",
+    "work.workspace-claim-release-command/v1",
+    "work.workspace-taint-command/v1",
+    "work.workspace-taint-disposition-command/v1",
+    "work.workspace-risk-acceptance-command/v1",
+    "work.workspace-cleanup-preview/v1",
+    "work.artifact-collection-preview/v1",
+    "flow.resource-handoff-cleanup-preview/v1",
+    "flow.resource-handoff-disposition-command/v1",
+    "flow.resource-handoff-disposition-evidence/v1",
+    "flow.resource-handoff-disposition-validation/v1",
+    "flow.operation/resource-cleanup/v1",
+    "flow.resource-cleanup-request/v1",
+    "flow.resource-cleanup-receipt/v1",
+    "work.human-authority/v1",
+    "work.human-authority-validation/v1",
+    "work.taint-disposition-evidence/v1",
+    "work.taint-disposition-validation/v1",
+    "work.legal-next-action/v1",
     "work.git-observation/v1",
     "work.artifact-authority/v1",
     "work.artifact-record-command/v1",

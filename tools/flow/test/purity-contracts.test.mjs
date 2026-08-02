@@ -52,6 +52,10 @@ test("LifecycleKernel uses only the authoritative fold and typed command", () =>
     decision: "approve",
     expected_watermark: fold.watermark,
   };
+  fold.legal_actions = [
+    command,
+    { ...command, decision: "decline" },
+  ];
   const unchanged = structuredClone({ fold, command });
 
   const decision = withoutAmbientReads(() =>
@@ -94,7 +98,7 @@ test("LifecycleKernel uses only the authoritative fold and typed command", () =>
     bundle_digest: fold.bundle_digest,
     authority_watermark: fold.watermark,
     authority_watermark_domain: "run",
-    legal_actions: [],
+    legal_actions: fold.legal_actions,
   });
 });
 
@@ -103,6 +107,7 @@ test("pure module imports cannot acquire ambient capabilities", () => {
   assert.doesNotThrow(() => assertPureModuleGraph([
     resolve(sourceDirectory, "plan-compiler.mjs"),
     resolve(sourceDirectory, "lifecycle-kernel.mjs"),
+    resolve(sourceDirectory, "projection-builder.mjs"),
   ]));
 
   assert.throws(

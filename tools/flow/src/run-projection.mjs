@@ -3,6 +3,7 @@ import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
+import { buildRunViews } from "./projection-builder.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const launchOwnership = run.events.find(({ type }) => type === "run_launched")
@@ -568,10 +569,11 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   });
 }
 
-export function projectRun(fold) {
+export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
   if (fold?.schema !== "flow.run-fold/v1") {
     throw new Error("run projection requires an authoritative fold");
   }
+  const views = buildRunViews({ authorityEventStreamDigest, events, fold });
   return freezeCanonical({
     schema: "flow.run-projection/v1",
     run_id: fold.run_id,
@@ -593,10 +595,12 @@ export function projectRun(fold) {
     revisions: fold.revisions,
     active_plan: fold.active_plan,
     cards: fold.cards,
+    checkpoints: views.operator.checkpoints,
     blocks: fold.blocks,
     grants: fold.grants,
     capabilities: fold.capabilities,
     capability_bindings: fold.capability_bindings,
+    capability_envelopes: fold.capability_envelopes,
     resource_claims: fold.resource_claims,
     resource_dispositions: fold.resource_dispositions,
     limits: fold.limits,
@@ -611,6 +615,7 @@ export function projectRun(fold) {
     delegate_attempts: fold.delegate_attempts,
     quarantined_delegate_outputs: fold.quarantined_delegate_outputs,
     legal_actions: fold.legal_actions,
+    views,
   });
 }
 

@@ -22,12 +22,14 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v12 adds independently authoritative child-run creation,
-  deterministic lineage, exact adoption, reconciled parent cancellation,
-  late-unclaimed output quarantine, and the authority-bound GitHub tracker
-  progress operation and projection. Catalog v11 combines workspace, artifact,
-  and resource handoff interfaces
-  with the delegate-attempt execution introduced in v10. Delegate contracts
+  Catalog v13 adds disposable, exactly watermarked Kanban, graph, timeline,
+  trust, and operator projections rebuilt from `RunAuthority`, plus
+  independently authoritative child-run creation, deterministic lineage,
+  exact adoption, reconciled parent cancellation, and late-unclaimed output
+  quarantine. Catalog v12 adds authority-bound GitHub tracker progress, exact workspace
+  writer claims, durable taint dispositions, human-bound destructive authority,
+  and cleanup previews to the workspace, artifact, and resource handoff
+  interfaces introduced in v11. Delegate contracts
   include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
   blocks, a single Flow-owned Drovr feature baseline, and the exact working-turn
@@ -188,6 +190,19 @@ disabled, so this API does not authorize normal replacement launches.
   Child-run projections add immutable lineage. A terminal child watermark is
   copied into the parent's settled receipt, so a parent projection never
   changes while retaining the same parent watermark.
+  Every run projection also contains `views` with
+  `flow.kanban-projection/v1`, `flow.graph-projection/v1`,
+  `flow.timeline-projection/v1`, `flow.trust-projection/v1`, and
+  `flow.operator-projection/v1`. These immutable views expose the exact run
+  watermark and the operator-facing lifecycle, admission, revision, readiness,
+  route, capability, checkpoint, attempt, effect, resource, handoff, and legal
+  action facts relevant to each form. They are derived on every query or watch
+  observation, are never persisted as lifecycle authority, and may be deleted
+  and rebuilt without losing or inventing run state.
+  Timeline entry kinds are `lifecycle`, `checkpoint`, `readiness`,
+  `capability`, `revision`, `effect`, `attempt`, `handoff`, and the
+  `authority_change` fallback for authority events without a more specific
+  operator category.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
@@ -215,7 +230,14 @@ versioned Interfaces register canonical workspace subjects through
 and query retained `flow.resource-handoff/v1` subjects.
 Workspace projections bind registration and subject generation, mutation
 epoch, independently observed exact commit, tree, ref, clean state, and
-disposition. Artifact
+disposition. An exclusive writer claim cites the exact generation and Git
+fingerprint; competing claims, stale generations, and changed fingerprints fail
+closed. Uncertain subject state is durably tainted across process termination
+and reboot. Only published evidence-backed dispositions clear taint. Risk
+acceptance leaves taint intact, and both risk acceptance and destructive reset
+require a fresh RunAuthority-owned checkpoint bound to the exact subject,
+command, action payload, and watermark. Taint dispositions also require an
+owning-authority validation from the registered evidence Adapter. Artifact
 projections bind digest, schema, size, producer and validator provenance,
 classification, retention, pins, and retained-byte availability. Paths never
 establish artifact identity. Registration commands carry durable idempotency
@@ -246,6 +268,31 @@ watermark. The resulting
 and recorded before invocation. Content-addressed bytes, the Git retention ref,
 and authority streams remain valid after the producer process, harness, branch,
 or workspace disappears.
+
+Mutating consumers acquire the handoff's sole mutation lease and the associated
+WorkspaceAuthority claim atomically with launch. Competing writers fail closed,
+uncertain effects retain the lease, and successful exact receipts release the
+workspace lease, consumer pin, and artifact pins atomically. Each allowed
+consumer operation publishes an explicit `read_only` or `mutation` authority
+classification; names never imply mutation safety. Pins and claims remain held
+until the consuming run succeeds. Cancellation releases work that was never
+invoked and quarantines claims whose effects remain uncertain.
+
+Workspace cleanup, artifact collection, and resource handoff cleanup expose
+authority-derived previews with exact effects, observation watermarks, refusal
+reasons, and legal actions. Active claims, dirty or changed Git facts, taint,
+missing bytes, pins, retention, active handoffs, and cleanup obligations suppress
+destructive actions. Eligible cleanup executes only as the registered
+`flow.operation/resource-cleanup/v1` operation, preserving intent-before-effect
+and exact receipt settlement. An evidence-validated handoff retirement discharges
+its cleanup obligations and changes retention to collectable only after consumer
+pins are gone. Retirement evidence and its owning-Adapter validation bind the
+exact obligation list being discharged. Cleanup then releases Git retention,
+handoff artifact pins, and only the exact matching workspace generation before
+recording the handoff receipt. An uncertain cleanup remains bound to its original
+effect and can only retry after independent absence evidence or settle through
+exact presence evidence. Resource selection is
+always by exact handoff identity and digest; `latest` is rejected.
 
 The public launch contract is host-idempotent. Production-shaped conformance
 uses `createDurableRunAuthority()` with the replacement authority root beneath
