@@ -210,9 +210,10 @@ test("producer promotion, pin transfer, handoff activation, and finalization com
   );
   oneShotOperation.inputs = { publication };
   claimProducerWorkspace(oneShotProposal);
-  const oneShotPrepared = oneShotRuntime.prepare(oneShotProposal);
-  assert.equal(oneShotRuntime.launch(confirmedLaunchRequest(oneShotPrepared)).code,
-    "unsafe_publication_effect_class");
+  assert.throws(
+    () => oneShotRuntime.prepare(oneShotProposal),
+    /one-shot operation cannot publish a resource handoff/u,
+  );
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
 

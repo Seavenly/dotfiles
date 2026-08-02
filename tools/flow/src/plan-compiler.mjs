@@ -648,6 +648,13 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
+  if (card.executor.effect_classification === "one_shot_uncertain" &&
+      card.inputs?.publication !== undefined) {
+    invalidPlan(
+      "unsafe_publication_effect_class",
+      `one-shot operation cannot publish a resource handoff: ${card.id}`,
+    );
+  }
   const checkpoints = proposal.graph.cards.filter((checkpoint) =>
     card.dependencies.includes(checkpoint.id) &&
     checkpoint.executor?.kind === "checkpoint" &&

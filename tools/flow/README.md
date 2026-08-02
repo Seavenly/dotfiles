@@ -55,6 +55,8 @@ disabled, so this API does not authorize normal replacement launches.
   Launch also rejects operation cards with
   `unregistered_operation_contract`, `incomplete_operation_registration`, or
   `invalid_effect_classification` before any run or effect intent is created.
+  Preparation rejects `unsafe_publication_effect_class` when a one-shot
+  uncertain operation attempts to publish a resource handoff.
   Recovery performs the same registration check before mutating authority, so
   a replacement runtime cannot accept an effect it is unable to dispatch.
 - `command(command)` accepts the exact legal approve or decline checkpoint
@@ -160,8 +162,10 @@ to validate their transitions, then commits workspace promotion, artifact pin
 transfer, workspace disposition, `flow.resource-handoff/v1` activation, the
 effect receipt, and producer run finalization in one SQLite transaction. A
 failure before commit leaves all of those authorities unchanged.
-WorkspaceAuthority independently re-observes the promoted commit, tree, ref,
-and clean state before that transaction can commit.
+The publication operation attests to and retains an already-existing promoted
+workspace state; it does not produce that state. WorkspaceAuthority
+independently observes the promoted commit, tree, ref, and clean state before
+Adapter invocation and rechecks authority before the transaction can commit.
 
 A later run prepares with an exact handoff resource claim naming the digest and
 allowed operations. Launch validates that accepted claim and pins the handoff

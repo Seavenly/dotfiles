@@ -829,8 +829,7 @@ export function createDurableRunAuthority({
               "command",
               error instanceof TypeError
                 ? "artifact_bytes_mismatch"
-                : error.message ===
-                    "artifact digest already names different retained bytes"
+                : error.code === "artifact_bytes_conflict"
                   ? "artifact_bytes_conflict"
                   : "artifact_storage_unavailable",
               { command },
@@ -1785,7 +1784,9 @@ function storeArtifactBytes(authorityDirectory, artifact, encodedBytes) {
   if (existsSync(path)) {
     const existing = readFileSync(path);
     if (!existing.equals(bytes)) {
-      throw new Error("artifact digest already names different retained bytes");
+      const error = new Error("artifact digest already names different retained bytes");
+      error.code = "artifact_bytes_conflict";
+      throw error;
     }
     return null;
   }
