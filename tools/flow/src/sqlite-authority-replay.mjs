@@ -152,6 +152,7 @@ function reduceAuthorityStream(stream, records) {
     const run = {
       run_id: stream.stream_id,
       prepared: launch.prepared,
+      ...(launch.lineage === undefined ? {} : { lineage: launch.lineage }),
       events: records.map(({ payload }) => {
         const { prepared: _prepared, ...event } = payload;
         return event;

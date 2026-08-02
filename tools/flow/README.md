@@ -22,7 +22,10 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v11 combines workspace, artifact, and resource handoff interfaces
+  Catalog v12 adds independently authoritative child-run creation,
+  deterministic lineage, exact adoption, reconciled parent cancellation, and
+  late-unclaimed output quarantine. Catalog v11 combines workspace, artifact,
+  and resource handoff interfaces
   with the delegate-attempt execution introduced in v10. Delegate contracts
   include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
@@ -33,18 +36,19 @@ disabled, so this API does not authorize normal replacement launches.
   requirements introduced in v7 for
   `explicit_facts.block_observations` on dynamic proposals and
   `revision_templates` on prepared runs remain required. Callers must prepare a
-  fresh bundle rather than launch a pre-v11 envelope.
+  fresh bundle rather than launch a pre-v12 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`, one operation card,
-  or one `flow.delegated-agent-port/v1` delegate card.
+  one `flow.delegated-agent-port/v1` delegate card, or one
+  `flow.subrun/create-and-observe/v1` child card.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
   `operation_execute` command without adding human approval. The operation names a registered Adapter,
   declares its effect class, and binds its input, route, claims, validator, and
   attempt limit in the confirmed graph. A delegate card binds a compatible
   Drovr description, immutable route, prompt, bounded wait, validator
-  contracts, and attempt limit in the same confirmed graph. Subrun executors
-  remain unavailable until their owning runtime contracts are implemented.
+  contracts, and attempt limit in the same confirmed graph. A subrun card binds
+  an exact confirmed child launch and immutable lineage inputs.
   External card-block acquisition by a live Adapter remains deferred; this runtime
   validates exact caller-supplied block observations before they can become
   authoritative.
@@ -147,6 +151,23 @@ disabled, so this API does not authorize normal replacement launches.
   requires an exact agent-retirement receipt. Exhausting the cap projects one
   typed `terminal_disposition` decline action instead of stranding an active
   run.
+  A ready subrun card projects `subrun_execute`. Its reconcilable Adapter
+  creates or adopts a child ID derived from the parent run, immutable card
+  digest, and revision ordinal. The exact confirmed child launch is embedded
+  in the parent plan, so child creation never recompiles or refreshes it.
+  Parent and child reserve separate host admission and retain separate limits,
+  attempts, watermarks, legal actions, and terminal decisions. The child
+  advances only through commands against its own run authority. Successful
+  child admission is recorded in the parent stream before its projection can
+  report the child as active. Exact absence after cancellation settles as
+  `not_created`; a pre-invocation cancellation derives the same disposition
+  without inventing a child record. Same-boot recovery verifies exact child
+  lineage and repairs a missing parent admission record if interruption occurs
+  between those commits. Parent
+  cancellation first records a terminal request, then the mechanism Adapter
+  reconciles it through the child's exact cancellation action. Late child
+  output remains correlated by child ID and watermark with
+  `late_unclaimed`/`quarantined` dispositions and cannot complete the parent.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -159,6 +180,9 @@ disabled, so this API does not authorize normal replacement launches.
   Delegate projections add reserved, accepted, and quarantined attempts, exact
   route bindings, validated evidence, quarantine reasons, and bounded retry
   actions derived from the same run watermark.
+  Child-run projections add immutable lineage. A terminal child watermark is
+  copied into the parent's settled receipt, so a parent projection never
+  changes while retaining the same parent watermark.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and

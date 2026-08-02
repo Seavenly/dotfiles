@@ -108,10 +108,18 @@ export function dispatchRegisteredEffect(
         intent,
         observed,
       );
-      if (validateEffectObservation(observation, intent) !== "present") return;
-      return runAuthority.invokeEffect(intent, {
-        reconciliation: "adopt_present",
-      });
+      const presence = validateEffectObservation(observation, intent);
+      if (presence === "present") {
+        return runAuthority.invokeEffect(intent, {
+          reconciliation: "adopt_present",
+        });
+      }
+      if (presence === "absent") {
+        return runAuthority.invokeEffect(intent, {
+          reconciliation: "settle_absent",
+        });
+      }
+      return undefined;
     }
     if (recovery && policy.requires_observation) {
       const observed = await registration.observe?.(intent);

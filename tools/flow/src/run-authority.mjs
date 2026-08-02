@@ -44,6 +44,7 @@ import {
   createFailClosedRebootObservationAdapter,
 } from "./reboot-revalidation.mjs";
 import { foldRun, projectRun, runWatermark } from "./run-projection.mjs";
+import { deriveChildRunId } from "./subrun-effects.mjs";
 import {
   AuthorityIntegrityError,
   readAuthorityStream,
@@ -89,9 +90,11 @@ export function createInMemoryRunAuthority() {
   const bundleRuns = new Map();
   const authorityEvents = [];
   const watchers = new Map();
+  let childLaunchLineage = null;
 
   return Object.freeze({
     launch(request = {}) {
+      const lineage = childLaunchLineage;
       const validation = validateLaunchRequest(request);
       if (!validation.accepted) {
         return launchRejection(
@@ -103,12 +106,17 @@ export function createInMemoryRunAuthority() {
       }
       const { prepared, closedFacts } = validation;
 
-      const existingRunId = bundleRuns.get(prepared.bundle_digest);
+      const existingRunId = lineage === null
+        ? bundleRuns.get(prepared.bundle_digest)
+        : null;
       if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
 
-      const runId = `run:${prepared.bundle_digest.slice("sha256:".length)}`;
+      const runId = lineage === null
+        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(lineage);
       const initialRun = {
         run_id: runId,
+        ...(lineage === null ? {} : { lineage }),
         prepared,
         events: [
           {
@@ -117,6 +125,7 @@ export function createInMemoryRunAuthority() {
             plan_fingerprint: prepared.plan_fingerprint,
             confirmation_digest: prepared.confirmation_digest,
             closed_fact_observation_digest: digest(closedFacts),
+            ...(lineage === null ? {} : { lineage }),
           },
           ...prepared.explicit_facts.block_observations.map((observation) => ({
             type: "card_blocked",
@@ -131,13 +140,73 @@ export function createInMemoryRunAuthority() {
         launch_watermark: runWatermark(initialRun),
       });
       runs.set(runId, run);
-      bundleRuns.set(prepared.bundle_digest, runId);
+      if (lineage === null) bundleRuns.set(prepared.bundle_digest, runId);
       authorityEvents.push({
         type: "run_launched",
         run_id: runId,
         bundle_digest: prepared.bundle_digest,
       });
       return launchReceipt(run, true);
+    },
+
+    launchChild({
+      parent_run_id: parentRunId,
+      card_id: cardId,
+      card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal,
+      launch_request: launchRequest,
+    }) {
+      const lineage = childLineage(
+        parentRunId,
+        cardId,
+        cardIdentity,
+        revisionOrdinal,
+      );
+      const parent = runs.get(parentRunId);
+      if (!validChildLaunchParent(parent, lineage, launchRequest)) {
+        return unknownRunRejection("launch", parentRunId, authorityEvents);
+      }
+      childLaunchLineage = lineage;
+      let receipt;
+      try {
+        receipt = this.launch(launchRequest);
+      } finally {
+        childLaunchLineage = null;
+      }
+      if (receipt?.schema !== "flow.launch-receipt/v1") return receipt;
+      this.recordSubrunAdmission(lineage);
+      return receipt;
+    },
+
+    recordSubrunAdmission(lineage) {
+      const childRunId = deriveChildRunId(lineage);
+      const parent = runs.get(lineage.parent_run_id);
+      const child = runs.get(childRunId);
+      if (!validRecordedSubrunAdmission(parent, child, lineage)) {
+        return unknownRunRejection(
+          "subrun_admission",
+          childRunId,
+          authorityEvents,
+        );
+      }
+      if (!parent.events.some(({ type, child_run_id: recordedChildId }) =>
+        type === "subrun_admitted" && recordedChildId === childRunId)) {
+        const updatedParent = freezeCanonical({
+          ...parent,
+          events: [...parent.events, {
+            type: "subrun_admitted",
+            card_id: lineage.card_id,
+            child_run_id: childRunId,
+            child_watermark: runWatermark(child),
+          }],
+        });
+        runs.set(lineage.parent_run_id, updatedParent);
+        const projection = projectRun(foldRun(updatedParent));
+        for (const watcher of watchers.get(lineage.parent_run_id) ?? []) {
+          watcher.publish(projection);
+        }
+      }
+      return projectRun(foldRun(runs.get(lineage.parent_run_id)));
     },
 
     command(command) {
@@ -228,6 +297,7 @@ export function createInMemoryRunAuthority() {
 
 export function createDurableRunAuthority({
   afterCancellationCommit = () => {},
+  afterChildLaunchCommit = () => {},
   authorityDirectory,
   access = "mutate",
   afterSchemaTransitionCommit = () => {},
@@ -267,6 +337,11 @@ export function createDurableRunAuthority({
   if (typeof beforeHandoffCommit !== "function") {
     throw new TypeError(
       "durable run authority beforeHandoffCommit must be a function",
+    );
+  }
+  if (typeof afterChildLaunchCommit !== "function") {
+    throw new TypeError(
+      "durable run authority child-launch hook must be a function",
     );
   }
   if (typeof afterCancellationCommit !== "function" ||
@@ -322,6 +397,7 @@ export function createDurableRunAuthority({
   let authorityEpoch = null;
   let authoritySchemaCompatibility = null;
   let sameBootRecoveryRunIds = new Set();
+  let childLaunchLineage = null;
   let closed = false;
 
   if (access === "mutate") {
@@ -376,6 +452,7 @@ export function createDurableRunAuthority({
       sameBootRecoveryRunIds.delete(runId);
     },
     launch(request = {}) {
+      const lineage = childLaunchLineage;
       assertOpen();
       if (authoritySchemaCompatibility?.status === "incompatible") {
         return schemaCompatibilityRejection(
@@ -413,7 +490,9 @@ export function createDurableRunAuthority({
       }
       const { prepared, closedFacts } = validation;
 
-      const runId = `run:${prepared.bundle_digest.slice("sha256:".length)}`;
+      const runId = lineage === null
+        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(lineage);
       let database = null;
       try {
         database = openAuthorityDatabase(databasePath);
@@ -473,6 +552,7 @@ export function createDurableRunAuthority({
                   plan_fingerprint: prepared.plan_fingerprint,
                   confirmation_digest: prepared.confirmation_digest,
                   closed_fact_observation_digest: digest(closedFacts),
+                  ...(lineage === null ? {} : { lineage }),
                 },
               },
               ...prepared.explicit_facts.block_observations.map(
@@ -563,6 +643,120 @@ export function createDurableRunAuthority({
       } finally {
         database?.close();
       }
+    },
+
+    launchChild({
+      parent_run_id: parentRunId,
+      card_id: cardId,
+      card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal,
+      launch_request: launchRequest,
+    }) {
+      const lineage = childLineage(
+        parentRunId,
+        cardId,
+        cardIdentity,
+        revisionOrdinal,
+      );
+      const parent = this.query(parentRunId);
+      if (parent?.schema !== "flow.run-projection/v1" ||
+          parent.phase !== "active" ||
+          parent.current_revision.ordinal !== revisionOrdinal ||
+          !parent.subruns.some(({ card_id: linkedCardId,
+            card_identity: linkedIdentity,
+            revision_ordinal: linkedOrdinal }) =>
+            linkedCardId === cardId && linkedIdentity === cardIdentity &&
+              linkedOrdinal === revisionOrdinal) ||
+          !parent.active_plan.cards.some(({ executor, id }) =>
+            id === cardId && executor.kind === "subrun") ||
+          digest(parent.active_plan.cards.find(({ id }) => id === cardId)) !==
+            cardIdentity ||
+          !isDeepStrictEqual(parent.active_plan.cards.find(
+            ({ id }) => id === cardId,
+          ).inputs.child_launch_request, launchRequest)) {
+        return createRejection({
+          operation: "launch",
+          code: "subrun_not_actionable",
+          runId: parentRunId,
+          authorityWatermark: parent?.watermark ?? null,
+          authorityWatermarkDomain: "run",
+          legalActions: parent?.legal_actions ?? [],
+        });
+      }
+      childLaunchLineage = lineage;
+      let receipt;
+      try {
+        receipt = this.launch(launchRequest);
+      } finally {
+        childLaunchLineage = null;
+      }
+      if (receipt?.schema !== "flow.launch-receipt/v1") return receipt;
+      afterChildLaunchCommit({
+        parent_run_id: parentRunId,
+        child_run_id: receipt.run_id,
+      });
+      this.recordSubrunAdmission(lineage);
+      return receipt;
+    },
+
+    recordSubrunAdmission(lineage) {
+      const childRunId = deriveChildRunId(lineage);
+      const parent = this.query(lineage.parent_run_id);
+      const child = this.query(childRunId);
+      if (!validRecordedSubrunAdmission(parent, child, lineage)) {
+        return createRejection({
+          operation: "subrun_admission",
+          code: "subrun_admission_unproven",
+          runId: lineage.parent_run_id,
+          authorityWatermark: parent?.watermark ?? null,
+          authorityWatermarkDomain: "run",
+          legalActions: parent?.legal_actions ?? [],
+        });
+      }
+      const database = openAuthorityDatabase(databasePath);
+      try {
+        database.exec("BEGIN IMMEDIATE");
+        assertAuthorityEpoch(database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const stream = readStream(database, lineage.parent_run_id);
+        if (!stream.records.some(({ payload }) =>
+          payload.type === "subrun_admitted" &&
+          payload.child_run_id === childRunId)) {
+          appendAuthorityEvents(database, {
+            streamId: lineage.parent_run_id,
+            streamKind: "run",
+            events: [{
+              contract: "flow.run-event/v1",
+              payload: {
+                type: "subrun_admitted",
+                card_id: lineage.card_id,
+                child_run_id: childRunId,
+                child_watermark: child.watermark,
+              },
+            }],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+        }
+        database.exec("COMMIT");
+        const projection = projectRun(fenceRun(
+          database,
+          readStream(database, lineage.parent_run_id),
+        ));
+        for (const watcher of watchers.get(lineage.parent_run_id) ?? []) {
+          watcher.publish(projection);
+        }
+      } catch (error) {
+        if (database.isTransaction) database.exec("ROLLBACK");
+        throw error;
+      } finally {
+        database.close();
+      }
+      return this.query(lineage.parent_run_id);
     },
 
     command(command) {
@@ -1010,8 +1204,9 @@ export function createDurableRunAuthority({
         );
       }
       const reconciliation = adapter?.reconciliation ?? null;
-      if (![null, "adopt_present", "invoke_absent"].includes(reconciliation) ||
-          reconciliation !== "adopt_present" &&
+      if (![null, "adopt_present", "invoke_absent", "settle_absent"].includes(
+        reconciliation,
+      ) || !["adopt_present", "settle_absent"].includes(reconciliation) &&
           typeof adapter?.invoke !== "function") {
         throw new TypeError("effect adapter must expose invoke");
       }
@@ -1087,6 +1282,14 @@ export function createDurableRunAuthority({
             "effect reinvocation requires exact durable absence evidence",
           );
         }
+        if (reconciliation === "settle_absent" &&
+            (observedPresence !== "absent" || !observationIsFresh ||
+             stream.fold.phase !== "cancelled")) {
+          throw new AuthorityFenceError(
+            "effect_absence_not_proven",
+            "cancelled effect settlement requires exact durable absence evidence",
+          );
+        }
         const previouslyInvoked = stream.records.some(({ payload }) =>
           payload.type === "effect_invocation_started" &&
           payload.effect_id === intent.effect_id);
@@ -1125,7 +1328,15 @@ export function createDurableRunAuthority({
           processIdentity,
         });
         let result;
-        if (reconciliation === "adopt_present") {
+        if (reconciliation === "settle_absent") {
+          result = {
+            schema: "flow.effect-receipt/v1",
+            effect_id: effectiveIntent.effect_id,
+            idempotency_key: effectiveIntent.idempotency_key,
+            outcome: "not_created",
+            provider_receipt: latestObservation.provider_observation,
+          };
+        } else if (reconciliation === "adopt_present") {
           result = {
             schema: "flow.effect-receipt/v1",
             effect_id: effectiveIntent.effect_id,
@@ -1187,10 +1398,15 @@ export function createDurableRunAuthority({
           const unresolved = unresolvedEffectIds(current);
           unresolved.delete(effectiveIntent.effect_id);
           const effectSucceeded = result?.outcome !== "quarantined";
-          const deferredEvents = unresolved.size === 0 && effectSucceeded &&
+          let deferredEvents = unresolved.size === 0 && effectSucceeded &&
               current.fold.phase === "active"
             ? pendingDeferredEvents(current, effectiveIntent)
             : [];
+          deferredEvents = settleSubrunTerminalEvents(
+            deferredEvents,
+            effectiveIntent,
+            result,
+          );
           const publication = effectiveIntent.operation_input?.publication === undefined
             ? null
             : prepareHandoffPublication(
@@ -2177,6 +2393,26 @@ function pendingDeferredEvents(stream, settlingIntent) {
   return events;
 }
 
+function settleSubrunTerminalEvents(events, intent, receipt) {
+  if (intent.operation_contract !== "flow.subrun/create-and-observe/v1" ||
+      receipt?.provider_receipt?.child_phase === "succeeded" ||
+      events.length === 0) {
+    return events;
+  }
+  return [
+    ...events.filter(({ type }) =>
+      !["operation_completed", "run_succeeded"].includes(type)),
+    {
+      type: "subrun_failed",
+      card_id: intent.card_id,
+      attempt_id: intent.attempt_id,
+      child_run_id: receipt.provider_receipt.child_run_id,
+      child_phase: receipt.provider_receipt.child_phase,
+    },
+    { type: "run_declined" },
+  ];
+}
+
 function unresolvedEffectIds(stream) {
   const unresolved = new Set(stream.records
     .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
@@ -2501,6 +2737,63 @@ function schemaTransitionRequiredRejection(
 
 function databaseExists(databasePath) {
   return existsSync(databasePath);
+}
+
+function childLineage(parentRunId, cardId, cardIdentity, revisionOrdinal) {
+  if (typeof parentRunId !== "string" || !parentRunId ||
+      typeof cardId !== "string" || !cardId ||
+      !/^sha256:[0-9a-f]{64}$/.test(cardIdentity ?? "") ||
+      !Number.isInteger(revisionOrdinal) || revisionOrdinal < 0) {
+    throw new TypeError("child run lineage is incomplete");
+  }
+  return freezeCanonical({
+    schema: "flow.child-run-lineage/v1",
+    parent_run_id: parentRunId,
+    card_id: cardId,
+    card_identity: cardIdentity,
+    revision_ordinal: revisionOrdinal,
+  });
+}
+
+function validChildLaunchParent(parent, lineage, launchRequest) {
+  if (!parent) return false;
+  const fold = foldRun(parent);
+  return fold.phase === "active" &&
+    fold.current_revision.ordinal === lineage.revision_ordinal &&
+    fold.active_plan.cards.some(({ executor, id }) =>
+      id === lineage.card_id && executor.kind === "subrun") &&
+    digest(fold.active_plan.cards.find(({ id }) => id === lineage.card_id)) ===
+      lineage.card_identity &&
+    isDeepStrictEqual(fold.active_plan.cards.find(
+      ({ id }) => id === lineage.card_id,
+    ).inputs.child_launch_request, launchRequest) &&
+    fold.subruns.some(({ card_id: cardId, card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal }) =>
+      cardId === lineage.card_id && cardIdentity === lineage.card_identity &&
+        revisionOrdinal === lineage.revision_ordinal);
+}
+
+function validRecordedSubrunAdmission(parentRun, childRun, lineage) {
+  if (!parentRun || !childRun) return false;
+  const parent = parentRun.schema === "flow.run-projection/v1"
+    ? parentRun
+    : projectRun(foldRun(parentRun));
+  const recordedLineage = childRun.schema === "flow.run-projection/v1"
+    ? childRun.parent
+    : childRun.lineage;
+  const childRunId = deriveChildRunId(lineage);
+  return ["active", "cancelled"].includes(parent.phase) &&
+    recordedLineage?.schema === "flow.child-run-lineage/v1" &&
+    recordedLineage.parent_run_id === lineage.parent_run_id &&
+    recordedLineage.card_id === lineage.card_id &&
+    recordedLineage.card_identity === lineage.card_identity &&
+    recordedLineage.revision_ordinal === lineage.revision_ordinal &&
+    (childRun.run_id === childRunId) &&
+    parent.subruns.some(({ card_id: cardId, card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal, child_run_id: linkedChildId }) =>
+      cardId === lineage.card_id && cardIdentity === lineage.card_identity &&
+      revisionOrdinal === lineage.revision_ordinal &&
+      linkedChildId === childRunId);
 }
 
 function authorityIntegrityError(error) {

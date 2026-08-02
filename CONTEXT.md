@@ -116,6 +116,17 @@ admission, attempts, checkpoints, blocks, revisions, cancellation, and flow-run
 finalization.
 _Avoid_: Controller, scheduler, projection
 
+**Child run identity**:
+The deterministic run identity derived from one parent run, immutable subrun
+card identity, and revision ordinal. Replays adopt this exact identity rather
+than allocating replacement work.
+_Avoid_: Nested task ID, generated child ID
+
+**Child run lineage**:
+The immutable parent run, subrun card, card identity, and revision ordinal
+binding stored with an independently authoritative child run.
+_Avoid_: Parent pointer, execution context
+
 **Registered operation**:
 A versioned operation contract paired with an Adapter that declares one effect
 classification and implements the invocation and any required reconciliation

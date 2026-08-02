@@ -699,7 +699,7 @@ test("duplicate launch adopts the exact confirmed bundle without recompiling fac
     confirmedLaunchRequest(selfConsistentUnsupported),
   );
   assert.equal(executorRejection.code, "invalid_prepared_bundle");
-  assert.equal(executorRejection.reason, "unsupported_executor_kind");
+  assert.equal(executorRejection.reason, "invalid_subrun_contract");
 
   const invalidDecision = runtime.launch({
       ...launchRequest,

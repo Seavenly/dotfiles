@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 11);
+  assert.equal(catalog.catalog_version, 12);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -97,6 +97,10 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
     "flow.delegate-evidence/v1",
+    "flow.child-run-identity/v1",
+    "flow.child-run-lineage/v1",
+    "flow.subrun/create-and-observe/v1",
+    "flow.validator/subrun-receipt/v1",
     "flow.authority-schema-compatibility/v1",
     "flow.authority-schema-transition/v1",
     "flow.authority-schema-transition-boundary/v1",
@@ -151,6 +155,22 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
     exhausted_action: "terminal_disposition",
   });
+  assert.deepEqual(catalog.flow_runtime.subrun_execution, {
+    authority: "RunAuthority",
+    adapter_authority: "mechanism_only",
+    contract: "flow.subrun/create-and-observe/v1",
+    receipt_validator: "flow.validator/subrun-receipt/v1",
+    execution_command: "subrun_execute",
+    identity_fields: ["parent_run_id", "card_identity", "revision_ordinal"],
+    child_authority: "independent_run_record",
+    replay: "adopt_exact_child",
+    cancellation: "reconciled_request",
+    late_unclaimed_output: "quarantined",
+  });
+  assert.ok(catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
+    "subrun_execute",
+  ));
+  assert.ok(catalog.mechanism_adapters.includes("subrun"));
   assert.ok(catalog.projections.includes("authority_schema_compatibility"));
   assert.deepEqual(catalog.work_domain_interfaces.handoff.atomic_finalization, [
     "workspace_promotion",

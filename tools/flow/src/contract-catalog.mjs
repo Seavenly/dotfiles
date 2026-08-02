@@ -120,6 +120,18 @@ const DELEGATE_EXECUTION = {
     "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
   exhausted_action: "terminal_disposition",
 };
+const SUBRUN_EXECUTION = {
+  authority: "RunAuthority",
+  adapter_authority: "mechanism_only",
+  contract: "flow.subrun/create-and-observe/v1",
+  receipt_validator: "flow.validator/subrun-receipt/v1",
+  execution_command: "subrun_execute",
+  identity_fields: ["parent_run_id", "card_identity", "revision_ordinal"],
+  child_authority: "independent_run_record",
+  replay: "adopt_exact_child",
+  cancellation: "reconciled_request",
+  late_unclaimed_output: "quarantined",
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -175,6 +187,20 @@ export async function loadContractCatalog({
     DELEGATE_EXECUTION.disposition_policy,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("delegate execution contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.subrun_execution,
+    SUBRUN_EXECUTION,
+  ) || ![
+    SUBRUN_EXECUTION.contract,
+    SUBRUN_EXECUTION.receipt_validator,
+    "flow.child-run-identity/v1",
+    "flow.child-run-lineage/v1",
+  ].every((contract) => catalog.contracts.includes(contract)) ||
+      !catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
+        SUBRUN_EXECUTION.execution_command,
+      ) || !catalog.mechanism_adapters.includes("subrun")) {
+    throw new Error("subrun execution contracts are incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
