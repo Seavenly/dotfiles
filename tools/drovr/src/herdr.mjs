@@ -442,6 +442,12 @@ export class HerdrClient {
     const visibleBeforeDelivery = guardsClaudeStagedSubmission
       ? await this.agentVisibleText(name)
       : undefined;
+    if (claudePromptBoxHasStagedInput(visibleBeforeDelivery)) {
+      throw new DrovrError(
+        `Claude already has staged prompt text for ${name}; inspect or clear it through drovr attach before starting another turn`,
+        { code: 4, outcome: "adapter_failure" },
+      );
+    }
     const result = await this.sessionCommand([
       "agent",
       "prompt",
@@ -455,24 +461,34 @@ export class HerdrClient {
     // Claude can turn multiline and long single-line bracketed pastes into an
     // attachment token asynchronously. Herdr 0.7.5 can send the submit key
     // before that conversion finishes, leaving the prompt staged while the
-    // agent remains idle. Use the visible pane only to wait for a new
-    // attachment token, then send one guarded submit key. Native state and
-    // transcript correlation remain authoritative for progress and completion.
+    // agent remains idle. Use the visible pane only to wait through attachment
+    // conversion or confirm literal single-line staging, then send one guarded
+    // submit key. Native state and transcript correlation remain authoritative
+    // for progress and completion.
     let attachmentReady = false;
+    let literalPromptReady = false;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       observedAfterDelivery = await this.agentRecord(name);
       if (promptSubmissionObserved(observedAfterDelivery)) {
         return result;
       }
+      const visibleAfterDelivery = await this.agentVisibleText(name);
       attachmentReady = newClaudeAttachmentTokenObserved(
         visibleBeforeDelivery,
-        await this.agentVisibleText(name),
+        visibleAfterDelivery,
       );
+      literalPromptReady ||=
+        !prompt.includes("\n") &&
+        newClaudeLiteralPromptObserved(
+          visibleBeforeDelivery,
+          visibleAfterDelivery,
+          prompt,
+        );
       if (attachmentReady) break;
       await this.delay(25);
     }
-    if (!attachmentReady) {
+    if (!attachmentReady && !literalPromptReady) {
       // A short prompt can complete before the first post-delivery poll. A new
       // done observation proves that the native agent transitioned, while the
       // exact transcript still remains completion authority.
@@ -569,6 +585,47 @@ function claudeAttachmentTokenCounts(text) {
     counts.set(match[0], (counts.get(match[0]) ?? 0) + 1);
   }
   return counts;
+}
+
+function claudePromptBoxHasStagedInput(text) {
+  const lines = String(text).split(/\r?\n/u);
+  const dividers = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (/^\s*[─━-]{3,}\s*$/u.test(lines[index])) dividers.push(index);
+  }
+  if (dividers.length < 2) return false;
+  const region = lines.slice(dividers.at(-2) + 1, dividers.at(-1));
+  const promptLine = region.findIndex((line) => /^\s*❯/u.test(line));
+  if (promptLine < 0) return false;
+  const promptText = [
+    region[promptLine].replace(/^\s*❯[ \u00a0]?/u, ""),
+    ...region.slice(promptLine + 1),
+  ].join("\n");
+  return promptText.trim().length > 0;
+}
+
+function newClaudeLiteralPromptObserved(before, after, prompt) {
+  const compactBefore = compactTerminalText(before);
+  const compactAfter = compactTerminalText(after);
+  const compactPrompt = compactTerminalText(prompt);
+  if (compactPrompt.length === 0) return false;
+  const chunkLength = Math.min(32, compactPrompt.length);
+  const offsets = new Set([
+    0,
+    Math.max(0, Math.floor((compactPrompt.length - chunkLength) / 2)),
+    Math.max(0, compactPrompt.length - chunkLength),
+  ]);
+  for (const offset of offsets) {
+    const chunk = compactPrompt.slice(offset, offset + chunkLength);
+    if (compactAfter.includes(chunk) && !compactBefore.includes(chunk)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function compactTerminalText(text) {
+  return String(text).replace(/\s/gu, "");
 }
 
 function isTimeout(error) {
