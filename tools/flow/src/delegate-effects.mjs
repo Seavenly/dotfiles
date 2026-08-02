@@ -1,22 +1,8 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
-import { DROVR_ADVERTISED_FEATURES } from "../../drovr/src/description.mjs";
-
-const REQUIRED_FEATURES = [
-  "bounded_observation",
-  "bounded_wait",
-  "caller_idempotent_discovery",
-  "caller_idempotent_dispatch",
-  "caller_keyed_ordered_input",
-  "cancellation",
-  "exact_launch_description",
-  "feature_advertisement",
-  "late_result_correlation",
-  "launch_binding_settlement_proof",
-  "opaque_caller_ownership_metadata",
-  "reconciliation",
-  "terminal_proof_classification",
-  "transcript_correlation",
-];
+import {
+  featureConformanceFindings,
+  loadRequiredDrovrFeatures,
+} from "./required-drovr-features.mjs";
 const REQUIRED_PORT_OPERATIONS = [
   "describe",
   "dispatch",
@@ -42,6 +28,14 @@ export function snapshotDelegatedAgentPort(port) {
   });
 }
 
+export function snapshotRequiredDrovrFeatures() {
+  try {
+    return loadRequiredDrovrFeatures();
+  } catch {
+    return null;
+  }
+}
+
 export function snapshotDelegateOutputValidators(validators) {
   if (validators === null || typeof validators !== "object" ||
       Array.isArray(validators)) {
@@ -60,19 +54,24 @@ export function snapshotDelegateOutputValidators(validators) {
   ]));
 }
 
-export function delegateCompatibilityIssue(card, port, validators) {
+export function delegateCompatibilityIssue(
+  card,
+  port,
+  validators,
+  requiredFeatures,
+) {
   if (port?.contract !== "flow.delegated-agent-port/v1" ||
       !REQUIRED_PORT_OPERATIONS.every(
         (operation) => typeof port?.[operation] === "function")) {
     return "delegated_agent_port_unavailable";
   }
-  const advertised = card.inputs.description?.feature_advertisement?.features;
-  if (!Array.isArray(advertised) ||
-      digest(advertised) !== digest(DROVR_ADVERTISED_FEATURES) ||
-      REQUIRED_FEATURES.some((id) => {
-        const matches = advertised.filter((feature) => feature?.id === id);
-        return matches.length !== 1 || matches[0].availability !== "supported";
-      })) {
+  if (!Array.isArray(requiredFeatures)) {
+    return "required_feature_contract_unavailable";
+  }
+  if (featureConformanceFindings(
+    card.inputs.description,
+    requiredFeatures,
+  ).length > 0) {
     return "incompatible_feature_advertisement";
   }
   if (card.validators.some((contract) =>
@@ -127,6 +126,9 @@ async function executeDelegate(intent, port, validators) {
       turn_id: current.turn.id,
       timeout_ms: intent.delegate_input.wait_timeout_ms,
     });
+  }
+  if (["still_running", "reconciling"].includes(current.status)) {
+    throw delegatedRuntimeError(current);
   }
   const receipt = await validateSettledDelegate({
     current,
@@ -242,7 +244,8 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
 
 async function settleTerminalDisposition({ current, intent, port, receipt }) {
   if (receipt.outcome === "quarantined" &&
-      intent.attempt_ordinal < intent.max_attempts) {
+      intent.attempt_ordinal < intent.max_attempts &&
+      current.turn?.status !== "working") {
     return freezeCanonical({
       ...receipt,
       provider_receipt: {

@@ -22,14 +22,16 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v9 extends the exact v1 requirements introduced in v8 with
+  Catalog v10 gives delegate quarantine blocks their own public contract and
+  single-sources the required Drovr feature baseline. Catalog v9 extended the
+  exact v1 requirements introduced in v8 with
   delegate-attempt execution, independently validated delegate evidence, and
   distinct correlated `flow.delegate-quarantine/v1` records. Catalog v8 introduced
   `explicit_facts.block_observations` on dynamic proposals and
   `revision_templates` on prepared runs, and publishes registered operation
   intent, observation, receipt, validation, effect-class, and recovery
   contracts together with authority-schema compatibility and transition
-  contracts. Callers must prepare a fresh bundle rather than launch a pre-v9
+  contracts. Callers must prepare a fresh bundle rather than launch a pre-v10
   envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`, one operation card,
@@ -109,11 +111,14 @@ disabled, so this API does not authorize normal replacement launches.
   incompatible, empty, or validator-rejected output remains correlated to its
   attempt, is quarantined, and cannot satisfy the card. A retry is projected
   only while the confirmed attempt cap has capacity, and it keeps the same
-  immutable route under a new reserved attempt identity. A quarantined attempt
-  with retry capacity records an explicit handoff to the named Drovr registry
-  holder; accepted or exhausted work requires an exact agent-retirement
-  receipt. Exhausting the cap projects one typed `terminal_disposition`
-  decline action instead of stranding an active run.
+  immutable route under a new reserved attempt identity. A non-destructive
+  bounded wait leaves the current attempt unresolved, so recovery discovers
+  and waits on that same live turn without cancellation or redispatch. A
+  terminally quarantined attempt with retry capacity records an explicit
+  handoff to the named Drovr registry holder; accepted or exhausted work
+  requires an exact agent-retirement receipt. Exhausting the cap projects one
+  typed `terminal_disposition` decline action instead of stranding an active
+  run.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory

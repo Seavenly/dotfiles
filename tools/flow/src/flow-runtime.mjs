@@ -8,6 +8,7 @@ import {
   dispatchDelegateEffect,
   snapshotDelegatedAgentPort,
   snapshotDelegateOutputValidators,
+  snapshotRequiredDrovrFeatures,
 } from "./delegate-effects.mjs";
 import {
   dispatchRegisteredEffect,
@@ -37,6 +38,7 @@ export function createFlowRuntime({
     delegateOutputValidators,
   );
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
+  const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
   const compile = planCompiler === compileDynamicPlan
     ? (proposal) => compileDynamicPlan(proposal, {
         registeredOperations: operationRegistry,
@@ -84,6 +86,7 @@ export function createFlowRuntime({
               card,
               delegatePort,
               delegateValidators,
+              requiredDrovrFeatures,
             ),
           }))
           .find(({ issue }) => issue !== null);

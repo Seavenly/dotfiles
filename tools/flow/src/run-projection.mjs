@@ -77,6 +77,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     : run.events.some(({ type }) => type === "run_succeeded")
       ? "succeeded"
       : "active";
+  const activeObservedBlocks = new Map();
   const cards = activePlan.cards.map((card) => {
     let status = "pending";
     if (supersededCards.includes(card.id)) {
@@ -106,6 +107,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         !block.required_capabilities.every((capability) =>
           capabilityApplies(capabilityBindings, capability, card.id));
       const revisionBlocked = block?.type === "plan_revision_required";
+      if (capabilityBlocked || revisionBlocked) {
+        activeObservedBlocks.set(card.id, block);
+      }
       status = capabilityBlocked || revisionBlocked
         ? "blocked"
         : card.executor.kind === "checkpoint" ? "waiting_checkpoint" : "ready";
@@ -121,13 +125,13 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const blocks = cards
     .filter(({ status }) => status === "blocked")
     .map(({ id }) => {
-      const observed = observedBlocks.get(id);
+      const observed = activeObservedBlocks.get(id);
       if (observed) return { card_id: id, ...observed };
       const quarantined = quarantinedDelegateOutputs.filter(
         ({ card_id: cardId }) => cardId === id,
       ).at(-1);
       return {
-        schema: "flow.card-block/v1",
+        schema: "flow.delegate-card-block/v1",
         id: `${quarantined.attempt_id}:quarantined-output`,
         type: "delegate_output_quarantined",
         card_id: id,
@@ -231,8 +235,12 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       expected_watermark: watermark,
     }));
   const delegateActions = cards
-    .filter(({ executor_kind: kind, status }) =>
-      kind === "delegate" && ["blocked", "ready"].includes(status))
+    .filter(({ id, executor_kind: kind, status }) =>
+      kind === "delegate" && (status === "ready" ||
+        status === "blocked" && !activeObservedBlocks.has(id) &&
+        quarantinedDelegateOutputs.some(
+          ({ card_id: cardId }) => cardId === id,
+        )))
     .filter(({ id }) => {
       const attempts = [...effectIntents.values()].filter(
         ({ card_id: cardId, effect_kind: kind }) =>
@@ -251,6 +259,10 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const delegateDispositionActions = cards
     .filter(({ executor_kind: kind, status }) =>
       kind === "delegate" && status === "blocked")
+    .filter(({ id }) => !activeObservedBlocks.has(id) &&
+      quarantinedDelegateOutputs.some(
+        ({ card_id: cardId }) => cardId === id,
+      ))
     .filter(({ id }) => {
       const attempts = [...effectIntents.values()].filter(
         ({ card_id: cardId, effect_kind: kind }) =>

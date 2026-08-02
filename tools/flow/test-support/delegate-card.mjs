@@ -1,4 +1,5 @@
 import { digest } from "../src/canonical.mjs";
+import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { dynamicCheckpointProposal } from "./dynamic-checkpoint.mjs";
 
 export const DELEGATE_CONTRACT = "flow.delegated-agent-port/v1";
@@ -38,6 +39,38 @@ export function delegateCardProposal(description, { maxAttempts = 1 } = {}) {
   proposal.requested_authority.commands.push("terminal_disposition");
   proposal.explicit_facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
   proposal.explicit_facts.limits.max_cards = 2;
+  return proposal;
+}
+
+export function capabilityBlockedDelegateProposal(
+  description,
+  { maxAttempts = 1 } = {},
+) {
+  const proposal = delegateCardProposal(description, { maxAttempts });
+  const block = {
+    schema: "flow.card-block/v1",
+    id: "delegate-review:repository-read",
+    type: "capability_required",
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "capability_required",
+      code: "repository_read_required",
+    },
+    required_capabilities: ["repository:read"],
+    revision_template_ids: [],
+  };
+  proposal.requested_authority.commands.push("capability_grant");
+  proposal.explicit_facts.operation_contracts.push(
+    "flow.adapter/card-block-observation/v1",
+  );
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/card-block-observation/v1",
+  );
+  proposal.explicit_facts.capability_envelopes.push("repository:read");
+  proposal.explicit_facts.limits.max_capabilities = 1;
+  proposal.explicit_facts.block_observations.push(structuredClone(
+    observeCardBlock({ card_id: "delegate-review", block }),
+  ));
   return proposal;
 }
 

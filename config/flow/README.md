@@ -57,4 +57,5 @@ retained as correlated quarantine and cannot advance the run. Drovr owns its
 delegated resources only; it cannot schedule cards or author Flow lifecycle
 events. Flow records a named durable handoff while a bounded retry remains and
 requires a Drovr retirement receipt before accepted or exhausted delegated work
-can settle.
+can settle. A non-destructive bounded wait preserves the current attempt for
+same-turn recovery rather than consuming retry capacity.

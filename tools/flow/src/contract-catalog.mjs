@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { authorityRootsAreDisjoint } from "./authority-root.mjs";
 import {
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
-} from "./drovr-delegated-agent-port.mjs";
+} from "./required-drovr-features.mjs";
 import { isExactSequence } from "./validation.mjs";
 
 const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
@@ -103,6 +103,7 @@ const DELEGATE_EXECUTION = {
   receipt: "flow.effect-receipt/v1",
   evidence: "flow.delegate-evidence/v1",
   quarantine_record: "flow.delegate-quarantine/v1",
+  block: "flow.delegate-card-block/v1",
   disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
   execution_command: "delegate_execute",
   recovery_command: "recovery",
@@ -164,6 +165,7 @@ export async function loadContractCatalog({
     DELEGATE_EXECUTION.receipt,
     DELEGATE_EXECUTION.evidence,
     DELEGATE_EXECUTION.quarantine_record,
+    DELEGATE_EXECUTION.block,
     DELEGATE_EXECUTION.disposition_policy,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("delegate execution contracts are incomplete");

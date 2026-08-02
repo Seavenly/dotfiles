@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 9);
+  assert.equal(catalog.catalog_version, 10);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -134,6 +134,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     receipt: "flow.effect-receipt/v1",
     evidence: "flow.delegate-evidence/v1",
     quarantine_record: "flow.delegate-quarantine/v1",
+    block: "flow.delegate-card-block/v1",
     disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
     execution_command: "delegate_execute",
     recovery_command: "recovery",
@@ -306,6 +307,25 @@ test("the public catalog requires complete registered operation contracts", asyn
       featureContractPath,
     }),
     /registered operation contracts are incomplete/,
+  );
+});
+
+test("the public catalog requires the delegate quarantine block contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-delegate-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.contracts = catalog.contracts.filter(
+    (contract) => contract !== "flow.delegate-card-block/v1",
+  );
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /delegate execution contracts are incomplete/,
   );
 });
 
