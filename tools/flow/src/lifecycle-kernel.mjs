@@ -66,6 +66,10 @@ export function decideLifecycle(fold, command) {
       .filter(({ effect_id: effectId }) => unresolvedEffectIds.has(effectId))
       .flatMap(({ resource_claims: resourceClaims }) => resourceClaims)
       .map((claim) => digest(claim)));
+    const delegateCancellations = fold.effect_intents
+      .filter((intent) => intent.effect_kind === "delegate" &&
+        unresolvedEffectIds.has(intent.effect_id))
+      .map((intent) => delegateCancellationIntent(intent));
     return {
       schema: "flow.decision/v1",
       command_type: command.type,
@@ -78,7 +82,7 @@ export function decideLifecycle(fold, command) {
             : "released",
         })),
       }],
-      effect_intents: [],
+      effect_intents: delegateCancellations,
       obligations: [],
       projection_hints: ["operator", "graph"],
     };
@@ -250,6 +254,29 @@ export function decideLifecycle(fold, command) {
   );
 }
 
+function delegateCancellationIntent(delegateIntent) {
+  const identity = digest({
+    schema: "flow.delegate-cancellation-identity/v1",
+    effect_id: delegateIntent.effect_id,
+    attempt_id: delegateIntent.attempt_id,
+    route_binding: delegateIntent.route_binding,
+  });
+  return {
+    schema: "flow.effect-intent/v1",
+    effect_kind: "delegate_cancellation",
+    effect_id: `effect:${identity.slice("sha256:".length)}`,
+    idempotency_key: `delegate-cancellation:${identity.slice("sha256:".length)}`,
+    attempt_id: `${delegateIntent.attempt_id}:cancellation`,
+    delegate_attempt_id: delegateIntent.attempt_id,
+    delegate_effect_id: delegateIntent.effect_id,
+    card_id: delegateIntent.card_id,
+    classification: "caller_idempotent",
+    operation_contract: delegateIntent.operation_contract,
+    route_binding: delegateIntent.route_binding,
+    resource_claims: delegateIntent.resource_claims,
+  };
+}
+
 function decisionCompletesRun(fold, {
   activePlan = fold.active_plan,
   completedCardIds = [],
@@ -271,13 +298,20 @@ function delegateDecision(fold, command, delegate) {
     ({ card_id: cardId, effect_kind: kind }) =>
       cardId === delegate.id && kind === "delegate",
   ).length + 1;
+  const fallback = card.inputs.fallback;
+  const routeBinding = fallback?.activate_for_attempt === ordinal
+    ? fallback.route
+    : card.route;
+  const delegateInput = fallback?.activate_for_attempt === ordinal
+    ? { ...card.inputs, description: fallback.description }
+    : card.inputs;
   const attemptId = `${fold.run_id}:${delegate.id}:attempt:${ordinal}`;
   const effectIdentity = digest({
     schema: "flow.delegate-effect-identity/v1",
     run_id: fold.run_id,
     card_id: delegate.id,
     attempt_id: attemptId,
-    route_binding: card.route,
+    route_binding: routeBinding,
   });
   const completesRun = decisionCompletesRun(fold, {
     completedCardIds: [delegate.id],
@@ -300,9 +334,10 @@ function delegateDecision(fold, command, delegate) {
       card_id: delegate.id,
       classification: "caller_idempotent",
       operation_contract: card.executor.contract,
-      delegate_input: card.inputs,
+      delegate_input: delegateInput,
       delegate_validator_contracts: card.validators,
-      route_binding: card.route,
+      managed_agent_binding: card.inputs.managed_agent ?? null,
+      route_binding: routeBinding,
       resource_claims: card.resource_claims,
       terminal_disposition_policy: {
         schema: "flow.delegate-terminal-disposition-policy/v1",

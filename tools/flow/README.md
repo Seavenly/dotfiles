@@ -22,8 +22,10 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v12 adds the authority-bound GitHub tracker progress operation and
-  projection. Catalog v11 combines workspace, artifact, and resource handoff interfaces
+  Catalog v13 adds declared managed-agent reuse, exact-attempt independent
+  fallback, caller-identified ordered steering, and recoverable delegate
+  cancellation settlement. Catalog v12 added the authority-bound GitHub tracker
+  progress operation and projection. Catalog v11 combines workspace, artifact, and resource handoff interfaces
   with the delegate-attempt execution introduced in v10. Delegate contracts
   include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
@@ -37,8 +39,8 @@ disabled, so this API does not authorize normal replacement launches.
   fresh bundle rather than launch a pre-v12 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`, one or more
-  independently ready operation cards, or one
-  `flow.delegated-agent-port/v1` delegate card.
+  independently ready operation cards, or one or more ordered
+  `flow.delegated-agent-port/v1` delegate cards.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
   `operation_execute` command without adding human approval. The operation names a registered Adapter,
@@ -152,6 +154,18 @@ disabled, so this API does not authorize normal replacement launches.
   requires an exact agent-retirement receipt. Exhausting the cap projects one
   typed `terminal_disposition` decline action instead of stranding an active
   run.
+  Multiple cards may reuse one agent only through an identical
+  `flow.managed-agent-binding/v1` that names the complete ordered card set and
+  terminal card under one immutable route. Earlier cards hand the agent to the
+  named run holder; the terminal card retires it. An exact
+  `flow.delegate-route-fallback/v1` may bind the final retry only when it was
+  accepted with the plan, uses a different harness, and preserves the exact
+  effective-authority comparison key. Ordered
+  `flow.delegate-steering-input/v1` values derive stable attempt-bound caller
+  keys and must all appear in settlement proof. Ambiguous discovery remains
+  reconciling. Cancellation is itself a recorded, recoverable effect that
+  closes the discovered exact turn and hands the agent back to the durable
+  registry before quarantined delegate retirement settlement.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -269,7 +283,11 @@ Adapter only when its full intent and idempotency key were durably recorded by
 the lifecycle decision; the lock and epoch are checked again immediately before
 the call, asynchronous provider settlement is awaited, and only successful
 completion appends a durable receipt. Effect-bearing decisions cannot record a
-terminal run transition before that receipt. Same-boot recovery adopts the
+terminal run transition before that receipt. Cancellation is the narrow
+exception: its decision atomically records `run_cancelled` and exact
+`delegate_cancellation` intents so admission closes immediately, then only
+those intents may close live turns before quarantined delegate settlement.
+Same-boot recovery adopts the
 exact outstanding intent under the new epoch without changing its idempotency
 identity.
 RunAuthority records each provider invocation start and validates reconciliation

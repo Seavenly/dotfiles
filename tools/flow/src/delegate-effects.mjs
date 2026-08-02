@@ -81,10 +81,14 @@ export function delegateCompatibilityIssue(
   if (!Array.isArray(requiredFeatures)) {
     return "required_feature_contract_unavailable";
   }
-  if (featureConformanceFindings(
+  const descriptions = [
     card.inputs.description,
+    ...(card.inputs.fallback ? [card.inputs.fallback.description] : []),
+  ];
+  if (descriptions.some((description) => featureConformanceFindings(
+    description,
     requiredFeatures,
-  ).length > 0) {
+  ).length > 0)) {
     return "incompatible_feature_advertisement";
   }
   if (card.validators.some((contract) =>
@@ -99,14 +103,141 @@ export function dispatchDelegateEffect(
   port,
   validators,
   runAuthority,
+  { settleCancelled = false } = {},
 ) {
-  if (intent.effect_kind !== "delegate" ||
+  if (!["delegate", "delegate_cancellation"].includes(intent.effect_kind) ||
       typeof runAuthority.invokeEffect !== "function") return;
   void runAuthority.invokeEffect(intent, {
+    settleCancelled,
     async invoke(effectiveIntent) {
-      return executeDelegate(effectiveIntent, port, validators);
+      return settleCancelled
+        ? effectiveIntent.effect_kind === "delegate_cancellation"
+          ? executeDelegateCancellation(effectiveIntent, port)
+          : executeCancelledDelegate(effectiveIntent, port)
+        : executeDelegate(effectiveIntent, port, validators);
     },
-  }).catch(() => {});
+  }).then(() => {
+    if (intent.effect_kind !== "delegate_cancellation") return;
+    const action = runAuthority.query(intent.run_id)?.legal_actions?.find(
+      (candidate) => candidate.type === "recovery" &&
+        candidate.effect_id === intent.delegate_effect_id);
+    if (!action) return;
+    const receipt = runAuthority.command(action);
+    for (const recoveryIntent of receipt?.effect_intents ?? []) {
+      dispatchDelegateEffect(
+        recoveryIntent,
+        port,
+        validators,
+        runAuthority,
+        { settleCancelled: true },
+      );
+    }
+  }).catch(async (error) => {
+    if (error?.code !== "delegated_runtime_unresolved" ||
+        typeof runAuthority.recordEffectObservation !== "function") return;
+    try {
+      await runAuthority.recordEffectObservation(intent, {
+        schema: "flow.effect-observation/v1",
+        effect_id: intent.effect_id,
+        idempotency_key: intent.idempotency_key,
+        presence: "indeterminate",
+        causation: null,
+        provider_observation: error.projection ?? null,
+      });
+    } catch {
+      // A concurrent settlement or terminal fence owns the newer truth.
+    }
+  });
+}
+
+async function executeDelegateCancellation(intent, port) {
+  const current = await port.discover({
+    schema: "flow.delegated-agent-discover-request/v1",
+    caller_key: intent.delegate_attempt_id,
+  });
+  if (current.status !== "proven_absent" && !current.turn?.id) {
+    throw delegatedRuntimeError(current);
+  }
+  if (current.turn?.id &&
+      current.delegation?.agent_id !== intent.route_binding.agent_id) {
+    throw delegatedRuntimeError(current);
+  }
+  let turnDisposition = null;
+  if (current.turn?.status === "working") {
+    turnDisposition = await port.cancel({
+      schema: "flow.delegated-agent-cancel-request/v1",
+      turn_id: current.turn.id,
+    });
+    const expectedAgentId = intent.route_binding.agent_id;
+    if (!provesClosedTurn(turnDisposition, expectedAgentId, current.turn.id)) {
+      throw delegatedRuntimeError(turnDisposition);
+    }
+  }
+  const agentId = intent.route_binding.agent_id;
+  return freezeCanonical({
+    schema: "flow.effect-receipt/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    outcome: "succeeded",
+    provider_receipt: {
+      schema: "flow.delegate-cancellation-receipt/v1",
+      delegate_attempt_id: intent.delegate_attempt_id,
+      delegate_effect_id: intent.delegate_effect_id,
+      turn_id: current.turn?.id ?? null,
+      drovr_watermark: current.watermark ?? null,
+      terminal_disposition: {
+        schema: "flow.resource-handoff/v1",
+        resource: { type: "drovr_agent", id: agentId },
+        durable_holder: "drovr.registry",
+        reason: "cancelled_delegate_settlement",
+        attempt_id: intent.delegate_attempt_id,
+        ...(turnDisposition ? { turn_disposition: turnDisposition } : {}),
+      },
+    },
+  });
+}
+
+async function executeCancelledDelegate(intent, port) {
+  const current = await port.discover({
+    schema: "flow.delegated-agent-discover-request/v1",
+    caller_key: intent.attempt_id,
+  });
+  if (current.status !== "proven_absent" && !current.turn?.id) {
+    throw delegatedRuntimeError(current);
+  }
+  if (current.turn?.id &&
+      current.delegation?.agent_id !== intent.route_binding.agent_id) {
+    throw delegatedRuntimeError(current);
+  }
+  if (current.turn?.status === "working") {
+    throw delegatedRuntimeError(current);
+  }
+  const receipt = freezeCanonical({
+    schema: "flow.effect-receipt/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    outcome: "quarantined",
+    provider_receipt: {
+      schema: "flow.delegate-quarantine/v1",
+      attempt_id: intent.attempt_id,
+      card_id: intent.card_id,
+      turn_id: current.turn?.id ?? null,
+      drovr_watermark: current.watermark ?? null,
+      route_binding: intent.route_binding,
+      settlement_proof: current.turn?.settlement_proof ?? null,
+      validator_receipts: [],
+      quarantine_reason: "run_cancelled",
+      correlated_output: current.turn?.late_result?.text ??
+        current.turn?.result?.text ?? null,
+    },
+  });
+  return settleTerminalDisposition({
+    current,
+    forceRetirement: true,
+    intent,
+    port,
+    receipt,
+  });
 }
 
 async function executeDelegate(intent, port, validators) {
@@ -132,6 +263,21 @@ async function executeDelegate(intent, port, validators) {
     throw delegatedRuntimeError(discovered);
   }
 
+  if (current.status !== "completed" && current.turn?.status !== "completed") {
+    for (const steering of intent.delegate_input.steering ?? []) {
+      if (!current.turn?.id) throw delegatedRuntimeError(current);
+      current = await port.send({
+        schema: "flow.delegated-agent-send-request/v1",
+        turn_id: current.turn.id,
+        input_key: `${callerKey}:steering:${steering.caller_id}`,
+        prompt: steering.prompt,
+      });
+      if (["blocked", "reconciling", "unavailable"].includes(current.status)) {
+        throw delegatedRuntimeError(current);
+      }
+    }
+  }
+
   if (current.status !== "completed" || current.turn?.status !== "completed") {
     if (!current.turn?.id) throw delegatedRuntimeError(current);
     current = await port.wait({
@@ -155,23 +301,29 @@ async function executeDelegate(intent, port, validators) {
 async function validateSettledDelegate({ current, inputKey, intent, validators }) {
   const turn = current?.turn;
   const description = intent.delegate_input.description;
-  const expectedInput = {
+  const expectedInputs = [{
     sequence: 1,
     caller_key: inputKey,
     payload_sha256: digest(intent.delegate_input.prompt),
     delivery_proof: "exact_transcript_correlation",
-  };
-  const expectedDeliveredInput = {
-    sequence: 1,
-    caller_key: inputKey,
-    payload_sha256: digest(intent.delegate_input.prompt),
+  }, ...(intent.delegate_input.steering ?? []).map((steering, index) => ({
+    sequence: index + 2,
+    caller_key: `${intent.attempt_id}:steering:${steering.caller_id}`,
+    payload_sha256: digest(steering.prompt),
+    delivery_proof: "exact_transcript_correlation",
+  }))];
+  const expectedDeliveredInputs = expectedInputs.map((input) => ({
+    sequence: input.sequence,
+    caller_key: input.caller_key,
+    payload_sha256: input.payload_sha256,
     delivery_status: "submitted",
-  };
+  }));
   const proof = turn?.settlement_proof;
   const lateResult = turn?.late_result;
   const output = lateResult?.text ?? turn?.result?.text;
   let reason = null;
-  if (turn?.caller?.dispatch_key !== intent.attempt_id ||
+  if (current.delegation?.agent_id !== intent.route_binding.agent_id ||
+      turn?.caller?.dispatch_key !== intent.attempt_id ||
       turn.launch_binding?.comparison_key !==
         intent.route_binding.launch_comparison_key ||
       turn.launch_binding?.configuration_watermark !==
@@ -184,7 +336,7 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
       caller_key: input.caller_key,
       payload_sha256: input.payload_sha256,
       delivery_status: input.delivery?.status,
-    }))) !== digest([expectedDeliveredInput])) {
+    }))) !== digest(expectedDeliveredInputs)) {
     reason = "incompatible_ordered_inputs";
   } else if (lateResult && (
       lateResult.turn_id !== turn.id ||
@@ -201,7 +353,7 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
       proof.launch_comparison_key !== description.comparison_keys.launch ||
       proof.configuration_watermark !== description.watermark.content_sha256 ||
       proof.description_digest !== description.description_digest ||
-      digest(proof.ordered_inputs) !== digest([expectedInput])) {
+      digest(proof.ordered_inputs) !== digest(expectedInputs)) {
     reason = "incompatible_settlement_proof";
   } else if (typeof output !== "string" || output.length === 0) {
     reason = "missing_exact_output";
@@ -255,11 +407,16 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
   });
 }
 
-async function settleTerminalDisposition({ current, intent, port, receipt }) {
-  if (receipt.outcome === "quarantined" &&
+async function settleTerminalDisposition({
+  current,
+  forceRetirement = false,
+  intent,
+  port,
+  receipt,
+}) {
+  if (!forceRetirement && receipt.outcome === "quarantined" &&
       intent.attempt_ordinal < intent.max_attempts) {
-    const expectedAgentId = current.delegation?.agent_id ??
-      intent.route_binding.agent_id;
+    const expectedAgentId = intent.route_binding.agent_id;
     let turnDisposition = null;
     if (current.turn?.status === "working") {
       turnDisposition = await port.cancel({
@@ -292,11 +449,32 @@ async function settleTerminalDisposition({ current, intent, port, receipt }) {
       },
     });
   }
+  if (receipt.outcome === "succeeded" &&
+      intent.managed_agent_binding !== null &&
+      intent.card_id !== intent.managed_agent_binding.terminal_card_id) {
+    return freezeCanonical({
+      ...receipt,
+      provider_receipt: {
+        ...receipt.provider_receipt,
+        terminal_disposition: {
+          schema: "flow.resource-handoff/v1",
+          resource: {
+            type: "drovr_agent",
+            id: current.delegation?.agent_id ?? intent.route_binding.agent_id,
+          },
+          durable_holder: `flow.run:${intent.run_id}`,
+          reason: "declared_managed_agent_reuse",
+          attempt_id: intent.attempt_id,
+          managed_agent_binding: intent.managed_agent_binding,
+        },
+      },
+    });
+  }
   let disposition;
   try {
     disposition = await port.retire({
       schema: "flow.delegated-agent-retire-request/v1",
-      agent_id: current.delegation?.agent_id ?? intent.route_binding.agent_id,
+      agent_id: intent.route_binding.agent_id,
       turn_id: current.turn?.id,
       attempt_id: intent.attempt_id,
     });
@@ -315,8 +493,7 @@ async function settleTerminalDisposition({ current, intent, port, receipt }) {
       legal_next_actions: ["retry_terminal_disposition"],
     };
   }
-  const expectedAgentId = current.delegation?.agent_id ??
-    intent.route_binding.agent_id;
+  const expectedAgentId = intent.route_binding.agent_id;
   const settled = disposition?.schema ===
       "flow.delegated-agent-lifecycle-projection/v1" &&
     disposition.operation === "retire" &&
@@ -358,5 +535,6 @@ function delegatedRuntimeError(projection) {
   const error = new Error("delegated runtime did not prove an exact turn");
   error.code = projection?.compatibility?.code ??
     "delegated_runtime_unresolved";
+  error.projection = projection ?? null;
   return error;
 }

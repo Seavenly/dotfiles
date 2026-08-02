@@ -157,12 +157,17 @@ export function createFlowRuntime({
       if (registryRejection) return registryRejection;
       const receipt = runAuthority.command(command);
       for (const intent of receipt?.effect_intents ?? []) {
-        if (intent.effect_kind === "delegate") {
+        if (["delegate", "delegate_cancellation"].includes(intent.effect_kind)) {
           dispatchDelegateEffect(
             intent,
             delegatePort,
             delegateValidators,
             runAuthority,
+            {
+              settleCancelled: intent.effect_kind === "delegate_cancellation" ||
+                command?.type === "recovery" &&
+                command.recovery === "settle_cancelled",
+            },
           );
         } else {
           dispatchRegisteredEffect(intent, operationRegistry, runAuthority, {
@@ -226,10 +231,13 @@ function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
       if (action.type !== "recovery") continue;
       const effect = projection.effects.find(({ effect_id: effectId }) =>
         effectId === action.effect_id);
-      if (!effect || operationRegistrationIssue(
+      const isDelegateEffect = ["delegate", "delegate_cancellation"].includes(
+        effect?.effect_kind,
+      );
+      if (!effect || (!isDelegateEffect && operationRegistrationIssue(
         registeredOperation(operationRegistry, effect.operation_contract),
         effect.classification,
-      )) {
+      ))) {
         compatible = false;
         break;
       }
@@ -290,7 +298,9 @@ function operationBinding(command, projection) {
   if (command.type === "recovery") {
     const effect = projection.effects.find(({ effect_id: effectId }) =>
       effectId === command.effect_id);
-    if (effect?.effect_kind === "delegate") return null;
+    if (["delegate", "delegate_cancellation"].includes(effect?.effect_kind)) {
+      return null;
+    }
     return effect ? {
       classification: effect.classification,
       contract: effect.operation_contract,
