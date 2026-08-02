@@ -211,6 +211,27 @@ _Avoid_: Updated time, cache version
 A host-local execution substrate that launches and observes durable agent harnesses without owning flow policy or scheduling.
 _Avoid_: Orchestrator, workflow engine
 
+**Drovr qualification catalog**:
+The versioned source of known production-incident scenarios and the contracts
+used to qualify Drovr for supervised reusable-agent review cycles.
+_Avoid_: Test list, issue-history index
+
+**Qualification scenario**:
+One named Drovr incident contract that binds public commands, preconditions,
+typed outcomes, safety invariants, execution class, evidence, and cleanup duties.
+_Avoid_: Test case, reproduction note
+
+**Qualification evidence**:
+The version-bound result of executing one qualification scenario, including
+public invocations, typed observations, assertions, limits, and cleanup receipt.
+_Avoid_: Test log, transcript dump
+
+**Qualification cleanup receipt**:
+The evidence-backed disposition of every resource created by one qualification
+scenario, including proof that prohibited mutations and caller-owned workspace
+changes did not occur.
+_Avoid_: Teardown log, cleanup success flag
+
 **Delegated agent port**:
 The non-authoritative Flow interface that requests an exact delegated-runtime
 description and independently checks it before plan preparation may bind it.

@@ -7,6 +7,14 @@ registry discovery, status observation, cancellation, retirement, task and
 group cleanup, Herdr restart reconciliation, and conservative native-session
 recovery.
 
+The versioned known-incident and qualification contract lives under
+[`qualification/`](qualification/README.md). Validate its scenario completeness
+and runner evidence shapes with:
+
+```sh
+npm --silent --prefix tools/drovr run qualification:validate
+```
+
 After convergence, diagnose the local runtime:
 
 ```sh
