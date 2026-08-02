@@ -22,7 +22,8 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v9 extends the v8 contracts with irreversible cancellation,
+  Catalog v10 adds the authority-bound GitHub tracker progress operation and
+  projection. Catalog v9 extends the v8 contracts with irreversible cancellation,
   abandoned-attempt, late-effect quarantine, and observation-only cancelled
   settlement behavior. Catalog v8 extends the exact v1 requirements introduced in v7 for
   `explicit_facts.block_observations` on dynamic proposals and
@@ -252,6 +253,32 @@ dark Interface is a conformance seam, not a converged public launcher; the
 launch policy still selects the legacy implementation.
 `PlanCompiler` and `LifecycleKernel` are pure Modules: their decisions depend
 only on their explicit arguments.
+
+## GitHub tracker progress
+
+`createGitHubTrackerProgressOperation()` registers the reconcilable
+`flow.operation/tracker-progress-github/v1` mechanism. A confirmed dynamic
+plan may use it only with a confirmed `explicit_facts.tracker_binding` for a
+feature or epic. `RunAuthority` records whether launch created a top-level or
+child run, rejects tracker operations for authority-known children, and binds
+that ownership observation into every tracker intent. The Adapter never trusts
+caller-supplied top-level scope.
+
+Each update is bounded and writes one `flow.tracker-progress/v1` marker-bound
+comment. Later updates from the same run edit that comment in place. Duplicate
+markers or a marker owned by another run fail closed. The marker records the
+run, exact effect identity, caller idempotency key, and authority watermark, so
+receipt recovery can adopt the exact provider mutation without reposting.
+Tracker-scoped mutation fencing serializes the observe-and-upsert boundary, so
+concurrent first writes cannot both create a comment under the sole runtime.
+Tracker progress operations must be graph leaves; their receipts cannot make
+another card ready. GitHub issue state and unrelated comment content are never
+read as lifecycle, scheduling, checkpoint, or acceptance authority.
+
+Run `query` and `watch` expose the current
+`flow.tracker-progress-projection/v1`, including the exact run-authority
+watermark, projected watermark, status, desired bounded update, and only the
+tracker operation's legal next actions at that watermark.
 
 The focused public contract suite is:
 

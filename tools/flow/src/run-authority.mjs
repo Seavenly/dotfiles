@@ -46,6 +46,7 @@ import {
   transitionAuthoritySchema,
   uninitializedAuthoritySchemaCompatibility,
 } from "./authority-schema.mjs";
+import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const require = createRequire(import.meta.url);
@@ -84,6 +85,7 @@ export function createInMemoryRunAuthority() {
             plan_fingerprint: prepared.plan_fingerprint,
             confirmation_digest: prepared.confirmation_digest,
             closed_fact_observation_digest: digest(closedFacts),
+            run_ownership: topLevelRunOwnership(),
           },
           ...prepared.explicit_facts.block_observations.map((observation) => ({
             type: "card_blocked",
@@ -206,6 +208,7 @@ export function createDurableRunAuthority({
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
 } = {}) {
   if (typeof authorityDirectory !== "string" || authorityDirectory.length === 0) {
     throw new TypeError("durable run authority requires an authority directory");
@@ -250,6 +253,9 @@ export function createDurableRunAuthority({
     throw new TypeError(
       "durable run authority requires a reboot observation Adapter",
     );
+  }
+  if (typeof runOwnershipAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a run ownership Adapter");
   }
   const hostIdentity = hostIdentityAdapter.observe();
   if (hostIdentity?.schema !== "flow.host-authority-identity/v1" ||
@@ -380,6 +386,16 @@ export function createDurableRunAuthority({
         if (existing) {
           return durableLaunchReceipt(database, existing, false, fenceRun);
         }
+        const runOwnership = observeRunOwnership(runOwnershipAdapter, prepared);
+        if (runOwnership.scope !== "top_level" && prepared.graph.cards.some(
+          ({ executor }) => executor.contract === TRACKER_PROGRESS_CONTRACT,
+        )) {
+          return durableLaunchRejection(
+            "tracker_mutation_not_owned",
+            prepared,
+            databasePath,
+          );
+        }
 
         database.exec("BEGIN IMMEDIATE");
         try {
@@ -410,6 +426,7 @@ export function createDurableRunAuthority({
                   plan_fingerprint: prepared.plan_fingerprint,
                   confirmation_digest: prepared.confirmation_digest,
                   closed_fact_observation_digest: digest(closedFacts),
+                  run_ownership: runOwnership,
                 },
               },
               ...prepared.explicit_facts.block_observations.map(
@@ -593,6 +610,7 @@ export function createDurableRunAuthority({
               decision: currentDecision,
               deferredEvents,
               prepared: current.records[0].payload.prepared,
+              runOwnership: currentFold.run_ownership,
               runId: canonicalCommand.run_id,
             }));
           appendAuthorityEvents(database, {
@@ -1326,6 +1344,7 @@ function bindEffectIntent(intent, {
   decision,
   deferredEvents,
   prepared,
+  runOwnership,
   runId,
 }) {
   const facts = prepared.explicit_facts;
@@ -1362,10 +1381,40 @@ function bindEffectIntent(intent, {
     capability_envelopes: facts.capability_envelopes,
     operation_contracts: facts.operation_contracts,
     validator_contracts: facts.validator_contracts,
+    ...(facts.tracker_binding === undefined ? {} : {
+      tracker_binding: facts.tracker_binding,
+      run_ownership: runOwnership,
+    }),
     resource_claims: resourceClaims,
     time_facts: [],
     subject_generations: [],
   });
+}
+
+export function createTopLevelRunOwnershipAdapter() {
+  return Object.freeze({ observe: topLevelRunOwnership });
+}
+
+function topLevelRunOwnership() {
+  return {
+    schema: "flow.run-ownership/v1",
+    scope: "top_level",
+    parent_run_id: null,
+  };
+}
+
+function observeRunOwnership(adapter, prepared) {
+  const ownership = adapter.observe({ prepared });
+  if (ownership?.schema !== "flow.run-ownership/v1" ||
+      !["top_level", "child"].includes(ownership.scope) ||
+      (ownership.scope === "top_level" && ownership.parent_run_id !== null) ||
+      (ownership.scope === "child" &&
+        (typeof ownership.parent_run_id !== "string" ||
+         ownership.parent_run_id.length === 0)) ||
+      Object.keys(ownership).length !== 3) {
+    throw new TypeError("run ownership Adapter returned an invalid observation");
+  }
+  return freezeCanonical(ownership);
 }
 
 function adoptEffectIntent(database, intent, {
@@ -1564,6 +1613,11 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
         ...action,
         expected_watermark: watermark,
       }));
+  const trackerProgress = stream.fold.tracker_progress;
+  const trackerEffectIds = new Set(stream.fold.effects
+    .filter(({ card_id: cardId }) =>
+      cardId === trackerProgress?.operation_card_id)
+    .map(({ effect_id: effectId }) => effectId));
   return freezeCanonical({
     ...stream.fold,
     watermark,
@@ -1573,6 +1627,15 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
     stream_generation: stream.generation,
     ...(revalidation === null ? {} : { reboot_revalidation: revalidation }),
     legal_actions: legalActions,
+    ...(trackerProgress === undefined ? {} : {
+      tracker_progress: {
+        ...trackerProgress,
+        authority_watermark: watermark,
+        legal_next_actions: legalActions.filter((action) =>
+          action.card_id === trackerProgress.operation_card_id ||
+          trackerEffectIds.has(action.effect_id)),
+      },
+    }),
   });
 }
 

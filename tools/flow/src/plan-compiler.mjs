@@ -167,15 +167,6 @@ export function validateDynamicPlan(proposal, {
   }
 
   const cardIds = new Set();
-  const operationCards = proposal.graph.cards.filter(
-    ({ executor }) => executor?.kind === "operation",
-  );
-  if (operationCards.length > 1) {
-    invalidPlan(
-      "operation_card_limit_exceeded",
-      "this runtime slice accepts exactly one registered operation",
-    );
-  }
   for (const card of proposal.graph.cards) {
     if (!isRecord(card) || typeof card.id !== "string" || !card.id ||
         cardIds.has(card.id)) {
@@ -648,6 +639,16 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
+  if (typeof registration?.validateCard === "function") {
+    try {
+      registration.validateCard(card, proposal);
+    } catch (error) {
+      invalidPlan(
+        "invalid_operation_input",
+        error?.message ?? `operation input is invalid: ${card.id}`,
+      );
+    }
+  }
   const checkpoints = proposal.graph.cards.filter((checkpoint) =>
     card.dependencies.includes(checkpoint.id) &&
     checkpoint.executor?.kind === "checkpoint" &&
@@ -666,8 +667,8 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `checkpoint-bound operation requires one exact dependency: ${card.id}`,
     );
   }
-  if (checkpoints.length === 0 && (card.dependencies.length !== 0 ||
-      !proposal.requested_authority.commands.includes("operation_execute"))) {
+  if (checkpoints.length === 0 &&
+      !proposal.requested_authority.commands.includes("operation_execute")) {
     invalidPlan(
       "incomplete_operation_execution_authority",
       `direct operation execution authority is incomplete: ${card.id}`,

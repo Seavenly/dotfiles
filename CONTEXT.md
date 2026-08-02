@@ -41,6 +41,16 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Run ownership**:
+The authority-recorded relationship that identifies a flow run as top-level or
+as a child of one exact parent run.
+_Avoid_: Caller-declared scope, tracker ownership
+
+**Tracker binding**:
+The confirmed tracker identity and flow kind that a top-level run may use for
+an external progress projection.
+_Avoid_: Tracker authority, scheduling source
+
 **Authority schema transition**:
 An atomic, versioned change to replacement authority storage, bound to one
 exact runtime release and preserving replay of compatible records.
@@ -273,6 +283,10 @@ _Avoid_: Migration record, replacement run
 - The **recorder** extends **convergence** only when explicitly enabled.
 - A replacement **flow run** executes **flow cards**, each of which may have
   multiple **worker attempts**.
+- **Run ownership** is recorded by **run authority** at launch; a child run
+  cannot acquire a top-level **tracker binding**.
+- A **tracker binding** permits only a rebuildable progress projection and
+  never grants tracker state lifecycle or acceptance authority.
 - A **registered operation** creates one **effect intent** under **run
   authority**; an **effect receipt** settles it, while an **effect observation**
   supports recovery according to its **effect classification**.

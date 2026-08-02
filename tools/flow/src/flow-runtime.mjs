@@ -64,6 +64,35 @@ export function createFlowRuntime({
             authorityWatermarkDomain: "host",
           });
         }
+        const invalidInput = operationCards.find((card) => {
+          if (card.executor.kind !== "operation") return false;
+          const registration = registeredOperation(
+            operationRegistry,
+            card.executor.contract,
+          );
+          if (typeof registration?.validateCard !== "function") return false;
+          try {
+            registration.validateCard(card, {
+              graph: validation.prepared.graph,
+              requested_authority: validation.prepared.requested_authority,
+              explicit_facts: validation.prepared.explicit_facts,
+            });
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        if (invalidInput) {
+          const host = runAuthority.query();
+          return createRejection({
+            operation: "launch",
+            code: "invalid_operation_input",
+            reason: invalidInput.executor.contract,
+            bundleDigest: validation.prepared.bundle_digest,
+            authorityWatermark: host.watermark,
+            authorityWatermarkDomain: "host",
+          });
+        }
         if (operationCards.some(({ executor }) => executor.kind === "operation") &&
             typeof runAuthority.invokeEffect !== "function") {
           const host = runAuthority.query();

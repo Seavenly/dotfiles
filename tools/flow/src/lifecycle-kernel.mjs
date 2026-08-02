@@ -273,6 +273,7 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
       classification: operationCard.executor.effect_classification,
       operation_contract: operationCard.executor.contract,
       operation_input: operationCard.inputs,
+      source_authority_watermark: fold.watermark,
       route_binding: operationCard.route,
       resource_claims: operationCard.resource_claims,
     }],
