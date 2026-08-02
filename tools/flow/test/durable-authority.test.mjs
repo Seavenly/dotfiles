@@ -106,6 +106,8 @@ test("a terminal checkpoint revision succeeds and atomically releases capacity",
   assert.equal(afterDecline.current_revision.ordinal, 0);
   assert.equal(runtime.query().admission.active_runs, 1);
   assert.equal(runtime.command(staleAcceptance).code, "stale_authority_watermark");
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "active");
+  assert.equal(runtime.query().admission.active_runs, 1);
 
   const cappedProposal = repeatedRevisionCheckpointProposal();
   cappedProposal.explicit_facts.limits.max_revisions = 1;

@@ -1248,16 +1248,14 @@ function assertEveryActiveProjectionIsActionable(proposal, path = [], seen = [])
     runtime.command(action);
     projection = runtime.query({ run_id: launch.run_id });
   }
-  if (projection.phase !== "active") return;
-  const strandedTerminal = projection.cards.every(({ status }) =>
+  const allTerminal = projection.cards.every(({ status }) =>
     ["completed", "superseded"].includes(status)) &&
-    projection.effects.every(({ status }) => status === "succeeded") &&
-    projection.legal_actions.length === 0;
-  assert.equal(
-    strandedTerminal,
-    false,
-    `active projection is terminal but stranded at path ${path.join(",")}`,
+    projection.effects.every(({ status }) => status === "succeeded");
+  assert.ok(
+    !allTerminal || projection.phase !== "active",
+    `terminal projection remained active at path ${path.join(",")}`,
   );
+  if (projection.phase !== "active") return;
   assert.ok(
     projection.legal_actions.length > 0,
     `active projection has no legal action at path ${path.join(",")}`,
@@ -1265,6 +1263,9 @@ function assertEveryActiveProjectionIsActionable(proposal, path = [], seen = [])
   const stateIdentity = digest({
     cards: projection.cards,
     blocks: projection.blocks,
+    grants: projection.grants,
+    capabilities: projection.capabilities,
+    revisions: projection.revisions,
     current_revision: projection.current_revision,
     effects: projection.effects,
     legal_actions: projection.legal_actions.map(
