@@ -22,7 +22,9 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v8 extends the exact v1 requirements introduced in v7 for
+  Catalog v9 extends the v8 contracts with irreversible cancellation,
+  abandoned-attempt, late-effect quarantine, and observation-only cancelled
+  settlement behavior. Catalog v8 extends the exact v1 requirements introduced in v7 for
   `explicit_facts.block_observations` on dynamic proposals and
   `revision_templates` on prepared runs, and publishes registered operation
   intent, observation, receipt, validation, effect-class, and recovery
@@ -89,6 +91,24 @@ disabled, so this API does not authorize normal replacement launches.
   operation commands are serialized behind settlement; capability grants and
   exact recovery remain available. Adapter failures leave the effect unresolved
   for recovery and are not separately classified in the current projection.
+  A confirmed plan that requests `cancel` authority projects one exact
+  watermarked cancellation action. Cancellation commits a terminal fence,
+  abandons every incomplete attempt and card, releases host admission, and can
+  never be reversed. An intent not yet admitted to its Adapter is fenced before
+  invocation. Completed effects remain accepted evidence; abandoned,
+  outstanding, and late effects retain their real status with a `quarantined`
+  evidence disposition and cannot flush deferred completion or satisfy
+  dependencies. Cancelled
+  reconcilable and one-shot effects may expose only `settle_cancelled`, which
+  observes and may adopt exact positive causation but never invokes replacement
+  work.
+  The cancellation transaction records every prepared resource claim as
+  `released` when its work is settled or its intent was fenced before Adapter
+  invocation, and `quarantined` when an invoked unresolved effect may still
+  touch it. Effect dispositions describe evidence usability; resource
+  dispositions describe whether a resource may have been touched. Both are
+  immutable evidence, and late settlement does not silently release a
+  quarantined claim.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -171,9 +191,10 @@ affirmative absence observation; one-shot uncertain effects may adopt exact
 presence but never invoke again. While an effect remains unresolved, terminal
 checkpoint and revision declines are withheld and constructed checkpoint
 declines are rejected.
-If an effect cannot be settled, the run deliberately remains active and keeps
-its host capacity reservation. This slice has no abandonment or cancellation
-path that can claim the external effect did not occur.
+Before cancellation, an effect that cannot be settled keeps the run active and
+its host capacity reserved. Cancellation abandons the attempt without claiming
+that the external effect did not occur. The terminal run releases host capacity
+while retaining unresolved, uncertain, abandoned, and late evidence truthfully.
 `invokeEffect`, `recordEffectObservation`, `pendingSameBootRecoveryRunIds`, and
 `completeSameBootRecovery` are internal effect-coordination mechanism seams on
 the dark durable authority Adapter, not additional public `FlowRuntime`
@@ -211,7 +232,7 @@ both categories is the empty list. Durable construction fails reboot admission
 closed until that
 current-observation Adapter is configured. An unresolved effect from a prior
 boot remains deliberately fenced, keeps its capacity reservation, and requires
-a future explicit cancellation or reconciliation mechanism. The shipped
+explicit admission before cancellation or reconciliation. The shipped
 `LifecycleKernel` emits effect intents only for the single registered-operation
 tracer. Each run is admitted independently. Run
 watermarks bind the run stream generation and current authority epoch, while host
@@ -238,6 +259,7 @@ The focused public contract suite is:
 node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/durable-authority.test.mjs \
   tools/flow/test/registered-operation.test.mjs \
+  tools/flow/test/cancellation.test.mjs \
   tools/flow/test/purity-contracts.test.mjs
 ```
 
