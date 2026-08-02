@@ -259,6 +259,7 @@ function delegateDecision(fold, command, delegate) {
         accepted_proofs: [
           "drovr_agent_retirement_receipt",
           "named_durable_handoff",
+          "drovr_turn_cancellation_proof",
         ],
         retry_holder: "drovr.registry",
       },

@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import {
+  delegateCompatibilityIssue,
+  snapshotRequiredDrovrFeatures,
+} from "../src/delegate-effects.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import {
@@ -326,6 +330,70 @@ for (const status of ["needs_input", "cancelled"]) {
   });
 }
 
+test("a working quarantined turn is cancelled before retry handoff", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-retry-cancel"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  let attempt = 0;
+  const cancellations = [];
+  const runtime = delegateRuntime(authority, {
+    async discover() {
+      return absentDiscovery();
+    },
+    async dispatch(request) {
+      attempt += 1;
+      return workingProjection(request);
+    },
+    async wait() {
+      const projection = completedTurnProjection({
+        callerKey: runtime.query({ run_id: launch.run_id })
+          .delegate_attempts.at(-1).caller_key,
+        description,
+      });
+      if (attempt === 1) {
+        projection.status = "needs_input";
+        projection.turn.status = "working";
+        delete projection.turn.result;
+      }
+      return projection;
+    },
+    async cancel(request) {
+      cancellations.push(request);
+      return cancelledTurnProjection(request.turn_id);
+    },
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description, {
+    maxAttempts: 2,
+  }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .delegate_attempts[0].status === "quarantined");
+
+  const retryable = runtime.query({ run_id: launch.run_id });
+  const disposition = retryable.quarantined_delegate_outputs[0]
+    .quarantine_record.terminal_disposition;
+  assert.deepEqual(cancellations, [{
+    schema: "flow.delegated-agent-cancel-request/v1",
+    turn_id: "turn:delegate-review",
+  }]);
+  assert.equal(disposition.durable_holder, "drovr.registry");
+  assert.equal(disposition.turn_disposition.status, "cancelled");
+  assert.deepEqual(retryable.legal_actions.map(({ type }) => type), [
+    "delegate_execute",
+  ]);
+
+  runtime.command(retryable.legal_actions[0]);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  assert.equal(attempt, 2);
+});
+
 test("an observed capability block gates delegate execution", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -463,7 +531,7 @@ test("late delegate output stays correlated and quarantined before a bounded ret
   assert.equal(completed.quarantined_delegate_outputs.length, 1);
 });
 
-test("Drovr output cannot schedule cards or advance RunAuthority", async (t) => {
+test("accepted Drovr output cannot schedule cards or advance RunAuthority", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const authority = createDurableRunAuthority({
@@ -485,11 +553,48 @@ test("Drovr output cannot schedule cards or advance RunAuthority", async (t) => 
           .delegate_attempts[0].caller_key,
         description,
       });
+      projection.flow_events = [{ type: "run_declined" }];
+      projection.scheduled_cards = [{ id: "drovr-invented-card" }];
+      projection.legal_next_actions = ["advance_run"];
+      return projection;
+    },
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  const projection = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(projection.phase, "succeeded");
+  assert.deepEqual(projection.cards.map(({ id }) => id), [
+    "confirm-plan",
+    "delegate-review",
+  ]);
+  assert.equal(projection.delegate_attempts[0].status, "accepted");
+  assert.deepEqual(projection.legal_actions, []);
+});
+
+test("incompatible Drovr lifecycle claims remain quarantined", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-boundary"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const runtime = delegateRuntime(authority, {
+    async wait() {
+      const projection = completedTurnProjection({
+        callerKey: runtime.query({ run_id: launch.run_id })
+          .delegate_attempts[0].caller_key,
+        description,
+      });
       projection.turn.settlement_proof.description_digest =
         `sha256:${"f".repeat(64)}`;
       projection.flow_events = [{ type: "run_succeeded" }];
       projection.scheduled_cards = [{ id: "drovr-invented-card" }];
-      projection.legal_next_actions = ["advance_run"];
       return projection;
     },
   });
@@ -507,12 +612,45 @@ test("Drovr output cannot schedule cards or advance RunAuthority", async (t) => 
   ]);
   assert.equal(projection.blocks[0].quarantine_reason,
     "incompatible_settlement_proof");
-  assert.equal(projection.blocks[0].schema, "flow.delegate-card-block/v1");
   assert.deepEqual(projection.legal_actions.map(({ type }) => type), [
     "terminal_disposition",
   ]);
   runtime.command(projection.legal_actions[0]);
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "declined");
+});
+
+test("required feature snapshot preserves integrity and availability codes", async () => {
+  const description = await compatibleDescription();
+  const card = delegateCardProposal(description).graph.cards[1];
+  const port = {
+    contract: "flow.delegated-agent-port/v1",
+    ...completePortOperations(),
+    async dispatch() {},
+    async discover() {},
+    async wait() {},
+  };
+  const validators = new Map([[DELEGATE_OUTPUT_VALIDATOR, {
+    validate() { return true; },
+  }]]);
+  const integrity = snapshotRequiredDrovrFeatures({
+    loadBytes: () => Buffer.from("drifted contract"),
+  });
+  const unavailable = snapshotRequiredDrovrFeatures({
+    loadBytes() { throw new Error("offline"); },
+  });
+  const malformed = snapshotRequiredDrovrFeatures({
+    loadBytes: () => ({ not: "bytes" }),
+  });
+
+  assert.equal(delegateCompatibilityIssue(
+    card, port, validators, integrity,
+  ), "required_feature_contract_integrity_failed");
+  assert.equal(delegateCompatibilityIssue(
+    card, port, validators, unavailable,
+  ), "required_feature_contract_unavailable");
+  assert.equal(delegateCompatibilityIssue(
+    card, port, validators, malformed,
+  ), "required_feature_contract_unavailable");
 });
 
 test("settled output becomes evidence only after independent validation", async (t) => {
@@ -716,6 +854,27 @@ function stillWorkingProjection() {
     ...workingProjection({ agent_id: "agent:delegate-review" }),
     operation: "wait",
     status: "still_running",
+  };
+}
+
+function cancelledTurnProjection(turnId) {
+  return {
+    schema: "flow.delegated-agent-lifecycle-projection/v1",
+    operation: "cancel",
+    status: "cancelled",
+    watermark: {
+      schema: "drovr.turn-authority-watermark/v1",
+      authority: "drovr.registry",
+      turn_id: turnId,
+      record_sha256: digestForTest(turnId),
+    },
+    delegation: {
+      agent_id: "agent:delegate-review",
+      task_id: "task:delegate-review",
+      group_id: "group:flow",
+    },
+    turn: { id: turnId, status: "cancelled" },
+    legal_next_actions: [],
   };
 }
 

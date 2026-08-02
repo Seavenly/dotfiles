@@ -10,14 +10,40 @@ export const FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_URL = new URL(
   import.meta.url,
 );
 
+export class RequiredDrovrFeatureContractError extends Error {
+  constructor(message, { code, cause } = {}) {
+    super(message, { cause });
+    this.name = "RequiredDrovrFeatureContractError";
+    this.code = code;
+  }
+}
+
 export function loadRequiredDrovrFeatures({
   loadBytes = () => readFileSync(FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_URL),
 } = {}) {
-  const bytes = loadBytes();
-  if (!requiredFeatureContractIsPinned(bytes)) {
-    throw new Error("Flow-required Drovr feature contract is not pinned");
+  let bytes;
+  try {
+    bytes = loadBytes();
+  } catch (cause) {
+    throw new RequiredDrovrFeatureContractError(
+      "Flow-required Drovr feature contract is unavailable",
+      { code: "required_feature_contract_unavailable", cause },
+    );
   }
-  return requiredFeaturesFrom(bytes);
+  if (!requiredFeatureContractIsPinned(bytes)) {
+    throw new RequiredDrovrFeatureContractError(
+      "Flow-required Drovr feature contract is not pinned",
+      { code: "required_feature_contract_integrity_failed" },
+    );
+  }
+  try {
+    return requiredFeaturesFrom(bytes);
+  } catch (cause) {
+    throw new RequiredDrovrFeatureContractError(
+      "invalid Flow-required Drovr feature contract",
+      { code: "required_feature_contract_invalid", cause },
+    );
+  }
 }
 
 export function requiredFeatureContractIsPinned(bytes) {

@@ -2,6 +2,7 @@ import { digest, freezeCanonical } from "./canonical.mjs";
 import {
   featureConformanceFindings,
   loadRequiredDrovrFeatures,
+  RequiredDrovrFeatureContractError,
 } from "./required-drovr-features.mjs";
 const REQUIRED_PORT_OPERATIONS = [
   "describe",
@@ -28,11 +29,19 @@ export function snapshotDelegatedAgentPort(port) {
   });
 }
 
-export function snapshotRequiredDrovrFeatures() {
+export function snapshotRequiredDrovrFeatures(options) {
   try {
-    return loadRequiredDrovrFeatures();
-  } catch {
-    return null;
+    return Object.freeze({
+      features: loadRequiredDrovrFeatures(options),
+      issue: null,
+    });
+  } catch (error) {
+    return Object.freeze({
+      features: null,
+      issue: error instanceof RequiredDrovrFeatureContractError
+        ? error.code
+        : "required_feature_contract_unavailable",
+    });
   }
 }
 
@@ -58,13 +67,17 @@ export function delegateCompatibilityIssue(
   card,
   port,
   validators,
-  requiredFeatures,
+  requiredFeatureSnapshot,
 ) {
   if (port?.contract !== "flow.delegated-agent-port/v1" ||
       !REQUIRED_PORT_OPERATIONS.every(
         (operation) => typeof port?.[operation] === "function")) {
     return "delegated_agent_port_unavailable";
   }
+  if (requiredFeatureSnapshot?.issue) {
+    return requiredFeatureSnapshot.issue;
+  }
+  const requiredFeatures = requiredFeatureSnapshot?.features;
   if (!Array.isArray(requiredFeatures)) {
     return "required_feature_contract_unavailable";
   }
@@ -244,8 +257,23 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
 
 async function settleTerminalDisposition({ current, intent, port, receipt }) {
   if (receipt.outcome === "quarantined" &&
-      intent.attempt_ordinal < intent.max_attempts &&
-      current.turn?.status !== "working") {
+      intent.attempt_ordinal < intent.max_attempts) {
+    const expectedAgentId = current.delegation?.agent_id ??
+      intent.route_binding.agent_id;
+    let turnDisposition = null;
+    if (current.turn?.status === "working") {
+      turnDisposition = await port.cancel({
+        schema: "flow.delegated-agent-cancel-request/v1",
+        turn_id: current.turn.id,
+      });
+      if (!provesClosedTurn(
+        turnDisposition,
+        expectedAgentId,
+        current.turn.id,
+      )) {
+        throw delegatedRuntimeError(turnDisposition);
+      }
+    }
     return freezeCanonical({
       ...receipt,
       provider_receipt: {
@@ -254,11 +282,12 @@ async function settleTerminalDisposition({ current, intent, port, receipt }) {
           schema: "flow.resource-handoff/v1",
           resource: {
             type: "drovr_agent",
-            id: current.delegation?.agent_id ?? intent.route_binding.agent_id,
+            id: expectedAgentId,
           },
           durable_holder: "drovr.registry",
           reason: "bounded_delegate_retry_available",
           attempt_id: intent.attempt_id,
+          ...(turnDisposition ? { turn_disposition: turnDisposition } : {}),
         },
       },
     });
@@ -304,6 +333,25 @@ async function settleTerminalDisposition({ current, intent, port, receipt }) {
       terminal_disposition: disposition,
     },
   });
+}
+
+function provesClosedTurn(projection, expectedAgentId, expectedTurnId) {
+  return projection?.schema ===
+      "flow.delegated-agent-lifecycle-projection/v1" &&
+    projection.operation === "cancel" &&
+    ["cancelled", "turn_closed"].includes(projection.status) &&
+    projection.delegation?.agent_id === expectedAgentId &&
+    projection.turn?.id === expectedTurnId &&
+    ["cancelled", "completed", "interrupted"].includes(
+      projection.turn.status,
+    ) &&
+    projection.watermark?.schema ===
+      "drovr.turn-authority-watermark/v1" &&
+    projection.watermark.authority === "drovr.registry" &&
+    projection.watermark.turn_id === expectedTurnId &&
+    /^sha256:[0-9a-f]{64}$/u.test(
+      projection.watermark.record_sha256 ?? "",
+    );
 }
 
 function delegatedRuntimeError(projection) {

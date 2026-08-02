@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 10);
+  assert.equal(catalog.catalog_version, 11);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -142,7 +142,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     dispatch_order: "discover_before_dispatch",
     settlement: "exact_binding_ordered_inputs_and_independent_validation",
     quarantine: "late_or_incompatible_correlated",
-    terminal_disposition: "retire_receipt_or_named_durable_handoff",
+    terminal_disposition:
+      "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
     exhausted_action: "terminal_disposition",
   });
   assert.ok(catalog.projections.includes("authority_schema_compatibility"));

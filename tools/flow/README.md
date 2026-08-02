@@ -22,17 +22,21 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v10 gives delegate quarantine blocks their own public contract and
-  single-sources the required Drovr feature baseline. Catalog v9 extended the
-  exact v1 requirements introduced in v8 with
-  delegate-attempt execution, independently validated delegate evidence, and
-  distinct correlated `flow.delegate-quarantine/v1` records. Catalog v8 introduced
-  `explicit_facts.block_observations` on dynamic proposals and
-  `revision_templates` on prepared runs, and publishes registered operation
+  Catalog v11 adds the exact working-turn cancellation proof required before a
+  retryable delegate handoff. Catalog v10 gives delegate quarantine blocks
+  their own public contract and single-sources the required Drovr feature
+  baseline. Catalog v9 extended the delegate execution surface built on the
+  exact v1 block-observation and
+  revision-template requirements introduced in v7 and carried forward by v8,
+  adding delegate-attempt execution, independently validated delegate evidence,
+  and
+  distinct correlated `flow.delegate-quarantine/v1` records. Catalog v8
+  extended that v7 envelope and publishes registered operation
   intent, observation, receipt, validation, effect-class, and recovery
   contracts together with authority-schema compatibility and transition
-  contracts. Callers must prepare a fresh bundle rather than launch a pre-v10
-  envelope.
+  contracts. Catalog v11 changes execution disposition policy but not the
+  prepared-run envelope, so callers must prepare a fresh bundle rather than
+  launch a pre-v10 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`, one operation card,
   or one `flow.delegated-agent-port/v1` delegate card.
@@ -64,7 +68,11 @@ disabled, so this API does not authorize normal replacement launches.
   a replacement runtime cannot accept an effect it is unable to dispatch.
   Delegate launch also rejects an unavailable port, an incomplete Drovr
   feature baseline, or an unregistered output validator with a typed
-  compatibility rejection before creating the run.
+  compatibility rejection before creating the run. The required-feature
+  baseline is snapshotted when the runtime is constructed so one runtime cannot
+  observe mutable launch policy; repairing it requires constructing a fresh
+  runtime. Unreadable, invalid, and digest-mismatched baselines remain distinct
+  typed compatibility failures.
 - `command(command)` accepts the exact legal approve or decline checkpoint
   command projected by authority. A ready operation that does not require a
   checkpoint projects an exact `operation_execute` command. A
@@ -115,7 +123,10 @@ disabled, so this API does not authorize normal replacement launches.
   bounded wait leaves the current attempt unresolved, so recovery discovers
   and waits on that same live turn without cancellation or redispatch. A
   terminally quarantined attempt with retry capacity records an explicit
-  handoff to the named Drovr registry holder; accepted or exhausted work
+  handoff to the named Drovr registry holder. If its turn is still working,
+  the adapter first requires an exact Drovr cancellation proof; an unproven
+  cancellation leaves the attempt unresolved for same-attempt recovery.
+  Accepted or exhausted work
   requires an exact agent-retirement receipt. Exhausting the cap projects one
   typed `terminal_disposition` decline action instead of stranding an active
   run.
