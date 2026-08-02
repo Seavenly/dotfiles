@@ -1,5 +1,8 @@
 import { digest } from "./canonical.mjs";
-import { compileDynamicPlan } from "./plan-compiler.mjs";
+import {
+  applyRevisionGraphChanges,
+  compileDynamicPlan,
+} from "./plan-compiler.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import { createInMemoryRunAuthority } from "./run-authority.mjs";
@@ -78,6 +81,33 @@ export function createFlowRuntime({
             operation: "launch",
             code: incompatible.issue,
             reason: incompatible.card.executor.contract,
+            bundleDigest: validation.prepared.bundle_digest,
+            authorityWatermark: host.watermark,
+            authorityWatermarkDomain: "host",
+          });
+        }
+        const invalidInput = operationValidationContexts(
+          validation.prepared,
+        ).find(({ card, proposal }) => {
+          if (card.executor.kind !== "operation") return false;
+          const registration = registeredOperation(
+            operationRegistry,
+            card.executor.contract,
+          );
+          if (typeof registration?.validateCard !== "function") return false;
+          try {
+            registration.validateCard(card, proposal);
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        if (invalidInput) {
+          const host = runAuthority.query();
+          return createRejection({
+            operation: "launch",
+            code: "invalid_operation_input",
+            reason: invalidInput.card.executor.contract,
             bundleDigest: validation.prepared.bundle_digest,
             authorityWatermark: host.watermark,
             authorityWatermarkDomain: "host",
@@ -203,6 +233,41 @@ function executionCards(prepared) {
       .map(({ inputs }) => inputs.child_launch_request.prepared));
   }
   return cards;
+}
+
+function operationValidationContexts(prepared) {
+  const contexts = [];
+  const pending = [prepared];
+  const seenBundles = new Set();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (seenBundles.has(current.bundle_digest)) continue;
+    seenBundles.add(current.bundle_digest);
+    const proposal = (graph) => ({
+      graph,
+      requested_authority: current.requested_authority,
+      explicit_facts: current.explicit_facts,
+      revision_templates: current.revision_templates,
+    });
+    const graphs = [current.graph];
+    for (const template of current.revision_templates) {
+      graphs.push(applyRevisionGraphChanges(current.graph, template.changes));
+    }
+    for (const graph of graphs) {
+      contexts.push(...graph.cards.map((card) => ({
+        card,
+        proposal: proposal(graph),
+      })));
+    }
+    const currentCards = [
+      ...current.graph.cards,
+      ...current.revision_templates.flatMap(({ changes }) => changes.add_cards),
+    ];
+    pending.push(...currentCards
+      .filter(({ executor }) => executor.kind === "subrun")
+      .map(({ inputs }) => inputs.child_launch_request.prepared));
+  }
+  return contexts;
 }
 
 function subrunIntentForEffect(projection, effectId) {

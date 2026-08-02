@@ -159,6 +159,7 @@ drovr task get TASK_ID
 drovr agent start TASK_ID --key AGENT_KEY
 drovr agent list --task TASK_ID --status active --harness codex
 drovr agent get AGENT_ID
+drovr agent staged-input AGENT_ID
 drovr agent retire AGENT_ID
 drovr task close TASK_ID
 drovr task close TASK_ID --force
@@ -180,8 +181,10 @@ after Herdr stages a prompt; an idle state-token change alone does not prove
 submission. A still-idle multiline or long single-line bracketed paste receives
 one guarded submit key only after the newly staged content is visible as literal
 prompt-box text or as a new Claude attachment token. Drovr refuses to append a
-new turn over prompt text that was already staged before delivery; inspect or
-clear that text with `drovr attach` first. A single-line prompt with no visible
+new turn over prompt text that was already staged before delivery. The refusal
+happens before a new logical turn is created and returns
+`drovr agent staged-input AGENT_ID` as the exact next command. A single-line
+prompt with no visible
 staged content proceeds to exact native
 transcript correlation only after a new `done` observation, because a short
 turn can complete before the first poll. Pane output is delivery-readiness
@@ -200,6 +203,30 @@ same projection recovers legacy
 `unsupported_transcript` records that were created when a transcript file was
 temporarily absent. Discovery does not rewrite the durable turn or promote it to
 `completed`.
+
+`drovr agent staged-input AGENT_ID` reports the visible Claude prompt snapshot,
+an exact token, and whether a failed Drovr delivery receipt proves ownership.
+Unknown or operator-owned text is preserved by default. The inspection result
+offers `--clear-unknown TOKEN` when an operator explicitly chooses to clear that
+exact snapshot without entering the native terminal. For proven Drovr-owned
+text, use the exact command returned by inspection:
+
+```sh
+drovr agent staged-input AGENT_ID --submit TOKEN
+drovr agent staged-input AGENT_ID --clear TOKEN
+```
+
+Both operations re-read the prompt box, native session, and settled agent before
+acting. Submit continues the original uncertain logical turn and later
+`turn get` can project its exactly correlated transcript result. Clear sends one
+guarded interrupt and verifies the same Claude session remains settled with an
+empty prompt box. A stale token never mutates the terminal.
+
+`drovr attach` remains a raw interactive terminal. Native interrupt or EOF keys
+can terminate Claude and its Herdr pane, so staged-input inspection and recovery
+are the supported path for prompt-box cleanup. If unknown text must be retained,
+copy it from the inspection result and leave the token unused.
+
 Cancellation reports `cancelled` only after native interruption and confirmed
 settlement. Cancelling an already-idle turn returns its exact reconciled terminal
 status, including `uncertain` when prompt delivery cannot be proven. A missing or
@@ -219,7 +246,9 @@ group lifetime. Stale agents converge only when their exact process and pane
 are absent and native-session ownership is unambiguous. All cleanup preserves
 durable history and never deletes caller-owned cwd or transcript files.
 Mutating commands may recover a confirmed-down native session only when every
-persisted safety check succeeds;
+persisted safety check succeeds. A missing managed pane is recreated through a
+new managed workspace/task tab or an exact registered sibling pane; a surviving
+tab without that ownership evidence remains blocked;
 `status` and `agent get` report observed loss without launching anything.
 
 Claude role instructions are materialized from the immutable launch

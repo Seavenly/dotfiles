@@ -117,6 +117,17 @@ export function createInMemoryRunAuthority() {
       if (lineage !== null && runs.has(runId)) {
         return launchReceipt(runs.get(runId), false);
       }
+      const runOwnership = lineage === null
+        ? topLevelRunOwnership()
+        : childRunOwnership(lineage.parent_run_id);
+      if (runOwnership.scope === "child" &&
+          prepared.explicit_facts.tracker_binding !== undefined) {
+        return launchRejection(
+          "tracker_mutation_not_owned",
+          prepared,
+          authorityEvents,
+        );
+      }
       const initialRun = {
         run_id: runId,
         ...(lineage === null ? {} : { lineage }),
@@ -129,6 +140,7 @@ export function createInMemoryRunAuthority() {
             confirmation_digest: prepared.confirmation_digest,
             closed_fact_observation_digest: digest(closedFacts),
             ...(lineage === null ? {} : { lineage }),
+            run_ownership: runOwnership,
           },
           ...prepared.explicit_facts.block_observations.map((observation) => ({
             type: "card_blocked",
@@ -329,6 +341,7 @@ export function createDurableRunAuthority({
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
 } = {}) {
   if (typeof authorityDirectory !== "string" || authorityDirectory.length === 0) {
     throw new TypeError("durable run authority requires an authority directory");
@@ -389,6 +402,9 @@ export function createDurableRunAuthority({
     throw new TypeError(
       "durable run authority requires a reboot observation Adapter",
     );
+  }
+  if (typeof runOwnershipAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a run ownership Adapter");
   }
   const hostIdentity = hostIdentityAdapter.observe();
   if (hostIdentity?.schema !== "flow.host-authority-identity/v1" ||
@@ -522,6 +538,17 @@ export function createDurableRunAuthority({
         if (existing) {
           return durableLaunchReceipt(database, existing, false, fenceRun);
         }
+        const runOwnership = lineage === null
+          ? observeRunOwnership(runOwnershipAdapter, prepared)
+          : childRunOwnership(lineage.parent_run_id);
+        if (runOwnership.scope !== "top_level" &&
+            prepared.explicit_facts.tracker_binding !== undefined) {
+          return durableLaunchRejection(
+            "tracker_mutation_not_owned",
+            prepared,
+            databasePath,
+          );
+        }
         let consumerBindings;
         try {
           consumerBindings = prepareConsumerHandoffBindings(
@@ -570,6 +597,7 @@ export function createDurableRunAuthority({
                   confirmation_digest: prepared.confirmation_digest,
                   closed_fact_observation_digest: digest(closedFacts),
                   ...(lineage === null ? {} : { lineage }),
+                  run_ownership: runOwnership,
                 },
               },
               ...prepared.explicit_facts.block_observations.map(
@@ -882,6 +910,7 @@ export function createDurableRunAuthority({
               decision: currentDecision,
               deferredEvents,
               prepared: current.records[0].payload.prepared,
+              runOwnership: currentFold.run_ownership,
               runId: canonicalCommand.run_id,
             }));
           appendAuthorityEvents(database, {
@@ -2211,6 +2240,7 @@ function bindEffectIntent(intent, {
   decision,
   deferredEvents,
   prepared,
+  runOwnership,
   runId,
 }) {
   const facts = prepared.explicit_facts;
@@ -2247,10 +2277,48 @@ function bindEffectIntent(intent, {
     capability_envelopes: facts.capability_envelopes,
     operation_contracts: facts.operation_contracts,
     validator_contracts: facts.validator_contracts,
+    ...(facts.tracker_binding === undefined ? {} : {
+      tracker_binding: facts.tracker_binding,
+      run_ownership: runOwnership,
+    }),
     resource_claims: resourceClaims,
     time_facts: [],
     subject_generations: [],
   });
+}
+
+export function createTopLevelRunOwnershipAdapter() {
+  return Object.freeze({ observe: topLevelRunOwnership });
+}
+
+function topLevelRunOwnership() {
+  return {
+    schema: "flow.run-ownership/v1",
+    scope: "top_level",
+    parent_run_id: null,
+  };
+}
+
+function childRunOwnership(parentRunId) {
+  return freezeCanonical({
+    schema: "flow.run-ownership/v1",
+    scope: "child",
+    parent_run_id: parentRunId,
+  });
+}
+
+function observeRunOwnership(adapter, prepared) {
+  const ownership = adapter.observe({ prepared });
+  if (ownership?.schema !== "flow.run-ownership/v1" ||
+      !["top_level", "child"].includes(ownership.scope) ||
+      (ownership.scope === "top_level" && ownership.parent_run_id !== null) ||
+      (ownership.scope === "child" &&
+        (typeof ownership.parent_run_id !== "string" ||
+         ownership.parent_run_id.length === 0)) ||
+      Object.keys(ownership).length !== 3) {
+    throw new TypeError("run ownership Adapter returned an invalid observation");
+  }
+  return freezeCanonical(ownership);
 }
 
 function adoptEffectIntent(database, intent, {
@@ -2513,6 +2581,11 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
         ...action,
         expected_watermark: watermark,
       }));
+  const trackerProgress = stream.fold.tracker_progress;
+  const trackerEffectIds = new Set(stream.fold.effects
+    .filter(({ card_id: cardId }) =>
+      cardId === trackerProgress?.operation_card_id)
+    .map(({ effect_id: effectId }) => effectId));
   return freezeCanonical({
     ...stream.fold,
     watermark,
@@ -2522,6 +2595,15 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
     stream_generation: stream.generation,
     ...(revalidation === null ? {} : { reboot_revalidation: revalidation }),
     legal_actions: legalActions,
+    ...(trackerProgress === undefined ? {} : {
+      tracker_progress: {
+        ...trackerProgress,
+        authority_watermark: watermark,
+        legal_next_actions: legalActions.filter((action) =>
+          action.card_id === trackerProgress.operation_card_id ||
+          trackerEffectIds.has(action.effect_id)),
+      },
+    }),
   });
 }
 

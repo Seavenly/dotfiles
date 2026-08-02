@@ -96,6 +96,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.plan-revision-template/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
+    "flow.operation/tracker-progress-github/v1",
+    "flow.run-ownership/v1",
+    "flow.tracker-binding/v1",
+    "flow.tracker-progress-update/v1",
+    "flow.tracker-progress-projection/v1",
     "flow.delegate-evidence/v1",
     "flow.child-run-identity/v1",
     "flow.child-run-lineage/v1",
@@ -134,6 +139,19 @@ test("the public catalog exposes the settled interface and forbids legacy import
     cancelled_attempt_disposition: "abandoned",
     late_effect_disposition: "quarantined",
     cancelled_resource_dispositions: ["released", "quarantined"],
+  });
+  assert.deepEqual(catalog.flow_runtime.tracker_progress, {
+    authority: "RunAuthority",
+    operation: "flow.operation/tracker-progress-github/v1",
+    ownership: "flow.run-ownership/v1",
+    binding: "flow.tracker-binding/v1",
+    update: "flow.tracker-progress-update/v1",
+    projection: "flow.tracker-progress-projection/v1",
+    effect_class: "reconcilable",
+    mutation_scope: "confirmed_top_level_feature_or_epic",
+    child_mutation: "forbidden",
+    provider_state_authority: "none",
+    marker_cardinality: "at_most_one_update_in_place",
   });
   assert.deepEqual(catalog.flow_runtime.delegate_execution, {
     authority: "RunAuthority",

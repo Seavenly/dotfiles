@@ -125,7 +125,7 @@ export function decideLifecycle(fold, command) {
           template_id: command.template_id,
           base_plan_fingerprint: command.base_plan_fingerprint,
           trigger: command.trigger,
-        }, { type: "run_declined" }],
+        }],
         effect_intents: [],
         obligations: [],
         projection_hints: ["operator", "graph"],
@@ -136,6 +136,10 @@ export function decideLifecycle(fold, command) {
     );
     const revision = admitPlanRevision(fold, template);
     if (revision.code) return reject(fold, command, revision.code);
+    const completesRun = decisionCompletesRun(fold, {
+      activePlan: revision.active_plan,
+      supersededCardIds: template.changes.supersede_cards,
+    });
     return {
       schema: "flow.decision/v1",
       command_type: command.type,
@@ -148,7 +152,7 @@ export function decideLifecycle(fold, command) {
         trigger: command.trigger,
         changes: command.changes,
         active_plan: revision.active_plan,
-      }],
+      }, ...(completesRun ? [{ type: "run_succeeded" }] : [])],
       effect_intents: [],
       obligations: [],
       projection_hints: ["operator", "graph"],
@@ -244,15 +248,28 @@ export function decideLifecycle(fold, command) {
     }]);
   }
 
-  const allOtherCardsComplete = fold.cards.every(
-    (card) => card.id === checkpoint.id ||
-      ["completed", "superseded"].includes(card.status),
-  );
   return decision(
     command,
     checkpoint,
-    allOtherCardsComplete ? [{ type: "run_succeeded" }] : [],
+    decisionCompletesRun(fold, { completedCardIds: [checkpoint.id] })
+      ? [{ type: "run_succeeded" }]
+      : [],
   );
+}
+
+function decisionCompletesRun(fold, {
+  activePlan = fold.active_plan,
+  completedCardIds = [],
+  supersededCardIds = [],
+} = {}) {
+  const terminalCards = new Set(fold.cards
+    .filter(({ status }) => ["completed", "superseded"].includes(status))
+    .map(({ id }) => id));
+  for (const cardId of [...completedCardIds, ...supersededCardIds]) {
+    terminalCards.add(cardId);
+  }
+  const planCards = activePlan?.cards ?? fold.cards;
+  return planCards.every(({ id }) => terminalCards.has(id));
 }
 
 function delegateDecision(fold, command, delegate) {
@@ -269,9 +286,9 @@ function delegateDecision(fold, command, delegate) {
     attempt_id: attemptId,
     route_binding: card.route,
   });
-  const completesRun = fold.cards.every((candidate) =>
-    candidate.id === delegate.id ||
-    ["completed", "superseded"].includes(candidate.status));
+  const completesRun = decisionCompletesRun(fold, {
+    completedCardIds: [delegate.id],
+  });
   return {
     schema: "flow.decision/v1",
     command_type: command.type,
@@ -334,14 +351,13 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
     attempt_id: attemptId,
     operation_contract: operationCard.executor.contract,
   });
-  const excluded = new Set([
+  const completedCardIds = [
     operation.id,
     ...immediateEvents
       .filter(({ type }) => type === "checkpoint_decided")
       .map(({ checkpoint_id: checkpointId }) => checkpointId),
-  ]);
-  const completesRun = fold.cards.every((card) => excluded.has(card.id) ||
-    ["completed", "superseded"].includes(card.status));
+  ];
+  const completesRun = decisionCompletesRun(fold, { completedCardIds });
   return {
     schema: "flow.decision/v1",
     command_type: command.type,
@@ -365,6 +381,7 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
       card_identity: digest(operationCard),
       revision_ordinal: fold.current_revision.ordinal,
       operation_input: operationCard.inputs,
+      source_authority_watermark: fold.watermark,
       route_binding: operationCard.route,
       resource_claims: operationCard.resource_claims,
     }],

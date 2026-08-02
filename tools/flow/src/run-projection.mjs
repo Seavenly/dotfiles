@@ -2,8 +2,20 @@ import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
+import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
+  const launchOwnership = run.events.find(({ type }) => type === "run_launched")
+    ?.run_ownership;
+  if (launchOwnership === undefined &&
+      run.prepared.explicit_facts.tracker_binding !== undefined) {
+    throw new TypeError("tracker-bound run is missing authority-owned scope");
+  }
+  const runOwnership = launchOwnership ?? {
+    schema: "flow.run-ownership/v1",
+    scope: "top_level",
+    parent_run_id: null,
+  };
   const checkpointDecisions = new Map(
     run.events
       .filter(({ type }) => type === "checkpoint_decided")
@@ -271,6 +283,11 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const operationActions = cards
     .filter(({ executor_kind: kind, status }) =>
       kind === "operation" && status === "ready")
+    .filter(({ id }) => trackerProgressActionIsCurrent({
+      activePlan,
+      cards,
+      operationId: id,
+    }))
     .filter(({ id }) => !effectClassPolicy(activePlan.cards.find(
       (card) => card.id === id,
     ).executor.effect_classification).requires_fresh_checkpoint)
@@ -436,6 +453,16 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       ? "abandoned"
       : effectReceipts.has(intent.effect_id) ? "completed" : "active",
   })).sort((left, right) => left.attempt_id < right.attempt_id ? -1 : 1);
+  const trackerProgress = buildTrackerProgressProjection({
+    activePlan,
+    effects,
+    foldWatermark: watermark,
+    legalActions,
+    prepared: run.prepared,
+    runOwnership,
+    runId: run.run_id,
+    cards,
+  });
   const delegateAttempts = [...effectIntents.values()]
     .filter(({ effect_kind: kind }) => kind === "delegate")
     .map((intent) => {
@@ -506,6 +533,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     schema: "flow.run-fold/v1",
     run_id: run.run_id,
     ...(run.lineage === undefined ? {} : { parent: run.lineage }),
+    run_ownership: runOwnership,
     watermark,
     sequence: run.events.length,
     phase,
@@ -529,6 +557,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     attempts,
     subruns,
     effects,
+    ...(trackerProgress === null ? {} : { tracker_progress: trackerProgress }),
     handoffs,
     resource_handoff_bindings: resourceHandoffBindings,
     delegate_attempts: delegateAttempts,
@@ -547,6 +576,7 @@ export function projectRun(fold) {
     schema: "flow.run-projection/v1",
     run_id: fold.run_id,
     ...(fold.parent === undefined ? {} : { parent: fold.parent }),
+    run_ownership: fold.run_ownership,
     watermark: fold.watermark,
     sequence: fold.sequence,
     phase: fold.phase,
@@ -573,11 +603,68 @@ export function projectRun(fold) {
     attempts: fold.attempts,
     subruns: fold.subruns,
     effects: fold.effects,
+    ...(fold.tracker_progress === undefined ? {} : {
+      tracker_progress: fold.tracker_progress,
+    }),
     handoffs: fold.handoffs,
     resource_handoff_bindings: fold.resource_handoff_bindings,
     delegate_attempts: fold.delegate_attempts,
     quarantined_delegate_outputs: fold.quarantined_delegate_outputs,
     legal_actions: fold.legal_actions,
+  });
+}
+
+function trackerProgressActionIsCurrent({ activePlan, cards, operationId }) {
+  const operation = activePlan.cards.find(({ id }) => id === operationId);
+  if (operation.executor.contract !== TRACKER_PROGRESS_CONTRACT) return true;
+  return !activePlan.cards.some((candidate) =>
+    candidate.executor.contract === TRACKER_PROGRESS_CONTRACT &&
+    candidate.inputs.sequence < operation.inputs.sequence &&
+    !["completed", "superseded"].includes(
+      cards.find(({ id }) => id === candidate.id)?.status,
+    ));
+}
+
+function buildTrackerProgressProjection({
+  activePlan,
+  cards,
+  effects,
+  foldWatermark,
+  legalActions,
+  prepared,
+  runOwnership,
+  runId,
+}) {
+  const activeProgressCards = activePlan.cards
+    .filter(({ executor }) => executor.contract === TRACKER_PROGRESS_CONTRACT)
+    .filter((card) => cards.find(({ id }) => id === card.id)?.status !==
+      "superseded")
+    .sort((left, right) => left.inputs.sequence - right.inputs.sequence);
+  if (activeProgressCards.length === 0) return null;
+  const current = activeProgressCards.find((card) =>
+    cards.find(({ id }) => id === card.id)?.status !== "completed") ??
+    activeProgressCards.at(-1);
+  const cardState = cards.find(({ id }) => id === current.id);
+  const effect = effects.find(({ card_id: cardId }) => cardId === current.id);
+  const relevantActions = legalActions.filter((action) =>
+    action.card_id === current.id || action.effect_id === effect?.effect_id);
+  const status = cardState.status === "completed" && effect?.receipt
+    ? "projected"
+    : effect?.status ?? cardState.status;
+  return freezeCanonical({
+    schema: "flow.tracker-progress-projection/v1",
+    owner_run_id: runId,
+    operation_card_id: current.id,
+    ownership: runOwnership,
+    binding: prepared.explicit_facts.tracker_binding,
+    tracker: prepared.explicit_facts.tracker_binding.tracker,
+    sequence: current.inputs.sequence,
+    desired: current.inputs,
+    status,
+    authority_watermark: foldWatermark,
+    projected_watermark:
+      effect?.receipt?.provider_receipt?.authority_watermark ?? null,
+    legal_next_actions: relevantActions,
   });
 }
 

@@ -41,6 +41,16 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Run ownership**:
+The authority-recorded relationship that identifies a flow run as top-level or
+as a child of one exact parent run.
+_Avoid_: Caller-declared scope, tracker ownership
+
+**Tracker binding**:
+The confirmed tracker identity and flow kind that a top-level run may use for
+an external progress projection.
+_Avoid_: Tracker authority, scheduling source
+
 **Workspace subject**:
 A generation-fenced managed repository workspace identified canonically and
 bound to exact Git facts, mutation epoch, and disposition by WorkspaceAuthority.
@@ -299,6 +309,10 @@ _Avoid_: Migration record, replacement run
 - The **recorder** extends **convergence** only when explicitly enabled.
 - A replacement **flow run** executes **flow cards**, each of which may have
   multiple **worker attempts**.
+- **Run ownership** is recorded by **run authority** at launch; a child run
+  cannot acquire a top-level **tracker binding**.
+- A **tracker binding** permits only a rebuildable progress projection and
+  never grants tracker state lifecycle or acceptance authority.
 - A **resource handoff** binds one exact generation of a **workspace subject**
   and its retained **artifact subjects** for a later flow run.
 - A **registered operation** creates one **effect intent** under **run
