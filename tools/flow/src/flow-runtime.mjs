@@ -112,16 +112,17 @@ export function createFlowRuntime({
 }
 
 function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
-  if (typeof runAuthority.claimSameBootRecovery !== "function" ||
-      !runAuthority.claimSameBootRecovery()) return;
-  const host = runAuthority.query();
-  if (host?.schema !== "flow.run-index-projection/v1" ||
-      !Array.isArray(host.runs)) return;
-  const outstandingEffects = [];
-  for (const runId of host.runs) {
+  if (typeof runAuthority.pendingSameBootRecoveryRunIds !== "function") return;
+  const runIds = runAuthority.pendingSameBootRecoveryRunIds();
+  if (!Array.isArray(runIds)) return;
+  // Keep this sweep synchronous through each pending-set update. Provider
+  // settlement remains asynchronous, but another Interface cannot interleave.
+  for (const runId of runIds) {
     const projection = runAuthority.query(runId);
-    if (projection?.schema !== "flow.run-projection/v1") return;
+    if (projection?.schema !== "flow.run-projection/v1") continue;
     if (projection.admission !== "admitted") continue;
+    const outstandingEffects = [];
+    let compatible = true;
     for (const action of projection.legal_actions ?? []) {
       if (action.type !== "recovery") continue;
       const effect = projection.effects.find(({ effect_id: effectId }) =>
@@ -129,17 +130,25 @@ function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
       if (!effect || operationRegistrationIssue(
         registeredOperation(operationRegistry, effect.operation_contract),
         effect.classification,
-      )) return;
-      outstandingEffects.push({ effectId: action.effect_id, runId });
+      )) {
+        compatible = false;
+        break;
+      }
+      outstandingEffects.push(action.effect_id);
     }
+    if (!compatible) continue;
+    let accepted = true;
+    for (const effectId of outstandingEffects) {
+      const current = runAuthority.query(runId);
+      const action = current?.legal_actions?.find((candidate) =>
+        candidate.type === "recovery" && candidate.effect_id === effectId);
+      if (!action || runtime.command(action)?.accepted !== true) {
+        accepted = false;
+        break;
+      }
+    }
+    if (accepted) runAuthority.completeSameBootRecovery?.(runId);
   }
-  for (const { effectId, runId } of outstandingEffects) {
-    const current = runAuthority.query(runId);
-    const action = current?.legal_actions?.find((candidate) =>
-      candidate.type === "recovery" && candidate.effect_id === effectId);
-    if (!action || runtime.command(action)?.accepted !== true) return;
-  }
-  runAuthority.completeSameBootRecovery?.();
 }
 
 function commandRegistryRejection(command, operationRegistry, runAuthority) {

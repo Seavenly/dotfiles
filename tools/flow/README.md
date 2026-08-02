@@ -174,11 +174,12 @@ declines are rejected.
 If an effect cannot be settled, the run deliberately remains active and keeps
 its host capacity reservation. This slice has no abandonment or cancellation
 path that can claim the external effect did not occur.
-`invokeEffect` and `recordEffectObservation` are internal effect-coordination
-mechanism seams on the dark durable authority Adapter, not additional public
-`FlowRuntime` operations. They therefore signal mechanism fencing failures to
-their internal caller rather than extending the five-operation public
-rejection catalog. A registered Adapter must declare one of `read_only`,
+`invokeEffect`, `recordEffectObservation`, `pendingSameBootRecoveryRunIds`, and
+`completeSameBootRecovery` are internal effect-coordination mechanism seams on
+the dark durable authority Adapter, not additional public `FlowRuntime`
+operations. They therefore signal mechanism fencing failures to their internal
+caller rather than extending the five-operation public rejection catalog. A
+registered Adapter must declare one of `read_only`,
 `caller_idempotent`, `reconcilable`, or `one_shot_uncertain`, expose `invoke`,
 and expose `observe` for the latter two classes. Only a positive, identity-bound
 `flow.effect-receipt/v1` completes an operation. Missing, malformed, or negative
@@ -198,6 +199,9 @@ projects `suspended_after_reboot`; the sole lifecycle action is the exact typed
 `reboot_admission` command. That action binds the catalog, routes, capability
 envelopes, operation and validator contracts, resource claims, time facts,
 subject generations, unresolved effects, stream generation, boot, and epoch.
+An active run whose authority cannot be projected or whose registered operation
+cannot be dispatched retains its pending recovery without blocking independent
+runs; a later compatible Interface may resume that exact run.
 The mechanism Adapter refreshes those observations at admission. Its
 revalidation record keeps prepared facts under `expected`, current facts under
 `observed`, and records `observed: null` when no exact current observation is

@@ -266,7 +266,7 @@ export function createDurableRunAuthority({
   let lockDatabase = null;
   let authorityEpoch = null;
   let authoritySchemaCompatibility = null;
-  let sameBootRecoveryPending = false;
+  let sameBootRecoveryRunIds = new Set();
   let closed = false;
 
   if (access === "mutate") {
@@ -286,12 +286,16 @@ export function createDurableRunAuthority({
         });
         if (authoritySchemaCompatibility.status === "compatible") {
           const previousAdmission = readAdmission(database);
+          // Active runs retain capacity until unresolved effects settle. Any
+          // future release path must preserve that recovery-coverage invariant.
+          if (previousAdmission?.boot_id === bootId) {
+            sameBootRecoveryRunIds = new Set(previousAdmission.active_runs);
+          }
           authorityEpoch = acquireAuthorityEpoch(database, {
             bootId,
             declaredCapacity,
             processIdentity,
           });
-          sameBootRecoveryPending = previousAdmission?.boot_id === bootId;
         } else if (authoritySchemaCompatibility.status === "incompatible") {
           if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
           lockDatabase.close();
@@ -309,12 +313,12 @@ export function createDurableRunAuthority({
   }
 
   return Object.freeze({
-    claimSameBootRecovery() {
-      return sameBootRecoveryPending;
+    pendingSameBootRecoveryRunIds() {
+      return Object.freeze([...sameBootRecoveryRunIds].sort());
     },
 
-    completeSameBootRecovery() {
-      sameBootRecoveryPending = false;
+    completeSameBootRecovery(runId) {
+      sameBootRecoveryRunIds.delete(runId);
     },
 
     launch(request = {}) {
@@ -1103,6 +1107,8 @@ export function createDurableRunAuthority({
       if (authoritySchemaCompatibility.status !== "compatible") {
         return schemaTransitionRequiredRejection("command", databasePath);
       }
+      // Version-one stores predate registered effect intents, so this
+      // transition-time epoch acquisition has no same-boot recovery snapshot.
       authorityEpoch = acquireAuthorityEpoch(database, {
         bootId,
         declaredCapacity,
