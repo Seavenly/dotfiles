@@ -35,6 +35,25 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const completedOperations = new Set(run.events
     .filter(({ type }) => type === "operation_completed")
     .map(({ card_id: cardId }) => cardId));
+  const handoffs = run.events
+    .filter(({ type }) => type === "resource_handoff_published")
+    .map(({ handoff_id: handoffId, handoff_watermark: handoffWatermark }) => ({
+      handoff_id: handoffId,
+      handoff_watermark: handoffWatermark,
+    }));
+  const resourceHandoffBindings = run.events
+    .filter(({ type }) => type === "resource_handoff_bound")
+    .map(({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }) => ({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }));
   const grantEvents = run.events.filter(({ type }) => type === "capability_granted");
   const grants = grantEvents.map(({ type: _type, ...grant }) => grant);
   const revisionEvents = run.events.filter(({ type }) => type === "plan_revised");
@@ -262,6 +281,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     limits,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
     effects,
+    handoffs,
+    resource_handoff_bindings: resourceHandoffBindings,
     revision_templates: run.prepared.revision_templates,
     effect_intents: [...effectIntents.values()],
     legal_actions: legalActions,
@@ -298,6 +319,8 @@ export function projectRun(fold) {
     resource_claims: fold.resource_claims,
     limits: fold.limits,
     effects: fold.effects,
+    handoffs: fold.handoffs,
+    resource_handoff_bindings: fold.resource_handoff_bindings,
     legal_actions: fold.legal_actions,
   });
 }

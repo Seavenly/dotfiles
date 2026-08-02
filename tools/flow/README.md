@@ -22,12 +22,13 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v8 extends the exact v1 requirements introduced in v7 for
+  Catalog v9 retains the exact v1 requirements introduced in v8 for
   `explicit_facts.block_observations` on dynamic proposals and
   `revision_templates` on prepared runs, and publishes registered operation
   intent, observation, receipt, validation, effect-class, and recovery
   contracts together with authority-schema compatibility and transition
-  contracts. Callers must prepare a fresh bundle rather than launch a pre-v8
+  contracts, and adds the workspace, artifact, and resource handoff
+  Interfaces. Callers must prepare a fresh bundle rather than launch a pre-v8
   envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1` and one operation card.
@@ -115,6 +116,45 @@ registration; an unrelated run lifecycle event does not change it.
 `authority_watermark` may be null only when the authority could not be observed.
 `legal_actions` is always derived from the represented authority, or empty when
 no authority watermark is available.
+
+## Workspace, artifact, and resource handoff authority
+
+`src/work-authority.mjs` exports distinct `getWorkspaceAuthority()`,
+`getArtifactAuthority()`, and `getResourceHandoffAuthority()` accessors. Their
+versioned Interfaces register canonical workspace subjects through
+`work.workspace/v1`, immutable artifact subjects through `work.artifact/v1`,
+and query retained `flow.resource-handoff/v1` subjects.
+Workspace projections bind registration and subject generation, mutation
+epoch, independently observed exact commit, tree, ref, clean state, and
+disposition. Artifact
+projections bind digest, schema, size, producer and validator provenance,
+classification, retention, pins, and retained-byte availability. Paths never
+establish artifact identity. Registration commands carry durable idempotency
+identities, so an exact retry adopts its original receipt while a payload
+conflict fails closed.
+
+A registered operation may carry an exact
+`flow.resource-handoff-publication/v1`. The operation receipt must bind the
+publication digest and an exact `flow.git-retention-receipt/v1`. RunAuthority
+asks WorkspaceAuthority and ArtifactAuthority
+to validate their transitions, then commits workspace promotion, artifact pin
+transfer, workspace disposition, `flow.resource-handoff/v1` activation, the
+effect receipt, and producer run finalization in one SQLite transaction. A
+failure before commit leaves all of those authorities unchanged.
+WorkspaceAuthority independently re-observes the promoted commit, tree, ref,
+and clean state before that transaction can commit.
+
+A later run prepares with an exact handoff resource claim naming the digest and
+allowed operations. Launch validates that accepted claim and pins the handoff
+and artifacts atomically with run creation. Immediately before a bound
+registered operation reaches its Adapter, the owning authorities recheck the
+workspace generation and fingerprint, retained Git commit and tree, artifact
+generations and bytes, intended consumer, operation scope, and authority
+watermark. The resulting
+`flow.resource-handoff-mutation-authorization/v1` is bound to that exact effect
+and recorded before invocation. Content-addressed bytes, the Git retention ref,
+and authority streams remain valid after the producer process, harness, branch,
+or workspace disappears.
 
 The public launch contract is host-idempotent. Production-shaped conformance
 uses `createDurableRunAuthority()` with the replacement authority root beneath

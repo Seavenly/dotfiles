@@ -171,6 +171,10 @@ authority-projected command. Operation
 effects use durable intent-before-effect authority, typed receipts, and
 effect-class-specific reconciliation. Its SQLite authority streams are fenced
 to one mutating runtime while competing processes remain read-only.
+Workspace and artifact subjects can publish one immutable generation-bound
+resource handoff atomically with producer finalization. A later run pins and
+rechecks that exact handoff before mutation without depending on the producer's
+process, branch, or workspace.
 The public contracts and guardrails are documented in
 [`tools/flow/README.md`](tools/flow/README.md) and
 [`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).

@@ -1,5 +1,6 @@
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
 import { foldRun } from "./run-projection.mjs";
+import { foldWorkStream } from "./work-authority.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 
@@ -158,6 +159,15 @@ function reduceAuthorityStream(stream, records) {
     };
     return foldRun(run, { watermark: stream.head_digest });
   }
+  if (["workspace", "artifact", "handoff"].includes(stream.stream_kind)) {
+    const subjectId = stream.stream_id.split(":").slice(2).join(":");
+    return foldWorkStream(
+      stream.stream_kind,
+      subjectId,
+      records,
+      stream.head_digest,
+    );
+  }
   integrityFailure("unknown_contract", "authority stream contract is unknown");
 }
 
@@ -166,6 +176,9 @@ function expectedEventContract(streamKind) {
     host_admission: "flow.host-admission-event/v1",
     host_runs: "flow.host-run-event/v1",
     run: "flow.run-event/v1",
+    workspace: "work.workspace-event/v1",
+    artifact: "work.artifact-event/v1",
+    handoff: "flow.resource-handoff-event/v1",
   };
   const contract = contracts[streamKind];
   if (!contract) {
