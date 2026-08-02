@@ -274,6 +274,8 @@ test("Claude prompt delivery rejects a staged long single-line paste without an 
       harness: "claude",
       observedBeforeDelivery: {
         agent_status: "idle",
+        agent_session: { value: "native-1" },
+        pane_id: "pane-1",
         state_change_seq: 12,
       },
     }),
@@ -346,6 +348,8 @@ test("Claude prompt delivery refuses to append over staged prompt text", async (
       harness: "claude",
       observedBeforeDelivery: {
         agent_status: "idle",
+        agent_session: { value: "native-1" },
+        pane_id: "pane-1",
         state_change_seq: 12,
       },
     }),
@@ -355,6 +359,198 @@ test("Claude prompt delivery refuses to append over staged prompt text", async (
     },
   );
   assert.equal(promptCalls, 0);
+});
+
+test("Claude staged input recovery submits only the exact inspected prompt", async () => {
+  let submitted = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("read")) {
+        return "────────\n❯ Exact staged work\n────────";
+      }
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: submitted ? "working" : "idle",
+                state_change_seq: submitted ? 13 : 12,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("send-keys")) submitted = true;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  const staged = await client.inspectStagedInput("managed-agent", {
+    harness: "claude",
+  });
+  assert.equal(staged.display_text, "Exact staged work");
+
+  await client.recoverStagedInput("managed-agent", {
+    harness: "claude",
+    action: "submit",
+    token: staged.token,
+  });
+
+  assert.equal(submitted, true);
+});
+
+test("Claude failed submission returns an exact Drovr-owned staged-input receipt", async () => {
+  let promptSent = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("read")) {
+        return promptSent
+          ? "────────\n❯ Exact Drovr work\n────────"
+          : "────────\n❯\n────────";
+      }
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: "idle",
+                state_change_seq: 12,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("prompt")) promptSent = true;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await assert.rejects(
+    client.prompt("managed-agent", "Exact Drovr work", {
+      harness: "claude",
+      observedBeforeDelivery: {
+        agent_status: "idle",
+        agent_session: { value: "native-1" },
+        pane_id: "pane-1",
+        state_change_seq: 12,
+      },
+    }),
+    (error) => {
+      assert.equal(error.outcome, "adapter_failure");
+      assert.equal(error.details.staged_input.ownership, "drovr");
+      assert.equal(error.details.staged_input.display_text, "Exact Drovr work");
+      assert.equal(error.details.staged_input.agent_name, "managed-agent");
+      assert.equal(error.details.staged_input.pane_id, "pane-1");
+      assert.equal(error.details.staged_input.native_session, "native-1");
+      assert.equal(
+        error.details.staged_input.state_change_seq_before_delivery,
+        12,
+      );
+      assert.match(error.details.staged_input.token, /^[a-f0-9]{64}$/u);
+      return true;
+    },
+  );
+});
+
+test("Claude delivery never claims a prompt box with appended operator text", async () => {
+  let promptSent = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("read")) {
+        return promptSent
+          ? "────────\n❯ Exact Drovr work plus operator text\n────────"
+          : "────────\n❯\n────────";
+      }
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: "idle",
+                state_change_seq: 12,
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("prompt")) promptSent = true;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await assert.rejects(
+    client.prompt("managed-agent", "Exact Drovr work", {
+      harness: "claude",
+      observedBeforeDelivery: {
+        agent_status: "idle",
+        state_change_seq: 12,
+      },
+    }),
+    (error) => {
+      assert.equal(error.outcome, "adapter_failure");
+      assert.equal(error.details, undefined);
+      return true;
+    },
+  );
+});
+
+test("Claude staged input recovery clears only the exact inspected prompt", async () => {
+  let cleared = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("read")) {
+        return cleared
+          ? "────────\n❯\n────────"
+          : "────────\n❯ Exact staged work\n────────";
+      }
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                agent_status: "idle",
+                state_change_seq: cleared ? 13 : 12,
+                agent_session: { value: "native-1" },
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("send-keys")) {
+        assert.deepEqual(args.slice(-2), ["esc", "esc"]);
+        cleared = true;
+      }
+      return JSON.stringify({ result: {} });
+    },
+  });
+  const staged = await client.inspectStagedInput("managed-agent", {
+    harness: "claude",
+  });
+
+  await client.recoverStagedInput("managed-agent", {
+    action: "clear",
+    harness: "claude",
+    nativeSession: "native-1",
+    token: staged.token,
+  });
+
+  assert.equal(cleared, true);
+  assert.equal(
+    await client.inspectStagedInput("managed-agent", { harness: "claude" }),
+    null,
+  );
 });
 
 test("Claude prompt delivery waits for delayed attachment conversion despite an idle state change", async () => {

@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 import { claudeAgentArguments } from "./claude.mjs";
 import { codexAgentArguments } from "./codex.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 import { execute } from "./process.mjs";
+import { createStagedInputReceipt } from "./staged-input-receipt.mjs";
 
 function parseJson(output, operation) {
   try {
@@ -476,6 +478,7 @@ export class HerdrClient {
     // for progress and completion.
     let attachmentReady = false;
     let literalPromptReady = false;
+    let stagedAfterDelivery;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       observedAfterDelivery = await this.agentRecord(name);
@@ -494,6 +497,12 @@ export class HerdrClient {
           visibleAfterDelivery,
           prompt,
         );
+      if (literalPromptReady) {
+        const snapshot = claudePromptBoxSnapshot(visibleAfterDelivery);
+        if (snapshot?.display_text === prompt) {
+          stagedAfterDelivery = snapshot;
+        }
+      }
       if (attachmentReady) break;
       await this.delay(25);
     }
@@ -522,12 +531,112 @@ export class HerdrClient {
     }
     throw new DrovrError(
       `Herdr did not confirm Claude prompt submission for ${name}`,
+      {
+        code: 4,
+        outcome: "adapter_failure",
+        ...(stagedAfterDelivery
+          ? {
+              details: {
+                staged_input: createStagedInputReceipt({
+                  agentName: name,
+                  observed: observedBeforeDelivery,
+                  prompt,
+                  snapshot: stagedAfterDelivery,
+                }),
+              },
+            }
+          : {}),
+      },
+    );
+  }
+
+  async inspectStagedInput(name, { harness } = {}) {
+    if (harness !== "claude") return null;
+    return claudePromptBoxSnapshot(await this.agentVisibleText(name));
+  }
+
+  async recoverStagedInput(
+    name,
+    { action, harness, nativeSession, token } = {},
+  ) {
+    if (harness !== "claude" || !["clear", "submit"].includes(action)) {
+      throw new DrovrError("unsupported staged-input recovery action", {
+        code: 2,
+        outcome: "invalid_arguments",
+      });
+    }
+    const observedBefore = await this.agentRecord(name);
+    if (
+      !observedBefore ||
+      !["idle", "done"].includes(observedBefore.agent_status)
+    ) {
+      throw new DrovrError(`Claude agent ${name} is not settled`, {
+        code: 0,
+        outcome: "task_busy",
+      });
+    }
+    if (
+      nativeSession &&
+      observedBefore.agent_session?.value !== nativeSession
+    ) {
+      throw new DrovrError(`Claude identity changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
+    const staged = await this.inspectStagedInput(name, { harness });
+    if (!staged || staged.token !== token) {
+      throw new DrovrError(`Claude staged input changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
+    const recoveryKeys = action === "submit" ? ["enter"] : ["esc", "esc"];
+    await this.sessionCommand([
+      "agent",
+      "send-keys",
+      name,
+      ...recoveryKeys,
+    ]);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await this.agentRecord(name);
+      if (
+        nativeSession &&
+        observed?.agent_session?.value !== nativeSession
+      ) {
+        throw new DrovrError(`Claude identity changed for ${name}`, {
+          code: 0,
+          outcome: "recovery_blocked",
+        });
+      }
+      if (action === "clear") {
+        if (
+          observed &&
+          ["idle", "done"].includes(observed.agent_status) &&
+          (!nativeSession || observed.agent_session?.value === nativeSession) &&
+          !(await this.inspectStagedInput(name, { harness }))
+        ) {
+          return observed;
+        }
+        await this.delay(25);
+        continue;
+      }
+      if (
+        promptSubmissionObserved(observed) ||
+        promptCompletionObserved(observedBefore, observed)
+      ) {
+        return observed;
+      }
+      await this.delay(25);
+    }
+    throw new DrovrError(
+      `Herdr did not confirm Claude staged-input ${action} for ${name}`,
       { code: 4, outcome: "adapter_failure" },
     );
   }
 
   async interruptAgent(name) {
-    return this.sessionCommand(["agent", "send-keys", name, "ctrl-c"]);
+    return this.sessionCommand(["agent", "send-keys", name, "ctrl+c"]);
   }
 
   async waitForAgent(name, timeoutMs) {
@@ -597,20 +706,29 @@ function claudeAttachmentTokenCounts(text) {
 }
 
 function claudePromptBoxHasStagedInput(text) {
+  return claudePromptBoxSnapshot(text) !== null;
+}
+
+function claudePromptBoxSnapshot(text) {
   const lines = String(text).split(/\r?\n/u);
   const dividers = [];
   for (let index = 0; index < lines.length; index += 1) {
     if (/^\s*[─━-]{3,}\s*$/u.test(lines[index])) dividers.push(index);
   }
-  if (dividers.length < 2) return false;
+  if (dividers.length < 2) return null;
   const region = lines.slice(dividers.at(-2) + 1, dividers.at(-1));
   const promptLine = region.findIndex((line) => /^\s*❯/u.test(line));
-  if (promptLine < 0) return false;
+  if (promptLine < 0) return null;
   const promptText = [
     region[promptLine].replace(/^\s*❯[ \u00a0]?/u, ""),
     ...region.slice(promptLine + 1),
   ].join("\n");
-  return promptText.trim().length > 0;
+  if (promptText.trim().length === 0) return null;
+  const displayText = promptText.trimEnd();
+  return {
+    token: createHash("sha256").update(displayText).digest("hex"),
+    display_text: displayText,
+  };
 }
 
 function newClaudeLiteralPromptObserved(before, after, prompt) {

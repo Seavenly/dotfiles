@@ -5,12 +5,18 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+# Resolve Node before isolating the fixture home so pre-links exercises the real
+# profile preflight without asking the host mise shim to trust fixture state.
+node_bin="$(mise which node)"
+node_dir="$(dirname "$node_bin")"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 home="$tmp/home"
 config_home="$home/.config"
 state_home="$home/.local/state"
 mkdir -p "$home" "$config_home" "$state_home"
+export PATH="$node_dir:$PATH"
 
 HOME="$home" XDG_CONFIG_HOME="$config_home" DOTFILES_ROOT="$root" \
   "$root/internal/bootstrap/hermes-profiles"

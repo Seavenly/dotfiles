@@ -76,6 +76,125 @@ test("confirmed-down idle agents recover their exact native session", async (t) 
   assert.equal(agent.recovered_at, "2026-07-23T12:00:00.000Z");
 });
 
+test("an absent managed agent and exact persisted pane are confirmed down", async (t) => {
+  const fixture = await recoveryFixture(t);
+  let registered = false;
+  let resumeCalls = 0;
+  const herdr = recoveryHerdr({
+    onResume(options) {
+      resumeCalls += 1;
+      assert.equal(options.paneId, "replacement-pane");
+      registered = true;
+    },
+    registered: () => registered,
+  });
+  herdr.paneRecord = async (paneId) => {
+    assert.equal(paneId, "pane-agent-1");
+    return null;
+  };
+  herdr.tabRecord = async () => null;
+  herdr.workspaceRecord = async () => null;
+  herdr.createWorkspace = async ({ cwd }) => {
+    assert.equal(cwd, fixture.task.cwd);
+    return {
+      workspaceId: "replacement-workspace",
+      tabId: "replacement-tab",
+      paneId: "replacement-pane",
+    };
+  };
+  herdr.renameTab = async () => {};
+  herdr.paneProcessInfo = async () => {
+    throw new Error("a missing pane has no process information");
+  };
+  herdr.agentRecord = async () =>
+    registered
+      ? {
+          name: "managed-agent",
+          pane_id: "replacement-pane",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        }
+      : null;
+  herdr.agentRecords = async () =>
+    registered ? [await herdr.agentRecord()] : [];
+
+  const result = await reconcileOrRecoverAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr,
+    run: compatibleCodex,
+  });
+
+  assert.equal(result.status, "recovered");
+  assert.equal(resumeCalls, 1);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.herdr.pane_id, "replacement-pane");
+});
+
+test("a missing agent pane recovers through an exact managed sibling", async (t) => {
+  const fixture = await recoveryFixture(t);
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "sibling-agent",
+    task_id: fixture.task.id,
+    status: "active",
+    launch: fixture.agent.launch,
+    herdr: { name: "managed-sibling", pane_id: "sibling-pane" },
+    native_session: "native-sibling",
+  });
+  let registered = false;
+  let splitOptions;
+  const sibling = {
+    name: "managed-sibling",
+    pane_id: "sibling-pane",
+    agent_status: "idle",
+    agent_session: { value: "native-sibling" },
+  };
+  const restored = {
+    name: "managed-agent",
+    pane_id: "replacement-pane",
+    agent_status: "idle",
+    agent_session: { value: "native-1" },
+  };
+  const herdr = recoveryHerdr({
+    onResume(options) {
+      assert.equal(options.paneId, "replacement-pane");
+      registered = true;
+    },
+    registered: () => registered,
+  });
+  herdr.agentRecord = async () => (registered ? restored : null);
+  herdr.agentRecords = async () => [
+    sibling,
+    ...(registered ? [restored] : []),
+  ];
+  herdr.paneRecord = async (paneId) =>
+    paneId === "sibling-pane"
+      ? { pane_id: paneId, tab_id: "tab-task-1" }
+      : null;
+  herdr.tabRecord = async () => ({ tab_id: "tab-task-1" });
+  herdr.splitPane = async (options) => {
+    splitOptions = options;
+    return "replacement-pane";
+  };
+
+  const result = await reconcileOrRecoverAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr,
+    run: compatibleCodex,
+  });
+
+  assert.equal(result.status, "recovered");
+  assert.deepEqual(splitOptions, {
+    paneId: "sibling-pane",
+    direction: "right",
+    ratio: 0.5,
+    cwd: fixture.task.cwd,
+  });
+  const [agent] = (await readRecords(fixture.registryDirectory, "agents"))
+    .filter(({ id }) => id === fixture.agent.id);
+  assert.equal(agent.herdr.pane_id, "replacement-pane");
+});
+
 test("recovering a working agent interrupts the prior turn without replaying it", async (t) => {
   const fixture = await recoveryFixture(t, { working: true });
   let registered = false;

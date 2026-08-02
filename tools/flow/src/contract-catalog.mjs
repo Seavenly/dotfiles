@@ -146,6 +146,28 @@ const DELEGATE_EXECUTION = {
     "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
   exhausted_action: "terminal_disposition",
 };
+const PROJECTION_BUILDER = {
+  authority: "non_authoritative",
+  source: "RunAuthority",
+  watermark: "exact_run_authority",
+  retention: "disposable",
+  lifecycle_mutation: "forbidden",
+  forms: {
+    kanban: "flow.kanban-projection/v1",
+    graph: "flow.graph-projection/v1",
+    timeline: "flow.timeline-projection/v1",
+    trust: "flow.trust-projection/v1",
+    operator: "flow.operator-projection/v1",
+  },
+};
+const RESOURCE_SAFETY = {
+  writer_fence: "exact_generation_fingerprint_and_exclusive_claim",
+  taint_persistence: "durable_until_evidence_backed_disposition",
+  cleanup: "exact_preview_refuses_active_dirty_uncertain_or_retained",
+  collection_guards: ["pins", "claims", "retention", "cleanup_obligations"],
+  forbidden_selection: "latest",
+  exact_human_authority: ["destructive_reset", "risk_acceptance"],
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -219,8 +241,42 @@ export async function loadContractCatalog({
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("delegate execution contracts are incomplete");
   }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.projection_builder,
+    PROJECTION_BUILDER,
+  ) || !Object.values(PROJECTION_BUILDER.forms).every(
+    (contract) => catalog.contracts.includes(contract),
+  )) {
+    throw new Error("operator projection contracts are incomplete");
+  }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
+  }
+  if (!isDeepStrictEqual(
+    catalog.work_domain_interfaces?.resource_safety,
+    RESOURCE_SAFETY,
+  ) || ![
+    "work.workspace-claim-command/v1",
+    "work.workspace-claim-release-command/v1",
+    "work.workspace-taint-command/v1",
+    "work.workspace-taint-disposition-command/v1",
+    "work.workspace-risk-acceptance-command/v1",
+    "work.workspace-cleanup-preview/v1",
+    "work.artifact-collection-preview/v1",
+    "flow.resource-handoff-cleanup-preview/v1",
+    "flow.resource-handoff-disposition-command/v1",
+    "flow.resource-handoff-disposition-evidence/v1",
+    "flow.resource-handoff-disposition-validation/v1",
+    "flow.operation/resource-cleanup/v1",
+    "flow.resource-cleanup-request/v1",
+    "flow.resource-cleanup-receipt/v1",
+    "work.human-authority/v1",
+    "work.human-authority-validation/v1",
+    "work.taint-disposition-evidence/v1",
+    "work.taint-disposition-validation/v1",
+    "work.legal-next-action/v1",
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("Work-domain resource safety contracts are incomplete");
   }
   let publishedFeatureContract;
   let publishedFeatureContractBytes;

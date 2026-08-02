@@ -248,6 +248,11 @@ export function decideLifecycle(fold, command) {
   if (!["approve", "decline"].includes(command.decision)) {
     return reject(fold, command, "unsupported_checkpoint_decision");
   }
+  const legalCheckpointDecision = fold.legal_actions.find((action) =>
+    action.type === "checkpoint_decision" && digest(action) === digest(command));
+  if (!legalCheckpointDecision) {
+    return reject(fold, command, "checkpoint_not_actionable");
+  }
 
   if (command.decision === "decline") {
     return decision(command, checkpoint, [{ type: "run_declined" }]);

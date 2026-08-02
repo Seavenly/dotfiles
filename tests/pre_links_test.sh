@@ -5,6 +5,11 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+# Resolve Node before isolating the fixture home so pre-links does not depend on
+# the host mise shim after its configuration directory changes.
+node_bin="$(mise which node)"
+node_dir="$(dirname "$node_bin")"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export HOME="$tmp/home"
@@ -12,6 +17,7 @@ export XDG_CONFIG_HOME="$tmp/config"
 export XDG_STATE_HOME="$tmp/state"
 export DOTFILES_CONTEXT_OS=Linux
 export DOTFILES_CONTEXT_ARCH=x86_64
+export PATH="$node_dir:$PATH"
 mkdir -p \
   "$HOME/.agents/skills/handoff" \
   "$HOME/.claude/skills" \

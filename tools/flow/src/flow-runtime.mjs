@@ -224,7 +224,9 @@ function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
   for (const runId of runIds) {
     const projection = runAuthority.query(runId);
     if (projection?.schema !== "flow.run-projection/v1") continue;
-    if (projection.admission !== "admitted") continue;
+    if (projection.admission !== "admitted" &&
+        !(projection.phase === "cancelled" &&
+          projection.admission === "released")) continue;
     const outstandingEffects = [];
     let compatible = true;
     for (const action of projection.legal_actions ?? []) {
