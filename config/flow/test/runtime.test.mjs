@@ -16,11 +16,22 @@ import test from "node:test";
 import {
   createDrovrDelegatedAgentPort,
 } from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
+import { createDurableRunAuthority } from
+  "../../../tools/flow/src/run-authority.mjs";
+import {
+  completedTurnProjection,
+  DELEGATE_OUTPUT_VALIDATOR,
+  delegateCardProposal,
+} from "../../../tools/flow/test-support/delegate-card.mjs";
 import {
   rebindDescriptionDigest,
   repositoryDrovrDependencies,
   supportedDescription,
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
+import { confirmedLaunchRequest } from
+  "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
+import { fixedHostIdentity } from
+  "../../../tools/flow/test-support/fixed-host-identity.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
 
 test("query exposes the DelegatedAgentPort description without creating a run", async () => {
@@ -60,6 +71,61 @@ test("query exposes the DelegatedAgentPort description without creating a run", 
     caller_metadata: { run_id: "run:example", card_id: "review" },
   }), projection);
   assert.deepEqual(runtime.query(), before);
+});
+
+test("public runtime rejects delegate effects without durable authority", async () => {
+  const description = await delegateDescription();
+  const runtime = createFlowRuntime({
+    delegatedAgentPort: delegatePort(),
+    delegateOutputValidators: delegateValidators(),
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "durable_authority_required");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("public runtime wires exact delegate execution through its composition root", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-runtime-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-runtime"),
+  });
+  t.after(() => runAuthority.close());
+  const description = await delegateDescription();
+  let callerKey;
+  const runtime = createFlowRuntime({
+    runAuthority,
+    delegatedAgentPort: delegatePort({
+      async dispatch(request) {
+        callerKey = request.caller_key;
+        return workingDelegateProjection(request);
+      },
+      async wait() {
+        return completedTurnProjection({ callerKey, description });
+      },
+    }),
+    delegateOutputValidators: delegateValidators(),
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const checkpoint = runtime.query({ run_id: launch.run_id }).legal_actions
+    .find(({ decision }) => decision === "approve");
+  runtime.command(checkpoint);
+  const execute = runtime.query({ run_id: launch.run_id }).legal_actions
+    .find(({ type }) => type === "delegate_execute");
+
+  runtime.command(execute);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+
+  const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(completed.delegate_attempts[0].status, "accepted");
+  assert.equal(callerKey, `${launch.run_id}:delegate-review:attempt:1`);
 });
 
 for (const [label, mutate, expectedFinding] of [
@@ -861,4 +927,109 @@ function delegatedAgentQuery() {
       attempt: 1,
     },
   };
+}
+
+async function delegateDescription() {
+  return supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "read-only",
+    },
+    caller_metadata: { owner: "flow" },
+  }, {});
+}
+
+function delegateValidators() {
+  return {
+    [DELEGATE_OUTPUT_VALIDATOR]: {
+      validate(output) {
+        return output === "accepted output";
+      },
+    },
+  };
+}
+
+function delegatePort(overrides = {}) {
+  return {
+    contract: "flow.delegated-agent-port/v1",
+    async describe() {},
+    async discover() {
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "discover",
+        status: "proven_absent",
+        watermark: {
+          schema: "drovr.registry-authority-watermark/v1",
+          authority: "drovr.registry",
+          turns_sha256: `sha256:${"0".repeat(64)}`,
+        },
+        delegation: null,
+        turn: null,
+        legal_next_actions: ["dispatch_exact_turn"],
+      };
+    },
+    async dispatch(request) {
+      return workingDelegateProjection(request);
+    },
+    async send() {},
+    async observe() {},
+    async wait() {},
+    async cancel() {},
+    async reconcile() {},
+    async retire(request) {
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "retire",
+        status: "retired",
+        watermark: {
+          schema: "drovr.agent-authority-watermark/v1",
+          authority: "drovr.registry",
+          agent_id: request.agent_id,
+          record_sha256: `sha256:${"1".repeat(64)}`,
+        },
+        delegation: {
+          agent_id: request.agent_id,
+          task_id: "task:delegate-review",
+          group_id: "group:flow",
+        },
+        turn: null,
+        legal_next_actions: [],
+      };
+    },
+    ...overrides,
+  };
+}
+
+function workingDelegateProjection(request) {
+  return {
+    schema: "flow.delegated-agent-lifecycle-projection/v1",
+    operation: "dispatch",
+    status: "working",
+    watermark: {
+      schema: "drovr.registry-authority-watermark/v1",
+      authority: "drovr.registry",
+      turns_sha256: `sha256:${"2".repeat(64)}`,
+    },
+    delegation: {
+      agent_id: request.agent_id,
+      task_id: "task:delegate-review",
+      group_id: "group:flow",
+    },
+    turn: { id: "turn:delegate-review", status: "working" },
+    legal_next_actions: ["wait_bounded"],
+  };
+}
+
+async function until(assertion, timeoutMs = 2000) {
+  const started = Date.now();
+  while (!assertion()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("timed out waiting for Flow projection");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }

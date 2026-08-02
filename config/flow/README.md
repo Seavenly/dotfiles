@@ -46,3 +46,19 @@ and exposes the Drovr configuration watermark and closed legal next actions.
 It does not create a replacement run or mutate Drovr delegated work. Until all
 required lifecycle features advertise `supported`, the projection is a typed
 compatibility block with repair and refresh as its only legal actions.
+
+The same configured port is the mechanism Adapter for confirmed delegate
+cards. A caller embedding `FlowRuntime` supplies the durable `RunAuthority` and
+registered independent output validators. Flow reserves the exact attempt and
+route before it asks Drovr to discover or dispatch, and recovery always
+discovers the derived caller key first. Only exact settled output accepted by
+every bound validator becomes run evidence. Late or incompatible output is
+retained as correlated quarantine and cannot advance the run. Drovr owns its
+delegated resources only; it cannot schedule cards or author Flow lifecycle
+events. Flow records a named durable handoff while a bounded retry remains and
+requires an exact Drovr cancellation proof before handing off an agent whose
+turn is still working. An unproven cancellation leaves that same attempt
+unresolved for recovery. Flow requires a Drovr retirement receipt before
+accepted or exhausted delegated work can settle. A non-destructive bounded
+wait preserves the current attempt for same-turn recovery rather than
+consuming retry capacity.

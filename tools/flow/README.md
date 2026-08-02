@@ -22,24 +22,30 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v10 retains the v9 irreversible cancellation, abandoned-attempt,
-  late-effect quarantine, and observation-only cancelled settlement contracts,
-  and adds the workspace, artifact, and resource handoff interfaces. The exact
-  v1 requirements for `explicit_facts.block_observations` on dynamic proposals
-  and `revision_templates` on prepared runs were introduced in v7 and remain
-  required, together with registered operation intent, observation, receipt,
-  validation, effect-class, recovery, authority-schema compatibility, and
-  transition contracts. Callers must prepare a fresh bundle rather than launch
-  a pre-v8 envelope.
+  Catalog v11 combines workspace, artifact, and resource handoff interfaces
+  with the delegate-attempt execution introduced in v10. Delegate contracts
+  include independently validated delegate
+  evidence, distinct correlated `flow.delegate-quarantine/v1` records and
+  blocks, a single Flow-owned Drovr feature baseline, and the exact working-turn
+  cancellation proof required before a retryable delegate handoff. Catalog v9
+  introduced irreversible cancellation, abandoned-attempt, late-effect
+  quarantine, and observation-only cancelled settlement behavior. The exact v1
+  requirements introduced in v7 for
+  `explicit_facts.block_observations` on dynamic proposals and
+  `revision_templates` on prepared runs remain required. Callers must prepare a
+  fresh bundle rather than launch a pre-v11 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
-  executor with `flow.validator/checkpoint-decision/v1` and one operation card.
+  executor with `flow.validator/checkpoint-decision/v1`, one operation card,
+  or one `flow.delegated-agent-port/v1` delegate card.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
   `operation_execute` command without adding human approval. The operation names a registered Adapter,
   declares its effect class, and binds its input, route, claims, validator, and
-  attempt limit in the confirmed graph. Delegate and subrun executors remain
-  unavailable until their owning runtime contracts are implemented. External
-  card-block acquisition by a live Adapter remains deferred; this runtime
+  attempt limit in the confirmed graph. A delegate card binds a compatible
+  Drovr description, immutable route, prompt, bounded wait, validator
+  contracts, and attempt limit in the same confirmed graph. Subrun executors
+  remain unavailable until their owning runtime contracts are implemented.
+  External card-block acquisition by a live Adapter remains deferred; this runtime
   validates exact caller-supplied block observations before they can become
   authoritative.
 - `launch({ prepared, confirmation, closed_facts })` accepts an explicit
@@ -59,6 +65,13 @@ disabled, so this API does not authorize normal replacement launches.
   uncertain operation attempts to publish a resource handoff.
   Recovery performs the same registration check before mutating authority, so
   a replacement runtime cannot accept an effect it is unable to dispatch.
+  Delegate launch also rejects an unavailable port, an incomplete Drovr
+  feature baseline, or an unregistered output validator with a typed
+  compatibility rejection before creating the run. The required-feature
+  baseline is snapshotted when the runtime is constructed so one runtime cannot
+  observe mutable launch policy; repairing it requires constructing a fresh
+  runtime. Unreadable, invalid, and digest-mismatched baselines remain distinct
+  typed compatibility failures.
 - `command(command)` accepts the exact legal approve or decline checkpoint
   command projected by authority. A ready operation that does not require a
   checkpoint projects an exact `operation_execute` command. A
@@ -111,6 +124,29 @@ disabled, so this API does not authorize normal replacement launches.
   dispositions describe whether a resource may have been touched. Both are
   immutable evidence, and late settlement does not silently release a
   quarantined claim.
+  A ready delegate projects one exact `delegate_execute` command. RunAuthority
+  reserves the attempt and immutable route in the effect intent before the
+  port is called. The caller key is derived only from run, card, and reserved
+  attempt. Initial execution and recovery both discover that key before any
+  dispatch. Proven presence adopts the same turn; proven absence dispatches
+  with the same identity; unproven absence leaves the attempt unresolved.
+  Completion requires exact launch and ordered-input settlement proof plus
+  every registered independent validator. Only then is the output recorded as
+  `flow.delegate-evidence/v1` and allowed to advance the run. Late,
+  incompatible, empty, or validator-rejected output remains correlated to its
+  attempt, is quarantined, and cannot satisfy the card. A retry is projected
+  only while the confirmed attempt cap has capacity, and it keeps the same
+  immutable route under a new reserved attempt identity. A non-destructive
+  bounded wait leaves the current attempt unresolved, so recovery discovers
+  and waits on that same live turn without cancellation or redispatch. A
+  terminally quarantined attempt with retry capacity records an explicit
+  handoff to the named Drovr registry holder. If its turn is still working,
+  the adapter first requires an exact Drovr cancellation proof; an unproven
+  cancellation leaves the attempt unresolved for same-attempt recovery.
+  Accepted or exhausted work
+  requires an exact agent-retirement receipt. Exhausting the cap projects one
+  typed `terminal_disposition` decline action instead of stranding an active
+  run.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -120,6 +156,9 @@ disabled, so this API does not authorize normal replacement launches.
   append-only revision and card-bound grant history, effective capabilities,
   resources, limits, operation attempts, effect classifications, receipts,
   reconciliation observations, and only the legal actions at that watermark.
+  Delegate projections add reserved, accepted, and quarantined attempts, exact
+  route bindings, validated evidence, quarantine reasons, and bounded retry
+  actions derived from the same run watermark.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
@@ -301,6 +340,7 @@ The focused public contract suite is:
 ```sh
 node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/durable-authority.test.mjs \
+  tools/flow/test/delegate-card.test.mjs \
   tools/flow/test/registered-operation.test.mjs \
   tools/flow/test/cancellation.test.mjs \
   tools/flow/test/purity-contracts.test.mjs
@@ -318,7 +358,7 @@ or unavailable descriptions expose closed repair or retry actions and never
 invent a watermark.
 
 The same port exposes `dispatch`, `discover`, `send`, `observe`, `wait`,
-`cancel`, and `reconcile`. Each operation returns a
+`cancel`, `reconcile`, and `retire`. Each operation returns a
 `flow.delegated-agent-lifecycle-projection/v1` derived from Drovr's registry
 authority. Dispatch binds the exact compatible description, discovery proves
 presence or absence at an exact registry watermark, and later inputs use an
@@ -365,6 +405,14 @@ flow query delegated-agent \
 This query creates no run and no Drovr resource. Plan compilation binds the
 exact description and comparison keys before using the lifecycle operations;
 it does not refresh them implicitly.
+
+When a confirmed delegate card executes, Drovr remains a mechanism authority
+only. It may create and observe its delegation group, task, managed agent, and
+logical turn, but it cannot schedule a Flow card, make another card ready,
+accept output evidence, or advance the run. Flow reconstructs evidence from
+the narrow lifecycle projection and ignores any lifecycle or scheduling claims
+outside the port contract. The authority-boundary negative suite exercises
+that rule with attempted Drovr-authored cards and terminal events.
 
 The managed sources under `config/flow/` are:
 

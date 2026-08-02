@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
+import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
 import { describeDelegatedAgent } from "../src/description.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
@@ -974,6 +975,47 @@ test("get rejects a late result when an unrecorded input interrupts the recorded
 
   assert.equal(context.turn.status, "uncertain");
   assert.equal(context.late_result, undefined);
+});
+
+test("get recovers a late result after a known failed Claude prompt was concatenated", async (t) => {
+  const fixture = await settledClaudeAgentFixture(t);
+  const staleTurn = createTurnRecord({
+    id: "stale-turn",
+    agentId: fixture.agent.id,
+    taskId: fixture.agent.task_id,
+    prompt: "stale staged prompt",
+    submittedAt: "2026-07-23T10:00:00.000Z",
+    transcriptCursor: await captureClaudeTranscriptCursor(fixture.transcript),
+  });
+  staleTurn.status = "uncertain";
+  staleTurn.error =
+    "Herdr did not expose Claude's staged attachment for managed-agent";
+  staleTurn.settled_at = "2026-07-23T10:00:01.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", staleTurn);
+
+  const currentTurn = createTurnRecord({
+    id: "current-turn",
+    agentId: fixture.agent.id,
+    taskId: fixture.agent.task_id,
+    prompt: "current prompt",
+    submittedAt: "2026-07-23T10:00:02.000Z",
+    transcriptCursor: await captureClaudeTranscriptCursor(fixture.transcript),
+  });
+  currentTurn.status = "uncertain";
+  currentTurn.error = "submitted input was not observed after the transcript cursor";
+  currentTurn.late_result_recovery = "exact_transcript_correlation";
+  currentTurn.settled_at = "2026-07-23T10:00:03.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", currentTurn);
+  await appendTranscript(
+    fixture.transcript,
+    claudeUserMessage("stale staged promptcurrent prompt"),
+    claudeAssistantMessage("recovered review"),
+  );
+
+  const context = await getTurn(currentTurn.id, { env: fixture.env });
+
+  assert.equal(context.turn.status, "uncertain");
+  assert.equal(context.late_result.text, "recovered review");
 });
 
 test("wait allows Herdr's native session identity to appear after delivery", async (t) => {
