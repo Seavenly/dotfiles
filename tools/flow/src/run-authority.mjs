@@ -266,6 +266,7 @@ export function createDurableRunAuthority({
   let lockDatabase = null;
   let authorityEpoch = null;
   let authoritySchemaCompatibility = null;
+  let sameBootRecoveryPending = false;
   let closed = false;
 
   if (access === "mutate") {
@@ -284,11 +285,13 @@ export function createDurableRunAuthority({
           beforeCommit: beforeSchemaTransitionCommit,
         });
         if (authoritySchemaCompatibility.status === "compatible") {
+          const previousAdmission = readAdmission(database);
           authorityEpoch = acquireAuthorityEpoch(database, {
             bootId,
             declaredCapacity,
             processIdentity,
           });
+          sameBootRecoveryPending = previousAdmission?.boot_id === bootId;
         } else if (authoritySchemaCompatibility.status === "incompatible") {
           if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
           lockDatabase.close();
@@ -306,6 +309,14 @@ export function createDurableRunAuthority({
   }
 
   return Object.freeze({
+    claimSameBootRecovery() {
+      return sameBootRecoveryPending;
+    },
+
+    completeSameBootRecovery() {
+      sameBootRecoveryPending = false;
+    },
+
     launch(request = {}) {
       assertOpen();
       if (authoritySchemaCompatibility?.status === "incompatible") {

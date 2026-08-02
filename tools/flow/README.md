@@ -188,9 +188,13 @@ of presence or absence without affirmative provider evidence normalize to
 indeterminate and cannot authorize adoption or invocation; indeterminate
 provider diagnostics are retained while causation is cleared.
 
-Same-boot process replacement increments the epoch and resumes from replayed
-authority. A boot identity change instead projects
-`suspended_after_reboot`; the sole lifecycle action is the exact typed
+Same-boot process replacement increments the epoch, replays every active run,
+and automatically dispatches each exact outstanding recovery action before
+considering new work on that run. Read-only and caller-idempotent effects repeat
+their committed identity. Reconcilable and one-shot effects observe first;
+only affirmative exact absence permits a declared reconcilable invocation,
+while uncertain absence remains reconciling. A boot identity change instead
+projects `suspended_after_reboot`; the sole lifecycle action is the exact typed
 `reboot_admission` command. That action binds the catalog, routes, capability
 envelopes, operation and validator contracts, resource claims, time facts,
 subject generations, unresolved effects, stream generation, boot, and epoch.

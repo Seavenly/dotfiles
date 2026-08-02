@@ -113,7 +113,7 @@ test("safe effect classes execute without an unrelated human checkpoint", async 
   assert.equal(invocationCount, 1);
 });
 
-test("caller-idempotent recovery repeats only the committed identity", async (t) => {
+test("same-boot replacement automatically repeats the exact caller-idempotent intent", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -151,18 +151,94 @@ test("caller-idempotent recovery repeats only the committed identity", async (t)
       return operationReceipt(intent, { adopted: true });
     },
   });
-  const recovery = recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery");
-
-  assert.equal(recovery.effect_id, unresolved.effects[0].effect_id);
-  const receipt = recoveredRuntime.command(recovery);
-  assert.equal(receipt.accepted, true);
   await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
+  const recovered = recoveredRuntime.query({ run_id: launch.run_id });
   assert.deepEqual(attemptedKeys, [attemptedKeys[0], attemptedKeys[0]]);
+  assert.equal(recovered.effects[0].effect_id, unresolved.effects[0].effect_id);
+  assert.equal(recovered.effects[0].attempt_id, unresolved.effects[0].attempt_id);
 });
 
-test("read-only recovery repeats the exact committed observation", async (t) => {
+test("another Interface over the current authority does not synthesize runtime loss", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  let invocationCount = 0;
+  const registration = {
+    classification: "caller_idempotent",
+    invoke() {
+      invocationCount += 1;
+      throw new Error("provider result unavailable");
+    },
+  };
+  const runtime = operationRuntime(authority, registration);
+  const prepared = runtime.prepare(registeredOperationProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ decision }) => decision === "approve",
+  ));
+  await until(() => invocationCount === 1);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  operationRuntime(authority, registration);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(invocationCount, 1);
+});
+
+test("same-boot replacement recovers every outstanding run intent", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const attemptedKeys = new Map();
+  const firstRuntime = operationRuntime(firstAuthority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      attemptedKeys.set(intent.run_id, [intent.idempotency_key]);
+      throw new Error("provider result unavailable");
+    },
+  });
+  const launches = ["first", "second"].map((value) => {
+    const proposal = registeredOperationProposal();
+    proposal.graph.cards[1].inputs.value = value;
+    const prepared = firstRuntime.prepare(proposal);
+    const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+    firstRuntime.command(firstRuntime.query({ run_id: launch.run_id })
+      .legal_actions.find(({ decision }) => decision === "approve"));
+    return launch;
+  });
+  await until(() => attemptedKeys.size === launches.length);
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = operationRuntime(recoveredAuthority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      attemptedKeys.get(intent.run_id).push(intent.idempotency_key);
+      return operationReceipt(intent);
+    },
+  });
+
+  await until(() => launches.every(({ run_id: runId }) =>
+    recoveredRuntime.query({ run_id: runId }).phase === "succeeded"));
+  for (const { run_id: runId } of launches) {
+    const [initialKey, recoveredKey] = attemptedKeys.get(runId);
+    assert.equal(recoveredKey, initialKey);
+  }
+});
+
+test("same-boot replacement automatically repeats the exact read-only intent", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -198,14 +274,12 @@ test("read-only recovery repeats the exact committed observation", async (t) => 
       return operationReceipt(intent, { observation: "current" });
     },
   });
-  recoveredRuntime.command(recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery"));
   await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
   assert.deepEqual(observedKeys, [observedKeys[0], observedKeys[0]]);
 });
 
-test("reconcilable recovery adopts exact positive causation without reinvocation", async (t) => {
+test("same-boot replacement automatically adopts exact positive causation", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -257,10 +331,6 @@ test("reconcilable recovery adopts exact positive causation without reinvocation
       };
     },
   });
-  const recovery = recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery");
-
-  recoveredRuntime.command(recovery);
   await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
   const reconciled = recoveredRuntime.query({ run_id: launch.run_id });
@@ -268,7 +338,7 @@ test("reconcilable recovery adopts exact positive causation without reinvocation
   assert.equal(reconciled.effects[0].receipt.provider_receipt.record, "accepted");
 });
 
-test("reconcilable recovery invokes only after proven absence", async (t) => {
+test("same-boot replacement invokes reconcilable work only after proven absence", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -319,14 +389,12 @@ test("reconcilable recovery invokes only after proven absence", async (t) => {
       return operationReceipt(intent);
     },
   });
-  recoveredRuntime.command(recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery"));
   await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
   assert.deepEqual(order, ["observe", "invoke"]);
 });
 
-test("reconcilable recovery rejects absence without affirmative evidence", async (t) => {
+test("same-boot replacement keeps uncertain absence reconciling", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -373,8 +441,6 @@ test("reconcilable recovery rejects absence without affirmative evidence", async
       assert.fail("absence without evidence must not authorize invocation");
     },
   });
-  recoveredRuntime.command(recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery"));
   await until(() => recoveredRuntime.query({ run_id: launch.run_id })
     .effects[0].last_observation !== null);
 
@@ -382,9 +448,16 @@ test("reconcilable recovery rejects absence without affirmative evidence", async
   assert.equal(invocationCount, 1);
   assert.equal(unresolved.effects[0].last_observation.presence, "indeterminate");
   assert.equal(unresolved.effects[0].status, "reconciling");
+  assert.deepEqual(unresolved.legal_actions.map(({ type }) => type), [
+    "recovery",
+  ]);
+  assert.equal(unresolved.legal_actions[0].effect_id,
+    unresolved.effects[0].effect_id);
+  assert.equal(unresolved.legal_actions[0].expected_watermark,
+    unresolved.watermark);
 });
 
-test("a one-shot uncertain effect is checkpoint-bound and never retried", async (t) => {
+test("same-boot replacement never retries a checkpoint-bound one-shot effect", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -438,17 +511,20 @@ test("a one-shot uncertain effect is checkpoint-bound and never retried", async 
       };
     },
   });
-  recoveredRuntime.command(recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery"));
   await until(() => recoveredRuntime.query({ run_id: launch.run_id })
     .effects[0].status === "uncertain");
   const uncertain = recoveredRuntime.query({ run_id: launch.run_id });
   assert.equal(invocationCount, 1);
   assert.equal(uncertain.phase, "active");
   assert.equal(uncertain.effects[0].last_observation.presence, "absent");
+  assert.deepEqual(uncertain.legal_actions.map(({ type }) => type), [
+    "recovery",
+  ]);
+  assert.equal(uncertain.legal_actions[0].expected_watermark,
+    uncertain.watermark);
 });
 
-test("one-shot recovery adopts exact presence without provider reinvocation", async (t) => {
+test("same-boot replacement adopts exact one-shot presence without reinvocation", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
@@ -500,8 +576,6 @@ test("one-shot recovery adopts exact presence without provider reinvocation", as
       };
     },
   });
-  recoveredRuntime.command(recoveredRuntime.query({ run_id: launch.run_id })
-    .legal_actions.find(({ type }) => type === "recovery"));
   await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
 
@@ -555,6 +629,47 @@ test("recovery rejects an incompatible replacement registry before mutation", as
   assert.equal(observed, false);
   assert.equal(recoveredRuntime.query({ run_id: launch.run_id }).watermark,
     before.watermark);
+});
+
+test("an incompatible Interface cannot consume same-boot automatic recovery", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  let invocationCount = 0;
+  const firstRuntime = operationRuntime(firstAuthority, {
+    classification: "caller_idempotent",
+    invoke() {
+      invocationCount += 1;
+      throw new Error("provider result unavailable");
+    },
+  });
+  const prepared = firstRuntime.prepare(registeredOperationProposal());
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstRuntime.command(firstRuntime.query({ run_id: launch.run_id })
+    .legal_actions.find(({ decision }) => decision === "approve"));
+  await until(() => invocationCount === 1);
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  createFlowRuntime({ runAuthority: recoveredAuthority });
+  const recoveredRuntime = operationRuntime(recoveredAuthority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      invocationCount += 1;
+      return operationReceipt(intent);
+    },
+  });
+
+  await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  assert.equal(invocationCount, 2);
 });
 
 test("execution rejects an incompatible replacement registry before intent", async (t) => {
