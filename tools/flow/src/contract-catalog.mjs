@@ -133,6 +133,20 @@ const DELEGATE_EXECUTION = {
     "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
   exhausted_action: "terminal_disposition",
 };
+const PROJECTION_BUILDER = {
+  authority: "non_authoritative",
+  source: "RunAuthority",
+  watermark: "exact_run_authority",
+  retention: "disposable",
+  lifecycle_mutation: "forbidden",
+  forms: {
+    kanban: "flow.kanban-projection/v1",
+    graph: "flow.graph-projection/v1",
+    timeline: "flow.timeline-projection/v1",
+    trust: "flow.trust-projection/v1",
+    operator: "flow.operator-projection/v1",
+  },
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -200,6 +214,14 @@ export async function loadContractCatalog({
     DELEGATE_EXECUTION.disposition_policy,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("delegate execution contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.projection_builder,
+    PROJECTION_BUILDER,
+  ) || !Object.values(PROJECTION_BUILDER.forms).every(
+    (contract) => catalog.contracts.includes(contract),
+  )) {
+    throw new Error("operator projection contracts are incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");

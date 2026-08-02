@@ -98,6 +98,13 @@ export function replayAuthorityStream(
     }
   }
   return {
+    authorityEventStreamDigest: stream.stream_kind === "run"
+      ? digest({
+        schema: "flow.run-authority-stream/v1",
+        run_id: stream.stream_id,
+        events: runEventsFromRecords(records),
+      })
+      : null,
     fold: freezeCanonical(fold),
     generation: Number(stream.generation),
     lastBootId: records.at(-1)?.boot_id ?? null,
@@ -152,10 +159,7 @@ function reduceAuthorityStream(stream, records) {
     const run = {
       run_id: stream.stream_id,
       prepared: launch.prepared,
-      events: records.map(({ payload }) => {
-        const { prepared: _prepared, ...event } = payload;
-        return event;
-      }),
+      events: runEventsFromRecords(records),
     };
     return foldRun(run, { watermark: stream.head_digest });
   }
@@ -169,6 +173,13 @@ function reduceAuthorityStream(stream, records) {
     );
   }
   integrityFailure("unknown_contract", "authority stream contract is unknown");
+}
+
+export function runEventsFromRecords(records) {
+  return records.map(({ payload }) => {
+    const { prepared: _prepared, ...event } = payload;
+    return event;
+  });
 }
 
 function expectedEventContract(streamKind) {

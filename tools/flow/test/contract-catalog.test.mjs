@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 12);
+  assert.equal(catalog.catalog_version, 13);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -168,6 +168,20 @@ test("the public catalog exposes the settled interface and forbids legacy import
     terminal_disposition:
       "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
     exhausted_action: "terminal_disposition",
+  });
+  assert.deepEqual(catalog.flow_runtime.projection_builder, {
+    authority: "non_authoritative",
+    source: "RunAuthority",
+    watermark: "exact_run_authority",
+    retention: "disposable",
+    lifecycle_mutation: "forbidden",
+    forms: {
+      kanban: "flow.kanban-projection/v1",
+      graph: "flow.graph-projection/v1",
+      timeline: "flow.timeline-projection/v1",
+      trust: "flow.trust-projection/v1",
+      operator: "flow.operator-projection/v1",
+    },
   });
   assert.ok(catalog.projections.includes("authority_schema_compatibility"));
   assert.deepEqual(catalog.work_domain_interfaces.handoff.atomic_finalization, [
