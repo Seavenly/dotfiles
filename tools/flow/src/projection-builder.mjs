@@ -9,14 +9,18 @@ const TIMELINE_KINDS = new Map([
   ["card_blocked", "readiness"],
   ["capability_granted", "capability"],
   ["plan_revised", "revision"],
+  ["plan_revision_declined", "revision"],
   ["effect_intent_recorded", "effect"],
   ["effect_intent_adopted", "effect"],
   ["effect_invocation_started", "effect"],
+  ["effect_recovery_requested", "effect"],
   ["effect_observation_recorded", "effect"],
   ["effect_receipt_recorded", "effect"],
   ["operation_completed", "attempt"],
   ["delegate_completed", "attempt"],
   ["delegate_output_quarantined", "attempt"],
+  ["terminal_disposition_decided", "attempt"],
+  ["run_admitted_after_reboot", "lifecycle"],
   ["resource_handoff_published", "handoff"],
   ["resource_handoff_bound", "handoff"],
 ]);
@@ -42,13 +46,17 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
       route,
     })),
   };
+  const checkpointDecisions = new Map(events
+    .filter(({ type }) => type === "checkpoint_decided")
+    .map(({ checkpoint_id: checkpointId, decision }) => [
+      checkpointId,
+      decision,
+    ]));
   const checkpoints = fold.cards
     .filter(({ executor_kind: kind }) => kind === "checkpoint")
     .map(({ id, status }) => ({
       card_id: id,
-      decision: status === "completed"
-        ? "approve"
-        : status === "declined" ? "decline" : null,
+      decision: checkpointDecisions.get(id) ?? null,
       status,
     }));
   const capability = {
@@ -188,7 +196,11 @@ function assertMatchingAuthorityEvents(fold, events, authorityEventStreamDigest)
 
 function publicTimelineEntry(event, sequence, runId) {
   const kind = TIMELINE_KINDS.get(event.type) ?? "authority_change";
-  const subjectId = event.checkpoint_id ?? event.card_id ?? event.effect_id ??
-    event.handoff_id ?? event.grant_id ?? event.template_id ?? runId;
+  const subjectId = kind === "attempt"
+    ? event.attempt_id ?? event.card_id ?? runId
+    : kind === "effect"
+      ? event.effect_id ?? event.intent?.effect_id ?? runId
+      : event.checkpoint_id ?? event.card_id ?? event.handoff_id ??
+        event.grant_id ?? event.template_id ?? runId;
   return { sequence, kind, subject_id: subjectId };
 }

@@ -175,6 +175,10 @@ disabled, so this API does not authorize normal replacement launches.
   action facts relevant to each form. They are derived on every query or watch
   observation, are never persisted as lifecycle authority, and may be deleted
   and rebuilt without losing or inventing run state.
+  Timeline entry kinds are `lifecycle`, `checkpoint`, `readiness`,
+  `capability`, `revision`, `effect`, `attempt`, `handoff`, and the
+  `authority_change` fallback for authority events without a more specific
+  operator category.
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and

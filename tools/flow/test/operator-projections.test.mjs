@@ -10,6 +10,7 @@ import { CardBlockObservationAdapter } from "../src/card-block-observation-adapt
 import { createDrovrDelegatedAgentPort } from "../src/drovr-delegated-agent-port.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createGitHubTrackerProgressOperation } from "../src/github-tracker-progress.mjs";
+import { buildRunViews } from "../src/projection-builder.mjs";
 import {
   createDurableRunAuthority,
   createInMemoryRunAuthority,
@@ -156,8 +157,23 @@ test("projection construction rejects a substituted same-length event stream", (
     events: [launchEvent],
   };
   const fold = foldRun(authoritativeRun);
+  const unchanged = structuredClone({ events: authoritativeRun.events, fold });
+  const authorityEventStreamDigest = runWatermark(authoritativeRun);
+  const first = buildRunViews({
+    authorityEventStreamDigest,
+    events: authoritativeRun.events,
+    fold,
+  });
+  const second = buildRunViews({
+    authorityEventStreamDigest,
+    events: structuredClone(authoritativeRun.events),
+    fold: structuredClone(fold),
+  });
   const substituted = [{ ...launchEvent, bundle_digest: `sha256:${"f".repeat(64)}` }];
 
+  assert.deepEqual(first, second);
+  assert.deepEqual({ events: authoritativeRun.events, fold }, unchanged);
+  assert.equal(Object.isFrozen(first.timeline), true);
   assert.throws(
     () => projectRun({
       authorityEventStreamDigest: runWatermark(authoritativeRun),
@@ -166,6 +182,45 @@ test("projection construction rejects a substituted same-length event stream", (
     }),
     /events do not match the authoritative fold/,
   );
+});
+
+test("timeline classifies revision, effect, attempt, and admission events", () => {
+  const prepared = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  }).prepare(dependencyCheckpointProposal());
+  const runId = `run:${prepared.bundle_digest.slice("sha256:".length)}`;
+  const events = [
+    {
+      type: "run_launched",
+      run_ownership: {
+        schema: "flow.run-ownership/v1",
+        scope: "top_level",
+        parent_run_id: null,
+      },
+    },
+    { type: "plan_revision_declined", template_id: "revision:declined" },
+    { type: "effect_recovery_requested", effect_id: "effect:recovery" },
+    {
+      type: "terminal_disposition_decided",
+      card_id: "operation:one",
+      attempt_id: "attempt:one",
+    },
+    { type: "run_admitted_after_reboot" },
+  ];
+  const run = { run_id: runId, prepared, events };
+  const views = buildRunViews({
+    authorityEventStreamDigest: runWatermark(run),
+    events,
+    fold: foldRun(run),
+  });
+
+  assert.deepEqual(views.timeline.entries, [
+    { sequence: 1, kind: "lifecycle", subject_id: runId },
+    { sequence: 2, kind: "revision", subject_id: "revision:declined" },
+    { sequence: 3, kind: "effect", subject_id: "effect:recovery" },
+    { sequence: 4, kind: "attempt", subject_id: "attempt:one" },
+    { sequence: 5, kind: "lifecycle", subject_id: runId },
+  ]);
 });
 
 test("deleted views rebuild exactly from durable authority without lifecycle mutation", async (t) => {
@@ -239,11 +294,46 @@ test("deleted views rebuild exactly from durable authority without lifecycle mut
   assert.ok(revisedOperator.routes.cards.some(({ route }) => route !== null));
   assert.notEqual(revisedOperator.capability.effective.length, 0);
   assert.notEqual(revisedOperator.resources.claims.length, 0);
+  assert.deepEqual(
+    Object.fromEntries(revisedOperator.checkpoints.map(
+      ({ card_id: cardId, decision }) => [cardId, decision],
+    )),
+    {
+      "confirm-plan": null,
+      "confirm-revised-plan": "approve",
+      "confirm-scope": "approve",
+    },
+  );
   const operationOperator = rebuilt[1].views.operator;
   assert.equal(operationOperator.attempts.length, 1);
   assert.equal(operationOperator.effects.length, 1);
   assert.equal(operationOperator.routes.attempts.length, 1);
   assert.notEqual(operationOperator.resources.claims.length, 0);
+  const operationTimeline = rebuilt[1].views.timeline.entries.filter(
+    ({ kind }) => ["effect", "attempt"].includes(kind),
+  );
+  assert.deepEqual(operationTimeline, [
+    {
+      sequence: 3,
+      kind: "effect",
+      subject_id: operationOperator.effects[0].effect_id,
+    },
+    {
+      sequence: 4,
+      kind: "effect",
+      subject_id: operationOperator.effects[0].effect_id,
+    },
+    {
+      sequence: 5,
+      kind: "effect",
+      subject_id: operationOperator.effects[0].effect_id,
+    },
+    {
+      sequence: 6,
+      kind: "attempt",
+      subject_id: operationOperator.attempts[0].attempt_id,
+    },
+  ]);
   assert.deepEqual(replayedRuntime.query().admission, {
     active_runs: 0,
     declared_capacity: 4,

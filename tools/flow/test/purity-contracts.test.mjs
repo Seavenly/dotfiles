@@ -107,6 +107,7 @@ test("pure module imports cannot acquire ambient capabilities", () => {
   assert.doesNotThrow(() => assertPureModuleGraph([
     resolve(sourceDirectory, "plan-compiler.mjs"),
     resolve(sourceDirectory, "lifecycle-kernel.mjs"),
+    resolve(sourceDirectory, "projection-builder.mjs"),
   ]));
 
   assert.throws(
