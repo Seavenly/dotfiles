@@ -31,6 +31,7 @@ import {
 } from "./turn-record.mjs";
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { reconcileOrRecoverAgent } from "./recovery.mjs";
+import { ownedStagedTurn } from "./staged-input-receipt.mjs";
 
 const TRANSCRIPT_SETTLE_GRACE_MS = 5000;
 
@@ -206,6 +207,36 @@ export async function startTurn(agentId, options, dependencies = {}) {
               `Herdr did not confirm a native session for reused agent ${agentId}`,
               { code: 0, outcome: "uncertain" },
             );
+          }
+
+          if (
+            current.agent.launch.harness === "claude" &&
+            herdr.inspectStagedInput
+          ) {
+            const stagedInput = await herdr.inspectStagedInput(
+              current.agent.herdr.name,
+              { harness: "claude" },
+            );
+            if (stagedInput) {
+              const ownedTurn = turns.find(
+                (turn) => ownedStagedTurn(turn, current.agent, stagedInput),
+              );
+              throw new DrovrError(
+                `Claude has staged prompt text for ${current.agent.herdr.name}`,
+                {
+                  code: 0,
+                  outcome: "recovery_blocked",
+                  details: {
+                    staged_input: {
+                      ...stagedInput,
+                      ownership: ownedTurn ? "drovr" : "unknown",
+                      ...(ownedTurn ? { turn_id: ownedTurn.id } : {}),
+                    },
+                    next_command: `drovr agent staged-input ${agentId}`,
+                  },
+                },
+              );
+            }
           }
 
           const adapter = harnessAdapter(current.agent.launch.harness, env);
@@ -1574,6 +1605,7 @@ function summarizeTurn(
         }
       : {}),
     ...(turn.error ? { error: turn.error } : {}),
+    ...(turn.staged_input ? { staged_input: turn.staged_input } : {}),
   };
   if (compact) return summary;
   return {
