@@ -22,7 +22,8 @@ export function decideLifecycle(fold, command) {
   if (command.expected_watermark !== fold.watermark) {
     return reject(fold, command, "stale_authority_watermark");
   }
-  if (fold.phase !== "active") {
+  if (fold.phase !== "active" &&
+      !(fold.phase === "cancelled" && command.type === "recovery")) {
     return reject(fold, command, "run_terminal");
   }
   if (fold.admission === "suspended_after_reboot") {
@@ -48,6 +49,38 @@ export function decideLifecycle(fold, command) {
       effect_intents: [],
       obligations: [],
       projection_hints: ["operator"],
+    };
+  }
+  if (command.type === "cancel") {
+    const legalCancellation = fold.legal_actions.find((action) =>
+      action.type === "cancel" && digest(action) === digest(command));
+    if (!legalCancellation) {
+      return reject(fold, command, "cancellation_not_actionable");
+    }
+    const unresolvedEffectIds = new Set(fold.effects
+      .filter(({ status, invocation_started: invocationStarted }) =>
+        invocationStarted !== false &&
+        !["succeeded", "late_succeeded"].includes(status))
+      .map(({ effect_id: effectId }) => effectId));
+    const quarantinedClaimDigests = new Set(fold.effect_intents
+      .filter(({ effect_id: effectId }) => unresolvedEffectIds.has(effectId))
+      .flatMap(({ resource_claims: resourceClaims }) => resourceClaims)
+      .map((claim) => digest(claim)));
+    return {
+      schema: "flow.decision/v1",
+      command_type: command.type,
+      events: [{
+        type: "run_cancelled",
+        resource_dispositions: fold.resource_claims.map((claim) => ({
+          claim,
+          disposition: quarantinedClaimDigests.has(digest(claim))
+            ? "quarantined"
+            : "released",
+        })),
+      }],
+      effect_intents: [],
+      obligations: [],
+      projection_hints: ["operator", "graph"],
     };
   }
   const hasUnresolvedEffects = fold.effects?.some(
