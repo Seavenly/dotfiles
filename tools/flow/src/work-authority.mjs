@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from "node:util";
 import { digest, freezeCanonical } from "./canonical.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const RETAINED_WORKSPACE_DISPOSITIONS = new Set(["retained_for_handoff"]);
+const TERMINAL_WORKSPACE_DISPOSITIONS = new Set(["cleaned"]);
 const attachedAuthorities = new WeakMap();
 
 export function getWorkspaceAuthority({ runAuthority } = {}) {
@@ -542,6 +544,7 @@ export function buildConsumerHandoffBinding({ handoff, claim, runId }) {
   const mutatingOperations = claim?.operations?.filter((operation) =>
     consumerOperationAccess(handoff, operation) === "mutation") ?? [];
   if (claim?.kind !== "resource_handoff" || claim.id !== handoff?.handoff_id ||
+      handoff.status !== "active" ||
       claim.digest !== handoff.handoff_digest ||
       !Array.isArray(claim.operations) || claim.operations.length === 0 ||
       claim.operations.some((operation) =>
@@ -608,6 +611,7 @@ export function buildConsumerMutationAuthorization({ handoff, intent }) {
     claim.digest === handoff?.handoff_digest &&
     claim.operations?.includes(request?.operation));
   if (request?.handoff_id !== handoff?.handoff_id ||
+      handoff.status !== "active" ||
       request.handoff_digest !== handoff.handoff_digest ||
       !cardClaim ||
       !pin?.operations.includes(request.operation) ||
@@ -650,7 +654,7 @@ export function buildWorkspaceCleanupPreview(projection, gitObservation) {
       gitObservation?.schema !== "work.git-observation/v1") {
     throw new TypeError("workspace cleanup requires exact authority observations");
   }
-  const effects = [{
+  const effects = projection.disposition === "cleaned" ? [] : [{
     type: "remove_workspace",
     canonical_path: projection.workspace.canonical_path,
     repository_id: projection.repository.canonical_id,
@@ -659,8 +663,10 @@ export function buildWorkspaceCleanupPreview(projection, gitObservation) {
   if (projection.claims.length > 0) refusalReasons.push("active_claim");
   if (gitObservation.git?.clean !== true) refusalReasons.push("dirty");
   if (projection.taint !== null) refusalReasons.push("uncertain");
-  if (String(projection.disposition).includes("retained")) {
+  if (RETAINED_WORKSPACE_DISPOSITIONS.has(projection.disposition)) {
     refusalReasons.push("retained");
+  } else if (projection.disposition === "cleaned") {
+    refusalReasons.push("already_cleaned");
   } else if (!["retired", "abandoned", "released"].includes(
     projection.disposition,
   )) {
@@ -950,6 +956,9 @@ function decideWorkspaceClaim(current, command) {
   }
   if (command.expected_generation !== current.generation) {
     return reject(command, "stale_subject_generation", current);
+  }
+  if (TERMINAL_WORKSPACE_DISPOSITIONS.has(current.disposition)) {
+    return reject(command, "workspace_disposed", current);
   }
   if (current.taint !== null) {
     return reject(command, "workspace_tainted", current);

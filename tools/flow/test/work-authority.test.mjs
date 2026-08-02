@@ -600,6 +600,14 @@ test("FlowRuntime executes an exact eligible cleanup through its registered Adap
   assert.equal(cleaned.disposition, "cleaned");
   assert.equal(cleaned.cleanup_receipt.request.preview_digest,
     freshAction.preview_digest);
+  const cleanedPreview = workspaceAuthority.previewCleanup(workspaceQuery());
+  assert.deepEqual(cleanedPreview.refusal_reasons, ["already_cleaned"]);
+  assert.deepEqual(cleanedPreview.effects, []);
+  assert.equal(workspaceAuthority.command(workspaceClaim({
+    claimId: "claim:post-cleanup",
+    commandId: "workspace-claim:post-cleanup",
+    expectedWatermark: cleaned.watermark,
+  })).code, "workspace_disposed");
 });
 
 test("producer promotion, pin transfer, handoff activation, and finalization commit atomically", async (t) => {
@@ -859,6 +867,106 @@ test("a failure before handoff commit leaves every authority unpromoted", async 
   }).pins, [{ holder: "run", id: launch.run_id }]);
 });
 
+test("cancellation retains a quarantined mutation lease despite a released sibling claim", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-quarantined-claim-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "quarantine-process"),
+    workEvidenceAdapter: deterministicWorkEvidenceAdapter(),
+  });
+  t.after(() => runAuthority.close());
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  const artifactAuthority = getArtifactAuthority({ runAuthority });
+  const handoffAuthority = getResourceHandoffAuthority({ runAuthority });
+  const bytes = Buffer.from("quarantined mutation candidate\n");
+  const artifactDigest = sha256(bytes);
+  const publication = handoffPublication(artifactDigest);
+  const producerProposal = registeredOperationProposal({ checkpointBound: false });
+  producerProposal.graph.cards[0].inputs = { publication };
+  claimProducerWorkspace(producerProposal);
+  const runtime = createFlowRuntime({
+    runAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        schema: "flow.registered-operation/v1",
+        classification: "caller_idempotent",
+        invoke(intent) {
+          if (intent.operation_input.publication) return publicationReceipt(intent);
+          throw new Error("consumer result remains uncertain");
+        },
+      },
+    },
+  });
+  const producerPrepared = runtime.prepare(producerProposal);
+  const producer = runtime.launch(confirmedLaunchRequest(producerPrepared));
+  workspaceAuthority.command(workspaceRegistration());
+  acquireProducerWorkspace(workspaceAuthority, producer.run_id);
+  artifactAuthority.command(artifactRegistration(bytes, artifactDigest, producer.run_id));
+  runtime.command(runtime.query({ run_id: producer.run_id }).legal_actions[0]);
+  await until(() => runtime.query({ run_id: producer.run_id }).phase === "succeeded");
+  const [{ handoff_id: handoffId }] = runtime.query({
+    run_id: producer.run_id,
+  }).handoffs;
+  const handoff = handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  });
+  const consumerProposal = consumerOperationProposal(
+    handoffId,
+    handoff.handoff_digest,
+    "workspace_mutation",
+    ["workspace_mutation", "read_workspace"],
+    ["workspace_mutation"],
+  );
+  const mutationCard = consumerProposal.graph.cards[0];
+  consumerProposal.graph.cards.push({
+    ...mutationCard,
+    id: "z-read-after-uncertain-mutation",
+    dependencies: [],
+    inputs: {
+      resource_handoff: {
+        handoff_id: handoffId,
+        handoff_digest: handoff.handoff_digest,
+        operation: "read_workspace",
+      },
+    },
+    resource_claims: [{
+      kind: "resource_handoff",
+      id: handoffId,
+      digest: handoff.handoff_digest,
+      operations: ["read_workspace"],
+    }],
+  });
+  consumerProposal.explicit_facts.limits.max_cards = 2;
+  consumerProposal.requested_authority.commands.push("cancel");
+  const consumerPrepared = runtime.prepare(consumerProposal);
+  const consumer = runtime.launch(confirmedLaunchRequest(consumerPrepared));
+  assert.equal(consumer.created, true, JSON.stringify(consumer));
+  runtime.command(runtime.query({ run_id: consumer.run_id }).legal_actions[0]);
+  await until(() => runtime.query({ run_id: consumer.run_id }).effects.length === 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runtime.query({ run_id: consumer.run_id }).effects[0].status,
+    "unresolved");
+  runtime.command(runtime.query({ run_id: consumer.run_id }).legal_actions
+    .find(({ type }) => type === "cancel"));
+  const cancelled = runtime.query({ run_id: consumer.run_id });
+  assert.equal(cancelled.phase, "cancelled");
+  assert.deepEqual(cancelled.resource_dispositions
+    .filter(({ claim }) => claim.kind === "resource_handoff")
+    .map(({ disposition }) => disposition).sort(), ["quarantined", "released"]);
+  assert.equal(workspaceAuthority.query(workspaceQuery()).claims[0].holder,
+    consumer.run_id);
+  assert.equal(handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  }).consumer_pins.some(({ run_id: runId }) => runId === consumer.run_id), true);
+});
+
 test("a later run pins and rechecks a retained handoff after the producer disappears", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-authority-"));
   const gitRoot = await mkdtemp(join(tmpdir(), "flow-git-retention-"));
@@ -938,9 +1046,9 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
   }));
   acquireProducerWorkspace(producerWorkspaceAuthority, producer.run_id);
   git(producerWorkspace, ["switch", "--detach", candidateGit.commit_sha]);
-  producerArtifactAuthority.command(
-    artifactRegistration(bytes, artifactDigest, producer.run_id),
-  );
+  const artifactRecord = artifactRegistration(bytes, artifactDigest, producer.run_id);
+  artifactRecord.artifact.retention = "collectable";
+  producerArtifactAuthority.command(artifactRecord);
   producerRuntime.command(
     producerRuntime.query({ run_id: producer.run_id }).legal_actions[0],
   );
@@ -963,6 +1071,9 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
   });
   t.after(() => consumerAuthority.close());
   const consumerHandoffAuthority = getResourceHandoffAuthority({
+    runAuthority: consumerAuthority,
+  });
+  const consumerArtifactAuthority = getArtifactAuthority({
     runAuthority: consumerAuthority,
   });
   const recoveredWorkspaceAuthority = getWorkspaceAuthority({
@@ -1190,6 +1301,16 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
   };
   const retirementReceipt = consumerHandoffAuthority.command(retirement);
   assert.equal(retirementReceipt.accepted, true, JSON.stringify(retirementReceipt));
+  const retiredProposal = consumerOperationProposal(
+    handoffId,
+    retained.handoff_digest,
+  );
+  retiredProposal.graph.cards[0].inputs.retired_handoff_nonce = "cannot-rebind";
+  const retiredPrepared = consumerRuntime.prepare(retiredProposal);
+  assert.equal(
+    consumerRuntime.launch(confirmedLaunchRequest(retiredPrepared)).code,
+    "invalid_resource_handoff_binding",
+  );
   const cleanupPreview = consumerHandoffAuthority.previewCleanup({
     contract: "flow.resource-handoff/v1",
     subject_id: handoffId,
@@ -1220,6 +1341,27 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     contract: "flow.resource-handoff/v1",
     subject_id: handoffId,
   }).git_availability, "missing");
+  const artifactCleanup = consumerArtifactAuthority.previewCollection({
+    contract: "work.artifact/v1",
+    subject_id: artifactDigest,
+  });
+  assert.equal(artifactCleanup.eligibility, "eligible");
+  const artifactCleanupPrepared = consumerRuntime.prepare(
+    cleanupOperationProposal(artifactCleanup.legal_actions[0]),
+  );
+  const artifactCleanupRun = consumerRuntime.launch(
+    confirmedLaunchRequest(artifactCleanupPrepared),
+  );
+  consumerRuntime.command(consumerRuntime.query({
+    run_id: artifactCleanupRun.run_id,
+  }).legal_actions[0]);
+  await until(() => consumerRuntime.query({
+    run_id: artifactCleanupRun.run_id,
+  }).phase === "succeeded");
+  assert.equal(consumerArtifactAuthority.query({
+    contract: "work.artifact/v1",
+    subject_id: artifactDigest,
+  }).status, "collected");
 });
 
 function workspaceRegistration(canonicalPath = "/tmp/producer-worktree", {

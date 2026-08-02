@@ -1936,12 +1936,14 @@ function appendResourceCleanupCompletion(database, intent, receipt, fence) {
   }
   if (identity.streamKind === "artifact" &&
       (current?.status !== "uncertain" ||
-       current.collection_effect_id !== intent.effect_id)) {
+       current.collection_effect_id !== intent.effect_id ||
+       current.pins.length > 0)) {
     throw new TypeError("artifact cleanup authority changed after invocation");
   }
   if (identity.streamKind === "handoff" &&
       (current?.status !== "uncertain" ||
-       current.cleanup_effect_id !== intent.effect_id)) {
+       current.cleanup_effect_id !== intent.effect_id ||
+       current.consumer_pins.length > 0)) {
     throw new TypeError("handoff cleanup authority changed after invocation");
   }
   if (identity.streamKind === "handoff") {
@@ -2212,14 +2214,20 @@ function appendTerminalConsumerHandoffReleases(database, {
   runId,
   terminalEvent,
 }, fence) {
-  const releasedClaims = terminalEvent.type === "run_cancelled"
+  const releasableHandoffIds = terminalEvent.type === "run_cancelled"
     ? terminalEvent.resource_dispositions
-      .filter(({ disposition }) => disposition === "released")
-      .map(({ claim }) => claim)
-    : prepared.explicit_facts.resource_claims;
-  const handoffIds = [...new Set(releasedClaims
-    .filter(({ kind }) => kind === "resource_handoff")
-    .map(({ id }) => id))];
+      .filter(({ claim }) => claim.kind === "resource_handoff")
+      .reduce((releasable, { claim, disposition }) => {
+        const existing = releasable.get(claim.id) ?? true;
+        releasable.set(claim.id, existing && disposition === "released");
+        return releasable;
+      }, new Map())
+    : new Map(prepared.explicit_facts.resource_claims
+      .filter(({ kind }) => kind === "resource_handoff")
+      .map(({ id }) => [id, true]));
+  const handoffIds = [...releasableHandoffIds.entries()]
+    .filter(([, releasable]) => releasable)
+    .map(([handoffId]) => handoffId);
   for (const handoffId of handoffIds) {
     appendConsumerHandoffRelease(database, { handoffId, runId }, fence);
   }
