@@ -19,6 +19,10 @@ import {
   registeredOperation,
   snapshotRegisteredOperations,
 } from "./operation-effects.mjs";
+import {
+  createSubrunRegistration,
+  SUBRUN_CONTRACT,
+} from "./subrun-effects.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
 
@@ -36,18 +40,24 @@ export function createFlowRuntime({
        Array.isArray(registeredOperations))) {
     throw new TypeError("registeredOperations must be an object or Map");
   }
+  let runtime;
+  const subrunRegistration = createSubrunRegistration({
+    getRuntime: () => runtime,
+    runAuthority,
+  });
   const operationRegistry = snapshotRegisteredOperations(registeredOperations);
   const delegateValidators = snapshotDelegateOutputValidators(
     delegateOutputValidators,
   );
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
+  operationRegistry.set(SUBRUN_CONTRACT, subrunRegistration);
   const compile = planCompiler === compileDynamicPlan
     ? (proposal) => compileDynamicPlan(proposal, {
         registeredOperations: operationRegistry,
       })
     : planCompiler;
-  const runtime = Object.freeze({
+  runtime = Object.freeze({
     prepare(proposal) {
       return compile(proposal);
     },
@@ -55,15 +65,10 @@ export function createFlowRuntime({
     launch(request) {
       const validation = validateLaunchRequest(request);
       if (validation.accepted) {
-        const operationCards = [
-          ...validation.prepared.graph.cards,
-          ...validation.prepared.revision_templates.flatMap(
-            ({ changes }) => changes.add_cards,
-          ),
-        ];
+        const operationCards = executionCards(validation.prepared);
         const incompatible = operationCards.map((card) => ({
           card,
-          issue: card.executor.kind === "operation"
+          issue: ["operation", "subrun"].includes(card.executor.kind)
             ? operationRegistrationIssue(
                 registeredOperation(operationRegistry, card.executor.contract),
                 card.executor.effect_classification,
@@ -132,7 +137,7 @@ export function createFlowRuntime({
           });
         }
         if (operationCards.some(({ executor }) =>
-          ["delegate", "operation"].includes(executor.kind)) &&
+          ["delegate", "operation", "subrun"].includes(executor.kind)) &&
             typeof runAuthority.invokeEffect !== "function") {
           const host = runAuthority.query();
           return createRejection({
@@ -149,6 +154,9 @@ export function createFlowRuntime({
     },
 
     command(command) {
+      const before = typeof command?.run_id === "string"
+        ? runAuthority.query(command.run_id)
+        : null;
       const registryRejection = commandRegistryRejection(
         command,
         operationRegistry,
@@ -170,6 +178,20 @@ export function createFlowRuntime({
           });
         }
       }
+      if (receipt?.accepted === true && command?.type === "cancel") {
+        for (const subrun of before?.subruns ?? []) {
+          const intent = before.effects?.find(({ card_id: cardId }) =>
+            cardId === subrun.card_id);
+          if (!intent) continue;
+          const completeIntent = subrunIntentForEffect(before, intent.effect_id);
+          if (completeIntent) subrunRegistration.requestCancellation(completeIntent);
+        }
+      }
+      if (receipt?.accepted === true && command?.type === "recovery" &&
+          command.recovery === "settle_cancelled") {
+        const completeIntent = subrunIntentForEffect(before, command.effect_id);
+        if (completeIntent) subrunRegistration.requestCancellation(completeIntent);
+      }
       return receipt;
     },
 
@@ -184,33 +206,90 @@ export function createFlowRuntime({
       return runAuthority.watch(runId);
     },
   });
-  recoverOutstandingEffects(runtime, runAuthority, operationRegistry);
+  recoverOutstandingEffects(
+    runtime,
+    runAuthority,
+    operationRegistry,
+    subrunRegistration,
+  );
   return runtime;
 }
 
+function executionCards(prepared) {
+  const cards = [];
+  const pending = [prepared];
+  const seenBundles = new Set();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (seenBundles.has(current.bundle_digest)) continue;
+    seenBundles.add(current.bundle_digest);
+    const currentCards = [
+      ...current.graph.cards,
+      ...current.revision_templates.flatMap(({ changes }) => changes.add_cards),
+    ];
+    cards.push(...currentCards);
+    pending.push(...currentCards
+      .filter(({ executor }) => executor.kind === "subrun")
+      .map(({ inputs }) => inputs.child_launch_request.prepared));
+  }
+  return cards;
+}
+
 function operationValidationContexts(prepared) {
-  const proposal = (graph) => ({
-    graph,
-    requested_authority: prepared.requested_authority,
-    explicit_facts: prepared.explicit_facts,
-    revision_templates: prepared.revision_templates,
-  });
-  const contexts = prepared.graph.cards.map((card) => ({
-    card,
-    proposal: proposal(prepared.graph),
-  }));
-  for (const template of prepared.revision_templates) {
-    const graph = applyRevisionGraphChanges(prepared.graph, template.changes);
-    const revisedProposal = proposal(graph);
-    contexts.push(...graph.cards.map((card) => ({
-      card,
-      proposal: revisedProposal,
-    })));
+  const contexts = [];
+  const pending = [prepared];
+  const seenBundles = new Set();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (seenBundles.has(current.bundle_digest)) continue;
+    seenBundles.add(current.bundle_digest);
+    const proposal = (graph) => ({
+      graph,
+      requested_authority: current.requested_authority,
+      explicit_facts: current.explicit_facts,
+      revision_templates: current.revision_templates,
+    });
+    const graphs = [current.graph];
+    for (const template of current.revision_templates) {
+      graphs.push(applyRevisionGraphChanges(current.graph, template.changes));
+    }
+    for (const graph of graphs) {
+      contexts.push(...graph.cards.map((card) => ({
+        card,
+        proposal: proposal(graph),
+      })));
+    }
+    const currentCards = [
+      ...current.graph.cards,
+      ...current.revision_templates.flatMap(({ changes }) => changes.add_cards),
+    ];
+    pending.push(...currentCards
+      .filter(({ executor }) => executor.kind === "subrun")
+      .map(({ inputs }) => inputs.child_launch_request.prepared));
   }
   return contexts;
 }
 
-function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
+function subrunIntentForEffect(projection, effectId) {
+  const effect = projection.effects?.find(({ effect_id: id }) => id === effectId);
+  if (effect?.operation_contract !== SUBRUN_CONTRACT) return null;
+  const subrun = projection.subruns?.find(({ card_id: cardId }) =>
+    cardId === effect?.card_id);
+  if (!effect || !subrun) return null;
+  return {
+    run_id: projection.run_id,
+    card_id: subrun.card_id,
+    card_identity: subrun.card_identity,
+    revision_ordinal: subrun.revision_ordinal,
+  };
+}
+
+function recoverOutstandingEffects(
+  runtime,
+  runAuthority,
+  operationRegistry,
+  subrunRegistration,
+) {
   if (typeof runAuthority.pendingSameBootRecoveryRunIds !== "function") return;
   const runIds = runAuthority.pendingSameBootRecoveryRunIds();
   if (!Array.isArray(runIds)) return;
@@ -241,7 +320,28 @@ function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
       const current = runAuthority.query(runId);
       const action = current?.legal_actions?.find((candidate) =>
         candidate.type === "recovery" && candidate.effect_id === effectId);
-      if (!action || runtime.command(action)?.accepted !== true) {
+      if (!action) {
+        accepted = false;
+        break;
+      }
+      const effect = current.effects.find(({ effect_id: currentEffectId }) =>
+        currentEffectId === effectId);
+      const subrun = current.subruns.find(({ card_id: cardId }) =>
+        cardId === effect?.card_id);
+      if (effect?.operation_contract === SUBRUN_CONTRACT &&
+          ["active", "admission_pending"].includes(subrun?.status)) {
+        // Subrun resume owns the initial observation, admission repair,
+        // terminal waiting, and final recovery without a competing caller.
+        void subrunRegistration.resume({
+          effect_id: effectId,
+          run_id: current.run_id,
+          card_id: subrun.card_id,
+          card_identity: subrun.card_identity,
+          revision_ordinal: subrun.revision_ordinal,
+        }).catch(() => {});
+        continue;
+      }
+      if (runtime.command(action)?.accepted !== true) {
         accepted = false;
         break;
       }
@@ -251,7 +351,7 @@ function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
 }
 
 function commandRegistryRejection(command, operationRegistry, runAuthority) {
-  if (!["checkpoint_decision", "operation_execute", "recovery"].includes(
+  if (!["checkpoint_decision", "operation_execute", "subrun_execute", "recovery"].includes(
     command?.type,
   ) || typeof command.run_id !== "string") {
     return null;
@@ -305,9 +405,11 @@ function operationBinding(command, projection) {
     operationId = checkpoint?.inputs?.operation_card_id;
   }
   const operation = projection.active_plan.cards.find(({ executor, id }) =>
-    id === operationId && executor.kind === "operation");
+    id === operationId && ["operation", "subrun"].includes(executor.kind));
   const operationState = projection.cards.find(({ id }) => id === operationId);
-  const expectedStatus = command.type === "operation_execute"
+  const expectedStatus = ["operation_execute", "subrun_execute"].includes(
+    command.type,
+  )
     ? "ready"
     : "pending";
   if (!operation || operationState?.status !== expectedStatus) return null;

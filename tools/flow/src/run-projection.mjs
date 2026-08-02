@@ -1,6 +1,7 @@
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
+import { deriveChildRunId } from "./subrun-effects.mjs";
 import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
 import { buildRunViews } from "./projection-builder.mjs";
 
@@ -86,6 +87,12 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const unresolvedEffectIds = new Set([...effectIntents.keys()].filter(
     (effectId) => !effectReceipts.has(effectId),
   ));
+  const failedSubruns = new Set(run.events
+    .filter(({ type }) => type === "subrun_failed")
+    .map(({ card_id: cardId }) => cardId));
+  const subrunAdmissions = new Map(run.events
+    .filter(({ type }) => type === "subrun_admitted")
+    .map((event) => [event.card_id, event]));
   const grantEvents = run.events.filter(({ type }) => type === "capability_granted");
   const grants = grantEvents.map(({ type: _type, ...grant }) => grant);
   const revisionEvents = run.events.filter(({ type }) => type === "plan_revised");
@@ -131,6 +138,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     let status = "pending";
     if (supersededCards.includes(card.id)) {
       status = "superseded";
+    } else if (failedSubruns.has(card.id)) {
+      status = "declined";
     } else if (completedOperations.has(card.id) ||
         completedDelegates.has(card.id)) {
       status = "completed";
@@ -342,6 +351,16 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         expected_watermark: watermark,
       };
     });
+  const subrunActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "subrun" && status === "ready")
+    .map(({ id }) => ({
+      schema: "flow.command/v1",
+      type: "subrun_execute",
+      run_id: run.run_id,
+      card_id: id,
+      expected_watermark: watermark,
+    }));
   const recoveryActions = [...effectIntents.values()]
     .filter((intent) => !effectReceipts.has(intent.effect_id))
     .filter((intent) => phase !== "cancelled" ||
@@ -379,6 +398,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         ...operationActions,
         ...delegateActions,
         ...delegateDispositionActions,
+        ...subrunActions,
         ...recoveryActions,
         ...cancellationActions,
       ]
@@ -403,7 +423,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     idempotency_key: intent.idempotency_key,
     route_binding: intent.route_binding,
     invocation_started: effectInvocationIndexes.has(intent.effect_id),
-    status: effectReceipts.has(intent.effect_id)
+    status: effectReceipts.get(intent.effect_id)?.outcome === "not_created"
+      ? "not_created"
+      : effectReceipts.has(intent.effect_id)
       ? hasLateReceipt(intent.effect_id)
         ? effectReceipts.get(intent.effect_id)?.outcome === "quarantined"
           ? "late_quarantined"
@@ -464,10 +486,54 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
           : null,
       };
     });
+  const subruns = [...effectIntents.values()]
+    .filter(({ operation_contract: contract }) =>
+      contract === "flow.subrun/create-and-observe/v1")
+    .map((intent) => {
+      const effectReceipt = effectReceipts.get(intent.effect_id);
+      const receipt = effectReceipt?.provider_receipt;
+      const admission = subrunAdmissions.get(intent.card_id);
+      const notCreated = effectReceipt?.outcome === "not_created" ||
+        cancellationIndex >= 0 && !effectInvocationIndexes.has(intent.effect_id);
+      return {
+        parent_run_id: run.run_id,
+        card_id: intent.card_id,
+        card_identity: intent.card_identity,
+        revision_ordinal: intent.revision_ordinal,
+        child_run_id: receipt?.child_run_id ?? deriveChildRunId({
+          parent_run_id: run.run_id,
+          card_identity: intent.card_identity,
+          revision_ordinal: intent.revision_ordinal,
+        }),
+        status: notCreated
+          ? "not_created"
+          : receipt?.child_phase ?? (admission ? "active" : "admission_pending"),
+        result_disposition: notCreated
+          ? "not_created"
+          : cancellationIndex >= 0 ||
+            receipt && receipt.child_phase !== "succeeded"
+          ? "quarantined"
+          : receipt ? "claimed" : "pending",
+        cancellation_disposition: cancellationIndex < 0
+          ? "not_requested"
+          : receipt || notCreated ? "reconciled" : "requested",
+        output_disposition: notCreated
+          ? "none"
+          : cancellationIndex >= 0 && receipt
+          ? "late_unclaimed"
+          : receipt?.child_phase !== undefined &&
+              receipt.child_phase !== "succeeded"
+            ? "terminal_unclaimed"
+            : receipt ? "claimed" : "pending",
+        child_watermark: receipt?.child_watermark ??
+          admission?.child_watermark ?? null,
+      };
+    });
 
   return freezeCanonical({
     schema: "flow.run-fold/v1",
     run_id: run.run_id,
+    ...(run.lineage === undefined ? {} : { parent: run.lineage }),
     run_ownership: runOwnership,
     watermark,
     sequence: run.events.length,
@@ -490,6 +556,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     limits,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
     attempts,
+    subruns,
     effects,
     ...(trackerProgress === null ? {} : { tracker_progress: trackerProgress }),
     handoffs,
@@ -510,6 +577,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
   return freezeCanonical({
     schema: "flow.run-projection/v1",
     run_id: fold.run_id,
+    ...(fold.parent === undefined ? {} : { parent: fold.parent }),
     run_ownership: fold.run_ownership,
     watermark: fold.watermark,
     sequence: fold.sequence,
@@ -537,6 +605,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     resource_dispositions: fold.resource_dispositions,
     limits: fold.limits,
     attempts: fold.attempts,
+    subruns: fold.subruns,
     effects: fold.effects,
     ...(fold.tracker_progress === undefined ? {} : {
       tracker_progress: fold.tracker_progress,

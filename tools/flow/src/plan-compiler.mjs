@@ -12,6 +12,14 @@ import {
   operationRegistrationIssue,
   registeredOperation,
 } from "./operation-effects.mjs";
+import {
+  TRACKER_PROGRESS_CONTRACT,
+  validateTrackerProgressBinding,
+} from "./github-tracker-progress.mjs";
+import {
+  SUBRUN_CONTRACT,
+  SUBRUN_RECEIPT_VALIDATOR,
+} from "./subrun-effects.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
@@ -178,6 +186,15 @@ export function validateDynamicPlan(proposal, {
   }
 
   const cardIds = new Set();
+  const subrunCards = proposal.graph.cards.filter(
+    ({ executor }) => executor?.kind === "subrun",
+  );
+  if (subrunCards.length > 1) {
+    invalidPlan(
+      "subrun_card_limit_exceeded",
+      "this runtime slice accepts exactly one child run",
+    );
+  }
   for (const card of proposal.graph.cards) {
     if (!isRecord(card) || typeof card.id !== "string" || !card.id ||
         cardIds.has(card.id)) {
@@ -207,6 +224,8 @@ export function validateDynamicPlan(proposal, {
       validateOperationCard(card, proposal, registeredOperations);
     } else if (card.executor.kind === "delegate") {
       validateDelegateCard(card, proposal);
+    } else if (card.executor.kind === "subrun") {
+      validateSubrunCard(card, proposal, registeredOperations);
     } else {
       invalidPlan(
         "unsupported_executor_kind",
@@ -229,11 +248,76 @@ export function validateDynamicPlan(proposal, {
       "dynamic plan checkpoint authority is incomplete",
     );
   }
+  if (proposal.graph.cards.some(({ executor }) => executor.kind === "subrun") &&
+      !proposal.requested_authority.commands.includes("subrun_execute")) {
+    invalidPlan(
+      "incomplete_subrun_authority",
+      "dynamic plan subrun authority is incomplete",
+    );
+  }
   assertAcyclic(proposal.graph.cards);
   validateBlockObservations(proposal);
   if (!skipRevisionTemplates) {
     validateRevisionTemplates(proposal, registeredOperations);
     validateDeclaredRecoveryCapacity(proposal);
+  }
+}
+
+function validateSubrunCard(card, proposal, registeredOperations) {
+  const launch = card.inputs?.child_launch_request;
+  let expectedPrepared = null;
+  try {
+    expectedPrepared = compileDynamicPlan({
+      schema: "flow.dynamic-plan-proposal/v1",
+      graph: launch?.prepared?.graph,
+      requested_authority: launch?.prepared?.requested_authority,
+      explicit_facts: launch?.prepared?.explicit_facts,
+      revision_templates: launch?.prepared?.revision_templates,
+    }, { registeredOperations });
+  } catch (error) {
+    if (!(error instanceof DynamicPlanValidationError)) throw error;
+  }
+  const expectedConfirmation = expectedPrepared === null ? null : {
+    schema: "flow.dynamic-plan-confirmation-decision/v1",
+    decision: "accept",
+    bundle_digest: expectedPrepared.bundle_digest,
+    confirmation_digest: expectedPrepared.confirmation_digest,
+  };
+  const expectedClosedFacts = expectedPrepared === null ? null : {
+    schema: "flow.closed-fact-observation/v1",
+    bundle_digest: expectedPrepared.bundle_digest,
+    facts: expectedPrepared.explicit_facts,
+  };
+  if (card.executor.contract !== SUBRUN_CONTRACT ||
+      card.executor.effect_classification !== "reconcilable" ||
+      card.recovery !== "reconcile" ||
+      card.validators.length !== 1 ||
+      card.validators[0] !== SUBRUN_RECEIPT_VALIDATOR ||
+      card.limits.max_attempts !== 1 ||
+      launch?.prepared?.schema !== "flow.prepared-run/v1" ||
+      launch?.confirmation?.schema !==
+        "flow.dynamic-plan-confirmation-decision/v1" ||
+      launch.confirmation.decision !== "accept" ||
+      launch?.closed_facts?.schema !== "flow.closed-fact-observation/v1" ||
+      !sameCanonicalValue(launch.prepared, expectedPrepared) ||
+      !sameCanonicalValue(launch.confirmation, expectedConfirmation) ||
+      !sameCanonicalValue(launch.closed_facts, expectedClosedFacts) ||
+      expectedPrepared?.explicit_facts.tracker_binding !== undefined ||
+      proposal.requested_authority.commands.includes("cancel") &&
+        !expectedPrepared?.requested_authority.commands.includes("cancel") ||
+      !proposal.requested_authority.mutations.includes(SUBRUN_CONTRACT) ||
+      !proposal.explicit_facts.operation_contracts.includes(SUBRUN_CONTRACT) ||
+      !proposal.explicit_facts.validator_contracts.includes(
+        SUBRUN_RECEIPT_VALIDATOR,
+      )) {
+    invalidPlan("invalid_subrun_contract", `subrun card is incomplete: ${card.id}`);
+  }
+  const issue = operationRegistrationIssue(
+    registeredOperation(registeredOperations, SUBRUN_CONTRACT),
+    "reconcilable",
+  );
+  if (registeredOperations !== null && issue) {
+    invalidPlan(issue, `subrun Adapter is unavailable: ${card.id}`);
   }
 }
 
@@ -694,9 +778,20 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
-  if (typeof registration?.validateCard === "function") {
+  if (card.executor.contract === TRACKER_PROGRESS_CONTRACT) {
     try {
-      registration.validateCard(card, proposal);
+      validateTrackerProgressBinding(proposal);
+    } catch (error) {
+      invalidPlan(
+        "invalid_operation_input",
+        error?.message ?? `operation input is invalid: ${card.id}`,
+      );
+    }
+  }
+  const validateCard = registration?.validateCard;
+  if (typeof validateCard === "function") {
+    try {
+      validateCard(card, proposal);
     } catch (error) {
       invalidPlan(
         "invalid_operation_input",
@@ -814,6 +909,14 @@ function compareCanonicalValues(left, right) {
   const leftDigest = digest(left);
   const rightDigest = digest(right);
   return leftDigest < rightDigest ? -1 : leftDigest > rightDigest ? 1 : 0;
+}
+
+function sameCanonicalValue(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
 }
 
 function invalidPlan(reason, message) {

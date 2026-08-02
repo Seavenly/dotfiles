@@ -215,6 +215,13 @@ export function decideLifecycle(fold, command) {
       projection_hints: ["operator", "graph"],
     };
   }
+  if (command.type === "subrun_execute") {
+    const legalExecution = fold.legal_actions.find((action) =>
+      action.type === "subrun_execute" && digest(action) === digest(command));
+    if (!legalExecution) return reject(fold, command, "subrun_not_actionable");
+    const subrun = fold.cards.find(({ id }) => id === command.card_id);
+    return operationDecision(fold, command, subrun);
+  }
   if (command.type !== "checkpoint_decision") {
     return reject(fold, command, "unsupported_command");
   }
@@ -376,6 +383,8 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
       card_id: operation.id,
       classification: operationCard.executor.effect_classification,
       operation_contract: operationCard.executor.contract,
+      card_identity: digest(operationCard),
+      revision_ordinal: fold.current_revision.ordinal,
       operation_input: operationCard.inputs,
       source_authority_watermark: fold.watermark,
       route_binding: operationCard.route,

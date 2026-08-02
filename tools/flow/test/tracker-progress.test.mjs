@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { digest } from "../src/canonical.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
   createGitHubTrackerProgressOperation,
@@ -421,6 +422,28 @@ test("relative GitHub owner and repository segments are rejected", () => {
   }
 });
 
+test("durable launch rejects a tracker card without its binding before commit", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-tracker-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const prepared = structuredClone(compileDynamicPlan(trackerProgressProposal([
+    progressCard("publish", 1, "Bounded progress", 0, 1),
+  ])));
+  delete prepared.explicit_facts.tracker_binding;
+  rebindPreparedIdentity(prepared);
+
+  const rejection = authority.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "invalid_operation_input");
+  assert.deepEqual(authority.query().runs, []);
+});
+
 function revisionTrackerProgressProposal() {
   const proposal = trackerProgressProposal([
     progressCard("publish-original", 1, "Original progress", 0, 1),
@@ -611,6 +634,28 @@ function createTrackerCompilerRuntime() {
       }),
     },
   });
+}
+
+function rebindPreparedIdentity(prepared) {
+  prepared.plan_fingerprint = digest(prepared.graph);
+  prepared.bundle_digest = digest({
+    schema: "flow.prepared-bundle/v1",
+    kind: prepared.kind,
+    graph: prepared.graph,
+    plan_fingerprint: prepared.plan_fingerprint,
+    requested_authority: prepared.requested_authority,
+    explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
+  });
+  prepared.confirmation = {
+    schema: "flow.dynamic-plan-confirmation/v1",
+    bundle_digest: prepared.bundle_digest,
+    graph: prepared.graph,
+    requested_authority: prepared.requested_authority,
+    explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
+  };
+  prepared.confirmation_digest = digest(prepared.confirmation);
 }
 
 class FakeGitHubDriver {

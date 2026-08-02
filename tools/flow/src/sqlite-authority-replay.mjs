@@ -159,6 +159,7 @@ function reduceAuthorityStream(stream, records) {
     const run = {
       run_id: stream.stream_id,
       prepared: launch.prepared,
+      ...(launch.lineage === undefined ? {} : { lineage: launch.lineage }),
       events: runEventsFromRecords(records),
     };
     return foldRun(run, { watermark: stream.head_digest });
