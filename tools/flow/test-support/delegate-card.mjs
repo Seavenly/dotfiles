@@ -75,13 +75,26 @@ export function capabilityBlockedDelegateProposal(
 }
 
 export function completedTurnProjection({
+  agentId = "agent:delegate-review",
   callerKey,
   description,
   output = "accepted output",
+  prompt = "inspect the exact candidate",
+  steering = [],
   turnId = "turn:delegate-review",
 } = {}) {
   const inputKey = `${callerKey}:input:1`;
-  const prompt = "inspect the exact candidate";
+  const inputs = [{
+    sequence: 1,
+    caller_key: inputKey,
+    payload_sha256: digest(prompt),
+    delivery: { status: "submitted" },
+  }, ...steering.map(({ caller_id: callerId, prompt: steeringPrompt }, index) => ({
+    sequence: index + 2,
+    caller_key: `${callerKey}:steering:${callerId}`,
+    payload_sha256: digest(steeringPrompt),
+    delivery: { status: "submitted" },
+  }))];
   return {
     schema: "flow.delegated-agent-lifecycle-projection/v1",
     operation: "wait",
@@ -93,7 +106,7 @@ export function completedTurnProjection({
       record_sha256: digest({ turnId, output }),
     },
     delegation: {
-      agent_id: "agent:delegate-review",
+      agent_id: agentId,
       task_id: "task:delegate-review",
       group_id: "group:flow",
     },
@@ -111,24 +124,19 @@ export function completedTurnProjection({
         configuration_watermark: description.watermark.content_sha256,
         description_digest: description.description_digest,
       },
-      inputs: [{
-        sequence: 1,
-        caller_key: inputKey,
-        payload_sha256: digest(prompt),
-        delivery: { status: "submitted" },
-      }],
+      inputs,
       settlement_proof: {
         schema: "drovr.turn-settlement-proof/v1",
         classification: "exact_transcript_correlation",
         launch_comparison_key: description.comparison_keys.launch,
         configuration_watermark: description.watermark.content_sha256,
         description_digest: description.description_digest,
-        ordered_inputs: [{
-          sequence: 1,
-          caller_key: inputKey,
-          payload_sha256: digest(prompt),
+        ordered_inputs: inputs.map((input) => ({
+          sequence: input.sequence,
+          caller_key: input.caller_key,
+          payload_sha256: input.payload_sha256,
           delivery_proof: "exact_transcript_correlation",
-        }],
+        })),
       },
       result: { text: output, messages: [output] },
     },

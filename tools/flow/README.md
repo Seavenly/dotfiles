@@ -22,14 +22,18 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v13 adds disposable, exactly watermarked Kanban, graph, timeline,
-  trust, and operator projections rebuilt from `RunAuthority`, plus
-  independently authoritative child-run creation, deterministic lineage,
-  exact adoption, reconciled parent cancellation, and late-unclaimed output
-  quarantine. Catalog v12 adds authority-bound GitHub tracker progress, exact workspace
+  Catalog v14 adds declared managed-agent reuse, exact-attempt independent
+  fallback, caller-identified ordered steering, and recoverable delegate
+  cancellation settlement. Catalog v13 adds disposable, exactly watermarked
+  Kanban, graph, timeline, trust, and operator projections rebuilt from
+  `RunAuthority`, plus independently authoritative child-run creation,
+  deterministic lineage, exact adoption, reconciled parent cancellation, and
+  late-unclaimed output quarantine. Catalog v12 adds
+  authority-bound GitHub tracker progress, exact workspace
   writer claims, durable taint dispositions, human-bound destructive authority,
   and cleanup previews to the workspace, artifact, and resource handoff
-  interfaces introduced in v11. Delegate contracts
+  interfaces introduced in v11, alongside the delegate-attempt execution
+  introduced in v10. Delegate contracts
   include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
   blocks, a single Flow-owned Drovr feature baseline, and the exact working-turn
@@ -42,8 +46,8 @@ disabled, so this API does not authorize normal replacement launches.
   fresh bundle rather than launch a pre-v12 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`, one or more
-  independently ready operation cards, one
-  `flow.delegated-agent-port/v1` delegate card, or one
+  independently ready operation cards, one or more ordered
+  `flow.delegated-agent-port/v1` delegate cards, or one
   `flow.subrun/create-and-observe/v1` child card.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
@@ -175,6 +179,27 @@ disabled, so this API does not authorize normal replacement launches.
   reconciles it through the child's exact cancellation action. Late child
   output remains correlated by child ID and watermark with
   `late_unclaimed`/`quarantined` dispositions and cannot complete the parent.
+  Multiple cards may reuse one agent only through an identical
+  `flow.managed-agent-binding/v1` that names the complete ordered card set and
+  terminal card under one immutable route. A revision is rejected when its
+  required pending dependent closure would supersede any card inside that
+  binding, including when the revision block is upstream of the binding.
+  Earlier cards hand the agent to the named run holder; the terminal card
+  retires it. An exact
+  `flow.delegate-route-fallback/v1` may bind the final retry only when it was
+  accepted with the plan, uses a different harness, and preserves the exact
+  effective-authority comparison key. Ordered
+  `flow.delegate-steering-input/v1` values derive stable attempt-bound caller
+  keys and must all appear in settlement proof. Ambiguous discovery remains
+  reconciling. Cancellation is itself a recorded, recoverable effect that
+  closes the discovered exact turn and hands the agent back to the durable
+  registry before quarantined delegate retirement settlement. If cancellation
+  occurs between declared managed cards, the recorded cancellation effect
+  retires the agent held by the run. A checkpoint decline or terminal
+  disposition also retires every managed agent held by the run before the
+  deferred `run_declined` event commits. If exact discovery proves the held
+  turn absent, cleanup is handed conservatively to the Drovr registry instead
+  of issuing an invalid retirement request without a turn identity.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -340,11 +365,18 @@ Adapter only when its full intent and idempotency key were durably recorded by
 the lifecycle decision; the lock and epoch are checked again immediately before
 the call, asynchronous provider settlement is awaited, and only successful
 completion appends a durable receipt. Effect-bearing decisions cannot record a
-terminal run transition before that receipt. Same-boot recovery adopts the
+terminal run transition before that receipt. Cancellation is the narrow
+exception: its decision atomically records `run_cancelled` and exact
+`delegate_cancellation` intents so admission closes immediately, then only
+those intents may close live turns before quarantined delegate settlement.
+Same-boot recovery adopts the
 exact outstanding intent under the new epoch without changing its idempotency
 identity.
-RunAuthority records each provider invocation start and validates reconciliation
-observations itself. Reconcilable reinvocation requires a latest durable,
+RunAuthority records each initial provider invocation start and validates
+reconciliation observations itself. Cancelled delegate settlement reuses that
+original invocation identity because a post-cancellation invocation marker
+would incorrectly describe new work; its separate cancellation effect records
+its own invocation start. Reconcilable reinvocation requires a latest durable,
 affirmative absence observation; one-shot uncertain effects may adopt exact
 presence but never invoke again. While an effect remains unresolved, terminal
 checkpoint and revision declines are withheld and constructed checkpoint

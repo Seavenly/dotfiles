@@ -241,6 +241,7 @@ export function validateDynamicPlan(proposal, {
       );
     }
   }
+  validateManagedAgentBindings(proposal.graph.cards);
   if (proposal.graph.cards.some(({ executor }) => executor.kind === "checkpoint") &&
       !proposal.requested_authority.commands.includes("checkpoint_decision")) {
     invalidPlan(
@@ -318,6 +319,58 @@ function validateSubrunCard(card, proposal, registeredOperations) {
   );
   if (registeredOperations !== null && issue) {
     invalidPlan(issue, `subrun Adapter is unavailable: ${card.id}`);
+  }
+}
+
+function validateManagedAgentBindings(cards) {
+  const delegates = cards.filter(({ executor }) => executor.kind === "delegate");
+  for (const card of delegates.filter(({ inputs }) => inputs.fallback)) {
+    if (delegates.some((candidate) => candidate.id !== card.id && [
+      candidate.route.agent_id,
+      candidate.inputs.fallback?.route?.agent_id,
+    ].includes(card.inputs.fallback.route.agent_id))) {
+      invalidPlan("ambient_managed_agent_reuse",
+        `fallback route reuses an undeclared managed agent: ${card.id}`);
+    }
+  }
+  const routesByAgent = Map.groupBy(delegates, ({ route }) => route.agent_id);
+  const boundAgentIds = new Map();
+  for (const [agentId, routedCards] of routesByAgent) {
+    if (routedCards.length === 1 &&
+        routedCards[0].inputs.managed_agent === undefined) continue;
+    const bindings = routedCards.map(({ inputs }) => inputs.managed_agent);
+    if (bindings.some((binding) => !isRecord(binding)) ||
+        new Set(bindings.map((binding) => digest(binding))).size !== 1) {
+      invalidPlan("ambient_managed_agent_reuse",
+        `managed agent reuse must be declared identically: ${agentId}`);
+    }
+    const binding = bindings[0];
+    const cardIds = binding.card_ids;
+    const routedCardIds = routedCards.map(({ id }) => id).sort();
+    const orderedCards = Array.isArray(cardIds)
+      ? cardIds.map((cardId) => routedCards.find(({ id }) => id === cardId))
+      : [];
+    if (binding.schema !== "flow.managed-agent-binding/v1" ||
+        Object.keys(binding).sort().join(",") !==
+          "binding_id,card_ids,schema,terminal_card_id" ||
+        typeof binding.binding_id !== "string" || !binding.binding_id ||
+        !Array.isArray(binding.card_ids) ||
+        digest([...binding.card_ids].sort()) !== digest(routedCardIds) ||
+        binding.terminal_card_id !== cardIds.at(-1) ||
+        orderedCards.some((card) => card === undefined) ||
+        orderedCards.some((card) => card.inputs.fallback !== undefined) ||
+        new Set(routedCards.map(({ route }) => digest(route))).size !== 1 ||
+        orderedCards.slice(1).some((card, index) =>
+          !card.dependencies.includes(orderedCards[index].id))) {
+      invalidPlan("invalid_managed_agent_binding",
+        `managed agent reuse is not one ordered immutable binding: ${agentId}`);
+    }
+    const priorAgentId = boundAgentIds.get(binding.binding_id);
+    if (priorAgentId !== undefined && priorAgentId !== agentId) {
+      invalidPlan("invalid_managed_agent_binding",
+        `managed agent binding names multiple routes: ${binding.binding_id}`);
+    }
+    boundAgentIds.set(binding.binding_id, agentId);
   }
 }
 
@@ -567,6 +620,16 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       `revision supersession is invalid: ${template.id}`,
     );
   }
+  const managedBindingCardIds = new Set(proposal.graph.cards
+    .filter((card) => card.executor?.kind === "delegate" &&
+      isRecord(card.inputs?.managed_agent))
+    .map(({ id }) => id));
+  if (changes.supersede_cards.some((id) => managedBindingCardIds.has(id))) {
+    invalidPlan(
+      "managed_agent_binding_revision",
+      `revision cannot supersede an immutable managed-agent binding: ${template.id}`,
+    );
+  }
   const pendingClosure = new Set(
     proposal.explicit_facts.block_observations
       .filter(({ block }) => block.revision_template_ids.includes(template.id))
@@ -692,6 +755,7 @@ function validateDelegateCard(card, proposal) {
   if (description?.schema !== "drovr.delegated-agent-description/v1" ||
       !isDigest(description.description_digest) ||
       !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.comparison_keys?.effective_authority) ||
       !isDigest(description.watermark?.content_sha256) ||
       typeof card.inputs.prompt !== "string" || !card.inputs.prompt ||
       !Number.isSafeInteger(card.inputs.wait_timeout_ms) ||
@@ -707,6 +771,8 @@ function validateDelegateCard(card, proposal) {
     invalidPlan("invalid_delegate_route",
       `delegate route does not bind the exact description: ${card.id}`);
   }
+  validateDelegateFallback(card, description);
+  validateDelegateSteering(card);
   if (!Number.isInteger(card.limits.max_attempts) ||
       card.limits.max_attempts < 1 ||
       card.recovery !== "discover_then_dispatch_exact") {
@@ -717,6 +783,60 @@ function validateDelegateCard(card, proposal) {
     facts.validator_contracts.includes(validator))) {
     invalidPlan("unsupported_delegate_validator",
       `delegate validators are not declared: ${card.id}`);
+  }
+}
+
+function validateDelegateSteering(card) {
+  const steering = card.inputs.steering ?? [];
+  if (!Array.isArray(steering) || steering.some((input) =>
+    !isRecord(input) ||
+    Object.keys(input).sort().join(",") !== "caller_id,prompt,schema" ||
+    input.schema !== "flow.delegate-steering-input/v1" ||
+    typeof input.caller_id !== "string" || !input.caller_id ||
+    typeof input.prompt !== "string" || !input.prompt) ||
+    new Set(steering.map(({ caller_id: callerId }) => callerId)).size !==
+      steering.length) {
+    invalidPlan("invalid_delegate_steering",
+      `delegate steering identities must be unique and complete: ${card.id}`);
+  }
+}
+
+function validateDelegateFallback(card, primaryDescription) {
+  const fallback = card.inputs.fallback;
+  if (fallback === undefined) return;
+  const description = fallback?.description;
+  const route = fallback?.route;
+  if (fallback?.schema !== "flow.delegate-route-fallback/v1" ||
+      Object.keys(fallback).sort().join(",") !==
+        "activate_for_attempt,description,independent_from,route,schema" ||
+      Object.keys(fallback.independent_from ?? {}).sort().join(",") !==
+        "description_digest,relation" ||
+      fallback.activate_for_attempt !== card.limits.max_attempts ||
+      fallback.activate_for_attempt < 2 ||
+      description?.schema !== "drovr.delegated-agent-description/v1" ||
+      !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.comparison_keys?.effective_authority) ||
+      !isDigest(description.watermark?.content_sha256) ||
+      route?.description_digest !== description.description_digest ||
+      route?.launch_comparison_key !== description.comparison_keys?.launch ||
+      route?.configuration_watermark !== description.watermark?.content_sha256 ||
+      typeof route?.agent_id !== "string" || !route.agent_id) {
+    invalidPlan("invalid_delegate_fallback",
+      `delegate fallback is not bound to one exact attempt: ${card.id}`);
+  }
+  if (fallback.independent_from?.relation !== "different_harness" ||
+      fallback.independent_from.description_digest !==
+        primaryDescription.description_digest ||
+      description.launch?.harness === primaryDescription.launch?.harness ||
+      route.agent_id === card.route.agent_id) {
+    invalidPlan("fallback_not_independent",
+      `delegate fallback is not independent of its primary route: ${card.id}`);
+  }
+  if (description.comparison_keys?.effective_authority !==
+      primaryDescription.comparison_keys?.effective_authority) {
+    invalidPlan("fallback_capability_widening",
+      `delegate fallback widens the accepted authority: ${card.id}`);
   }
 }
 

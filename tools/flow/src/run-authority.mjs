@@ -475,6 +475,19 @@ export function createDurableRunAuthority({
           // future release path must preserve that recovery-coverage invariant.
           if (previousAdmission?.boot_id === bootId) {
             sameBootRecoveryRunIds = new Set(previousAdmission.active_runs);
+            const runIndex = readStream(database, "host:runs")?.fold;
+            for (const runId of runIndex?.runs ?? []) {
+              const stream = readStream(database, runId);
+              if (stream?.lastBootId === bootId &&
+                  stream.fold.legal_actions.some((action) =>
+                    action.type === "recovery" &&
+                    ["delegate", "delegate_cancellation"].includes(
+                      stream.fold.effects.find(({ effect_id: effectId }) =>
+                        effectId === action.effect_id)?.effect_kind,
+                    ))) {
+                sameBootRecoveryRunIds.add(runId);
+              }
+            }
           }
           authorityEpoch = acquireAuthorityEpoch(database, {
             bootId,
@@ -1009,7 +1022,9 @@ export function createDurableRunAuthority({
           }
           const terminalEvent = currentDecision.events.find(({ type }) =>
             ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
-          if (terminalEvent && effectIntents.length === 0) {
+          const terminalCommitsImmediately = terminalEvent?.type ===
+              "run_cancelled" || effectIntents.length === 0;
+          if (terminalEvent && terminalCommitsImmediately) {
             appendTerminalConsumerHandoffReleases(database, {
               prepared: current.records[0].payload.prepared,
               runId: canonicalCommand.run_id,
@@ -1020,8 +1035,7 @@ export function createDurableRunAuthority({
               processIdentity,
             });
           }
-          if (effectIntents.length === 0 && currentDecision.events.some(({ type }) =>
-            ["run_cancelled", "run_declined", "run_succeeded"].includes(type))) {
+          if (terminalEvent && terminalCommitsImmediately) {
             appendAuthorityEvents(database, {
               streamId: "host:admission",
               streamKind: "host_admission",
@@ -1403,6 +1417,7 @@ export function createDurableRunAuthority({
         );
       }
       const reconciliation = adapter?.reconciliation ?? null;
+      const settleCancelled = adapter?.settleCancelled === true;
       if (![null, "adopt_present", "invoke_absent", "settle_absent"].includes(
         reconciliation,
       ) || !["adopt_present", "settle_absent"].includes(reconciliation) &&
@@ -1433,6 +1448,13 @@ export function createDurableRunAuthority({
           throw new AuthorityFenceError(
             "unrecorded_effect_intent",
             "effect intent was not durably recorded by RunAuthority",
+          );
+        }
+        if (settleCancelled &&
+            !["delegate", "delegate_cancellation"].includes(intent.effect_kind)) {
+          throw new AuthorityFenceError(
+            "invalid_cancelled_settlement",
+            "cancelled settlement is reserved for delegated resources",
           );
         }
         if (stream.records.some(({ payload }) =>
@@ -1548,21 +1570,30 @@ export function createDurableRunAuthority({
           // return its intent-commit watermark before invocation-start advances it.
           await Promise.resolve();
           const admissionStream = readStream(database, effectiveIntent.run_id);
-          if (admissionStream.fold.phase !== "active") {
+          if (settleCancelled && admissionStream.fold.phase !== "cancelled") {
+            throw new AuthorityFenceError(
+              "cancelled_settlement_not_actionable",
+              "delegate cancellation settlement requires cancelled authority",
+            );
+          }
+          if (!settleCancelled && admissionStream.fold.phase !== "active") {
             throw new AuthorityFenceError(
               "attempt_disposed",
               "terminal run authority fenced effect admission",
             );
           }
-          recordEffectInvocationStarted(database, effectiveIntent, {
-            authorityDirectory,
-            authorityEpoch,
-            bootId,
-            gitRetentionAdapter,
-            gitWorkspaceObservationAdapter,
-            processIdentity,
-          });
-          beforeEffect(effectiveIntent);
+          if (!settleCancelled ||
+              effectiveIntent.effect_kind === "delegate_cancellation") {
+            recordEffectInvocationStarted(database, effectiveIntent, {
+              authorityDirectory,
+              authorityEpoch,
+              bootId,
+              gitRetentionAdapter,
+              gitWorkspaceObservationAdapter,
+              processIdentity,
+            });
+            beforeEffect(effectiveIntent);
+          }
           assertMutationFence(lockDatabase, database, {
             authorityEpoch,
             bootId,
