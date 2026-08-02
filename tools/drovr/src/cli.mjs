@@ -35,6 +35,10 @@ import { statusReport } from "./status.mjs";
 import { normalizeInputText } from "./turn-record.mjs";
 import { openTask, taskOpenCommandResult } from "./task-open.mjs";
 import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
+import {
+  inspectAgentStagedInput,
+  recoverAgentStagedInput,
+} from "./staged-input.mjs";
 
 const HELP = `Usage:
   drovr doctor
@@ -57,6 +61,7 @@ const HELP = `Usage:
   drovr agent start TASK_ID [options]
   drovr agent list [--task TASK_ID] [--status STATUS] [--harness HARNESS]
   drovr agent get AGENT_ID
+  drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN]
   drovr agent retire AGENT_ID
   drovr attach AGENT_ID [--takeover]
 
@@ -313,6 +318,38 @@ export async function runCli(argv) {
     return 0;
   }
 
+  if (argv[0] === "agent" && argv[1] === "staged-input") {
+    const agentId = argv[2];
+    if (!agentId) invalidArguments("agent staged-input requires AGENT_ID");
+    const trailing = argv.slice(3);
+    let context;
+    if (trailing.length === 0) {
+      context = await inspectAgentStagedInput(agentId);
+    } else {
+      if (
+        trailing.length !== 2 ||
+        !["--submit", "--clear", "--clear-unknown"].includes(trailing[0])
+      ) {
+        invalidArguments(
+          "agent staged-input accepts --submit TOKEN, --clear TOKEN, or --clear-unknown TOKEN",
+        );
+      }
+      context = await recoverAgentStagedInput(agentId, {
+        action:
+          trailing[0] === "--submit"
+            ? "submit"
+            : trailing[0] === "--clear-unknown"
+              ? "clear_unknown"
+              : "clear",
+        token: trailing[1],
+      });
+    }
+    process.stdout.write(
+      `${JSON.stringify(stagedInputCommandResult(context))}\n`,
+    );
+    return 0;
+  }
+
   if (argv[0] === "agent" && argv[1] === "retire") {
     if (argv.length !== 3) invalidArguments("agent retire requires AGENT_ID");
     const report = lifecycleCommandResult(
@@ -361,6 +398,35 @@ function parseCloseArguments(argv, command, identifier) {
     invalidArguments("--force may be supplied once");
   }
   return { id, force: trailing.includes("--force") };
+}
+
+function stagedInputCommandResult(context) {
+  return {
+    schema: "drovr.command/v1",
+    command: "agent staged-input",
+    ok: true,
+    result: {
+      status: context.status,
+      agent: {
+        id: context.agent.id,
+        key: context.agent.key,
+        harness: context.agent.launch.harness,
+        native_session: context.agent.native_session,
+      },
+      ...(context.staged_input
+        ? { staged_input: context.staged_input }
+        : {}),
+      ...(context.turn
+        ? {
+            turn: {
+              id: context.turn.id,
+              status: context.turn.status,
+              input_count: context.turn.inputs.length,
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 const DELEGATE_OPTIONS = new Map([

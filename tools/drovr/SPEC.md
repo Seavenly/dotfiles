@@ -315,6 +315,7 @@ drovr task close TASK_ID [--force]
 drovr agent start TASK_ID [options]
 drovr agent list [filters]
 drovr agent get AGENT_ID
+drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN]
 drovr agent retire AGENT_ID
 
 drovr turn start AGENT_ID [options] [PROMPT]
@@ -412,13 +413,30 @@ a multiline or long single-line prompt staged and the agent idle, Drovr waits
 for the newly staged content to appear either as literal prompt-box text or as a
 new visible Claude attachment token, sends one guarded submit key, and requires
 active-state evidence before continuing. Drovr refuses to append a new turn
-over prompt text that was already staged before delivery. A single-line
+over prompt text that was already staged before delivery. This preflight occurs
+before a logical turn is created and returns `recovery_blocked` with an exact
+inspection command and staged-input token. A single-line
 delivery with no visible staged content proceeds to exact native transcript
 correlation only when Herdr reports a new `done` observation, because a short
 turn can complete before the first post-delivery poll. Pane output is used only
 as delivery-readiness evidence; it is never completion authority. Failure to
 observe staged content or a native transition is an adapter failure and leaves
 the turn `uncertain`; it is not treated as native settlement.
+
+When Drovr observes an empty Claude prompt box become staged during its own
+delivery attempt but cannot confirm submission, the uncertain turn retains an
+exact staged-input receipt. The receipt binds the complete visible literal input,
+original input digest, agent, pane, native session, and pre-delivery state token.
+Attachment placeholders and partial visible matches are never ownership proof.
+`agent staged-input` compares the current prompt-box snapshot with that receipt.
+An exact match may be submitted or cleared non-interactively with the returned
+token. Submission remains correlated to the original uncertain logical turn and
+never creates a replacement turn. Clearing sends one guarded interrupt key and
+succeeds only after the same native session is settled with an empty prompt box.
+A mismatch or changed native identity returns `recovery_blocked` without
+terminal mutation. Unknown prompt text is preserved by default; the operator may
+explicitly authorize clearing that exact inspected snapshot with
+`--clear-unknown TOKEN`.
 
 Native waiting first returns an already-settled observation rather than waiting
 for another state change. If the pre-delivery state persists past the bounded
@@ -601,7 +619,13 @@ Herdr's own native session restore handles a full Herdr server restart. Drovr
 reconciles restored panes back to registered agents.
 
 When a mutating command needs an active registered agent and confirms that its
-process is absent, it may automatically resume the native session only when:
+named Herdr agent is absent, an absent exact persisted pane is confirmed-down
+evidence. A present pane is recoverable only when its process inventory contains
+the pane shell and no other foreground process. If the pane is absent, Drovr
+recreates a missing managed workspace or task tab, or splits from an exact
+registered sibling pane in the surviving task tab, before rebinding the agent.
+An unowned surviving tab remains ambiguous. Drovr may automatically resume
+the native session only when:
 
 1. Registry state says the agent should still be active.
 2. The original task and cwd remain active and present.

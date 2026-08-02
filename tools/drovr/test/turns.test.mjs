@@ -28,6 +28,99 @@ import {
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 
+test("start refuses unknown staged Claude input before creating a logical turn", async (t) => {
+  const fixture = await settledClaudeAgentFixture(t);
+  const observed = {
+    name: "managed-agent",
+    pane_id: "pane-agent-1",
+    agent_status: "idle",
+    state_change_seq: 12,
+    agent_session: { value: "claude-session-1" },
+  };
+  const herdr = {
+    async ensureSession() {},
+    async agentRecords() {
+      return [observed];
+    },
+    async agentRecord() {
+      return observed;
+    },
+    async inspectStagedInput() {
+      return { token: "a".repeat(64), display_text: "operator staged work" };
+    },
+    async prompt() {
+      assert.fail("a new prompt must not be delivered over staged input");
+    },
+  };
+
+  await assert.rejects(
+    startTurn(
+      fixture.agent.id,
+      { prompt: "new Drovr work" },
+      { env: fixture.env, herdr },
+    ),
+    (error) => {
+      assert.equal(error.outcome, "recovery_blocked");
+      assert.equal(error.details.staged_input.ownership, "unknown");
+      assert.equal(error.details.staged_input.token, "a".repeat(64));
+      return true;
+    },
+  );
+  assert.deepEqual(await readRecords(fixture.registryDirectory, "turns"), []);
+});
+
+test("failed delivery persists the exact Drovr-owned staged-input receipt", async (t) => {
+  const fixture = await settledClaudeAgentFixture(t);
+  const observed = {
+    name: "managed-agent",
+    pane_id: "pane-agent-1",
+    agent_status: "idle",
+    state_change_seq: 12,
+    agent_session: { value: "claude-session-1" },
+  };
+  const token = "b".repeat(64);
+  const herdr = {
+    async ensureSession() {},
+    async agentRecords() {
+      return [observed];
+    },
+    async agentRecord() {
+      return observed;
+    },
+    async inspectStagedInput() {
+      return null;
+    },
+    async prompt() {
+      const error = new Error("submission was not confirmed");
+      error.details = {
+        staged_input: {
+          token,
+          display_text: "new Drovr work",
+          ownership: "drovr",
+        },
+      };
+      throw error;
+    },
+  };
+
+  await assert.rejects(
+    startTurn(
+      fixture.agent.id,
+      { prompt: "new Drovr work" },
+      { env: fixture.env, herdr },
+    ),
+    /submission was not confirmed/u,
+  );
+
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  assert.equal(turn.status, "uncertain");
+  assert.deepEqual(turn.staged_input, {
+    token,
+    display_text: "new Drovr work",
+    ownership: "drovr",
+  });
+});
+
 test("cancel explicitly interrupts, confirms settlement, and leaves the agent reusable", async (t) => {
   const fixture = await turnFixture(t);
   let interrupted = false;

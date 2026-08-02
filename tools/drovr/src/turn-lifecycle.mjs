@@ -46,8 +46,14 @@ export async function deliverTurn({
   now,
 }) {
   try {
-    return await herdr.prompt(agent.herdr.name, prompt);
+    return await herdr.prompt(agent.herdr.name, prompt, {
+      harness: agent.launch.harness,
+    });
   } catch (error) {
+    if (error.details?.staged_input?.ownership === "drovr") {
+      turn.staged_input = error.details.staged_input;
+      turn.late_result_recovery = "exact_transcript_correlation";
+    }
     settleTurnRecord(turn, {
       status: "uncertain",
       error: error.message,
