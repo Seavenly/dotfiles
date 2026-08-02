@@ -68,7 +68,23 @@ run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
   "$root/config/claude/scripts/package-lock.json" \
   "$root/config/agent-flow/package.json" \
   "$root/config/agent-flow/package-lock.json" \
+  "$root/config/flow/package.json" \
+  "$root/config/flow/package-lock.json" \
+  "$root/config/flow/contracts/drovr-required-features.v1.json" \
+  "$root/config/flow/schemas/flow.query.v1.schema.json" \
+  "$root/config/flow/schemas/flow.authority-schema-compatibility.v1.schema.json" \
+  "$root/config/flow/schemas/flow.authority-schema-transition-boundary.v1.schema.json" \
+  "$root/config/flow/schemas/flow.delegated-agent-description-projection.v1.schema.json" \
+  "$root/config/flow/schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json" \
+  "$root/config/flow/schemas/flow.legacy-compatibility-inventory.v1.schema.json" \
+  "$root/config/flow/schemas/flow.rejection.v1.schema.json" \
   "$root/tools/drovr/package.json" \
+  "$root/tools/flow/package.json" \
+  "$root/tools/flow/package-lock.json" \
+  "$root/config/flow/contracts/catalog.v1.json" \
+  "$root/config/flow/launch-policy.v1.json" \
+  "$root/config/flow/legacy-baselines.v1.json" \
+  "$root/config/flow/transition-ledger.v1.json" \
   "$root/config/agent-flow/schemas/agent-flow.handoff.v1.schema.json" \
   "$root/config/agent-flow/schemas/agent-flow.local-review.v1.schema.json"
 run "TOML (macOS)" env MISE_TRUSTED_CONFIG_PATHS="$root" mise -C "$root" -E macos config ls
@@ -84,6 +100,8 @@ run "Lua" bash -c 'find "$1/config/nvim" -name "*.lua" -print0 | xargs -0 luac -
 run "Python" env PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/dotfiles-pycache" python3 -m py_compile "$root/tools/recorder/clean.py" "$root/tools/recorder/record.py" "$root/tools/recorder/transcribe.py"
 run "recorder lock" env UV_CACHE_DIR="${TMPDIR:-/tmp}/dotfiles-uv-cache" uv lock --project "$root/tools/recorder" --check
 run "Drovr" npm --prefix "$root/tools/drovr" test
+run "Flow" npm --prefix "$root/config/flow" test
+run "Flow transition" npm --prefix "$root/tools/flow" test
 run "behavior" "$root/tests/run"
 if command -v actionlint >/dev/null 2>&1; then
   run "GitHub Actions" actionlint "$root/.github/workflows/check.yml"

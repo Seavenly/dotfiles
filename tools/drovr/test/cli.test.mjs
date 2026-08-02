@@ -37,6 +37,8 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr delegate \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr ask AGENT_ID \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr turn start AGENT_ID \[options\] \[PROMPT\]/);
+  assert.match(stdout, /drovr turn dispatch AGENT_ID/);
+  assert.match(stdout, /drovr turn discover CALLER_KEY/);
   assert.match(stdout, /drovr turn send TURN_ID \[options\] \[PROMPT\]/);
   assert.match(
     stdout,
@@ -50,8 +52,100 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr agent retire AGENT_ID/);
   assert.match(stdout, /drovr task close TASK_ID/);
   assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
+  assert.match(stdout, /drovr describe \[launch options\] --caller-metadata JSON/);
   assert.match(stdout, /Waiting commands emit one JSON result/u);
   assert.match(stdout, /They do not\nstream progress/u);
+});
+
+test("public describe command returns an exact launch without initializing state", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-describe-cli-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const stateHome = join(scratch, "state");
+
+  const { stdout } = await execFileAsync(
+    drovr,
+    [
+      "describe",
+      "--harness",
+      "codex",
+      "--capability",
+      "read-only",
+      "--caller-metadata",
+      '{"run_id":"run:example"}',
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOTFILES_ROOT: root,
+        DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+        XDG_STATE_HOME: stateHome,
+      },
+    },
+  );
+
+  const report = JSON.parse(stdout);
+  assert.equal(report.schema, "drovr.command/v1");
+  assert.equal(report.command, "describe");
+  assert.equal(report.ok, true);
+  assert.equal(report.result.schema, "drovr.delegated-agent-description/v1");
+  assert.equal(report.result.launch.harness, "codex");
+  assert.deepEqual(report.result.caller_metadata, { run_id: "run:example" });
+  await assert.rejects(stat(join(stateHome, "drovr")), { code: "ENOENT" });
+});
+
+test("public caller discovery proves absence without initializing state", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-discover-cli-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const stateHome = join(scratch, "state");
+
+  const { stdout } = await execFileAsync(
+    drovr,
+    ["turn", "discover", "run:1/card:review/attempt:1"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOTFILES_ROOT: root,
+        XDG_STATE_HOME: stateHome,
+      },
+    },
+  );
+
+  const report = JSON.parse(stdout);
+  assert.equal(report.command, "turn discover");
+  assert.equal(report.result.status, "proven_absent");
+  assert.equal(
+    report.result.authority_watermark.authority,
+    "drovr.registry",
+  );
+  assert.match(
+    report.result.authority_watermark.turns_sha256,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.deepEqual(report.result.legal_next_actions, [
+    "dispatch_with_same_caller_key",
+  ]);
+  await assert.rejects(stat(join(stateHome, "drovr")), { code: "ENOENT" });
+});
+
+test("describe help documents its non-mutating contract arguments", async () => {
+  const { stdout, stderr } = await execFileAsync(
+    drovr,
+    ["describe", "--help"],
+    {
+      encoding: "utf8",
+      env: { ...process.env, DOTFILES_ROOT: root },
+    },
+  );
+
+  assert.equal(stderr, "");
+  assert.match(
+    stdout,
+    /^Usage:\n  drovr describe \[launch options\] --caller-metadata JSON/u,
+  );
+  assert.match(stdout, /--caller-metadata JSON/u);
+  assert.match(stdout, /--capability CAPABILITY/u);
 });
 
 test("delegate help documents options without initializing state", async (t) => {

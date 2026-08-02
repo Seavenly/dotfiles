@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegated-agent-description-projection.v1.schema.json",
+  "title": "flow.delegated-agent-description-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "watermark",
+    "description",
+    "compatibility",
+    "legal_next_actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.delegated-agent-description-projection/v1"
+    },
+    "status": { "enum": ["compatible", "blocked"] },
+    "watermark": {
+      "oneOf": [
+        { "$ref": "#/$defs/watermark" },
+        { "type": "null" }
+      ]
+    },
+    "description": {
+      "oneOf": [
+        { "$ref": "#/$defs/description" },
+        { "type": "null" }
+      ]
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "code", "findings"],
+      "properties": {
+        "contract": { "const": "flow.delegated-agent-port/v1" },
+        "code": {
+          "enum": [
+            null,
+            "invalid_description_request",
+            "delegated_agent_port_unavailable",
+            "description_unavailable",
+            "incompatible_feature_advertisement",
+            "contradictory_description"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 2,
+            "maxProperties": 2,
+            "properties": {
+              "feature_id": { "type": ["string", "null"] },
+              "field": { "type": "string" },
+              "reason": {
+                "enum": ["missing", "unavailable", "weakened", "contradictory"]
+              }
+            },
+            "required": ["reason"]
+          }
+        }
+      }
+    },
+    "legal_next_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "bind_exact_launch_description",
+          "refresh_delegated_runtime_description",
+          "repair_delegated_runtime_contract",
+          "repair_delegated_agent_port",
+          "retry_delegated_runtime_description"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authority", "content_sha256"],
+      "properties": {
+        "schema": { "const": "drovr.authority-watermark/v1" },
+        "authority": { "const": "drovr.configuration-catalog" },
+        "content_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "description": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "schemas",
+        "watermark",
+        "description_digest",
+        "launch",
+        "effective_authority",
+        "capacity",
+        "credential_reference",
+        "feature_advertisement",
+        "caller_metadata",
+        "comparison_keys",
+        "legal_actions"
+      ],
+      "properties": {
+        "schema": { "const": "drovr.delegated-agent-description/v1" },
+        "schemas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "request",
+            "description",
+            "launch",
+            "effective_authority",
+            "capacity",
+            "credential_reference",
+            "feature_advertisement",
+            "caller_metadata"
+          ],
+          "properties": {
+            "request": { "const": "drovr.delegated-agent-description-request/v1" },
+            "description": { "const": "drovr.delegated-agent-description/v1" },
+            "launch": { "const": "drovr.launch-description/v1" },
+            "effective_authority": { "const": "drovr.effective-authority/v1" },
+            "capacity": { "const": "drovr.capacity/v1" },
+            "credential_reference": { "const": "drovr.credential-reference/v1" },
+            "feature_advertisement": { "const": "drovr.feature-advertisement/v1" },
+            "caller_metadata": { "const": "opaque-json/v1" }
+          }
+        },
+        "watermark": { "$ref": "#/$defs/watermark" },
+        "description_digest": { "$ref": "#/$defs/digest" },
+        "launch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "harness",
+            "role",
+            "instructions",
+            "model",
+            "effort",
+            "capability",
+            "native",
+            "catalog_fingerprints"
+          ],
+          "properties": {
+            "schema": { "const": "drovr.launch-description/v1" },
+            "harness": { "enum": ["claude", "codex"] },
+            "role": { "type": ["string", "null"] },
+            "instructions": { "type": "string" },
+            "model": { "type": "string", "minLength": 1 },
+            "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+            "capability": {
+              "enum": [
+                "read-only",
+                "on-approve",
+                "workspace-write",
+                "auto",
+                "unrestricted"
+              ]
+            },
+            "native": { "type": "object" },
+            "catalog_fingerprints": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["subject", "sha256"],
+                "properties": {
+                  "subject": { "type": "string", "minLength": 1 },
+                  "sha256": { "$ref": "#/$defs/digest" }
+                }
+              }
+            }
+          }
+        },
+        "effective_authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "capability", "dimensions"],
+          "properties": {
+            "schema": { "const": "drovr.effective-authority/v1" },
+            "capability": { "type": "string" },
+            "dimensions": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["approvals", "filesystem", "network"],
+              "properties": {
+                "approvals": { "type": "string" },
+                "filesystem": { "type": "string" },
+                "network": { "type": "string" }
+              }
+            }
+          }
+        },
+        "capacity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "admission_owner",
+            "observation_timeout_ms",
+            "concurrent_logical_turns_per_agent",
+            "managed_agents_per_task"
+          ],
+          "properties": {
+            "schema": { "const": "drovr.capacity/v1" },
+            "admission_owner": { "const": "caller" },
+            "observation_timeout_ms": { "const": 30000 },
+            "concurrent_logical_turns_per_agent": { "const": 1 },
+            "managed_agents_per_task": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["hard_limit", "normal_limit", "five_or_more_supported"],
+              "properties": {
+                "hard_limit": { "type": "null" },
+                "normal_limit": { "const": 4 },
+                "five_or_more_supported": { "const": true }
+              }
+            }
+          }
+        },
+        "credential_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "identity", "secret_material_included"],
+          "properties": {
+            "schema": { "const": "drovr.credential-reference/v1" },
+            "identity": { "enum": ["ambient/claude", "ambient/codex"] },
+            "secret_material_included": { "const": false }
+          }
+        },
+        "feature_advertisement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "features"],
+          "properties": {
+            "schema": { "const": "drovr.feature-advertisement/v1" },
+            "features": {
+              "type": "array",
+              "minItems": 14,
+              "maxItems": 14,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "contract",
+                  "authority",
+                  "availability",
+                  "guarantees"
+                ],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "contract": {
+                    "type": "string",
+                    "pattern": "^drovr\\.feature/[a-z-]+/v1$"
+                  },
+                  "authority": {
+                    "enum": ["configuration_catalog", "delegated_runtime"]
+                  },
+                  "availability": {
+                    "enum": ["supported", "unavailable"]
+                  },
+                  "guarantees": {
+                    "type": "array",
+                    "minItems": 2,
+                    "items": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "caller_metadata": {},
+        "comparison_keys": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "launch",
+            "effective_authority",
+            "credential_reference",
+            "configuration_catalog"
+          ],
+          "properties": {
+            "launch": { "$ref": "#/$defs/digest" },
+            "effective_authority": { "$ref": "#/$defs/digest" },
+            "credential_reference": { "$ref": "#/$defs/digest" },
+            "configuration_catalog": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "legal_actions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "const": "dispatch_exact_launch" },
+            { "const": "refresh_description" }
+          ],
+          "items": false
+        }
+      }
+    }
+  }
+}

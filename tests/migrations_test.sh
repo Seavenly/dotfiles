@@ -74,7 +74,7 @@ private_marker="$XDG_STATE_HOME/dotfiles/migrations/002-private-environment"
 [[ -f "$private_file" ]] || fail "private environment file was not created"
 [[ -f "$private_marker" ]] || fail "private environment migration was not recorded"
 [[ ! -s "$private_file" ]] || fail "fresh private environment should be empty"
-permissions="$(stat -f '%Lp' "$private_file" 2>/dev/null || stat -c '%a' "$private_file")"
+permissions="$(file_mode "$private_file")"
 [[ "$permissions" == 600 ]] || fail "private environment permissions were $permissions"
 echo "ok - migrations create secure private environment"
 

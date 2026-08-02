@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { claudeAgentArguments } from "./claude.mjs";
 import { codexAgentArguments } from "./codex.mjs";
 import { DrovrError } from "./errors.mjs";
+import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 import { execute } from "./process.mjs";
 
 function parseJson(output, operation) {
@@ -33,10 +34,11 @@ export class HerdrClient {
     this.delay = delay;
   }
 
-  async sessionCommand(args) {
+  async sessionCommand(args, options = {}) {
     try {
       return await this.run("herdr", ["--session", this.session, ...args], {
         env: this.env,
+        ...options,
       });
     } catch (error) {
       const wrapped = new DrovrError(
@@ -49,6 +51,12 @@ export class HerdrClient {
       wrapped.adapterFailure = error;
       throw wrapped;
     }
+  }
+
+  async observationCommand(args) {
+    return this.sessionCommand(args, {
+      timeout: HERDR_OBSERVATION_TIMEOUT_MS,
+    });
   }
 
   async ensureSession() {
@@ -77,6 +85,7 @@ export class HerdrClient {
     try {
       output = await this.run("herdr", ["session", "list", "--json"], {
         env: this.env,
+        timeout: HERDR_OBSERVATION_TIMEOUT_MS,
       });
     } catch (error) {
       throw new DrovrError(`Herdr session list failed: ${error.message}`, {
@@ -117,7 +126,7 @@ export class HerdrClient {
       );
     }
     const pane = parseJson(
-      await this.sessionCommand(["pane", "get", paneId]),
+      await this.observationCommand(["pane", "get", paneId]),
       "pane get",
     ).result?.pane;
     if (!pane?.tab_id) {
@@ -243,7 +252,7 @@ export class HerdrClient {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       let output;
       try {
-        output = await this.sessionCommand([
+        output = await this.observationCommand([
           "pane",
           "process-info",
           "--pane",
@@ -276,7 +285,7 @@ export class HerdrClient {
 
   async agentRecords() {
     const result = parseJson(
-      await this.sessionCommand(["agent", "list"]),
+      await this.observationCommand(["agent", "list"]),
       "agent list",
     ).result;
     return result?.agents ?? [];
@@ -284,7 +293,7 @@ export class HerdrClient {
 
   async paneProcessInfo(paneId) {
     return parseJson(
-      await this.sessionCommand([
+      await this.observationCommand([
         "pane",
         "process-info",
         "--pane",
@@ -297,7 +306,7 @@ export class HerdrClient {
   async paneRecord(paneId) {
     try {
       return parseJson(
-        await this.sessionCommand(["pane", "get", paneId]),
+        await this.observationCommand(["pane", "get", paneId]),
         "pane get",
       ).result?.pane;
     } catch (error) {
@@ -308,7 +317,7 @@ export class HerdrClient {
 
   async paneLayout(paneId) {
     const layout = parseJson(
-      await this.sessionCommand(["pane", "layout", "--pane", paneId]),
+      await this.observationCommand(["pane", "layout", "--pane", paneId]),
       "pane layout",
     ).result?.layout;
     if (!layout || !Array.isArray(layout.panes)) {
@@ -351,7 +360,7 @@ export class HerdrClient {
   async tabRecord(tabId) {
     try {
       return parseJson(
-        await this.sessionCommand(["tab", "get", tabId]),
+        await this.observationCommand(["tab", "get", tabId]),
         "tab get",
       ).result?.tab;
     } catch (error) {
@@ -363,7 +372,7 @@ export class HerdrClient {
   async workspaceRecord(workspaceId) {
     try {
       return parseJson(
-        await this.sessionCommand(["workspace", "get", workspaceId]),
+        await this.observationCommand(["workspace", "get", workspaceId]),
         "workspace get",
       ).result?.workspace;
     } catch (error) {
@@ -397,7 +406,7 @@ export class HerdrClient {
   }
 
   async agentExcerpt(name) {
-    return this.sessionCommand([
+    return this.observationCommand([
       "agent",
       "read",
       name,
@@ -411,7 +420,7 @@ export class HerdrClient {
   }
 
   async agentVisibleText(name) {
-    return this.sessionCommand([
+    return this.observationCommand([
       "agent",
       "read",
       name,

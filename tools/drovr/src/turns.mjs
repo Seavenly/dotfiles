@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   acknowledgeBlockRecord,
@@ -11,6 +11,8 @@ import {
   supersedeBlockRecord,
 } from "./block-record.mjs";
 import { DrovrError } from "./errors.mjs";
+import { digestCanonical } from "./canonical-json.mjs";
+import { describeDelegatedAgent } from "./description.mjs";
 import { harnessAdapter } from "./harness-adapter.mjs";
 import { HerdrClient } from "./herdr.mjs";
 import {
@@ -22,7 +24,9 @@ import {
 } from "./registry.mjs";
 import {
   appendTurnInput,
+  normalizeInputText,
   settleTurnRecord,
+  terminalProofClassification,
   turnAwaitsPostDeliverySettlement,
 } from "./turn-record.mjs";
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
@@ -215,6 +219,9 @@ export async function startTurn(agentId, options, dependencies = {}) {
             inventoryBeforeDelivery:
               adapter.inventoryBeforeDelivery || !current.agent.native_session,
             herdrStateChangeSeq: observed.state_change_seq,
+            caller: options.caller,
+            inputKey: options.inputKey,
+            launchBinding: options.launchBinding,
           });
           return { ...current, turn };
         },
@@ -228,6 +235,121 @@ export async function startTurn(agentId, options, dependencies = {}) {
         now,
       });
       return context;
+    },
+  );
+}
+
+export async function discoverTurn(callerKey, dependencies = {}) {
+  requireCallerKey(callerKey);
+  const env = dependencies.env ?? process.env;
+  const registryDirectory = stateDirectory(env);
+  const turns = await readRecords(registryDirectory, "turns");
+  const authorityWatermark = {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    turns_sha256: callerPayloadDigest(turns),
+  };
+  const matches = turns.filter(
+    (turn) => turn.caller?.dispatch_key === callerKey,
+  );
+  if (matches.length > 1) {
+    throw new DrovrError(
+      `caller key ${callerKey} owns more than one logical turn`,
+      { code: 5, outcome: "corrupt_registry" },
+    );
+  }
+  if (matches.length === 0) {
+    return {
+      discovery_status: "proven_absent",
+      authority_watermark: authorityWatermark,
+    };
+  }
+  return {
+    ...(await turnContext(registryDirectory, matches[0].id)),
+    discovery_status: "found",
+    discovery_watermark: authorityWatermark,
+  };
+}
+
+export async function dispatchTurn(agentId, options, dependencies = {}) {
+  requireCallerKey(options.callerKey);
+  requireCallerKey(options.inputKey);
+  const prompt = typeof options.prompt === "string"
+    ? normalizeInputText(options.prompt)
+    : options.prompt;
+  requireInputText(prompt);
+  validateLaunchBinding(options.launchBinding);
+  const env = dependencies.env ?? process.env;
+  const registryDirectory = stateDirectory(env);
+  const payloadSha256 = callerPayloadDigest({
+    agent_id: agentId,
+    prompt,
+    input_key: options.inputKey,
+    caller_metadata: options.callerMetadata,
+    launch_binding: options.launchBinding,
+  });
+  return withResourceLock(
+    registryDirectory,
+    `dispatch-key:${options.callerKey}`,
+    async () => {
+      const existing = (await readRecords(registryDirectory, "turns")).filter(
+        (turn) => turn.caller?.dispatch_key === options.callerKey,
+      );
+      if (existing.length > 1) {
+        throw new DrovrError(
+          `caller key ${options.callerKey} owns more than one logical turn`,
+          { code: 5, outcome: "corrupt_registry" },
+        );
+      }
+      if (existing.length === 1) {
+        if (existing[0].caller.payload_sha256 !== payloadSha256) {
+          callerKeyConflict(options.callerKey);
+        }
+        return {
+          ...(await turnContext(registryDirectory, existing[0].id)),
+          dispatch_status:
+            existing[0].status === "working" &&
+            existing[0].inputs[0]?.delivery?.status === "recorded"
+              ? "reconciling"
+              : "adopted",
+        };
+      }
+      const initial = await agentContext(registryDirectory, agentId);
+      requireAgentLaunchBinding(initial);
+      const exactDescription = await describeDelegatedAgent({
+        schema: "drovr.delegated-agent-description-request/v1",
+        launch: Object.fromEntries(
+          ["harness", "role", "model", "effort", "capability"]
+            .filter((key) => initial.agent.launch[key] !== undefined)
+            .map((key) => [key, initial.agent.launch[key]]),
+        ),
+        caller_metadata: options.callerMetadata,
+      }, { env });
+      if (
+        exactDescription.comparison_keys.launch !==
+          options.launchBinding.comparison_key ||
+        exactDescription.watermark.content_sha256 !==
+          options.launchBinding.configuration_watermark ||
+        exactDescription.description_digest !==
+          options.launchBinding.description_digest
+      ) {
+        throw new DrovrError(
+          `agent ${agentId} description identity does not match the requested launch binding`,
+          { code: 0, outcome: "launch_binding_conflict" },
+        );
+      }
+      validateAgentLaunchBinding(initial, options.launchBinding);
+      const context = await startTurn(agentId, {
+        prompt,
+        inputKey: options.inputKey,
+        launchBinding: options.launchBinding,
+        caller: {
+          dispatch_key: options.callerKey,
+          payload_sha256: payloadSha256,
+          metadata: structuredClone(options.callerMetadata),
+        },
+      }, dependencies);
+      return { ...context, dispatch_status: "dispatched" };
     },
   );
 }
@@ -754,7 +876,37 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const prompt = typeof options.prompt === "string"
+    ? normalizeInputText(options.prompt)
+    : options.prompt;
+  if (options.callerKey) requireInputText(prompt);
   const initial = await turnContext(registryDirectory, turnId);
+  if (initial.turn.caller && !options.callerKey) {
+    throw new DrovrError(
+      `caller-owned logical turn ${turnId} requires a caller input key`,
+      { code: 2, outcome: "invalid_arguments" },
+    );
+  }
+  if (options.callerKey) {
+    const adopted = callerInputDisposition(
+      initial.turn,
+      options.callerKey,
+      prompt,
+    );
+    if (adopted) {
+      return {
+        ...initial,
+        input_status:
+          initial.turn.status === "working" &&
+          adopted.delivery?.status === "recorded"
+            ? "reconciling"
+            : "adopted",
+      };
+    }
+  }
+  if (pendingCallerDelivery(initial.turn)) {
+    return { ...initial, input_status: "reconciling" };
+  }
   const herdr = client(owningSession(initial.group), env, dependencies);
   await herdr.ensureSession();
   const availability = await reconcileOrRecoverAgent(initial.agent.id, {
@@ -778,6 +930,26 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       const context = await turnContext(registryDirectory, turnId);
       if (context.turn.status !== "working") {
         return { ...context, command_status: "turn_closed" };
+      }
+      if (options.callerKey) {
+        const adopted = callerInputDisposition(
+          context.turn,
+          options.callerKey,
+          prompt,
+        );
+        if (adopted) {
+          return {
+            ...context,
+            input_status:
+              context.turn.status === "working" &&
+              adopted.delivery?.status === "recorded"
+                ? "reconciling"
+                : "adopted",
+          };
+        }
+      }
+      if (pendingCallerDelivery(context.turn)) {
+        return { ...context, input_status: "reconciling" };
       }
       if (
         context.turn.cancellation_requested_at ||
@@ -808,7 +980,8 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       }
 
       appendTurnInput(context.turn, {
-        text: options.prompt,
+        callerKey: options.callerKey,
+        text: prompt,
         submittedAt: now(),
       });
       await writeRecord(registryDirectory, "turns", context.turn);
@@ -816,7 +989,7 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
         registryDirectory,
         agent: context.agent,
         turn: context.turn,
-        prompt: options.prompt,
+        prompt,
         herdr,
         now,
       });
@@ -826,6 +999,151 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
   if (!outcome.reconcile_status) return outcome;
   const reconciled = await waitForTurn(turnId, {}, dependencies);
   return { ...reconciled, command_status: outcome.reconcile_status };
+}
+
+export async function reconcileTurn(
+  turnId,
+  options = {},
+  dependencies = {},
+) {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) {
+    throw new DrovrError("turn reconciliation requires a positive timeout", {
+      code: 2,
+      outcome: "invalid_arguments",
+    });
+  }
+  const initial = await getTurn(turnId, dependencies);
+  if (initial.turn.status !== "working") return initial;
+  const recovery = await reconcileOrRecoverAgent(
+    initial.agent.id,
+    dependencies,
+  );
+  if (recovery.status === "reconciled") {
+    return waitForTurn(turnId, { timeoutMs: options.timeoutMs }, dependencies);
+  }
+  const context = await getTurn(turnId, dependencies);
+  if (recovery.status === "recovered") return context;
+  return {
+    ...context,
+    command_status: recovery.status,
+    ...(recovery.reason ? { recovery_reason: recovery.reason } : {}),
+  };
+}
+
+function callerInputDisposition(turn, callerKey, prompt) {
+  requireCallerKey(callerKey);
+  const matches = turn.inputs.filter((input) => input.caller_key === callerKey);
+  if (matches.length > 1) {
+    throw new DrovrError(
+      `caller input key ${callerKey} appears more than once`,
+      { code: 5, outcome: "corrupt_registry" },
+    );
+  }
+  if (matches.length === 0) return null;
+  const payloadSha256 = textDigest(prompt);
+  if (matches[0].payload_sha256 !== payloadSha256) callerKeyConflict(callerKey);
+  return matches[0];
+}
+
+function pendingCallerDelivery(turn) {
+  return turn.status === "working" &&
+    turn.inputs.some(({ delivery }) => delivery?.status === "recorded");
+}
+
+function validateAgentLaunchBinding(context, requested) {
+  const { agent } = context;
+  const actual = agent.launch_binding;
+  if (
+    actual.comparison_key !== requested.comparison_key ||
+    actual.configuration_watermark !== requested.configuration_watermark
+  ) {
+    throw new DrovrError(
+      `agent ${agent.id} has a stale immutable launch binding`,
+      {
+        code: 0,
+        outcome: "launch_binding_stale",
+        details: { delegation: delegationIdentity(context) },
+      },
+    );
+  }
+}
+
+function requireAgentLaunchBinding(context) {
+  if (!context.agent.launch_binding) {
+    throw new DrovrError(
+      `agent ${context.agent.id} predates exact launch bindings`,
+      {
+        code: 0,
+        outcome: "launch_binding_missing",
+        details: { delegation: delegationIdentity(context) },
+      },
+    );
+  }
+}
+
+function delegationIdentity({ group, task, agent }) {
+  return {
+    agent_id: agent.id,
+    task_id: task.id,
+    group_id: group.id,
+  };
+}
+
+function validateLaunchBinding(binding) {
+  if (
+    binding?.schema !== "drovr.launch-binding/v1" ||
+    !isDigest(binding.comparison_key) ||
+    !isDigest(binding.configuration_watermark) ||
+    !isDigest(binding.description_digest) ||
+    Object.keys(binding).some((key) => ![
+      "schema",
+      "comparison_key",
+      "configuration_watermark",
+      "description_digest",
+    ].includes(key))
+  ) {
+    throw new DrovrError("invalid exact launch binding", {
+      code: 2,
+      outcome: "invalid_arguments",
+    });
+  }
+}
+
+function requireCallerKey(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new DrovrError("caller key must be a non-empty string", {
+      code: 2,
+      outcome: "invalid_arguments",
+    });
+  }
+}
+
+function requireInputText(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new DrovrError("caller input must be a non-empty string", {
+      code: 2,
+      outcome: "invalid_arguments",
+    });
+  }
+}
+
+function callerKeyConflict(callerKey) {
+  throw new DrovrError(`caller key ${callerKey} has a different payload`, {
+    code: 0,
+    outcome: "caller_key_conflict",
+  });
+}
+
+function callerPayloadDigest(value) {
+  return digestCanonical(value);
+}
+
+function textDigest(value) {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function isDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 export async function cancelTurn(turnId, options = {}, dependencies = {}) {
@@ -1077,11 +1395,17 @@ function concatenatedClaudeRecoveryInputs(context, turns, currentInputs) {
 
 function lateResultRecoveryEligible(turn) {
   if (
-    !["uncertain", "unsupported_transcript"].includes(turn.status) ||
+    ![
+      "cancelled",
+      "interrupted",
+      "uncertain",
+      "unsupported_transcript",
+    ].includes(turn.status) ||
     turn.result
   ) {
     return false;
   }
+  if (["cancelled", "interrupted"].includes(turn.status)) return true;
   if (turn.late_result_recovery === "exact_transcript_correlation") return true;
   return (
     turn.error === "submitted input was not observed after the transcript cursor" ||
@@ -1111,6 +1435,11 @@ export function turnCommandResult(command, context, options = {}) {
   const status =
     context.command_status ??
     context.wait_status ??
+    (context.dispatch_status === "reconciling" ||
+    context.input_status === "reconciling"
+      ? "reconciling"
+      : undefined) ??
+    (pendingCallerDelivery(context.turn) ? "reconciling" : undefined) ??
     (context.block ? "needs_input" : context.turn.status);
   return {
     schema: "drovr.command/v1",
@@ -1129,6 +1458,28 @@ export function turnCommandResult(command, context, options = {}) {
       ...(context.recovery_reason
         ? { recovery: { reason: context.recovery_reason } }
         : {}),
+      authority_watermark: turnAuthorityWatermark(context.turn),
+      ...(context.discovery_watermark
+        ? { discovery_watermark: context.discovery_watermark }
+        : {}),
+      legal_next_actions: legalNextActions(context),
+    },
+  };
+}
+
+export function turnDiscoveryCommandResult(callerKey, discovery) {
+  if (discovery.discovery_status === "found") {
+    return turnCommandResult("turn discover", discovery);
+  }
+  return {
+    schema: "drovr.command/v1",
+    command: "turn discover",
+    ok: true,
+    result: {
+      status: "proven_absent",
+      caller_key: callerKey,
+      authority_watermark: discovery.authority_watermark,
+      legal_next_actions: ["dispatch_with_same_caller_key"],
     },
   };
 }
@@ -1184,10 +1535,39 @@ function summarizeTurn(
     id: turn.id,
     status: turn.status,
     input_count: turn.inputs.length,
+    ...(turn.caller ? { caller: structuredClone(turn.caller) } : {}),
+    ...(turn.launch_binding
+      ? { launch_binding: structuredClone(turn.launch_binding) }
+      : {}),
+    ...(turn.settlement_proof
+      ? { settlement_proof: structuredClone(turn.settlement_proof) }
+      : turn.status !== "working"
+        ? {
+            terminal_proof: {
+              schema: "drovr.terminal-proof/v1",
+              classification: terminalProofClassification(turn.status),
+            },
+          }
+        : {}),
+    inputs: turn.inputs.map(
+      ({ sequence, caller_key, payload_sha256, delivery }) => ({
+        sequence,
+        ...(caller_key
+          ? {
+              caller_key,
+              payload_sha256,
+              delivery: structuredClone(delivery),
+            }
+          : {}),
+      }),
+    ),
     ...(result ? { result } : {}),
     ...(lateResult
       ? {
           late_result: {
+            turn_id: turn.id,
+            disposition: "quarantined",
+            proof_classification: "exact_transcript_correlation",
             text: lateResult.text,
             ...(includeMessages ? { messages: lateResult.messages } : {}),
           },
@@ -1203,6 +1583,52 @@ function summarizeTurn(
     created_at: turn.created_at,
     ...(turn.settled_at ? { settled_at: turn.settled_at } : {}),
   };
+}
+
+function turnAuthorityWatermark(turn) {
+  return {
+    schema: "drovr.turn-authority-watermark/v1",
+    authority: "drovr.registry",
+    turn_id: turn.id,
+    record_sha256: callerPayloadDigest(turn),
+  };
+}
+
+function legalNextActions(context) {
+  const { turn, block } = context;
+  if (
+    context.dispatch_status === "reconciling" ||
+    context.input_status === "reconciling" ||
+    pendingCallerDelivery(turn)
+  ) {
+    return ["observe_bounded", "wait_bounded", "reconcile_exact_turn"];
+  }
+  if (
+    context.recovery_reason ||
+    ["agent_lost", "recovery_blocked", "uncertain"].includes(
+      context.command_status,
+    ) ||
+    context.wait_status === "agent_lost"
+  ) {
+    return ["observe_bounded", "reconcile_exact_turn", "retire_agent"];
+  }
+  if (turn.status === "working") {
+    if (turn.cancellation_requested_at || turn.cleanup_requested_at) {
+      return ["observe_bounded", "wait_bounded", "reconcile_exact_turn"];
+    }
+    return block
+      ? ["observe_bounded", "wait_after_exact_block", "cancel_exact_turn"]
+      : [
+          "send_caller_keyed_input",
+          "observe_bounded",
+          "wait_bounded",
+          "cancel_exact_turn",
+        ];
+  }
+  if (["uncertain", "unsupported_transcript"].includes(turn.status)) {
+    return ["observe_late_result", "reconcile_exact_turn", "retire_agent"];
+  }
+  return ["observe_exact_turn", "retire_agent"];
 }
 
 function summarizeBlock(block) {

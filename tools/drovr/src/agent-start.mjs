@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { loadConfiguration, resolveLaunchSpecification } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
+import { createAgentLaunchBinding } from "./description.mjs";
 import { harnessAdapter } from "./harness-adapter.mjs";
 import { HerdrClient } from "./herdr.mjs";
 import {
@@ -210,6 +211,7 @@ export async function startAgent(taskId, options, dependencies = {}) {
   const initial = await contextFor(registryDirectory, taskId);
   const configuration = await loadConfiguration({ env });
   const specification = resolveLaunchSpecification(configuration, options);
+  const launchBinding = createAgentLaunchBinding(configuration, specification);
   const adapter = harnessAdapter(specification.harness, env);
   await adapter.validate(specification, { env, run: dependencies.run });
   const herdr =
@@ -323,6 +325,7 @@ export async function startAgent(taskId, options, dependencies = {}) {
         label: options.label ?? options.key,
         status: "active",
         launch: specification,
+        launch_binding: launchBinding,
         herdr: {
           name: managedName,
           pane_id: paneId,

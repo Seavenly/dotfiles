@@ -13,6 +13,54 @@ After convergence, diagnose the local runtime:
 drovr doctor
 ```
 
+Inspect an exact launch and the complete flow-required feature advertisement
+without creating a delegation group, task, agent, or logical turn:
+
+```sh
+drovr describe \
+  --harness codex \
+  --role reviewer \
+  --capability read-only \
+  --caller-metadata '{"run_id":"run:example","card_id":"review"}'
+```
+
+The `drovr.delegated-agent-description/v1` result contains the resolved launch
+schema and native settings, normalized effective authority, capacity facts,
+ambient credential-reference identity, logical catalog fingerprints, opaque
+caller metadata, comparison keys, and all flow-required feature contracts.
+Its `drovr.configuration-catalog` watermark binds the complete configuration
+and advertised contracts without exposing credential material. Identical
+catalog bytes and inputs produce identical identity-bearing output even when
+the catalog is installed at a different path.
+The capacity facts declare a 30-second bound for each Herdr observation, and
+the runtime applies that same bound to each read-only Herdr query.
+
+Each advertised contract declares `supported` or `unavailable`. The complete
+flow-required baseline is supported. Flow may bind the exact description and
+dispatch with a stable caller key, caller-keyed initial input, opaque metadata,
+and the description's launch comparison key, catalog watermark, and digest.
+Exact retries adopt the same logical turn; a reused caller key with a different
+payload fails closed.
+
+Caller-owned execution and discovery use:
+
+```sh
+drovr turn dispatch AGENT_ID \
+  --caller-key run:example/card:review/attempt:1 \
+  --input-key input:1 \
+  --caller-metadata '{"run_id":"run:example","card_id":"review"}' \
+  --launch-binding '{"schema":"drovr.launch-binding/v1","comparison_key":"sha256:...","configuration_watermark":"sha256:...","description_digest":"sha256:..."}' \
+  "Review the exact candidate."
+drovr turn discover run:example/card:review/attempt:1
+drovr turn send TURN_ID --caller-key input:2 "Prioritize correctness."
+```
+
+Turn projections carry a durable authority watermark, exact legal next actions,
+opaque caller ownership, ordered input identities, terminal proof
+classification, and launch-binding settlement proof. Late correlated results
+retain the original turn identity and remain quarantined rather than replacing
+the durable terminal disposition.
+
 Delegate one logical turn:
 
 ```sh

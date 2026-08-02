@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json",
+  "title": "flow.delegated-agent-lifecycle-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "status",
+    "watermark",
+    "delegation",
+    "turn",
+    "legal_next_actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.delegated-agent-lifecycle-projection/v1"
+    },
+    "operation": {
+      "enum": [
+        "dispatch",
+        "discover",
+        "send",
+        "observe",
+        "wait",
+        "cancel",
+        "reconcile",
+        "retire"
+      ]
+    },
+    "status": { "type": "string", "minLength": 1 },
+    "watermark": {
+      "oneOf": [
+        { "$ref": "#/$defs/watermark" },
+        { "type": "null" }
+      ]
+    },
+    "discovery_watermark": { "$ref": "#/$defs/registryWatermark" },
+    "delegation": {
+      "oneOf": [
+        { "$ref": "#/$defs/delegation" },
+        { "type": "null" }
+      ]
+    },
+    "turn": {
+      "oneOf": [
+        { "$ref": "#/$defs/turn" },
+        { "type": "null" }
+      ]
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "code"],
+      "properties": {
+        "contract": { "const": "flow.delegated-agent-port/v1" },
+        "code": { "type": "string", "minLength": 1 }
+      }
+    },
+    "legal_next_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "watermark": {
+      "oneOf": [
+        { "$ref": "#/$defs/turnWatermark" },
+        { "$ref": "#/$defs/registryWatermark" },
+        { "$ref": "#/$defs/agentWatermark" }
+      ]
+    },
+    "turnWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authority", "turn_id", "record_sha256"],
+      "properties": {
+        "schema": { "const": "drovr.turn-authority-watermark/v1" },
+        "authority": { "const": "drovr.registry" },
+        "turn_id": { "type": "string", "minLength": 1 },
+        "record_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "registryWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authority", "turns_sha256"],
+      "properties": {
+        "schema": { "const": "drovr.registry-authority-watermark/v1" },
+        "authority": { "const": "drovr.registry" },
+        "turns_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "agentWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authority", "agent_id", "record_sha256"],
+      "properties": {
+        "schema": { "const": "drovr.agent-authority-watermark/v1" },
+        "authority": { "const": "drovr.registry" },
+        "agent_id": { "type": "string", "minLength": 1 },
+        "record_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "task_id", "group_id"],
+      "properties": {
+        "agent_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "group_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "required": ["id", "status", "input_count", "inputs"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "input_count": { "type": "integer", "minimum": 1 },
+        "inputs": { "type": "array", "minItems": 1 }
+      }
+    }
+  }
+}

@@ -302,6 +302,7 @@ The recovery and advanced interface is:
 ```text
 drovr doctor
 drovr status
+drovr describe [launch options] --caller-metadata JSON
 
 drovr group list
 drovr group get GROUP_ID
@@ -318,6 +319,9 @@ drovr agent get AGENT_ID
 drovr agent retire AGENT_ID
 
 drovr turn start AGENT_ID [options] [PROMPT]
+drovr turn dispatch AGENT_ID --caller-key KEY --input-key KEY \
+  --caller-metadata JSON --launch-binding JSON [PROMPT]
+drovr turn discover CALLER_KEY
 drovr turn send TURN_ID [options] [PROMPT]
 drovr turn wait TURN_ID [--timeout DURATION]
 drovr turn wait TURN_ID --after-block BLOCK_ID [--timeout DURATION]
@@ -325,6 +329,48 @@ drovr turn get TURN_ID [--include-messages]
 drovr turn list [--agent AGENT_ID] [--task TASK_ID] [--status STATUS]
 drovr turn cancel TURN_ID
 ```
+
+`describe` is the non-mutating delegated-runtime contract seam. It resolves the
+same tracked role, harness, model, effort, capability, instructions, native
+settings, and logical catalog fingerprints used by agent launch, but it never
+creates or changes a Drovr registry or Herdr resource. Its versioned result
+also carries normalized effective authority, declared capacity, an ambient
+credential-reference identity with no secret material, opaque caller ownership
+metadata, deterministic comparison keys, and the complete flow-required
+feature advertisement. The configuration-catalog watermark binds those facts.
+Declared capacity includes a 30-second Herdr observation bound, which applies
+to both session discovery and session-scoped read-only observations.
+Every feature entry carries an exact `supported` or `unavailable` availability
+state. The watermark includes the complete feature advertisement and the full
+authority-dimension catalog used to normalize effective authority.
+
+The flow-required feature baseline is exact launch description,
+caller-idempotent dispatch and discovery, caller-keyed ordered input, bounded
+observation and wait, transcript correlation, cancellation and reconciliation,
+terminal-proof classification, late-result correlation, launch-binding
+settlement proof, opaque caller ownership metadata, and feature advertisement.
+Flow conformance compares the complete versioned guarantees, not just feature
+names or a Drovr version string. Missing, weakened, duplicate, unexpected, or
+contradictory advertisement blocks preparation until a fresh conforming
+description can be observed.
+
+The complete baseline is supported. Caller-owned dispatch validates the exact
+description digest, launch comparison key, configuration watermark, and opaque
+metadata against the persisted agent launch before Herdr is touched. An exact
+caller-key and payload retry adopts one durable logical turn. A payload conflict
+fails closed, and a complete registry scan distinguishes proven absence from a
+discovery failure. An agent whose immutable binding is missing, or differs from
+a fresh description of that same agent launch, fails closed with an explicit
+retirement disposition. A caller description for another launch is repairable
+by refresh and never authorizes retirement. Each initial and steering input
+carries its own stable caller key and payload digest; settlement remains gated
+on their recorded order.
+
+Terminal projections name the proof classification and bind completed
+settlement to the exact launch comparison key and ordered inputs. Cancellation,
+interruption, uncertainty, and late transcript correlation retain distinct
+dispositions. Drovr and Herdr restart recovery use the persisted agent and turn
+bindings without replaying an unresolved input or refreshing catalog identity.
 
 Creation options use stable keys and optional labels. Normal examples include:
 
@@ -380,6 +426,10 @@ including:
 - `task_closed`
 - `turn_closed`
 - `configuration_conflict`
+- `caller_key_conflict`
+- `launch_binding_conflict`
+- `launch_binding_missing`
+- `launch_binding_stale`
 - `agent_lost`
 - `recovery_blocked`
 - `session_missing`

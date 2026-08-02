@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   access,
   appendFile,
+  cp,
   mkdir,
   mkdtemp,
   rm,
@@ -15,18 +16,290 @@ import test from "node:test";
 
 import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
 import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
+import { describeDelegatedAgent } from "../src/description.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
 import {
   cancelTurn,
+  discoverTurn,
+  dispatchTurn,
   getTurn,
+  reconcileTurn,
   sendToTurn,
   startTurn,
+  turnCommandResult,
   waitForTurn,
 } from "../src/turns.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
+
+test("caller-owned dispatch and ordered input survive caller exit and fail closed on conflicts", async (t) => {
+  const fixture = await turnFixture(t);
+  const [existing] = await readRecords(fixture.registryDirectory, "turns");
+  existing.status = "cancelled";
+  existing.settled_at = "2026-07-23T09:59:59.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", existing);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  const copiedConfig = join(
+    fixture.env.XDG_STATE_HOME,
+    "..",
+    "drovr-config",
+  );
+  await cp(join(root, "config", "drovr"), copiedConfig, { recursive: true });
+  fixture.env.DROVR_CONFIG_DIR = copiedConfig;
+  const callerMetadata = { run_id: "run:1", card_id: "review" };
+  const description = await describeDelegatedAgent({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: agent.launch.harness,
+      model: agent.launch.model,
+      effort: agent.launch.effort,
+      capability: agent.launch.capability,
+    },
+    caller_metadata: callerMetadata,
+  }, { env: fixture.env });
+  agent.launch_binding = {
+    schema: "drovr.agent-launch-binding/v1",
+    comparison_key: description.comparison_keys.launch,
+    configuration_watermark: description.watermark.content_sha256,
+  };
+  await writeRecord(fixture.registryDirectory, "agents", agent);
+
+  let deliveries = 0;
+  const herdr = {
+    async ensureSession() {},
+    async agentRecord() {
+      return {
+        agent_status: deliveries === 0 ? "idle" : "working",
+        state_change_seq: deliveries,
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async prompt() {
+      deliveries += 1;
+    },
+    async waitForAgent() {
+      return { drovr_status: "still_running" };
+    },
+  };
+  const launchBinding = {
+    schema: "drovr.launch-binding/v1",
+    comparison_key: description.comparison_keys.launch,
+    configuration_watermark: description.watermark.content_sha256,
+    description_digest: description.description_digest,
+  };
+  const request = {
+    callerKey: "run:1/card:review/attempt:1",
+    callerMetadata,
+    inputKey: "input:1",
+    launchBinding,
+    prompt: "inspect the candidate",
+  };
+
+  const dispatched = await dispatchTurn(agent.id, request, {
+    env: fixture.env,
+    herdr,
+    now: () => "2026-07-23T10:00:00.000Z",
+  });
+  assert.equal(deliveries, 1);
+  assert.equal(dispatched.turn.caller.dispatch_key, request.callerKey);
+
+  const discovered = await discoverTurn(request.callerKey, {
+    env: fixture.env,
+  });
+  assert.equal(discovered.discovery_status, "found");
+  assert.equal(discovered.turn.id, dispatched.turn.id);
+
+  const interruptedDelivery = (await readRecords(
+    fixture.registryDirectory,
+    "turns",
+  )).find(({ id }) => id === dispatched.turn.id);
+  interruptedDelivery.inputs[0].delivery = { status: "recorded" };
+  await writeRecord(fixture.registryDirectory, "turns", interruptedDelivery);
+  const reconcilingDispatch = await dispatchTurn(agent.id, request, {
+    env: fixture.env,
+    herdr,
+  });
+  assert.equal(reconcilingDispatch.dispatch_status, "reconciling");
+  assert.equal(deliveries, 1);
+  interruptedDelivery.inputs[0].delivery = {
+    status: "submitted",
+    accepted_at: "2026-07-23T10:00:00.000Z",
+  };
+  await writeRecord(fixture.registryDirectory, "turns", interruptedDelivery);
+
+  const adopted = await dispatchTurn(agent.id, request, {
+    env: fixture.env,
+    herdr,
+  });
+  assert.equal(adopted.dispatch_status, "adopted");
+  assert.equal(adopted.turn.id, dispatched.turn.id);
+  assert.equal(deliveries, 1);
+
+  const normalizedDispatchRetry = await dispatchTurn(agent.id, {
+    ...request,
+    prompt: `${request.prompt}\n`,
+  }, { env: fixture.env, herdr });
+  assert.equal(normalizedDispatchRetry.dispatch_status, "adopted");
+  assert.equal(deliveries, 1);
+
+  const otherLaunchDescription = await describeDelegatedAgent({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: { harness: "claude", capability: "read-only" },
+    caller_metadata: callerMetadata,
+  }, { env: fixture.env });
+  await assert.rejects(
+    () => dispatchTurn(agent.id, {
+      ...request,
+      callerKey: "run:1/card:wrong-agent/attempt:1",
+      launchBinding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: otherLaunchDescription.comparison_keys.launch,
+        configuration_watermark:
+          otherLaunchDescription.watermark.content_sha256,
+        description_digest: otherLaunchDescription.description_digest,
+      },
+    }, { env: fixture.env, herdr }),
+    { outcome: "launch_binding_conflict" },
+  );
+  assert.equal(deliveries, 1);
+
+  await assert.rejects(
+    () => dispatchTurn(agent.id, { ...request, prompt: "different" }, {
+      env: fixture.env,
+      herdr,
+    }),
+    { outcome: "caller_key_conflict" },
+  );
+
+  const sent = await sendToTurn(dispatched.turn.id, {
+    callerKey: "input:2",
+    prompt: "prioritize correctness",
+  }, { env: fixture.env, herdr });
+  assert.equal(sent.turn.inputs.length, 2);
+  assert.equal(deliveries, 2);
+
+  const normalizedInputRetry = await sendToTurn(dispatched.turn.id, {
+    callerKey: "input:2",
+    prompt: "prioritize correctness\n",
+  }, { env: fixture.env, herdr });
+  assert.equal(normalizedInputRetry.input_status, "adopted");
+  assert.equal(deliveries, 2);
+
+  await assert.rejects(
+    () => sendToTurn(dispatched.turn.id, {
+      prompt: "unkeyed steering",
+    }, { env: fixture.env, herdr }),
+    { outcome: "invalid_arguments" },
+  );
+  assert.equal(deliveries, 2);
+
+  const storedTurns = await readRecords(fixture.registryDirectory, "turns");
+  const storedDispatch = storedTurns.find(({ id }) => id === dispatched.turn.id);
+  storedDispatch.inputs[1].delivery = { status: "recorded" };
+  await writeRecord(fixture.registryDirectory, "turns", storedDispatch);
+  const uncertainInput = await sendToTurn(dispatched.turn.id, {
+    callerKey: "input:2",
+    prompt: "prioritize correctness",
+  }, { env: fixture.env, herdr });
+  assert.equal(uncertainInput.input_status, "reconciling");
+  assert.equal(deliveries, 2);
+
+  const resent = await sendToTurn(dispatched.turn.id, {
+    callerKey: "input:2",
+    prompt: "prioritize correctness",
+  }, { env: fixture.env, herdr });
+  assert.equal(resent.input_status, "reconciling");
+  assert.equal(resent.turn.inputs.length, 2);
+  assert.equal(deliveries, 2);
+
+  const fencedLaterInput = await sendToTurn(dispatched.turn.id, {
+    callerKey: "input:3",
+    prompt: "do not overtake input two",
+  }, { env: fixture.env, herdr });
+  assert.equal(fencedLaterInput.input_status, "reconciling");
+  assert.equal(fencedLaterInput.turn.inputs.length, 2);
+  assert.equal(deliveries, 2);
+  assert.deepEqual(
+    turnCommandResult("turn send", fencedLaterInput).result.legal_next_actions,
+    ["observe_bounded", "wait_bounded", "reconcile_exact_turn"],
+  );
+
+  const reconciledPendingInput = await reconcileTurn(
+    dispatched.turn.id,
+    { timeoutMs: 1 },
+    { env: fixture.env, herdr },
+  );
+  assert.equal(reconciledPendingInput.wait_status, "still_running");
+  assert.equal(deliveries, 2);
+
+  await assert.rejects(
+    () => sendToTurn(dispatched.turn.id, {
+      callerKey: "input:2",
+      prompt: "different steering",
+    }, { env: fixture.env, herdr }),
+    { outcome: "caller_key_conflict" },
+  );
+
+  const absent = await discoverTurn("run:1/card:missing/attempt:1", {
+    env: fixture.env,
+  });
+  assert.equal(absent.discovery_status, "proven_absent");
+
+  await appendFile(join(copiedConfig, "config.toml"), "\n# catalog drift\n");
+  const adoptedAfterDrift = await dispatchTurn(agent.id, request, {
+    env: fixture.env,
+    herdr,
+  });
+  assert.equal(adoptedAfterDrift.dispatch_status, "adopted");
+  assert.equal(adoptedAfterDrift.turn.id, dispatched.turn.id);
+  await assert.rejects(
+    () => dispatchTurn(agent.id, {
+      ...request,
+      callerKey: "run:1/card:other/attempt:1",
+    }, { env: fixture.env, herdr }),
+    { outcome: "launch_binding_conflict" },
+  );
+  const refreshedDescription = await describeDelegatedAgent({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: agent.launch.harness,
+      model: agent.launch.model,
+      effort: agent.launch.effort,
+      capability: agent.launch.capability,
+    },
+    caller_metadata: callerMetadata,
+  }, { env: fixture.env });
+  await assert.rejects(
+    () => dispatchTurn(agent.id, {
+      ...request,
+      callerKey: "run:1/card:fresh/attempt:1",
+      launchBinding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: refreshedDescription.comparison_keys.launch,
+        configuration_watermark:
+          refreshedDescription.watermark.content_sha256,
+        description_digest: refreshedDescription.description_digest,
+      },
+    }, { env: fixture.env, herdr }),
+    { outcome: "launch_binding_stale" },
+  );
+  const unboundAgent = (await readRecords(
+    fixture.registryDirectory,
+    "agents",
+  )).find(({ id }) => id === agent.id);
+  delete unboundAgent.launch_binding;
+  await writeRecord(fixture.registryDirectory, "agents", unboundAgent);
+  await assert.rejects(
+    () => dispatchTurn(agent.id, {
+      ...request,
+      callerKey: "run:1/card:legacy/attempt:1",
+    }, { env: fixture.env, herdr }),
+    { outcome: "launch_binding_missing" },
+  );
+  assert.equal(deliveries, 2);
+});
 
 test("cancel explicitly interrupts, confirms settlement, and leaves the agent reusable", async (t) => {
   const fixture = await turnFixture(t);
@@ -639,6 +912,24 @@ test("get discovers a late result only after the exact recorded inputs", async (
   ]);
   assert.equal(stored.status, "uncertain");
   assert.equal(stored.result, undefined);
+});
+
+test("get quarantines a late result after restart interruption", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.status = "interrupted";
+  turn.settled_at = "2026-07-23T10:00:02.000Z";
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  await appendTranscript(
+    fixture.transcript,
+    userMessage("initial"),
+    assistantMessage("late after restart"),
+  );
+
+  const context = await getTurn(fixture.turn.id, { env: fixture.env });
+
+  assert.equal(context.turn.status, "interrupted");
+  assert.equal(context.late_result.text, "late after restart");
 });
 
 test("get recovers legacy unsupported-transcript turns after the transcript appears", async (t) => {

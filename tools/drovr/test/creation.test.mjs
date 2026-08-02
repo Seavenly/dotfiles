@@ -196,6 +196,16 @@ test("a genuinely failed start preserves its immutable launch reservation", asyn
   assert.equal(agent.key, "builder");
   assert.equal(agent.native_session, null);
   assert.equal(agent.launch.effort, "high");
+  assert.deepEqual(Object.keys(agent.launch_binding).sort(), [
+    "comparison_key",
+    "configuration_watermark",
+    "schema",
+  ]);
+  assert.match(agent.launch_binding.comparison_key, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(
+    agent.launch_binding.configuration_watermark,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
 });
 
 test("agent start balances additional panes using registered task topology", async (t) => {

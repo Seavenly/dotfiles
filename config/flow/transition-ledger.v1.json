@@ -1,0 +1,59 @@
+{
+  "schema": "flow.transition-ledger/v1",
+  "sequence": 8,
+  "release": {
+    "id": "flow-stage0/v1",
+    "source_commit": "1e3e4665d4241419ad573d208077a20d845289bc"
+  },
+  "environment": {
+    "id": "repository-linux-x64",
+    "kind": "repository",
+    "os": "linux",
+    "architecture": "x64"
+  },
+  "status_vocabulary": [
+    "passed",
+    "failed",
+    "blocked",
+    "not_run"
+  ],
+  "evidence": [
+    {
+      "id": "public_contract_catalog",
+      "path": "contracts/catalog.v1.json",
+      "sha256": "da286bab42da0b8ecfc6afa9c8302b76dd6db8177883594a3103c97bc5e2eb1d",
+      "status": "passed",
+      "recorded_at": "2026-08-02T13:52:38Z"
+    },
+    {
+      "id": "legacy_default_policy",
+      "path": "launch-policy.v1.json",
+      "sha256": "892324c24183b78410ac2b5839e12af437a27a43598d81bf2a6bfe65f4d5d752",
+      "status": "passed",
+      "recorded_at": "2026-07-30T23:06:09Z"
+    },
+    {
+      "id": "frozen_legacy_inventory",
+      "path": "legacy-baselines.v1.json",
+      "sha256": "791f5bcee2c29e50e97173c10c028a6843d225ed13a8b2d269b955fb3337c4d5",
+      "status": "passed",
+      "recorded_at": "2026-07-30T23:06:09Z"
+    },
+    {
+      "id": "replacement_runtime_activation",
+      "path": null,
+      "sha256": null,
+      "status": "not_run",
+      "recorded_at": "2026-07-30T23:06:09Z"
+    }
+  ],
+  "defects": [],
+  "exceptions": [],
+  "decision": {
+    "kind": "keep_legacy_default",
+    "selected_implementation": "legacy-claude/v1",
+    "replacement_launch_enabled": false,
+    "decided_at": "2026-07-30T23:06:09Z"
+  },
+  "recorded_at": "2026-08-02T02:16:35Z"
+}

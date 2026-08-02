@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.rejection.v1.schema.json",
+  "title": "flow.rejection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "code",
+    "reason",
+    "command_type",
+    "run_id",
+    "bundle_digest",
+    "authority_watermark",
+    "authority_watermark_domain",
+    "legal_actions"
+  ],
+  "properties": {
+    "schema": { "const": "flow.rejection/v1" },
+    "operation": { "enum": ["launch", "command", "query", "watch"] },
+    "code": { "type": "string", "minLength": 1 },
+    "reason": { "type": ["string", "null"] },
+    "command_type": { "type": ["string", "null"] },
+    "run_id": { "type": ["string", "null"] },
+    "bundle_digest": { "type": ["string", "null"] },
+    "authority_watermark": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "authority_watermark_domain": { "enum": ["host", "run"] },
+    "legal_actions": { "type": "array" }
+  }
+}

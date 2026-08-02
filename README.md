@@ -109,6 +109,11 @@ dotfiles check                  validate scripts, configs, locks, and credential
 dotfiles upgrade                upgrade normal components
 dotfiles upgrade tools nvim     upgrade selected components only
 dotfiles upgrade mise           update the pinned mise release and checksums
+flow query legacy-inventory --json
+                                inventory retained legacy flow evidence read-only
+flow query delegated-agent --harness codex --capability read-only \
+  --caller-metadata '{"owner":"preparation"}' --json
+                                inspect an exact non-mutating Drovr launch contract
 ```
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
@@ -134,14 +139,48 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `config/` | Application-owned configuration organized by concern |
 | `config/agents/` | Shared agent guidance, managed skills, and colocated profile variants |
 | `config/agent-flow/` | Hermes-backed agent-flow orchestration, schemas, and routing template |
+| `config/flow/` | Replacement FlowRuntime inventory, transition policy, public contracts, frozen legacy baselines, and evidence ledger |
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
 | `tools/drovr/` | Harness-neutral delegated agent runtime over Herdr |
+| `tools/flow/` | Public flow transition interfaces and the dark replacement runtime |
 
 Configuration is organized by concern rather than mirroring the destination
 layout under `$HOME`. Native mise dotfiles create explicit symlinks from these
 directories to their platform-appropriate destinations.
+
+## Flow implementation transition
+
+The future harness-neutral `flow` runtime is being built beside the frozen
+Claude-only and Hermes-backed implementations. New launches still select the
+Claude-only baseline by default. Repeating `dotfiles install` reapplies the
+same versioned policy from `config/flow/launch-policy.v1.json`; it does not
+change the selector merely because replacement sources are installed. The
+future launcher remains responsible for enforcing that converged decision.
+
+The three implementations use disjoint authority roots, and existing runs
+remain owned by the implementation that created them. No legacy import adapter
+ships initially. Inspect the exact transition watermark, evidence status, and
+legal next actions with `npm --silent --prefix tools/flow run status`. The
+dark replacement API can prepare, confirm, durably launch, observe, recover,
+cancel, and complete a finite dynamic plan with one registered operation without
+changing the converged launch selector. One-shot uncertain effects require a
+fresh operation-bound checkpoint; safer classes can execute from an exact
+authority-projected command. Operation
+effects use durable intent-before-effect authority, typed receipts, and
+effect-class-specific reconciliation. Its SQLite authority streams are fenced
+to one mutating runtime while competing processes remain read-only.
+Workspace and artifact subjects can publish one immutable generation-bound
+resource handoff atomically with producer finalization. A later run pins and
+rechecks that exact handoff before mutation without depending on the producer's
+process, branch, or workspace.
+Cancellation is irreversible: it stops new Adapter admission, abandons
+incomplete attempts, preserves completed evidence, and quarantines outstanding
+or late results without advancing dependencies.
+The public contracts and guardrails are documented in
+[`tools/flow/README.md`](tools/flow/README.md) and
+[`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).
 
 ## Machine-local configuration
 

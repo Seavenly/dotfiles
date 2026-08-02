@@ -26,6 +26,7 @@ conflicting_keys="$(
 echo "ok - Herdr custom keys avoid AeroSpace global bindings"
 
 assert_contains "$(cat "$root/config/herdr/config.toml")" 'key = "prefix+ctrl+d"'
+# shellcheck disable=SC2016
 assert_contains "$(cat "$root/config/herdr/config.toml")" \
   'command = "project-switcher --backend herdr --project \"$(dotfiles-root)\""'
 echo "ok - Herdr opens the dotfiles project with prefix Ctrl-D"
