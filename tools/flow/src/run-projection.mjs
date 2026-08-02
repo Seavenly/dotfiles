@@ -45,6 +45,25 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const completedOperations = new Set(run.events
     .filter(({ type }) => type === "operation_completed")
     .map(({ card_id: cardId }) => cardId));
+  const handoffs = run.events
+    .filter(({ type }) => type === "resource_handoff_published")
+    .map(({ handoff_id: handoffId, handoff_watermark: handoffWatermark }) => ({
+      handoff_id: handoffId,
+      handoff_watermark: handoffWatermark,
+    }));
+  const resourceHandoffBindings = run.events
+    .filter(({ type }) => type === "resource_handoff_bound")
+    .map(({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }) => ({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }));
   const completedDelegates = new Set(run.events
     .filter(({ type }) => type === "delegate_completed")
     .map(({ card_id: cardId }) => cardId));
@@ -443,6 +462,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
     attempts,
     effects,
+    handoffs,
+    resource_handoff_bindings: resourceHandoffBindings,
     delegate_attempts: delegateAttempts,
     quarantined_delegate_outputs: quarantinedDelegateOutputs,
     revision_templates: run.prepared.revision_templates,
@@ -483,6 +504,8 @@ export function projectRun(fold) {
     limits: fold.limits,
     attempts: fold.attempts,
     effects: fold.effects,
+    handoffs: fold.handoffs,
+    resource_handoff_bindings: fold.resource_handoff_bindings,
     delegate_attempts: fold.delegate_attempts,
     quarantined_delegate_outputs: fold.quarantined_delegate_outputs,
     legal_actions: fold.legal_actions,

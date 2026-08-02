@@ -22,19 +22,18 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v10 adds delegate-attempt execution, independently validated delegate
+  Catalog v11 combines workspace, artifact, and resource handoff interfaces
+  with the delegate-attempt execution introduced in v10. Delegate contracts
+  include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
   blocks, a single Flow-owned Drovr feature baseline, and the exact working-turn
   cancellation proof required before a retryable delegate handoff. Catalog v9
-  extends the v8 contracts with irreversible cancellation, abandoned-attempt,
-  late-effect quarantine, and observation-only cancelled settlement behavior.
-  Catalog v8 extends the exact v1 requirements introduced in v7 for
+  introduced irreversible cancellation, abandoned-attempt, late-effect
+  quarantine, and observation-only cancelled settlement behavior. The exact v1
+  requirements introduced in v7 for
   `explicit_facts.block_observations` on dynamic proposals and
-  `revision_templates` on prepared runs, and publishes registered operation
-  intent, observation, receipt, validation, effect-class, and recovery
-  contracts together with authority-schema compatibility and transition
-  contracts. Callers must prepare a fresh bundle rather than launch a pre-v10
-  envelope.
+  `revision_templates` on prepared runs remain required. Callers must prepare a
+  fresh bundle rather than launch a pre-v11 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1`, one operation card,
   or one `flow.delegated-agent-port/v1` delegate card.
@@ -62,6 +61,8 @@ disabled, so this API does not authorize normal replacement launches.
   Launch also rejects operation cards with
   `unregistered_operation_contract`, `incomplete_operation_registration`, or
   `invalid_effect_classification` before any run or effect intent is created.
+  Preparation rejects `unsafe_publication_effect_class` when a one-shot
+  uncertain operation attempts to publish a resource handoff.
   Recovery performs the same registration check before mutating authority, so
   a replacement runtime cannot accept an effect it is unable to dispatch.
   Delegate launch also rejects an unavailable port, an incomplete Drovr
@@ -175,6 +176,47 @@ registration; an unrelated run lifecycle event does not change it.
 `authority_watermark` may be null only when the authority could not be observed.
 `legal_actions` is always derived from the represented authority, or empty when
 no authority watermark is available.
+
+## Workspace, artifact, and resource handoff authority
+
+`src/work-authority.mjs` exports distinct `getWorkspaceAuthority()`,
+`getArtifactAuthority()`, and `getResourceHandoffAuthority()` accessors. Their
+versioned Interfaces register canonical workspace subjects through
+`work.workspace/v1`, immutable artifact subjects through `work.artifact/v1`,
+and query retained `flow.resource-handoff/v1` subjects.
+Workspace projections bind registration and subject generation, mutation
+epoch, independently observed exact commit, tree, ref, clean state, and
+disposition. Artifact
+projections bind digest, schema, size, producer and validator provenance,
+classification, retention, pins, and retained-byte availability. Paths never
+establish artifact identity. Registration commands carry durable idempotency
+identities, so an exact retry adopts its original receipt while a payload
+conflict fails closed.
+
+A registered operation may carry an exact
+`flow.resource-handoff-publication/v1`. The operation receipt must bind the
+publication digest and an exact `flow.git-retention-receipt/v1`. RunAuthority
+asks WorkspaceAuthority and ArtifactAuthority
+to validate their transitions, then commits workspace promotion, artifact pin
+transfer, workspace disposition, `flow.resource-handoff/v1` activation, the
+effect receipt, and producer run finalization in one SQLite transaction. A
+failure before commit leaves all of those authorities unchanged.
+The publication operation attests to and retains an already-existing promoted
+workspace state; it does not produce that state. WorkspaceAuthority
+independently observes the promoted commit, tree, ref, and clean state before
+Adapter invocation and rechecks authority before the transaction can commit.
+
+A later run prepares with an exact handoff resource claim naming the digest and
+allowed operations. Launch validates that accepted claim and pins the handoff
+and artifacts atomically with run creation. Immediately before a bound
+registered operation reaches its Adapter, the owning authorities recheck the
+workspace generation and fingerprint, retained Git commit and tree, artifact
+generations and bytes, intended consumer, operation scope, and authority
+watermark. The resulting
+`flow.resource-handoff-mutation-authorization/v1` is bound to that exact effect
+and recorded before invocation. Content-addressed bytes, the Git retention ref,
+and authority streams remain valid after the producer process, harness, branch,
+or workspace disappears.
 
 The public launch contract is host-idempotent. Production-shaped conformance
 uses `createDurableRunAuthority()` with the replacement authority root beneath

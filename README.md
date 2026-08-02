@@ -171,6 +171,10 @@ authority-projected command. Operation
 effects use durable intent-before-effect authority, typed receipts, and
 effect-class-specific reconciliation. Its SQLite authority streams are fenced
 to one mutating runtime while competing processes remain read-only.
+Workspace and artifact subjects can publish one immutable generation-bound
+resource handoff atomically with producer finalization. A later run pins and
+rechecks that exact handoff before mutation without depending on the producer's
+process, branch, or workspace.
 Cancellation is irreversible: it stops new Adapter admission, abandons
 incomplete attempts, preserves completed evidence, and quarantines outstanding
 or late results without advancing dependencies.

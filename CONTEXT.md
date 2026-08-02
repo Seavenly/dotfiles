@@ -41,6 +41,21 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Workspace subject**:
+A generation-fenced managed repository workspace identified canonically and
+bound to exact Git facts, mutation epoch, and disposition by WorkspaceAuthority.
+_Avoid_: Worktree path, branch name
+
+**Artifact subject**:
+Immutable content identified by digest and governed with schema, provenance,
+classification, retention, pins, and byte availability by ArtifactAuthority.
+_Avoid_: Artifact path, latest artifact
+
+**Resource handoff**:
+An immutable generation-bound transfer that binds an exact workspace subject,
+artifact subjects, producer evidence, consumer authority, and retention duties.
+_Avoid_: Producer workspace, latest result
+
 **Authority schema transition**:
 An atomic, versioned change to replacement authority storage, bound to one
 exact runtime release and preserving replay of compatible records.
@@ -273,6 +288,8 @@ _Avoid_: Migration record, replacement run
 - The **recorder** extends **convergence** only when explicitly enabled.
 - A replacement **flow run** executes **flow cards**, each of which may have
   multiple **worker attempts**.
+- A **resource handoff** binds one exact generation of a **workspace subject**
+  and its retained **artifact subjects** for a later flow run.
 - A **registered operation** creates one **effect intent** under **run
   authority**; an **effect receipt** settles it, while an **effect observation**
   supports recovery according to its **effect classification**.

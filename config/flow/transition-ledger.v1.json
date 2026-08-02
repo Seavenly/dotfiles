@@ -21,9 +21,9 @@
     {
       "id": "public_contract_catalog",
       "path": "contracts/catalog.v1.json",
-      "sha256": "85e66799e910a94f6a4fd12241f91828be1c69ca95fca0a63cfe130a19f59e1d",
+      "sha256": "da286bab42da0b8ecfc6afa9c8302b76dd6db8177883594a3103c97bc5e2eb1d",
       "status": "passed",
-      "recorded_at": "2026-08-02T13:39:09Z"
+      "recorded_at": "2026-08-02T13:52:38Z"
     },
     {
       "id": "legacy_default_policy",

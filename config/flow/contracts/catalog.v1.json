@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 10,
+  "catalog_version": 11,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -185,6 +185,43 @@
       "content_sha256": "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896"
     }
   },
+  "work_domain_interfaces": {
+    "command_receipt": "work.command-receipt/v1",
+    "rejection": "work.rejection/v1",
+    "workspace": {
+      "authority": "WorkspaceAuthority",
+      "interface": "work.workspace-authority/v1",
+      "contract": "work.workspace/v1",
+      "projection": "work.workspace-projection/v1",
+      "commands": ["work.workspace-register-command/v1"],
+      "git_observation": "work.git-observation/v1"
+    },
+    "artifact": {
+      "authority": "ArtifactAuthority",
+      "interface": "work.artifact-authority/v1",
+      "contract": "work.artifact/v1",
+      "projection": "work.artifact-projection/v1",
+      "commands": ["work.artifact-record-command/v1"]
+    },
+    "handoff": {
+      "authority": "Work_domain_authorities_with_RunAuthority_finalization",
+      "interface": "flow.resource-handoff-authority/v1",
+      "contract": "flow.resource-handoff/v1",
+      "publication": "flow.resource-handoff-publication/v1",
+      "projection": "flow.resource-handoff-projection/v1",
+      "consumer_binding": "flow.resource-handoff-consumer-binding/v1",
+      "mutation_authorization": "flow.resource-handoff-mutation-authorization/v1",
+      "consumer_preparation": "exact_resource_claim_bound_at_launch",
+      "mutation_recheck": "operation_bound_before_adapter_invocation",
+      "atomic_finalization": [
+        "workspace_promotion",
+        "artifact_pin_transfer",
+        "workspace_disposition",
+        "handoff_activation",
+        "producer_run_finalization"
+      ]
+    }
+  },
   "contracts": [
     "flow.runtime/v1",
     "flow.query/v1",
@@ -224,6 +261,24 @@
     "flow.checkpoint/confirmation/v1",
     "flow.validator/checkpoint-decision/v1",
     "flow.resource-handoff/v1",
+    "flow.resource-handoff-publication/v1",
+    "flow.resource-handoff-projection/v1",
+    "flow.resource-handoff-consumer-binding/v1",
+    "flow.resource-handoff-mutation-authorization/v1",
+    "flow.git-retention-receipt/v1",
+    "flow.git-retention-observation/v1",
+    "flow.legal-next-action/v1",
+    "work.workspace-authority/v1",
+    "work.workspace-register-command/v1",
+    "work.git-observation/v1",
+    "work.artifact-authority/v1",
+    "work.artifact-record-command/v1",
+    "flow.resource-handoff-authority/v1",
+    "work.command-receipt/v1",
+    "work.rejection/v1",
+    "work.workspace-projection/v1",
+    "work.artifact-projection/v1",
+    "work.idempotency-receipt/v1",
     "flow.launch-policy/v1",
     "flow.transition-ledger/v1",
     "flow.transition-projection/v1",
@@ -342,7 +397,10 @@
     "transition",
     "delegated_agent_description",
     "legacy_compatibility_inventory",
-    "authority_schema_compatibility"
+    "authority_schema_compatibility",
+    "workspace",
+    "artifact",
+    "resource_handoff"
   ],
   "authority_roots": {
     "legacy_claude": {

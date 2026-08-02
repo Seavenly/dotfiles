@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 10);
+  assert.equal(catalog.catalog_version, 11);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -152,6 +152,34 @@ test("the public catalog exposes the settled interface and forbids legacy import
     exhausted_action: "terminal_disposition",
   });
   assert.ok(catalog.projections.includes("authority_schema_compatibility"));
+  assert.deepEqual(catalog.work_domain_interfaces.handoff.atomic_finalization, [
+    "workspace_promotion",
+    "artifact_pin_transfer",
+    "workspace_disposition",
+    "handoff_activation",
+    "producer_run_finalization",
+  ]);
+  for (const contract of [
+    "work.workspace-authority/v1",
+    "work.workspace-register-command/v1",
+    "work.git-observation/v1",
+    "work.artifact-authority/v1",
+    "work.artifact-record-command/v1",
+    "flow.resource-handoff-authority/v1",
+    "work.command-receipt/v1",
+    "work.rejection/v1",
+    "work.workspace-projection/v1",
+    "work.artifact-projection/v1",
+    "flow.resource-handoff-publication/v1",
+    "flow.resource-handoff-projection/v1",
+    "flow.resource-handoff-consumer-binding/v1",
+    "flow.resource-handoff-mutation-authorization/v1",
+    "flow.git-retention-receipt/v1",
+    "flow.git-retention-observation/v1",
+    "work.idempotency-receipt/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
