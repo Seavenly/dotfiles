@@ -537,7 +537,8 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
     );
   }
   const managedBindingCardIds = new Set(proposal.graph.cards
-    .filter((card) => isRecord(card.inputs?.managed_agent))
+    .filter((card) => card.executor?.kind === "delegate" &&
+      isRecord(card.inputs?.managed_agent))
     .map(({ id }) => id));
   if (changes.supersede_cards.some((id) => managedBindingCardIds.has(id))) {
     invalidPlan(

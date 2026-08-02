@@ -161,9 +161,11 @@ disabled, so this API does not authorize normal replacement launches.
   run.
   Multiple cards may reuse one agent only through an identical
   `flow.managed-agent-binding/v1` that names the complete ordered card set and
-  terminal card under one immutable route. Plan revisions cannot supersede a
-  card inside that binding. Earlier cards hand the agent to the named run
-  holder; the terminal card retires it. An exact
+  terminal card under one immutable route. A revision is rejected when its
+  required pending dependent closure would supersede any card inside that
+  binding, including when the revision block is upstream of the binding.
+  Earlier cards hand the agent to the named run holder; the terminal card
+  retires it. An exact
   `flow.delegate-route-fallback/v1` may bind the final retry only when it was
   accepted with the plan, uses a different harness, and preserves the exact
   effective-authority comparison key. Ordered

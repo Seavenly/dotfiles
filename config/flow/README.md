@@ -65,8 +65,9 @@ consuming retry capacity.
 
 Declared managed-agent reuse binds a complete ordered card set to one exact
 launch and names the terminal card that must retire it; duplicate agent routes
-without that binding fail preparation, and revisions cannot supersede cards
-inside the binding. A pre-approved fallback binds one exact
+without that binding fail preparation. A revision also fails preparation when
+its pending dependent closure would supersede a card inside the binding,
+including from an upstream block. A pre-approved fallback binds one exact
 retry to a different harness with the same effective-authority comparison key,
 so retry cannot widen capability. Steering inputs carry stable caller
 identities and become part of ordered settlement proof. Ambiguous dispatch
