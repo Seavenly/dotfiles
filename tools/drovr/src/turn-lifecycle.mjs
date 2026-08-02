@@ -52,7 +52,9 @@ export async function deliverTurn({
   now,
 }) {
   try {
-    const result = await herdr.prompt(agent.herdr.name, prompt);
+    const result = await herdr.prompt(agent.herdr.name, prompt, {
+      harness: agent.launch.harness,
+    });
     const input = turn.inputs.at(-1);
     if (input?.delivery?.status === "recorded") {
       input.delivery = { status: "submitted", accepted_at: now() };
@@ -60,6 +62,10 @@ export async function deliverTurn({
     }
     return result;
   } catch (error) {
+    if (error.details?.staged_input?.ownership === "drovr") {
+      turn.staged_input = error.details.staged_input;
+      turn.late_result_recovery = "exact_transcript_correlation";
+    }
     settleTurnRecord(turn, {
       status: "uncertain",
       error: error.message,
