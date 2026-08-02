@@ -64,6 +64,21 @@ export function createFlowRuntime({
             authorityWatermarkDomain: "host",
           });
         }
+        const unsafePublication = operationCards.find((card) =>
+          card.executor.kind === "operation" &&
+          card.executor.effect_classification === "one_shot_uncertain" &&
+          card.inputs?.publication !== undefined);
+        if (unsafePublication) {
+          const host = runAuthority.query();
+          return createRejection({
+            operation: "launch",
+            code: "unsafe_publication_effect_class",
+            reason: unsafePublication.id,
+            bundleDigest: validation.prepared.bundle_digest,
+            authorityWatermark: host.watermark,
+            authorityWatermarkDomain: "host",
+          });
+        }
         if (operationCards.some(({ executor }) => executor.kind === "operation") &&
             typeof runAuthority.invokeEffect !== "function") {
           const host = runAuthority.query();

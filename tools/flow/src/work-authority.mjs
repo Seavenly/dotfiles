@@ -138,6 +138,7 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
     const handoffDigest = digest(activated.handoff);
     const consumerPins = [];
     const mutationAuthorizations = [];
+    let mutationAuthorizationCount = 0;
     for (const { payload } of records.slice(1)) {
       if (payload.type === "resource_handoff_pinned") {
         consumerPins.push({
@@ -146,7 +147,9 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
           binding_digest: payload.binding_digest,
         });
       } else if (payload.type === "consumer_handoff_rechecked") {
-        mutationAuthorizations.push(payload.authorization);
+        mutationAuthorizationCount += 1;
+        mutationAuthorizations.splice(0, mutationAuthorizations.length,
+          payload.authorization);
       }
     }
     const legalActions = consumerPins.map((pin) => ({
@@ -168,6 +171,7 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
       status: "active",
       consumer_pins: consumerPins,
       mutation_authorizations: mutationAuthorizations,
+      mutation_authorization_count: mutationAuthorizationCount,
       legal_actions: legalActions,
     });
   }
@@ -228,42 +232,20 @@ export function buildHandoffPublication({
   workspace,
   gitObservation,
 }) {
-  if (publication?.schema !== "flow.resource-handoff-publication/v1" ||
-      receipt?.provider_receipt?.publication_digest !== digest(publication) ||
+  validateHandoffPublicationAuthority({
+    artifacts,
+    gitObservation,
+    intent,
+    publication,
+    workspace,
+  });
+  if (receipt?.provider_receipt?.publication_digest !== digest(publication) ||
       !validGitRetentionReceipt(
         receipt?.provider_receipt?.git_retention,
         workspace,
         publication,
-      ) ||
-      gitObservation?.schema !== "work.git-observation/v1" ||
-      !isDeepStrictEqual(gitObservation.git, publication?.workspace?.promoted_git) ||
-      workspace?.schema !== "work.workspace-projection/v1" ||
-      workspace.subject_id !== publication.workspace?.subject_id ||
-      workspace.generation !== publication.workspace.expected_generation ||
-      workspace.mutation_epoch !== publication.workspace.expected_mutation_epoch ||
-      digest(workspace.git) !== digest(publication.workspace.expected_git) ||
-      publication.workspace.promoted_generation !== workspace.generation + 1 ||
-      !Number.isSafeInteger(publication.workspace.promoted_mutation_epoch) ||
-      publication.workspace.promoted_mutation_epoch <= workspace.mutation_epoch ||
-      !validGitFacts(publication.workspace.promoted_git) ||
-      !nonEmpty(publication.workspace.disposition) ||
-      publication.subject?.contract !== "work.workspace/v1" ||
-      publication.subject.subject_id !== workspace.subject_id ||
-      !Array.isArray(publication.artifacts) || publication.artifacts.length === 0 ||
-      artifacts.length !== publication.artifacts.length ||
-      artifacts.some((artifact, index) =>
-        artifact?.schema !== "work.artifact-projection/v1" ||
-        artifact.digest !== publication.artifacts[index].digest ||
-        artifact.generation !== publication.artifacts[index].expected_generation ||
-        artifact.byte_availability !== "available" ||
-        !artifact.pins.some(({ holder, id }) =>
-          holder === "run" && id === intent.run_id)) ||
-      !Array.isArray(publication.allowed_consumer_operations) ||
-      publication.allowed_consumer_operations.length === 0 ||
-      !isRecord(publication.authority_envelope) ||
-      !nonEmpty(publication.retention) ||
-      !Array.isArray(publication.cleanup_obligations)) {
-    throw new TypeError("resource handoff publication does not match authority");
+      )) {
+    throw new TypeError("resource handoff receipt does not match publication");
   }
   const handoffBody = {
     subject: {
@@ -323,6 +305,48 @@ export function buildHandoffPublication({
   };
 }
 
+export function validateHandoffPublicationAuthority({
+  artifacts,
+  intent,
+  publication,
+  workspace,
+  gitObservation,
+}) {
+  if (publication?.schema !== "flow.resource-handoff-publication/v1" ||
+      gitObservation?.schema !== "work.git-observation/v1" ||
+      !isDeepStrictEqual(gitObservation.git, publication?.workspace?.promoted_git) ||
+      workspace?.schema !== "work.workspace-projection/v1" ||
+      workspace.subject_id !== publication.workspace?.subject_id ||
+      workspace.generation !== publication.workspace.expected_generation ||
+      workspace.mutation_epoch !== publication.workspace.expected_mutation_epoch ||
+      digest(workspace.git) !== digest(publication.workspace.expected_git) ||
+      publication.workspace.promoted_generation !== workspace.generation + 1 ||
+      !Number.isSafeInteger(publication.workspace.promoted_mutation_epoch) ||
+      publication.workspace.promoted_mutation_epoch <= workspace.mutation_epoch ||
+      !validGitFacts(publication.workspace.promoted_git) ||
+      !nonEmpty(publication.workspace.disposition) ||
+      publication.subject?.contract !== "work.workspace/v1" ||
+      publication.subject.subject_id !== workspace.subject_id ||
+      !intent.resource_claims?.some((claim) =>
+        claim.kind === "workspace" && claim.id === workspace.subject_id) ||
+      !Array.isArray(publication.artifacts) || publication.artifacts.length === 0 ||
+      artifacts.length !== publication.artifacts.length ||
+      artifacts.some((artifact, index) =>
+        artifact?.schema !== "work.artifact-projection/v1" ||
+        artifact.digest !== publication.artifacts[index].digest ||
+        artifact.generation !== publication.artifacts[index].expected_generation ||
+        artifact.byte_availability !== "available" ||
+        !artifact.pins.some(({ holder, id }) =>
+          holder === "run" && id === intent.run_id)) ||
+      !Array.isArray(publication.allowed_consumer_operations) ||
+      publication.allowed_consumer_operations.length === 0 ||
+      !isRecord(publication.authority_envelope) ||
+      !nonEmpty(publication.retention) ||
+      !Array.isArray(publication.cleanup_obligations)) {
+    throw new TypeError("resource handoff publication does not match authority");
+  }
+}
+
 export function buildConsumerHandoffBinding({ handoff, claim, runId }) {
   if (claim?.kind !== "resource_handoff" || claim.id !== handoff?.handoff_id ||
       claim.digest !== handoff.handoff_digest ||
@@ -372,8 +396,14 @@ export function buildConsumerMutationAuthorization({ handoff, intent }) {
   const request = intent?.operation_input?.resource_handoff;
   const pin = handoff?.consumer_pins.find(({ run_id: runId }) =>
     runId === intent.run_id);
+  const cardClaim = intent?.resource_claims?.find((claim) =>
+    claim.kind === "resource_handoff" &&
+    claim.id === handoff?.handoff_id &&
+    claim.digest === handoff?.handoff_digest &&
+    claim.operations?.includes(request?.operation));
   if (request?.handoff_id !== handoff?.handoff_id ||
       request.handoff_digest !== handoff.handoff_digest ||
+      !cardClaim ||
       !pin?.operations.includes(request.operation) ||
       !handoff.allowed_consumer_operations.includes(request.operation) ||
       handoff.subject_availability !== "exact" ||

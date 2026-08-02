@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 
 import { freezeCanonical } from "./canonical.mjs";
 
+const GIT_TIMEOUT_MS = 10_000;
+
 export function createGitRetentionAdapter({ resolveRepository } = {}) {
   if (typeof resolveRepository !== "function") {
     throw new TypeError("Git retention Adapter requires repository resolution");
@@ -115,6 +117,7 @@ function unavailableGitRetentionObservation(receipt = {}) {
 function gitOutput(repository, args) {
   const result = spawnSync("git", ["-C", repository, ...args], {
     encoding: "utf8",
+    timeout: GIT_TIMEOUT_MS,
   });
   if (result.status !== 0) {
     throw new Error(result.stderr.trim() || "Git retention operation failed");
@@ -125,6 +128,7 @@ function gitOutput(repository, args) {
 function gitOptionalOutput(repository, args) {
   const result = spawnSync("git", ["-C", repository, ...args], {
     encoding: "utf8",
+    timeout: GIT_TIMEOUT_MS,
   });
   return result.status === 0 ? result.stdout.trim() : null;
 }

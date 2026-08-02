@@ -22,17 +22,15 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v9 extends the v8 contracts with irreversible cancellation,
-  abandoned-attempt, late-effect quarantine, and observation-only cancelled
-  settlement behavior. It retains the exact v1 requirements introduced in v8
-  for
-  `explicit_facts.block_observations` on dynamic proposals and
-  `revision_templates` on prepared runs, and publishes registered operation
-  intent, observation, receipt, validation, effect-class, and recovery
-  contracts together with authority-schema compatibility and transition
-  contracts, and adds the workspace, artifact, and resource handoff
-  Interfaces. Callers must prepare a fresh bundle rather than launch a pre-v8
-  envelope.
+  Catalog v10 retains the v9 irreversible cancellation, abandoned-attempt,
+  late-effect quarantine, and observation-only cancelled settlement contracts,
+  and adds the workspace, artifact, and resource handoff interfaces. The exact
+  v1 requirements for `explicit_facts.block_observations` on dynamic proposals
+  and `revision_templates` on prepared runs were introduced in v7 and remain
+  required, together with registered operation intent, observation, receipt,
+  validation, effect-class, recovery, authority-schema compatibility, and
+  transition contracts. Callers must prepare a fresh bundle rather than launch
+  a pre-v8 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
   executor with `flow.validator/checkpoint-decision/v1` and one operation card.
   A one-shot uncertain operation must be bound only to an exact fresh

@@ -172,6 +172,8 @@ test("producer promotion, pin transfer, handoff activation, and finalization com
   const publication = handoffPublication(artifactDigest);
   const proposal = registeredOperationProposal({ checkpointBound: false });
   proposal.graph.cards[0].inputs = { publication };
+  claimProducerWorkspace(proposal);
+  let publicationInvocations = 0;
   const runtime = createFlowRuntime({
     runAuthority,
     registeredOperations: {
@@ -179,11 +181,38 @@ test("producer promotion, pin transfer, handoff activation, and finalization com
         schema: "flow.registered-operation/v1",
         classification: "caller_idempotent",
         invoke(intent) {
+          publicationInvocations += 1;
           return publicationReceipt(intent);
         },
       },
     },
   });
+  const oneShotRuntime = createFlowRuntime({
+    runAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        schema: "flow.registered-operation/v1",
+        classification: "one_shot_uncertain",
+        invoke() {
+          assert.fail("unsafe publication reached its Adapter");
+        },
+        observe() {
+          return { presence: "indeterminate" };
+        },
+      },
+    },
+  });
+  const oneShotProposal = registeredOperationProposal({
+    classification: "one_shot_uncertain",
+  });
+  const oneShotOperation = oneShotProposal.graph.cards.find(
+    ({ executor }) => executor.kind === "operation",
+  );
+  oneShotOperation.inputs = { publication };
+  claimProducerWorkspace(oneShotProposal);
+  const oneShotPrepared = oneShotRuntime.prepare(oneShotProposal);
+  assert.equal(oneShotRuntime.launch(confirmedLaunchRequest(oneShotPrepared)).code,
+    "unsafe_publication_effect_class");
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
 
@@ -251,6 +280,7 @@ test("producer promotion, pin transfer, handoff activation, and finalization com
     staleProposal.graph.cards[0].inputs = {
       publication: handoffPublication(staleDigest, publicationOverrides),
     };
+    claimProducerWorkspace(staleProposal);
     const stalePrepared = runtime.prepare(staleProposal);
     const staleRun = runtime.launch(confirmedLaunchRequest(stalePrepared));
     artifactAuthority.command(artifactRegistration(
@@ -266,6 +296,7 @@ test("producer promotion, pin transfer, handoff activation, and finalization com
     assert.equal(rejected.effects[0].status, "unresolved", label);
     assert.deepEqual(rejected.handoffs, [], label);
   }
+  assert.equal(publicationInvocations, 1);
   await rm(join(
     authorityDirectory,
     "artifacts",
@@ -302,6 +333,7 @@ test("a failure before handoff commit leaves every authority unpromoted", async 
   proposal.graph.cards[0].inputs = {
     publication: handoffPublication(artifactDigest),
   };
+  claimProducerWorkspace(proposal);
   const runtime = createFlowRuntime({
     runAuthority,
     registeredOperations: {
@@ -388,6 +420,7 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
       promotedGit: candidateGit,
     }),
   };
+  claimProducerWorkspace(proposal);
   const producerRuntime = createFlowRuntime({
     runAuthority: producerAuthority,
     registeredOperations: {
@@ -494,6 +527,25 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     consumerRuntime.launch(confirmedLaunchRequest(disallowedPrepared)).code,
     "invalid_resource_handoff_binding",
   );
+
+  const overbroadPrepared = consumerRuntime.prepare(consumerOperationProposal(
+    handoffId,
+    retained.handoff_digest,
+    "workspace_mutation",
+    ["read_workspace", "workspace_mutation"],
+    ["read_workspace"],
+  ));
+  const overbroadConsumer = consumerRuntime.launch(
+    confirmedLaunchRequest(overbroadPrepared),
+  );
+  consumerRuntime.command(
+    consumerRuntime.query({ run_id: overbroadConsumer.run_id }).legal_actions[0],
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(consumerInvocations, 0);
+  assert.equal(consumerRuntime.query({
+    run_id: overbroadConsumer.run_id,
+  }).effects[0].status, "unresolved");
 
   const splitPrepared = consumerRuntime.prepare(consumerOperationProposal(
     handoffId,
@@ -667,6 +719,7 @@ function consumerOperationProposal(
   handoffDigest,
   operation = "workspace_mutation",
   claimedOperations = [operation],
+  cardClaimedOperations = claimedOperations,
 ) {
   const proposal = registeredOperationProposal({ checkpointBound: false });
   const claims = claimedOperations.map((claimedOperation) => ({
@@ -682,10 +735,20 @@ function consumerOperationProposal(
       operation,
     },
   };
-  proposal.graph.cards[0].resource_claims.push(...claims);
+  proposal.graph.cards[0].resource_claims.push(...claims.filter(({ operations }) =>
+    cardClaimedOperations.includes(operations[0])));
   proposal.explicit_facts.resource_claims.push(...claims);
   proposal.explicit_facts.limits.max_resources = 1 + claims.length;
   return proposal;
+}
+
+function claimProducerWorkspace(proposal) {
+  const claim = { kind: "workspace", id: "workspace:producer" };
+  const producerCard = proposal.graph.cards.find((card) =>
+    card.inputs?.publication !== undefined);
+  producerCard.resource_claims.push(claim);
+  proposal.explicit_facts.resource_claims.push(claim);
+  proposal.explicit_facts.limits.max_resources += 1;
 }
 
 function publicationReceipt(intent) {

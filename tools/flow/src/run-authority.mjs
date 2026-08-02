@@ -63,6 +63,7 @@ import {
   buildConsumerMutationAuthorization,
   buildHandoffPublication,
   decideWorkCommand,
+  validateHandoffPublicationAuthority,
   withHandoffObservations,
   withArtifactAvailability,
   workRejection,
@@ -828,7 +829,10 @@ export function createDurableRunAuthority({
               "command",
               error instanceof TypeError
                 ? "artifact_bytes_mismatch"
-                : "artifact_bytes_conflict",
+                : error.message ===
+                    "artifact digest already names different retained bytes"
+                  ? "artifact_bytes_conflict"
+                  : "artifact_storage_unavailable",
               { command },
             );
           }
@@ -1138,6 +1142,7 @@ export function createDurableRunAuthority({
             authorityEpoch,
             bootId,
             gitRetentionAdapter,
+            gitWorkspaceObservationAdapter,
             processIdentity,
           });
           beforeEffect(effectiveIntent);
@@ -1153,6 +1158,17 @@ export function createDurableRunAuthority({
           bootId,
           processIdentity,
         });
+        const publicationRequest = effectiveIntent.operation_input?.publication;
+        if (publicationRequest !== undefined) {
+          const retentionReceipt = result?.provider_receipt?.git_retention;
+          const retentionObservation = gitRetentionAdapter.observe(retentionReceipt);
+          if (retentionObservation?.available !== true ||
+              retentionObservation.commit_sha !== retentionReceipt?.commit_sha ||
+              retentionObservation.tree_sha !== retentionReceipt?.tree_sha ||
+              retentionObservation.retention_ref !== retentionReceipt?.retention_ref) {
+            throw new TypeError("Git retention was not independently observed");
+          }
+        }
         database.exec("BEGIN IMMEDIATE");
         try {
           assertAuthorityEpoch(database, {
@@ -1595,6 +1611,30 @@ function prepareHandoffPublication(
   receipt,
   },
 ) {
+  const authority = handoffPublicationAuthorityContext(
+    database,
+    authorityDirectory,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    intent,
+    publication,
+  );
+  return buildHandoffPublication({
+    ...authority,
+    intent,
+    publication,
+    receipt,
+  });
+}
+
+function handoffPublicationAuthorityContext(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  intent,
+  publication,
+) {
   const workspaceIdentity = workStreamIdentity(
     "work.workspace/v1",
     publication?.workspace?.subject_id,
@@ -1621,14 +1661,15 @@ function prepareHandoffPublication(
         )
       : null;
   });
-  return buildHandoffPublication({
+  const authority = {
     artifacts,
     intent,
     publication,
-    receipt,
     workspace: workspaceStream?.fold ?? null,
     gitObservation,
-  });
+  };
+  validateHandoffPublicationAuthority(authority);
+  return authority;
 }
 
 function appendHandoffPublication(database, publication, fence) {
@@ -2014,8 +2055,20 @@ function recordEffectInvocationStarted(database, intent, {
   authorityEpoch,
   bootId,
   gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
   processIdentity,
 }) {
+  const publication = intent.operation_input?.publication;
+  if (publication !== undefined) {
+    handoffPublicationAuthorityContext(
+      database,
+      authorityDirectory,
+      gitRetentionAdapter,
+      gitWorkspaceObservationAdapter,
+      intent,
+      publication,
+    );
+  }
   database.exec("BEGIN IMMEDIATE");
   try {
     assertAuthorityEpoch(database, {
