@@ -81,10 +81,13 @@ disabled, so this API does not authorize normal replacement launches.
   they do not grant that capability to unrelated cards. Revision decisions
   cite the current plan fingerprint and validated trigger. Accepting admits
   the template's complete change set in one authority event; declining records
-  the negative outcome and terminates the run. A capped or otherwise
+  the negative outcome while leaving the blocked run active and its capacity
+  reserved. A capped or otherwise
   inadmissible revision withholds acceptance but retains that exact decline
   action, so an active checkpoint-only run is never stranded without a legal
-  operator action. A revision may
+  operator action. When an accepted revision leaves every card completed or
+  superseded and no effect unresolved, revision history, successful terminality,
+  and capacity release commit atomically. A revision may
   supersede only its blocked card and pending dependent closure; completed
   cards, accepted checkpoint evidence, routes, grants, and earlier revisions
   remain unchanged, and no active card may depend on superseded work. Any

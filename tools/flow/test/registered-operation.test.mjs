@@ -1057,7 +1057,7 @@ test("an unresolved effect serializes checkpoint decisions", async (t) => {
   assert.equal(runtime.query().admission.active_runs, 0);
 });
 
-test("an unresolved effect serializes revision decisions", async (t) => {
+test("a settled operation permits a terminal revision while an unresolved effect does not", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const authority = createDurableRunAuthority({
@@ -1105,7 +1105,7 @@ test("an unresolved effect serializes revision decisions", async (t) => {
     observeCardBlock({ card_id: revisionCard.id, block }),
   ));
   Object.assign(proposal.explicit_facts.limits, {
-    max_cards: 4,
+    max_cards: 3,
     max_revisions: 1,
     max_cards_per_revision: 1,
   });
@@ -1115,10 +1115,7 @@ test("an unresolved effect serializes revision decisions", async (t) => {
     trigger,
     limits: { max_applications: 1 },
     changes: {
-      add_cards: [{
-        ...structuredClone(revisionCard),
-        id: "revised-scope",
-      }],
+      add_cards: [],
       add_edges: [],
       supersede_cards: [revisionCard.id],
       capability_additions: [],
@@ -1159,12 +1156,15 @@ test("an unresolved effect serializes revision decisions", async (t) => {
     ({ type, decision }) => type === "revision_decision" && decision === "accept",
   );
   assert.equal(runtime.command(revision).accepted, true);
-  const approval = runtime.query({ run_id: launch.run_id }).legal_actions.find(
-    ({ checkpoint_id: checkpointId, decision }) =>
-      checkpointId === "revised-scope" && decision === "approve",
-  );
-  assert.equal(runtime.command(approval).accepted, true);
-  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
+  const terminal = runtime.query({ run_id: launch.run_id });
+  assert.equal(terminal.phase, "succeeded");
+  assert.deepEqual(terminal.cards, [
+    { id: "confirm-plan", executor_kind: "checkpoint", status: "completed" },
+    { id: "record-outcome", executor_kind: "operation", status: "completed" },
+    { id: "revise-scope", executor_kind: "checkpoint", status: "superseded" },
+  ]);
+  assert.equal(terminal.effects[0].status, "succeeded");
+  assert.deepEqual(terminal.legal_actions, []);
   assert.equal(runtime.query().admission.active_runs, 0);
 });
 

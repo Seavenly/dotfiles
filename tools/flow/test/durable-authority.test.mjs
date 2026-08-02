@@ -16,6 +16,8 @@ import {
   capabilityBlockedCheckpointProposal,
   confirmedLaunchRequest,
   dynamicCheckpointProposal,
+  repeatedRevisionCheckpointProposal,
+  terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
 
@@ -68,6 +70,96 @@ test("durable launch projects digest-bound card blocks and their legal grant", a
   ]);
   assert.equal(runtime.command(blocked.legal_actions[0]).accepted, true);
   assert.equal(runtime.query({ run_id: launch.run_id }).progress, "waiting");
+});
+
+test("a terminal checkpoint revision succeeds and atomically releases capacity", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 1,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(terminalRevisionCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "capability_grant",
+  ));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ checkpoint_id: checkpointId, decision }) =>
+      checkpointId === "confirm-scope" && decision === "approve",
+  ));
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const staleAcceptance = blocked.legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "accept",
+  );
+  const decline = blocked.legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "decline",
+  );
+
+  assert.equal(runtime.command(decline).accepted, true);
+  const afterDecline = runtime.query({ run_id: launch.run_id });
+  assert.equal(afterDecline.phase, "active");
+  assert.equal(afterDecline.current_revision.ordinal, 0);
+  assert.equal(runtime.query().admission.active_runs, 1);
+  assert.equal(runtime.command(staleAcceptance).code, "stale_authority_watermark");
+
+  const cappedProposal = repeatedRevisionCheckpointProposal();
+  cappedProposal.explicit_facts.limits.max_revisions = 1;
+  const nextPrepared = runtime.prepare(cappedProposal);
+  const capacityRejection = runtime.launch(confirmedLaunchRequest(nextPrepared));
+  assert.equal(capacityRejection.code, "host_capacity_exhausted");
+
+  const revision = afterDecline.legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "accept",
+  );
+
+  assert.equal(runtime.command(revision).accepted, true);
+  const terminal = runtime.query({ run_id: launch.run_id });
+  assert.equal(terminal.phase, "succeeded");
+  assert.equal(terminal.progress, "complete");
+  assert.deepEqual(terminal.cards, [
+    { id: "confirm-plan", executor_kind: "checkpoint", status: "superseded" },
+    { id: "confirm-scope", executor_kind: "checkpoint", status: "completed" },
+  ]);
+  assert.deepEqual(terminal.legal_actions, []);
+  assert.equal(runtime.query().admission.active_runs, 0);
+
+  const inspector = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "inspector"),
+  });
+  t.after(() => inspector.close());
+  const replayed = createFlowRuntime({ runAuthority: inspector });
+  assert.deepEqual(replayed.query({ run_id: launch.run_id }), terminal);
+  assert.equal(replayed.query().admission.active_runs, 0);
+
+  const nextLaunch = runtime.launch(confirmedLaunchRequest(nextPrepared));
+  assert.equal(nextLaunch.created, true);
+  assert.equal(runtime.query().admission.active_runs, 1);
+
+  const nextInitial = runtime.query({ run_id: nextLaunch.run_id });
+  runtime.command(nextInitial.legal_actions.find(({ template_id: templateId }) =>
+    templateId === "replace-confirm-plan"));
+  const capped = runtime.query({ run_id: nextLaunch.run_id });
+  assert.ok(!capped.legal_actions.some(({ type, decision }) =>
+    type === "revision_decision" && decision === "accept"));
+  assert.equal(runtime.command(capped.legal_actions.find(
+    ({ type, decision }) =>
+      type === "revision_decision" && decision === "decline",
+  )).accepted, true);
+  assert.equal(runtime.query({ run_id: nextLaunch.run_id }).phase, "active");
+  assert.equal(runtime.query().admission.active_runs, 1);
+
+  const unavailable = runtime.prepare(dynamicCheckpointProposal());
+  assert.equal(
+    runtime.launch(confirmedLaunchRequest(unavailable)).code,
+    "host_capacity_exhausted",
+  );
 });
 
 test("same-boot recovery advances the epoch and resumes from replayed authority", async (t) => {
