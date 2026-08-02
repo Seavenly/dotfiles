@@ -42,6 +42,16 @@ const LIMIT_FIELDS = [
   "max_elapsed_seconds",
 ];
 
+export function applyRevisionGraphChanges(graph, changes) {
+  const cards = [...graph.cards, ...changes.add_cards]
+    .map((card) => structuredClone(card));
+  for (const { from, to } of changes.add_edges) {
+    const target = cards.find(({ id }) => id === to);
+    target.dependencies = [...new Set([...target.dependencies, from])].sort();
+  }
+  return { ...graph, cards };
+}
+
 const CARD_BLOCK_FIELDS = [
   "schema",
   "id",
@@ -497,8 +507,8 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       "revision supersession must be the blocked card and its pending dependent closure",
     );
   }
-  const revisedCards = [...proposal.graph.cards, ...changes.add_cards]
-    .map((card) => structuredClone(card));
+  const revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
+  const revisedCards = revisedGraph.cards;
   const allIds = new Set(revisedCards.map(({ id }) => id));
   const edgeIds = new Set();
   for (const edge of changes.add_edges) {
@@ -562,7 +572,7 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
   }
   validateDynamicPlan({
     ...proposal,
-    graph: { ...proposal.graph, cards: revisedCards },
+    graph: revisedGraph,
     explicit_facts: { ...proposal.explicit_facts, limits },
   }, { registeredOperations, skipRevisionTemplates: true });
 }

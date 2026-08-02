@@ -1,5 +1,8 @@
 import { digest } from "./canonical.mjs";
-import { compileDynamicPlan } from "./plan-compiler.mjs";
+import {
+  applyRevisionGraphChanges,
+  compileDynamicPlan,
+} from "./plan-compiler.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import { createInMemoryRunAuthority } from "./run-authority.mjs";
@@ -197,16 +200,9 @@ function operationValidationContexts(prepared) {
     proposal: proposal(prepared.graph),
   }));
   for (const template of prepared.revision_templates) {
-    const cards = [
-      ...prepared.graph.cards,
-      ...template.changes.add_cards,
-    ].map((card) => structuredClone(card));
-    for (const { from, to } of template.changes.add_edges) {
-      const target = cards.find(({ id }) => id === to);
-      target.dependencies = [...new Set([...target.dependencies, from])].sort();
-    }
-    const revisedProposal = proposal({ ...prepared.graph, cards });
-    contexts.push(...cards.map((card) => ({
+    const graph = applyRevisionGraphChanges(prepared.graph, template.changes);
+    const revisedProposal = proposal(graph);
+    contexts.push(...graph.cards.map((card) => ({
       card,
       proposal: revisedProposal,
     })));
