@@ -783,6 +783,8 @@ export function createDurableRunAuthority({
             provider_receipt: latestObservation.provider_observation,
           };
         } else {
+          // This must remain the first await in invokeEffect. It lets command()
+          // return its intent-commit watermark before invocation-start advances it.
           await Promise.resolve();
           recordEffectInvocationStarted(database, effectiveIntent, {
             authorityEpoch,
@@ -890,6 +892,22 @@ export function createDurableRunAuthority({
           throw new AuthorityFenceError(
             "unrecorded_effect_intent",
             "effect observation is not bound to a recorded intent",
+          );
+        }
+        if (stream.records.some(({ payload }) =>
+          payload.type === "effect_receipt_recorded" &&
+          payload.effect_id === intent.effect_id)) {
+          throw new AuthorityFenceError(
+            "effect_already_recorded",
+            "effect already has a durable receipt",
+          );
+        }
+        if (stream.fold.phase !== "active") {
+          // Receipts currently settle every effect before terminal transition.
+          // Retain this invariant fence in case later terminal paths diverge.
+          throw new AuthorityFenceError(
+            "run_terminal",
+            "effect observations cannot mutate a terminal run",
           );
         }
         const normalizedObservation = normalizeEffectObservation(

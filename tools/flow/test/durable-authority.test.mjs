@@ -493,6 +493,17 @@ test("only a complete durable effect intent is invoked and receipted", async (t)
     () => authority.invokeEffect(intent, { invoke() {} }),
     (error) => error.code === "effect_already_recorded",
   );
+  await assert.rejects(
+    () => authority.recordEffectObservation(intent, {
+      schema: "flow.effect-observation/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      presence: "indeterminate",
+      causation: null,
+      provider_observation: { checked: true },
+    }),
+    (error) => error.code === "effect_already_recorded",
+  );
 });
 
 test("authority rejects kernel resource claims outside prepared facts", async (t) => {
@@ -794,6 +805,12 @@ test("recovery fails closed for effects that require reconciliation", async (t) 
   assert.equal(normalized.presence, "indeterminate");
   await assert.rejects(
     () => recovered.invokeEffect(receipt.effect_intents[0], {
+      reconciliation: "adopt_present",
+    }),
+    (error) => error.code === "effect_presence_not_proven",
+  );
+  await assert.rejects(
+    () => recovered.invokeEffect(receipt.effect_intents[0], {
       reconciliation: "invoke_absent",
       invoke() {},
     }),
@@ -833,6 +850,84 @@ test("recovery fails closed for effects that require reconciliation", async (t) 
     () => recovered.invokeEffect(receipt.effect_intents[0], {
       reconciliation: "invoke_absent",
       invoke() { assert.fail("stale absence must not authorize invocation"); },
+    }),
+    (error) => error.code === "effect_absence_not_proven",
+  );
+});
+
+test("presence evidence older than an invocation cannot be adopted", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: (fold, command) => effectLifecycle(
+      fold,
+      command,
+      "reconcilable",
+    ),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const [intent] = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  ).effect_intents;
+  await authority.recordEffectObservation(intent, {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "present",
+    causation: {
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+    },
+    provider_observation: { provider_id: "existing" },
+  });
+  await assert.rejects(
+    () => authority.invokeEffect(intent, {
+      invoke() { throw new Error("receipt lost after mutation"); },
+    }),
+    /receipt lost after mutation/,
+  );
+
+  await assert.rejects(
+    () => authority.invokeEffect(intent, { reconciliation: "adopt_present" }),
+    (error) => error.code === "effect_presence_not_proven",
+  );
+});
+
+test("one-shot effects cannot use absence to authorize reinvocation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: (fold, command) => effectLifecycle(
+      fold,
+      command,
+      "one_shot_uncertain",
+    ),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const [intent] = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  ).effect_intents;
+  await authority.recordEffectObservation(intent, {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "absent",
+    causation: null,
+    provider_observation: { found: false },
+  });
+
+  await assert.rejects(
+    () => authority.invokeEffect(intent, {
+      reconciliation: "invoke_absent",
+      invoke() { assert.fail("one-shot effect must not be invoked"); },
     }),
     (error) => error.code === "effect_absence_not_proven",
   );

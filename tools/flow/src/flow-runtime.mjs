@@ -1,10 +1,13 @@
+import { digest } from "./canonical.mjs";
 import { compileDynamicPlan } from "./plan-compiler.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import { createInMemoryRunAuthority } from "./run-authority.mjs";
 import {
   dispatchRegisteredEffect,
-  hasRegisteredOperation,
+  operationRegistrationIssue,
+  registeredOperation,
+  snapshotRegisteredOperations,
 } from "./operation-effects.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
@@ -21,8 +24,11 @@ export function createFlowRuntime({
        Array.isArray(registeredOperations))) {
     throw new TypeError("registeredOperations must be an object or Map");
   }
+  const operationRegistry = snapshotRegisteredOperations(registeredOperations);
   const compile = planCompiler === compileDynamicPlan
-    ? (proposal) => compileDynamicPlan(proposal, { registeredOperations })
+    ? (proposal) => compileDynamicPlan(proposal, {
+        registeredOperations: operationRegistry,
+      })
     : planCompiler;
   return Object.freeze({
     prepare(proposal) {
@@ -38,15 +44,21 @@ export function createFlowRuntime({
             ({ changes }) => changes.add_cards,
           ),
         ];
-        const unregistered = operationCards.find((card) =>
-          card.executor.kind === "operation" &&
-          !hasRegisteredOperation(registeredOperations, card.executor.contract));
-        if (unregistered) {
+        const incompatible = operationCards.map((card) => ({
+          card,
+          issue: card.executor.kind === "operation"
+            ? operationRegistrationIssue(
+                registeredOperation(operationRegistry, card.executor.contract),
+                card.executor.effect_classification,
+              )
+            : null,
+        })).find(({ issue }) => issue !== null);
+        if (incompatible) {
           const host = runAuthority.query();
           return createRejection({
             operation: "launch",
-            code: "unregistered_operation_contract",
-            reason: unregistered.executor.contract,
+            code: incompatible.issue,
+            reason: incompatible.card.executor.contract,
             bundleDigest: validation.prepared.bundle_digest,
             authorityWatermark: host.watermark,
             authorityWatermarkDomain: "host",
@@ -69,9 +81,15 @@ export function createFlowRuntime({
     },
 
     command(command) {
+      const registryRejection = recoveryRegistryRejection(
+        command,
+        operationRegistry,
+        runAuthority,
+      );
+      if (registryRejection) return registryRejection;
       const receipt = runAuthority.command(command);
       for (const intent of receipt?.effect_intents ?? []) {
-        dispatchRegisteredEffect(intent, registeredOperations, runAuthority, {
+        dispatchRegisteredEffect(intent, operationRegistry, runAuthority, {
           recovery: command?.type === "recovery",
         });
       }
@@ -88,6 +106,39 @@ export function createFlowRuntime({
     watch({ run_id: runId } = {}) {
       return runAuthority.watch(runId);
     },
+  });
+}
+
+function recoveryRegistryRejection(command, operationRegistry, runAuthority) {
+  if (command?.type !== "recovery" || typeof command.run_id !== "string") {
+    return null;
+  }
+  const projection = runAuthority.query(command.run_id);
+  let isLegalRecovery = false;
+  try {
+    isLegalRecovery = projection?.legal_actions?.some((action) =>
+      action.type === "recovery" && digest(action) === digest(command));
+  } catch {
+    return null;
+  }
+  if (!isLegalRecovery) return null;
+  const effect = projection.effects.find(({ effect_id: effectId }) =>
+    effectId === command.effect_id);
+  const issue = operationRegistrationIssue(
+    registeredOperation(operationRegistry, effect.operation_contract),
+    effect.classification,
+  );
+  if (!issue) return null;
+  return createRejection({
+    operation: "command",
+    code: issue,
+    reason: effect.operation_contract,
+    commandType: command.type,
+    runId: command.run_id,
+    bundleDigest: projection.bundle_digest,
+    authorityWatermark: projection.watermark,
+    authorityWatermarkDomain: "run",
+    legalActions: projection.legal_actions,
   });
 }
 

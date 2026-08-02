@@ -1,3 +1,5 @@
+import { digest } from "./canonical.mjs";
+
 const POLICIES = {
   read_only: {
     recovery: "repeat_exact",
@@ -52,6 +54,36 @@ export function hasRegisteredOperation(registrations, contract) {
   return Boolean(registeredOperation(registrations, contract));
 }
 
+export function snapshotRegisteredOperations(registrations) {
+  const entries = registrations instanceof Map
+    ? registrations.entries()
+    : Object.entries(registrations);
+  return new Map([...entries].flatMap(([contract, registration]) => {
+    if (!registration) return [];
+    return [[contract, Object.freeze({
+      classification: registration.classification,
+      invoke: typeof registration.invoke === "function"
+        ? registration.invoke.bind(registration)
+        : registration.invoke,
+      observe: typeof registration.observe === "function"
+        ? registration.observe.bind(registration)
+        : registration.observe,
+    })]];
+  }));
+}
+
+export function operationRegistrationIssue(registration, classification) {
+  if (!registration) return "unregistered_operation_contract";
+  const policy = effectClassPolicy(registration.classification);
+  if (typeof registration.invoke !== "function" || !policy ||
+      policy.requires_observation && typeof registration.observe !== "function") {
+    return "incomplete_operation_registration";
+  }
+  return registration.classification === classification
+    ? null
+    : "invalid_effect_classification";
+}
+
 export function dispatchRegisteredEffect(
   intent,
   registrations,
@@ -63,6 +95,8 @@ export function dispatchRegisteredEffect(
     intent.operation_contract,
   );
   const policy = effectClassPolicy(intent.classification);
+  // Runtime admission makes this guard unreachable for launch and recovery.
+  // Keep it as a final defense against a non-conforming authority-supplied intent.
   if (!registration || !policy || typeof runAuthority.invokeEffect !== "function" ||
       registration.classification !== intent.classification ||
       typeof registration.invoke !== "function") return;
@@ -101,35 +135,50 @@ export function dispatchRegisteredEffect(
 }
 
 export function normalizeEffectObservation(observation, intent) {
-  if (validateEffectObservation(observation, intent) !== "indeterminate" ||
-      observation?.schema === "flow.effect-observation/v1" &&
-      observation.effect_id === intent.effect_id &&
-      observation.idempotency_key === intent.idempotency_key &&
-      observation.presence === "indeterminate" &&
-      observation.provider_observation !== undefined) {
-    return observation;
-  }
+  const presence = observationPresence(observation, intent, { exact: false });
+  const providerObservation = canonicalValue(observation?.provider_observation)
+    ? observation.provider_observation
+    : null;
   return {
     schema: "flow.effect-observation/v1",
     effect_id: intent.effect_id,
     idempotency_key: intent.idempotency_key,
-    presence: "indeterminate",
-    causation: null,
-    provider_observation: null,
+    presence,
+    causation: presence === "present" ? {
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+    } : null,
+    provider_observation: providerObservation,
   };
 }
 
 export function validateEffectObservation(observation, intent) {
+  return observationPresence(observation, intent, { exact: true });
+}
+
+function observationPresence(observation, intent, { exact }) {
   if (observation?.schema !== "flow.effect-observation/v1" ||
       observation.effect_id !== intent.effect_id ||
       observation.idempotency_key !== intent.idempotency_key ||
       !["present", "absent", "indeterminate"].includes(
         observation.presence,
-      ) || observation.provider_observation === undefined) {
+      ) || exact && !hasExactKeys(observation, [
+        "schema",
+        "effect_id",
+        "idempotency_key",
+        "presence",
+        "causation",
+        "provider_observation",
+      ]) || !canonicalValue(observation.causation) ||
+      !canonicalValue(observation.provider_observation)) {
     return "indeterminate";
   }
   if (observation.presence === "present" &&
-      (observation.causation?.effect_id !== intent.effect_id ||
+      (exact && !hasExactKeys(
+        observation.causation,
+        ["effect_id", "idempotency_key"],
+      ) ||
+       observation.causation?.effect_id !== intent.effect_id ||
        observation.causation?.idempotency_key !== intent.idempotency_key ||
        !isRecord(observation.provider_observation) ||
        Object.keys(observation.provider_observation).length === 0)) {
@@ -142,6 +191,20 @@ export function validateEffectObservation(observation, intent) {
     return "indeterminate";
   }
   return observation.presence;
+}
+
+function canonicalValue(value) {
+  try {
+    digest(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasExactKeys(value, keys) {
+  return isRecord(value) && Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
 }
 
 function assertEffectReceipt(receipt, intent) {

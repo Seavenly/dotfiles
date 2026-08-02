@@ -6,6 +6,10 @@ import test from "node:test";
 
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import {
+  normalizeEffectObservation,
+  validateEffectObservation,
+} from "../src/operation-effects.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { confirmedLaunchRequest } from "../test-support/dynamic-checkpoint.mjs";
 import {
@@ -506,6 +510,53 @@ test("one-shot recovery adopts exact presence without provider reinvocation", as
     .effects[0].receipt.provider_receipt.provider_id, "accepted-once");
 });
 
+test("recovery rejects an incompatible replacement registry before mutation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  let invocationCount = 0;
+  const firstRuntime = operationRuntime(firstAuthority, {
+    classification: "caller_idempotent",
+    invoke() {
+      invocationCount += 1;
+      throw new Error("provider result unavailable");
+    },
+  });
+  const prepared = firstRuntime.prepare(registeredOperationProposal());
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstRuntime.command(firstRuntime.query({ run_id: launch.run_id })
+    .legal_actions.find(({ decision }) => decision === "approve"));
+  await until(() => invocationCount === 1);
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  let observed = false;
+  const recoveredRuntime = operationRuntime(recoveredAuthority, {
+    classification: "one_shot_uncertain",
+    invoke() { assert.fail("incompatible registry must not dispatch"); },
+    observe() {
+      observed = true;
+      return null;
+    },
+  });
+  const before = recoveredRuntime.query({ run_id: launch.run_id });
+  const rejection = recoveredRuntime.command(before.legal_actions.find(
+    ({ type }) => type === "recovery",
+  ));
+
+  assert.equal(rejection.code, "invalid_effect_classification");
+  assert.equal(observed, false);
+  assert.equal(recoveredRuntime.query({ run_id: launch.run_id }).watermark,
+    before.watermark);
+});
+
 test("a checkpoint-bound operation rejects additional dependencies", () => {
   const runtime = operationRuntime(createNoopAuthority(), {
     classification: "caller_idempotent",
@@ -811,6 +862,156 @@ test("launch rejects an operation whose adapter is not registered", async (t) =>
   assert.equal(rejection.schema, "flow.rejection/v1");
   assert.equal(rejection.code, "unregistered_operation_contract");
   assert.deepEqual(unregisteredRuntime.query().runs, []);
+});
+
+test("launch rejects an operation whose adapter classification changed", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const prepared = operationRuntime(authority, {
+    classification: "one_shot_uncertain",
+    invoke(intent) { return operationReceipt(intent); },
+    observe() {},
+  }).prepare(registeredOperationProposal({
+    classification: "one_shot_uncertain",
+  }));
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    invoke(intent) { return operationReceipt(intent); },
+  });
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_effect_classification");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("launch rejects an incomplete operation adapter", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const prepared = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    invoke(intent) { return operationReceipt(intent); },
+  }).prepare(registeredOperationProposal());
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+  });
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "incomplete_operation_registration");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("operation registrations snapshot bound methods", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  class Registration {
+    #calls = 0;
+    classification = "caller_idempotent";
+
+    invoke(intent) {
+      this.#calls += 1;
+      return operationReceipt(intent);
+    }
+
+    calls() {
+      return this.#calls;
+    }
+  }
+  const registration = new Registration();
+  const runtime = operationRuntime(authority, registration);
+  const prepared = runtime.prepare(registeredOperationProposal());
+  registration.classification = "one_shot_uncertain";
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions[0]);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
+
+  assert.equal(registration.calls(), 1);
+});
+
+test("effect observation normalization round-trips exact canonical records", () => {
+  const intent = {
+    effect_id: "effect:test",
+    idempotency_key: "effect:test:v1",
+  };
+  const causation = {
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+  };
+  const observations = [
+    {
+      schema: "flow.effect-observation/v1",
+      ...intent,
+      presence: "present",
+      causation,
+      provider_observation: { found: true },
+      ignored: true,
+    },
+    {
+      schema: "flow.effect-observation/v1",
+      ...intent,
+      presence: "absent",
+      causation: null,
+      provider_observation: { found: false },
+    },
+    {
+      schema: "flow.effect-observation/v1",
+      ...intent,
+      presence: "indeterminate",
+      causation: { stale: true },
+      provider_observation: { error: "timeout" },
+    },
+    {
+      schema: "flow.effect-observation/v1",
+      ...intent,
+      presence: "present",
+      causation,
+      provider_observation: { invalid: undefined },
+    },
+  ];
+
+  for (const observation of observations) {
+    const normalized = normalizeEffectObservation(observation, intent);
+    assert.deepEqual(Object.keys(normalized).sort(), [
+      "causation",
+      "effect_id",
+      "idempotency_key",
+      "presence",
+      "provider_observation",
+      "schema",
+    ]);
+    assert.equal(
+      validateEffectObservation(normalized, intent),
+      normalized.presence,
+    );
+  }
+  const diagnostic = normalizeEffectObservation(observations[2], intent);
+  const present = normalizeEffectObservation({
+    ...observations[0],
+    causation: { ...causation, provider_ref: "external" },
+  }, intent);
+  assert.equal(present.presence, "present");
+  assert.deepEqual(present.causation, causation);
+  assert.equal(diagnostic.causation, null);
+  assert.deepEqual(diagnostic.provider_observation, { error: "timeout" });
+  assert.equal(normalizeEffectObservation(observations[3], intent).presence,
+    "indeterminate");
 });
 
 test("the public runtime rejects a null operation registry", () => {

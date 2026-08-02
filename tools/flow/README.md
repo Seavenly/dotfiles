@@ -49,6 +49,11 @@ disabled, so this API does not authorize normal replacement launches.
   facts; the caller supplies the closed observation.
   Invalid prepared bundles, confirmation decisions, and changed closed facts
   return typed launch rejections rather than escaping as transport errors.
+  Launch also rejects operation cards with
+  `unregistered_operation_contract`, `incomplete_operation_registration`, or
+  `invalid_effect_classification` before any run or effect intent is created.
+  Recovery performs the same registration check before mutating authority, so
+  a replacement runtime cannot accept an effect it is unable to dispatch.
 - `command(command)` accepts the exact legal approve or decline checkpoint
   command projected by authority. A ready operation that does not require a
   checkpoint projects an exact `operation_execute` command. A
@@ -144,8 +149,10 @@ rejection catalog. A registered Adapter must declare one of `read_only`,
 and expose `observe` for the latter two classes. Only a positive, identity-bound
 `flow.effect-receipt/v1` completes an operation. Missing, malformed, or negative
 receipts leave the exact effect unresolved and never prove absence.
-An observation claiming absence without affirmative provider evidence is
-normalized to indeterminate and cannot authorize invocation.
+Observations are rebuilt as exact canonical records before persistence. Claims
+of presence or absence without affirmative provider evidence normalize to
+indeterminate and cannot authorize adoption or invocation; indeterminate
+provider diagnostics are retained while causation is cleared.
 
 Same-boot process replacement increments the epoch and resumes from replayed
 authority. A boot identity change instead projects

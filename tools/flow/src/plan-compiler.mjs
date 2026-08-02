@@ -9,6 +9,7 @@ import {
 } from "./prepared-contracts.mjs";
 import {
   effectClassPolicy,
+  operationRegistrationIssue,
   registeredOperation,
 } from "./operation-effects.mjs";
 
@@ -594,16 +595,19 @@ function validateOperationCard(card, proposal, registeredOperations) {
   const registration = registeredOperation(registeredOperations,
     card.executor.contract);
   const policy = effectClassPolicy(card.executor.effect_classification);
-  if (registeredOperations !== null && !registration) {
+  const registrationIssue = registeredOperations === null
+    ? null
+    : operationRegistrationIssue(
+        registration,
+        card.executor.effect_classification,
+      );
+  if (registrationIssue === "unregistered_operation_contract") {
     invalidPlan(
       "unregistered_operation_contract",
       `operation contract is not registered: ${card.executor.contract}`,
     );
   }
-  const registrationPolicy = effectClassPolicy(registration?.classification);
-  if (registration && (typeof registration.invoke !== "function" ||
-      !registrationPolicy || registrationPolicy.requires_observation &&
-        typeof registration.observe !== "function")) {
+  if (registrationIssue === "incomplete_operation_registration") {
     invalidPlan(
       "incomplete_operation_registration",
       `operation adapter registration is incomplete: ${card.executor.contract}`,
@@ -624,9 +628,7 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation resource claim is outside the prepared facts: ${card.id}`,
     );
   }
-  if (!policy ||
-      registration?.classification !== undefined &&
-        registration.classification !== card.executor.effect_classification) {
+  if (!policy || registrationIssue === "invalid_effect_classification") {
     invalidPlan(
       "invalid_effect_classification",
       `operation effect classification is invalid: ${card.id}`,
