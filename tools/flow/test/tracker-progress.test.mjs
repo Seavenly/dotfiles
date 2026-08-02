@@ -88,6 +88,36 @@ test("child runs and tracker-gated graphs are rejected before mutation", async (
   assert.equal(fixture.driver.updateCount, 0);
 });
 
+test("child runs reject tracker cards declared only by a revision", async (t) => {
+  const fixture = await trackerRuntime(t, {
+    runOwnership: {
+      schema: "flow.run-ownership/v1",
+      scope: "child",
+      parent_run_id: "run:parent",
+    },
+  });
+  const proposal = revisionTrackerProgressProposal();
+  proposal.graph.cards = [checkpointCard("revise-progress", [])];
+  proposal.revision_templates[0].changes.supersede_cards = ["revise-progress"];
+  proposal.explicit_facts.block_observations[0] = observeCardBlock({
+    card_id: "revise-progress",
+    block: {
+      ...proposal.explicit_facts.block_observations[0].block,
+      id: "revise-progress:revision",
+    },
+  });
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/checkpoint-decision/v1",
+  );
+  proposal.requested_authority.commands.push("checkpoint_decision");
+
+  const prepared = fixture.runtime.prepare(proposal);
+  const rejection = fixture.runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(rejection.code, "tracker_mutation_not_owned");
+  assert.equal(fixture.driver.createCount, 0);
+  assert.equal(fixture.driver.updateCount, 0);
+});
+
 test("tracker-scoped mutation fencing prevents concurrent first-write duplicates", async (t) => {
   const fixture = await trackerRuntime(t, { listDelayMs: 20 });
   const prepared = ["First owner", "Second owner"].map((summary) =>
@@ -222,8 +252,71 @@ test("duplicate progress markers remain unresolved and are never consolidated im
     .tracker_progress.status, "unresolved");
 });
 
+test("an altered GitHub write receipt cannot settle tracker progress", async (t) => {
+  const fixture = await trackerRuntime(t, { alterWriteReceipt: true });
+  const prepared = fixture.runtime.prepare(trackerProgressProposal([
+    progressCard("publish", 1, "Exact progress", 0, 1),
+  ]));
+  const launch = fixture.runtime.launch(confirmedLaunchRequest(prepared));
+  fixture.runtime.command(fixture.runtime.query({ run_id: launch.run_id })
+    .tracker_progress.legal_next_actions[0]);
+  await until(() => fixture.runtime.query({ run_id: launch.run_id })
+    .effects[0]?.invocation_started === true);
+
+  const projection = fixture.runtime.query({ run_id: launch.run_id });
+  assert.equal(projection.effects[0].receipt, null);
+  assert.notEqual(projection.tracker_progress.status, "projected");
+});
+
 test("tracker projection follows revision-added cards and ignores superseded cards", async (t) => {
   const fixture = await trackerRuntime(t);
+  const proposal = revisionTrackerProgressProposal();
+  const prepared = fixture.runtime.prepare(proposal);
+  const launch = fixture.runtime.launch(confirmedLaunchRequest(prepared));
+  const blocked = fixture.runtime.query({ run_id: launch.run_id });
+  assert.equal(blocked.tracker_progress.operation_card_id, "publish-original");
+  assert.equal(blocked.tracker_progress.status, "blocked");
+
+  fixture.runtime.command(blocked.legal_actions.find(({ type }) =>
+    type === "revision_decision"));
+  const revised = fixture.runtime.query({ run_id: launch.run_id });
+  assert.equal(revised.tracker_progress.operation_card_id, "publish-revised");
+  assert.equal(revised.tracker_progress.sequence, 2);
+  assert.deepEqual(
+    revised.tracker_progress.legal_next_actions.map(({ type }) => type),
+    ["operation_execute"],
+  );
+});
+
+test("tracker revisions reject duplicate or regressing progress sequences", () => {
+  const duplicate = revisionTrackerProgressProposal();
+  duplicate.revision_templates[0].changes.add_cards[0].inputs.sequence = 1;
+  assert.throws(
+    () => createTrackerCompilerRuntime().prepare(duplicate),
+    /tracker progress update sequences must be unique/,
+  );
+
+  const regressing = revisionTrackerProgressProposal();
+  regressing.graph.cards[0].inputs.sequence = 3;
+  assert.throws(
+    () => createTrackerCompilerRuntime().prepare(regressing),
+    /revision progress sequence must advance the base plan/,
+  );
+
+  const ambiguous = revisionTrackerProgressProposal();
+  const secondTemplate = structuredClone(ambiguous.revision_templates[0]);
+  secondTemplate.id = "replace-progress-again";
+  secondTemplate.trigger.code = "second_progress_revision_required";
+  secondTemplate.changes.add_cards[0].id = "publish-another-revision";
+  secondTemplate.changes.add_cards[0].inputs.sequence = 3;
+  ambiguous.revision_templates.push(secondTemplate);
+  assert.throws(
+    () => createTrackerCompilerRuntime().prepare(ambiguous),
+    /one unambiguous revision path/,
+  );
+});
+
+function revisionTrackerProgressProposal() {
   const proposal = trackerProgressProposal([
     progressCard("publish-original", 1, "Original progress", 0, 1),
   ]);
@@ -275,23 +368,8 @@ test("tracker projection follows revision-added cards and ignores superseded car
       limit_changes: { max_cards: 2 },
     },
   }];
-
-  const prepared = fixture.runtime.prepare(proposal);
-  const launch = fixture.runtime.launch(confirmedLaunchRequest(prepared));
-  const blocked = fixture.runtime.query({ run_id: launch.run_id });
-  assert.equal(blocked.tracker_progress.operation_card_id, "publish-original");
-  assert.equal(blocked.tracker_progress.status, "blocked");
-
-  fixture.runtime.command(blocked.legal_actions.find(({ type }) =>
-    type === "revision_decision"));
-  const revised = fixture.runtime.query({ run_id: launch.run_id });
-  assert.equal(revised.tracker_progress.operation_card_id, "publish-revised");
-  assert.equal(revised.tracker_progress.sequence, 2);
-  assert.deepEqual(
-    revised.tracker_progress.legal_next_actions.map(({ type }) => type),
-    ["operation_execute"],
-  );
-});
+  return proposal;
+}
 
 function trackerProgressProposal(cards) {
   return {
@@ -420,8 +498,24 @@ function createTrackerRuntime(authority, driver) {
   });
 }
 
+function createTrackerCompilerRuntime() {
+  return createFlowRuntime({
+    registeredOperations: {
+      [TRACKER_PROGRESS_CONTRACT]: createGitHubTrackerProgressOperation({
+        driver: new FakeGitHubDriver(),
+      }),
+    },
+  });
+}
+
 class FakeGitHubDriver {
-  constructor({ comments = [], listDelayMs = 0, loseFirstReceipt = false } = {}) {
+  constructor({
+    alterWriteReceipt = false,
+    comments = [],
+    listDelayMs = 0,
+    loseFirstReceipt = false,
+  } = {}) {
+    this.alterWriteReceipt = alterWriteReceipt;
     this.comments = structuredClone(comments);
     this.createCount = 0;
     this.updateCount = 0;
@@ -439,7 +533,10 @@ class FakeGitHubDriver {
 
   async createComment(_tracker, body) {
     this.createCount += 1;
-    const comment = { id: `comment-${this.createCount}`, body };
+    const comment = {
+      id: `comment-${this.createCount}`,
+      body: this.alterWriteReceipt ? `${body}\n` : body,
+    };
     this.comments.push(comment);
     if (this.loseFirstReceipt) {
       this.loseFirstReceipt = false;

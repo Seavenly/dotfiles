@@ -46,7 +46,6 @@ import {
   transitionAuthoritySchema,
   uninitializedAuthoritySchemaCompatibility,
 } from "./authority-schema.mjs";
-import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const require = createRequire(import.meta.url);
@@ -387,9 +386,8 @@ export function createDurableRunAuthority({
           return durableLaunchReceipt(database, existing, false, fenceRun);
         }
         const runOwnership = observeRunOwnership(runOwnershipAdapter, prepared);
-        if (runOwnership.scope !== "top_level" && prepared.graph.cards.some(
-          ({ executor }) => executor.contract === TRACKER_PROGRESS_CONTRACT,
-        )) {
+        if (runOwnership.scope !== "top_level" &&
+            prepared.explicit_facts.tracker_binding !== undefined) {
           return durableLaunchRejection(
             "tracker_mutation_not_owned",
             prepared,

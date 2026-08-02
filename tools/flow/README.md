@@ -33,7 +33,8 @@ disabled, so this API does not authorize normal replacement launches.
   contracts. Callers must prepare a fresh bundle rather than launch a pre-v8
   envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
-  executor with `flow.validator/checkpoint-decision/v1` and one operation card.
+  executor with `flow.validator/checkpoint-decision/v1` and one or more
+  independently ready operation cards.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
   `operation_execute` command without adding human approval. The operation names a registered Adapter,
@@ -234,8 +235,8 @@ closed until that
 current-observation Adapter is configured. An unresolved effect from a prior
 boot remains deliberately fenced, keeps its capacity reservation, and requires
 explicit admission before cancellation or reconciliation. The shipped
-`LifecycleKernel` emits effect intents only for the single registered-operation
-tracer. Each run is admitted independently. Run
+`LifecycleKernel` emits effect intents only for registered operation cards.
+Each run is admitted independently. Run
 watermarks bind the run stream generation and current authority epoch, while host
 watermarks bind both host-index and host-admission streams. Reordering,
 omission, duplication, digest conflict, unknown contracts, corrupt JSON,
@@ -263,6 +264,12 @@ feature or epic. `RunAuthority` records whether launch created a top-level or
 child run, rejects tracker operations for authority-known children, and binds
 that ownership observation into every tracker intent. The Adapter never trusts
 caller-supplied top-level scope.
+
+The injected GitHub driver is a narrow provider port. `listComments` must
+return the complete issue-comment collection across every provider page, and
+`createComment` and `updateComment` must return the stored comment with a
+byte-exact body. An incomplete listing or altered write receipt is a driver
+contract violation and cannot settle an effect receipt.
 
 Each update is bounded and writes one `flow.tracker-progress/v1` marker-bound
 comment. Later updates from the same run edit that comment in place. Duplicate

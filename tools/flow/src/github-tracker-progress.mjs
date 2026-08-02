@@ -105,12 +105,37 @@ export function validateTrackerProgressCard(card, proposal) {
     dependencies.includes(card.id))) {
     throw new TypeError("tracker progress cannot schedule downstream work");
   }
-  const progressCards = proposal.graph.cards.filter(
-    ({ executor }) => executor?.contract === TRACKER_PROGRESS_CONTRACT,
-  );
+  const revisionTemplates = Array.isArray(proposal.revision_templates)
+    ? proposal.revision_templates
+    : [];
+  const revisionProgressCards = revisionTemplates.flatMap(({ changes }) =>
+    Array.isArray(changes?.add_cards)
+      ? changes.add_cards.filter(({ executor }) =>
+          executor?.contract === TRACKER_PROGRESS_CONTRACT)
+      : []);
+  const revisionCardIds = new Set(revisionProgressCards.map(({ id }) => id));
+  const baseProgressCards = proposal.graph.cards.filter(({ id, executor }) =>
+    executor?.contract === TRACKER_PROGRESS_CONTRACT &&
+    !revisionCardIds.has(id));
+  const progressCards = [...baseProgressCards, ...revisionProgressCards];
   const sequences = progressCards.map(({ inputs }) => inputs?.sequence);
   if (new Set(sequences).size !== sequences.length) {
     throw new TypeError("tracker progress update sequences must be unique");
+  }
+  const trackerRevisionCount = revisionTemplates.filter(({ changes }) =>
+    Array.isArray(changes?.add_cards) && changes.add_cards.some(({ executor }) =>
+      executor?.contract === TRACKER_PROGRESS_CONTRACT)).length;
+  if (trackerRevisionCount > 1) {
+    throw new TypeError(
+      "tracker progress updates require one unambiguous revision path",
+    );
+  }
+  if (revisionProgressCards.length > 0 && baseProgressCards.length > 0 &&
+      Math.min(...revisionProgressCards.map(({ inputs }) => inputs.sequence)) <=
+      Math.max(...baseProgressCards.map(({ inputs }) => inputs.sequence))) {
+    throw new TypeError(
+      "revision progress sequence must advance the base plan",
+    );
   }
 }
 
@@ -123,7 +148,6 @@ export function renderTrackerProgress(intent, request = trackerRequest(intent)) 
     `Progress: ${progress.completed}/${progress.total}`,
     `Phase: ${progress.phase}`,
     `Authority watermark: ${intent.source_authority_watermark}`,
-    "",
   ].join("\n");
 }
 
@@ -198,7 +222,7 @@ function effectObservation(intent, presence, providerObservation) {
 }
 
 function providerReceipt({ body, comment, intent, mutation }) {
-  if (!validComment(comment)) {
+  if (!validComment(comment) || comment.body !== body) {
     throw new TypeError("GitHub returned an invalid progress comment receipt");
   }
   return freezeCanonical({

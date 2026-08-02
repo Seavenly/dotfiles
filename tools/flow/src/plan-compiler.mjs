@@ -667,8 +667,8 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `checkpoint-bound operation requires one exact dependency: ${card.id}`,
     );
   }
-  if (checkpoints.length === 0 &&
-      !proposal.requested_authority.commands.includes("operation_execute")) {
+  if (checkpoints.length === 0 && (card.dependencies.length !== 0 ||
+      !proposal.requested_authority.commands.includes("operation_execute"))) {
     invalidPlan(
       "incomplete_operation_execution_authority",
       `direct operation execution authority is incomplete: ${card.id}`,

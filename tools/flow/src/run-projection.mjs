@@ -4,12 +4,17 @@ import { admitPlanRevision } from "./plan-revision.mjs";
 import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
-  const runOwnership = run.events.find(({ type }) => type === "run_launched")
-    ?.run_ownership ?? {
-      schema: "flow.run-ownership/v1",
-      scope: "top_level",
-      parent_run_id: null,
-    };
+  const launchOwnership = run.events.find(({ type }) => type === "run_launched")
+    ?.run_ownership;
+  if (launchOwnership === undefined &&
+      run.prepared.explicit_facts.tracker_binding !== undefined) {
+    throw new TypeError("tracker-bound run is missing authority-owned scope");
+  }
+  const runOwnership = launchOwnership ?? {
+    schema: "flow.run-ownership/v1",
+    scope: "top_level",
+    parent_run_id: null,
+  };
   const checkpointDecisions = new Map(
     run.events
       .filter(({ type }) => type === "checkpoint_decided")
