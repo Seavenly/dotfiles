@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
+    "qualification:run": "node scripts/run-qualification.mjs",
     "qualification:validate": "node scripts/validate-qualification-catalog.mjs"
   }
 }

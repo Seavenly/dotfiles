@@ -51,7 +51,10 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr agent start TASK_ID \[options\]/);
   assert.match(stdout, /drovr agent retire AGENT_ID/);
   assert.match(stdout, /drovr task close TASK_ID/);
-  assert.match(stdout, /drovr attach AGENT_ID \[--takeover\]/);
+  assert.match(
+    stdout,
+    /drovr attach AGENT_ID \[--takeover\] \[--json-result\]/,
+  );
   assert.match(stdout, /drovr describe \[launch options\] --caller-metadata JSON/);
   assert.match(stdout, /Waiting commands emit one JSON result/u);
   assert.match(stdout, /They do not\nstream progress/u);
@@ -280,6 +283,7 @@ test("doctor reports a compatible configured Codex runtime", async (t) => {
       CODEX_HOME: codexHome,
       CLAUDE_CONFIG_DIR: claudeHome,
       DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+      DOTFILES_ROOT: root,
     },
   });
   const report = JSON.parse(stdout);
@@ -294,9 +298,21 @@ test("doctor reports a compatible configured Codex runtime", async (t) => {
     effort: "high",
     capability: "on-approve",
   });
+  assert.deepEqual(report.result.qualification, {
+    claude: { model: "haiku", effort: "low" },
+    codex: { model: "gpt-5.6-luna", effort: "low" },
+  });
+  assert.match(
+    report.result.checks.find(({ id }) => id === "drovr").detail,
+    /^drovr source sha256:[0-9a-f]{64}$/u,
+  );
   assert.equal(
     report.result.checks.find(({ id }) => id === "codex-integration").status,
     "pass",
+  );
+  assert.equal(
+    report.result.checks.find(({ id }) => id === "codex-integration").detail,
+    "current (v6)",
   );
   assert.equal(
     report.result.checks.find(({ id }) => id === "codex-native-session").status,

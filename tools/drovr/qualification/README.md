@@ -20,12 +20,42 @@ catalog that omits either execution class.
 
 ## Evidence contract
 
-A future runner records one `drovr.qualification-evidence/v1` result per
-scenario. The catalog defines its required fields before runner implementation,
-including exact version bindings, model and reasoning effort, declared and
-measured limits, ordered public invocations, typed observations, assertions,
-and one embedded cleanup receipt. Deterministic replay records why live use was
-not needed. A live run records why replay could not prove the behavior.
+The black-box runner records one `drovr.qualification-evidence/v1` result per
+scenario. It validates every public `drovr.command/v1` envelope and records
+exact source, integration, executable, model, and reasoning-effort versions;
+declared and measured limits; ordered public invocations; typed observations;
+assertions; and one embedded cleanup receipt.
+
+Run one focused live scenario and retain its evidence outside the caller-owned
+workspace:
+
+```sh
+qualification_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --scenario codex_live_prompt_sources_and_reuse \
+  --evidence-dir "$qualification_evidence_dir"
+```
+
+Run the cost-bounded Codex-primary set plus the minimal Claude-specific set
+unattended:
+
+```sh
+qualification_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --full-live \
+  --evidence-dir "$qualification_evidence_dir"
+```
+
+Exit status `0` means every selected scenario passed or every selected
+replay-only scenario was explicitly skipped. Status `3` means prerequisites
+blocked execution or a mixed run was incomplete; status `4` means a scenario
+assertion failed. Each non-pass retains evidence. Missing or incompatible
+prerequisites never become a pass.
+
+Catalog `max_elapsed` bounds scenario work through the final behavioral
+observation. Cleanup then receives a separate 65-second wall-time budget,
+recorded under `limits.cleanup`; command termination grace is included in both
+bounds. Exhausting either budget produces typed failure evidence.
 
 The embedded `drovr.qualification-cleanup-receipt/v1` binds every created
 resource to its disposition, records prohibited-mutation checks, proves the
@@ -46,11 +76,11 @@ Herdr resources to manufacture success.
   establish. Each such scenario names its harness and hard turn, retry, and
   elapsed-time limits.
 
-Every live scenario uses the smallest configured supported model and lowest
-supported reasoning effort that can exercise the mechanism; any deviation is
-recorded in its evidence. Generic live coverage belongs on Codex. Claude is
-reserved for Claude-specific behavior and the minimum later shared-parity
-evidence.
+Every live scenario uses the tracked qualification configuration in
+`config/drovr/config.toml`: `gpt-5.6-luna` with `low` effort for Codex and
+`haiku` with `low` effort for Claude. Any future deviation must be recorded in
+its evidence. Generic live coverage belongs on Codex. Claude is reserved for
+Claude-specific behavior and the minimum shared-parity evidence.
 
 ## Scope
 

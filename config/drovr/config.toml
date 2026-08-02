@@ -6,3 +6,11 @@ harness = "codex"
 model = "gpt-5.6-sol"
 effort = "high"
 capability = "on-approve"
+
+[qualification.codex]
+model = "gpt-5.6-luna"
+effort = "low"
+
+[qualification.claude]
+model = "haiku"
+effort = "low"

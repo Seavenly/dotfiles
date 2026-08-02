@@ -15,6 +15,19 @@ and runner evidence shapes with:
 npm --silent --prefix tools/drovr run qualification:validate
 ```
 
+Run one named black-box scenario or the unattended live set with isolated
+runtime state and retained evidence:
+
+```sh
+qualification_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --scenario codex_live_prompt_sources_and_reuse \
+  --evidence-dir "$qualification_evidence_dir"
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --full-live \
+  --evidence-dir "$qualification_evidence_dir"
+```
+
 After convergence, diagnose the local runtime:
 
 ```sh

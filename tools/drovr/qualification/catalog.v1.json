@@ -60,7 +60,7 @@
     "snapshot_token_conflicts": "A stale, mismatched, or reappeared staged-input snapshot token authorizes no mutation and produces a typed non-success result."
   },
   "known_incidents": [
-    {"id":"codex_prompt_normalization","summary":"Prompt-file and stdin trailing newlines were recorded but not submitted, so every exact Codex correlation failed.","scenarios":["codex_prompt_file_trailing_newline"],"source_evidence":["Git commit 1e3e4665d4241419ad573d208077a20d845289bc"]},
+    {"id":"codex_prompt_normalization","summary":"Prompt-file and stdin trailing newlines were recorded but not submitted, so every exact Codex correlation failed.","scenarios":["codex_prompt_file_trailing_newline","codex_live_prompt_sources_and_reuse"],"source_evidence":["Git commit 1e3e4665d4241419ad573d208077a20d845289bc"]},
     {"id":"codex_startup_context","summary":"Codex wrote AGENTS.md and environment context before the first prompt and Drovr treated that startup material as foreign input.","scenarios":["codex_startup_context_before_prompt"],"source_evidence":["Git commit 1e3e4665d4241419ad573d208077a20d845289bc"]},
     {"id":"claude_multiline_conversion","summary":"Claude converted multiline input into a staged paste but Drovr waited without submitting it.","scenarios":["claude_multiline_paste_conversion"],"source_evidence":["Git commit c4d92840ed5f47e3eadd58c669b8e5f53817424a"]},
     {"id":"claude_long_paste_conversion","summary":"Claude converted a long single-line input into a staged attachment that required one guarded submit.","scenarios":["claude_long_single_line_paste_conversion"],"source_evidence":["Git commit a5371cdc0ec4060c38b0da36ab1ce6cdae228f4f"]},
@@ -69,13 +69,39 @@
     {"id":"staged_prompt_clearing","summary":"Claude treated the old clear key as copy; exact staged input required the documented double-Escape gesture and same-session verification.","scenarios":["claude_unknown_staged_input_clear_and_reuse"],"source_evidence":["Git commit 82e7091cbee18596c215fa052a5ada7075ab1a0c"]},
     {"id":"transient_clear_reappearance","summary":"Unknown staged input disappeared immediately after clear, then reappeared with the identical token and made the earlier cleared result false.","scenarios":["claude_staged_input_transient_clear_reappears"],"source_evidence":["qualification/incidents/claude-staged-input-transient-clear-reappears.md"]},
     {"id":"caller_pane_inheritance","summary":"Inherited Herdr topology let delegated operations target the caller pane instead of the managed agent.","scenarios":["herdr_caller_pane_context_isolation"],"source_evidence":["Git commit f35152390116a00f68a3024f2e2a110a6e3d5eef"]},
-    {"id":"native_session_identity_races","summary":"The managed pane could be remapped between validation and steering, or unrelated blocked-pane text could be read before identity validation.","scenarios":["native_session_changes_before_steering","blocked_pane_native_session_mismatch"],"source_evidence":["Git commits 96c5d35a56dea5b444ffd31126a4c4a690b5edce and 410cb15624ad490ea29452ff3d940e42a1b80a62"]},
-    {"id":"delayed_transcript_settlement","summary":"A stale idle observation exhausted transcript grace before the submitted input or final assistant result settled.","scenarios":["delayed_transcript_settlement"],"source_evidence":["Git commits ecbd3ec3829dfca571dee42a0caa328030ab5d76 and e1b358f6402fd06938049527e4a51d911e34f704"]},
+    {"id":"native_session_identity_races","summary":"The managed pane could be remapped between validation and steering, or unrelated blocked-pane text could be read before identity validation.","scenarios":["native_session_changes_before_steering","blocked_pane_native_session_mismatch","codex_live_lifecycle_recovery"],"source_evidence":["Git commits 96c5d35a56dea5b444ffd31126a4c4a690b5edce and 410cb15624ad490ea29452ff3d940e42a1b80a62"]},
+    {"id":"delayed_transcript_settlement","summary":"A stale idle observation exhausted transcript grace before the submitted input or final assistant result settled.","scenarios":["delayed_transcript_settlement","codex_live_lifecycle_recovery"],"source_evidence":["Git commits ecbd3ec3829dfca571dee42a0caa328030ab5d76 and e1b358f6402fd06938049527e4a51d911e34f704"]},
     {"id":"late_results","summary":"A valid transcript result appeared after durable uncertainty and was either lost or at risk of being promoted into authoritative settlement.","scenarios":["late_result_after_uncertain"],"source_evidence":["Git commit afabf583330b600a513663ab5c962e87322b5b33"]},
-    {"id":"cancellation","summary":"Cancellation could report success without exact interruption and settlement, or act on a different native session.","scenarios":["identity_safe_cancellation_and_reuse"],"source_evidence":["Git commits f5db21cdefa65d76f7cc5e39f2756637f21a406d and f35152390116a00f68a3024f2e2a110a6e3d5eef"]},
+    {"id":"cancellation","summary":"Cancellation could appear successful without confirmed settlement or could interrupt a different native session.","scenarios":["identity_safe_cancellation_and_reuse","codex_live_lifecycle_recovery"],"source_evidence":["Git commits f5db21cdefa65d76f7cc5e39f2756637f21a406d and f35152390116a00f68a3024f2e2a110a6e3d5eef"]},
     {"id":"recovery_token_conflicts","summary":"Stale or mismatched staged-input tokens could otherwise mutate a prompt snapshot that was never authorized.","scenarios":["staged_input_snapshot_token_conflict"],"source_evidence":["Git commits 83860fcf24bd8c1a0e27856fd04149effe19246c and 82e7091cbee18596c215fa052a5ada7075ab1a0c"]}
   ],
   "scenarios": [
+    {
+      "id": "codex_live_prompt_sources_and_reuse",
+      "title": "Live Codex prompt sources preserve one reusable managed agent",
+      "observed_failure": "Prompt normalization or startup context could prevent exact correlation and make later same-agent turns unsafe.",
+      "execution": {"kind":"real_herdr_harness","harnesses":["codex"],"rationale":"A small live Codex baseline proves public positional, prompt-file, stdin, and same-agent reuse wiring through real Herdr panes.","limits":{"max_turns":3,"max_retries":0,"max_elapsed":"6m"}},
+      "public_commands": ["drovr delegate --task-key <task> --agent-key <agent> --cwd <workspace> --harness codex <positional-prompt>", "drovr ask <agent-id> --prompt-file <newline-terminated-file>", "drovr ask <agent-id> < <newline-terminated-stdin-file>"],
+      "preconditions": ["Disposable real Codex agent using the tracked smallest supported model and lowest supported effort."],
+      "expected_outcomes": {"positive":[{"status":"completed","when":"All three prompt sources complete on the same managed agent."}],"negative":[{"status":"missing_prompt","when":"A prompt source normalizes to empty text."}],"uncertain":[{"status":"uncertain","when":"Exact ordered input or managed identity cannot be proven."}],"recovery":[{"status":"completed","when":"A later exact sentinel completes on the same managed agent after bounded settlement."}]},
+      "safety_invariants": ["exact_agent_identity","exact_native_session_identity","caller_owned_workspace_preservation"],
+      "prohibited_mutations": ["Do not rewrite prompt sources, native transcripts, private registry records, caller files, or replace the managed agent."],
+      "cleanup_obligations": ["Close only the scenario-owned group after all turns settle; retain isolated state when cleanup is blocked."],
+      "evidence_requirements": ["Exact versions, model and effort, ordered public envelopes, prompt-source identities, same-agent proof, limits, workspace fingerprint, and cleanup receipt."]
+    },
+    {
+      "id": "codex_live_lifecycle_recovery",
+      "title": "Live Codex steering, timeout, cancellation, and reuse remain identity safe",
+      "observed_failure": "Steering, delayed settlement, or cancellation could act on stale native identity and make later reuse unsafe.",
+      "execution": {"kind":"real_herdr_harness","harnesses":["codex"],"rationale":"Real process interruption and public-command reuse need one bounded Codex and Herdr lifecycle baseline in addition to deterministic branch replay.","limits":{"max_turns":4,"max_retries":0,"max_elapsed":"6m"}},
+      "public_commands": ["drovr turn start <agent-id> <sentinel>", "drovr turn send <turn-id> --caller-key <key> <sentinel>", "drovr turn wait <turn-id> --timeout <duration>", "drovr turn cancel <turn-id>", "drovr ask <agent-id> <reuse-sentinel>"],
+      "preconditions": ["Disposable real Codex agent with an exact managed native-session identity."],
+      "expected_outcomes": {"positive":[{"status":"completed","when":"Steering and bounded settlement complete on the exact managed agent."}],"negative":[{"status":"uncertain","when":"Native identity differs and no mutation is authorized."}],"uncertain":[{"status":"still_running","when":"A deliberately short public wait expires before exact settlement."}],"recovery":[{"status":"completed","when":"Exact cancellation settles and the same agent completes a later sentinel."}]},
+      "safety_invariants": ["exact_agent_identity","exact_native_session_identity","non_submission_of_unknown_text","caller_owned_workspace_preservation"],
+      "prohibited_mutations": ["Do not steer or interrupt a mismatched native session, claim cancellation without settlement, mutate private state, or replace the agent."],
+      "cleanup_obligations": ["Settle or retain typed uncertainty, then close only the scenario-owned group and preserve unrelated Herdr resources."],
+      "evidence_requirements": ["Ordered steering, wait, cancellation and reuse envelopes, identity observations, exact versions, enforced limits, workspace fingerprint, and cleanup receipt."]
+    },
     {
       "id": "codex_prompt_file_trailing_newline",
       "title": "Codex prompt-file normalization preserves exact correlation",

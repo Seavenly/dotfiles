@@ -80,7 +80,7 @@ test("description resolves an exact watermarked launch without creating delegate
       },
       {
         subject: "config.toml",
-        sha256: "sha256:43829181449abf4fdfac1946945d185a681c0d759922b791d625d8c9ba8e2185",
+        sha256: "sha256:057ee08c3b3c7e4b0021fc7ed82d2ab2d88a8570942dcaf8e7ec36a9fd249407",
       },
       {
         subject: "roles/reviewer/codex.md",
