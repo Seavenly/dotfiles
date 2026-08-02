@@ -93,6 +93,14 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
       calls.push(["reconcile", turnId, options]);
       return { ...context, wait_status: "still_running" };
     },
+    async retireDrovr(agentId) {
+      calls.push(["retire", agentId]);
+      return {
+        ...context,
+        status: "retired",
+        agent: { ...context.agent, status: "retired" },
+      };
+    },
   });
   const description = (await port.describe(request)).description;
 
@@ -132,6 +140,12 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
     turn_id: "turn:1",
     timeout_ms: 1000,
   });
+  const retired = await port.retire({
+    schema: "flow.delegated-agent-retire-request/v1",
+    agent_id: "agent:1",
+    turn_id: "turn:1",
+    attempt_id: "run:1/card:review/attempt:1",
+  });
 
   for (const projection of [
     dispatched,
@@ -159,6 +173,9 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
   assert.equal(waited.status, "still_running");
   assert.equal(cancelled.status, "cancelled");
   assert.equal(reconciled.status, "still_running");
+  assert.equal(retired.status, "retired");
+  assert.equal(retired.watermark.schema, "drovr.agent-authority-watermark/v1");
+  assert.deepEqual(retired.legal_next_actions, []);
   assert.equal(calls[0][2].launchBinding.description_digest,
     description.description_digest);
   assert.equal(calls[2][2].callerKey, "input:2");

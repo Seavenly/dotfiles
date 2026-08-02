@@ -48,6 +48,16 @@ import {
 } from "./authority-schema.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const EFFECT_INTENT_EVENT_TYPES = new Set([
+  "effect_intent_recorded",
+  "effect_intent_adopted",
+]);
+const DEFERRED_EFFECT_EVENT_TYPES = new Set([
+  "delegate_completed",
+  "operation_completed",
+  "run_declined",
+  "run_succeeded",
+]);
 const require = createRequire(import.meta.url);
 let databaseConstructor = null;
 
@@ -547,9 +557,9 @@ export function createDurableRunAuthority({
           }
           committedDecision = currentDecision;
           const deferredEvents = currentDecision.events.filter(({ type }) =>
-            ["operation_completed", "run_declined", "run_succeeded"].includes(type));
+            DEFERRED_EFFECT_EVENT_TYPES.has(type));
           const immediateEvents = currentDecision.events.filter(({ type }) =>
-            !["operation_completed", "run_declined", "run_succeeded"].includes(type));
+            !DEFERRED_EFFECT_EVENT_TYPES.has(type));
           const effectIntents = currentDecision.effect_intents.map((intent) =>
             bindEffectIntent(intent, {
               authorityEpoch,
@@ -765,9 +775,7 @@ export function createDurableRunAuthority({
           ? readStream(database, intent.run_id)
           : null;
         const recorded = stream?.records.some(({ payload }) =>
-          ["effect_intent_recorded", "effect_intent_adopted"].includes(
-            payload.type,
-          ) &&
+          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
           isDeepStrictEqual(payload.intent, intent));
         if (!recorded) {
           throw new AuthorityFenceError(
@@ -899,8 +907,9 @@ export function createDurableRunAuthority({
           const current = readStream(database, effectiveIntent.run_id);
           const unresolved = unresolvedEffectIds(current);
           unresolved.delete(effectiveIntent.effect_id);
-          const deferredEvents = unresolved.size === 0
-            ? pendingDeferredEvents(current)
+          const effectSucceeded = result?.outcome !== "quarantined";
+          const deferredEvents = unresolved.size === 0 && effectSucceeded
+            ? pendingDeferredEvents(current, effectiveIntent)
             : [];
           appendAuthorityEvents(database, {
             streamId: effectiveIntent.run_id,
@@ -915,6 +924,16 @@ export function createDurableRunAuthority({
                   ...(result === undefined ? {} : { receipt: result }),
                 },
               },
+              ...(result?.outcome === "quarantined" ? [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "delegate_output_quarantined",
+                  effect_id: effectiveIntent.effect_id,
+                  attempt_id: effectiveIntent.attempt_id,
+                  card_id: effectiveIntent.card_id,
+                  quarantine_record: result.provider_receipt,
+                },
+              }] : []),
               ...deferredEvents.map((payload) => ({
                 contract: "flow.run-event/v1",
                 payload,
@@ -970,9 +989,8 @@ export function createDurableRunAuthority({
         });
         const stream = readStream(database, intent?.run_id);
         const recorded = stream?.records.some(({ payload }) =>
-          ["effect_intent_recorded", "effect_intent_adopted"].includes(
-            payload.type,
-          ) && isDeepStrictEqual(payload.intent, intent));
+          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+          isDeepStrictEqual(payload.intent, intent));
         if (!recorded) {
           throw new AuthorityFenceError(
             "unrecorded_effect_intent",
@@ -1410,15 +1428,17 @@ function readRecordedEffectIntents(database, runId, commandDigest) {
     .map(({ payload }) => payload.intent);
 }
 
-function pendingDeferredEvents(stream) {
-  // One operation currently bounds this to one settlement flush. Filter events
-  // already in the stream before the future multi-operation slice removes it.
+function pendingDeferredEvents(stream, settlingIntent) {
   const events = [];
   const seen = new Set();
+  const successfulEffects = new Set(stream.records
+    .filter(({ payload }) => payload.type === "effect_receipt_recorded" &&
+      payload.receipt?.outcome !== "quarantined")
+    .map(({ payload }) => payload.effect_id));
+  successfulEffects.add(settlingIntent.effect_id);
   for (const { payload } of stream.records) {
-    if (!["effect_intent_recorded", "effect_intent_adopted"].includes(
-      payload.type,
-    )) continue;
+    if (!EFFECT_INTENT_EVENT_TYPES.has(payload.type) ||
+        !successfulEffects.has(payload.intent.effect_id)) continue;
     for (const event of payload.intent.deferred_events) {
       const eventDigest = digest(event);
       if (seen.has(eventDigest)) continue;
@@ -1431,10 +1451,7 @@ function pendingDeferredEvents(stream) {
 
 function unresolvedEffectIds(stream) {
   const unresolved = new Set(stream.records
-    .filter(({ payload }) => [
-      "effect_intent_recorded",
-      "effect_intent_adopted",
-    ].includes(payload.type))
+    .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
     .map(({ payload }) => payload.intent.effect_id));
   for (const { payload } of stream.records) {
     if (payload.type === "effect_receipt_recorded") {
@@ -1533,10 +1550,7 @@ function rebootRevalidation(stream, adapter) {
     .filter(({ payload }) => payload.type === "effect_receipt_recorded")
     .map(({ payload }) => payload.effect_id));
   const unresolvedEffects = stream.records
-    .filter(({ payload }) => [
-      "effect_intent_recorded",
-      "effect_intent_adopted",
-    ].includes(payload.type))
+    .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
     .map(({ payload }) => payload.intent)
     .filter(({ effect_id: effectId }) => !receipts.has(effectId));
   return buildRebootRevalidation({

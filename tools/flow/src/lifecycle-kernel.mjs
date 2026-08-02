@@ -51,7 +51,7 @@ export function decideLifecycle(fold, command) {
     };
   }
   const hasUnresolvedEffects = fold.effects?.some(
-    ({ status }) => status !== "succeeded",
+    ({ status }) => !["quarantined", "succeeded"].includes(status),
   );
   // This one-operation slice serializes completion-changing commands behind
   // effect settlement. Revisit the allow-list before admitting sibling effects.
@@ -149,6 +149,35 @@ export function decideLifecycle(fold, command) {
     const operation = fold.cards.find(({ id }) => id === command.card_id);
     return operationDecision(fold, command, operation);
   }
+  if (command.type === "delegate_execute") {
+    const legalExecution = fold.legal_actions.find((action) =>
+      action.type === "delegate_execute" && digest(action) === digest(command));
+    if (!legalExecution) return reject(fold, command, "delegate_not_actionable");
+    const delegate = fold.cards.find(({ id }) => id === command.card_id);
+    return delegateDecision(fold, command, delegate);
+  }
+  if (command.type === "terminal_disposition") {
+    const legalDisposition = fold.legal_actions.find((action) =>
+      action.type === "terminal_disposition" &&
+      digest(action) === digest(command));
+    if (!legalDisposition) {
+      return reject(fold, command, "terminal_disposition_not_actionable");
+    }
+    return {
+      schema: "flow.decision/v1",
+      command_type: command.type,
+      events: [{
+        type: "terminal_disposition_decided",
+        card_id: command.card_id,
+        attempt_id: command.attempt_id,
+        disposition: command.disposition,
+        reason: command.reason,
+      }, { type: "run_declined" }],
+      effect_intents: [],
+      obligations: [],
+      projection_hints: ["operator", "graph"],
+    };
+  }
   if (command.type !== "checkpoint_decision") {
     return reject(fold, command, "unsupported_command");
   }
@@ -184,6 +213,59 @@ export function decideLifecycle(fold, command) {
     checkpoint,
     allOtherCardsComplete ? [{ type: "run_succeeded" }] : [],
   );
+}
+
+function delegateDecision(fold, command, delegate) {
+  const card = fold.active_plan.cards.find(({ id }) => id === delegate.id);
+  const ordinal = fold.effect_intents.filter(
+    ({ card_id: cardId, effect_kind: kind }) =>
+      cardId === delegate.id && kind === "delegate",
+  ).length + 1;
+  const attemptId = `${fold.run_id}:${delegate.id}:attempt:${ordinal}`;
+  const effectIdentity = digest({
+    schema: "flow.delegate-effect-identity/v1",
+    run_id: fold.run_id,
+    card_id: delegate.id,
+    attempt_id: attemptId,
+    route_binding: card.route,
+  });
+  const completesRun = fold.cards.every((candidate) =>
+    candidate.id === delegate.id ||
+    ["completed", "superseded"].includes(candidate.status));
+  return {
+    schema: "flow.decision/v1",
+    command_type: command.type,
+    events: [
+      { type: "delegate_completed", card_id: delegate.id, attempt_id: attemptId },
+      ...(completesRun ? [{ type: "run_succeeded" }] : []),
+    ],
+    effect_intents: [{
+      schema: "flow.effect-intent/v1",
+      effect_kind: "delegate",
+      effect_id: `effect:${effectIdentity.slice("sha256:".length)}`,
+      idempotency_key: `delegate:${effectIdentity.slice("sha256:".length)}`,
+      attempt_id: attemptId,
+      attempt_ordinal: ordinal,
+      max_attempts: card.limits.max_attempts,
+      card_id: delegate.id,
+      classification: "caller_idempotent",
+      operation_contract: card.executor.contract,
+      delegate_input: card.inputs,
+      delegate_validator_contracts: card.validators,
+      route_binding: card.route,
+      resource_claims: card.resource_claims,
+      terminal_disposition_policy: {
+        schema: "flow.delegate-terminal-disposition-policy/v1",
+        accepted_proofs: [
+          "drovr_agent_retirement_receipt",
+          "named_durable_handoff",
+        ],
+        retry_holder: "drovr.registry",
+      },
+    }],
+    obligations: [],
+    projection_hints: ["operator", "graph"],
+  };
 }
 
 function nextOperation(fold, checkpointId) {

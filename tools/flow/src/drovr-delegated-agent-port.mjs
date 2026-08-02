@@ -15,6 +15,7 @@ import {
   turnDiscoveryCommandResult,
   waitForTurn,
 } from "../../drovr/src/turns.mjs";
+import { retireAgent } from "../../drovr/src/lifecycle.mjs";
 
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
 
@@ -76,6 +77,7 @@ export function createDrovrDelegatedAgentPort({
   waitDrovr = waitForTurn,
   cancelDrovr = cancelTurn,
   reconcileDrovr = reconcileTurn,
+  retireDrovr = retireAgent,
 } = {}) {
   return Object.freeze({
     contract: PORT_CONTRACT,
@@ -327,6 +329,46 @@ export function createDrovrDelegatedAgentPort({
         }, dependencies),
       ));
     },
+
+    async retire(request) {
+      if (!validKeyedRequest(
+        request,
+        "retire",
+        ["agent_id", "turn_id", "attempt_id"],
+      )) {
+        return lifecycleBlock("retire", "invalid_retirement_request", []);
+      }
+      return invokeLifecycle("retire", async () =>
+        lifecycleRetirementProjection(
+          await retireDrovr(request.agent_id, dependencies),
+        ));
+    },
+  });
+}
+
+function lifecycleRetirementProjection(context) {
+  const retired = context.status === "retired";
+  return freezeCanonical({
+    schema: LIFECYCLE_PROJECTION_CONTRACT,
+    operation: "retire",
+    status: context.status,
+    watermark: context.agent
+      ? {
+          schema: "drovr.agent-authority-watermark/v1",
+          authority: "drovr.registry",
+          agent_id: context.agent.id,
+          record_sha256: digest(context.agent),
+        }
+      : null,
+    delegation: context.agent
+      ? {
+          agent_id: context.agent.id,
+          task_id: context.task.id,
+          group_id: context.group.id,
+        }
+      : null,
+    turn: null,
+    legal_next_actions: retired ? [] : ["reconcile_exact_agent_retirement"],
   });
 }
 
