@@ -536,6 +536,15 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       `revision supersession is invalid: ${template.id}`,
     );
   }
+  const managedBindingCardIds = new Set(proposal.graph.cards
+    .filter((card) => isRecord(card.inputs?.managed_agent))
+    .map(({ id }) => id));
+  if (changes.supersede_cards.some((id) => managedBindingCardIds.has(id))) {
+    invalidPlan(
+      "managed_agent_binding_revision",
+      `revision cannot supersede an immutable managed-agent binding: ${template.id}`,
+    );
+  }
   const pendingClosure = new Set(
     proposal.explicit_facts.block_observations
       .filter(({ block }) => block.revision_template_ids.includes(template.id))

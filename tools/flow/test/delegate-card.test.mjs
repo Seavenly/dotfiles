@@ -8,6 +8,8 @@ import {
   delegateCompatibilityIssue,
   snapshotRequiredDrovrFeatures,
 } from "../src/delegate-effects.mjs";
+import { observeCardBlock } from
+  "../src/card-block-observation-adapter.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import {
@@ -1517,6 +1519,71 @@ test("prepare rejects fallback inside an immutable managed-agent binding", async
   assert.throws(
     () => createFlowRuntime().prepare(proposal),
     (error) => error.reason === "invalid_managed_agent_binding",
+  );
+});
+
+test("prepare rejects revision supersession inside a managed-agent binding", async () => {
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  const first = proposal.graph.cards[1];
+  const binding = {
+    schema: "flow.managed-agent-binding/v1",
+    binding_id: "managed-agent:review",
+    card_ids: ["delegate-review", "delegate-followup"],
+    terminal_card_id: "delegate-followup",
+  };
+  first.inputs.managed_agent = binding;
+  const second = structuredClone(first);
+  second.id = "delegate-followup";
+  second.dependencies = [first.id];
+  proposal.graph.cards.push(second);
+  proposal.explicit_facts.limits.max_cards = 3;
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "replace_managed_terminal",
+  };
+  const block = {
+    schema: "flow.card-block/v1",
+    id: "delegate-followup:revision",
+    type: "plan_revision_required",
+    trigger,
+    required_capabilities: [],
+    revision_template_ids: ["replace-managed-terminal"],
+  };
+  proposal.requested_authority.commands.push("revision_decision");
+  proposal.explicit_facts.operation_contracts.push(
+    "flow.adapter/card-block-observation/v1",
+  );
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/card-block-observation/v1",
+  );
+  proposal.explicit_facts.block_observations.push(observeCardBlock({
+    card_id: second.id,
+    block,
+  }));
+  Object.assign(proposal.explicit_facts.limits, {
+    max_revisions: 1,
+    max_cards_per_revision: 0,
+  });
+  proposal.revision_templates = [{
+    schema: "flow.plan-revision-template/v1",
+    id: "replace-managed-terminal",
+    trigger,
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [],
+      add_edges: [],
+      supersede_cards: [second.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  }];
+
+  assert.throws(
+    () => createFlowRuntime().prepare(proposal),
+    (error) => error.reason === "managed_agent_binding_revision",
   );
 });
 
