@@ -90,7 +90,7 @@ export function createFlowRuntime({
       const receipt = runAuthority.command(command);
       for (const intent of receipt?.effect_intents ?? []) {
         dispatchRegisteredEffect(intent, operationRegistry, runAuthority, {
-          recovery: command?.type === "recovery",
+          recovery: command?.type === "recovery" ? command.recovery : null,
         });
       }
       return receipt;

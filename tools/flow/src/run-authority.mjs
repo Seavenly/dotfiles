@@ -194,6 +194,7 @@ export function createInMemoryRunAuthority() {
 }
 
 export function createDurableRunAuthority({
+  afterCancellationCommit = () => {},
   authorityDirectory,
   access = "mutate",
   afterSchemaTransitionCommit = () => {},
@@ -203,6 +204,7 @@ export function createDurableRunAuthority({
   declaredCapacity = 4,
   hostIdentityAdapter = createHostAuthorityIdentityAdapter(),
   lifecycleKernel = decideLifecycle,
+  beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
 } = {}) {
   if (typeof authorityDirectory !== "string" || authorityDirectory.length === 0) {
@@ -219,6 +221,12 @@ export function createDurableRunAuthority({
   }
   if (typeof beforeEffect !== "function") {
     throw new TypeError("durable run authority beforeEffect must be a function");
+  }
+  if (typeof afterCancellationCommit !== "function" ||
+      typeof beforeCancellationCommit !== "function") {
+    throw new TypeError(
+      "durable run authority cancellation hooks must be functions",
+    );
   }
   if (typeof beforeIntentCommit !== "function") {
     throw new TypeError(
@@ -528,6 +536,7 @@ export function createDurableRunAuthority({
           return freezeCanonical(decision);
         }
         let committedDecision;
+        let cancellationBoundary = null;
         database.exec("BEGIN IMMEDIATE");
         try {
           assertAuthorityEpoch(database, {
@@ -546,6 +555,17 @@ export function createDurableRunAuthority({
             return freezeCanonical(currentDecision);
           }
           committedDecision = currentDecision;
+          const cancellationEvent = currentDecision.events.find(
+            ({ type }) => type === "run_cancelled",
+          );
+          if (cancellationEvent) {
+            cancellationBoundary = freezeCanonical({
+              schema: "flow.cancellation-commit-boundary/v1",
+              run_id: canonicalCommand.run_id,
+              command_digest: commandDigest,
+              resource_dispositions: cancellationEvent.resource_dispositions,
+            });
+          }
           const deferredEvents = currentDecision.events.filter(({ type }) =>
             ["operation_completed", "run_declined", "run_succeeded"].includes(type));
           const immediateEvents = currentDecision.events.filter(({ type }) =>
@@ -586,7 +606,7 @@ export function createDurableRunAuthority({
             });
           }
           if (effectIntents.length === 0 && currentDecision.events.some(({ type }) =>
-            ["run_declined", "run_succeeded"].includes(type))) {
+            ["run_cancelled", "run_declined", "run_succeeded"].includes(type))) {
             appendAuthorityEvents(database, {
               streamId: "host:admission",
               streamKind: "host_admission",
@@ -602,7 +622,13 @@ export function createDurableRunAuthority({
               processIdentity,
             });
           }
+          if (cancellationBoundary) {
+            beforeCancellationCommit(cancellationBoundary);
+          }
           database.exec("COMMIT");
+          if (cancellationBoundary) {
+            afterCancellationCommit(cancellationBoundary);
+          }
         } catch (error) {
           if (database.isTransaction) database.exec("ROLLBACK");
           throw error;
@@ -871,6 +897,13 @@ export function createDurableRunAuthority({
           // This must remain the first await in invokeEffect. It lets command()
           // return its intent-commit watermark before invocation-start advances it.
           await Promise.resolve();
+          const admissionStream = readStream(database, effectiveIntent.run_id);
+          if (admissionStream.fold.phase !== "active") {
+            throw new AuthorityFenceError(
+              "attempt_disposed",
+              "terminal run authority fenced effect admission",
+            );
+          }
           recordEffectInvocationStarted(database, effectiveIntent, {
             authorityEpoch,
             bootId,
@@ -899,7 +932,8 @@ export function createDurableRunAuthority({
           const current = readStream(database, effectiveIntent.run_id);
           const unresolved = unresolvedEffectIds(current);
           unresolved.delete(effectiveIntent.effect_id);
-          const deferredEvents = unresolved.size === 0
+          const deferredEvents = unresolved.size === 0 &&
+              current.fold.phase === "active"
             ? pendingDeferredEvents(current)
             : [];
           appendAuthorityEvents(database, {
@@ -987,12 +1021,10 @@ export function createDurableRunAuthority({
             "effect already has a durable receipt",
           );
         }
-        if (stream.fold.phase !== "active") {
-          // Receipts currently settle every effect before terminal transition.
-          // Retain this invariant fence in case later terminal paths diverge.
+        if (!["active", "cancelled"].includes(stream.fold.phase)) {
           throw new AuthorityFenceError(
             "run_terminal",
-            "effect observations cannot mutate a terminal run",
+            "effect observations cannot mutate a settled terminal run",
           );
         }
         const normalizedObservation = normalizeEffectObservation(

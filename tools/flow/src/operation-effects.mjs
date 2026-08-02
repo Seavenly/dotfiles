@@ -88,7 +88,7 @@ export function dispatchRegisteredEffect(
   intent,
   registrations,
   runAuthority,
-  { recovery = false } = {},
+  { recovery = null } = {},
 ) {
   const registration = registeredOperation(
     registrations,
@@ -101,6 +101,18 @@ export function dispatchRegisteredEffect(
       registration.classification !== intent.classification ||
       typeof registration.invoke !== "function") return;
   void (async () => {
+    if (recovery === "settle_cancelled") {
+      if (!policy.requires_observation) return;
+      const observed = await registration.observe?.(intent);
+      const observation = await runAuthority.recordEffectObservation?.(
+        intent,
+        observed,
+      );
+      if (validateEffectObservation(observation, intent) !== "present") return;
+      return runAuthority.invokeEffect(intent, {
+        reconciliation: "adopt_present",
+      });
+    }
     if (recovery && policy.requires_observation) {
       const observed = await registration.observe?.(intent);
       const observation = await runAuthority.recordEffectObservation?.(

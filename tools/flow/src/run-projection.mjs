@@ -20,16 +20,26 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   );
   const effectIntents = new Map();
   const effectReceipts = new Map();
+  const effectReceiptIndexes = new Map();
+  const effectInvocationIndexes = new Map();
   const effectObservations = new Map();
-  for (const event of run.events) {
+  let cancellationEvent = null;
+  let cancellationIndex = -1;
+  for (const [eventIndex, event] of run.events.entries()) {
     if (["effect_intent_recorded", "effect_intent_adopted"].includes(
       event.type,
     )) {
       effectIntents.set(event.intent.effect_id, event.intent);
     } else if (event.type === "effect_receipt_recorded") {
       effectReceipts.set(event.effect_id, event.receipt ?? null);
+      effectReceiptIndexes.set(event.effect_id, eventIndex);
     } else if (event.type === "effect_observation_recorded") {
       effectObservations.set(event.effect_id, event.observation);
+    } else if (event.type === "effect_invocation_started") {
+      effectInvocationIndexes.set(event.effect_id, eventIndex);
+    } else if (event.type === "run_cancelled") {
+      cancellationEvent = event;
+      cancellationIndex = eventIndex;
     }
   }
   const completedOperations = new Set(run.events
@@ -63,17 +73,26 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     (current, { changes }) => ({ ...current, ...changes.limit_changes }),
     run.prepared.explicit_facts.limits,
   );
-  const phase = run.events.some(({ type }) => type === "run_declined")
-    ? "declined"
-    : run.events.some(({ type }) => type === "run_succeeded")
-      ? "succeeded"
-      : "active";
+  const phase = run.events.some(({ type }) => type === "run_cancelled")
+    ? "cancelled"
+    : run.events.some(({ type }) => type === "run_declined")
+      ? "declined"
+      : run.events.some(({ type }) => type === "run_succeeded")
+        ? "succeeded"
+        : "active";
+  const resourceDispositions = cancellationEvent?.resource_dispositions ??
+    resourceClaims.map((claim) => ({
+      claim,
+      disposition: phase === "active" ? "held" : "released",
+    }));
   const cards = activePlan.cards.map((card) => {
     let status = "pending";
     if (supersededCards.includes(card.id)) {
       status = "superseded";
     } else if (completedOperations.has(card.id)) {
       status = "completed";
+    } else if (phase === "cancelled") {
+      status = "abandoned";
     } else if ([...effectIntents.values()].some(
       ({ card_id: cardId }) => cardId === card.id,
     )) {
@@ -199,30 +218,53 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     }));
   const recoveryActions = [...effectIntents.values()]
     .filter((intent) => !effectReceipts.has(intent.effect_id))
+    .filter((intent) => phase !== "cancelled" ||
+      effectClassPolicy(intent.classification).requires_observation &&
+      effectInvocationIndexes.has(intent.effect_id) &&
+      effectInvocationIndexes.get(intent.effect_id) < cancellationIndex)
     .map((intent) => ({
       schema: "flow.command/v1",
       type: "recovery",
       run_id: run.run_id,
       effect_id: intent.effect_id,
-      recovery: effectClassPolicy(intent.classification).recovery,
+      recovery: phase === "cancelled"
+        ? "settle_cancelled"
+        : effectClassPolicy(intent.classification).recovery,
       expected_watermark: watermark,
     }));
+  const cancellationActions = run.prepared.requested_authority.commands.includes(
+    "cancel",
+  ) ? [{
+      schema: "flow.command/v1",
+      type: "cancel",
+      run_id: run.run_id,
+      expected_watermark: watermark,
+    }] : [];
   const hasUnresolvedEffects = effectIntents.size > effectReceipts.size;
-  const legalActions = phase === "active"
+  const legalActions = phase === "cancelled"
+    ? recoveryActions
+    : phase === "active"
     ? hasUnresolvedEffects
-      ? [...capabilityActions, ...recoveryActions]
+      ? [...capabilityActions, ...recoveryActions, ...cancellationActions]
       : [
         ...checkpointActions,
         ...capabilityActions,
         ...revisionActions,
         ...operationActions,
         ...recoveryActions,
+        ...cancellationActions,
       ]
-    : [];
+      : [];
   const progress = phase !== "active"
     ? "complete"
     : blocks.length > 0 ? "blocked"
       : hasUnresolvedEffects ? "executing" : "waiting";
+  const hasLateReceipt = (effectId) => cancellationIndex >= 0 &&
+    effectReceipts.has(effectId) &&
+    effectReceiptIndexes.get(effectId) > cancellationIndex;
+  const isQuarantinedAfterCancellation = (effectId) =>
+    cancellationIndex >= 0 &&
+    (!effectReceipts.has(effectId) || hasLateReceipt(effectId));
   const effects = [...effectIntents.values()].map((intent) => ({
     effect_id: intent.effect_id,
     card_id: intent.card_id ?? null,
@@ -231,13 +273,31 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     operation_contract: intent.operation_contract,
     idempotency_key: intent.idempotency_key,
     route_binding: intent.route_binding,
-    status: effectReceipts.has(intent.effect_id) ? "succeeded"
+    status: effectReceipts.has(intent.effect_id)
+      ? hasLateReceipt(intent.effect_id)
+        ? "late_succeeded"
+        : "succeeded"
+      : cancellationIndex >= 0 &&
+          (!effectInvocationIndexes.has(intent.effect_id) ||
+           effectInvocationIndexes.get(intent.effect_id) > cancellationIndex)
+        ? "abandoned"
       : effectObservations.has(intent.effect_id)
         ? effectClassPolicy(intent.classification).observed_unresolved_status
         : "unresolved",
+    disposition: isQuarantinedAfterCancellation(intent.effect_id)
+      ? "quarantined"
+      : "accepted",
     last_observation: effectObservations.get(intent.effect_id) ?? null,
     receipt: effectReceipts.get(intent.effect_id) ?? null,
   })).sort((left, right) => left.effect_id < right.effect_id ? -1 : 1);
+  const attempts = [...effectIntents.values()].map((intent) => ({
+    attempt_id: intent.attempt_id,
+    card_id: intent.card_id ?? null,
+    effect_id: intent.effect_id,
+    status: isQuarantinedAfterCancellation(intent.effect_id)
+      ? "abandoned"
+      : effectReceipts.has(intent.effect_id) ? "completed" : "active",
+  })).sort((left, right) => left.attempt_id < right.attempt_id ? -1 : 1);
 
   return freezeCanonical({
     schema: "flow.run-fold/v1",
@@ -259,8 +319,10 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     capability_bindings: capabilityBindings,
     capability_envelopes: run.prepared.explicit_facts.capability_envelopes,
     resource_claims: resourceClaims,
+    resource_dispositions: resourceDispositions,
     limits,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
+    attempts,
     effects,
     revision_templates: run.prepared.revision_templates,
     effect_intents: [...effectIntents.values()],
@@ -296,7 +358,9 @@ export function projectRun(fold) {
     capabilities: fold.capabilities,
     capability_bindings: fold.capability_bindings,
     resource_claims: fold.resource_claims,
+    resource_dispositions: fold.resource_dispositions,
     limits: fold.limits,
+    attempts: fold.attempts,
     effects: fold.effects,
     legal_actions: fold.legal_actions,
   });

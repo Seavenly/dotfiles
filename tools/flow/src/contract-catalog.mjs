@@ -94,6 +94,11 @@ const OPERATION_EXECUTION = {
   ],
   execution_command: "operation_execute",
   recovery_command: "recovery",
+  cancellation_command: "cancel",
+  cancelled_recovery: "settle_cancelled",
+  cancelled_attempt_disposition: "abandoned",
+  late_effect_disposition: "quarantined",
+  cancelled_resource_dispositions: ["released", "quarantined"],
 };
 
 export async function loadContractCatalog({
