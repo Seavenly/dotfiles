@@ -74,6 +74,8 @@ case "\${1:-} \${2:-}" in
   "agent read")
     if [[ -f "$state/cleared" ]]; then
       printf '────────\\n❯\\n────────\\n'
+    elif [[ -f "$state/replaced" ]]; then
+      printf '────────\\n❯ replacement staged work\\n────────\\n'
     elif [[ -f "$state/settled" ]]; then
       printf '────────\\n❯ operator staged work\\n────────\\n'
     else
@@ -83,7 +85,7 @@ case "\${1:-} \${2:-}" in
   "agent send-keys")
     [[ \${3:-} == managed-agent ]]
     if [[ \${4:-} == enter ]]; then touch "$state/submitted"
-    elif [[ \${4:-} == ctrl-c ]]; then touch "$state/cleared"
+    elif [[ \${4:-} == esc && \${5:-} == esc ]]; then touch "$state/cleared"
     else exit 1
     fi
     printf '{"result":{"status":"sent"}}\\n'
@@ -245,12 +247,44 @@ esac
 
   const unknown = await runDrovr(env, ["agent", "staged-input", agent.id]);
   assert.equal(unknown.result.staged_input.ownership, "unknown");
-  const cleared = await runDrovr(env, [
+  const mismatched = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
+    "--clear-unknown",
+    "mismatched-snapshot-token",
+  ]);
+  assert.equal(mismatched.ok, true);
+  assert.equal(mismatched.result.status, "recovery_blocked");
+  assert.equal(
+    (await runDrovr(env, ["agent", "staged-input", agent.id])).result
+      .staged_input.token,
+    unknown.result.staged_input.token,
+  );
+  await writeFile(join(herdrState, "replaced"), "");
+  const stale = await runDrovr(env, [
     "agent",
     "staged-input",
     agent.id,
     "--clear-unknown",
     unknown.result.staged_input.token,
+  ]);
+  assert.equal(stale.result.status, "recovery_blocked");
+  const replacement = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
+  ]);
+  assert.equal(
+    replacement.result.staged_input.display_text,
+    "replacement staged work",
+  );
+  const cleared = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
+    "--clear-unknown",
+    replacement.result.staged_input.token,
   ]);
   assert.equal(cleared.result.status, "cleared");
   assert.equal(cleared.result.turn, undefined);

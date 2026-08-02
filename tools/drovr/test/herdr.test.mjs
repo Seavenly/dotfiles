@@ -529,7 +529,7 @@ test("Claude staged input recovery clears only the exact inspected prompt", asyn
         });
       }
       if (args.includes("send-keys")) {
-        assert.equal(args.at(-1), "ctrl-c");
+        assert.deepEqual(args.slice(-2), ["esc", "esc"]);
         cleared = true;
       }
       return JSON.stringify({ result: {} });

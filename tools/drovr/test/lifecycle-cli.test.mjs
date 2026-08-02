@@ -53,7 +53,7 @@ case "\${1:-} \${2:-}" in
     printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","agent_session":{"value":"native-1"}}]}}\\n' "$status"
     ;;
   "agent send-keys")
-    [[ \${3:-} == managed-agent && \${4:-} == ctrl-c ]]
+    [[ \${3:-} == managed-agent && \${4:-} == ctrl+c ]]
     touch "$state/interrupted"
     printf '{"result":{"status":"sent"}}\\n'
     ;;
