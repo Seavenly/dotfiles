@@ -64,7 +64,9 @@ export function createFlowRuntime({
             authorityWatermarkDomain: "host",
           });
         }
-        const invalidInput = operationCards.find((card) => {
+        const invalidInput = operationValidationContexts(
+          validation.prepared,
+        ).find(({ card, proposal }) => {
           if (card.executor.kind !== "operation") return false;
           const registration = registeredOperation(
             operationRegistry,
@@ -72,11 +74,7 @@ export function createFlowRuntime({
           );
           if (typeof registration?.validateCard !== "function") return false;
           try {
-            registration.validateCard(card, {
-              graph: validation.prepared.graph,
-              requested_authority: validation.prepared.requested_authority,
-              explicit_facts: validation.prepared.explicit_facts,
-            });
+            registration.validateCard(card, proposal);
             return false;
           } catch {
             return true;
@@ -87,7 +85,7 @@ export function createFlowRuntime({
           return createRejection({
             operation: "launch",
             code: "invalid_operation_input",
-            reason: invalidInput.executor.contract,
+            reason: invalidInput.card.executor.contract,
             bundleDigest: validation.prepared.bundle_digest,
             authorityWatermark: host.watermark,
             authorityWatermarkDomain: "host",
@@ -138,6 +136,35 @@ export function createFlowRuntime({
   });
   recoverOutstandingEffects(runtime, runAuthority, operationRegistry);
   return runtime;
+}
+
+function operationValidationContexts(prepared) {
+  const proposal = (graph) => ({
+    graph,
+    requested_authority: prepared.requested_authority,
+    explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
+  });
+  const contexts = prepared.graph.cards.map((card) => ({
+    card,
+    proposal: proposal(prepared.graph),
+  }));
+  for (const template of prepared.revision_templates) {
+    const cards = [
+      ...prepared.graph.cards,
+      ...template.changes.add_cards,
+    ].map((card) => structuredClone(card));
+    for (const { from, to } of template.changes.add_edges) {
+      const target = cards.find(({ id }) => id === to);
+      target.dependencies = [...new Set([...target.dependencies, from])].sort();
+    }
+    const revisedProposal = proposal({ ...prepared.graph, cards });
+    contexts.push(...cards.map((card) => ({
+      card,
+      proposal: revisedProposal,
+    })));
+  }
+  return contexts;
 }
 
 function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {

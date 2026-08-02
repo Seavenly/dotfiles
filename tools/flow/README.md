@@ -265,11 +265,11 @@ child run, rejects tracker operations for authority-known children, and binds
 that ownership observation into every tracker intent. The Adapter never trusts
 caller-supplied top-level scope.
 
-The injected GitHub driver is a narrow provider port. `listComments` must
-return the complete issue-comment collection across every provider page, and
-`createComment` and `updateComment` must return the stored comment with a
-byte-exact body. An incomplete listing or altered write receipt is a driver
-contract violation and cannot settle an effect receipt.
+The injected GitHub driver is a narrow provider port. `listComments` returns
+`{ comments, complete: true }` only after exhausting every provider page;
+missing or false completeness fails closed. `createComment` and
+`updateComment` return the stored comment with a byte-exact body. An incomplete
+listing or altered write receipt cannot authorize or settle a mutation.
 
 Each update is bounded and writes one `flow.tracker-progress/v1` marker-bound
 comment. Later updates from the same run edit that comment in place. Duplicate

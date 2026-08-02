@@ -170,10 +170,13 @@ function trackerRequest(intent) {
 }
 
 async function inspectComments(driver, intent, desiredBody) {
-  const comments = await driver.listComments(intent.tracker_binding.tracker);
-  if (!Array.isArray(comments) || !comments.every(validComment)) {
+  const listing = await driver.listComments(intent.tracker_binding.tracker);
+  if (!exactKeys(listing, ["comments", "complete"]) ||
+      listing.complete !== true || !Array.isArray(listing.comments) ||
+      !listing.comments.every(validComment)) {
     return { conflict: "GitHub returned invalid comment observations", markerMatches: 0 };
   }
+  const comments = listing.comments;
   const marked = comments.filter(({ body }) =>
     body.includes(TRACKER_PROGRESS_MARKER));
   if (marked.length > 1) {
@@ -299,7 +302,8 @@ function validComment(comment) {
 }
 
 function validGitHubPathSegment(value) {
-  return typeof value === "string" && /^[A-Za-z0-9_.-]+$/.test(value);
+  return typeof value === "string" && ![".", ".."].includes(value) &&
+    /^[A-Za-z0-9_.-]+$/.test(value);
 }
 
 function exactKeys(value, fields) {

@@ -13,6 +13,7 @@ import {
 import { observeCardBlock } from
   "../src/card-block-observation-adapter.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
+import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { confirmedLaunchRequest } from "../test-support/dynamic-checkpoint.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
 
@@ -268,6 +269,23 @@ test("an altered GitHub write receipt cannot settle tracker progress", async (t)
   assert.notEqual(projection.tracker_progress.status, "projected");
 });
 
+test("an incomplete GitHub comment listing cannot authorize creation", async (t) => {
+  const fixture = await trackerRuntime(t, { completeListing: false });
+  const prepared = fixture.runtime.prepare(trackerProgressProposal([
+    progressCard("publish", 1, "Bounded progress", 0, 1),
+  ]));
+  const launch = fixture.runtime.launch(confirmedLaunchRequest(prepared));
+  fixture.runtime.command(fixture.runtime.query({ run_id: launch.run_id })
+    .tracker_progress.legal_next_actions[0]);
+  await until(() => fixture.runtime.query({ run_id: launch.run_id })
+    .effects[0]?.invocation_started === true);
+
+  assert.equal(fixture.driver.createCount, 0);
+  assert.equal(fixture.driver.updateCount, 0);
+  assert.equal(fixture.runtime.query({ run_id: launch.run_id })
+    .tracker_progress.status, "unresolved");
+});
+
 test("tracker projection follows revision-added cards and ignores superseded cards", async (t) => {
   const fixture = await trackerRuntime(t);
   const proposal = revisionTrackerProgressProposal();
@@ -314,6 +332,93 @@ test("tracker revisions reject duplicate or regressing progress sequences", () =
     () => createTrackerCompilerRuntime().prepare(ambiguous),
     /one unambiguous revision path/,
   );
+});
+
+test("launch revalidates tracker revisions from a registry-neutral bundle", () => {
+  const proposal = revisionTrackerProgressProposal();
+  proposal.graph.cards[0].inputs.sequence = 3;
+  const prepared = compileDynamicPlan(proposal);
+
+  const rejection = createTrackerCompilerRuntime().launch(
+    confirmedLaunchRequest(prepared),
+  );
+  assert.equal(rejection.code, "invalid_operation_input");
+});
+
+test("launch rejects revision edges that make tracker progress gate work", () => {
+  const proposal = trackerProgressProposal([
+    progressCard("publish", 1, "Bounded progress", 0, 1),
+    checkpointCard("revise-work", []),
+  ]);
+  const block = {
+    schema: "flow.card-block/v1",
+    id: "revise-work:revision",
+    type: "plan_revision_required",
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: "work_revision_required",
+    },
+    required_capabilities: [],
+    revision_template_ids: ["replace-work"],
+  };
+  proposal.requested_authority.commands.push(
+    "checkpoint_decision",
+    "revision_decision",
+  );
+  proposal.explicit_facts.operation_contracts.push(
+    "flow.adapter/card-block-observation/v1",
+  );
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/card-block-observation/v1",
+    "flow.validator/checkpoint-decision/v1",
+  );
+  proposal.explicit_facts.block_observations.push(observeCardBlock({
+    card_id: "revise-work",
+    block,
+  }));
+  Object.assign(proposal.explicit_facts.limits, {
+    max_cards: 3,
+    max_revisions: 1,
+    max_cards_per_revision: 1,
+  });
+  proposal.revision_templates = [{
+    schema: "flow.plan-revision-template/v1",
+    id: "replace-work",
+    trigger: structuredClone(block.trigger),
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [checkpointCard("accept-work", [])],
+      add_edges: [{ from: "publish", to: "accept-work" }],
+      supersede_cards: ["revise-work"],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: { max_cards: 3 },
+    },
+  }];
+  const prepared = compileDynamicPlan(proposal);
+
+  const rejection = createTrackerCompilerRuntime().launch(
+    confirmedLaunchRequest(prepared),
+  );
+  assert.equal(rejection.code, "invalid_operation_input");
+});
+
+test("relative GitHub owner and repository segments are rejected", () => {
+  for (const field of ["owner", "repository"]) {
+    const proposal = trackerProgressProposal([
+      progressCard("publish", 1, "Bounded progress", 0, 1),
+    ]);
+    proposal.explicit_facts.tracker_binding.tracker[field] = "..";
+    const identity = `github:${proposal.explicit_facts.tracker_binding.tracker.owner}/${proposal.explicit_facts.tracker_binding.tracker.repository}#34`;
+    proposal.explicit_facts.resource_claims[0].id = identity;
+    proposal.graph.cards[0].resource_claims[0].id = identity;
+    assert.throws(
+      () => createTrackerCompilerRuntime().prepare(proposal),
+      /confirmed feature or epic tracker binding/,
+      field,
+    );
+  }
 });
 
 function revisionTrackerProgressProposal() {
@@ -512,11 +617,13 @@ class FakeGitHubDriver {
   constructor({
     alterWriteReceipt = false,
     comments = [],
+    completeListing = true,
     listDelayMs = 0,
     loseFirstReceipt = false,
   } = {}) {
     this.alterWriteReceipt = alterWriteReceipt;
     this.comments = structuredClone(comments);
+    this.completeListing = completeListing;
     this.createCount = 0;
     this.updateCount = 0;
     this.loseFirstReceipt = loseFirstReceipt;
@@ -528,7 +635,7 @@ class FakeGitHubDriver {
     if (this.listDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.listDelayMs));
     }
-    return snapshot;
+    return { comments: snapshot, complete: this.completeListing };
   }
 
   async createComment(_tracker, body) {
