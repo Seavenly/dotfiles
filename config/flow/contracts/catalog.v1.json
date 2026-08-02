@@ -81,6 +81,19 @@
         "quarantined"
       ]
     },
+    "tracker_progress": {
+      "authority": "RunAuthority",
+      "operation": "flow.operation/tracker-progress-github/v1",
+      "ownership": "flow.run-ownership/v1",
+      "binding": "flow.tracker-binding/v1",
+      "update": "flow.tracker-progress-update/v1",
+      "projection": "flow.tracker-progress-projection/v1",
+      "effect_class": "reconcilable",
+      "mutation_scope": "confirmed_top_level_feature_or_epic",
+      "child_mutation": "forbidden",
+      "provider_state_authority": "none",
+      "marker_cardinality": "at_most_one_update_in_place"
+    },
     "delegate_execution": {
       "authority": "RunAuthority",
       "adapter_authority": "mechanism_only",
@@ -270,6 +283,11 @@
     "flow.delegate-terminal-disposition-policy/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
+    "flow.operation/tracker-progress-github/v1",
+    "flow.run-ownership/v1",
+    "flow.tracker-binding/v1",
+    "flow.tracker-progress-update/v1",
+    "flow.tracker-progress-projection/v1",
     "flow.run-plan/v1",
     "flow.run-projection/v1",
     "flow.run-index-projection/v1",

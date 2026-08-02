@@ -42,6 +42,16 @@ const LIMIT_FIELDS = [
   "max_elapsed_seconds",
 ];
 
+export function applyRevisionGraphChanges(graph, changes) {
+  const cards = [...graph.cards, ...changes.add_cards]
+    .map((card) => structuredClone(card));
+  for (const { from, to } of changes.add_edges) {
+    const target = cards.find(({ id }) => id === to);
+    target.dependencies = [...new Set([...target.dependencies, from])].sort();
+  }
+  return { ...graph, cards };
+}
+
 const CARD_BLOCK_FIELDS = [
   "schema",
   "id",
@@ -168,15 +178,6 @@ export function validateDynamicPlan(proposal, {
   }
 
   const cardIds = new Set();
-  const operationCards = proposal.graph.cards.filter(
-    ({ executor }) => executor?.kind === "operation",
-  );
-  if (operationCards.length > 1) {
-    invalidPlan(
-      "operation_card_limit_exceeded",
-      "this runtime slice accepts exactly one registered operation",
-    );
-  }
   for (const card of proposal.graph.cards) {
     if (!isRecord(card) || typeof card.id !== "string" || !card.id ||
         cardIds.has(card.id)) {
@@ -506,9 +507,10 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       "revision supersession must be the blocked card and its pending dependent closure",
     );
   }
-  const revisedCards = [...proposal.graph.cards, ...changes.add_cards]
-    .map((card) => structuredClone(card));
-  const allIds = new Set(revisedCards.map(({ id }) => id));
+  const allIds = new Set([
+    ...proposal.graph.cards.map(({ id }) => id),
+    ...changes.add_cards.map(({ id }) => id),
+  ]);
   const edgeIds = new Set();
   for (const edge of changes.add_edges) {
     const edgeId = `${edge?.from}\0${edge?.to}`;
@@ -519,8 +521,9 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       invalidPlan("invalid_revision_edge", `revision edge is invalid: ${template.id}`);
     }
     edgeIds.add(edgeId);
-    revisedCards.find(({ id }) => id === edge.to).dependencies.push(edge.from);
   }
+  const revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
+  const revisedCards = revisedGraph.cards;
   if (hasActiveDependencyOnSuperseded(revisedCards, superseded)) {
     invalidPlan(
       "active_card_depends_on_superseded_work",
@@ -571,7 +574,7 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
   }
   validateDynamicPlan({
     ...proposal,
-    graph: { ...proposal.graph, cards: revisedCards },
+    graph: revisedGraph,
     explicit_facts: { ...proposal.explicit_facts, limits },
   }, { registeredOperations, skipRevisionTemplates: true });
 }
@@ -690,6 +693,16 @@ function validateOperationCard(card, proposal, registeredOperations) {
       "invalid_operation_recovery",
       `operation recovery does not match its effect class: ${card.id}`,
     );
+  }
+  if (typeof registration?.validateCard === "function") {
+    try {
+      registration.validateCard(card, proposal);
+    } catch (error) {
+      invalidPlan(
+        "invalid_operation_input",
+        error?.message ?? `operation input is invalid: ${card.id}`,
+      );
+    }
   }
   if (card.executor.effect_classification === "one_shot_uncertain" &&
       card.inputs?.publication !== undefined) {

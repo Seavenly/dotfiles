@@ -22,9 +22,10 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v12 adds exact workspace writer claims, durable taint dispositions,
-  human-bound destructive authority, and cleanup previews to the workspace,
-  artifact, and resource handoff interfaces introduced in v11. Delegate contracts
+  Catalog v12 adds authority-bound GitHub tracker progress, exact workspace
+  writer claims, durable taint dispositions, human-bound destructive authority,
+  and cleanup previews to the workspace, artifact, and resource handoff
+  interfaces introduced in v11. Delegate contracts
   include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
   blocks, a single Flow-owned Drovr feature baseline, and the exact working-turn
@@ -36,8 +37,9 @@ disabled, so this API does not authorize normal replacement launches.
   `revision_templates` on prepared runs remain required. Callers must prepare a
   fresh bundle rather than launch a pre-v12 envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
-  executor with `flow.validator/checkpoint-decision/v1`, one operation card,
-  or one `flow.delegated-agent-port/v1` delegate card.
+  executor with `flow.validator/checkpoint-decision/v1`, one or more
+  independently ready operation cards, or one
+  `flow.delegated-agent-port/v1` delegate card.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
   `operation_execute` command without adding human approval. The operation names a registered Adapter,
@@ -82,10 +84,13 @@ disabled, so this API does not authorize normal replacement launches.
   they do not grant that capability to unrelated cards. Revision decisions
   cite the current plan fingerprint and validated trigger. Accepting admits
   the template's complete change set in one authority event; declining records
-  the negative outcome and terminates the run. A capped or otherwise
+  the negative outcome while leaving the blocked run active and its capacity
+  reserved. A capped or otherwise
   inadmissible revision withholds acceptance but retains that exact decline
   action, so an active checkpoint-only run is never stranded without a legal
-  operator action. A revision may
+  operator action. When an accepted revision leaves every card completed or
+  superseded and no effect unresolved, revision history, successful terminality,
+  and capacity release commit atomically. A revision may
   supersede only its blocked card and pending dependent closure; completed
   cards, accepted checkpoint evidence, routes, grants, and earlier revisions
   remain unchanged, and no active card may depend on superseded work. Any
@@ -348,8 +353,8 @@ closed until that
 current-observation Adapter is configured. An unresolved effect from a prior
 boot remains deliberately fenced, keeps its capacity reservation, and requires
 explicit admission before cancellation or reconciliation. The shipped
-`LifecycleKernel` emits effect intents only for the single registered-operation
-tracer. Each run is admitted independently. Run
+`LifecycleKernel` emits effect intents only for registered operation cards.
+Each run is admitted independently. Run
 watermarks bind the run stream generation and current authority epoch, while host
 watermarks bind both host-index and host-admission streams. Reordering,
 omission, duplication, digest conflict, unknown contracts, corrupt JSON,
@@ -367,6 +372,38 @@ dark Interface is a conformance seam, not a converged public launcher; the
 launch policy still selects the legacy implementation.
 `PlanCompiler` and `LifecycleKernel` are pure Modules: their decisions depend
 only on their explicit arguments.
+
+## GitHub tracker progress
+
+`createGitHubTrackerProgressOperation()` registers the reconcilable
+`flow.operation/tracker-progress-github/v1` mechanism. A confirmed dynamic
+plan may use it only with a confirmed `explicit_facts.tracker_binding` for a
+feature or epic. `RunAuthority` records whether launch created a top-level or
+child run, rejects tracker operations for authority-known children, and binds
+that ownership observation into every tracker intent. The Adapter never trusts
+caller-supplied top-level scope.
+
+The injected GitHub driver is a narrow provider port. `listComments` returns
+`{ comments, complete: true }` only after exhausting every provider page;
+missing or false completeness fails closed. `createComment` and
+`updateComment` return the stored comment with a byte-exact body. An incomplete
+listing or altered write receipt cannot authorize or settle a mutation.
+
+Each update is bounded and writes one `flow.tracker-progress/v1` marker-bound
+comment. Later updates from the same run edit that comment in place. Duplicate
+markers or a marker owned by another run fail closed. The marker records the
+run, exact effect identity, caller idempotency key, and authority watermark, so
+receipt recovery can adopt the exact provider mutation without reposting.
+Tracker-scoped mutation fencing serializes the observe-and-upsert boundary, so
+concurrent first writes cannot both create a comment under the sole runtime.
+Tracker progress operations must be graph leaves; their receipts cannot make
+another card ready. GitHub issue state and unrelated comment content are never
+read as lifecycle, scheduling, checkpoint, or acceptance authority.
+
+Run `query` and `watch` expose the current
+`flow.tracker-progress-projection/v1`, including the exact run-authority
+watermark, projected watermark, status, desired bounded update, and only the
+tracker operation's legal next actions at that watermark.
 
 The focused public contract suite is:
 

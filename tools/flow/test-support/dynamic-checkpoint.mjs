@@ -177,6 +177,23 @@ export function revisionBlockedCheckpointProposal() {
   return proposal;
 }
 
+export function terminalRevisionCheckpointProposal() {
+  const proposal = revisionBlockedCheckpointProposal();
+  const [template] = proposal.revision_templates;
+  template.changes = {
+    add_cards: [],
+    add_edges: [],
+    supersede_cards: ["confirm-plan"],
+    capability_additions: [],
+    resource_additions: [],
+    limit_changes: {},
+  };
+  proposal.explicit_facts.capability_envelopes = ["scope:approve"];
+  proposal.explicit_facts.limits.max_capabilities = 1;
+  proposal.explicit_facts.limits.max_resources = 0;
+  return proposal;
+}
+
 export function repeatedRevisionCheckpointProposal() {
   const proposal = independentCheckpointProposal();
   proposal.requested_authority.commands.push("revision_decision");

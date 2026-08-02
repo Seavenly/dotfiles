@@ -100,6 +100,19 @@ const OPERATION_EXECUTION = {
   late_effect_disposition: "quarantined",
   cancelled_resource_dispositions: ["released", "quarantined"],
 };
+const TRACKER_PROGRESS = {
+  authority: "RunAuthority",
+  operation: "flow.operation/tracker-progress-github/v1",
+  ownership: "flow.run-ownership/v1",
+  binding: "flow.tracker-binding/v1",
+  update: "flow.tracker-progress-update/v1",
+  projection: "flow.tracker-progress-projection/v1",
+  effect_class: "reconcilable",
+  mutation_scope: "confirmed_top_level_feature_or_epic",
+  child_mutation: "forbidden",
+  provider_state_authority: "none",
+  marker_cardinality: "at_most_one_update_in_place",
+};
 const DELEGATE_EXECUTION = {
   authority: "RunAuthority",
   adapter_authority: "mechanism_only",
@@ -169,6 +182,18 @@ export async function loadContractCatalog({
     OPERATION_EXECUTION.receipt_validator,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("registered operation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.tracker_progress,
+    TRACKER_PROGRESS,
+  ) || ![
+    TRACKER_PROGRESS.operation,
+    TRACKER_PROGRESS.ownership,
+    TRACKER_PROGRESS.binding,
+    TRACKER_PROGRESS.update,
+    TRACKER_PROGRESS.projection,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("tracker progress contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.flow_runtime?.delegate_execution,

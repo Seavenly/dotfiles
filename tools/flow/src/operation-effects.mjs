@@ -68,6 +68,9 @@ export function snapshotRegisteredOperations(registrations) {
       observe: typeof registration.observe === "function"
         ? registration.observe.bind(registration)
         : registration.observe,
+      validateCard: typeof registration.validateCard === "function"
+        ? registration.validateCard.bind(registration)
+        : registration.validateCard,
     })]];
   }));
 }

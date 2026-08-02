@@ -1,5 +1,8 @@
 import { digest } from "./canonical.mjs";
-import { compileDynamicPlan } from "./plan-compiler.mjs";
+import {
+  applyRevisionGraphChanges,
+  compileDynamicPlan,
+} from "./plan-compiler.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import { createInMemoryRunAuthority } from "./run-authority.mjs";
@@ -73,6 +76,33 @@ export function createFlowRuntime({
             operation: "launch",
             code: incompatible.issue,
             reason: incompatible.card.executor.contract,
+            bundleDigest: validation.prepared.bundle_digest,
+            authorityWatermark: host.watermark,
+            authorityWatermarkDomain: "host",
+          });
+        }
+        const invalidInput = operationValidationContexts(
+          validation.prepared,
+        ).find(({ card, proposal }) => {
+          if (card.executor.kind !== "operation") return false;
+          const registration = registeredOperation(
+            operationRegistry,
+            card.executor.contract,
+          );
+          if (typeof registration?.validateCard !== "function") return false;
+          try {
+            registration.validateCard(card, proposal);
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        if (invalidInput) {
+          const host = runAuthority.query();
+          return createRejection({
+            operation: "launch",
+            code: "invalid_operation_input",
+            reason: invalidInput.card.executor.contract,
             bundleDigest: validation.prepared.bundle_digest,
             authorityWatermark: host.watermark,
             authorityWatermarkDomain: "host",
@@ -156,6 +186,28 @@ export function createFlowRuntime({
   });
   recoverOutstandingEffects(runtime, runAuthority, operationRegistry);
   return runtime;
+}
+
+function operationValidationContexts(prepared) {
+  const proposal = (graph) => ({
+    graph,
+    requested_authority: prepared.requested_authority,
+    explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
+  });
+  const contexts = prepared.graph.cards.map((card) => ({
+    card,
+    proposal: proposal(prepared.graph),
+  }));
+  for (const template of prepared.revision_templates) {
+    const graph = applyRevisionGraphChanges(prepared.graph, template.changes);
+    const revisedProposal = proposal(graph);
+    contexts.push(...graph.cards.map((card) => ({
+      card,
+      proposal: revisedProposal,
+    })));
+  }
+  return contexts;
 }
 
 function recoverOutstandingEffects(runtime, runAuthority, operationRegistry) {
