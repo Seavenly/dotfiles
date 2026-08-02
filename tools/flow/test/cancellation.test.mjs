@@ -72,6 +72,32 @@ test("cancellation irreversibly stops new admission", async (t) => {
   assert.deepEqual(runtime.query({ run_id: launch.run_id }), cancelled);
 });
 
+test("cancellation requires prepared cancel authority", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-cancel-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const active = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(active.legal_actions.some(({ type }) => type === "cancel"), false);
+  const rejected = runtime.command({
+    schema: "flow.command/v1",
+    type: "cancel",
+    run_id: launch.run_id,
+    expected_watermark: active.watermark,
+  });
+
+  assert.equal(rejected.schema, "flow.rejection/v1");
+  assert.equal(rejected.code, "cancellation_not_actionable");
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "active");
+});
+
 test("cancellation fences an operation before Adapter admission", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-cancel-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -111,10 +137,11 @@ test("cancellation fences an operation before Adapter admission", async (t) => {
   assert.equal(cancelled.phase, "cancelled");
   assert.equal(cancelled.effects[0].status, "abandoned");
   assert.equal(cancelled.effects[0].disposition, "quarantined");
+  assert.equal(cancelled.effects[0].invocation_started, false);
   assert.equal(cancelled.attempts[0].status, "abandoned");
   assert.deepEqual(cancelled.resource_dispositions, [{
     claim: { kind: "test-record", id: "outcome" },
-    disposition: "quarantined",
+    disposition: "released",
   }]);
   assert.deepEqual(cancelled.legal_actions, []);
 });
@@ -252,6 +279,8 @@ test("cancellation preserves evidence completed before the terminal fence", asyn
 
   assert.equal(cancelled.phase, "cancelled");
   assert.equal(cancelled.cards.find(({ id }) => id === "record-outcome").status,
+    "completed");
+  assert.equal(cancelled.cards.find(({ id }) => id === "confirm-plan").status,
     "completed");
   assert.equal(cancelled.cards.find(({ id }) => id === "accept-result").status,
     "abandoned");

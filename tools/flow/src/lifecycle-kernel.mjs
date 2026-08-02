@@ -58,7 +58,9 @@ export function decideLifecycle(fold, command) {
       return reject(fold, command, "cancellation_not_actionable");
     }
     const unresolvedEffectIds = new Set(fold.effects
-      .filter(({ status }) => !["succeeded", "late_succeeded"].includes(status))
+      .filter(({ status, invocation_started: invocationStarted }) =>
+        invocationStarted !== false &&
+        !["succeeded", "late_succeeded"].includes(status))
       .map(({ effect_id: effectId }) => effectId));
     const quarantinedClaimDigests = new Set(fold.effect_intents
       .filter(({ effect_id: effectId }) => unresolvedEffectIds.has(effectId))

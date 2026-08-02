@@ -91,16 +91,16 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       status = "superseded";
     } else if (completedOperations.has(card.id)) {
       status = "completed";
+    } else if (checkpointDecisions.get(card.id) === "decline") {
+      status = "declined";
+    } else if (approvedCheckpoints.has(card.id)) {
+      status = "completed";
     } else if (phase === "cancelled") {
       status = "abandoned";
     } else if ([...effectIntents.values()].some(
       ({ card_id: cardId }) => cardId === card.id,
     )) {
       status = "executing";
-    } else if (checkpointDecisions.get(card.id) === "decline") {
-      status = "declined";
-    } else if (approvedCheckpoints.has(card.id)) {
-      status = "completed";
     } else if (phase === "active" && card.dependencies.every((dependency) =>
       approvedCheckpoints.has(dependency) ||
       completedOperations.has(dependency))) {
@@ -273,6 +273,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     operation_contract: intent.operation_contract,
     idempotency_key: intent.idempotency_key,
     route_binding: intent.route_binding,
+    invocation_started: effectInvocationIndexes.has(intent.effect_id),
     status: effectReceipts.has(intent.effect_id)
       ? hasLateReceipt(intent.effect_id)
         ? "late_succeeded"

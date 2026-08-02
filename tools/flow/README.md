@@ -95,16 +95,20 @@ disabled, so this API does not authorize normal replacement launches.
   watermarked cancellation action. Cancellation commits a terminal fence,
   abandons every incomplete attempt and card, releases host admission, and can
   never be reversed. An intent not yet admitted to its Adapter is fenced before
-  invocation. Completed effects remain accepted evidence; outstanding and late
-  effects retain their observed status with a `quarantined` disposition and
-  cannot flush deferred completion or satisfy dependencies. Cancelled
+  invocation. Completed effects remain accepted evidence; abandoned,
+  outstanding, and late effects retain their real status with a `quarantined`
+  evidence disposition and cannot flush deferred completion or satisfy
+  dependencies. Cancelled
   reconcilable and one-shot effects may expose only `settle_cancelled`, which
   observes and may adopt exact positive causation but never invokes replacement
   work.
   The cancellation transaction records every prepared resource claim as
-  `released` when its work is settled or `quarantined` when an unresolved
-  effect still touches it. Those dispositions are immutable evidence and late
-  settlement does not silently release a quarantined claim.
+  `released` when its work is settled or its intent was fenced before Adapter
+  invocation, and `quarantined` when an invoked unresolved effect may still
+  touch it. Effect dispositions describe evidence usability; resource
+  dispositions describe whether a resource may have been touched. Both are
+  immutable evidence, and late settlement does not silently release a
+  quarantined claim.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
