@@ -243,8 +243,12 @@ destructive actions. Eligible cleanup executes only as the registered
 `flow.operation/resource-cleanup/v1` operation, preserving intent-before-effect
 and exact receipt settlement. An evidence-validated handoff retirement discharges
 its cleanup obligations and changes retention to collectable only after consumer
-pins are gone. Cleanup then releases Git retention, handoff artifact pins, and
-workspace retention before recording the handoff receipt. Resource selection is
+pins are gone. Retirement evidence and its owning-Adapter validation bind the
+exact obligation list being discharged. Cleanup then releases Git retention,
+handoff artifact pins, and only the exact matching workspace generation before
+recording the handoff receipt. An uncertain cleanup remains bound to its original
+effect and can only retry after independent absence evidence or settle through
+exact presence evidence. Resource selection is
 always by exact handoff identity and digest; `latest` is rejected.
 
 The public launch contract is host-idempotent. Production-shaped conformance

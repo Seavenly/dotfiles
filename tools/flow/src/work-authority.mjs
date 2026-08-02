@@ -164,7 +164,10 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
         taint = null;
         cleanupReceipt = payload.cleanup_receipt;
       } else if (payload.type === "workspace_handoff_retention_released") {
-        disposition = "released";
+        if (payload.expected_generation === generation &&
+            payload.expected_fingerprint === digest({ git })) {
+          disposition = "released";
+        }
       }
     }
     const legalActions = claims.map((claim) => ({
@@ -827,12 +830,17 @@ function decideHandoffDisposition(current, command) {
   if (current.status !== "active" || current.consumer_pins.length > 0 ||
       command.disposition !== "retired" ||
       command.evidence?.schema !== "flow.resource-handoff-disposition-evidence/v1" ||
+      command.evidence.kind !== "cleanup_obligations_discharged" ||
       !isDigest(command.evidence.digest) ||
+      !isDeepStrictEqual(command.evidence.cleanup_obligations,
+        current.cleanup_obligations) ||
       command.evidence_validation?.schema !==
         "flow.resource-handoff-disposition-validation/v1" ||
       command.evidence_validation.valid !== true ||
       command.evidence_validation.subject_id !== current.subject_id ||
       command.evidence_validation.handoff_digest !== current.handoff_digest ||
+      command.evidence_validation.cleanup_obligations_digest !==
+        digest(current.cleanup_obligations) ||
       command.evidence_validation.evidence_digest !== command.evidence.digest) {
     return reject(command, "handoff_disposition_evidence_required", current);
   }
@@ -942,6 +950,9 @@ function decideWorkspaceClaim(current, command) {
   }
   if (command.expected_generation !== current.generation) {
     return reject(command, "stale_subject_generation", current);
+  }
+  if (current.taint !== null) {
+    return reject(command, "workspace_tainted", current);
   }
   if (command.expected_watermark !== current.watermark) {
     return reject(command, "stale_authority_watermark", current);
@@ -1188,10 +1199,13 @@ function registrationReceiptFor(command) {
 }
 
 function commandDigest(command) {
-  if (!isRecord(command) || command.git_observation === undefined) {
-    return safeDigest(command);
-  }
-  const { git_observation: ignored, ...requestedCommand } = command;
+  if (!isRecord(command)) return safeDigest(command);
+  const {
+    evidence_validation: ignoredEvidenceValidation,
+    git_observation: ignoredGitObservation,
+    human_authority_validation: ignoredHumanValidation,
+    ...requestedCommand
+  } = command;
   return safeDigest(requestedCommand);
 }
 

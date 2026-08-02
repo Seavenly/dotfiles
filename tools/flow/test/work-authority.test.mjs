@@ -14,6 +14,7 @@ import {
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import {
   buildHumanAuthorityBinding,
+  foldWorkStream,
   getArtifactAuthority,
   getResourceHandoffAuthority,
   getWorkspaceAuthority,
@@ -29,6 +30,48 @@ import {
 } from "../test-support/registered-operation.mjs";
 
 const CLEANUP_OPERATION_CONTRACT = "flow.operation/resource-cleanup/v1";
+
+test("obsolete handoff cleanup cannot release a newer workspace generation", () => {
+  const generationTwoGit = promotedGitFacts();
+  const generationThreeGit = {
+    ...generationTwoGit,
+    commit_sha: "5".repeat(40),
+    tree_sha: "6".repeat(40),
+  };
+  const projection = foldWorkStream("workspace", "workspace:producer", [
+    {
+      payload: {
+        type: "workspace_registered",
+        registration: workspaceRegistration().registration,
+        git_observation: { schema: "work.git-observation/v1", git: exactGitFacts() },
+        registration_receipt: { registered: true },
+      },
+    },
+    {
+      payload: {
+        type: "workspace_promoted",
+        generation: 3,
+        mutation_epoch: 9,
+        git: generationThreeGit,
+        git_observation: {
+          schema: "work.git-observation/v1",
+          git: generationThreeGit,
+        },
+        disposition: "producer_owned",
+      },
+    },
+    {
+      payload: {
+        type: "workspace_handoff_retention_released",
+        expected_generation: 2,
+        expected_fingerprint: digestValue({ git: generationTwoGit }),
+      },
+    },
+  ], `sha256:${"e".repeat(64)}`);
+
+  assert.equal(projection.generation, 3);
+  assert.equal(projection.disposition, "producer_owned");
+});
 
 test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-authority-"));
@@ -287,6 +330,10 @@ test("workspace taint survives reboot and only exact dispositions can clear it",
     "workspace_taint_disposition",
     "workspace_risk_acceptance",
   ]);
+  assert.equal(workspaceAuthority.command(workspaceClaim({
+    commandId: "workspace-claim:tainted",
+    expectedWatermark: tainted.watermark,
+  })).code, "workspace_tainted");
 
   assert.equal(workspaceAuthority.command(workspaceTaintDisposition(tainted, {
     disposition: "generic_clear",
@@ -340,6 +387,9 @@ test("workspace taint survives reboot and only exact dispositions can clear it",
   assert.equal(workspaceAuthority.command(adopted).accepted, true);
   const cleared = workspaceAuthority.query(workspaceQuery());
   assert.equal(cleared.taint, null);
+  const replayedAdoption = workspaceAuthority.command(adopted);
+  assert.equal(replayedAdoption.accepted, true);
+  assert.equal(replayedAdoption.created, false);
 
   const secondTaint = workspaceTaint(cleared.watermark);
   secondTaint.command_id = "workspace-taint:second-uncertain-effect";
@@ -483,6 +533,9 @@ test("FlowRuntime executes an exact eligible cleanup through its registered Adap
         classification: "reconcilable",
         async invoke(intent) {
           invocations += 1;
+          if (invocations === 1) {
+            throw new Error("cleanup result unavailable after admission");
+          }
           await rm(workspacePath, { recursive: true });
           return operationReceipt(intent, {
             resource_cleanup: {
@@ -492,8 +545,15 @@ test("FlowRuntime executes an exact eligible cleanup through its registered Adap
             },
           });
         },
-        observe() {
-          return { presence: "absent" };
+        observe(intent) {
+          return {
+            schema: "flow.effect-observation/v1",
+            effect_id: intent.effect_id,
+            idempotency_key: intent.idempotency_key,
+            presence: "absent",
+            causation: null,
+            provider_observation: { found: false },
+          };
         },
       },
     },
@@ -519,9 +579,22 @@ test("FlowRuntime executes an exact eligible cleanup through its registered Adap
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
   runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions[0]);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.length === 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+  assert.equal(workspaceAuthority.query(workspaceQuery()).taint.reason,
+    "resource_cleanup_in_flight");
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions
+    .find(({ type }) => type === "recovery"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runtime.query({ run_id: launch.run_id }).effects[0]
+    .last_observation.presence, "absent");
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions
+    .find(({ type }) => type === "recovery"));
   await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
 
-  assert.equal(invocations, 1);
+  assert.equal(invocations, 2);
   await assert.rejects(access(workspacePath));
   const cleaned = workspaceAuthority.query(workspaceQuery());
   assert.equal(cleaned.disposition, "cleaned");
@@ -1112,6 +1185,7 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
       schema: "flow.resource-handoff-disposition-evidence/v1",
       kind: "cleanup_obligations_discharged",
       digest: `sha256:${"d".repeat(64)}`,
+      cleanup_obligations: settledHandoff.cleanup_obligations,
     },
   };
   const retirementReceipt = consumerHandoffAuthority.command(retirement);
@@ -1315,6 +1389,7 @@ function deterministicWorkEvidenceAdapter() {
         valid: accepted.has(command.evidence?.digest),
         subject_id: handoff.subject_id,
         handoff_digest: handoff.handoff_digest,
+        cleanup_obligations_digest: digestValue(handoff.cleanup_obligations),
         evidence_digest: command.evidence?.digest ?? null,
       };
       return {

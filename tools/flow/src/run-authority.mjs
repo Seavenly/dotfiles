@@ -1317,12 +1317,13 @@ export function createDurableRunAuthority({
               processIdentity,
             });
           }
-          if (effectSucceeded && deferredEvents.some(({ type }) =>
-            type === "run_succeeded")) {
+          const deferredTerminalEvent = deferredEvents.find(({ type }) =>
+            ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
+          if (effectSucceeded && deferredTerminalEvent) {
             appendTerminalConsumerHandoffReleases(database, {
               prepared: current.records[0].payload.prepared,
               runId: effectiveIntent.run_id,
-              terminalEvent: { type: "run_succeeded" },
+              terminalEvent: deferredTerminalEvent,
             }, {
               authorityEpoch,
               bootId,
@@ -1855,8 +1856,9 @@ function resourceCleanupAuthorityContext(
   authorityDirectory,
   gitRetentionAdapter,
   gitWorkspaceObservationAdapter,
-  request,
+  intent,
 ) {
+  const request = intent?.operation_input?.resource_cleanup;
   if (request?.schema !== "flow.resource-cleanup-request/v1") {
     throw new TypeError("resource cleanup request is invalid");
   }
@@ -1884,8 +1886,16 @@ function resourceCleanupAuthorityContext(
       ? buildArtifactCollectionPreview(projection)
       : buildHandoffCleanupPreview(projection);
   const action = preview.legal_actions[0];
-  if (preview.eligibility !== "eligible" ||
-      !isDeepStrictEqual(action?.operation_input?.resource_cleanup, request)) {
+  const sameInFlightEffect = identity.streamKind === "workspace"
+    ? projection.taint?.reason === "resource_cleanup_in_flight" &&
+      projection.taint.source_effect_id === intent.effect_id
+    : identity.streamKind === "artifact"
+      ? projection.status === "uncertain" &&
+        projection.collection_effect_id === intent.effect_id
+      : projection.status === "uncertain" &&
+        projection.cleanup_effect_id === intent.effect_id;
+  if (!sameInFlightEffect && (preview.eligibility !== "eligible" ||
+      !isDeepStrictEqual(action?.operation_input?.resource_cleanup, request))) {
     throw new TypeError("resource cleanup authority is stale or unsafe");
   }
   return { identity, preview };
@@ -1944,7 +1954,11 @@ function appendResourceCleanupCompletion(database, intent, receipt, fence) {
       streamKind: workspaceIdentity.streamKind,
       events: [{
         contract: "work.workspace-event/v1",
-        payload: { type: "workspace_handoff_retention_released" },
+        payload: {
+          type: "workspace_handoff_retention_released",
+          expected_generation: current.associated_workspace.generation,
+          expected_fingerprint: digest({ git: current.associated_workspace.git }),
+        },
       }],
       ...fence,
     });
@@ -2501,7 +2515,7 @@ function recordEffectInvocationStarted(database, intent, {
       authorityDirectory,
       gitRetentionAdapter,
       gitWorkspaceObservationAdapter,
-      intent.operation_input.resource_cleanup,
+      intent,
     );
   }
   database.exec("BEGIN IMMEDIATE");
