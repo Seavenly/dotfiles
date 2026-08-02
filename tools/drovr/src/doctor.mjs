@@ -12,25 +12,33 @@ const DROVR_ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.
 const REPOSITORY_ROOT = dirname(dirname(DROVR_ROOT));
 
 async function implementationCheck() {
-  const paths = [
-    ...(await walkFiles(join(DROVR_ROOT, "src"))),
-    ...(await walkFiles(join(DROVR_ROOT, "scripts"))),
-    join(DROVR_ROOT, "package.json"),
-    join(REPOSITORY_ROOT, "bin", "drovr"),
-  ].sort();
-  const hash = createHash("sha256");
-  for (const path of paths) {
-    const source = await readFile(path);
-    hash.update(relative(REPOSITORY_ROOT, path));
-    hash.update("\0");
-    hash.update(source);
-    hash.update("\0");
+  try {
+    const paths = [
+      ...(await walkFiles(join(DROVR_ROOT, "src"))),
+      ...(await walkFiles(join(DROVR_ROOT, "scripts"))),
+      join(DROVR_ROOT, "package.json"),
+      join(REPOSITORY_ROOT, "bin", "drovr"),
+    ].sort();
+    const hash = createHash("sha256");
+    for (const path of paths) {
+      const source = await readFile(path);
+      hash.update(relative(REPOSITORY_ROOT, path));
+      hash.update("\0");
+      hash.update(source);
+      hash.update("\0");
+    }
+    return {
+      id: "drovr",
+      status: "pass",
+      detail: `drovr source sha256:${hash.digest("hex")}`,
+    };
+  } catch (error) {
+    return {
+      id: "drovr",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+    };
   }
-  return {
-    id: "drovr",
-    status: "pass",
-    detail: `drovr source sha256:${hash.digest("hex")}`,
-  };
 }
 
 async function commandCheck(id, command, args, run) {

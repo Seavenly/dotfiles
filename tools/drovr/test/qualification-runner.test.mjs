@@ -16,11 +16,19 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import {
+  HERDR_DETACH_SEQUENCE,
   interruptQualification,
+  compareUnrelatedGroups,
+  nativeSessionValues,
+  proveUnknownInputWasNotSubmitted,
+  prohibitedMutationObservations,
+  resourceDisposition,
   runQualification,
+  selectScenarios,
   validateDrovrEnvelope,
   workspaceFingerprint,
 } from "../src/qualification-runner.mjs";
+import { loadQualificationCatalog } from "../src/qualification-catalog.mjs";
 
 const execFileAsync = promisify(execFile);
 const runner = fileURLToPath(
@@ -424,6 +432,117 @@ test("complete Drovr envelope validation rejects contradictory and partial shape
   );
 });
 
+test("unknown-input evidence helpers fail closed on missing observations", () => {
+  assert.deepEqual(nativeSessionValues([{ execution: { envelope: { result: { agent: { native_session: "session-1" } } } } }, null]), ["session-1"]);
+  assert.deepEqual(compareUnrelatedGroups(undefined, undefined, "owned"), {
+    proven: false,
+    unchanged: false,
+  });
+  assert.equal(
+    proveUnknownInputWasNotSubmitted({
+      beforeTurns: [],
+      afterTurns: undefined,
+      reuseTurnId: "reuse-1",
+    }),
+    false,
+  );
+});
+
+test("unknown-input proof permits only the one expected reuse turn", () => {
+  const unknownPayloadSha256 = "unknown-sha";
+  assert.equal(
+    proveUnknownInputWasNotSubmitted({
+      beforeTurns: [],
+      afterTurns: [{
+        id: "reuse-1",
+        input_count: 1,
+        inputs: [{ payload_sha256: "reuse-sha" }],
+      }],
+      reuseTurnId: "reuse-1",
+      unknownPayloadSha256,
+    }),
+    true,
+  );
+  assert.equal(
+    proveUnknownInputWasNotSubmitted({
+      beforeTurns: [],
+      afterTurns: [
+        { id: "unknown-submit", input_count: 1 },
+        { id: "reuse-1", input_count: 1 },
+      ],
+      reuseTurnId: "reuse-1",
+      unknownPayloadSha256,
+    }),
+    false,
+  );
+  assert.equal(
+    proveUnknownInputWasNotSubmitted({
+      beforeTurns: [],
+      afterTurns: [{
+        id: "reuse-1",
+        input_count: 1,
+        inputs: [{ payload_sha256: unknownPayloadSha256 }],
+      }],
+      reuseTurnId: "reuse-1",
+      unknownPayloadSha256,
+    }),
+    false,
+  );
+});
+
+test("failed cleanup retains isolated filesystem resources in receipts", () => {
+  assert.equal(resourceDisposition("state_root", false), "retained");
+  assert.equal(resourceDisposition("runtime_root", false), "retained");
+  assert.equal(resourceDisposition("temporary_workspace", false), "retained");
+  assert.equal(resourceDisposition("group", false), "cleanup-blocked");
+  assert.equal(resourceDisposition("turn", false), "retained");
+});
+
+test("prohibited-mutation receipts distinguish proof from unobserved state", () => {
+  assert.deepEqual(
+    prohibitedMutationObservations(["private state is unchanged"], {
+      basis: ["public envelopes only"],
+    }),
+    [{
+      description: "private state is unchanged",
+      unchanged: "not_observed",
+      basis: ["public envelopes only"],
+    }],
+  );
+  assert.equal(
+    prohibitedMutationObservations(["known check"], {
+      fullyObserved: true,
+      unchanged: false,
+    })[0].unchanged,
+    false,
+  );
+});
+
+test("interactive qualification uses the tracked Herdr prefix to detach", async () => {
+  const configPath = fileURLToPath(
+    new URL("../../../config/herdr/config.toml", import.meta.url),
+  );
+  const config = await readFile(configPath, "utf8");
+  assert.match(config, /^prefix = "ctrl\+a"$/mu);
+  assert.equal(HERDR_DETACH_SEQUENCE, "\u0001q");
+});
+
+test("full live selection is catalog-derived and excludes operator-staged scenarios", async () => {
+  const catalog = await loadQualificationCatalog();
+  const selected = selectScenarios(catalog, [], { fullLive: true });
+  assert.ok(selected.length > 0);
+  assert.ok(
+    selected.every(
+      ({ execution }) =>
+        execution.kind === "real_herdr_harness" &&
+        execution.unattended === true,
+    ),
+  );
+  assert.ok(
+    !selected.some(({ id }) => id === "claude_owned_staged_input_submit"),
+  );
+});
+
 test("workspace fingerprints detect content changes hidden by unchanged Git status", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-workspace-fingerprint-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -472,5 +591,66 @@ sleep 30
     await readFile(report.scenarios[0].evidence, "utf8"),
   );
   assert.equal(evidence.result.reason.code, "operator_interrupted");
+  assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
+});
+
+test("executor rejection still writes failure evidence through the cleanup path", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-rejection-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const caller = join(scratch, "caller");
+  const evidenceDirectory = join(scratch, "evidence");
+  await mkdir(fakeBin);
+  await mkdir(caller);
+  await executable(
+    join(fakeBin, "drovr"),
+    `stdin_value=""
+if [[ \${1:-} == ask && "$*" != *--prompt-file* ]]; then stdin_value=$(cat); fi
+case "\${1:-} \${2:-}" in
+  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"codex":{"model":"gpt-5.6-luna","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:rejection"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"codex-launch-capabilities","status":"pass","detail":"supported"},{"id":"codex-transcripts","status":"pass","detail":"available"},{"id":"codex-transcript-structure","status":"pass","detail":"supported"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"codex-native-session","status":"pass","detail":"supported"}]}}' ;;
+  "group list") printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}' ;;
+  "delegate --group")
+    previous=""; workspace=""
+    for argument in "$@"; do [[ "$previous" == --cwd ]] && workspace="$argument"; previous="$argument"; done
+    rmdir "$workspace"
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-rejection"},"task":{"id":"task-rejection"},"agent":{"id":"agent-rejection","harness":"codex","model":"gpt-5.6-luna","effort":"low"},"turn":{"id":"turn-rejection-1","status":"completed","input_count":1,"result":{"text":"QUALIFY-CODEX-POSITIONAL-1-OK"}}}}' ;;
+  "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-rejection","native_session":"session-rejection"}}}' ;;
+  "ask agent-rejection")
+    if [[ "$*" == *--prompt-file* ]]; then turn=2; text=QUALIFY-CODEX-FILE-2-OK; else turn=3; text=QUALIFY-CODEX-STDIN-3-OK; fi
+    printf '{"schema":"drovr.command/v1","command":"ask","ok":true,"result":{"status":"completed","group":{"id":"group-rejection"},"task":{"id":"task-rejection"},"agent":{"id":"agent-rejection","harness":"codex","model":"gpt-5.6-luna","effort":"low"},"turn":{"id":"turn-rejection-%s","status":"completed","input_count":1,"result":{"text":"%s"}}}}\n' "$turn" "$text" ;;
+  "group close") printf '%s\n' '{"schema":"drovr.command/v1","command":"group close","ok":true,"result":{"status":"closed","group":{"id":"group-rejection"}}}' ;;
+  *) exit 5 ;;
+esac
+`,
+  );
+
+  let failure;
+  try {
+    await execFileAsync(
+      process.execPath,
+      [
+        runner,
+        "--scenario",
+        "codex_live_prompt_sources_and_reuse",
+        "--evidence-dir",
+        evidenceDirectory,
+      ],
+      {
+        cwd: caller,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      },
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(failure?.code, 4);
+  const report = JSON.parse(failure.stdout);
+  assert.equal(report.status, "fail");
+  const evidence = JSON.parse(
+    await readFile(report.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(evidence.result.reason.code, "internal_error");
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
 });

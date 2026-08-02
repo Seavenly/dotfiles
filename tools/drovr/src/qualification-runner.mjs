@@ -26,6 +26,7 @@ const execFileAsync = promisify(execFileCallback);
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const PROCESS_EXIT_GRACE_MS = 5_000;
 const CLEANUP_LIMIT_MS = 65_000;
+export const HERDR_DETACH_SEQUENCE = "\u0001q";
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -79,6 +80,7 @@ export function interruptQualification() {
 
 export async function runQualification({
   scenarioIds,
+  fullLive = false,
   evidenceDirectory,
   drovrCommand = "drovr",
   cwd = process.cwd(),
@@ -88,7 +90,7 @@ export async function runQualification({
   interruptionRequested = false;
   const catalog = await loadQualificationCatalog();
   validateQualificationCatalog(catalog);
-  const selected = selectScenarios(catalog, scenarioIds);
+  const selected = selectScenarios(catalog, scenarioIds, { fullLive });
   await mkdir(evidenceDirectory, { recursive: true });
 
   const results = [];
@@ -113,7 +115,14 @@ export async function runQualification({
   };
 }
 
-function selectScenarios(catalog, scenarioIds) {
+export function selectScenarios(catalog, scenarioIds, { fullLive = false } = {}) {
+  if (fullLive) {
+    return catalog.scenarios.filter(
+      ({ execution }) =>
+        execution.kind === "real_herdr_harness" &&
+        execution.unattended === true,
+    );
+  }
   if (!Array.isArray(scenarioIds) || scenarioIds.length === 0) {
     throw new QualificationUsageError("at least one --scenario is required");
   }
@@ -167,7 +176,7 @@ async function runScenarioPrerequisites({
     !scenarioPrerequisitesReady(scenario, execution.envelope);
   const executor = scenarioExecutors.get(scenario.id);
   if (!blocked && executor) {
-    return executor({
+    return await executor({
       catalog,
       scenario,
       evidenceDirectory,
@@ -203,7 +212,7 @@ async function runScenarioPrerequisites({
         message: "Drovr doctor reported an incompatible or missing prerequisite.",
       }
     : {
-        code: "scenario_executor_pending",
+        code: "deterministic_replay_deferred",
         message: "The selected scenario has no executor yet.",
       };
   deadline.completeScenario();
@@ -265,8 +274,9 @@ async function runScenarioPrerequisites({
         ...resource,
         disposition: "absent",
       })),
-      prohibited_mutations_observed: scenario.prohibited_mutations.map(
-        (description) => ({ description, unchanged: true }),
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        { basis: ["no live mutation was attempted by this deferred replay scenario"] },
       ),
       caller_owned_workspace: {
         path: resolve(cwd),
@@ -391,7 +401,7 @@ async function runUnknownStagedInputScenario({
         "read-only",
       ],
       "agent start",
-      { timeoutMs: 30_000 },
+      { timeoutMs: 15_000 },
     );
   }
   const agentId = agentStart?.execution.envelope?.result?.agent?.id;
@@ -402,7 +412,12 @@ async function runUnknownStagedInputScenario({
   let cleared;
   const stabilityObservations = [];
   let reuse;
+  let beforeTurnList;
   if (typeof agentId === "string") {
+    beforeTurnList = await invoke(
+      ["turn", "list", "--agent", agentId],
+      "turn list",
+    );
     beforeAttach = await invoke(["agent", "get", agentId], "agent get");
     if (beforeAttach.execution.envelope?.result?.status === "completed") {
       attached = await invokeAttachWithStagedText({
@@ -481,6 +496,18 @@ async function runUnknownStagedInputScenario({
   const finalAgent = reuse && typeof agentId === "string"
     ? await invoke(["agent", "get", agentId], "agent get")
     : null;
+  const afterTurnList = typeof agentId === "string"
+    ? await invoke(["turn", "list", "--agent", agentId], "turn list")
+    : null;
+  const afterTurnDetails = [];
+  for (const turn of afterTurnList?.execution.envelope?.result?.turns ?? []) {
+    afterTurnDetails.push(
+      await invoke(
+        ["turn", "get", turn.id, "--include-messages"],
+        "turn get",
+      ),
+    );
+  }
   deadline.completeScenario();
   let cleanup;
   if (typeof groupId === "string") {
@@ -510,7 +537,7 @@ async function runUnknownStagedInputScenario({
     ({ execution: observation }) =>
       observation.envelope?.result?.status === "staged_input",
   );
-  const observedNativeSessions = [
+  const observedNativeSessions = nativeSessionValues([
     agentStart,
     beforeAttach,
     afterAttach,
@@ -518,12 +545,7 @@ async function runUnknownStagedInputScenario({
     cleared,
     ...stabilityObservations,
     finalAgent,
-  ]
-    .map(
-      ({ execution } = {}) =>
-        execution?.envelope?.result?.agent?.native_session,
-    )
-    .filter((value) => typeof value === "string" && value.length > 0);
+  ]);
   const managedNativeSession = observedNativeSessions[0] ?? null;
   const finalNativeSession =
     finalAgent?.execution.envelope?.result?.agent?.native_session ?? null;
@@ -531,30 +553,46 @@ async function runUnknownStagedInputScenario({
     observedNativeSessions.length >= 3 &&
     observedNativeSessions.every((value) => value === managedNativeSession) &&
     (!reuse || finalNativeSession === managedNativeSession);
+  const observedModel = agentStart?.execution.envelope?.result?.agent?.model;
+  const observedEffort = agentStart?.execution.envelope?.result?.agent?.effort;
+  const exactLaunchConfiguration =
+    observedModel === launch.model && observedEffort === launch.effort;
   const sameAgentReuse =
     reuse?.execution.envelope?.result?.status === "completed" &&
     reuse.execution.envelope.result.agent?.id === agentId &&
     reuse.execution.envelope.result.turn?.result?.text?.trim() ===
       "QUALIFY-CLAUDE-REUSE-OK";
-  const unknownTextSubmitted = records.some(
+  const envelopeClaimsUnknownSubmission = records.some(
     ({ envelope }) =>
       envelope.command !== "attach" &&
       JSON.stringify(envelope).includes(unknownText) &&
       envelope.result?.turn?.input_count > 0,
   );
+  const noUnknownLogicalInput = proveUnknownInputWasNotSubmitted({
+    beforeTurns: beforeTurnList?.execution.envelope?.result?.turns,
+    afterTurns: afterTurnDetails.map(
+      ({ execution: observation }) => observation.envelope?.result?.turn,
+    ),
+    reuseTurnId: reuse?.execution.envelope?.result?.turn?.id,
+    unknownPayloadSha256: createHash("sha256")
+      .update(unknownText)
+      .digest("hex"),
+  });
+  const unknownTextSubmitted =
+    envelopeClaimsUnknownSubmission || !noUnknownLogicalInput;
   const cleanupComplete = cleanup?.execution.envelope?.result?.status === "closed";
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
-  const unrelatedResourcesUnchanged =
-    JSON.stringify(
-      unrelatedGroups(beforeGroups.execution.envelope?.result?.groups, groupKey),
-    ) ===
-    JSON.stringify(
-      unrelatedGroups(afterGroups.execution.envelope?.result?.groups, groupKey),
-    );
+  const unrelatedResources = compareUnrelatedGroups(
+    beforeGroups.execution.envelope?.result?.groups,
+    afterGroups.execution.envelope?.result?.groups,
+    groupKey,
+  );
+  const unrelatedResourcesUnchanged = unrelatedResources.unchanged;
   const passed =
     exactUnknownStaged &&
     exactNativeSession &&
+    exactLaunchConfiguration &&
     stableClear &&
     sameAgentReuse &&
     !unknownTextSubmitted &&
@@ -599,9 +637,8 @@ async function runUnknownStagedInputScenario({
     execution_kind: "real_herdr_harness",
     versions: {
       ...versions,
-      model: agentStart?.execution.envelope?.result?.agent?.model ?? launch.model,
-      reasoning_effort:
-        agentStart?.execution.envelope?.result?.agent?.effort ?? launch.effort,
+      model: observedModel ?? null,
+      reasoning_effort: observedEffort ?? null,
     },
     environment: {
       os: platform(),
@@ -610,6 +647,10 @@ async function runUnknownStagedInputScenario({
       isolated_runtime_root: runtimeDirectory,
       cwd: await realpath(workspace),
       managed_session_identity: managedNativeSession,
+      staged_input_stimulus: {
+        kind: "runner_authored_unknown_native_text",
+        sha256: createHash("sha256").update(unknownText).digest("hex"),
+      },
     },
     limits: {
       declared: scenario.execution.limits,
@@ -627,6 +668,7 @@ async function runUnknownStagedInputScenario({
     assertions: [
       { kind: "positive", id: "exact_unknown_snapshot_inspected", disposition: exactUnknownStaged ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
+      { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
       { kind: "positive", id: "clear_absent_for_stability_interval", disposition: stableClear ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_clear", disposition: sameAgentReuse ? "pass" : "fail" },
       { kind: "invariant", id: "non_submission_of_unknown_text", disposition: unknownTextSubmitted ? "fail" : "pass" },
@@ -668,25 +710,24 @@ async function runUnknownStagedInputScenario({
       owned_resources: ownedResources,
       resource_dispositions: ownedResources.map((resource) => ({
         ...resource,
-        disposition:
-          resource.kind === "turn"
-            ? "retained"
-            : ["group", "task", "agent"].includes(resource.kind)
-              ? cleanupComplete
-                ? "closed"
-                : "cleanup-blocked"
-              : cleanupComplete
-                ? "absent"
-                : "retained",
+        disposition: resourceDisposition(resource.kind, cleanupComplete),
       })),
-      prohibited_mutations_observed: scenario.prohibited_mutations.map(
-        (description) => ({
-          description,
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        {
+          fullyObserved: true,
           unchanged:
             !unknownTextSubmitted &&
-            callerWorkspaceUnchanged &&
-            unrelatedResourcesUnchanged,
-        }),
+            exactUnknownStaged &&
+            sameAgentReuse &&
+            callerWorkspaceUnchanged,
+          basis: [
+            "public turn history",
+            "exact staged-input snapshot and token",
+            "managed agent identity",
+            "caller workspace fingerprint",
+          ],
+        },
       ),
       caller_owned_workspace: {
         path: resolve(cwd),
@@ -839,19 +880,16 @@ async function recordScenarioFailure({
       owned_resources: ownedResources,
       resource_dispositions: ownedResources.map((resource) => ({
         ...resource,
-        disposition: cleanupComplete
-          ? resource.kind === "group"
-            ? "closed"
-            : "absent"
-          : "cleanup-blocked",
+        disposition: resourceDisposition(resource.kind, cleanupComplete),
       })),
-      prohibited_mutations_observed: scenario.prohibited_mutations.map(
-        (description) => ({ description, unchanged: "not_observed" }),
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        { basis: ["failure-path cleanup envelopes only"] },
       ),
       caller_owned_workspace: {
         path: resolve(cwd),
         before: "not_observed_before_internal_failure",
-        after: await workspaceFingerprint(cwd),
+        after: await safeWorkspaceFingerprint(cwd),
       },
       unresolved_obligations: cleanupComplete
         ? []
@@ -954,7 +992,7 @@ async function runCodexLifecycleScenario({
         "read-only",
       ],
       "agent start",
-      { timeoutMs: 30_000 },
+      { timeoutMs: 15_000 },
     );
   }
   const agentId = agentStart?.execution.envelope?.result?.agent?.id;
@@ -990,18 +1028,18 @@ async function runCodexLifecycleScenario({
           "Reply exactly: QUALIFY-CODEX-STEERING-OK",
         ],
         "turn send",
-        { timeoutMs: 30_000 },
+        { timeoutMs: 15_000 },
       );
       steeringSettled = await invoke(
-        ["turn", "wait", steeringTurnId, "--timeout", "2m"],
+        ["turn", "wait", steeringTurnId, "--timeout", "60s"],
         "turn wait",
-        { timeoutMs: 125_000 },
+        { timeoutMs: 65_000 },
       );
     }
     timeoutTurn = await invoke(
       ["turn", "start", agentId, "Reply exactly: QUALIFY-CODEX-TIMEOUT-OK"],
       "turn start",
-      { timeoutMs: 30_000 },
+      { timeoutMs: 15_000 },
     );
     const timeoutTurnId = timeoutTurn.execution.envelope?.result?.turn?.id;
     if (typeof timeoutTurnId === "string") {
@@ -1011,15 +1049,15 @@ async function runCodexLifecycleScenario({
         { timeoutMs: 5_000 },
       );
       timeoutSettled = await invoke(
-        ["turn", "wait", timeoutTurnId, "--timeout", "2m"],
+        ["turn", "wait", timeoutTurnId, "--timeout", "60s"],
         "turn wait",
-        { timeoutMs: 125_000 },
+        { timeoutMs: 65_000 },
       );
     }
     cancellationTurn = await invoke(
       ["turn", "start", agentId, "Keep working until interrupted."],
       "turn start",
-      { timeoutMs: 30_000 },
+      { timeoutMs: 15_000 },
     );
     const cancellationTurnId =
       cancellationTurn.execution.envelope?.result?.turn?.id;
@@ -1027,18 +1065,18 @@ async function runCodexLifecycleScenario({
       cancellation = await invoke(
         ["turn", "cancel", cancellationTurnId],
         "turn cancel",
-        { timeoutMs: 30_000 },
+        { timeoutMs: 15_000 },
       );
       reuse = await invoke(
         [
           "ask",
           agentId,
           "--timeout",
-          "2m",
+          "60s",
           "Reply exactly: QUALIFY-CODEX-REUSE-OK",
         ],
         "ask",
-        { timeoutMs: 125_000 },
+        { timeoutMs: 65_000 },
       );
     }
   }
@@ -1092,14 +1130,17 @@ async function runCodexLifecycleScenario({
   const cleanupComplete = cleanup?.execution.envelope?.result?.status === "closed";
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
-  const unrelatedResourcesUnchanged =
-    JSON.stringify(
-      unrelatedGroups(beforeGroups.execution.envelope?.result?.groups, groupKey),
-    ) ===
-    JSON.stringify(
-      unrelatedGroups(afterGroups.execution.envelope?.result?.groups, groupKey),
-    );
+  const unrelatedResources = compareUnrelatedGroups(
+    beforeGroups.execution.envelope?.result?.groups,
+    afterGroups.execution.envelope?.result?.groups,
+    groupKey,
+  );
+  const unrelatedResourcesUnchanged = unrelatedResources.unchanged;
   const lifecyclePassed = cancelled && reused && steered && timedOutAndSettled;
+  const observedModel = agentStart?.execution.envelope?.result?.agent?.model;
+  const observedEffort = agentStart?.execution.envelope?.result?.agent?.effort;
+  const exactLaunchConfiguration =
+    observedModel === launch.model && observedEffort === launch.effort;
   const runnerFailure =
     executionFailure(records) ??
     deadlineFailure(deadline) ??
@@ -1107,6 +1148,7 @@ async function runCodexLifecycleScenario({
   const passed =
     !runnerFailure &&
     lifecyclePassed &&
+    exactLaunchConfiguration &&
     exactNativeSession &&
     cleanupComplete &&
     callerWorkspaceUnchanged &&
@@ -1135,9 +1177,8 @@ async function runCodexLifecycleScenario({
     execution_kind: "real_herdr_harness",
     versions: {
       ...versions,
-      model: agentStart?.execution.envelope?.result?.agent?.model ?? launch.model,
-      reasoning_effort:
-        agentStart?.execution.envelope?.result?.agent?.effort ?? launch.effort,
+      model: observedModel ?? null,
+      reasoning_effort: observedEffort ?? null,
     },
     environment: {
       os: platform(),
@@ -1163,6 +1204,7 @@ async function runCodexLifecycleScenario({
     assertions: [
       { kind: "positive", id: "steering_on_exact_native_session", disposition: steered ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
+      { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
       { kind: "uncertain", id: "bounded_timeout_then_settlement", disposition: timedOutAndSettled ? "pass" : "fail" },
       { kind: "positive", id: "exact_cancellation_settlement", disposition: cancelled ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_recovery", disposition: reused ? "pass" : "fail" },
@@ -1185,20 +1227,17 @@ async function runCodexLifecycleScenario({
       owned_resources: ownedResources,
       resource_dispositions: ownedResources.map((resource) => ({
         ...resource,
-        disposition:
-          resource.kind === "turn"
-            ? "retained"
-            : ["group", "task", "agent"].includes(resource.kind)
-              ? cleanupComplete
-                ? "closed"
-                : "cleanup-blocked"
-              : "absent",
+        disposition: resourceDisposition(resource.kind, cleanupComplete),
       })),
-      prohibited_mutations_observed: scenario.prohibited_mutations.map(
-        (description) => ({
-          description,
-          unchanged: callerWorkspaceUnchanged && unrelatedResourcesUnchanged,
-        }),
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        {
+          basis: [
+            "public lifecycle envelopes",
+            "managed native-session identity",
+            "caller workspace fingerprint",
+          ],
+        },
       ),
       caller_owned_workspace: {
         path: resolve(cwd),
@@ -1245,6 +1284,7 @@ async function runCodexPromptScenario({
   const secondPromptPath = join(scratch, "prompt-file-2.txt");
   await mkdir(workspace);
   await writeFile(secondPromptPath, "Reply exactly: QUALIFY-CODEX-FILE-2-OK\n");
+  const promptSourceBefore = await fileFingerprint(secondPromptPath);
   const beforeWorkspace = await workspaceFingerprint(cwd);
   const suffix = randomUUID();
   const groupKey = `qualification-${scenario.id}-${suffix}`;
@@ -1288,11 +1328,11 @@ async function runCodexPromptScenario({
       "--capability",
       "read-only",
       "--timeout",
-      "2m",
+      "90s",
       "Reply exactly: QUALIFY-CODEX-POSITIONAL-1-OK",
     ],
     "delegate",
-    { timeoutMs: 125_000 },
+    { timeoutMs: 95_000 },
   );
   const agentId = delegate.execution.envelope?.result?.agent?.id;
   const initialAgent = typeof agentId === "string"
@@ -1302,14 +1342,14 @@ async function runCodexPromptScenario({
   let third;
   if (typeof agentId === "string") {
     second = await invoke(
-      ["ask", agentId, "--prompt-file", secondPromptPath, "--timeout", "2m"],
+      ["ask", agentId, "--prompt-file", secondPromptPath, "--timeout", "90s"],
       "ask",
-      { timeoutMs: 125_000 },
+      { timeoutMs: 95_000 },
     );
     third = await invoke(
-      ["ask", agentId, "--timeout", "2m"],
+      ["ask", agentId, "--timeout", "90s"],
       "ask",
-      { timeoutMs: 125_000, input: "Reply exactly: QUALIFY-CODEX-STDIN-3-OK\n" },
+      { timeoutMs: 95_000, input: "Reply exactly: QUALIFY-CODEX-STDIN-3-OK\n" },
     );
   }
   const finalAgent = typeof agentId === "string"
@@ -1335,6 +1375,9 @@ async function runCodexPromptScenario({
     cleanup: true,
   });
   const afterWorkspace = await workspaceFingerprint(cwd);
+  const promptSourceAfter = await fileFingerprint(secondPromptPath);
+  const promptSourceUnchanged =
+    JSON.stringify(promptSourceBefore) === JSON.stringify(promptSourceAfter);
   const turnResults = [delegate, second, third]
     .filter(Boolean)
     .map(({ execution }) => execution.envelope?.result);
@@ -1354,14 +1397,17 @@ async function runCodexPromptScenario({
             "QUALIFY-CODEX-STDIN-3-OK",
           ][index],
     );
+  const observedModel = turnResults[0]?.agent?.model;
+  const observedEffort = turnResults[0]?.agent?.effort;
+  const exactLaunchConfiguration =
+    observedModel === launch.model && observedEffort === launch.effort;
   const cleanupComplete = cleanup?.execution.envelope?.result?.status === "closed";
-  const unrelatedResourcesUnchanged =
-    JSON.stringify(
-      unrelatedGroups(beforeGroups.execution.envelope?.result?.groups, groupKey),
-    ) ===
-    JSON.stringify(
-      unrelatedGroups(afterGroups.execution.envelope?.result?.groups, groupKey),
-    );
+  const unrelatedResources = compareUnrelatedGroups(
+    beforeGroups.execution.envelope?.result?.groups,
+    afterGroups.execution.envelope?.result?.groups,
+    groupKey,
+  );
+  const unrelatedResourcesUnchanged = unrelatedResources.unchanged;
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
   const runnerFailure =
@@ -1373,6 +1419,8 @@ async function runCodexPromptScenario({
     completed &&
     sameAgent &&
     exactNativeSession &&
+    exactLaunchConfiguration &&
+    promptSourceUnchanged &&
     cleanupComplete &&
     unrelatedResourcesUnchanged &&
     callerWorkspaceUnchanged;
@@ -1398,8 +1446,8 @@ async function runCodexPromptScenario({
     execution_kind: "real_herdr_harness",
     versions: {
       ...versions,
-      model: turnResults[0]?.agent?.model ?? launch.model,
-      reasoning_effort: turnResults[0]?.agent?.effort ?? launch.effort,
+      model: observedModel ?? null,
+      reasoning_effort: observedEffort ?? null,
     },
     environment: {
       os: platform(),
@@ -1426,6 +1474,8 @@ async function runCodexPromptScenario({
       { kind: "positive", id: "positional_file_and_stdin_completed", disposition: completed ? "pass" : "fail" },
       { kind: "invariant", id: "same_managed_agent_across_turns", disposition: sameAgent ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
+      { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
+      { kind: "invariant", id: "prompt_source_preservation", disposition: promptSourceUnchanged ? "pass" : "fail" },
       { kind: "invariant", id: "caller_owned_workspace_preservation", disposition: callerWorkspaceUnchanged ? "pass" : "fail" },
       { kind: "invariant", id: "unrelated_herdr_resource_preservation", disposition: unrelatedResourcesUnchanged ? "pass" : "fail" },
       { kind: "cleanup", id: "owned_group_closed", disposition: cleanupComplete ? "pass" : "fail" },
@@ -1445,21 +1495,19 @@ async function runCodexPromptScenario({
       owned_resources: ownedResources,
       resource_dispositions: ownedResources.map((resource) => ({
         ...resource,
-        disposition:
-          resource.kind === "turn"
-            ? "retained"
-            : ["group", "task", "agent"].includes(resource.kind)
-              ? cleanupComplete
-                ? "closed"
-                : "cleanup-blocked"
-              : "absent",
+        disposition: resourceDisposition(resource.kind, cleanupComplete),
       })),
-      prohibited_mutations_observed: scenario.prohibited_mutations.map(
-        (description) => ({
-          description,
-          unchanged: callerWorkspaceUnchanged && unrelatedResourcesUnchanged,
-        }),
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        {
+          basis: [
+            "prompt source SHA-256",
+            "public managed agent identity",
+            "caller workspace fingerprint",
+          ],
+        },
       ),
+      prompt_sources: [{ before: promptSourceBefore, after: promptSourceAfter }],
       caller_owned_workspace: {
         path: resolve(cwd),
         before: beforeWorkspace,
@@ -1513,6 +1561,7 @@ async function runPromptFileScenario({
   const expectedResponse = specification.expectedResponse;
   const prompt = specification.prompt(expectedResponse);
   await writeFile(promptPath, prompt);
+  const promptSourceBefore = await fileFingerprint(promptPath);
   const limits = scenario.execution.limits ?? {
     max_turns: 1,
     max_retries: 0,
@@ -1538,6 +1587,10 @@ async function runPromptFileScenario({
     deadline,
   });
   const beforeGroups = await invoke(["group", "list"], "group list");
+  const behaviorTimeoutMs = Math.max(
+    1_000,
+    parseDuration(limits.max_elapsed) - 30_000,
+  );
   const delegate = await invoke(
     [
       "delegate",
@@ -1560,12 +1613,12 @@ async function runPromptFileScenario({
       "--capability",
       "read-only",
       "--timeout",
-      limits.max_elapsed,
+      `${behaviorTimeoutMs}ms`,
       "--prompt-file",
       promptPath,
     ],
     "delegate",
-    { timeoutMs: parseDuration(limits.max_elapsed) + 5_000 },
+    { timeoutMs: behaviorTimeoutMs + 5_000 },
   );
 
   let group = delegate.execution.envelope?.result?.group;
@@ -1667,6 +1720,9 @@ async function runPromptFileScenario({
     cleanup: true,
   });
   const afterWorkspace = await workspaceFingerprint(cwd);
+  const promptSourceAfter = await fileFingerprint(promptPath);
+  const promptSourceUnchanged =
+    JSON.stringify(promptSourceBefore) === JSON.stringify(promptSourceAfter);
   const result = delegate.execution.envelope?.result;
   const projectedTurn = ownedProjection?.execution.envelope?.result?.turn;
   const ownedRecovered =
@@ -1680,13 +1736,12 @@ async function runPromptFileScenario({
     (projectedTurn?.late_result?.text?.trim() === expectedResponse ||
       projectedTurn?.result?.text?.trim() === expectedResponse);
   const cleanupComplete = cleanup?.execution.envelope?.result?.status === "closed";
-  const unrelatedResourcesUnchanged =
-    JSON.stringify(
-      unrelatedGroups(beforeGroups.execution.envelope?.result?.groups, groupKey),
-    ) ===
-    JSON.stringify(
-      unrelatedGroups(afterGroups.execution.envelope?.result?.groups, groupKey),
-    );
+  const unrelatedResources = compareUnrelatedGroups(
+    beforeGroups.execution.envelope?.result?.groups,
+    afterGroups.execution.envelope?.result?.groups,
+    groupKey,
+  );
+  const unrelatedResourcesUnchanged = unrelatedResources.unchanged;
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
   const directCompleted =
@@ -1698,6 +1753,14 @@ async function runPromptFileScenario({
     result?.agent?.harness === harness &&
     result?.agent?.model === model &&
     result?.agent?.effort === launch.effort;
+  const observedAgent =
+    result?.agent ??
+    finalAgent?.execution.envelope?.result?.agent ??
+    recoveredAgent;
+  const observedModel = observedAgent?.model;
+  const observedEffort = observedAgent?.effort;
+  const exactLaunchConfiguration =
+    observedModel === model && observedEffort === launch.effort;
   const runnerFailure =
     executionFailure(invocationRecords) ??
     deadlineFailure(deadline) ??
@@ -1706,6 +1769,8 @@ async function runPromptFileScenario({
     beforeGroups.execution.exitCode === 0 &&
     !runnerFailure &&
     exactNativeSession &&
+    exactLaunchConfiguration &&
+    promptSourceUnchanged &&
     (isOwnedRecovery ? ownedRecovered : directCompleted) &&
     cleanupComplete &&
     unrelatedResourcesUnchanged &&
@@ -1747,8 +1812,8 @@ async function runPromptFileScenario({
     execution_kind: "real_herdr_harness",
     versions: {
       ...versions,
-      model: result?.agent?.model ?? model,
-      reasoning_effort: result?.agent?.effort ?? launch.effort,
+      model: observedModel ?? null,
+      reasoning_effort: observedEffort ?? null,
     },
     environment: {
       os: platform(),
@@ -1790,6 +1855,8 @@ async function runPromptFileScenario({
         disposition: result?.agent?.id || recoveredAgent?.id ? "pass" : "fail",
       },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
+      { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
+      { kind: "invariant", id: "prompt_source_preservation", disposition: promptSourceUnchanged ? "pass" : "fail" },
       { kind: "invariant", id: "caller_owned_workspace_preservation", disposition: callerWorkspaceUnchanged ? "pass" : "fail" },
       { kind: "invariant", id: "unrelated_herdr_resource_preservation", disposition: unrelatedResourcesUnchanged ? "pass" : "fail" },
       { kind: "cleanup", id: "owned_group_closed", disposition: cleanupComplete ? "pass" : "fail" },
@@ -1815,27 +1882,20 @@ async function runPromptFileScenario({
       owned_resources: ownedResources,
       resource_dispositions: ownedResources.map((resource) => ({
         ...resource,
-        disposition:
-          resource.kind === "group"
-            ? cleanupComplete
-              ? "closed"
-              : "cleanup-blocked"
-            : ["task", "agent"].includes(resource.kind)
-              ? cleanupComplete
-                ? "closed"
-                : "cleanup-blocked"
-              : resource.kind === "turn"
-                ? "retained"
-                : cleanupComplete
-                  ? "absent"
-                  : "retained",
+        disposition: resourceDisposition(resource.kind, cleanupComplete),
       })),
-      prohibited_mutations_observed: scenario.prohibited_mutations.map(
-        (description) => ({
-          description,
-          unchanged: callerWorkspaceUnchanged && unrelatedResourcesUnchanged,
-        }),
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        {
+          basis: [
+            "prompt source SHA-256",
+            "public turn and staged-input envelopes",
+            "managed agent identity",
+            "caller workspace fingerprint",
+          ],
+        },
       ),
+      prompt_sources: [{ before: promptSourceBefore, after: promptSourceAfter }],
       caller_owned_workspace: {
         path: resolve(cwd),
         before: beforeWorkspace,
@@ -2289,7 +2349,10 @@ function executeInteractiveAttach(command, args, { cwd, env, timeoutMs, text }) 
     let timedOut = false;
     let settled = false;
     const stageTimer = setTimeout(() => child.stdin.write(text), 1_000);
-    const detachTimer = setTimeout(() => child.stdin.write("\u0002q"), 2_000);
+    const detachTimer = setTimeout(
+      () => child.stdin.write(HERDR_DETACH_SEQUENCE),
+      2_000,
+    );
     const deadline = setTimeout(() => {
       timedOut = true;
       terminateChild(child);
@@ -2472,6 +2535,93 @@ function unrelatedGroups(groups, ownedKey) {
   return groups.filter((group) => group.key !== ownedKey);
 }
 
+export function compareUnrelatedGroups(beforeGroups, afterGroups, ownedKey) {
+  if (!Array.isArray(beforeGroups) || !Array.isArray(afterGroups)) {
+    return { proven: false, unchanged: false };
+  }
+  return {
+    proven: true,
+    unchanged:
+      JSON.stringify(unrelatedGroups(beforeGroups, ownedKey)) ===
+      JSON.stringify(unrelatedGroups(afterGroups, ownedKey)),
+  };
+}
+
+export function nativeSessionValues(observations) {
+  return observations
+    .map(
+      (observation) =>
+        observation?.execution?.envelope?.result?.agent?.native_session,
+    )
+    .filter((value) => typeof value === "string" && value.length > 0);
+}
+
+export function proveUnknownInputWasNotSubmitted({
+  beforeTurns,
+  afterTurns,
+  reuseTurnId,
+  unknownPayloadSha256,
+}) {
+  if (!Array.isArray(beforeTurns) || !Array.isArray(afterTurns)) return false;
+  if (
+    typeof unknownPayloadSha256 === "string" &&
+    afterTurns.some((turn) =>
+      turn?.inputs?.some(
+        (input) => input?.payload_sha256 === unknownPayloadSha256,
+      ))
+  ) {
+    return false;
+  }
+  const beforeIds = new Set(beforeTurns.map(({ id }) => id));
+  const created = afterTurns.filter(({ id }) => !beforeIds.has(id));
+  if (!reuseTurnId) return created.length === 0;
+  return (
+    created.length === 1 &&
+    created[0]?.id === reuseTurnId &&
+    created[0]?.input_count === 1
+  );
+}
+
+export function resourceDisposition(kind, cleanupComplete) {
+  if (kind === "turn") return "retained";
+  if (["group", "task", "agent"].includes(kind)) {
+    return cleanupComplete ? "closed" : "cleanup-blocked";
+  }
+  return cleanupComplete ? "absent" : "retained";
+}
+
+export function prohibitedMutationObservations(
+  descriptions,
+  { fullyObserved = false, unchanged = false, basis = [] } = {},
+) {
+  return descriptions.map((description) => ({
+    description,
+    unchanged: fullyObserved ? Boolean(unchanged) : "not_observed",
+    basis,
+  }));
+}
+
+async function fileFingerprint(path) {
+  const source = await readFile(path);
+  return {
+    path,
+    size: source.length,
+    sha256: createHash("sha256").update(source).digest("hex"),
+  };
+}
+
+async function safeWorkspaceFingerprint(cwd) {
+  try {
+    return await workspaceFingerprint(cwd);
+  } catch (error) {
+    return {
+      path: resolve(cwd),
+      status: "not_observed",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function scenarioPrerequisitesReady(scenario, envelope) {
   if (envelope?.schema !== "drovr.command/v1" || envelope.command !== "doctor") {
     return false;
@@ -2535,6 +2685,15 @@ function executionFailure(records) {
     const outcome = record.envelope?.error?.outcome;
     if (outcomes.has(outcome)) {
       return { code: outcome, message: outcomes.get(outcome) };
+    }
+    if (record.envelope?.command === "doctor") continue;
+    if (record.envelope?.ok !== true) {
+      return {
+        code: outcome ?? "drovr_command_failed",
+        message:
+          record.envelope?.error?.message ??
+          `Drovr ${record.envelope?.command ?? "command"} did not return success.`,
+      };
     }
   }
   return null;

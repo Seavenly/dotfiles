@@ -8,16 +8,6 @@ import {
   runQualification,
 } from "../src/qualification-runner.mjs";
 
-const FULL_LIVE_SCENARIOS = [
-  "codex_live_prompt_sources_and_reuse",
-  "codex_live_lifecycle_recovery",
-  "claude_multiline_paste_conversion",
-  "claude_long_single_line_paste_conversion",
-  "claude_owned_staged_input_submit",
-  "claude_unknown_staged_input_clear_and_reuse",
-  "claude_staged_input_transient_clear_reappears",
-];
-
 function parseArguments(argv) {
   const scenarioIds = [];
   let evidenceDirectory;
@@ -46,7 +36,8 @@ function parseArguments(argv) {
     );
   }
   return {
-    scenarioIds: fullLive ? FULL_LIVE_SCENARIOS : scenarioIds,
+    scenarioIds,
+    fullLive,
     evidenceDirectory,
   };
 }
@@ -65,7 +56,7 @@ try {
   process.stdout.write(`${JSON.stringify(report)}\n`);
   process.exitCode = {
     pass: 0,
-    skipped: 0,
+    skipped: 3,
     incomplete: 3,
     blocked: 3,
     fail: 4,

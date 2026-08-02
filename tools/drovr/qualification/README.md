@@ -46,11 +46,18 @@ npm --silent --prefix tools/drovr run qualification:run -- \
   --evidence-dir "$qualification_evidence_dir"
 ```
 
-Exit status `0` means every selected scenario passed or every selected
-replay-only scenario was explicitly skipped. Status `3` means prerequisites
-blocked execution or a mixed run was incomplete; status `4` means a scenario
-assertion failed. Each non-pass retains evidence. Missing or incompatible
-prerequisites never become a pass.
+`--full-live` is derived from catalog scenarios marked `unattended = true`.
+`claude_owned_staged_input_submit` is intentionally excluded because its exact
+uncertain-turn staged-input precondition cannot be manufactured on a healthy
+system through public commands. Run it by name as a bounded incident-capture
+scenario: it attempts delivery and exercises recovery only when that exact
+owned receipt emerges; healthy direct completion is not a recovery pass.
+
+Exit status `0` means every selected scenario passed. Status `3` means
+prerequisites blocked execution, a replay executor was explicitly deferred, or
+a mixed run was incomplete; status `4` means a scenario assertion failed. Each
+non-pass retains evidence. Missing or incompatible prerequisites never become
+a pass.
 
 Catalog `max_elapsed` bounds scenario work through the final behavioral
 observation. Cleanup then receives a separate 65-second wall-time budget,
@@ -61,6 +68,25 @@ The embedded `drovr.qualification-cleanup-receipt/v1` binds every created
 resource to its disposition, records prohibited-mutation checks, proves the
 caller-owned workspace was preserved, and retains unresolved cleanup duties
 instead of manufacturing a clean pass.
+
+The live runner stays on public Drovr commands. For Claude prompt-file
+scenarios it proves end-to-end completion, one logical input, prompt-source
+preservation, exact identities, and an exact sentinel result. Private
+paste-conversion and submit mechanics are covered by the adapter tests and are
+not overstated as directly observed live evidence. A prohibited mutation is
+reported as `not_observed` whenever every clause cannot be checked through the
+public interface.
+
+Catalog `public_commands` list the behavior under qualification. Common
+isolation, discovery, observation, and cleanup commands are runner mechanics
+and are recorded in the evidence invocation list rather than repeated in every
+scenario entry.
+
+Unknown staged-input scenarios explicitly label their native text as a
+runner-authored stimulus. The clear-and-reuse and transient-reappearance
+entries remain separate because they guard distinct incident outcomes: stable
+absence is a pass for the former, while any reappearance is retained as a
+typed contradiction for the latter.
 
 The runner may read native transcripts and Herdr observations as evidence, but
 it must exercise behavior only through public Drovr commands. It must never

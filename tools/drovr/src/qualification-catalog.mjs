@@ -86,6 +86,10 @@ export function validateQualificationCatalog(catalog) {
     executionKinds.add(scenario.execution.kind);
     requireString(scenario.execution.rationale, `${scenario.id}.execution.rationale`);
     if (scenario.execution.kind === "real_herdr_harness") {
+      requireCondition(
+        typeof scenario.execution.unattended === "boolean",
+        `${scenario.id}.execution.unattended must be boolean`,
+      );
       requireNonEmptyStrings(scenario.execution.harnesses, `${scenario.id}.execution.harnesses`);
       requireCondition(Number.isInteger(scenario.execution.limits?.max_turns), `${scenario.id} needs max_turns`);
       requireCondition(Number.isInteger(scenario.execution.limits?.max_retries), `${scenario.id} needs max_retries`);
