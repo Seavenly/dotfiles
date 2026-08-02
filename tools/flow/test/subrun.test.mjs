@@ -398,7 +398,7 @@ test("subrun reconciliation distinguishes exact absence from authority failure",
   assert.equal(registration.observe(intent).presence, "present");
 });
 
-for (const status of ["quarantined", "late_quarantined"]) {
+for (const status of ["quarantined", "late_quarantined", "not_created"]) {
   test(`subrun settlement accepts a terminal child with ${status} effects`, async () => {
     const child = {
       run_id: "run:child:settled",
@@ -515,6 +515,71 @@ test("in-memory child authority returns run-scoped typed rejections", () => {
   assert.equal(admissionRejection.code, "subrun_admission_unproven");
   assert.equal(admissionRejection.authority_watermark_domain, "run");
   assert.deepEqual(admissionRejection.legal_actions, parent.legal_actions);
+});
+
+test("inspect-only authority cannot record subrun admission", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-subrun-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-owner"),
+  });
+  const runtime = subrunRuntime(authority);
+  const childProposal = registeredOperationProposal({ checkpointBound: false });
+  childProposal.requested_authority.commands.push("cancel");
+  const childPrepared = runtime.prepare(childProposal);
+  const parentPrepared = runtime.prepare(parentProposal(
+    confirmedLaunchRequest(childPrepared),
+  ));
+  const parentLaunch = runtime.launch(confirmedLaunchRequest(parentPrepared));
+  runtime.command(runtime.query({ run_id: parentLaunch.run_id })
+    .legal_actions.find(({ type }) => type === "subrun_execute"));
+  await until(() => runtime.query({ run_id: parentLaunch.run_id })
+    .subruns[0].status === "active");
+  const link = runtime.query({ run_id: parentLaunch.run_id }).subruns[0];
+  authority.close();
+
+  const inspector = createDurableRunAuthority({
+    access: "inspect",
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-inspector"),
+  });
+  t.after(() => inspector.close());
+  const rejection = inspector.recordSubrunAdmission({
+    parent_run_id: link.parent_run_id,
+    card_id: link.card_id,
+    card_identity: link.card_identity,
+    revision_ordinal: link.revision_ordinal,
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "mutation_authority_unavailable");
+  assert.equal(rejection.authority_watermark_domain, "run");
+});
+
+test("prepare rejects a tracker-bound child launch", () => {
+  const runtime = subrunRuntime();
+  const childProposal = registeredOperationProposal({ checkpointBound: false });
+  childProposal.explicit_facts.tracker_binding = {
+    schema: "flow.tracker-binding/v1",
+    flow: "feature",
+    tracker: {
+      system: "github",
+      owner: "Seavenly",
+      repository: "dotfiles",
+      issue_number: 13,
+    },
+  };
+  const childPrepared = runtime.prepare(childProposal);
+
+  assert.throws(
+    () => runtime.prepare(parentProposal(
+      confirmedLaunchRequest(childPrepared),
+    )),
+    /subrun card is incomplete/,
+  );
 });
 
 test("prepare rejects a subrun whose exact child launch binding was changed", () => {

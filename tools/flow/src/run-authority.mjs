@@ -745,6 +745,31 @@ export function createDurableRunAuthority({
     },
 
     recordSubrunAdmission(lineage) {
+      assertOpen();
+      if (authoritySchemaCompatibility?.status === "incompatible") {
+        return schemaCompatibilityRejection(
+          "subrun_admission",
+          authoritySchemaCompatibility,
+          lineage?.parent_run_id,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "transition_required") {
+        return schemaTransitionRequiredRejection(
+          "subrun_admission",
+          databasePath,
+          null,
+          lineage?.parent_run_id,
+        );
+      }
+      if (!lockDatabase) {
+        return durableMutationRejection(
+          "subrun_admission",
+          lineage?.parent_run_id,
+          databasePath,
+          null,
+          fenceRun,
+        );
+      }
       const childRunId = deriveChildRunId(lineage);
       const parent = this.query(lineage.parent_run_id);
       const child = this.query(childRunId);
@@ -760,6 +785,11 @@ export function createDurableRunAuthority({
       }
       const database = openAuthorityDatabase(databasePath);
       try {
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
         database.exec("BEGIN IMMEDIATE");
         assertAuthorityEpoch(database, {
           authorityEpoch,
@@ -797,7 +827,22 @@ export function createDurableRunAuthority({
         }
       } catch (error) {
         if (database.isTransaction) database.exec("ROLLBACK");
-        throw error;
+        if (error instanceof AuthorityFenceError) {
+          return durableMutationRejection(
+            "subrun_admission",
+            lineage.parent_run_id,
+            databasePath,
+            null,
+            fenceRun,
+          );
+        }
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection(
+          "subrun_admission",
+          integrity.reason,
+          lineage.parent_run_id,
+        );
       } finally {
         database.close();
       }

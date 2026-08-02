@@ -13,6 +13,10 @@ import {
   registeredOperation,
 } from "./operation-effects.mjs";
 import {
+  TRACKER_PROGRESS_CONTRACT,
+  validateTrackerProgressBinding,
+} from "./github-tracker-progress.mjs";
+import {
   SUBRUN_CONTRACT,
   SUBRUN_RECEIPT_VALIDATOR,
 } from "./subrun-effects.mjs";
@@ -298,6 +302,7 @@ function validateSubrunCard(card, proposal, registeredOperations) {
       !sameCanonicalValue(launch.prepared, expectedPrepared) ||
       !sameCanonicalValue(launch.confirmation, expectedConfirmation) ||
       !sameCanonicalValue(launch.closed_facts, expectedClosedFacts) ||
+      expectedPrepared?.explicit_facts.tracker_binding !== undefined ||
       proposal.requested_authority.commands.includes("cancel") &&
         !expectedPrepared?.requested_authority.commands.includes("cancel") ||
       !proposal.requested_authority.mutations.includes(SUBRUN_CONTRACT) ||
@@ -773,9 +778,20 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
-  if (typeof registration?.validateCard === "function") {
+  if (card.executor.contract === TRACKER_PROGRESS_CONTRACT) {
     try {
-      registration.validateCard(card, proposal);
+      validateTrackerProgressBinding(proposal);
+    } catch (error) {
+      invalidPlan(
+        "invalid_operation_input",
+        error?.message ?? `operation input is invalid: ${card.id}`,
+      );
+    }
+  }
+  const validateCard = registration?.validateCard;
+  if (typeof validateCard === "function") {
+    try {
+      validateCard(card, proposal);
     } catch (error) {
       invalidPlan(
         "invalid_operation_input",

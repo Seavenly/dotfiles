@@ -79,13 +79,18 @@ export function createGitHubTrackerProgressOperation({ driver } = {}) {
   });
 }
 
-export function validateTrackerProgressCard(card, proposal) {
+export function validateTrackerProgressBinding(proposal) {
   const binding = proposal?.explicit_facts?.tracker_binding;
   if (!validTrackerBinding(binding)) {
     throw new TypeError(
       "tracker progress requires a confirmed feature or epic tracker binding",
     );
   }
+}
+
+export function validateTrackerProgressCard(card, proposal) {
+  validateTrackerProgressBinding(proposal);
+  const binding = proposal.explicit_facts.tracker_binding;
   if (!validProgress(card?.inputs)) {
     throw new TypeError("tracker progress update is invalid or unbounded");
   }

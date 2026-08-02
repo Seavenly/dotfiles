@@ -124,6 +124,7 @@ function settledTerminal(projection) {
       "quarantined",
       "late_quarantined",
       "abandoned",
+      "not_created",
     ].includes(status));
 }
 
