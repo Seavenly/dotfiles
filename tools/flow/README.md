@@ -22,7 +22,7 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v7 extends the exact v1 contracts by requiring
+  Catalog v7 introduced the exact v1 requirements for
   `explicit_facts.block_observations` on dynamic proposals and
   `revision_templates` on prepared runs; callers must prepare a fresh bundle
   rather than launch a pre-v7 envelope.
@@ -79,7 +79,8 @@ Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `bundle_digest` are null when they do not apply. `authority_watermark_domain`
 states how to interpret `authority_watermark`: `run` covers one run's lifecycle
 stream generation plus the current authority epoch and boot, while `host`
-covers both host run-index and host-admission streams. The host watermark
+covers host run-index, host-admission, and authority-schema state. The host
+watermark
 changes on authority acquisition, capacity reservation or release, and run
 registration; an unrelated run lifecycle event does not change it.
 `authority_watermark` may be null only when the authority could not be observed.
@@ -93,6 +94,34 @@ authority as append-only SQLite streams in WAL mode with foreign keys and full
 durability. Every write updates a replay-verifiable transactional fold in the
 same transaction. Query and watch rebuild from the streams and compare the
 result with the fold before returning a projection.
+
+Catalog v8 advances the replacement authority store to schema version 2. The
+transition is bound to exact release `flow-runtime-authority-schema/v2` and an
+append-only `flow.authority-schema-transition/v1` receipt. A version-1 store is
+advanced in one SQLite transaction before a new authority epoch is acquired.
+A process ending before commit leaves the version-1 store valid; ending after
+commit leaves the version-2 store replay-valid. Existing run streams are not
+rewritten and replay to the same lifecycle facts.
+
+The host run-index projection includes
+`flow.authority-schema-compatibility/v1`, its exact schema watermark, and only
+the legal schema action. A read-only runtime inspecting version 1 projects
+an exact `recovery` command for `authority_schema_transition`. A mutating
+runtime consumes that watermarked command through `FlowRuntime.command` before
+acquiring an authority epoch. Run projections expose no run-scoped legal action
+while that host transition is pending, and their temporary watermark binds both
+the run authority and the pending authority schema so watchers observe recovery.
+Other commands return
+`authority_schema_transition_required` with the exact host recovery action;
+only a mismatched schema-transition recovery command returns
+`stale_authority_schema_transition`. Transition commit hooks receive the
+published `flow.authority-schema-transition-boundary/v1` payload in both commit
+phases. Unknown store contracts, future versions, altered transition history,
+and release mismatches expose schema-valid `incompatible` compatibility with no
+legal action. `launch` and `command` then return the typed
+`authority_schema_incompatible` rejection without recording an authority epoch
+or mutating a run. An incompatible runtime releases the mutation lock after
+classification so a runtime supporting the store can acquire it.
 
 Exactly one mutating runtime holds a SQLite-backed operating-system advisory
 lock. Acquiring it appends a boot-bound monotonic authority epoch. A competing

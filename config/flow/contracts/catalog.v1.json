@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 7,
+  "catalog_version": 8,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -8,6 +8,18 @@
     "foreign_keys": true,
     "append_only_streams": true,
     "transactional_folds": true,
+    "schema_transition": {
+      "current_version": 2,
+      "transition_contract": "flow.authority-schema-transition/v1",
+      "boundary_contract": "flow.authority-schema-transition-boundary/v1",
+      "compatibility_projection": "flow.authority-schema-compatibility/v1",
+      "action_contract": "flow.command/v1",
+      "release": {
+        "schema": "flow.runtime-release/v1",
+        "id": "flow-runtime-authority-schema/v2",
+        "catalog_version": 8
+      }
+    },
     "mutation_lock": "sqlite_os_advisory_lock",
     "takeover": "operating_system_lock_release_only",
     "authority_epoch": {
@@ -40,8 +52,8 @@
         "legal_actions"
       ],
       "watermark_domains": {
-        "host": "host_run_index_and_admission_streams",
-        "run": "run_lifecycle_stream_and_authority_epoch"
+        "host": "host_run_index_admission_and_authority_schema",
+        "run": "run_lifecycle_stream_authority_epoch_and_authority_schema"
       }
     },
     "operation_contracts": {
@@ -142,6 +154,10 @@
     "flow.validator/card-block-observation/v1",
     "flow.revision-trigger/v1",
     "flow.plan-revision-template/v1",
+    "flow.authority-schema-transition/v1",
+    "flow.authority-schema-transition-boundary/v1",
+    "flow.authority-schema-compatibility/v1",
+    "flow.runtime-release/v1",
     "flow.checkpoint/confirmation/v1",
     "flow.validator/checkpoint-decision/v1",
     "flow.resource-handoff/v1",
@@ -253,7 +269,8 @@
     "review_inbox",
     "transition",
     "delegated_agent_description",
-    "legacy_compatibility_inventory"
+    "legacy_compatibility_inventory",
+    "authority_schema_compatibility"
   ],
   "authority_roots": {
     "legacy_claude": {

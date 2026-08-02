@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 7);
+  assert.equal(catalog.catalog_version, 8);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -44,6 +44,18 @@ test("the public catalog exposes the settled interface and forbids legacy import
     journal_mode: "wal",
     mutation_lock: "sqlite_os_advisory_lock",
     synchronous: "full",
+    schema_transition: {
+      action_contract: "flow.command/v1",
+      boundary_contract: "flow.authority-schema-transition-boundary/v1",
+      compatibility_projection: "flow.authority-schema-compatibility/v1",
+      current_version: 2,
+      release: {
+        schema: "flow.runtime-release/v1",
+        id: "flow-runtime-authority-schema/v2",
+        catalog_version: 8,
+      },
+      transition_contract: "flow.authority-schema-transition/v1",
+    },
     takeover: "operating_system_lock_release_only",
     transactional_folds: true,
   });
@@ -62,8 +74,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "legal_actions",
     ],
     watermark_domains: {
-      host: "host_run_index_and_admission_streams",
-      run: "run_lifecycle_stream_and_authority_epoch",
+      host: "host_run_index_admission_and_authority_schema",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
     },
   });
   for (const contract of [
@@ -82,6 +94,10 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.validator/card-block-observation/v1",
     "flow.revision-trigger/v1",
     "flow.plan-revision-template/v1",
+    "flow.authority-schema-compatibility/v1",
+    "flow.authority-schema-transition/v1",
+    "flow.authority-schema-transition-boundary/v1",
+    "flow.runtime-release/v1",
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
@@ -90,6 +106,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.card-block-observation/v1",
   );
   assert.ok(catalog.mechanism_adapters.includes("card_block_observation"));
+  assert.ok(catalog.projections.includes("authority_schema_compatibility"));
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
@@ -197,8 +214,8 @@ test("the public catalog requires the complete rejection contract", async (t) =>
     contract: "flow.rejection/v1",
     fields: ["schema"],
     watermark_domains: {
-      host: "host_run_index_and_admission_streams",
-      run: "run_lifecycle_stream_and_authority_epoch",
+      host: "host_run_index_admission_and_authority_schema",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
     },
   };
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
