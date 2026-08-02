@@ -110,10 +110,11 @@ export function dispatchDelegateEffect(
   void runAuthority.invokeEffect(intent, {
     settleCancelled,
     async invoke(effectiveIntent) {
+      if (effectiveIntent.effect_kind === "delegate_cancellation") {
+        return executeDelegateCancellation(effectiveIntent, port);
+      }
       return settleCancelled
-        ? effectiveIntent.effect_kind === "delegate_cancellation"
-          ? executeDelegateCancellation(effectiveIntent, port)
-          : executeCancelledDelegate(effectiveIntent, port)
+        ? executeCancelledDelegate(effectiveIntent, port)
         : executeDelegate(effectiveIntent, port, validators);
     },
   }).then(() => {
@@ -174,13 +175,16 @@ async function executeDelegateCancellation(intent, port) {
     }
   }
   const agentId = intent.route_binding.agent_id;
-  const terminalDisposition = intent.retire_managed_agent === true
+  const terminalDisposition = intent.retire_managed_agent === true &&
+      current.turn?.id
     ? await retireDelegateAgent(current, intent, port)
     : {
       schema: "flow.resource-handoff/v1",
       resource: { type: "drovr_agent", id: agentId },
       durable_holder: "drovr.registry",
-      reason: "cancelled_delegate_settlement",
+      reason: intent.retire_managed_agent === true
+        ? "managed_agent_turn_proven_absent"
+        : "cancelled_delegate_settlement",
       attempt_id: intent.delegate_attempt_id,
       ...(turnDisposition ? { turn_disposition: turnDisposition } : {}),
     };
@@ -496,7 +500,7 @@ async function retireDelegateAgent(current, intent, port) {
       schema: "flow.delegated-agent-retire-request/v1",
       agent_id: intent.route_binding.agent_id,
       turn_id: current.turn?.id,
-      attempt_id: intent.attempt_id,
+      attempt_id: intent.delegate_attempt_id ?? intent.attempt_id,
     });
   } catch (error) {
     disposition = {

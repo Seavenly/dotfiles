@@ -172,7 +172,11 @@ disabled, so this API does not authorize normal replacement launches.
   closes the discovered exact turn and hands the agent back to the durable
   registry before quarantined delegate retirement settlement. If cancellation
   occurs between declared managed cards, the recorded cancellation effect
-  retires the agent held by the run.
+  retires the agent held by the run. A checkpoint decline or terminal
+  disposition also retires every managed agent held by the run before the
+  deferred `run_declined` event commits. If exact discovery proves the held
+  turn absent, cleanup is handed conservatively to the Drovr registry instead
+  of issuing an invalid retirement request without a turn identity.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory

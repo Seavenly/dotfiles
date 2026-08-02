@@ -71,5 +71,6 @@ so retry cannot widen capability. Steering inputs carry stable caller
 identities and become part of ordered settlement proof. Ambiguous dispatch
 stays reconciling. Run cancellation records a fenced cancellation effect,
 closes the exact live turn, hands its agent back to the durable registry, and
-then permits quarantined delegate retirement settlement. Cancelling between
-declared managed cards instead retires the agent held by that run.
+then permits quarantined delegate retirement settlement. A run terminating
+between declared managed cards retires its held agent before cancellation or
+decline completes; proven-absent turns hand cleanup to the durable registry.

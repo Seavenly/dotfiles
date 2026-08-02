@@ -66,23 +66,13 @@ export function decideLifecycle(fold, command) {
       .filter(({ effect_id: effectId }) => unresolvedEffectIds.has(effectId))
       .flatMap(({ resource_claims: resourceClaims }) => resourceClaims)
       .map((claim) => digest(claim)));
-    const effectsById = new Map(fold.effects.map((effect) => [
-      effect.effect_id,
-      effect,
-    ]));
     const unresolvedDelegates = fold.effect_intents
       .filter((intent) => intent.effect_kind === "delegate" &&
         unresolvedEffectIds.has(intent.effect_id))
       .map((intent) => delegateCancellationIntent(intent));
-    const managedAgentHandoffs = fold.effect_intents
-      .filter((intent) => intent.effect_kind === "delegate" &&
-        !unresolvedEffectIds.has(intent.effect_id) &&
-        intent.managed_agent_binding?.terminal_card_id !== intent.card_id &&
-        effectsById.get(intent.effect_id)?.receipt?.provider_receipt
-          ?.terminal_disposition?.durable_holder === `flow.run:${fold.run_id}`)
-      .map((intent) => delegateCancellationIntent(intent, {
-        retireManagedAgent: true,
-      }));
+    const managedAgentHandoffs = heldManagedAgentRetirementIntents(fold, {
+      settlementPhase: "cancelled",
+    });
     const delegateCancellations = [
       ...unresolvedDelegates,
       ...managedAgentHandoffs,
@@ -231,7 +221,9 @@ export function decideLifecycle(fold, command) {
         disposition: command.disposition,
         reason: command.reason,
       }, { type: "run_declined" }],
-      effect_intents: [],
+      effect_intents: heldManagedAgentRetirementIntents(fold, {
+        settlementPhase: "declined",
+      }),
       obligations: [],
       projection_hints: ["operator", "graph"],
     };
@@ -255,7 +247,14 @@ export function decideLifecycle(fold, command) {
   }
 
   if (command.decision === "decline") {
-    return decision(command, checkpoint, [{ type: "run_declined" }]);
+    return decision(
+      command,
+      checkpoint,
+      [{ type: "run_declined" }],
+      heldManagedAgentRetirementIntents(fold, {
+        settlementPhase: "declined",
+      }),
+    );
   }
 
   const operation = nextOperation(fold, checkpoint.id);
@@ -278,6 +277,7 @@ export function decideLifecycle(fold, command) {
 
 function delegateCancellationIntent(delegateIntent, {
   retireManagedAgent = false,
+  settlementPhase = "cancelled",
 } = {}) {
   const identity = digest({
     schema: "flow.delegate-cancellation-identity/v1",
@@ -285,6 +285,7 @@ function delegateCancellationIntent(delegateIntent, {
     attempt_id: delegateIntent.attempt_id,
     route_binding: delegateIntent.route_binding,
     terminal_disposition: retireManagedAgent ? "retire" : "registry_handoff",
+    settlement_phase: settlementPhase,
   });
   return {
     schema: "flow.effect-intent/v1",
@@ -295,12 +296,31 @@ function delegateCancellationIntent(delegateIntent, {
     delegate_attempt_id: delegateIntent.attempt_id,
     delegate_effect_id: delegateIntent.effect_id,
     retire_managed_agent: retireManagedAgent,
+    settlement_phase: settlementPhase,
     card_id: delegateIntent.card_id,
     classification: "caller_idempotent",
     operation_contract: delegateIntent.operation_contract,
     route_binding: delegateIntent.route_binding,
     resource_claims: delegateIntent.resource_claims,
   };
+}
+
+function heldManagedAgentRetirementIntents(fold, {
+  settlementPhase,
+} = {}) {
+  const effectsById = new Map((fold.effects ?? []).map((effect) => [
+    effect.effect_id,
+    effect,
+  ]));
+  return (fold.effect_intents ?? [])
+    .filter((intent) => intent.effect_kind === "delegate" &&
+      intent.managed_agent_binding?.terminal_card_id !== intent.card_id &&
+      effectsById.get(intent.effect_id)?.receipt?.provider_receipt
+        ?.terminal_disposition?.durable_holder === `flow.run:${fold.run_id}`)
+    .map((intent) => delegateCancellationIntent(intent, {
+      retireManagedAgent: true,
+      settlementPhase,
+    }));
 }
 
 function decisionCompletesRun(fold, {
@@ -450,7 +470,7 @@ function sameCanonicalValue(left, right) {
   }
 }
 
-function decision(command, checkpoint, terminalEvents) {
+function decision(command, checkpoint, terminalEvents, effectIntents = []) {
   return {
     schema: "flow.decision/v1",
     command_type: command.type,
@@ -462,7 +482,7 @@ function decision(command, checkpoint, terminalEvents) {
       },
       ...terminalEvents,
     ],
-    effect_intents: [],
+    effect_intents: effectIntents,
     obligations: [],
     projection_hints: ["operator", "graph"],
   };

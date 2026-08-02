@@ -164,9 +164,11 @@ export function createFlowRuntime({
             delegateValidators,
             runAuthority,
             {
-              settleCancelled: intent.effect_kind === "delegate_cancellation" ||
-                command?.type === "recovery" &&
-                command.recovery === "settle_cancelled",
+              settleCancelled:
+                (intent.effect_kind === "delegate_cancellation" &&
+                  intent.settlement_phase !== "declined") ||
+                (command?.type === "recovery" &&
+                  command.recovery === "settle_cancelled"),
             },
           );
         } else {

@@ -1200,6 +1200,10 @@ test("cancelling between managed cards retires the held agent", async (t) => {
   let callerKey;
   const retirements = [];
   const runtime = delegateRuntime(authority, {
+    async discover() {
+      if (!callerKey) return absentDiscovery();
+      return completedTurnProjection({ callerKey, description });
+    },
     async dispatch(request) {
       callerKey = request.caller_key;
       return workingProjection(request);
@@ -1234,6 +1238,221 @@ test("cancelling between managed cards retires the held agent", async (t) => {
     .terminal_disposition.status, "retired");
   assert.equal(retirements[0].agent_id, "agent:delegate-review");
   assert.deepEqual(cancelled.legal_actions, []);
+});
+
+test("cancelling a proven-absent held managed turn delegates cleanup", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-absent-held-agent"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  const first = proposal.graph.cards[1];
+  const binding = {
+    schema: "flow.managed-agent-binding/v1",
+    binding_id: "managed-agent:review",
+    card_ids: ["delegate-review", "delegate-followup"],
+    terminal_card_id: "delegate-followup",
+  };
+  first.inputs.managed_agent = binding;
+  const second = structuredClone(first);
+  second.id = "delegate-followup";
+  second.dependencies = [first.id];
+  proposal.graph.cards.push(second);
+  proposal.explicit_facts.limits.max_cards = 3;
+  proposal.requested_authority.commands.push("cancel");
+  let callerKey;
+  const retirements = [];
+  const runtime = delegateRuntime(authority, {
+    async dispatch(request) {
+      callerKey = request.caller_key;
+      return workingProjection(request);
+    },
+    async wait() {
+      return completedTurnProjection({ callerKey, description });
+    },
+    async retire(request) {
+      retirements.push(request);
+      return completePortOperations().retire(request);
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .cards.find(({ id }) => id === second.id).status === "ready");
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "cancel",
+  ));
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.find(
+    ({ effect_kind: effectKind }) => effectKind === "delegate_cancellation",
+  )?.status === "succeeded");
+  const cancelled = runtime.query({ run_id: launch.run_id });
+  const disposition = cancelled.effects.find(
+    ({ effect_kind: effectKind }) => effectKind === "delegate_cancellation",
+  ).receipt.provider_receipt.terminal_disposition;
+
+  assert.equal(retirements.length, 0);
+  assert.equal(disposition.durable_holder, "drovr.registry");
+  assert.equal(cancelled.phase, "cancelled");
+  assert.deepEqual(cancelled.legal_actions, []);
+});
+
+test("declining between managed cards retires the held agent", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-declined-held-agent"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  const first = proposal.graph.cards[1];
+  const decisionCheckpoint = structuredClone(proposal.graph.cards[0]);
+  decisionCheckpoint.id = "confirm-followup";
+  decisionCheckpoint.dependencies = [first.id];
+  decisionCheckpoint.inputs = { prompt: "Confirm the managed follow-up" };
+  const binding = {
+    schema: "flow.managed-agent-binding/v1",
+    binding_id: "managed-agent:review",
+    card_ids: ["delegate-review", "delegate-followup"],
+    terminal_card_id: "delegate-followup",
+  };
+  first.inputs.managed_agent = binding;
+  const second = structuredClone(first);
+  second.id = "delegate-followup";
+  second.dependencies = [first.id, decisionCheckpoint.id];
+  proposal.graph.cards.push(decisionCheckpoint, second);
+  proposal.explicit_facts.limits.max_cards = 4;
+  let callerKey;
+  const retirements = [];
+  const runtime = delegateRuntime(authority, {
+    async discover() {
+      if (!callerKey) return absentDiscovery();
+      return completedTurnProjection({ callerKey, description });
+    },
+    async dispatch(request) {
+      callerKey = request.caller_key;
+      return workingProjection(request);
+    },
+    async wait() {
+      return completedTurnProjection({ callerKey, description });
+    },
+    async retire(request) {
+      retirements.push(request);
+      return completePortOperations().retire(request);
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .cards.find(({ id }) => id === decisionCheckpoint.id).status ===
+      "waiting_checkpoint");
+  const awaitingDecision = runtime.query({ run_id: launch.run_id });
+  runtime.command(awaitingDecision.legal_actions.find((action) =>
+    action.type === "checkpoint_decision" &&
+      action.checkpoint_id === decisionCheckpoint.id &&
+      action.decision === "decline"));
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "declined");
+  const declined = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(retirements.length, 1);
+  assert.equal(retirements[0].agent_id, "agent:delegate-review");
+  assert.equal(retirements[0].attempt_id,
+    `${launch.run_id}:delegate-review:attempt:1`);
+  assert.deepEqual(declined.legal_actions, []);
+});
+
+test("terminal disposition retires an agent held by the declining run", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-disposed-held-agent"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  const first = proposal.graph.cards[1];
+  const binding = {
+    schema: "flow.managed-agent-binding/v1",
+    binding_id: "managed-agent:review",
+    card_ids: ["delegate-review", "delegate-followup"],
+    terminal_card_id: "delegate-followup",
+  };
+  first.inputs.managed_agent = binding;
+  const second = structuredClone(first);
+  second.id = "delegate-followup";
+  second.dependencies = [first.id];
+  const rejected = structuredClone(first);
+  rejected.id = "delegate-rejected";
+  rejected.dependencies = [proposal.graph.cards[0].id];
+  rejected.inputs.prompt = "produce a rejected result";
+  delete rejected.inputs.managed_agent;
+  delete rejected.inputs.fallback;
+  rejected.route.agent_id = "agent:delegate-rejected";
+  proposal.graph.cards.push(second, rejected);
+  proposal.explicit_facts.limits.max_cards = 4;
+  const dispatches = [];
+  const completed = new Map();
+  const retirements = [];
+  const runtime = delegateRuntime(authority, {
+    async discover(request) {
+      return completed.get(request.caller_key) ?? absentDiscovery();
+    },
+    async dispatch(request) {
+      dispatches.push(request);
+      return workingProjection(request);
+    },
+    async wait() {
+      const request = dispatches.at(-1);
+      const projection = completedTurnProjection({
+        agentId: request.agent_id,
+        callerKey: request.caller_key,
+        description,
+        output: request.agent_id === "agent:delegate-rejected"
+          ? "rejected output"
+          : "accepted output",
+        prompt: request.prompt,
+        turnId: `turn:${request.agent_id}`,
+      });
+      completed.set(request.caller_key, projection);
+      return projection;
+    },
+    async retire(request) {
+      retirements.push(request);
+      return completePortOperations().retire(request);
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const waiting = runtime.query({ run_id: launch.run_id });
+  runtime.command(waiting.legal_actions.find(
+    ({ decision }) => decision === "approve",
+  ));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    (action) => action.type === "delegate_execute" &&
+      action.card_id === first.id));
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .cards.find(({ id }) => id === second.id).status === "ready");
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    (action) => action.type === "delegate_execute" &&
+      action.card_id === rejected.id));
+  await until(() => runtime.query({ run_id: launch.run_id }).legal_actions.some(
+    ({ type }) => type === "terminal_disposition"));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "terminal_disposition"));
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "declined");
+
+  assert.equal(retirements.filter(
+    ({ agent_id: agentId }) => agentId === "agent:delegate-review",
+  ).length, 1);
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }).legal_actions, []);
 });
 
 test("prepare rejects ambient managed-agent reuse", async () => {
