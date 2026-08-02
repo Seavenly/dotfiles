@@ -591,11 +591,12 @@ export class HerdrClient {
         outcome: "recovery_blocked",
       });
     }
+    const recoveryKeys = action === "submit" ? ["enter"] : ["esc", "esc"];
     await this.sessionCommand([
       "agent",
       "send-keys",
       name,
-      action === "submit" ? "enter" : "ctrl-c",
+      ...recoveryKeys,
     ]);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await this.agentRecord(name);
@@ -635,7 +636,7 @@ export class HerdrClient {
   }
 
   async interruptAgent(name) {
-    return this.sessionCommand(["agent", "send-keys", name, "ctrl-c"]);
+    return this.sessionCommand(["agent", "send-keys", name, "ctrl+c"]);
   }
 
   async waitForAgent(name, timeoutMs) {
