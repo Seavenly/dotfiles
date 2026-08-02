@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 13);
+  assert.equal(catalog.catalog_version, 14);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -106,6 +106,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.child-run-lineage/v1",
     "flow.subrun/create-and-observe/v1",
     "flow.validator/subrun-receipt/v1",
+    "flow.managed-agent-binding/v1",
+    "flow.delegate-route-fallback/v1",
+    "flow.delegate-steering-input/v1",
+    "flow.delegate-cancellation-identity/v1",
+    "flow.delegate-cancellation-receipt/v1",
     "flow.authority-schema-compatibility/v1",
     "flow.authority-schema-transition/v1",
     "flow.authority-schema-transition-boundary/v1",
@@ -167,7 +172,20 @@ test("the public catalog exposes the settled interface and forbids legacy import
     recovery_command: "recovery",
     attempt_identity: "run_card_reserved_attempt",
     dispatch_order: "discover_before_dispatch",
-    settlement: "exact_binding_ordered_inputs_and_independent_validation",
+    managed_agent_binding: "flow.managed-agent-binding/v1",
+    managed_agent_reuse:
+      "declared_cards_only_under_one_immutable_launch_binding",
+    route_fallback: "flow.delegate-route-fallback/v1",
+    fallback_policy:
+      "exact_attempt_preapproved_relationally_independent_and_no_authority_widening",
+    steering_input: "flow.delegate-steering-input/v1",
+    cancellation_identity: "flow.delegate-cancellation-identity/v1",
+    cancellation_receipt: "flow.delegate-cancellation-receipt/v1",
+    settlement:
+      "exact_binding_ordered_caller_inputs_and_independent_validation",
+    ambiguous_dispatch: "reconciling_without_fallback_activation",
+    cancelled_settlement:
+      "recorded_exact_turn_cancellation_registry_handoff_or_managed_retirement_then_quarantined_delegate_retirement",
     quarantine: "late_or_incompatible_correlated",
     terminal_disposition:
       "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",

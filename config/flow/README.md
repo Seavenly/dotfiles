@@ -62,3 +62,17 @@ unresolved for recovery. Flow requires a Drovr retirement receipt before
 accepted or exhausted delegated work can settle. A non-destructive bounded
 wait preserves the current attempt for same-turn recovery rather than
 consuming retry capacity.
+
+Declared managed-agent reuse binds a complete ordered card set to one exact
+launch and names the terminal card that must retire it; duplicate agent routes
+without that binding fail preparation. A revision also fails preparation when
+its pending dependent closure would supersede a card inside the binding,
+including from an upstream block. A pre-approved fallback binds one exact
+retry to a different harness with the same effective-authority comparison key,
+so retry cannot widen capability. Steering inputs carry stable caller
+identities and become part of ordered settlement proof. Ambiguous dispatch
+stays reconciling. Run cancellation records a fenced cancellation effect,
+closes the exact live turn, hands its agent back to the durable registry, and
+then permits quarantined delegate retirement settlement. A run terminating
+between declared managed cards retires its held agent before cancellation or
+decline completes; proven-absent turns hand cleanup to the durable registry.

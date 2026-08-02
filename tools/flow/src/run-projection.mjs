@@ -361,12 +361,21 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       card_id: id,
       expected_watermark: watermark,
     }));
+  const hasCancellationReceiptFor = (delegateEffectId) =>
+    [...effectIntents.values()].some((intent) =>
+      intent.effect_kind === "delegate_cancellation" &&
+      intent.delegate_effect_id === delegateEffectId &&
+      effectReceipts.has(intent.effect_id));
   const recoveryActions = [...effectIntents.values()]
     .filter((intent) => !effectReceipts.has(intent.effect_id))
     .filter((intent) => phase !== "cancelled" ||
-      effectClassPolicy(intent.classification).requires_observation &&
+      intent.effect_kind === "delegate_cancellation" ||
+      ((intent.effect_kind !== "delegate" ||
+        hasCancellationReceiptFor(intent.effect_id)) &&
+       (intent.effect_kind === "delegate" ||
+        effectClassPolicy(intent.classification).requires_observation) &&
       effectInvocationIndexes.has(intent.effect_id) &&
-      effectInvocationIndexes.get(intent.effect_id) < cancellationIndex)
+      effectInvocationIndexes.get(intent.effect_id) < cancellationIndex))
     .map((intent) => ({
       schema: "flow.command/v1",
       type: "recovery",
@@ -407,11 +416,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     ? "complete"
     : blocks.length > 0 ? "blocked"
       : hasUnresolvedEffects ? "executing" : "waiting";
+  const isCancellationEffect = (effectId) =>
+    effectIntents.get(effectId)?.effect_kind === "delegate_cancellation";
   const hasLateReceipt = (effectId) => cancellationIndex >= 0 &&
+    !isCancellationEffect(effectId) &&
     effectReceipts.has(effectId) &&
     effectReceiptIndexes.get(effectId) > cancellationIndex;
   const isQuarantinedAfterCancellation = (effectId) =>
     cancellationIndex >= 0 &&
+    !isCancellationEffect(effectId) &&
     (!effectReceipts.has(effectId) || hasLateReceipt(effectId));
   const effects = [...effectIntents.values()].map((intent) => ({
     effect_id: intent.effect_id,
@@ -434,11 +447,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
           ? "quarantined"
           : "succeeded"
       : cancellationIndex >= 0 &&
+          !isCancellationEffect(intent.effect_id) &&
           (!effectInvocationIndexes.has(intent.effect_id) ||
            effectInvocationIndexes.get(intent.effect_id) > cancellationIndex)
         ? "abandoned"
       : effectObservations.has(intent.effect_id)
-        ? effectClassPolicy(intent.classification).observed_unresolved_status
+        ? ["delegate", "delegate_cancellation"].includes(intent.effect_kind) &&
+          effectObservations.get(intent.effect_id).presence === "indeterminate"
+          ? "reconciling"
+          : effectClassPolicy(intent.classification).observed_unresolved_status
         : "unresolved",
     disposition: isQuarantinedAfterCancellation(intent.effect_id)
       ? "quarantined"
