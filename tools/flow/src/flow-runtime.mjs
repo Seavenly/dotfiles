@@ -255,7 +255,7 @@ function recoverOutstandingEffects(
       const current = runAuthority.query(runId);
       const action = current?.legal_actions?.find((candidate) =>
         candidate.type === "recovery" && candidate.effect_id === effectId);
-      if (!action || runtime.command(action)?.accepted !== true) {
+      if (!action) {
         accepted = false;
         break;
       }
@@ -265,6 +265,8 @@ function recoverOutstandingEffects(
         cardId === effect?.card_id);
       if (effect?.operation_contract === SUBRUN_CONTRACT &&
           ["active", "admission_pending"].includes(subrun?.status)) {
+        // Subrun resume owns the initial observation, admission repair,
+        // terminal waiting, and final recovery without a competing caller.
         void subrunRegistration.resume({
           effect_id: effectId,
           run_id: current.run_id,
@@ -272,6 +274,11 @@ function recoverOutstandingEffects(
           card_identity: subrun.card_identity,
           revision_ordinal: subrun.revision_ordinal,
         }).catch(() => {});
+        continue;
+      }
+      if (runtime.command(action)?.accepted !== true) {
+        accepted = false;
+        break;
       }
     }
     if (accepted) runAuthority.completeSameBootRecovery?.(runId);

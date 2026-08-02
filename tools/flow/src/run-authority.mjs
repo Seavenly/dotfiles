@@ -114,6 +114,9 @@ export function createInMemoryRunAuthority() {
       const runId = lineage === null
         ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
         : deriveChildRunId(lineage);
+      if (lineage !== null && runs.has(runId)) {
+        return launchReceipt(runs.get(runId), false);
+      }
       const initialRun = {
         run_id: runId,
         ...(lineage === null ? {} : { lineage }),
@@ -164,7 +167,16 @@ export function createInMemoryRunAuthority() {
       );
       const parent = runs.get(parentRunId);
       if (!validChildLaunchParent(parent, lineage, launchRequest)) {
-        return unknownRunRejection("launch", parentRunId, authorityEvents);
+        const projection = parent ? projectRun(foldRun(parent)) : null;
+        return createRejection({
+          operation: "launch",
+          code: "subrun_not_actionable",
+          runId: parentRunId,
+          authorityWatermark: projection?.watermark ??
+            authorityWatermark(authorityEvents),
+          authorityWatermarkDomain: projection ? "run" : "host",
+          legalActions: projection?.legal_actions ?? [],
+        });
       }
       childLaunchLineage = lineage;
       let receipt;
@@ -183,11 +195,16 @@ export function createInMemoryRunAuthority() {
       const parent = runs.get(lineage.parent_run_id);
       const child = runs.get(childRunId);
       if (!validRecordedSubrunAdmission(parent, child, lineage)) {
-        return unknownRunRejection(
-          "subrun_admission",
-          childRunId,
-          authorityEvents,
-        );
+        const projection = parent ? projectRun(foldRun(parent)) : null;
+        return createRejection({
+          operation: "subrun_admission",
+          code: "subrun_admission_unproven",
+          runId: lineage.parent_run_id,
+          authorityWatermark: projection?.watermark ??
+            authorityWatermark(authorityEvents),
+          authorityWatermarkDomain: projection ? "run" : "host",
+          legalActions: projection?.legal_actions ?? [],
+        });
       }
       if (!parent.events.some(({ type, child_run_id: recordedChildId }) =>
         type === "subrun_admitted" && recordedChildId === childRunId)) {

@@ -5,7 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
+import {
+  createDurableRunAuthority,
+  createInMemoryRunAuthority,
+} from "../src/run-authority.mjs";
 import {
   confirmedLaunchRequest,
   dynamicCheckpointProposal,
@@ -380,6 +383,19 @@ test("subrun reconciliation distinguishes exact absence from authority failure",
     authority_watermark_domain: "host",
   };
   assert.equal(registration.observe(intent).presence, "absent");
+
+  rejection = {
+    schema: "flow.run-projection/v1",
+    run_id: "run:child:unsettled",
+    phase: "cancelled",
+    watermark: `sha256:${"c".repeat(64)}`,
+    attempts: [],
+    effects: [{ status: "unresolved" }],
+  };
+  assert.equal(registration.observe(intent).presence, "indeterminate");
+
+  rejection.effects[0].status = "late_succeeded";
+  assert.equal(registration.observe(intent).presence, "present");
 });
 
 for (const status of ["quarantined", "late_quarantined"]) {
@@ -472,6 +488,33 @@ test("child authority rejects a launch request outside the confirmed subrun card
   await until(() => runtime.query().runs.length === 2);
   assert.equal(runtime.query({ run_id: link.child_run_id }).bundle_digest,
     childLaunchRequest.prepared.bundle_digest);
+});
+
+test("in-memory child authority returns run-scoped typed rejections", () => {
+  const authority = createInMemoryRunAuthority();
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const parent = runtime.query({ run_id: launch.run_id });
+  const lineage = {
+    parent_run_id: launch.run_id,
+    card_id: "not-a-subrun",
+    card_identity: `sha256:${"a".repeat(64)}`,
+    revision_ordinal: 0,
+  };
+
+  const childRejection = authority.launchChild({
+    ...lineage,
+    launch_request: confirmedLaunchRequest(prepared),
+  });
+  const admissionRejection = authority.recordSubrunAdmission(lineage);
+
+  assert.equal(childRejection.code, "subrun_not_actionable");
+  assert.equal(childRejection.authority_watermark_domain, "run");
+  assert.deepEqual(childRejection.legal_actions, parent.legal_actions);
+  assert.equal(admissionRejection.code, "subrun_admission_unproven");
+  assert.equal(admissionRejection.authority_watermark_domain, "run");
+  assert.deepEqual(admissionRejection.legal_actions, parent.legal_actions);
 });
 
 test("prepare rejects a subrun whose exact child launch binding was changed", () => {

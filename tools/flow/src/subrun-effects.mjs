@@ -48,14 +48,14 @@ export function createSubrunRegistration({ getRuntime, runAuthority }) {
           rejection_code: child.code,
         });
       }
-      if (["succeeded", "declined", "cancelled"].includes(child.phase)) {
+      if (settledTerminal(child)) {
         return observation(intent, "present", childResult(child));
       }
       return observation(intent, "indeterminate", {
         child_run_id: childRunId,
         child_phase: child.phase,
         child_watermark: child.watermark,
-        proof: "child_nonterminal",
+        proof: "child_unsettled",
       });
     },
 
@@ -68,6 +68,11 @@ export function createSubrunRegistration({ getRuntime, runAuthority }) {
     },
 
     async resume(intent) {
+      const initialRecovery = getRuntime().query({ run_id: intent.run_id })
+        .legal_actions.find(({ effect_id: effectId, type }) =>
+          type === "recovery" && effectId === intent.effect_id);
+      if (!initialRecovery ||
+          getRuntime().command(initialRecovery)?.accepted !== true) return;
       const childRunId = deriveChildRunId(subrunIdentity(intent));
       const child = getRuntime().query({ run_id: childRunId });
       if (child?.schema === "flow.rejection/v1") return;
