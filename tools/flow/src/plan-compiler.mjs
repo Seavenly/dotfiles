@@ -507,9 +507,10 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       "revision supersession must be the blocked card and its pending dependent closure",
     );
   }
-  const revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
-  const revisedCards = revisedGraph.cards;
-  const allIds = new Set(revisedCards.map(({ id }) => id));
+  const allIds = new Set([
+    ...proposal.graph.cards.map(({ id }) => id),
+    ...changes.add_cards.map(({ id }) => id),
+  ]);
   const edgeIds = new Set();
   for (const edge of changes.add_edges) {
     const edgeId = `${edge?.from}\0${edge?.to}`;
@@ -520,8 +521,9 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
       invalidPlan("invalid_revision_edge", `revision edge is invalid: ${template.id}`);
     }
     edgeIds.add(edgeId);
-    revisedCards.find(({ id }) => id === edge.to).dependencies.push(edge.from);
   }
+  const revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
+  const revisedCards = revisedGraph.cards;
   if (hasActiveDependencyOnSuperseded(revisedCards, superseded)) {
     invalidPlan(
       "active_card_depends_on_superseded_work",
