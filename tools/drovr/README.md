@@ -178,8 +178,11 @@ before prompt delivery cannot consume the grace needed after actual settlement.
 Claude delivery also watches a settled native agent for `working` or `blocked`
 after Herdr stages a prompt; an idle state-token change alone does not prove
 submission. A still-idle multiline or long single-line bracketed paste receives
-one guarded submit key only after a new visible Claude attachment token appears.
-A single-line prompt with no attachment token proceeds to exact native
+one guarded submit key only after the newly staged content is visible as literal
+prompt-box text or as a new Claude attachment token. Drovr refuses to append a
+new turn over prompt text that was already staged before delivery; inspect or
+clear that text with `drovr attach` first. A single-line prompt with no visible
+staged content proceeds to exact native
 transcript correlation only after a new `done` observation, because a short
 turn can complete before the first poll. Pane output is delivery-readiness
 evidence, not completion evidence. Native
@@ -189,7 +192,11 @@ grace, exact transcript correlation gets one final attempt before the turn
 becomes `uncertain`. An `uncertain` turn
 remains terminal, but `turn get` reports a non-durable `late_result` when the
 transcript later contains the exact recorded inputs in order and a complete
-result before any unrecorded native input. The same projection recovers legacy
+result before any unrecorded native input. If an older Drovr version appended a
+new Claude turn over a prompt left staged by the attachment-delivery failure,
+the projection also accepts the exact concatenation of that known failed Drovr
+input and the current input. Arbitrary native prefixes remain ineligible. The
+same projection recovers legacy
 `unsupported_transcript` records that were created when a transcript file was
 temporarily absent. Discovery does not rewrite the durable turn or promote it to
 `completed`.

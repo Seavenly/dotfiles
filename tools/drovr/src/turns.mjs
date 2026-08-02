@@ -1320,7 +1320,8 @@ function nativeSessionObservationError(agent, observed, adapterLabel) {
 }
 
 export async function getTurn(turnId, { env = process.env } = {}) {
-  const context = await turnContext(stateDirectory(env), turnId);
+  const registryDirectory = stateDirectory(env);
+  const context = await turnContext(registryDirectory, turnId);
   if (!lateResultRecoveryEligible(context.turn)) return context;
   const adapter = harnessAdapter(context.agent.launch.harness, env);
   let cursor = context.turn.transcript_cursor;
@@ -1336,14 +1337,60 @@ export async function getTurn(turnId, { env = process.env } = {}) {
         context.agent.native_session,
       );
     }
-    const lateResult = await adapter.extract(
-      cursor,
-      context.turn.inputs.map(({ text }) => text),
-    );
-    return { ...context, late_result: lateResult };
+    const inputs = context.turn.inputs.map(({ text }) => text);
+    try {
+      const lateResult = await adapter.extract(cursor, inputs);
+      return { ...context, late_result: lateResult };
+    } catch {
+      const turns = await readRecords(registryDirectory, "turns");
+      for (const candidate of concatenatedClaudeRecoveryInputs(
+        context,
+        turns,
+        inputs,
+      )) {
+        try {
+          const lateResult = await adapter.extract(cursor, candidate);
+          return { ...context, late_result: lateResult };
+        } catch {
+          // Try the next exact combination of known staged Drovr inputs.
+        }
+      }
+    }
+    return context;
   } catch {
     return context;
   }
+}
+
+function concatenatedClaudeRecoveryInputs(context, turns, currentInputs) {
+  if (
+    context.agent.launch.harness !== "claude" ||
+    currentInputs.length === 0
+  ) {
+    return [];
+  }
+  const priorTurns = turns
+    .filter(
+      (turn) =>
+        turn.agent_id === context.agent.id &&
+        turn.created_at < context.turn.created_at &&
+        turn.status === "uncertain" &&
+        !turn.result &&
+        /^Herdr did not expose Claude's staged attachment for /u.test(
+          turn.error ?? "",
+        ),
+    )
+    .sort((left, right) => right.created_at.localeCompare(left.created_at));
+  const candidates = [];
+  const knownStagedInputs = [];
+  for (const turn of priorTurns) {
+    knownStagedInputs.unshift(...turn.inputs.map(({ text }) => text));
+    candidates.push([
+      `${knownStagedInputs.join("")}${currentInputs[0]}`,
+      ...currentInputs.slice(1),
+    ]);
+  }
+  return candidates;
 }
 
 function lateResultRecoveryEligible(turn) {

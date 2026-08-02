@@ -459,14 +459,16 @@ For every Claude prompt delivered while the native agent is settled, Drovr
 looks for `working` or `blocked`; an idle state-token change alone is not
 submission evidence. If Claude's asynchronous bracketed-paste conversion leaves
 a multiline or long single-line prompt staged and the agent idle, Drovr waits
-for a new visible Claude attachment token, sends one guarded submit key, and
-requires active-state evidence before continuing. A single-line delivery with
-no attachment token proceeds to exact native transcript correlation only when
-Herdr reports a new `done` observation, because a short turn can complete before
-the first post-delivery poll. Pane output is used only as delivery-readiness
-evidence; it is never completion authority. Failure to observe either the
-attachment token or a native transition is an adapter failure and leaves the
-turn `uncertain`; it is not treated as native settlement.
+for the newly staged content to appear either as literal prompt-box text or as a
+new visible Claude attachment token, sends one guarded submit key, and requires
+active-state evidence before continuing. Drovr refuses to append a new turn
+over prompt text that was already staged before delivery. A single-line
+delivery with no visible staged content proceeds to exact native transcript
+correlation only when Herdr reports a new `done` observation, because a short
+turn can complete before the first post-delivery poll. Pane output is used only
+as delivery-readiness evidence; it is never completion authority. Failure to
+observe staged content or a native transition is an adapter failure and leaves
+the turn `uncertain`; it is not treated as native settlement.
 
 Native waiting first returns an already-settled observation rather than waiting
 for another state change. If the pre-delivery state persists past the bounded
@@ -539,6 +541,13 @@ projection. It also supports legacy `unsupported_transcript` records explicitly
 marked for exact transcript correlation. Exact ordered inputs and the absence
 of an intervening unrecorded native input are required. Discovery never changes
 the terminal status or writes a result into the durable turn record.
+
+For compatibility with turns produced by the earlier Claude delivery defect,
+late-result projection may also correlate one native user message that exactly
+concatenates a known earlier Drovr input which failed with the staged-attachment
+error and the current turn's first input. This recovery remains exact: an
+arbitrary native prefix or any later unrelated input is still a correlation
+boundary.
 
 ### Blocked agents
 
