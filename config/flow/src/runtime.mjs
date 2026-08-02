@@ -15,8 +15,10 @@ import {
 export function createFlowRuntime({
   env = process.env,
   delegatedAgentPort = null,
+  delegateOutputValidators = {},
   legacyAdapter = null,
   legacyRoots = defaultLegacyRoots(env),
+  runAuthority = undefined,
 } = {}) {
   const adapter = legacyAdapter ?? new FilesystemLegacyCompatibilityAdapter({
     legacyRoots,
@@ -25,6 +27,9 @@ export function createFlowRuntime({
     dependencies: { env },
   });
   return createCoreFlowRuntime({
+    ...(runAuthority === undefined ? {} : { runAuthority }),
+    delegatedAgentPort: delegationPort,
+    delegateOutputValidators,
     registeredQueries: {
       async delegated_agent_description(request) {
         assertDelegatedAgentDescriptionQuery(request);

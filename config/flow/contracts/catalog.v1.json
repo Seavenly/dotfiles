@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 9,
+  "catalog_version": 10,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -81,6 +81,25 @@
         "quarantined"
       ]
     },
+    "delegate_execution": {
+      "authority": "RunAuthority",
+      "adapter_authority": "mechanism_only",
+      "port": "flow.delegated-agent-port/v1",
+      "intent": "flow.effect-intent/v1",
+      "receipt": "flow.effect-receipt/v1",
+      "evidence": "flow.delegate-evidence/v1",
+      "quarantine_record": "flow.delegate-quarantine/v1",
+      "block": "flow.delegate-card-block/v1",
+      "disposition_policy": "flow.delegate-terminal-disposition-policy/v1",
+      "execution_command": "delegate_execute",
+      "recovery_command": "recovery",
+      "attempt_identity": "run_card_reserved_attempt",
+      "dispatch_order": "discover_before_dispatch",
+      "settlement": "exact_binding_ordered_inputs_and_independent_validation",
+      "quarantine": "late_or_incompatible_correlated",
+      "terminal_disposition": "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
+      "exhausted_action": "terminal_disposition"
+    },
     "operation_contracts": {
       "prepare": {
         "authority": "non_authoritative",
@@ -103,6 +122,7 @@
         "authority": "RunAuthority",
         "vocabulary": [
           "checkpoint_decision",
+          "delegate_execute",
           "operation_execute",
           "revision_decision",
           "capability_grant",
@@ -156,7 +176,8 @@
       "observe": "flow.delegated-agent-observe-request/v1",
       "wait": "flow.delegated-agent-wait-request/v1",
       "cancel": "flow.delegated-agent-cancel-request/v1",
-      "reconcile": "flow.delegated-agent-reconcile-request/v1"
+      "reconcile": "flow.delegated-agent-reconcile-request/v1",
+      "retire": "flow.delegated-agent-retire-request/v1"
     },
     "drovr_description": "drovr.delegated-agent-description/v1",
     "required_features": {
@@ -181,6 +202,10 @@
     "flow.effect-intent/v1",
     "flow.effect-observation/v1",
     "flow.effect-receipt/v1",
+    "flow.delegate-evidence/v1",
+    "flow.delegate-quarantine/v1",
+    "flow.delegate-card-block/v1",
+    "flow.delegate-terminal-disposition-policy/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
     "flow.run-plan/v1",
@@ -216,6 +241,7 @@
     "flow.delegated-agent-wait-request/v1",
     "flow.delegated-agent-cancel-request/v1",
     "flow.delegated-agent-reconcile-request/v1",
+    "flow.delegated-agent-retire-request/v1",
     "drovr.delegated-agent-description-request/v1",
     "drovr.delegated-agent-description/v1",
     "drovr.launch-description/v1",

@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { authorityRootsAreDisjoint } from "./authority-root.mjs";
 import {
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
-} from "./drovr-delegated-agent-port.mjs";
+} from "./required-drovr-features.mjs";
 import { isExactSequence } from "./validation.mjs";
 
 const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
@@ -100,6 +100,26 @@ const OPERATION_EXECUTION = {
   late_effect_disposition: "quarantined",
   cancelled_resource_dispositions: ["released", "quarantined"],
 };
+const DELEGATE_EXECUTION = {
+  authority: "RunAuthority",
+  adapter_authority: "mechanism_only",
+  port: "flow.delegated-agent-port/v1",
+  intent: "flow.effect-intent/v1",
+  receipt: "flow.effect-receipt/v1",
+  evidence: "flow.delegate-evidence/v1",
+  quarantine_record: "flow.delegate-quarantine/v1",
+  block: "flow.delegate-card-block/v1",
+  disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
+  execution_command: "delegate_execute",
+  recovery_command: "recovery",
+  attempt_identity: "run_card_reserved_attempt",
+  dispatch_order: "discover_before_dispatch",
+  settlement: "exact_binding_ordered_inputs_and_independent_validation",
+  quarantine: "late_or_incompatible_correlated",
+  terminal_disposition:
+    "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
+  exhausted_action: "terminal_disposition",
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -141,6 +161,20 @@ export async function loadContractCatalog({
     OPERATION_EXECUTION.receipt_validator,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("registered operation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.delegate_execution,
+    DELEGATE_EXECUTION,
+  ) || ![
+    DELEGATE_EXECUTION.port,
+    DELEGATE_EXECUTION.intent,
+    DELEGATE_EXECUTION.receipt,
+    DELEGATE_EXECUTION.evidence,
+    DELEGATE_EXECUTION.quarantine_record,
+    DELEGATE_EXECUTION.block,
+    DELEGATE_EXECUTION.disposition_policy,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("delegate execution contracts are incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
@@ -221,6 +255,7 @@ function delegatedAgentPortIsPublished(
       wait: "flow.delegated-agent-wait-request/v1",
       cancel: "flow.delegated-agent-cancel-request/v1",
       reconcile: "flow.delegated-agent-reconcile-request/v1",
+      retire: "flow.delegated-agent-retire-request/v1",
     }) &&
     port.drovr_description === "drovr.delegated-agent-description/v1" &&
     port.required_features?.contract === REQUIRED_FEATURE_CONTRACT &&
