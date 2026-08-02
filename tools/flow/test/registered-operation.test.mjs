@@ -557,6 +557,57 @@ test("recovery rejects an incompatible replacement registry before mutation", as
     before.watermark);
 });
 
+test("execution rejects an incompatible replacement registry before intent", async (t) => {
+  for (const { checkpointBound, expectedCode } of [
+    { checkpointBound: true, expectedCode: "unregistered_operation_contract" },
+    { checkpointBound: false, expectedCode: "incomplete_operation_registration" },
+  ]) {
+    await t.test(expectedCode, async (t) => {
+      const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+      t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+      const firstAuthority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+      });
+      const classification = checkpointBound
+        ? "one_shot_uncertain"
+        : "caller_idempotent";
+      const firstRuntime = operationRuntime(firstAuthority, {
+        classification,
+        invoke(intent) { return operationReceipt(intent); },
+        ...(checkpointBound ? { observe: indeterminateObservation } : {}),
+      });
+      const prepared = firstRuntime.prepare(registeredOperationProposal({
+        checkpointBound,
+        classification,
+      }));
+      const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+      firstAuthority.close();
+
+      const recoveredAuthority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+      });
+      t.after(() => recoveredAuthority.close());
+      const recoveredRuntime = checkpointBound
+        ? createFlowRuntime({ runAuthority: recoveredAuthority })
+        : operationRuntime(recoveredAuthority, {
+            classification: "caller_idempotent",
+          });
+      const before = recoveredRuntime.query({ run_id: launch.run_id });
+      const command = before.legal_actions.find(({ type }) => type ===
+        (checkpointBound ? "checkpoint_decision" : "operation_execute"));
+
+      const rejection = recoveredRuntime.command(command);
+
+      assert.equal(rejection.code, expectedCode);
+      const after = recoveredRuntime.query({ run_id: launch.run_id });
+      assert.equal(after.watermark, before.watermark);
+      assert.deepEqual(after.effects, []);
+    });
+  }
+});
+
 test("a checkpoint-bound operation rejects additional dependencies", () => {
   const runtime = operationRuntime(createNoopAuthority(), {
     classification: "caller_idempotent",
@@ -698,7 +749,7 @@ test("operation settlement does not terminate a graph with pending work", async 
     checkpointId === "final-confirmation"), true);
 });
 
-test("an unresolved effect prevents terminal checkpoint decline", async (t) => {
+test("an unresolved effect serializes checkpoint decisions", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const authority = createDurableRunAuthority({
@@ -731,29 +782,34 @@ test("an unresolved effect prevents terminal checkpoint decline", async (t) => {
   await until(() => runtime.query({ run_id: launch.run_id }).effects.length === 1);
   const executing = runtime.query({ run_id: launch.run_id });
 
-  assert.equal(executing.legal_actions.some(({ decision }) =>
-    decision === "decline"), false);
+  assert.equal(executing.legal_actions.some(({ type }) =>
+    type === "checkpoint_decision"), false);
   const rejection = runtime.command({
     schema: "flow.command/v1",
     type: "checkpoint_decision",
     run_id: launch.run_id,
     checkpoint_id: "other-confirmation",
-    decision: "decline",
+    decision: "approve",
     expected_watermark: executing.watermark,
   });
   assert.equal(rejection.code, "effect_settlement_required");
+  assert.equal(runtime.query({ run_id: launch.run_id }).watermark,
+    executing.watermark);
   assert.equal(runtime.query().admission.active_runs, 1);
 
   settle();
   await until(() => runtime.query({ run_id: launch.run_id })
     .effects[0].status === "succeeded");
-  assert.equal(runtime.query({ run_id: launch.run_id }).legal_actions.some(
+  const approval = runtime.query({ run_id: launch.run_id }).legal_actions.find(
     ({ checkpoint_id: checkpointId, decision }) =>
-      checkpointId === "other-confirmation" && decision === "decline",
-  ), true);
+      checkpointId === "other-confirmation" && decision === "approve",
+  );
+  assert.equal(runtime.command(approval).accepted, true);
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
+  assert.equal(runtime.query().admission.active_runs, 0);
 });
 
-test("an unresolved effect withholds terminal revision decline", async (t) => {
+test("an unresolved effect serializes revision decisions", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const authority = createDurableRunAuthority({
@@ -832,14 +888,36 @@ test("an unresolved effect withholds terminal revision decline", async (t) => {
 
   const executing = runtime.query({ run_id: launch.run_id });
   assert.equal(executing.legal_actions.some(
-    ({ type, decision }) => type === "revision_decision" && decision === "accept",
-  ), true);
-  assert.equal(executing.legal_actions.some(
-    ({ type, decision }) => type === "revision_decision" && decision === "decline",
+    ({ type }) => type === "revision_decision",
   ), false);
+  const rejection = runtime.command({
+    schema: "flow.command/v1",
+    type: "revision_decision",
+    run_id: launch.run_id,
+    template_id: "replace-revise-scope",
+    base_plan_fingerprint: executing.plan_fingerprint,
+    trigger,
+    changes: prepared.revision_templates[0].changes,
+    decision: "accept",
+    expected_watermark: executing.watermark,
+  });
+  assert.equal(rejection.code, "effect_settlement_required");
+  assert.equal(runtime.query({ run_id: launch.run_id }).watermark,
+    executing.watermark);
   settle();
   await until(() => runtime.query({ run_id: launch.run_id })
     .effects[0].status === "succeeded");
+  const revision = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "accept",
+  );
+  assert.equal(runtime.command(revision).accepted, true);
+  const approval = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ checkpoint_id: checkpointId, decision }) =>
+      checkpointId === "revised-scope" && decision === "approve",
+  );
+  assert.equal(runtime.command(approval).accepted, true);
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
+  assert.equal(runtime.query().admission.active_runs, 0);
 });
 
 test("launch rejects an operation whose adapter is not registered", async (t) => {

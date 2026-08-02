@@ -50,6 +50,15 @@ export function decideLifecycle(fold, command) {
       projection_hints: ["operator"],
     };
   }
+  const hasUnresolvedEffects = fold.effects?.some(
+    ({ status }) => status !== "succeeded",
+  );
+  // This one-operation slice serializes completion-changing commands behind
+  // effect settlement. Revisit the allow-list before admitting sibling effects.
+  if (hasUnresolvedEffects &&
+      !["capability_grant", "recovery"].includes(command.type)) {
+    return reject(fold, command, "effect_settlement_required");
+  }
   if (command.type === "capability_grant") {
     const legalGrant = fold.legal_actions.find((action) =>
       action.type === "capability_grant" && digest(action) === digest(command));
@@ -154,9 +163,6 @@ export function decideLifecycle(fold, command) {
   }
 
   if (command.decision === "decline") {
-    if (fold.effects?.some(({ status }) => status !== "succeeded")) {
-      return reject(fold, command, "effect_settlement_required");
-    }
     return decision(command, checkpoint, [{ type: "run_declined" }]);
   }
 

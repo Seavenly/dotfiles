@@ -209,15 +209,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     }));
   const hasUnresolvedEffects = effectIntents.size > effectReceipts.size;
   const legalActions = phase === "active"
-    ? [
-      ...checkpointActions.filter(({ decision }) =>
-        decision !== "decline" || !hasUnresolvedEffects),
-      ...capabilityActions,
-      ...revisionActions.filter(({ decision }) =>
-        decision !== "decline" || !hasUnresolvedEffects),
-      ...operationActions,
-      ...recoveryActions,
-    ]
+    ? hasUnresolvedEffects
+      ? [...capabilityActions, ...recoveryActions]
+      : [
+        ...checkpointActions,
+        ...capabilityActions,
+        ...revisionActions,
+        ...operationActions,
+        ...recoveryActions,
+      ]
     : [];
   const progress = phase !== "active"
     ? "complete"

@@ -1319,6 +1319,8 @@ function readRecordedEffectIntents(database, runId, commandDigest) {
 }
 
 function pendingDeferredEvents(stream) {
+  // One operation currently bounds this to one settlement flush. Filter events
+  // already in the stream before the future multi-operation slice removes it.
   const events = [];
   const seen = new Set();
   for (const { payload } of stream.records) {

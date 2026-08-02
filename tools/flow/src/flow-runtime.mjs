@@ -81,7 +81,7 @@ export function createFlowRuntime({
     },
 
     command(command) {
-      const registryRejection = recoveryRegistryRejection(
+      const registryRejection = commandRegistryRejection(
         command,
         operationRegistry,
         runAuthority,
@@ -109,30 +109,33 @@ export function createFlowRuntime({
   });
 }
 
-function recoveryRegistryRejection(command, operationRegistry, runAuthority) {
-  if (command?.type !== "recovery" || typeof command.run_id !== "string") {
+function commandRegistryRejection(command, operationRegistry, runAuthority) {
+  if (!["checkpoint_decision", "operation_execute", "recovery"].includes(
+    command?.type,
+  ) || typeof command.run_id !== "string") {
     return null;
   }
   const projection = runAuthority.query(command.run_id);
-  let isLegalRecovery = false;
+  let isLegalCommand = false;
   try {
-    isLegalRecovery = projection?.legal_actions?.some((action) =>
-      action.type === "recovery" && digest(action) === digest(command));
+    isLegalCommand = projection?.legal_actions?.some((action) =>
+      action.type === command.type && digest(action) === digest(command));
   } catch {
     return null;
   }
-  if (!isLegalRecovery) return null;
-  const effect = projection.effects.find(({ effect_id: effectId }) =>
-    effectId === command.effect_id);
+  // A miss is not authorization: RunAuthority still validates the command.
+  if (!isLegalCommand) return null;
+  const binding = operationBinding(command, projection);
+  if (!binding) return null;
   const issue = operationRegistrationIssue(
-    registeredOperation(operationRegistry, effect.operation_contract),
-    effect.classification,
+    registeredOperation(operationRegistry, binding.contract),
+    binding.classification,
   );
   if (!issue) return null;
   return createRejection({
     operation: "command",
     code: issue,
-    reason: effect.operation_contract,
+    reason: binding.contract,
     commandType: command.type,
     runId: command.run_id,
     bundleDigest: projection.bundle_digest,
@@ -140,6 +143,36 @@ function recoveryRegistryRejection(command, operationRegistry, runAuthority) {
     authorityWatermarkDomain: "run",
     legalActions: projection.legal_actions,
   });
+}
+
+function operationBinding(command, projection) {
+  if (command.type === "recovery") {
+    const effect = projection.effects.find(({ effect_id: effectId }) =>
+      effectId === command.effect_id);
+    return effect ? {
+      classification: effect.classification,
+      contract: effect.operation_contract,
+    } : null;
+  }
+  let operationId = command.card_id;
+  if (command.type === "checkpoint_decision") {
+    if (command.decision !== "approve") return null;
+    const checkpoint = projection.active_plan.cards.find(
+      ({ id }) => id === command.checkpoint_id,
+    );
+    operationId = checkpoint?.inputs?.operation_card_id;
+  }
+  const operation = projection.active_plan.cards.find(({ executor, id }) =>
+    id === operationId && executor.kind === "operation");
+  const operationState = projection.cards.find(({ id }) => id === operationId);
+  const expectedStatus = command.type === "operation_execute"
+    ? "ready"
+    : "pending";
+  if (!operation || operationState?.status !== expectedStatus) return null;
+  return {
+    classification: operation.executor.effect_classification,
+    contract: operation.executor.contract,
+  };
 }
 
 function dispatchRegisteredQuery(request, registeredQueries, runAuthority) {

@@ -95,8 +95,8 @@ export function dispatchRegisteredEffect(
     intent.operation_contract,
   );
   const policy = effectClassPolicy(intent.classification);
-  // Runtime admission makes this guard unreachable for launch and recovery.
-  // Keep it as a final defense against a non-conforming authority-supplied intent.
+  // FlowRuntime preflights every intent-emitting command. Keep this guard as a
+  // final defense against a non-conforming authority-supplied intent.
   if (!registration || !policy || typeof runAuthority.invokeEffect !== "function" ||
       registration.classification !== intent.classification ||
       typeof registration.invoke !== "function") return;

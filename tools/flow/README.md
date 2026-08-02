@@ -84,6 +84,10 @@ disabled, so this API does not authorize normal replacement launches.
   exact causation is adopted
   without reinvocation. One-shot uncertain recovery observes but never retries,
   and its initial invocation requires the fresh operation-bound checkpoint.
+  While any effect is unresolved, completion-changing checkpoint, revision, and
+  operation commands are serialized behind settlement; capability grants and
+  exact recovery remain available. Adapter failures leave the effect unresolved
+  for recovery and are not separately classified in the current projection.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
