@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { relative, sep } from "node:path";
 
+import { canonicalizeJson, digestCanonical } from "./canonical-json.mjs";
 import {
   loadConfiguration,
   resolveLaunchSpecification,
@@ -14,15 +14,15 @@ export const DROVR_ADVERTISED_FEATURES = deepFreeze([
     "does_not_create_or_mutate_delegated_resources",
     "binds_configuration_watermark",
   ], "configuration_catalog"),
-  feature("caller_idempotent_dispatch", "unavailable", [
+  feature("caller_idempotent_dispatch", "supported", [
     "same_caller_key_and_payload_adopts_one_logical_turn",
     "caller_key_payload_conflict_fails_closed",
   ]),
-  feature("caller_idempotent_discovery", "unavailable", [
+  feature("caller_idempotent_discovery", "supported", [
     "discovers_exact_caller_owned_resource_before_dispatch",
     "unproven_absence_does_not_authorize_replacement",
   ]),
-  feature("caller_keyed_ordered_input", "unavailable", [
+  feature("caller_keyed_ordered_input", "supported", [
     "each_input_has_stable_caller_identity",
     "settlement_requires_all_inputs_in_order",
   ]),
@@ -46,7 +46,7 @@ export const DROVR_ADVERTISED_FEATURES = deepFreeze([
     "recovery_uses_persisted_launch_binding",
     "missing_receipt_does_not_prove_absence",
   ]),
-  feature("terminal_proof_classification", "unavailable", [
+  feature("terminal_proof_classification", "supported", [
     "terminal_result_names_its_proof_class",
     "uncertain_is_distinct_from_completed",
   ]),
@@ -54,11 +54,11 @@ export const DROVR_ADVERTISED_FEATURES = deepFreeze([
     "late_output_retains_original_turn_identity",
     "late_output_does_not_replace_accepted_result",
   ]),
-  feature("launch_binding_settlement_proof", "unavailable", [
+  feature("launch_binding_settlement_proof", "supported", [
     "settlement_binds_exact_launch_comparison_key",
     "catalog_drift_cannot_refresh_active_binding",
   ]),
-  feature("opaque_caller_ownership_metadata", "unavailable", [
+  feature("opaque_caller_ownership_metadata", "supported", [
     "metadata_round_trips_without_interpretation",
     "metadata_is_bound_by_description_identity",
   ]),
@@ -129,14 +129,7 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     env: dependencies.env ?? process.env,
   });
   const resolved = resolveLaunchSpecification(configuration, request.launch);
-  const launch = deepFreeze({
-    schema: SCHEMAS.launch,
-    ...resolved,
-    catalog_fingerprints: logicalFingerprints(
-      configuration.directory,
-      resolved.catalog_fingerprints,
-    ),
-  });
+  const launch = launchDescription(configuration, resolved);
   const effectiveAuthority = deepFreeze({
     schema: SCHEMAS.effective_authority,
     capability: launch.capability,
@@ -151,27 +144,12 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     schema: SCHEMAS.feature_advertisement,
     features: DROVR_ADVERTISED_FEATURES,
   });
-  const catalogAuthority = {
-    schemas: SCHEMAS,
-    capacity: CAPACITY,
-    authority_dimensions: AUTHORITY_DIMENSIONS,
-    credential_references: ["ambient/claude", "ambient/codex"],
-    feature_advertisement: featureAdvertisement,
-    fingerprints: logicalFingerprints(
-      configuration.directory,
-      configuration.fingerprints,
-    ),
-  };
-  const watermark = deepFreeze({
-    schema: "drovr.authority-watermark/v1",
-    authority: "drovr.configuration-catalog",
-    content_sha256: digest(catalogAuthority),
-  });
-  const callerMetadata = canonicalize(request.caller_metadata);
+  const watermark = configurationWatermark(configuration, featureAdvertisement);
+  const callerMetadata = canonicalizeJson(request.caller_metadata);
   const comparisonKeys = deepFreeze({
-    launch: digest(launch),
-    effective_authority: digest(effectiveAuthority),
-    credential_reference: digest(credentialReference),
+    launch: digestCanonical(launch),
+    effective_authority: digestCanonical(effectiveAuthority),
+    credential_reference: digestCanonical(credentialReference),
     configuration_catalog: watermark.content_sha256,
   });
   const identity = {
@@ -189,8 +167,52 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
 
   return deepFreeze({
     ...identity,
-    description_digest: digest(identity),
+    description_digest: digestCanonical(identity),
     legal_actions: ["dispatch_exact_launch", "refresh_description"],
+  });
+}
+
+export function createAgentLaunchBinding(configuration, resolved) {
+  const featureAdvertisement = deepFreeze({
+    schema: SCHEMAS.feature_advertisement,
+    features: DROVR_ADVERTISED_FEATURES,
+  });
+  return deepFreeze({
+    schema: "drovr.agent-launch-binding/v1",
+    comparison_key: digestCanonical(launchDescription(configuration, resolved)),
+    configuration_watermark: configurationWatermark(
+      configuration,
+      featureAdvertisement,
+    ).content_sha256,
+  });
+}
+
+function launchDescription(configuration, resolved) {
+  return deepFreeze({
+    schema: SCHEMAS.launch,
+    ...resolved,
+    catalog_fingerprints: logicalFingerprints(
+      configuration.directory,
+      resolved.catalog_fingerprints,
+    ),
+  });
+}
+
+function configurationWatermark(configuration, featureAdvertisement) {
+  return deepFreeze({
+    schema: "drovr.authority-watermark/v1",
+    authority: "drovr.configuration-catalog",
+    content_sha256: digestCanonical({
+      schemas: SCHEMAS,
+      capacity: CAPACITY,
+      authority_dimensions: AUTHORITY_DIMENSIONS,
+      credential_references: ["ambient/claude", "ambient/codex"],
+      feature_advertisement: featureAdvertisement,
+      fingerprints: logicalFingerprints(
+        configuration.directory,
+        configuration.fingerprints,
+      ),
+    }),
   });
 }
 
@@ -223,8 +245,8 @@ function validateRequest(request) {
       outcome: "invalid_arguments",
     });
   }
-  canonicalize(request.launch);
-  canonicalize(request.caller_metadata);
+  canonicalizeJson(request.launch);
+  canonicalizeJson(request.caller_metadata);
 }
 
 function logicalFingerprints(directory, fingerprints) {
@@ -240,60 +262,6 @@ function logicalFingerprints(directory, fingerprints) {
       return { subject, sha256: `sha256:${sha256}` };
     })
     .sort((left, right) => compare(left.subject, right.subject));
-}
-
-function digest(value) {
-  return `sha256:${createHash("sha256")
-    .update(JSON.stringify(canonicalize(value)))
-    .digest("hex")}`;
-}
-
-function canonicalize(value, ancestors = new Set()) {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "object" || ancestors.has(value)) {
-    throw new DrovrError("description values must be lossless JSON", {
-      code: 2,
-      outcome: "invalid_arguments",
-    });
-  }
-  ancestors.add(value);
-  let result;
-  if (Array.isArray(value)) {
-    if (
-      Reflect.ownKeys(value).length !== value.length + 1 ||
-      value.some((_, index) => !Object.hasOwn(value, index))
-    ) {
-      throw new DrovrError("description values must be lossless JSON", {
-        code: 2,
-        outcome: "invalid_arguments",
-      });
-    }
-    result = value.map((item) => canonicalize(item, ancestors));
-  } else {
-    if (
-      !isRecord(value) ||
-      Reflect.ownKeys(value).length !== Object.keys(value).length
-    ) {
-      throw new DrovrError("description values must be lossless JSON", {
-        code: 2,
-        outcome: "invalid_arguments",
-      });
-    }
-    result = Object.fromEntries(
-      Object.keys(value)
-        .sort(compare)
-        .map((key) => [key, canonicalize(value[key], ancestors)]),
-    );
-  }
-  ancestors.delete(value);
-  return result;
 }
 
 function deepFreeze(value) {

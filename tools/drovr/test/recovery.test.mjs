@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { loadConfiguration, resolveLaunchSpecification } from "../src/config.mjs";
+import { createAgentLaunchBinding } from "../src/description.mjs";
 import { reconcileOrRecoverAgent } from "../src/recovery.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
-import { startTurn } from "../src/turns.mjs";
+import { reconcileTurn, startTurn } from "../src/turns.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -96,7 +97,36 @@ test("recovering a working agent interrupts the prior turn without replaying it"
   const [turn] = await readRecords(fixture.registryDirectory, "turns");
   assert.equal(turn.status, "interrupted");
   assert.equal(turn.inputs[0].text, "do not replay me");
+  assert.equal(turn.caller.dispatch_key, "run:1/card:1/attempt:1");
+  assert.equal(
+    turn.settlement_proof.classification,
+    "interruption_unconfirmed",
+  );
+  assert.equal(
+    turn.settlement_proof.launch_comparison_key,
+    fixture.agent.launch_binding.comparison_key,
+  );
   assert.deepEqual(delivered, []);
+});
+
+test("turn reconciliation reports the recovered turn disposition", async (t) => {
+  const fixture = await recoveryFixture(t, { working: true });
+  let registered = false;
+  const result = await reconcileTurn(fixture.turn.id, { timeoutMs: 1000 }, {
+    env: fixture.env,
+    now: () => "2026-07-23T12:00:01.000Z",
+    herdr: recoveryHerdr({
+      onResume() {
+        registered = true;
+      },
+      registered: () => registered,
+    }),
+    run: compatibleCodex,
+  });
+
+  assert.equal(result.turn.status, "interrupted");
+  assert.equal(Object.hasOwn(result, "command_status"), false);
+  assert.equal(Object.hasOwn(result, "recovery_reason"), false);
 });
 
 test("a mutating turn command recovers loss before accepting later explicit work", async (t) => {
@@ -251,7 +281,9 @@ async function recoveryFixture(t, { working = false } = {}) {
     XDG_STATE_HOME: join(scratch, "state"),
     DROVR_CONFIG_DIR: join(root, "config", "drovr"),
   };
-  const launch = resolveLaunchSpecification(await loadConfiguration({ env }), {});
+  const configuration = await loadConfiguration({ env });
+  const launch = resolveLaunchSpecification(configuration, {});
+  const launchBinding = createAgentLaunchBinding(configuration, launch);
   const registryDirectory = stateDirectory(env);
   const group = {
     schema: "drovr.group/v1",
@@ -273,6 +305,7 @@ async function recoveryFixture(t, { working = false } = {}) {
     task_id: task.id,
     status: "active",
     launch,
+    launch_binding: launchBinding,
     herdr: { name: "managed-agent", pane_id: "pane-agent-1" },
     native_session: "native-1",
   };
@@ -282,7 +315,23 @@ async function recoveryFixture(t, { working = false } = {}) {
     agent_id: agent.id,
     task_id: task.id,
     status: working ? "working" : "completed",
-    inputs: [{ sequence: 1, text: working ? "do not replay me" : "done" }],
+    inputs: [{
+      sequence: 1,
+      caller_key: "input:1",
+      payload_sha256: `sha256:${"d".repeat(64)}`,
+      text: working ? "do not replay me" : "done",
+    }],
+    caller: {
+      dispatch_key: "run:1/card:1/attempt:1",
+      payload_sha256: `sha256:${"e".repeat(64)}`,
+      metadata: { run_id: "run:1", card_id: "card:1" },
+    },
+    launch_binding: {
+      schema: "drovr.launch-binding/v1",
+      comparison_key: launchBinding.comparison_key,
+      configuration_watermark: launchBinding.configuration_watermark,
+      description_digest: `sha256:${"f".repeat(64)}`,
+    },
   };
   await writeRecord(registryDirectory, "groups", group);
   await writeRecord(registryDirectory, "tasks", task);

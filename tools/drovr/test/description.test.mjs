@@ -130,14 +130,7 @@ test("description resolves an exact watermarked launch without creating delegate
     description.feature_advertisement.features
       .filter(({ availability }) => availability === "unavailable")
       .map(({ id }) => id),
-    [
-      "caller_idempotent_dispatch",
-      "caller_idempotent_discovery",
-      "caller_keyed_ordered_input",
-      "terminal_proof_classification",
-      "launch_binding_settlement_proof",
-      "opaque_caller_ownership_metadata",
-    ],
+    [],
   );
   for (const value of Object.values(description.comparison_keys)) {
     assert.match(value, /^sha256:[0-9a-f]{64}$/u);

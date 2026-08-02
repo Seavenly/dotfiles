@@ -23,3 +23,12 @@ assert_status() {
   local expected="$2"
   [[ "$actual" -eq "$expected" ]] || fail "expected status $expected, got $actual"
 }
+
+file_mode() {
+  local path="$1"
+  if stat -c '%a' "$path" >/dev/null 2>&1; then
+    stat -c '%a' "$path"
+  else
+    stat -f '%Lp' "$path"
+  fi
+}

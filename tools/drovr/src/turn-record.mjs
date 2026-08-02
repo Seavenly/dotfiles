@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { DrovrError } from "./errors.mjs";
 
 // A `--prompt-file` or standard-input prompt arrives with the terminating newline
@@ -17,6 +19,9 @@ export function createTurnRecord({
   submittedAt,
   transcriptCursor,
   herdrStateChangeSeq,
+  caller,
+  inputKey,
+  launchBinding,
 }) {
   return {
     schema: "drovr.turn/v1",
@@ -24,7 +29,16 @@ export function createTurnRecord({
     agent_id: agentId,
     task_id: taskId,
     status: "working",
-    inputs: [{ sequence: 1, text: prompt, submitted_at: submittedAt }],
+    inputs: [inputRecord({
+      sequence: 1,
+      text: prompt,
+      submittedAt,
+      callerKey: inputKey,
+    })],
+    ...(caller ? { caller: structuredClone(caller) } : {}),
+    ...(launchBinding
+      ? { launch_binding: structuredClone(launchBinding) }
+      : {}),
     transcript_cursor: transcriptCursor,
     ...(Number.isSafeInteger(herdrStateChangeSeq)
       ? { herdr: { state_change_seq_before_delivery: herdrStateChangeSeq } }
@@ -46,10 +60,10 @@ export function turnAwaitsPostDeliverySettlement(
   );
 }
 
-export function appendTurnInput(turn, { text, submittedAt }) {
+export function appendTurnInput(turn, { callerKey, text, submittedAt }) {
   requireOpenTurn(turn);
   const sequence = (turn.inputs.at(-1)?.sequence ?? 0) + 1;
-  const input = { sequence, text, submitted_at: submittedAt };
+  const input = inputRecord({ sequence, text, submittedAt, callerKey });
   turn.inputs.push(input);
   return input;
 }
@@ -60,7 +74,58 @@ export function settleTurnRecord(turn, { status, result, error, settledAt }) {
   if (result !== undefined) turn.result = result;
   if (error !== undefined) turn.error = error;
   turn.settled_at = settledAt;
+  if (turn.launch_binding) {
+    turn.settlement_proof = {
+      schema: "drovr.turn-settlement-proof/v1",
+      classification: terminalProofClassification(status),
+      launch_comparison_key: turn.launch_binding.comparison_key,
+      configuration_watermark:
+        turn.launch_binding.configuration_watermark,
+      description_digest: turn.launch_binding.description_digest,
+      ordered_inputs: turn.inputs.map(
+        ({ sequence, caller_key, payload_sha256 }) => ({
+          sequence,
+          caller_key,
+          payload_sha256,
+          delivery_proof: inputDeliveryProof(status),
+        }),
+      ),
+    };
+  }
   return turn;
+}
+
+function inputDeliveryProof(status) {
+  return status === "completed"
+    ? "exact_transcript_correlation"
+    : "unproven";
+}
+
+function inputRecord({ sequence, text, submittedAt, callerKey }) {
+  return {
+    sequence,
+    ...(callerKey
+      ? {
+          caller_key: callerKey,
+          payload_sha256: `sha256:${createHash("sha256")
+            .update(text)
+            .digest("hex")}`,
+          delivery: { status: "recorded" },
+        }
+      : {}),
+    text,
+    submitted_at: submittedAt,
+  };
+}
+
+export function terminalProofClassification(status) {
+  return {
+    completed: "exact_transcript_correlation",
+    cancelled: "native_interruption_settlement",
+    interrupted: "interruption_unconfirmed",
+    uncertain: "indeterminate",
+    unsupported_transcript: "transcript_unavailable",
+  }[status] ?? "terminal_without_result";
 }
 
 function requireOpenTurn(turn) {

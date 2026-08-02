@@ -33,6 +33,14 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     ),
     "utf8",
   ));
+  const delegatedLifecycleSchema = JSON.parse(await readFile(
+    join(
+      root,
+      "schemas",
+      "flow.delegated-agent-lifecycle-projection.v1.schema.json",
+    ),
+    "utf8",
+  ));
   const rejectionSchema = JSON.parse(await readFile(
     join(root, "schemas", "flow.rejection.v1.schema.json"),
     "utf8",
@@ -147,6 +155,27 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
   assert.equal(malformedProjection.description, null);
   assert.equal(
     ajv.validate(delegatedDescriptionSchema, malformedProjection),
+    true,
+    ajv.errorsText(),
+  );
+  const absentLifecycleProjection = await createDrovrDelegatedAgentPort({
+    async discoverDrovr() {
+      return {
+        discovery_status: "proven_absent",
+        authority_watermark: {
+          schema: "drovr.registry-authority-watermark/v1",
+          authority: "drovr.registry",
+          turns_sha256:
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+      };
+    },
+  }).discover({
+    schema: "flow.delegated-agent-discover-request/v1",
+    caller_key: "run:absent/card:review/attempt:1",
+  });
+  assert.equal(
+    ajv.validate(delegatedLifecycleSchema, absentLifecycleProjection),
     true,
     ajv.errorsText(),
   );

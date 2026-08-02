@@ -77,7 +77,7 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
   assert.equal(stderr, "");
   const projection = JSON.parse(stdout);
   assert.equal(projection.schema, "flow.delegated-agent-description-projection/v1");
-  assert.equal(projection.status, "blocked");
+  assert.equal(projection.status, "compatible");
   assert.equal(projection.description.launch.harness, "codex");
   assert.equal(projection.description.launch.capability, "read-only");
   assert.deepEqual(projection.description.caller_metadata, {
@@ -85,21 +85,10 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
     card_id: "review",
   });
   assert.deepEqual(projection.legal_next_actions, [
-    "repair_delegated_runtime_contract",
+    "bind_exact_launch_description",
     "refresh_delegated_runtime_description",
   ]);
-  assert.deepEqual(
-    projection.compatibility.findings.map(({ feature_id: featureId }) =>
-      featureId),
-    [
-      "caller_idempotent_dispatch",
-      "caller_idempotent_discovery",
-      "caller_keyed_ordered_input",
-      "terminal_proof_classification",
-      "launch_binding_settlement_proof",
-      "opaque_caller_ownership_metadata",
-    ],
-  );
+  assert.deepEqual(projection.compatibility.findings, []);
 });
 
 test("flow CLI classifies an invalid launch selector without suggesting retry", async () => {
