@@ -41,6 +41,11 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Authority schema transition**:
+An atomic, versioned change to replacement authority storage, bound to one
+exact runtime release and preserving replay of compatible records.
+_Avoid_: Flow implementation transition, host convergence
+
 **Flow card**:
 One immutable executable node in an accepted finite flow run plan. Dependency
 edges determine readiness but never imply ambient data transfer.
@@ -271,6 +276,8 @@ _Avoid_: Migration record, replacement run
 - A **registered operation** creates one **effect intent** under **run
   authority**; an **effect receipt** settles it, while an **effect observation**
   supports recovery according to its **effect classification**.
+- An **authority schema transition** changes only the replacement authority
+  store contract; it does not migrate legacy authority or select a launcher.
 - A frozen Hermes-backed flow run executes **legacy Kanban cards** under its
   original authority.
 - The **launch policy** selects an implementation only for future runs; it does

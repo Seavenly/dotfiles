@@ -38,6 +38,14 @@ import {
   readAuthorityStream,
   replayAuthorityStream,
 } from "./sqlite-authority-replay.mjs";
+import {
+  AUTHORITY_SCHEMA_RELEASE,
+  CURRENT_AUTHORITY_SCHEMA_VERSION,
+  initializeAuthoritySchema as initializeStoreSchema,
+  readAuthoritySchemaCompatibility,
+  transitionAuthoritySchema,
+  uninitializedAuthoritySchemaCompatibility,
+} from "./authority-schema.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const require = createRequire(import.meta.url);
@@ -188,8 +196,10 @@ export function createInMemoryRunAuthority() {
 export function createDurableRunAuthority({
   authorityDirectory,
   access = "mutate",
+  afterSchemaTransitionCommit = () => {},
   beforeEffect = () => {},
   beforeIntentCommit = () => {},
+  beforeSchemaTransitionCommit = () => {},
   declaredCapacity = 4,
   hostIdentityAdapter = createHostAuthorityIdentityAdapter(),
   lifecycleKernel = decideLifecycle,
@@ -213,6 +223,16 @@ export function createDurableRunAuthority({
   if (typeof beforeIntentCommit !== "function") {
     throw new TypeError(
       "durable run authority beforeIntentCommit must be a function",
+    );
+  }
+  if (typeof afterSchemaTransitionCommit !== "function") {
+    throw new TypeError(
+      "durable run authority post-transition hook must be a function",
+    );
+  }
+  if (typeof beforeSchemaTransitionCommit !== "function") {
+    throw new TypeError(
+      "durable run authority schema transition hook must be a function",
     );
   }
   if (typeof lifecycleKernel !== "function") {
@@ -245,6 +265,7 @@ export function createDurableRunAuthority({
   const effectsInFlight = new Set();
   let lockDatabase = null;
   let authorityEpoch = null;
+  let authoritySchemaCompatibility = null;
   let closed = false;
 
   if (access === "mutate") {
@@ -258,15 +279,24 @@ export function createDurableRunAuthority({
       let database = null;
       try {
         database = openAuthorityDatabase(databasePath);
-        initializeAuthoritySchema(database);
-        authorityEpoch = acquireAuthorityEpoch(database, {
-          bootId,
-          declaredCapacity,
-          processIdentity,
+        authoritySchemaCompatibility = initializeStoreSchema(database, {
+          afterCommit: afterSchemaTransitionCommit,
+          beforeCommit: beforeSchemaTransitionCommit,
         });
+        if (authoritySchemaCompatibility.status === "compatible") {
+          authorityEpoch = acquireAuthorityEpoch(database, {
+            bootId,
+            declaredCapacity,
+            processIdentity,
+          });
+        } else if (authoritySchemaCompatibility.status === "incompatible") {
+          if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
+          lockDatabase.close();
+          lockDatabase = null;
+        }
       } catch (error) {
-        if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
-        lockDatabase.close();
+        if (lockDatabase?.isTransaction) lockDatabase.exec("ROLLBACK");
+        lockDatabase?.close();
         lockDatabase = null;
         throw error;
       } finally {
@@ -278,6 +308,22 @@ export function createDurableRunAuthority({
   return Object.freeze({
     launch(request = {}) {
       assertOpen();
+      if (authoritySchemaCompatibility?.status === "incompatible") {
+        return schemaCompatibilityRejection(
+          "launch",
+          authoritySchemaCompatibility,
+          null,
+          null,
+          request?.prepared?.bundle_digest ?? null,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "transition_required") {
+        return schemaTransitionRequiredRejection(
+          "launch",
+          databasePath,
+          request?.prepared?.bundle_digest ?? null,
+        );
+      }
       if (!lockDatabase) {
         return durableMutationRejection(
           "launch",
@@ -420,6 +466,27 @@ export function createDurableRunAuthority({
 
     command(command) {
       assertOpen();
+      if (authoritySchemaCompatibility?.status === "incompatible") {
+        return schemaCompatibilityRejection(
+          "command",
+          authoritySchemaCompatibility,
+          command?.run_id,
+          command?.type,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "transition_required") {
+        if (command?.type !== "recovery" ||
+            command?.recovery !== "authority_schema_transition") {
+          return schemaTransitionRequiredRejection(
+            "command",
+            databasePath,
+            null,
+            command?.run_id,
+            command?.type,
+          );
+        }
+        return applySchemaTransitionCommand(command);
+      }
       if (!lockDatabase) {
         return durableMutationRejection(
           "command",
@@ -594,21 +661,34 @@ export function createDurableRunAuthority({
         if (runId !== undefined) {
           return unknownRunRejection("query", runId, []);
         }
-        return freezeCanonical({
+        return fencedHostProjection(freezeCanonical({
           schema: "flow.run-index-projection/v1",
           watermark: EMPTY_WATERMARK,
           runs: [],
-        });
+        }), null, 0, uninitializedAuthoritySchemaCompatibility());
       }
       let database = null;
       try {
         database = openAuthorityDatabase(databasePath, { readOnly: true });
+        const compatibility = readAuthoritySchemaCompatibility(database);
+        if (compatibility.status === "incompatible") {
+          return runId === undefined
+            ? incompatibleHostProjection(compatibility)
+            : schemaCompatibilityRejection(
+                "query",
+                compatibility,
+                runId,
+              );
+        }
         if (runId !== undefined) {
           const stream = readStream(database, runId);
           if (!stream) {
             return durableUnknownRunRejection("query", runId, database);
           }
-          return projectRun(fenceRun(database, stream));
+          const projection = projectRun(fenceRun(database, stream));
+          return compatibility.status === "transition_required"
+            ? transitionRequiredRunProjection(projection, compatibility)
+            : projection;
         }
         const hostStream = readStream(database, "host:runs");
         const host = hostStream?.fold ?? freezeCanonical({
@@ -617,7 +697,12 @@ export function createDurableRunAuthority({
           runs: [],
         });
         const admission = readStream(database, "host:admission")?.fold;
-        return fencedHostProjection(host, admission, 0);
+        return fencedHostProjection(
+          host,
+          admission,
+          0,
+          readAuthoritySchemaCompatibility(database),
+        );
       } catch (error) {
         const integrity = authorityIntegrityError(error);
         if (!integrity) throw error;
@@ -972,6 +1057,58 @@ export function createDurableRunAuthority({
   function assertOpen() {
     if (closed) throw new Error("durable run authority is closed");
   }
+
+  function applySchemaTransitionCommand(command) {
+    if (!lockDatabase) {
+      return durableMutationRejection(
+        "command",
+        null,
+        databasePath,
+        command?.type,
+        fenceRun,
+      );
+    }
+    const database = openAuthorityDatabase(databasePath);
+    try {
+      const before = durableHostProjection(database);
+      const expectedCommand = before.legal_actions[0];
+      if (!isDeepStrictEqual(command, expectedCommand)) {
+        return createRejection({
+          operation: "command",
+          code: "stale_authority_schema_transition",
+          reason: "schema transition command differs from current authority",
+          commandType: typeof command?.type === "string" ? command.type : null,
+          runId: stringOrNull(command?.run_id),
+          authorityWatermark: before.watermark,
+          authorityWatermarkDomain: "host",
+          legalActions: before.legal_actions,
+        });
+      }
+      authoritySchemaCompatibility = transitionAuthoritySchema(database, {
+        afterCommit: afterSchemaTransitionCommit,
+        beforeCommit: beforeSchemaTransitionCommit,
+        expectedWatermark: authoritySchemaCompatibility.watermark,
+      });
+      if (authoritySchemaCompatibility.status !== "compatible") {
+        return schemaTransitionRequiredRejection("command", databasePath);
+      }
+      authorityEpoch = acquireAuthorityEpoch(database, {
+        bootId,
+        declaredCapacity,
+        processIdentity,
+      });
+      const after = durableHostProjection(database);
+      return freezeCanonical({
+        schema: "flow.command-receipt/v1",
+        command_type: "recovery",
+        run_id: null,
+        authority_watermark: after.watermark,
+        accepted: true,
+      });
+    } finally {
+      database.close();
+    }
+  }
 }
 
 function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
@@ -987,51 +1124,6 @@ function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
     database?.close();
     throw authorityIntegrityError(error) ?? error;
   }
-}
-
-function initializeAuthoritySchema(database) {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS authority_metadata (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      contract TEXT NOT NULL
-    );
-    INSERT OR IGNORE INTO authority_metadata(singleton, contract)
-      VALUES (1, 'flow.sqlite-authority-store/v1');
-
-    CREATE TABLE IF NOT EXISTS authority_streams (
-      stream_id TEXT PRIMARY KEY,
-      stream_kind TEXT NOT NULL,
-      generation INTEGER NOT NULL CHECK (generation > 0),
-      head_sequence INTEGER NOT NULL CHECK (head_sequence >= 0),
-      head_digest TEXT NOT NULL,
-      fold_contract TEXT,
-      fold_json TEXT,
-      fold_digest TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS authority_events (
-      stream_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL CHECK (sequence > 0),
-      generation INTEGER NOT NULL CHECK (generation > 0),
-      contract TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      payload_digest TEXT NOT NULL,
-      previous_digest TEXT NOT NULL,
-      record_digest TEXT NOT NULL,
-      authority_epoch INTEGER NOT NULL CHECK (authority_epoch > 0),
-      boot_id TEXT NOT NULL,
-      process_identity TEXT NOT NULL,
-      PRIMARY KEY (stream_id, sequence),
-      FOREIGN KEY (stream_id) REFERENCES authority_streams(stream_id)
-    );
-
-    CREATE TRIGGER IF NOT EXISTS authority_events_no_update
-      BEFORE UPDATE ON authority_events
-      BEGIN SELECT RAISE(ABORT, 'authority events are append-only'); END;
-    CREATE TRIGGER IF NOT EXISTS authority_events_no_delete
-      BEFORE DELETE ON authority_events
-      BEGIN SELECT RAISE(ABORT, 'authority events are append-only'); END;
-  `);
 }
 
 function acquireAuthorityEpoch(database, {
@@ -1539,30 +1631,130 @@ function durableLaunchRejection(
 }
 
 function durableHostProjection(database) {
+  const authoritySchema = readAuthoritySchemaCompatibility(database);
+  if (authoritySchema.status === "incompatible") {
+    return incompatibleHostProjection(authoritySchema);
+  }
   const host = readStream(database, "host:runs")?.fold ?? freezeCanonical({
     schema: "flow.run-index-projection/v1",
     watermark: EMPTY_WATERMARK,
     runs: [],
   });
   const admission = readStream(database, "host:admission")?.fold ?? null;
-  return fencedHostProjection(host, admission, admission?.declared_capacity ?? 0);
+  return fencedHostProjection(
+    host,
+    admission,
+    admission?.declared_capacity ?? 0,
+    authoritySchema,
+  );
 }
 
-function fencedHostProjection(host, admission, fallbackCapacity) {
+function incompatibleHostProjection(authoritySchema) {
+  const watermark = digest({
+    schema: "flow.fenced-host-watermark/v1",
+    run_index_watermark: null,
+    admission_watermark: null,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
+  return freezeCanonical({
+    schema: "flow.run-index-projection/v1",
+    watermark,
+    runs: [],
+    authority_epoch: 0,
+    authority_boot_id: null,
+    admission: { active_runs: 0, declared_capacity: 0 },
+    authority_schema: authoritySchema,
+    legal_actions: [],
+  });
+}
+
+function transitionRequiredRunProjection(projection, authoritySchema) {
+  const watermark = digest({
+    schema: "flow.transition-required-run-watermark/v1",
+    run_watermark: projection.watermark,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
+  return freezeCanonical({
+    ...projection,
+    watermark,
+    legal_actions: [],
+  });
+}
+
+function schemaCompatibilityRejection(
+  operation,
+  compatibility,
+  runId = null,
+  commandType = null,
+  bundleDigest = null,
+) {
+  return createRejection({
+    operation,
+    code: "authority_schema_incompatible",
+    reason: "authority store contract or schema version is incompatible",
+    commandType: commandType ?? null,
+    runId: runId ?? null,
+    bundleDigest: bundleDigest ?? null,
+    authorityWatermark: incompatibleHostProjection(compatibility).watermark,
+    authorityWatermarkDomain: "host",
+  });
+}
+
+function fencedHostProjection(host, admission, fallbackCapacity, authoritySchema) {
+  const watermark = digest({
+    schema: "flow.fenced-host-watermark/v1",
+    run_index_watermark: host.watermark,
+    admission_watermark: admission?.watermark ?? EMPTY_WATERMARK,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
   return freezeCanonical({
     ...host,
-    watermark: digest({
-      schema: "flow.fenced-host-watermark/v1",
-      run_index_watermark: host.watermark,
-      admission_watermark: admission?.watermark ?? EMPTY_WATERMARK,
-    }),
+    watermark,
     authority_epoch: admission?.authority_epoch ?? 0,
     authority_boot_id: admission?.boot_id ?? null,
     admission: {
       active_runs: admission?.active_runs.length ?? 0,
       declared_capacity: admission?.declared_capacity ?? fallbackCapacity,
     },
+    authority_schema: authoritySchema,
+    legal_actions: authoritySchema.status === "transition_required"
+      ? [{
+          schema: "flow.command/v1",
+          type: "recovery",
+          recovery: "authority_schema_transition",
+          from_version: authoritySchema.version,
+          to_version: CURRENT_AUTHORITY_SCHEMA_VERSION,
+          transition_release: AUTHORITY_SCHEMA_RELEASE,
+          expected_watermark: watermark,
+        }]
+      : [],
   });
+}
+
+function schemaTransitionRequiredRejection(
+  operation,
+  databasePath,
+  bundleDigest = null,
+  runId = null,
+  commandType = null,
+) {
+  const database = openAuthorityDatabase(databasePath, { readOnly: true });
+  try {
+    const host = durableHostProjection(database);
+    return createRejection({
+      operation,
+      code: "authority_schema_transition_required",
+      reason: "authority schema must transition before mutation",
+      bundleDigest,
+      runId: stringOrNull(runId),
+      commandType: stringOrNull(commandType),
+      authorityWatermark: host.watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: host.legal_actions,
+    });
+  } finally {
+    database.close();
+  }
 }
 
 function databaseExists(databasePath) {

@@ -17,7 +17,7 @@ HOME="$home" XDG_CONFIG_HOME="$config_home" DOTFILES_ROOT="$root" \
 
 routing="$config_home/dotfiles/hermes-routing.yaml"
 [[ -f "$routing" ]] || fail "Hermes routing skeleton was not created"
-[[ "$(stat -f '%Lp' "$routing" 2>/dev/null || stat -c '%a' "$routing")" == 600 ]] \
+[[ "$(file_mode "$routing")" == 600 ]] \
   || fail "Hermes routing skeleton is not mode 0600"
 assert_contains "$(cat "$routing")" 'schema: dotfiles.hermes-routing/v1'
 assert_contains "$(cat "$routing")" 'profiles: {}'
@@ -26,7 +26,7 @@ echo "ok - Hermes routing starts as secure machine-local configuration"
 for profile in flow-controller analyst critic builder artifact gate; do
   config="$home/.hermes/profiles/$profile/config.yaml"
   [[ -f "$config" ]] || fail "$profile config was not rendered"
-  [[ "$(stat -f '%Lp' "$config" 2>/dev/null || stat -c '%a' "$config")" == 600 ]] \
+  [[ "$(file_mode "$config")" == 600 ]] \
     || fail "$profile config is not mode 0600"
 done
 echo "ok - empty routing still converges safe model-neutral profile configs"

@@ -319,6 +319,9 @@ drovr agent get AGENT_ID
 drovr agent retire AGENT_ID
 
 drovr turn start AGENT_ID [options] [PROMPT]
+drovr turn dispatch AGENT_ID --caller-key KEY --input-key KEY \
+  --caller-metadata JSON --launch-binding JSON [PROMPT]
+drovr turn discover CALLER_KEY
 drovr turn send TURN_ID [options] [PROMPT]
 drovr turn wait TURN_ID [--timeout DURATION]
 drovr turn wait TURN_ID --after-block BLOCK_ID [--timeout DURATION]
@@ -351,13 +354,23 @@ names or a Drovr version string. Missing, weakened, duplicate, unexpected, or
 contradictory advertisement blocks preparation until a fresh conforming
 description can be observed.
 
-The initial advertisement marks caller-idempotent dispatch and discovery,
-caller-keyed ordered input, terminal-proof classification, launch-binding
-settlement proof, and opaque caller ownership metadata unavailable. Existing
-bounded observation, bounded wait, transcript correlation, cancellation,
-reconciliation, and late-result behavior remains advertised as supported.
-Flow must therefore return a typed compatibility block and must not expose a
-launch-binding action until the missing lifecycle contracts are implemented.
+The complete baseline is supported. Caller-owned dispatch validates the exact
+description digest, launch comparison key, configuration watermark, and opaque
+metadata against the persisted agent launch before Herdr is touched. An exact
+caller-key and payload retry adopts one durable logical turn. A payload conflict
+fails closed, and a complete registry scan distinguishes proven absence from a
+discovery failure. An agent whose immutable binding is missing, or differs from
+a fresh description of that same agent launch, fails closed with an explicit
+retirement disposition. A caller description for another launch is repairable
+by refresh and never authorizes retirement. Each initial and steering input
+carries its own stable caller key and payload digest; settlement remains gated
+on their recorded order.
+
+Terminal projections name the proof classification and bind completed
+settlement to the exact launch comparison key and ordered inputs. Cancellation,
+interruption, uncertainty, and late transcript correlation retain distinct
+dispositions. Drovr and Herdr restart recovery use the persisted agent and turn
+bindings without replaying an unresolved input or refreshing catalog identity.
 
 Creation options use stable keys and optional labels. Normal examples include:
 
@@ -413,6 +426,10 @@ including:
 - `task_closed`
 - `turn_closed`
 - `configuration_conflict`
+- `caller_key_conflict`
+- `launch_binding_conflict`
+- `launch_binding_missing`
+- `launch_binding_stale`
 - `agent_lost`
 - `recovery_blocked`
 - `session_missing`

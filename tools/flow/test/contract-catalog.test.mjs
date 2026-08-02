@@ -44,6 +44,18 @@ test("the public catalog exposes the settled interface and forbids legacy import
     journal_mode: "wal",
     mutation_lock: "sqlite_os_advisory_lock",
     synchronous: "full",
+    schema_transition: {
+      action_contract: "flow.command/v1",
+      boundary_contract: "flow.authority-schema-transition-boundary/v1",
+      compatibility_projection: "flow.authority-schema-compatibility/v1",
+      current_version: 2,
+      release: {
+        schema: "flow.runtime-release/v1",
+        id: "flow-runtime-authority-schema/v2",
+        catalog_version: 8,
+      },
+      transition_contract: "flow.authority-schema-transition/v1",
+    },
     takeover: "operating_system_lock_release_only",
     transactional_folds: true,
   });
@@ -62,8 +74,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "legal_actions",
     ],
     watermark_domains: {
-      host: "host_run_index_and_admission_streams",
-      run: "run_lifecycle_stream_and_authority_epoch",
+      host: "host_run_index_admission_and_authority_schema",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
     },
   });
   for (const contract of [
@@ -84,6 +96,10 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.plan-revision-template/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
+    "flow.authority-schema-compatibility/v1",
+    "flow.authority-schema-transition/v1",
+    "flow.authority-schema-transition-boundary/v1",
+    "flow.runtime-release/v1",
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
@@ -109,6 +125,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     execution_command: "operation_execute",
     recovery_command: "recovery",
   });
+  assert.ok(catalog.projections.includes("authority_schema_compatibility"));
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
@@ -130,6 +147,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
     adapter: "drovr/v1",
     description_request: "flow.delegated-agent-description-request/v1",
     description_projection: "flow.delegated-agent-description-projection/v1",
+    lifecycle_projection: "flow.delegated-agent-lifecycle-projection/v1",
+    operations: {
+      dispatch: "flow.delegated-agent-dispatch-request/v1",
+      discover: "flow.delegated-agent-discover-request/v1",
+      send: "flow.delegated-agent-send-request/v1",
+      observe: "flow.delegated-agent-observe-request/v1",
+      wait: "flow.delegated-agent-wait-request/v1",
+      cancel: "flow.delegated-agent-cancel-request/v1",
+      reconcile: "flow.delegated-agent-reconcile-request/v1",
+    },
     drovr_description: "drovr.delegated-agent-description/v1",
     required_features: {
       contract: "flow.drovr-required-features/v1",
@@ -216,8 +243,8 @@ test("the public catalog requires the complete rejection contract", async (t) =>
     contract: "flow.rejection/v1",
     fields: ["schema"],
     watermark_domains: {
-      host: "host_run_index_and_admission_streams",
-      run: "run_lifecycle_stream_and_authority_epoch",
+      host: "host_run_index_admission_and_authority_schema",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
     },
   };
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);

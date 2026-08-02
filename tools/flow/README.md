@@ -22,10 +22,11 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
-  Catalog v8 extends the exact v1 contracts by requiring
+  Catalog v8 extends the exact v1 requirements introduced in v7 for
   `explicit_facts.block_observations` on dynamic proposals and
   `revision_templates` on prepared runs, and publishes registered operation
   intent, observation, receipt, validation, effect-class, and recovery
+  contracts together with authority-schema compatibility and transition
   contracts. Callers must prepare a fresh bundle rather than launch a pre-v8
   envelope.
   This slice accepts the registered `flow.checkpoint/confirmation/v1`
@@ -107,7 +108,8 @@ Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `bundle_digest` are null when they do not apply. `authority_watermark_domain`
 states how to interpret `authority_watermark`: `run` covers one run's lifecycle
 stream generation plus the current authority epoch and boot, while `host`
-covers both host run-index and host-admission streams. The host watermark
+covers host run-index, host-admission, and authority-schema state. The host
+watermark
 changes on authority acquisition, capacity reservation or release, and run
 registration; an unrelated run lifecycle event does not change it.
 `authority_watermark` may be null only when the authority could not be observed.
@@ -121,6 +123,34 @@ authority as append-only SQLite streams in WAL mode with foreign keys and full
 durability. Every write updates a replay-verifiable transactional fold in the
 same transaction. Query and watch rebuild from the streams and compare the
 result with the fold before returning a projection.
+
+Catalog v8 advances the replacement authority store to schema version 2. The
+transition is bound to exact release `flow-runtime-authority-schema/v2` and an
+append-only `flow.authority-schema-transition/v1` receipt. A version-1 store is
+advanced in one SQLite transaction before a new authority epoch is acquired.
+A process ending before commit leaves the version-1 store valid; ending after
+commit leaves the version-2 store replay-valid. Existing run streams are not
+rewritten and replay to the same lifecycle facts.
+
+The host run-index projection includes
+`flow.authority-schema-compatibility/v1`, its exact schema watermark, and only
+the legal schema action. A read-only runtime inspecting version 1 projects
+an exact `recovery` command for `authority_schema_transition`. A mutating
+runtime consumes that watermarked command through `FlowRuntime.command` before
+acquiring an authority epoch. Run projections expose no run-scoped legal action
+while that host transition is pending, and their temporary watermark binds both
+the run authority and the pending authority schema so watchers observe recovery.
+Other commands return
+`authority_schema_transition_required` with the exact host recovery action;
+only a mismatched schema-transition recovery command returns
+`stale_authority_schema_transition`. Transition commit hooks receive the
+published `flow.authority-schema-transition-boundary/v1` payload in both commit
+phases. Unknown store contracts, future versions, altered transition history,
+and release mismatches expose schema-valid `incompatible` compatibility with no
+legal action. `launch` and `command` then return the typed
+`authority_schema_incompatible` rejection without recording an authority epoch
+or mutating a run. An incompatible runtime releases the mutation lock after
+classification so a runtime supporting the store can acquire it.
 
 Exactly one mutating runtime holds a SQLite-backed operating-system advisory
 lock. Acquiring it appends a boot-bound monotonic authority epoch. A competing
@@ -214,19 +244,36 @@ only `bind_exact_launch_description` and refresh; incompatible, contradictory,
 or unavailable descriptions expose closed repair or retry actions and never
 invent a watermark.
 
+The same port exposes `dispatch`, `discover`, `send`, `observe`, `wait`,
+`cancel`, and `reconcile`. Each operation returns a
+`flow.delegated-agent-lifecycle-projection/v1` derived from Drovr's registry
+authority. Dispatch binds the exact compatible description, discovery proves
+presence or absence at an exact registry watermark, and later inputs use an
+independent caller input key. Conflict projections fail closed and expose only
+actions that preserve the existing turn identity, except that an agent with a
+missing or stale immutable launch binding must be retired after registry
+discovery confirms its exact identity. Reconciliation names an exact turn and a
+bounded timeout; it recovers the bound agent when necessary, then correlates the
+durable ordered inputs without replaying an unproven delivery.
+
 Flow owns its required baseline in the versioned
 `config/flow/contracts/drovr-required-features.v1.json` contract and pins its
 exact bytes in the public catalog. Drovr independently owns and advertises its
 implemented contracts and exact availability. The port compares those separate
-authorities. The current runtime is intentionally blocked because six
-lifecycle contracts remain unavailable; the projection exposes repair and
-refresh, but no bind action.
+authorities. The current runtime supports the complete lifecycle baseline, so
+a conforming projection exposes exact bind and refresh actions. Missing,
+weakened, or contradictory contracts still fail closed with repair and refresh
+actions.
 Invalid launch selectors produce an `invalid_description_request` block with no
 retry action. Malformed adapter output is sanitized to a schema-valid closed
 projection rather than being presented as authoritative description evidence.
 Missing Flow contract bytes or validation dependencies produce a
 `delegated_agent_port_unavailable` block with only the local
 `repair_delegated_agent_port` action.
+If registry discovery cannot produce the exact conflict projection, the port
+returns `delegated_runtime_projection_unavailable` with only
+`repair_delegated_runtime_registry`; it never recommends retirement without an
+exact delegation identity and registry watermark.
 An invalid Drovr configuration produces a `description_unavailable` block with
 repair and refresh actions, while a transient description failure exposes only
 `retry_delegated_runtime_description`.
@@ -242,8 +289,9 @@ flow query delegated-agent \
   --json
 ```
 
-This query creates no run and no Drovr resource. Future plan compilation binds
-the exact description and comparison keys; it does not refresh them implicitly.
+This query creates no run and no Drovr resource. Plan compilation binds the
+exact description and comparison keys before using the lifecycle operations;
+it does not refresh them implicitly.
 
 The managed sources under `config/flow/` are:
 
@@ -253,6 +301,9 @@ The managed sources under `config/flow/` are:
   and validation-receipt contract. Its receipt must bind the exact imported
   bytes by digest, pass every required validation, and select only the catalog's
   positive `artifact_bytes` subject.
+- `schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json` - the
+  public lifecycle result shape, including authority and discovery watermarks,
+  delegation identity, turn evidence, and legal next actions.
 - `launch-policy.v1.json` - the converged selector policy. Its default is
   `legacy-claude/v1`; `flow-runtime/v1` is disabled.
 - `legacy-baselines.v1.json` - content-addressed Git trees for both frozen
