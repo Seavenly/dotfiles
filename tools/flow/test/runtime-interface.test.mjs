@@ -591,7 +591,7 @@ test("prepare rejects incomplete or cyclic dynamic graphs", () => {
   };
   assert.throws(
     () => runtime.prepare(unsupportedExecutor),
-    /dynamic plan does not support executor kind: delegate/,
+    /delegate authority is incomplete: confirm-plan/,
   );
 
   const unknownDependency = dynamicCheckpointProposal();

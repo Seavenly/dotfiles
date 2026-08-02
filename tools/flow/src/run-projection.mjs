@@ -57,6 +57,34 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const completedOperations = new Set(run.events
     .filter(({ type }) => type === "operation_completed")
     .map(({ card_id: cardId }) => cardId));
+  const handoffs = run.events
+    .filter(({ type }) => type === "resource_handoff_published")
+    .map(({ handoff_id: handoffId, handoff_watermark: handoffWatermark }) => ({
+      handoff_id: handoffId,
+      handoff_watermark: handoffWatermark,
+    }));
+  const resourceHandoffBindings = run.events
+    .filter(({ type }) => type === "resource_handoff_bound")
+    .map(({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }) => ({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }));
+  const completedDelegates = new Set(run.events
+    .filter(({ type }) => type === "delegate_completed")
+    .map(({ card_id: cardId }) => cardId));
+  const quarantinedDelegateOutputs = run.events
+    .filter(({ type }) => type === "delegate_output_quarantined")
+    .map(({ type: _type, ...output }) => output);
+  const unresolvedEffectIds = new Set([...effectIntents.keys()].filter(
+    (effectId) => !effectReceipts.has(effectId),
+  ));
   const grantEvents = run.events.filter(({ type }) => type === "capability_granted");
   const grants = grantEvents.map(({ type: _type, ...grant }) => grant);
   const revisionEvents = run.events.filter(({ type }) => type === "plan_revised");
@@ -97,11 +125,13 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       claim,
       disposition: phase === "active" ? "held" : "released",
     }));
+  const activeObservedBlocks = new Map();
   const cards = activePlan.cards.map((card) => {
     let status = "pending";
     if (supersededCards.includes(card.id)) {
       status = "superseded";
-    } else if (completedOperations.has(card.id)) {
+    } else if (completedOperations.has(card.id) ||
+        completedDelegates.has(card.id)) {
       status = "completed";
     } else if (checkpointDecisions.get(card.id) === "decline") {
       status = "declined";
@@ -110,17 +140,26 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     } else if (phase === "cancelled") {
       status = "abandoned";
     } else if ([...effectIntents.values()].some(
-      ({ card_id: cardId }) => cardId === card.id,
+      ({ card_id: cardId, effect_id: effectId }) =>
+        cardId === card.id && unresolvedEffectIds.has(effectId),
     )) {
       status = "executing";
+    } else if (quarantinedDelegateOutputs.some(
+      ({ card_id: cardId }) => cardId === card.id,
+    )) {
+      status = "blocked";
     } else if (phase === "active" && card.dependencies.every((dependency) =>
       approvedCheckpoints.has(dependency) ||
-      completedOperations.has(dependency))) {
+      completedOperations.has(dependency) ||
+      completedDelegates.has(dependency))) {
       const block = observedBlocks.get(card.id);
       const capabilityBlocked = block?.type === "capability_required" &&
         !block.required_capabilities.every((capability) =>
           capabilityApplies(capabilityBindings, capability, card.id));
       const revisionBlocked = block?.type === "plan_revision_required";
+      if (capabilityBlocked || revisionBlocked) {
+        activeObservedBlocks.set(card.id, block);
+      }
       status = capabilityBlocked || revisionBlocked
         ? "blocked"
         : card.executor.kind === "checkpoint" ? "waiting_checkpoint" : "ready";
@@ -135,7 +174,21 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     run.prepared.plan_fingerprint;
   const blocks = cards
     .filter(({ status }) => status === "blocked")
-    .map(({ id }) => ({ card_id: id, ...observedBlocks.get(id) }));
+    .map(({ id }) => {
+      const observed = activeObservedBlocks.get(id);
+      if (observed) return { card_id: id, ...observed };
+      const quarantined = quarantinedDelegateOutputs.filter(
+        ({ card_id: cardId }) => cardId === id,
+      ).at(-1);
+      return {
+        schema: "flow.delegate-card-block/v1",
+        id: `${quarantined.attempt_id}:quarantined-output`,
+        type: "delegate_output_quarantined",
+        card_id: id,
+        attempt_id: quarantined.attempt_id,
+        quarantine_reason: quarantined.quarantine_record.quarantine_reason,
+      };
+    });
   const revisions = revisionEvents.map((revision) => ({
     ordinal: revision.ordinal,
     template_id: revision.template_id,
@@ -176,6 +229,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       expected_watermark: watermark,
     })));
   const capabilityActions = blocks
+    .filter(({ type }) => type === "capability_required")
     .filter((block) => {
       const nextCapabilities = new Set([
         ...capabilities,
@@ -195,7 +249,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       trigger: block.trigger,
       expected_watermark: watermark,
     }));
-  const revisionActions = blocks.flatMap((block) =>
+  const revisionActions = blocks
+    .filter(({ type }) => type === "plan_revision_required")
+    .flatMap((block) =>
     block.revision_template_ids.flatMap((templateId) => {
       const template = run.prepared.revision_templates.find(
         ({ id }) => id === templateId,
@@ -233,6 +289,58 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       card_id: id,
       expected_watermark: watermark,
     }));
+  const delegateActions = cards
+    .filter(({ id, executor_kind: kind, status }) =>
+      kind === "delegate" && (status === "ready" ||
+        status === "blocked" && !activeObservedBlocks.has(id) &&
+        quarantinedDelegateOutputs.some(
+          ({ card_id: cardId }) => cardId === id,
+        )))
+    .filter(({ id }) => {
+      const attempts = [...effectIntents.values()].filter(
+        ({ card_id: cardId, effect_kind: kind }) =>
+          cardId === id && kind === "delegate",
+      ).length;
+      const card = activePlan.cards.find(({ id: cardId }) => cardId === id);
+      return attempts < card.limits.max_attempts;
+    })
+    .map(({ id }) => ({
+      schema: "flow.command/v1",
+      type: "delegate_execute",
+      run_id: run.run_id,
+      card_id: id,
+      expected_watermark: watermark,
+    }));
+  const delegateDispositionActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "delegate" && status === "blocked")
+    .filter(({ id }) => !activeObservedBlocks.has(id) &&
+      quarantinedDelegateOutputs.some(
+        ({ card_id: cardId }) => cardId === id,
+      ))
+    .filter(({ id }) => {
+      const attempts = [...effectIntents.values()].filter(
+        ({ card_id: cardId, effect_kind: kind }) =>
+          cardId === id && kind === "delegate",
+      ).length;
+      const card = activePlan.cards.find(({ id: cardId }) => cardId === id);
+      return attempts >= card.limits.max_attempts;
+    })
+    .map(({ id }) => {
+      const quarantine = quarantinedDelegateOutputs.filter(
+        ({ card_id: cardId }) => cardId === id,
+      ).at(-1);
+      return {
+        schema: "flow.command/v1",
+        type: "terminal_disposition",
+        run_id: run.run_id,
+        card_id: id,
+        attempt_id: quarantine.attempt_id,
+        disposition: "decline",
+        reason: "delegate_attempts_exhausted",
+        expected_watermark: watermark,
+      };
+    });
   const recoveryActions = [...effectIntents.values()]
     .filter((intent) => !effectReceipts.has(intent.effect_id))
     .filter((intent) => phase !== "cancelled" ||
@@ -268,6 +376,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         ...capabilityActions,
         ...revisionActions,
         ...operationActions,
+        ...delegateActions,
+        ...delegateDispositionActions,
         ...recoveryActions,
         ...cancellationActions,
       ]
@@ -288,13 +398,18 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     attempt_id: intent.attempt_id,
     classification: intent.classification,
     operation_contract: intent.operation_contract,
+    effect_kind: intent.effect_kind ?? "operation",
     idempotency_key: intent.idempotency_key,
     route_binding: intent.route_binding,
     invocation_started: effectInvocationIndexes.has(intent.effect_id),
     status: effectReceipts.has(intent.effect_id)
       ? hasLateReceipt(intent.effect_id)
-        ? "late_succeeded"
-        : "succeeded"
+        ? effectReceipts.get(intent.effect_id)?.outcome === "quarantined"
+          ? "late_quarantined"
+          : "late_succeeded"
+        : effectReceipts.get(intent.effect_id)?.outcome === "quarantined"
+          ? "quarantined"
+          : "succeeded"
       : cancellationIndex >= 0 &&
           (!effectInvocationIndexes.has(intent.effect_id) ||
            effectInvocationIndexes.get(intent.effect_id) > cancellationIndex)
@@ -326,6 +441,28 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     runId: run.run_id,
     cards,
   });
+  const delegateAttempts = [...effectIntents.values()]
+    .filter(({ effect_kind: kind }) => kind === "delegate")
+    .map((intent) => {
+      const receipt = effectReceipts.get(intent.effect_id);
+      return {
+        attempt_id: intent.attempt_id,
+        card_id: intent.card_id,
+        caller_key: intent.attempt_id,
+        route_binding: intent.route_binding,
+        status: isQuarantinedAfterCancellation(intent.effect_id)
+          ? "abandoned"
+          : receipt
+          ? receipt.outcome === "quarantined" ? "quarantined" : "accepted"
+          : "reserved",
+        validated_output: receipt?.outcome === "succeeded"
+          ? receipt.provider_receipt.validated_output
+          : null,
+        evidence: receipt?.outcome === "succeeded"
+          ? receipt.provider_receipt
+          : null,
+      };
+    });
 
   return freezeCanonical({
     schema: "flow.run-fold/v1",
@@ -354,6 +491,10 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     attempts,
     effects,
     ...(trackerProgress === null ? {} : { tracker_progress: trackerProgress }),
+    handoffs,
+    resource_handoff_bindings: resourceHandoffBindings,
+    delegate_attempts: delegateAttempts,
+    quarantined_delegate_outputs: quarantinedDelegateOutputs,
     revision_templates: run.prepared.revision_templates,
     effect_intents: [...effectIntents.values()],
     legal_actions: legalActions,
@@ -396,6 +537,10 @@ export function projectRun(fold) {
     ...(fold.tracker_progress === undefined ? {} : {
       tracker_progress: fold.tracker_progress,
     }),
+    handoffs: fold.handoffs,
+    resource_handoff_bindings: fold.resource_handoff_bindings,
+    delegate_attempts: fold.delegate_attempts,
+    quarantined_delegate_outputs: fold.quarantined_delegate_outputs,
     legal_actions: fold.legal_actions,
   });
 }

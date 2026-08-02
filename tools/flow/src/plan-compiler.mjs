@@ -17,6 +17,7 @@ const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
 const CHECKPOINT_VALIDATOR = "flow.validator/checkpoint-decision/v1";
 const OPERATION_RECEIPT_VALIDATOR = "flow.validator/operation-receipt/v1";
+const DELEGATE_CONTRACT = "flow.delegated-agent-port/v1";
 const CARD_ARRAY_FIELDS = [
   "outputs",
   "success_criteria",
@@ -194,6 +195,8 @@ export function validateDynamicPlan(proposal, {
       validateCheckpointCard(card, facts);
     } else if (card.executor.kind === "operation") {
       validateOperationCard(card, proposal, registeredOperations);
+    } else if (card.executor.kind === "delegate") {
+      validateDelegateCard(card, proposal);
     } else {
       invalidPlan(
         "unsupported_executor_kind",
@@ -581,6 +584,46 @@ function validateCheckpointCard(card, facts) {
   }
 }
 
+function validateDelegateCard(card, proposal) {
+  const { explicit_facts: facts } = proposal;
+  const description = card.inputs.description;
+  if (card.executor.contract !== DELEGATE_CONTRACT ||
+      !["delegate_execute", "terminal_disposition"].every((command) =>
+        proposal.requested_authority.commands.includes(command))) {
+    invalidPlan("incomplete_delegate_authority",
+      `delegate authority is incomplete: ${card.id}`);
+  }
+  if (description?.schema !== "drovr.delegated-agent-description/v1" ||
+      !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.watermark?.content_sha256) ||
+      typeof card.inputs.prompt !== "string" || !card.inputs.prompt ||
+      !Number.isSafeInteger(card.inputs.wait_timeout_ms) ||
+      card.inputs.wait_timeout_ms <= 0) {
+    invalidPlan("invalid_delegate_binding",
+      `delegate launch binding is incomplete: ${card.id}`);
+  }
+  if (card.route?.description_digest !== description.description_digest ||
+      card.route?.launch_comparison_key !== description.comparison_keys.launch ||
+      card.route?.configuration_watermark !==
+        description.watermark.content_sha256 ||
+      typeof card.route?.agent_id !== "string" || !card.route.agent_id) {
+    invalidPlan("invalid_delegate_route",
+      `delegate route does not bind the exact description: ${card.id}`);
+  }
+  if (!Number.isInteger(card.limits.max_attempts) ||
+      card.limits.max_attempts < 1 ||
+      card.recovery !== "discover_then_dispatch_exact") {
+    invalidPlan("invalid_delegate_recovery",
+      `delegate recovery contract is invalid: ${card.id}`);
+  }
+  if (card.validators.length < 1 || !card.validators.every((validator) =>
+    facts.validator_contracts.includes(validator))) {
+    invalidPlan("unsupported_delegate_validator",
+      `delegate validators are not declared: ${card.id}`);
+  }
+}
+
 function validateOperationCard(card, proposal, registeredOperations) {
   const { explicit_facts: facts } = proposal;
   const registration = registeredOperation(registeredOperations,
@@ -648,6 +691,13 @@ function validateOperationCard(card, proposal, registeredOperations) {
         error?.message ?? `operation input is invalid: ${card.id}`,
       );
     }
+  }
+  if (card.executor.effect_classification === "one_shot_uncertain" &&
+      card.inputs?.publication !== undefined) {
+    invalidPlan(
+      "unsafe_publication_effect_class",
+      `one-shot operation cannot publish a resource handoff: ${card.id}`,
+    );
   }
   const checkpoints = proposal.graph.cards.filter((checkpoint) =>
     card.dependencies.includes(checkpoint.id) &&

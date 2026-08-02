@@ -25,7 +25,8 @@
         "observe",
         "wait",
         "cancel",
-        "reconcile"
+        "reconcile",
+        "retire"
       ]
     },
     "status": { "type": "string", "minLength": 1 },

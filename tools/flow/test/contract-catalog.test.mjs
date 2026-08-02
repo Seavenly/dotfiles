@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 10);
+  assert.equal(catalog.catalog_version, 12);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -101,6 +101,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.tracker-binding/v1",
     "flow.tracker-progress-update/v1",
     "flow.tracker-progress-projection/v1",
+    "flow.delegate-evidence/v1",
     "flow.authority-schema-compatibility/v1",
     "flow.authority-schema-transition/v1",
     "flow.authority-schema-transition-boundary/v1",
@@ -148,7 +149,55 @@ test("the public catalog exposes the settled interface and forbids legacy import
     provider_state_authority: "none",
     marker_cardinality: "at_most_one_update_in_place",
   });
+  assert.deepEqual(catalog.flow_runtime.delegate_execution, {
+    authority: "RunAuthority",
+    adapter_authority: "mechanism_only",
+    port: "flow.delegated-agent-port/v1",
+    intent: "flow.effect-intent/v1",
+    receipt: "flow.effect-receipt/v1",
+    evidence: "flow.delegate-evidence/v1",
+    quarantine_record: "flow.delegate-quarantine/v1",
+    block: "flow.delegate-card-block/v1",
+    disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
+    execution_command: "delegate_execute",
+    recovery_command: "recovery",
+    attempt_identity: "run_card_reserved_attempt",
+    dispatch_order: "discover_before_dispatch",
+    settlement: "exact_binding_ordered_inputs_and_independent_validation",
+    quarantine: "late_or_incompatible_correlated",
+    terminal_disposition:
+      "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
+    exhausted_action: "terminal_disposition",
+  });
   assert.ok(catalog.projections.includes("authority_schema_compatibility"));
+  assert.deepEqual(catalog.work_domain_interfaces.handoff.atomic_finalization, [
+    "workspace_promotion",
+    "artifact_pin_transfer",
+    "workspace_disposition",
+    "handoff_activation",
+    "producer_run_finalization",
+  ]);
+  for (const contract of [
+    "work.workspace-authority/v1",
+    "work.workspace-register-command/v1",
+    "work.git-observation/v1",
+    "work.artifact-authority/v1",
+    "work.artifact-record-command/v1",
+    "flow.resource-handoff-authority/v1",
+    "work.command-receipt/v1",
+    "work.rejection/v1",
+    "work.workspace-projection/v1",
+    "work.artifact-projection/v1",
+    "flow.resource-handoff-publication/v1",
+    "flow.resource-handoff-projection/v1",
+    "flow.resource-handoff-consumer-binding/v1",
+    "flow.resource-handoff-mutation-authorization/v1",
+    "flow.git-retention-receipt/v1",
+    "flow.git-retention-observation/v1",
+    "work.idempotency-receipt/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
@@ -179,6 +228,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
       wait: "flow.delegated-agent-wait-request/v1",
       cancel: "flow.delegated-agent-cancel-request/v1",
       reconcile: "flow.delegated-agent-reconcile-request/v1",
+      retire: "flow.delegated-agent-retire-request/v1",
     },
     drovr_description: "drovr.delegated-agent-description/v1",
     required_features: {
@@ -309,6 +359,25 @@ test("the public catalog requires complete registered operation contracts", asyn
       featureContractPath,
     }),
     /registered operation contracts are incomplete/,
+  );
+});
+
+test("the public catalog requires the delegate quarantine block contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-delegate-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.contracts = catalog.contracts.filter(
+    (contract) => contract !== "flow.delegate-card-block/v1",
+  );
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /delegate execution contracts are incomplete/,
   );
 });
 

@@ -1,5 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import { existsSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
@@ -22,6 +29,10 @@ import {
   validateEffectObservation,
 } from "./operation-effects.mjs";
 import { createHostAuthorityIdentityAdapter } from "./host-authority-identity.mjs";
+import {
+  createFailClosedGitRetentionAdapter,
+  createFailClosedGitWorkspaceObservationAdapter,
+} from "./git-retention-adapter.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
 import {
   createOneShotWatcher,
@@ -46,8 +57,30 @@ import {
   transitionAuthoritySchema,
   uninitializedAuthoritySchemaCompatibility,
 } from "./authority-schema.mjs";
+import {
+  attachWorkAuthorities,
+  buildConsumerHandoffBinding,
+  buildConsumerMutationAuthorization,
+  buildHandoffPublication,
+  decideWorkCommand,
+  validateHandoffPublicationAuthority,
+  withHandoffObservations,
+  withArtifactAvailability,
+  workRejection,
+  workStreamIdentity,
+} from "./work-authority.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const EFFECT_INTENT_EVENT_TYPES = new Set([
+  "effect_intent_recorded",
+  "effect_intent_adopted",
+]);
+const DEFERRED_EFFECT_EVENT_TYPES = new Set([
+  "delegate_completed",
+  "operation_completed",
+  "run_declined",
+  "run_succeeded",
+]);
 const require = createRequire(import.meta.url);
 let databaseConstructor = null;
 
@@ -200,9 +233,12 @@ export function createDurableRunAuthority({
   access = "mutate",
   afterSchemaTransitionCommit = () => {},
   beforeEffect = () => {},
+  beforeHandoffCommit = () => {},
   beforeIntentCommit = () => {},
   beforeSchemaTransitionCommit = () => {},
   declaredCapacity = 4,
+  gitRetentionAdapter = createFailClosedGitRetentionAdapter(),
+  gitWorkspaceObservationAdapter = createFailClosedGitWorkspaceObservationAdapter(),
   hostIdentityAdapter = createHostAuthorityIdentityAdapter(),
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
@@ -215,6 +251,12 @@ export function createDurableRunAuthority({
   if (typeof hostIdentityAdapter?.observe !== "function") {
     throw new TypeError("durable run authority requires a host identity Adapter");
   }
+  if (typeof gitRetentionAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a Git retention Adapter");
+  }
+  if (typeof gitWorkspaceObservationAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a workspace Git Adapter");
+  }
   if (!["inspect", "mutate"].includes(access)) {
     throw new TypeError("durable run authority access must be inspect or mutate");
   }
@@ -223,6 +265,11 @@ export function createDurableRunAuthority({
   }
   if (typeof beforeEffect !== "function") {
     throw new TypeError("durable run authority beforeEffect must be a function");
+  }
+  if (typeof beforeHandoffCommit !== "function") {
+    throw new TypeError(
+      "durable run authority beforeHandoffCommit must be a function",
+    );
   }
   if (typeof afterCancellationCommit !== "function" ||
       typeof beforeCancellationCommit !== "function") {
@@ -325,7 +372,7 @@ export function createDurableRunAuthority({
     }
   }
 
-  return Object.freeze({
+  const authorityMethods = {
     pendingSameBootRecoveryRunIds() {
       return Object.freeze([...sameBootRecoveryRunIds].sort());
     },
@@ -333,7 +380,6 @@ export function createDurableRunAuthority({
     completeSameBootRecovery(runId) {
       sameBootRecoveryRunIds.delete(runId);
     },
-
     launch(request = {}) {
       assertOpen();
       if (authoritySchemaCompatibility?.status === "incompatible") {
@@ -394,6 +440,23 @@ export function createDurableRunAuthority({
             databasePath,
           );
         }
+        let consumerBindings;
+        try {
+          consumerBindings = prepareConsumerHandoffBindings(
+            database,
+            authorityDirectory,
+            gitRetentionAdapter,
+            prepared,
+            runId,
+          );
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+          return durableLaunchRejection(
+            "invalid_resource_handoff_binding",
+            prepared,
+            databasePath,
+          );
+        }
 
         database.exec("BEGIN IMMEDIATE");
         try {
@@ -438,7 +501,22 @@ export function createDurableRunAuthority({
                   },
                 }),
               ),
+              ...consumerBindings.map(({ binding }) => ({
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "resource_handoff_bound",
+                  handoff_id: binding.handoff_id,
+                  handoff_digest: binding.handoff_digest,
+                  binding_digest: digest(binding),
+                  operations: binding.operations,
+                },
+              })),
             ],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          appendConsumerHandoffBindings(database, consumerBindings, {
             authorityEpoch,
             bootId,
             processIdentity,
@@ -597,9 +675,9 @@ export function createDurableRunAuthority({
             });
           }
           const deferredEvents = currentDecision.events.filter(({ type }) =>
-            ["operation_completed", "run_declined", "run_succeeded"].includes(type));
+            DEFERRED_EFFECT_EVENT_TYPES.has(type));
           const immediateEvents = currentDecision.events.filter(({ type }) =>
-            !["operation_completed", "run_declined", "run_succeeded"].includes(type));
+            !DEFERRED_EFFECT_EVENT_TYPES.has(type));
           const effectIntents = currentDecision.effect_intents.map((intent) =>
             bindEffectIntent(intent, {
               authorityEpoch,
@@ -709,6 +787,155 @@ export function createDurableRunAuthority({
         );
       } finally {
         database?.close();
+      }
+    },
+
+    workCommand(command) {
+      assertOpen();
+      if (authoritySchemaCompatibility?.status !== "compatible" || !lockDatabase) {
+        return workRejection("command", "mutation_authority_unavailable", { command });
+      }
+      const identity = workStreamIdentity(command?.contract, command?.subject_id);
+      if (!identity) return workRejection("command", "invalid_command", { command });
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath);
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const currentProjection = readStream(database, identity.streamId)?.fold ?? null;
+        const structuralDecision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+        );
+        if (structuralDecision.schema === "work.rejection/v1") {
+          return structuralDecision;
+        }
+        if (currentProjection === null && command.type === "workspace_register") {
+          let observation;
+          try {
+            observation = gitWorkspaceObservationAdapter.observe({
+              repository_id: command.registration?.repository?.canonical_id,
+              workspace_path: command.registration?.workspace?.canonical_path,
+              ref: command.registration?.git?.ref,
+            });
+          } catch {
+            return workRejection("command", "workspace_git_observation_unavailable", {
+              command,
+            });
+          }
+          if (observation?.schema !== "work.git-observation/v1" ||
+              !isDeepStrictEqual(observation.git, command.registration?.git)) {
+            return workRejection("command", "workspace_git_facts_mismatch", { command });
+          }
+          command = freezeCanonical({ ...command, git_observation: observation });
+        }
+        const decision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+        );
+        if (decision.schema === "work.rejection/v1") return decision;
+        if (decision.replayed) {
+          return workCommandReceipt(command, currentProjection, false);
+        }
+        let createdArtifactPath = null;
+        if (decision.artifactBytes !== undefined) {
+          try {
+            createdArtifactPath = storeArtifactBytes(
+              authorityDirectory,
+              command.artifact,
+              decision.artifactBytes,
+            );
+          } catch (error) {
+            return workRejection(
+              "command",
+              error instanceof TypeError
+                ? "artifact_bytes_mismatch"
+                : error.code === "artifact_bytes_conflict"
+                  ? "artifact_bytes_conflict"
+                  : "artifact_storage_unavailable",
+              { command },
+            );
+          }
+        }
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          assertAuthorityEpoch(database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          const committed = evaluateWorkCommand(
+            database,
+            identity,
+            command,
+          );
+          if (committed.schema === "work.rejection/v1") {
+            database.exec("ROLLBACK");
+            if (createdArtifactPath) unlinkSync(createdArtifactPath);
+            return committed;
+          }
+          appendAuthorityEvents(database, {
+            streamId: identity.streamId,
+            streamKind: committed.streamKind,
+            events: [committed.event],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          database.exec("COMMIT");
+        } catch (error) {
+          if (database.isTransaction) database.exec("ROLLBACK");
+          if (createdArtifactPath) unlinkSync(createdArtifactPath);
+          throw error;
+        }
+        const projection = queryWorkProjection(
+          database,
+          authorityDirectory,
+          identity,
+          gitRetentionAdapter,
+        );
+        return workCommandReceipt(command, projection, true);
+      } catch (error) {
+        if (error instanceof AuthorityFenceError) {
+          return workRejection("command", "mutation_authority_unavailable", { command });
+        }
+        throw error;
+      } finally {
+        database?.close();
+      }
+    },
+
+    workQuery(request) {
+      assertOpen();
+      const identity = workStreamIdentity(request?.contract, request?.subject_id);
+      if (!identity || !databaseExists(databasePath)) {
+        return workRejection("query", "unknown_subject", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      const database = openAuthorityDatabase(databasePath, { readOnly: true });
+      try {
+        const stream = readStream(database, identity.streamId);
+        if (!stream) {
+          return workRejection("query", "unknown_subject", {
+            contract: request.contract,
+            subjectId: request.subject_id,
+          });
+        }
+        return queryWorkProjection(
+          database,
+          authorityDirectory,
+          identity,
+          gitRetentionAdapter,
+        );
+      } finally {
+        database.close();
       }
     },
 
@@ -822,9 +1049,7 @@ export function createDurableRunAuthority({
           ? readStream(database, intent.run_id)
           : null;
         const recorded = stream?.records.some(({ payload }) =>
-          ["effect_intent_recorded", "effect_intent_adopted"].includes(
-            payload.type,
-          ) &&
+          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
           isDeepStrictEqual(payload.intent, intent));
         if (!recorded) {
           throw new AuthorityFenceError(
@@ -936,8 +1161,11 @@ export function createDurableRunAuthority({
             );
           }
           recordEffectInvocationStarted(database, effectiveIntent, {
+            authorityDirectory,
             authorityEpoch,
             bootId,
+            gitRetentionAdapter,
+            gitWorkspaceObservationAdapter,
             processIdentity,
           });
           beforeEffect(effectiveIntent);
@@ -953,6 +1181,17 @@ export function createDurableRunAuthority({
           bootId,
           processIdentity,
         });
+        const publicationRequest = effectiveIntent.operation_input?.publication;
+        if (publicationRequest !== undefined) {
+          const retentionReceipt = result?.provider_receipt?.git_retention;
+          const retentionObservation = gitRetentionAdapter.observe(retentionReceipt);
+          if (retentionObservation?.available !== true ||
+              retentionObservation.commit_sha !== retentionReceipt?.commit_sha ||
+              retentionObservation.tree_sha !== retentionReceipt?.tree_sha ||
+              retentionObservation.retention_ref !== retentionReceipt?.retention_ref) {
+            throw new TypeError("Git retention was not independently observed");
+          }
+        }
         database.exec("BEGIN IMMEDIATE");
         try {
           assertAuthorityEpoch(database, {
@@ -963,10 +1202,35 @@ export function createDurableRunAuthority({
           const current = readStream(database, effectiveIntent.run_id);
           const unresolved = unresolvedEffectIds(current);
           unresolved.delete(effectiveIntent.effect_id);
-          const deferredEvents = unresolved.size === 0 &&
+          const effectSucceeded = result?.outcome !== "quarantined";
+          const deferredEvents = unresolved.size === 0 && effectSucceeded &&
               current.fold.phase === "active"
-            ? pendingDeferredEvents(current)
+            ? pendingDeferredEvents(current, effectiveIntent)
             : [];
+          const publication = effectiveIntent.operation_input?.publication === undefined
+            ? null
+            : prepareHandoffPublication(
+                database,
+                authorityDirectory,
+                gitRetentionAdapter,
+                gitWorkspaceObservationAdapter,
+                {
+                intent: effectiveIntent,
+                publication: effectiveIntent.operation_input.publication,
+                receipt: result,
+                },
+              );
+          if (publication !== null) {
+            appendHandoffPublication(database, publication, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            beforeHandoffCommit({
+              run_id: effectiveIntent.run_id,
+              handoff: publication.handoff,
+            });
+          }
           appendAuthorityEvents(database, {
             streamId: effectiveIntent.run_id,
             streamKind: "run",
@@ -980,6 +1244,32 @@ export function createDurableRunAuthority({
                   ...(result === undefined ? {} : { receipt: result }),
                 },
               },
+              ...(publication === null ? [] : [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "resource_handoff_published",
+                  handoff_id: publication.handoff.handoff_id,
+                  handoff_watermark: queryWorkProjection(
+                    database,
+                    authorityDirectory,
+                    workStreamIdentity(
+                      "flow.resource-handoff/v1",
+                      publication.handoff.handoff_id,
+                    ),
+                    gitRetentionAdapter,
+                  ).watermark,
+                },
+              }]),
+              ...(result?.outcome === "quarantined" ? [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "delegate_output_quarantined",
+                  effect_id: effectiveIntent.effect_id,
+                  attempt_id: effectiveIntent.attempt_id,
+                  card_id: effectiveIntent.card_id,
+                  quarantine_record: result.provider_receipt,
+                },
+              }] : []),
               ...deferredEvents.map((payload) => ({
                 contract: "flow.run-event/v1",
                 payload,
@@ -1035,9 +1325,8 @@ export function createDurableRunAuthority({
         });
         const stream = readStream(database, intent?.run_id);
         const recorded = stream?.records.some(({ payload }) =>
-          ["effect_intent_recorded", "effect_intent_adopted"].includes(
-            payload.type,
-          ) && isDeepStrictEqual(payload.intent, intent));
+          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+          isDeepStrictEqual(payload.intent, intent));
         if (!recorded) {
           throw new AuthorityFenceError(
             "unrecorded_effect_intent",
@@ -1115,7 +1404,7 @@ export function createDurableRunAuthority({
         lockDatabase = null;
       }
     },
-  });
+  };
 
   function assertOpen() {
     if (closed) throw new Error("durable run authority is closed");
@@ -1174,6 +1463,68 @@ export function createDurableRunAuthority({
       database.close();
     }
   }
+
+  const workCommand = authorityMethods.workCommand;
+  const workQuery = authorityMethods.workQuery;
+  const workspaceAuthority = Object.freeze({
+    schema: "work.workspace-authority/v1",
+    command(command) {
+      if (command?.schema !== "work.workspace-register-command/v1" ||
+          command.contract !== "work.workspace/v1") {
+        return workRejection("command", "invalid_workspace_command", { command });
+      }
+      return workCommand(command);
+    },
+    query(request) {
+      if (request?.contract !== "work.workspace/v1") {
+        return workRejection("query", "invalid_workspace_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+  });
+  const artifactAuthority = Object.freeze({
+    schema: "work.artifact-authority/v1",
+    command(command) {
+      if (command?.schema !== "work.artifact-record-command/v1" ||
+          command.contract !== "work.artifact/v1") {
+        return workRejection("command", "invalid_artifact_command", { command });
+      }
+      return workCommand(command);
+    },
+    query(request) {
+      if (request?.contract !== "work.artifact/v1") {
+        return workRejection("query", "invalid_artifact_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+  });
+  const handoffAuthority = Object.freeze({
+    schema: "flow.resource-handoff-authority/v1",
+    query(request) {
+      if (request?.contract !== "flow.resource-handoff/v1") {
+        return workRejection("query", "invalid_handoff_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+  });
+  delete authorityMethods.workCommand;
+  delete authorityMethods.workQuery;
+  const runAuthority = Object.freeze(authorityMethods);
+  attachWorkAuthorities(runAuthority, Object.freeze({
+    workspace: workspaceAuthority,
+    artifact: artifactAuthority,
+    handoff: handoffAuthority,
+  }));
+  return runAuthority;
 }
 
 function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
@@ -1189,6 +1540,307 @@ function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
     database?.close();
     throw authorityIntegrityError(error) ?? error;
   }
+}
+
+function queryWorkProjection(
+  database,
+  authorityDirectory,
+  identity,
+  gitRetentionAdapter,
+) {
+  const projection = readStream(database, identity.streamId).fold;
+  if (projection.schema === "work.artifact-projection/v1") {
+    return withArtifactAvailability(
+      projection,
+      artifactBytesAvailable(authorityDirectory, projection) ? "available" : "missing",
+    );
+  }
+  if (projection.schema !== "flow.resource-handoff-projection/v1") {
+    return projection;
+  }
+  const workspaceIdentity = workStreamIdentity(
+    "work.workspace/v1",
+    projection.associated_workspace.subject_id,
+  );
+  const workspace = readStream(database, workspaceIdentity.streamId)?.fold ?? null;
+  const artifacts = projection.artifacts.map(({ digest: artifactDigest }) => {
+    const artifactIdentity = workStreamIdentity("work.artifact/v1", artifactDigest);
+    const stream = readStream(database, artifactIdentity.streamId);
+    return stream
+      ? queryWorkProjection(
+          database,
+          authorityDirectory,
+          artifactIdentity,
+          gitRetentionAdapter,
+        )
+      : null;
+  });
+  const consumerObservations = projection.legal_actions.map((action) => {
+    const consumerStream = readStream(database, action.consumer_run_id);
+    if (!consumerStream) {
+      return { run_id: action.consumer_run_id, watermark: null, actionable: false };
+    }
+    const consumer = projectRun(consumerStream.fold);
+    const operationCardIds = consumer.legal_actions
+      .filter(({ type }) => type === "operation_execute")
+      .filter(({ card_id: cardId }) => {
+        const card = consumer.active_plan.cards.find(({ id }) => id === cardId);
+        const request = card?.inputs?.resource_handoff;
+        return request?.handoff_id === projection.handoff_id &&
+          request.handoff_digest === projection.handoff_digest &&
+          action.operations.includes(request.operation);
+      })
+      .map(({ card_id: cardId }) => cardId)
+      .sort();
+    return {
+      run_id: action.consumer_run_id,
+      watermark: consumer.watermark,
+      actionable: operationCardIds.length > 0,
+      operation_card_ids: operationCardIds,
+    };
+  });
+  const actionableRuns = new Set(consumerObservations
+    .filter(({ actionable }) => actionable)
+    .map(({ run_id: runId }) => runId));
+  const currentProjection = {
+    ...projection,
+    legal_actions: projection.legal_actions.filter(({ consumer_run_id: runId }) =>
+      actionableRuns.has(runId)),
+  };
+  return withHandoffObservations(
+    currentProjection,
+    workspace,
+    artifacts,
+    gitRetentionAdapter.observe(projection.git_retention),
+    consumerObservations,
+  );
+}
+
+function workCommandReceipt(command, projection, created) {
+  return freezeCanonical({
+    schema: "work.command-receipt/v1",
+    command_type: command.type,
+    contract: command.contract,
+    subject_id: command.subject_id,
+    authority_watermark: projection.watermark,
+    accepted: true,
+    created,
+  });
+}
+
+function evaluateWorkCommand(database, identity, command) {
+  const current = readStream(database, identity.streamId)?.fold ?? null;
+  return decideWorkCommand(current, command);
+}
+
+function prepareHandoffPublication(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  {
+  intent,
+  publication,
+  receipt,
+  },
+) {
+  const authority = handoffPublicationAuthorityContext(
+    database,
+    authorityDirectory,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    intent,
+    publication,
+  );
+  return buildHandoffPublication({
+    ...authority,
+    intent,
+    publication,
+    receipt,
+  });
+}
+
+function handoffPublicationAuthorityContext(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  intent,
+  publication,
+) {
+  const workspaceIdentity = workStreamIdentity(
+    "work.workspace/v1",
+    publication?.workspace?.subject_id,
+  );
+  if (!workspaceIdentity) {
+    throw new TypeError("resource handoff publication has no workspace identity");
+  }
+  const workspaceStream = readStream(database, workspaceIdentity.streamId);
+  const gitObservation = gitWorkspaceObservationAdapter.observe({
+    repository_id: workspaceStream?.fold?.repository?.canonical_id,
+    workspace_path: workspaceStream?.fold?.workspace?.canonical_path,
+    ref: publication?.workspace?.promoted_git?.ref,
+  });
+  const artifacts = (publication.artifacts ?? []).map(({ digest: artifactDigest }) => {
+    const identity = workStreamIdentity("work.artifact/v1", artifactDigest);
+    if (!identity) return null;
+    const stream = readStream(database, identity.streamId);
+    return stream
+      ? queryWorkProjection(
+          database,
+          authorityDirectory,
+          identity,
+          gitRetentionAdapter,
+        )
+      : null;
+  });
+  const authority = {
+    artifacts,
+    intent,
+    publication,
+    workspace: workspaceStream?.fold ?? null,
+    gitObservation,
+  };
+  validateHandoffPublicationAuthority(authority);
+  return authority;
+}
+
+function appendHandoffPublication(database, publication, fence) {
+  const workspaceIdentity = workStreamIdentity(
+    "work.workspace/v1",
+    publication.handoff.associated_workspace.subject_id,
+  );
+  appendAuthorityEvents(database, {
+    streamId: workspaceIdentity.streamId,
+    streamKind: workspaceIdentity.streamKind,
+    events: [publication.workspaceEvent],
+    ...fence,
+  });
+  publication.handoff.artifacts.forEach((artifact, index) => {
+    const identity = workStreamIdentity("work.artifact/v1", artifact.digest);
+    appendAuthorityEvents(database, {
+      streamId: identity.streamId,
+      streamKind: identity.streamKind,
+      events: [publication.artifactEvents[index]],
+      ...fence,
+    });
+  });
+  const handoffIdentity = workStreamIdentity(
+    "flow.resource-handoff/v1",
+    publication.handoff.handoff_id,
+  );
+  if (readStream(database, handoffIdentity.streamId)) {
+    throw new Error("resource handoff identity is already active");
+  }
+  appendAuthorityEvents(database, {
+    streamId: handoffIdentity.streamId,
+    streamKind: handoffIdentity.streamKind,
+    events: [publication.handoffEvent],
+    ...fence,
+  });
+}
+
+function prepareConsumerHandoffBindings(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  prepared,
+  runId,
+) {
+  const claimsByHandoff = new Map();
+  for (const claim of prepared.explicit_facts.resource_claims
+    .filter(({ kind }) => kind === "resource_handoff")) {
+    const existing = claimsByHandoff.get(claim.id);
+    if (existing && existing.digest !== claim.digest) {
+      throw new TypeError("prepared consumer handoff claims disagree on identity");
+    }
+    claimsByHandoff.set(claim.id, {
+      ...claim,
+      operations: [...new Set([
+        ...(existing?.operations ?? []),
+        ...claim.operations,
+      ])].sort(),
+    });
+  }
+  return [...claimsByHandoff.values()]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((claim) => {
+      const identity = workStreamIdentity("flow.resource-handoff/v1", claim.id);
+      if (!identity || !readStream(database, identity.streamId)) {
+        throw new TypeError("prepared consumer handoff does not exist");
+      }
+      const handoff = queryWorkProjection(
+        database,
+        authorityDirectory,
+        identity,
+        gitRetentionAdapter,
+      );
+      return {
+        ...buildConsumerHandoffBinding({ handoff, claim, runId }),
+        handoff,
+      };
+    });
+}
+
+function appendConsumerHandoffBindings(database, bindings, fence) {
+  for (const binding of bindings) {
+    const handoffIdentity = workStreamIdentity(
+      "flow.resource-handoff/v1",
+      binding.handoff.handoff_id,
+    );
+    appendAuthorityEvents(database, {
+      streamId: handoffIdentity.streamId,
+      streamKind: handoffIdentity.streamKind,
+      events: [binding.handoffEvent],
+      ...fence,
+    });
+    binding.handoff.artifacts.forEach((artifact, index) => {
+      const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
+      appendAuthorityEvents(database, {
+        streamId: artifactIdentity.streamId,
+        streamKind: artifactIdentity.streamKind,
+        events: [binding.artifactEvents[index]],
+        ...fence,
+      });
+    });
+  }
+}
+
+function storeArtifactBytes(authorityDirectory, artifact, encodedBytes) {
+  const bytes = Buffer.from(encodedBytes, "base64");
+  if (bytes.toString("base64") !== encodedBytes || bytes.length !== artifact.size ||
+      byteDigest(bytes) !== artifact.digest) {
+    throw new TypeError("artifact bytes do not match immutable artifact identity");
+  }
+  const directory = join(authorityDirectory, "artifacts");
+  const path = join(directory, artifact.digest.slice("sha256:".length));
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (existsSync(path)) {
+    const existing = readFileSync(path);
+    if (!existing.equals(bytes)) {
+      const error = new Error("artifact digest already names different retained bytes");
+      error.code = "artifact_bytes_conflict";
+      throw error;
+    }
+    return null;
+  }
+  writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+  return path;
+}
+
+function artifactBytesAvailable(authorityDirectory, artifact) {
+  const path = join(
+    authorityDirectory,
+    "artifacts",
+    artifact.digest.slice("sha256:".length),
+  );
+  if (!existsSync(path)) return false;
+  const bytes = readFileSync(path);
+  return bytes.length === artifact.size && byteDigest(bytes) === artifact.digest;
+}
+
+function byteDigest(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 function acquireAuthorityEpoch(database, {
@@ -1465,10 +2117,24 @@ function adoptEffectIntent(database, intent, {
 }
 
 function recordEffectInvocationStarted(database, intent, {
+  authorityDirectory,
   authorityEpoch,
   bootId,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
   processIdentity,
 }) {
+  const publication = intent.operation_input?.publication;
+  if (publication !== undefined) {
+    handoffPublicationAuthorityContext(
+      database,
+      authorityDirectory,
+      gitRetentionAdapter,
+      gitWorkspaceObservationAdapter,
+      intent,
+      publication,
+    );
+  }
   database.exec("BEGIN IMMEDIATE");
   try {
     assertAuthorityEpoch(database, {
@@ -1476,6 +2142,37 @@ function recordEffectInvocationStarted(database, intent, {
       bootId,
       processIdentity,
     });
+    const handoffRequest = intent.operation_input?.resource_handoff;
+    if (handoffRequest !== undefined) {
+      const handoffIdentity = workStreamIdentity(
+        "flow.resource-handoff/v1",
+        handoffRequest.handoff_id,
+      );
+      if (!handoffIdentity || !readStream(database, handoffIdentity.streamId)) {
+        throw new TypeError("consumer mutation handoff is unavailable");
+      }
+      const handoff = queryWorkProjection(
+        database,
+        authorityDirectory,
+        handoffIdentity,
+        gitRetentionAdapter,
+      );
+      const authorization = buildConsumerMutationAuthorization({
+        handoff,
+        intent,
+      });
+      appendAuthorityEvents(database, {
+        streamId: handoffIdentity.streamId,
+        streamKind: handoffIdentity.streamKind,
+        events: [{
+          contract: "flow.resource-handoff-event/v1",
+          payload: { type: "consumer_handoff_rechecked", authorization },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+    }
     appendAuthorityEvents(database, {
       streamId: intent.run_id,
       streamKind: "run",
@@ -1506,15 +2203,17 @@ function readRecordedEffectIntents(database, runId, commandDigest) {
     .map(({ payload }) => payload.intent);
 }
 
-function pendingDeferredEvents(stream) {
-  // One operation currently bounds this to one settlement flush. Filter events
-  // already in the stream before the future multi-operation slice removes it.
+function pendingDeferredEvents(stream, settlingIntent) {
   const events = [];
   const seen = new Set();
+  const successfulEffects = new Set(stream.records
+    .filter(({ payload }) => payload.type === "effect_receipt_recorded" &&
+      payload.receipt?.outcome !== "quarantined")
+    .map(({ payload }) => payload.effect_id));
+  successfulEffects.add(settlingIntent.effect_id);
   for (const { payload } of stream.records) {
-    if (!["effect_intent_recorded", "effect_intent_adopted"].includes(
-      payload.type,
-    )) continue;
+    if (!EFFECT_INTENT_EVENT_TYPES.has(payload.type) ||
+        !successfulEffects.has(payload.intent.effect_id)) continue;
     for (const event of payload.intent.deferred_events) {
       const eventDigest = digest(event);
       if (seen.has(eventDigest)) continue;
@@ -1527,10 +2226,7 @@ function pendingDeferredEvents(stream) {
 
 function unresolvedEffectIds(stream) {
   const unresolved = new Set(stream.records
-    .filter(({ payload }) => [
-      "effect_intent_recorded",
-      "effect_intent_adopted",
-    ].includes(payload.type))
+    .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
     .map(({ payload }) => payload.intent.effect_id));
   for (const { payload } of stream.records) {
     if (payload.type === "effect_receipt_recorded") {
@@ -1643,10 +2339,7 @@ function rebootRevalidation(stream, adapter) {
     .filter(({ payload }) => payload.type === "effect_receipt_recorded")
     .map(({ payload }) => payload.effect_id));
   const unresolvedEffects = stream.records
-    .filter(({ payload }) => [
-      "effect_intent_recorded",
-      "effect_intent_adopted",
-    ].includes(payload.type))
+    .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
     .map(({ payload }) => payload.intent)
     .filter(({ effect_id: effectId }) => !receipts.has(effectId));
   return buildRebootRevalidation({
