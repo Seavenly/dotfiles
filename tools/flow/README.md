@@ -108,11 +108,20 @@ The host run-index projection includes
 the legal schema action. A read-only runtime inspecting version 1 projects
 an exact `recovery` command for `authority_schema_transition`. A mutating
 runtime consumes that watermarked command through `FlowRuntime.command` before
-acquiring an authority epoch. Unknown store contracts, future versions, altered
-transition history, and release mismatches expose `incompatible` with no legal
-action. `launch` and `command` then return the typed
+acquiring an authority epoch. Run projections expose no run-scoped legal action
+while that host transition is pending, and their temporary watermark binds both
+the run authority and the pending authority schema so watchers observe recovery.
+Other commands return
+`authority_schema_transition_required` with the exact host recovery action;
+only a mismatched schema-transition recovery command returns
+`stale_authority_schema_transition`. Transition commit hooks receive the
+published `flow.authority-schema-transition-boundary/v1` payload in both commit
+phases. Unknown store contracts, future versions, altered transition history,
+and release mismatches expose schema-valid `incompatible` compatibility with no
+legal action. `launch` and `command` then return the typed
 `authority_schema_incompatible` rejection without recording an authority epoch
-or mutating a run.
+or mutating a run. An incompatible runtime releases the mutation lock after
+classification so a runtime supporting the store can acquire it.
 
 Exactly one mutating runtime holds a SQLite-backed operating-system advisory
 lock. Acquiring it appends a boot-bound monotonic authority epoch. A competing

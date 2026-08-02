@@ -7,6 +7,10 @@ import test from "node:test";
 
 import Ajv2020 from "ajv/dist/2020.js";
 
+import {
+  readAuthoritySchemaCompatibility,
+  transitionAuthoritySchema,
+} from "../src/authority-schema.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
@@ -18,8 +22,11 @@ import {
 test("a fresh authority store exposes its exact compatible schema release", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const boundaries = [];
   const authority = createDurableRunAuthority({
     authorityDirectory,
+    beforeSchemaTransitionCommit: (boundary) => boundaries.push(boundary),
+    afterSchemaTransitionCommit: (boundary) => boundaries.push(boundary),
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
   });
   t.after(() => authority.close());
@@ -48,6 +55,17 @@ test("a fresh authority store exposes its exact compatible schema release", asyn
     ),
     true,
   );
+  assert.equal(boundaries.length, 2);
+  assert.deepEqual(Object.keys(boundaries[0]), Object.keys(boundaries[1]));
+  for (const boundary of boundaries) {
+    assert.equal(
+      await validatesPublishedSchema(
+        "flow.authority-schema-transition-boundary.v1.schema.json",
+        boundary,
+      ),
+      true,
+    );
+  }
 });
 
 test("inspection before store creation exposes uninitialized compatibility", async (t) => {
@@ -65,6 +83,13 @@ test("inspection before store creation exposes uninitialized compatibility", asy
   assert.equal(projection.authority_schema.status, "uninitialized");
   assert.equal(projection.authority_schema.version, 0);
   assert.deepEqual(projection.legal_actions, []);
+  assert.equal(
+    await validatesPublishedSchema(
+      "flow.authority-schema-compatibility.v1.schema.json",
+      projection.authority_schema,
+    ),
+    true,
+  );
 });
 
 test("a version-one store transitions without changing existing run behavior", async (t) => {
@@ -88,9 +113,20 @@ test("a version-one store transitions without changing existing run behavior", a
     beforeHost.legal_actions[0].recovery,
     "authority_schema_transition",
   );
+  assert.deepEqual(beforeRun.legal_actions, []);
+  assert.equal(
+    await validatesPublishedSchema(
+      "flow.authority-schema-compatibility.v1.schema.json",
+      beforeHost.authority_schema,
+    ),
+    true,
+  );
 
+  const boundaries = [];
   const owner = createDurableRunAuthority({
     authorityDirectory,
+    beforeSchemaTransitionCommit: (boundary) => boundaries.push(boundary),
+    afterSchemaTransitionCommit: (boundary) => boundaries.push(boundary),
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
   });
   t.after(() => owner.close());
@@ -101,6 +137,9 @@ test("a version-one store transitions without changing existing run behavior", a
     (await watcher.next()).value.authority_schema.status,
     "transition_required",
   );
+  const runWatcher = afterRuntime.watch({ run_id: beforeRun.run_id });
+  t.after(() => runWatcher.return());
+  assert.deepEqual((await runWatcher.next()).value.legal_actions, []);
   const blockedPrepared = afterRuntime.prepare(dynamicCheckpointProposal());
   const blockedLaunch = afterRuntime.launch(
     confirmedLaunchRequest(blockedPrepared),
@@ -110,12 +149,38 @@ test("a version-one store transitions without changing existing run behavior", a
     blockedLaunch.legal_actions,
     afterRuntime.query().legal_actions,
   );
+  const blockedRunCommand = afterRuntime.command({
+    schema: "flow.command/v1",
+    type: "cancel",
+    run_id: beforeRun.run_id,
+  });
+  assert.equal(
+    blockedRunCommand.code,
+    "authority_schema_transition_required",
+  );
+  assert.equal(blockedRunCommand.command_type, "cancel");
+  assert.equal(blockedRunCommand.run_id, beforeRun.run_id);
+  assert.equal(blockedRunCommand.authority_watermark_domain, "host");
+  assert.deepEqual(
+    blockedRunCommand.legal_actions,
+    afterRuntime.query().legal_actions,
+  );
+  const unrelatedRecovery = afterRuntime.command({
+    schema: "flow.command/v1",
+    type: "recovery",
+    recovery: "other",
+  });
+  assert.equal(
+    unrelatedRecovery.code,
+    "authority_schema_transition_required",
+  );
   const staleAction = structuredClone(afterRuntime.query().legal_actions[0]);
   staleAction.expected_watermark = `sha256:${"0".repeat(64)}`;
   const stale = afterRuntime.command(staleAction);
   assert.equal(stale.code, "stale_authority_schema_transition");
   assert.deepEqual(stale.legal_actions, afterRuntime.query().legal_actions);
   const watchedTransition = watcher.next();
+  const watchedRunTransition = runWatcher.next();
   const transitionReceipt = afterRuntime.command(
     afterRuntime.query().legal_actions[0],
   );
@@ -125,6 +190,7 @@ test("a version-one store transitions without changing existing run behavior", a
     "compatible",
   );
   const afterRun = afterRuntime.query({ run_id: beforeRun.run_id });
+  const watchedRun = (await watchedRunTransition).value;
 
   assert.equal(afterHost.authority_schema.status, "compatible");
   assert.equal(transitionReceipt.accepted, true);
@@ -134,6 +200,24 @@ test("a version-one store transitions without changing existing run behavior", a
     "flow-runtime-authority-schema/v2",
   );
   assert.deepEqual(replayVisibleRun(afterRun), replayVisibleRun(beforeRun));
+  assert.deepEqual(watchedRun, afterRun);
+  assert.deepEqual(
+    afterRun.legal_actions.map(({ type, decision }) => ({ type, decision })),
+    [
+      { type: "checkpoint_decision", decision: "approve" },
+      { type: "checkpoint_decision", decision: "decline" },
+    ],
+  );
+  assert.equal(boundaries.length, 2);
+  for (const boundary of boundaries) {
+    assert.equal(
+      await validatesPublishedSchema(
+        "flow.authority-schema-transition-boundary.v1.schema.json",
+        boundary,
+      ),
+      true,
+    );
+  }
 });
 
 test("termination before the schema commit preserves the old valid authority", async (t) => {
@@ -217,10 +301,49 @@ test("unknown and incompatible authority schemas refuse public mutation", async 
       name: "version-one marker with retained transition history",
       sql: "UPDATE authority_metadata SET schema_version = 1",
     },
+    {
+      name: "malformed transition release",
+      sql: `UPDATE authority_metadata
+              SET transition_release_json = '"junk"'`,
+    },
+    {
+      name: "transition release with unknown contract",
+      sql: `UPDATE authority_metadata
+              SET transition_release_json =
+                '{"schema":"other/v1","id":"release","catalog_version":8}'`,
+    },
+    {
+      name: "negative schema version",
+      sql: "UPDATE authority_metadata SET schema_version = -1",
+      corrupt: true,
+    },
+    {
+      name: "negative transition sequence",
+      sql: "UPDATE authority_metadata SET transition_sequence = -1",
+      corrupt: true,
+    },
+    {
+      name: "non-text store contract",
+      sql: "UPDATE authority_metadata SET contract = x'00'",
+    },
+    {
+      name: "non-text transition contract",
+      sql: `DROP TRIGGER authority_schema_transitions_no_update;
+            UPDATE authority_schema_transitions SET contract = x'00'`,
+    },
+    {
+      name: "non-numeric transition version",
+      sql: `DROP TRIGGER authority_schema_transitions_no_update;
+            UPDATE authority_schema_transitions SET from_version = 'junk'`,
+      corrupt: true,
+    },
   ]) {
     await t.test(incompatible.name, async (t) => {
       const authorityDirectory = await currentStore(t);
       const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+      if (incompatible.corrupt) {
+        database.exec("PRAGMA ignore_check_constraints = ON");
+      }
       database.exec(incompatible.sql);
       database.close();
 
@@ -241,6 +364,13 @@ test("unknown and incompatible authority schemas refuse public mutation", async 
 
       assert.equal(host.authority_schema.status, "incompatible");
       assert.deepEqual(host.legal_actions, []);
+      assert.equal(
+        await validatesPublishedSchema(
+          "flow.authority-schema-compatibility.v1.schema.json",
+          host.authority_schema,
+        ),
+        true,
+      );
       for (const result of [launch, command]) {
         assert.equal(result.schema, "flow.rejection/v1");
         assert.equal(result.code, "authority_schema_incompatible");
@@ -251,8 +381,66 @@ test("unknown and incompatible authority schemas refuse public mutation", async 
         assert.equal(result.authority_watermark_domain, "host");
         assert.deepEqual(result.legal_actions, []);
       }
+
+      const secondAuthority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity(
+          "boot-a",
+          "second-incompatible-owner",
+        ),
+      });
+      t.after(() => secondAuthority.close());
+      const secondResult = createFlowRuntime({
+        runAuthority: secondAuthority,
+      }).command({
+        schema: "flow.command/v1",
+        type: "cancel",
+        run_id: "run:unknown",
+      });
+      assert.equal(secondResult.code, "authority_schema_incompatible");
     });
   }
+});
+
+test("a stale schema watermark is a non-poisoning no-op", async (t) => {
+  const authorityDirectory = await versionOneStoreWithRun(t);
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  t.after(() => database.close());
+  const before = readAuthoritySchemaCompatibility(database);
+  const columnsBefore = database.prepare(
+    "PRAGMA table_info(authority_metadata)",
+  ).all();
+  const streamHeadsBefore = database.prepare(`
+    SELECT stream_id, head_sequence, head_digest
+      FROM authority_streams ORDER BY stream_id
+  `).all();
+
+  const stale = transitionAuthoritySchema(database, {
+    expectedWatermark: `sha256:${"0".repeat(64)}`,
+  });
+
+  assert.deepEqual(stale, before);
+  assert.deepEqual(readAuthoritySchemaCompatibility(database), before);
+  assert.deepEqual(
+    database.prepare("PRAGMA table_info(authority_metadata)").all(),
+    columnsBefore,
+  );
+  assert.equal(
+    database.prepare(`
+      SELECT 1 FROM sqlite_schema
+       WHERE type = 'table' AND name = 'authority_schema_transitions'
+    `).get(),
+    undefined,
+  );
+  assert.deepEqual(database.prepare(`
+    SELECT stream_id, head_sequence, head_digest
+      FROM authority_streams ORDER BY stream_id
+  `).all(), streamHeadsBefore);
+
+  const transitioned = transitionAuthoritySchema(database, {
+    expectedWatermark: before.watermark,
+  });
+  assert.equal(transitioned.status, "compatible");
 });
 
 async function versionOneStoreWithRun(t) {
@@ -301,16 +489,12 @@ function replayVisibleRun(projection) {
     admission: _admission,
     authority_boot_id: _authorityBootId,
     authority_epoch: _authorityEpoch,
-    legal_actions: legalActions,
+    legal_actions: _legalActions,
     stream_generation: _streamGeneration,
     watermark: _watermark,
     ...stable
   } = projection;
-  return {
-    ...stable,
-    legal_actions: legalActions.map(({ expected_watermark: _expected, ...action }) =>
-      action),
-  };
+  return stable;
 }
 
 async function validatesPublishedSchema(filename, value) {

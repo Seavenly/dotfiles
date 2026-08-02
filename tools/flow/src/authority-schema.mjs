@@ -24,23 +24,13 @@ export function initializeAuthoritySchema(
     createAuthorityTables(database);
     createCurrentMetadata(database, 0);
     const transitioned = readAuthoritySchemaCompatibility(database);
-    beforeCommit(freezeCanonical({
-      schema: "flow.authority-schema-transition-boundary/v1",
-      phase: "before_commit",
-      from_version: existing.version,
-      to_version: CURRENT_AUTHORITY_SCHEMA_VERSION,
-      transition_release: AUTHORITY_SCHEMA_RELEASE,
-      expected_watermark: transitioned.watermark,
-    }));
+    beforeCommit(transitionBoundary("before_commit", existing, transitioned));
     database.exec("COMMIT");
-    afterCommit(freezeCanonical({
-      schema: "flow.authority-schema-transition-boundary/v1",
-      phase: "after_commit",
-      from_version: existing.version,
-      to_version: CURRENT_AUTHORITY_SCHEMA_VERSION,
-      transition_release: AUTHORITY_SCHEMA_RELEASE,
-      authority_schema: readAuthoritySchemaCompatibility(database),
-    }));
+    afterCommit(transitionBoundary(
+      "after_commit",
+      existing,
+      readAuthoritySchemaCompatibility(database),
+    ));
   } catch (error) {
     if (database.isTransaction) database.exec("ROLLBACK");
     throw error;
@@ -126,13 +116,13 @@ export function readAuthoritySchemaCompatibility(database) {
                transition_release_json, previous_digest, record_digest
           FROM authority_schema_transitions ORDER BY sequence
       `).all().map((row) => ({
-        sequence: Number(row.sequence),
-        contract: row.contract,
-        from_version: Number(row.from_version),
-        to_version: Number(row.to_version),
+        sequence: nonNegativeSafeIntegerOrNull(Number(row.sequence)),
+        contract: stringOrNull(row.contract),
+        from_version: nonNegativeSafeIntegerOrNull(Number(row.from_version)),
+        to_version: nonNegativeSafeIntegerOrNull(Number(row.to_version)),
         transition_release: parseRelease(row.transition_release_json),
-        previous_digest: row.previous_digest,
-        record_digest: row.record_digest,
+        previous_digest: stringOrNull(row.previous_digest),
+        record_digest: stringOrNull(row.record_digest),
       }))
     : [];
 
@@ -151,10 +141,12 @@ export function readAuthoritySchemaCompatibility(database) {
   }
   return compatibilityProjection({
     status,
-    storeContract: metadata.contract ?? null,
-    version: Number.isSafeInteger(version) ? version : null,
+    storeContract: typeof metadata.contract === "string"
+      ? metadata.contract
+      : null,
+    version: nonNegativeSafeIntegerOrNull(version),
     release,
-    sequence: Number.isSafeInteger(sequence) ? sequence : null,
+    sequence: nonNegativeSafeIntegerOrNull(sequence),
     transitions,
   });
 }
@@ -165,6 +157,7 @@ function transitionBoundary(phase, existing, transitioned) {
     phase,
     from_version: existing.version,
     to_version: CURRENT_AUTHORITY_SCHEMA_VERSION,
+    from_watermark: existing.watermark,
     transition_release: AUTHORITY_SCHEMA_RELEASE,
     authority_schema: transitioned,
   });
@@ -339,10 +332,28 @@ function transitionHistoryIsValid(transitions, sequence) {
 
 function parseRelease(value) {
   try {
-    return JSON.parse(value);
+    const release = JSON.parse(value);
+    return isPublishedRelease(release) ? release : null;
   } catch {
     return null;
   }
+}
+
+function isPublishedRelease(value) {
+  return typeof value === "object" && value !== null &&
+    !Array.isArray(value) &&
+    value.schema === "flow.runtime-release/v1" &&
+    typeof value.id === "string" && value.id.length > 0 &&
+    Number.isSafeInteger(value.catalog_version) && value.catalog_version > 0 &&
+    Object.keys(value).length === 3;
+}
+
+function nonNegativeSafeIntegerOrNull(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
 }
 
 function sameRelease(left, right) {

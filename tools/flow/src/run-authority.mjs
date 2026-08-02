@@ -278,10 +278,14 @@ export function createDurableRunAuthority({
             declaredCapacity,
             processIdentity,
           });
+        } else if (authoritySchemaCompatibility.status === "incompatible") {
+          if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
+          lockDatabase.close();
+          lockDatabase = null;
         }
       } catch (error) {
-        if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
-        lockDatabase.close();
+        if (lockDatabase?.isTransaction) lockDatabase.exec("ROLLBACK");
+        lockDatabase?.close();
         lockDatabase = null;
         throw error;
       } finally {
@@ -460,6 +464,16 @@ export function createDurableRunAuthority({
         );
       }
       if (authoritySchemaCompatibility?.status === "transition_required") {
+        if (command?.type !== "recovery" ||
+            command?.recovery !== "authority_schema_transition") {
+          return schemaTransitionRequiredRejection(
+            "command",
+            databasePath,
+            null,
+            command?.run_id,
+            command?.type,
+          );
+        }
         return applySchemaTransitionCommand(command);
       }
       if (!lockDatabase) {
@@ -648,7 +662,10 @@ export function createDurableRunAuthority({
           if (!stream) {
             return durableUnknownRunRejection("query", runId, database);
           }
-          return projectRun(fenceRun(database, stream));
+          const projection = projectRun(fenceRun(database, stream));
+          return compatibility.status === "transition_required"
+            ? transitionRequiredRunProjection(projection, compatibility)
+            : projection;
         }
         const hostStream = readStream(database, "host:runs");
         const host = hostStream?.fold ?? freezeCanonical({
@@ -886,6 +903,7 @@ export function createDurableRunAuthority({
           code: "stale_authority_schema_transition",
           reason: "schema transition command differs from current authority",
           commandType: typeof command?.type === "string" ? command.type : null,
+          runId: stringOrNull(command?.run_id),
           authorityWatermark: before.watermark,
           authorityWatermarkDomain: "host",
           legalActions: before.legal_actions,
@@ -1439,6 +1457,19 @@ function incompatibleHostProjection(authoritySchema) {
   });
 }
 
+function transitionRequiredRunProjection(projection, authoritySchema) {
+  const watermark = digest({
+    schema: "flow.transition-required-run-watermark/v1",
+    run_watermark: projection.watermark,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
+  return freezeCanonical({
+    ...projection,
+    watermark,
+    legal_actions: [],
+  });
+}
+
 function schemaCompatibilityRejection(
   operation,
   compatibility,
@@ -1493,6 +1524,8 @@ function schemaTransitionRequiredRejection(
   operation,
   databasePath,
   bundleDigest = null,
+  runId = null,
+  commandType = null,
 ) {
   const database = openAuthorityDatabase(databasePath, { readOnly: true });
   try {
@@ -1502,6 +1535,8 @@ function schemaTransitionRequiredRejection(
       code: "authority_schema_transition_required",
       reason: "authority schema must transition before mutation",
       bundleDigest,
+      runId: stringOrNull(runId),
+      commandType: stringOrNull(commandType),
       authorityWatermark: host.watermark,
       authorityWatermarkDomain: "host",
       legalActions: host.legal_actions,

@@ -46,6 +46,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     synchronous: "full",
     schema_transition: {
       action_contract: "flow.command/v1",
+      boundary_contract: "flow.authority-schema-transition-boundary/v1",
       compatibility_projection: "flow.authority-schema-compatibility/v1",
       current_version: 2,
       release: {
@@ -74,7 +75,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     ],
     watermark_domains: {
       host: "host_run_index_admission_and_authority_schema",
-      run: "run_lifecycle_stream_and_authority_epoch",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
     },
   });
   for (const contract of [
@@ -95,6 +96,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.plan-revision-template/v1",
     "flow.authority-schema-compatibility/v1",
     "flow.authority-schema-transition/v1",
+    "flow.authority-schema-transition-boundary/v1",
     "flow.runtime-release/v1",
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
@@ -213,7 +215,7 @@ test("the public catalog requires the complete rejection contract", async (t) =>
     fields: ["schema"],
     watermark_domains: {
       host: "host_run_index_admission_and_authority_schema",
-      run: "run_lifecycle_stream_and_authority_epoch",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
     },
   };
   await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);

@@ -72,6 +72,8 @@ run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
   "$root/config/flow/package-lock.json" \
   "$root/config/flow/contracts/drovr-required-features.v1.json" \
   "$root/config/flow/schemas/flow.query.v1.schema.json" \
+  "$root/config/flow/schemas/flow.authority-schema-compatibility.v1.schema.json" \
+  "$root/config/flow/schemas/flow.authority-schema-transition-boundary.v1.schema.json" \
   "$root/config/flow/schemas/flow.delegated-agent-description-projection.v1.schema.json" \
   "$root/config/flow/schemas/flow.legacy-compatibility-inventory.v1.schema.json" \
   "$root/config/flow/schemas/flow.rejection.v1.schema.json" \

@@ -11,6 +11,7 @@
     "schema_transition": {
       "current_version": 2,
       "transition_contract": "flow.authority-schema-transition/v1",
+      "boundary_contract": "flow.authority-schema-transition-boundary/v1",
       "compatibility_projection": "flow.authority-schema-compatibility/v1",
       "action_contract": "flow.command/v1",
       "release": {
@@ -52,7 +53,7 @@
       ],
       "watermark_domains": {
         "host": "host_run_index_admission_and_authority_schema",
-        "run": "run_lifecycle_stream_and_authority_epoch"
+        "run": "run_lifecycle_stream_authority_epoch_and_authority_schema"
       }
     },
     "operation_contracts": {
@@ -154,6 +155,7 @@
     "flow.revision-trigger/v1",
     "flow.plan-revision-template/v1",
     "flow.authority-schema-transition/v1",
+    "flow.authority-schema-transition-boundary/v1",
     "flow.authority-schema-compatibility/v1",
     "flow.runtime-release/v1",
     "flow.checkpoint/confirmation/v1",

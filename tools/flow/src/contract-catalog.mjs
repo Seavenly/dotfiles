@@ -61,6 +61,7 @@ const AUTHORITY_PERSISTENCE = {
   schema_transition: {
     current_version: 2,
     transition_contract: "flow.authority-schema-transition/v1",
+    boundary_contract: "flow.authority-schema-transition-boundary/v1",
     compatibility_projection: "flow.authority-schema-compatibility/v1",
     action_contract: "flow.command/v1",
     release: {
@@ -97,7 +98,7 @@ export async function loadContractCatalog({
       rejection.watermark_domains?.host !==
         "host_run_index_admission_and_authority_schema" ||
       rejection.watermark_domains?.run !==
-        "run_lifecycle_stream_and_authority_epoch" ||
+        "run_lifecycle_stream_authority_epoch_and_authority_schema" ||
       Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
     throw new Error("contract catalog rejection contract is incomplete");
   }
