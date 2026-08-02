@@ -13,6 +13,7 @@ import {
   independentCheckpointProposal,
   repeatedRevisionCheckpointProposal,
   revisionBlockedCheckpointProposal,
+  terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 
 test("a typed capability grant resolves an exact blocked plan without losing grant history", () => {
@@ -189,10 +190,16 @@ test("an exact plan revision atomically resolves a block without rewriting accep
     base_plan_fingerprint: prepared.plan_fingerprint,
     trigger: initial.blocks[0].trigger,
   }]);
-  assert.deepEqual(
-    revised.legal_actions.map(({ checkpoint_id: id }) => id),
-    ["confirm-revised-plan", "confirm-revised-plan"],
-  );
+  assert.deepEqual(revised.legal_actions, ["approve", "decline"].map(
+    (decision) => ({
+      schema: "flow.command/v1",
+      type: "checkpoint_decision",
+      run_id: launch.run_id,
+      checkpoint_id: "confirm-revised-plan",
+      decision,
+      expected_watermark: revised.watermark,
+    }),
+  ));
 
   const stale = runtime.command(revisionAction);
   assert.equal(stale.code, "stale_authority_watermark");
@@ -285,10 +292,12 @@ test("runtime admission withholds a revision beyond the declared run cap", () =>
   assert.ok(decline);
 
   const declined = runtime.command(decline);
-  const terminal = runtime.query({ run_id: launch.run_id });
+  const stillBlocked = runtime.query({ run_id: launch.run_id });
   assert.equal(declined.accepted, true);
-  assert.equal(terminal.phase, "declined");
-  assert.deepEqual(terminal.legal_actions, []);
+  assert.equal(stillBlocked.phase, "active");
+  assert.equal(stillBlocked.current_revision.ordinal, 1);
+  assert.ok(stillBlocked.legal_actions.some(({ type, decision }) =>
+    type === "revision_decision" && decision === "decline"));
 });
 
 test("every active checkpoint-only projection exposes a legal action", () => {
@@ -298,6 +307,7 @@ test("every active checkpoint-only projection exposes a legal action", () => {
     dynamicCheckpointProposal(),
     capabilityBlockedCheckpointProposal(),
     revisionBlockedCheckpointProposal(),
+    terminalRevisionCheckpointProposal(),
     capped,
   ]) {
     assertEveryActiveProjectionIsActionable(proposal);
@@ -1227,7 +1237,7 @@ function createTestRuntime(options = {}) {
   });
 }
 
-function assertEveryActiveProjectionIsActionable(proposal, path = []) {
+function assertEveryActiveProjectionIsActionable(proposal, path = [], seen = []) {
   const runtime = createTestRuntime();
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
@@ -1238,14 +1248,38 @@ function assertEveryActiveProjectionIsActionable(proposal, path = []) {
     runtime.command(action);
     projection = runtime.query({ run_id: launch.run_id });
   }
+  const allTerminal = projection.cards.every(({ status }) =>
+    ["completed", "superseded"].includes(status)) &&
+    projection.effects.every(({ status }) => status === "succeeded");
+  assert.ok(
+    !allTerminal || projection.phase !== "active",
+    `terminal projection remained active at path ${path.join(",")}`,
+  );
   if (projection.phase !== "active") return;
   assert.ok(
     projection.legal_actions.length > 0,
     `active projection has no legal action at path ${path.join(",")}`,
   );
+  const stateIdentity = digest({
+    cards: projection.cards,
+    blocks: projection.blocks,
+    grants: projection.grants,
+    capabilities: projection.capabilities,
+    revisions: projection.revisions,
+    current_revision: projection.current_revision,
+    effects: projection.effects,
+    legal_actions: projection.legal_actions.map(
+      ({ expected_watermark: _watermark, ...action }) => action,
+    ),
+  });
+  if (seen.includes(stateIdentity)) return;
   assert.ok(path.length < 8, "checkpoint-only action graph must be finite");
   for (const actionIndex of projection.legal_actions.keys()) {
-    assertEveryActiveProjectionIsActionable(proposal, [...path, actionIndex]);
+    assertEveryActiveProjectionIsActionable(
+      proposal,
+      [...path, actionIndex],
+      [...seen, stateIdentity],
+    );
   }
 }
 

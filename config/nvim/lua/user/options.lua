@@ -1,3 +1,7 @@
+if vim.env.SSH_CONNECTION then
+    vim.g.clipboard = "osc52"
+end
+
 local options = {
     backup = false,                          -- creates a backup file
     clipboard = "unnamedplus",               -- allows neovim to access the system clipboard
