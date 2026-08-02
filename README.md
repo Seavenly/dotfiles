@@ -174,7 +174,15 @@ to one mutating runtime while competing processes remain read-only.
 Workspace and artifact subjects can publish one immutable generation-bound
 resource handoff atomically with producer finalization. A later run pins and
 rechecks that exact handoff before mutation without depending on the producer's
-process, branch, or workspace.
+process, branch, or workspace. Workspace writer claims are generation- and
+fingerprint-fenced, uncertain state remains tainted until an evidence-backed
+disposition, and cleanup previews refuse active, dirty, uncertain, pinned, or
+retained resources. Mutating consumers hold one exclusive handoff and workspace
+lease according to explicit operation authority through terminal settlement,
+while evidence-backed handoff retirement
+enables cleanup to release Git retention, artifact pins, and workspace retention.
+Destructive reset and risk acceptance require fresh exact human authority;
+`latest` resource selection is never authoritative.
 Cancellation is irreversible: it stops new Adapter admission, abandons
 incomplete attempts, preserves completed evidence, and quarantines outstanding
 or late results without advancing dependencies.

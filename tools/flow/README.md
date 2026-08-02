@@ -23,10 +23,11 @@ disabled, so this API does not authorize normal replacement launches.
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
   Catalog v13 adds disposable, exactly watermarked Kanban, graph, timeline,
-  trust, and operator projections rebuilt from `RunAuthority`. Catalog v12
-  added the authority-bound GitHub tracker progress operation and
-  projection. Catalog v11 combines workspace, artifact, and resource handoff interfaces
-  with the delegate-attempt execution introduced in v10. Delegate contracts
+  trust, and operator projections rebuilt from `RunAuthority`. Catalog v12 adds
+  authority-bound GitHub tracker progress, exact workspace
+  writer claims, durable taint dispositions, human-bound destructive authority,
+  and cleanup previews to the workspace, artifact, and resource handoff
+  interfaces introduced in v11. Delegate contracts
   include independently validated delegate
   evidence, distinct correlated `flow.delegate-quarantine/v1` records and
   blocks, a single Flow-owned Drovr feature baseline, and the exact working-turn
@@ -206,7 +207,14 @@ versioned Interfaces register canonical workspace subjects through
 and query retained `flow.resource-handoff/v1` subjects.
 Workspace projections bind registration and subject generation, mutation
 epoch, independently observed exact commit, tree, ref, clean state, and
-disposition. Artifact
+disposition. An exclusive writer claim cites the exact generation and Git
+fingerprint; competing claims, stale generations, and changed fingerprints fail
+closed. Uncertain subject state is durably tainted across process termination
+and reboot. Only published evidence-backed dispositions clear taint. Risk
+acceptance leaves taint intact, and both risk acceptance and destructive reset
+require a fresh RunAuthority-owned checkpoint bound to the exact subject,
+command, action payload, and watermark. Taint dispositions also require an
+owning-authority validation from the registered evidence Adapter. Artifact
 projections bind digest, schema, size, producer and validator provenance,
 classification, retention, pins, and retained-byte availability. Paths never
 establish artifact identity. Registration commands carry durable idempotency
@@ -237,6 +245,31 @@ watermark. The resulting
 and recorded before invocation. Content-addressed bytes, the Git retention ref,
 and authority streams remain valid after the producer process, harness, branch,
 or workspace disappears.
+
+Mutating consumers acquire the handoff's sole mutation lease and the associated
+WorkspaceAuthority claim atomically with launch. Competing writers fail closed,
+uncertain effects retain the lease, and successful exact receipts release the
+workspace lease, consumer pin, and artifact pins atomically. Each allowed
+consumer operation publishes an explicit `read_only` or `mutation` authority
+classification; names never imply mutation safety. Pins and claims remain held
+until the consuming run succeeds. Cancellation releases work that was never
+invoked and quarantines claims whose effects remain uncertain.
+
+Workspace cleanup, artifact collection, and resource handoff cleanup expose
+authority-derived previews with exact effects, observation watermarks, refusal
+reasons, and legal actions. Active claims, dirty or changed Git facts, taint,
+missing bytes, pins, retention, active handoffs, and cleanup obligations suppress
+destructive actions. Eligible cleanup executes only as the registered
+`flow.operation/resource-cleanup/v1` operation, preserving intent-before-effect
+and exact receipt settlement. An evidence-validated handoff retirement discharges
+its cleanup obligations and changes retention to collectable only after consumer
+pins are gone. Retirement evidence and its owning-Adapter validation bind the
+exact obligation list being discharged. Cleanup then releases Git retention,
+handoff artifact pins, and only the exact matching workspace generation before
+recording the handoff receipt. An uncertain cleanup remains bound to its original
+effect and can only retry after independent absence evidence or settle through
+exact presence evidence. Resource selection is
+always by exact handoff identity and digest; `latest` is rejected.
 
 The public launch contract is host-idempotent. Production-shaped conformance
 uses `createDurableRunAuthority()` with the replacement authority root beneath

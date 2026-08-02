@@ -60,9 +60,13 @@ import {
 } from "./authority-schema.mjs";
 import {
   attachWorkAuthorities,
+  buildArtifactCollectionPreview,
   buildConsumerHandoffBinding,
   buildConsumerMutationAuthorization,
+  buildHandoffCleanupPreview,
   buildHandoffPublication,
+  buildHumanAuthorityBinding,
+  buildWorkspaceCleanupPreview,
   decideWorkCommand,
   validateHandoffPublicationAuthority,
   withHandoffObservations,
@@ -256,6 +260,7 @@ export function createDurableRunAuthority({
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  workEvidenceAdapter = createFailClosedWorkEvidenceAdapter(),
   runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
 } = {}) {
   if (typeof authorityDirectory !== "string" || authorityDirectory.length === 0) {
@@ -312,6 +317,9 @@ export function createDurableRunAuthority({
     throw new TypeError(
       "durable run authority requires a reboot observation Adapter",
     );
+  }
+  if (typeof workEvidenceAdapter?.validate !== "function") {
+    throw new TypeError("durable run authority requires a Work evidence Adapter");
   }
   if (typeof runOwnershipAdapter?.observe !== "function") {
     throw new TypeError("durable run authority requires a run ownership Adapter");
@@ -465,7 +473,9 @@ export function createDurableRunAuthority({
         } catch (error) {
           if (!(error instanceof TypeError)) throw error;
           return durableLaunchRejection(
-            "invalid_resource_handoff_binding",
+            error.code === "forbidden_latest_resource_selection"
+              ? error.code
+              : "invalid_resource_handoff_binding",
             prepared,
             databasePath,
           );
@@ -727,6 +737,19 @@ export function createDurableRunAuthority({
               effect_intents: effectIntents,
             });
           }
+          const terminalEvent = currentDecision.events.find(({ type }) =>
+            ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
+          if (terminalEvent && effectIntents.length === 0) {
+            appendTerminalConsumerHandoffReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: canonicalCommand.run_id,
+              terminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
           if (effectIntents.length === 0 && currentDecision.events.some(({ type }) =>
             ["run_cancelled", "run_declined", "run_succeeded"].includes(type))) {
             appendAuthorityEvents(database, {
@@ -819,11 +842,82 @@ export function createDurableRunAuthority({
           processIdentity,
         });
         const currentProjection = readStream(database, identity.streamId)?.fold ?? null;
-        const structuralDecision = evaluateWorkCommand(
-          database,
-          identity,
-          command,
-        );
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            command.type === "workspace_claim") {
+          let observation;
+          try {
+            observation = gitWorkspaceObservationAdapter.observe({
+              repository_id: currentProjection.repository.canonical_id,
+              workspace_path: currentProjection.workspace.canonical_path,
+              ref: currentProjection.git.ref,
+            });
+          } catch {
+            return workRejection("command", "workspace_git_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+          command = freezeCanonical({ ...command, git_observation: observation });
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            command.disposition === "destructive_reset") {
+          let observation;
+          try {
+            observation = gitWorkspaceObservationAdapter.observe({
+              repository_id: currentProjection.repository.canonical_id,
+              workspace_path: currentProjection.workspace.canonical_path,
+              ref: command.replacement?.git?.ref,
+            });
+          } catch {
+            return workRejection("command", "workspace_git_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+          command = freezeCanonical({ ...command, git_observation: observation });
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            command.type === "workspace_taint_disposition") {
+          let validation;
+          try {
+            validation = workEvidenceAdapter.validate({
+              workspace: currentProjection,
+              command,
+            });
+          } catch {
+            validation = null;
+          }
+          command = freezeCanonical({
+            ...command,
+            evidence_validation: validation,
+          });
+        }
+        if (currentProjection?.schema === "flow.resource-handoff-projection/v1" &&
+            command.type === "resource_handoff_disposition") {
+          let validation;
+          try {
+            validation = workEvidenceAdapter.validate({
+              handoff: currentProjection,
+              command,
+            });
+          } catch {
+            validation = null;
+          }
+          command = freezeCanonical({ ...command, evidence_validation: validation });
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            (command.type === "workspace_risk_acceptance" ||
+             command.disposition === "destructive_reset")) {
+          command = freezeCanonical({
+            ...command,
+            human_authority_validation: validateHumanWorkAuthority(
+              database,
+              command,
+              fenceRun,
+            ),
+          });
+        }
+        const structuralDecision = evaluateWorkCommand(database, identity, command);
         if (structuralDecision.schema === "work.rejection/v1") {
           return structuralDecision;
         }
@@ -1244,6 +1338,27 @@ export function createDurableRunAuthority({
               handoff: publication.handoff,
             });
           }
+          const cleanup = effectiveIntent.operation_input?.resource_cleanup;
+          if (cleanup !== undefined) {
+            appendResourceCleanupCompletion(database, effectiveIntent, result, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
+          const deferredTerminalEvent = deferredEvents.find(({ type }) =>
+            ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
+          if (effectSucceeded && deferredTerminalEvent) {
+            appendTerminalConsumerHandoffReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: effectiveIntent.run_id,
+              terminalEvent: deferredTerminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
           appendAuthorityEvents(database, {
             streamId: effectiveIntent.run_id,
             streamKind: "run",
@@ -1482,7 +1597,15 @@ export function createDurableRunAuthority({
   const workspaceAuthority = Object.freeze({
     schema: "work.workspace-authority/v1",
     command(command) {
-      if (command?.schema !== "work.workspace-register-command/v1" ||
+      if (![
+        "work.workspace-register-command/v1",
+        "work.workspace-claim-command/v1",
+        "work.workspace-claim-release-command/v1",
+        "work.workspace-taint-command/v1",
+        "work.workspace-taint-disposition-command/v1",
+        "work.workspace-risk-acceptance-command/v1",
+      ]
+        .includes(command?.schema) ||
           command.contract !== "work.workspace/v1") {
         return workRejection("command", "invalid_workspace_command", { command });
       }
@@ -1496,6 +1619,26 @@ export function createDurableRunAuthority({
         });
       }
       return workQuery(request);
+    },
+    previewCleanup(request) {
+      const projection = this.query(request);
+      if (projection?.schema !== "work.workspace-projection/v1") {
+        return projection;
+      }
+      let observation;
+      try {
+        observation = gitWorkspaceObservationAdapter.observe({
+          repository_id: projection.repository.canonical_id,
+          workspace_path: projection.workspace.canonical_path,
+          ref: projection.git.ref,
+        });
+      } catch {
+        return workRejection("cleanup_preview", "workspace_git_observation_unavailable", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return buildWorkspaceCleanupPreview(projection, observation);
     },
   });
   const artifactAuthority = Object.freeze({
@@ -1516,9 +1659,22 @@ export function createDurableRunAuthority({
       }
       return workQuery(request);
     },
+    previewCollection(request) {
+      const projection = this.query(request);
+      return projection?.schema === "work.artifact-projection/v1"
+        ? buildArtifactCollectionPreview(projection)
+        : projection;
+    },
   });
   const handoffAuthority = Object.freeze({
     schema: "flow.resource-handoff-authority/v1",
+    command(command) {
+      if (command?.schema !== "flow.resource-handoff-disposition-command/v1" ||
+          command.contract !== "flow.resource-handoff/v1") {
+        return workRejection("command", "invalid_handoff_command", { command });
+      }
+      return workCommand(command);
+    },
     query(request) {
       if (request?.contract !== "flow.resource-handoff/v1") {
         return workRejection("query", "invalid_handoff_query", {
@@ -1527,6 +1683,12 @@ export function createDurableRunAuthority({
         });
       }
       return workQuery(request);
+    },
+    previewCleanup(request) {
+      const projection = this.query(request);
+      return projection?.schema === "flow.resource-handoff-projection/v1"
+        ? buildHandoffCleanupPreview(projection)
+        : projection;
     },
   });
   delete authorityMethods.workCommand;
@@ -1722,6 +1884,146 @@ function handoffPublicationAuthorityContext(
   return authority;
 }
 
+function resourceCleanupAuthorityContext(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  intent,
+) {
+  const request = intent?.operation_input?.resource_cleanup;
+  if (request?.schema !== "flow.resource-cleanup-request/v1") {
+    throw new TypeError("resource cleanup request is invalid");
+  }
+  const identity = workStreamIdentity(request.contract, request.subject_id);
+  if (!identity || !["workspace", "artifact", "handoff"].includes(identity.streamKind) ||
+      !readStream(database, identity.streamId)) {
+    throw new TypeError("resource cleanup subject is unavailable");
+  }
+  const projection = queryWorkProjection(
+    database,
+    authorityDirectory,
+    identity,
+    gitRetentionAdapter,
+  );
+  const preview = identity.streamKind === "workspace"
+    ? buildWorkspaceCleanupPreview(
+        projection,
+        gitWorkspaceObservationAdapter.observe({
+          repository_id: projection.repository.canonical_id,
+          workspace_path: projection.workspace.canonical_path,
+          ref: projection.git.ref,
+        }),
+      )
+    : identity.streamKind === "artifact"
+      ? buildArtifactCollectionPreview(projection)
+      : buildHandoffCleanupPreview(projection);
+  const action = preview.legal_actions[0];
+  const sameInFlightEffect = identity.streamKind === "workspace"
+    ? projection.taint?.reason === "resource_cleanup_in_flight" &&
+      projection.taint.source_effect_id === intent.effect_id
+    : identity.streamKind === "artifact"
+      ? projection.status === "uncertain" &&
+        projection.collection_effect_id === intent.effect_id
+      : projection.status === "uncertain" &&
+        projection.cleanup_effect_id === intent.effect_id;
+  if (!sameInFlightEffect && (preview.eligibility !== "eligible" ||
+      !isDeepStrictEqual(action?.operation_input?.resource_cleanup, request))) {
+    throw new TypeError("resource cleanup authority is stale or unsafe");
+  }
+  return { identity, preview };
+}
+
+function appendResourceCleanupCompletion(database, intent, receipt, fence) {
+  const request = intent.operation_input.resource_cleanup;
+  const providerReceipt = receipt?.provider_receipt?.resource_cleanup;
+  if (receipt?.outcome !== "succeeded" ||
+      providerReceipt?.schema !== "flow.resource-cleanup-receipt/v1" ||
+      providerReceipt.outcome !== "removed" ||
+      !isDeepStrictEqual(providerReceipt.request, request)) {
+    throw new TypeError("resource cleanup receipt does not match its request");
+  }
+  const identity = workStreamIdentity(request.contract, request.subject_id);
+  const current = readStream(database, identity.streamId)?.fold;
+  if (identity.streamKind === "workspace" &&
+      (current?.taint?.reason !== "resource_cleanup_in_flight" ||
+       current.taint.source_effect_id !== intent.effect_id ||
+       current.taint.evidence_digest !== digest(intent))) {
+    throw new TypeError("workspace cleanup authority changed after invocation");
+  }
+  if (identity.streamKind === "artifact" &&
+      (current?.status !== "uncertain" ||
+       current.collection_effect_id !== intent.effect_id ||
+       current.pins.length > 0)) {
+    throw new TypeError("artifact cleanup authority changed after invocation");
+  }
+  if (identity.streamKind === "handoff" &&
+      (current?.status !== "uncertain" ||
+       current.cleanup_effect_id !== intent.effect_id ||
+       current.consumer_pins.length > 0)) {
+    throw new TypeError("handoff cleanup authority changed after invocation");
+  }
+  if (identity.streamKind === "handoff") {
+    for (const artifact of current.artifacts) {
+      const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
+      appendAuthorityEvents(database, {
+        streamId: artifactIdentity.streamId,
+        streamKind: artifactIdentity.streamKind,
+        events: [{
+          contract: "work.artifact-event/v1",
+          payload: {
+            type: "artifact_pins_transferred",
+            remove: [{ holder: "handoff", id: current.handoff_id }],
+            add: [],
+          },
+        }],
+        ...fence,
+      });
+    }
+    const workspaceIdentity = workStreamIdentity(
+      "work.workspace/v1",
+      current.associated_workspace.subject_id,
+    );
+    appendAuthorityEvents(database, {
+      streamId: workspaceIdentity.streamId,
+      streamKind: workspaceIdentity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_handoff_retention_released",
+          expected_generation: current.associated_workspace.generation,
+          expected_fingerprint: digest({ git: current.associated_workspace.git }),
+        },
+      }],
+      ...fence,
+    });
+  }
+  appendAuthorityEvents(database, {
+    streamId: identity.streamId,
+    streamKind: identity.streamKind,
+    events: [{
+      contract: identity.streamKind === "workspace"
+        ? "work.workspace-event/v1"
+        : identity.streamKind === "artifact"
+          ? "work.artifact-event/v1"
+          : "flow.resource-handoff-event/v1",
+      payload: identity.streamKind === "workspace"
+        ? {
+            type: "workspace_cleaned",
+            cleanup_receipt: providerReceipt,
+          }
+        : identity.streamKind === "artifact" ? {
+            type: "artifact_collected",
+            cleanup_receipt: providerReceipt,
+          } : {
+            type: "resource_handoff_cleaned",
+            cleanup_receipt: providerReceipt,
+          },
+    }],
+    ...fence,
+  });
+}
+
 function appendHandoffPublication(database, publication, fence) {
   const workspaceIdentity = workStreamIdentity(
     "work.workspace/v1",
@@ -1764,6 +2066,12 @@ function prepareConsumerHandoffBindings(
   prepared,
   runId,
 ) {
+  if (prepared.explicit_facts.resource_claims.some((claim) =>
+    claim?.kind === "resource_handoff" && claim.id === "latest")) {
+    const error = new TypeError("latest resource handoff selection is forbidden");
+    error.code = "forbidden_latest_resource_selection";
+    throw error;
+  }
   const claimsByHandoff = new Map();
   for (const claim of prepared.explicit_facts.resource_claims
     .filter(({ kind }) => kind === "resource_handoff")) {
@@ -1782,6 +2090,22 @@ function prepareConsumerHandoffBindings(
   return [...claimsByHandoff.values()]
     .sort((left, right) => left.id.localeCompare(right.id))
     .map((claim) => {
+      const cardOperations = [...new Set(prepared.graph.cards.flatMap((card) =>
+        (card.resource_claims ?? [])
+          .filter((cardClaim) =>
+            cardClaim.kind === "resource_handoff" && cardClaim.id === claim.id &&
+            cardClaim.digest === claim.digest)
+          .flatMap((cardClaim) => cardClaim.operations ?? [])))].sort();
+      const requestedOperations = [...new Set(prepared.graph.cards
+        .map((card) => card.inputs?.resource_handoff)
+        .filter((request) => request?.handoff_id === claim.id &&
+          request.handoff_digest === claim.digest)
+        .map((request) => request.operation))].sort();
+      if (!isDeepStrictEqual(cardOperations, claim.operations) ||
+          requestedOperations.some((operation) =>
+            !cardOperations.includes(operation))) {
+        throw new TypeError("consumer handoff claims exceed exact card authority");
+      }
       const identity = workStreamIdentity("flow.resource-handoff/v1", claim.id);
       if (!identity || !readStream(database, identity.streamId)) {
         throw new TypeError("prepared consumer handoff does not exist");
@@ -1811,6 +2135,22 @@ function appendConsumerHandoffBindings(database, bindings, fence) {
       events: [binding.handoffEvent],
       ...fence,
     });
+    if (binding.workspaceEvent !== null) {
+      const workspaceIdentity = workStreamIdentity(
+        "work.workspace/v1",
+        binding.handoff.associated_workspace.subject_id,
+      );
+      const workspace = readStream(database, workspaceIdentity.streamId)?.fold;
+      if (workspace?.claims.length > 0) {
+        throw new TypeError("consumer mutation workspace is already claimed");
+      }
+      appendAuthorityEvents(database, {
+        streamId: workspaceIdentity.streamId,
+        streamKind: workspaceIdentity.streamKind,
+        events: [binding.workspaceEvent],
+        ...fence,
+      });
+    }
     binding.handoff.artifacts.forEach((artifact, index) => {
       const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
       appendAuthorityEvents(database, {
@@ -1820,6 +2160,93 @@ function appendConsumerHandoffBindings(database, bindings, fence) {
         ...fence,
       });
     });
+  }
+}
+
+function appendConsumerHandoffRelease(database, {
+  effectId = null,
+  handoffId,
+  runId: holderRunId,
+}, fence) {
+  const handoffIdentity = workStreamIdentity(
+    "flow.resource-handoff/v1",
+    handoffId,
+  );
+  const handoff = readStream(database, handoffIdentity.streamId)?.fold;
+  const pin = handoff?.consumer_pins.find(({ run_id: runId }) =>
+    runId === holderRunId);
+  if (!pin) return;
+  appendAuthorityEvents(database, {
+    streamId: handoffIdentity.streamId,
+    streamKind: handoffIdentity.streamKind,
+    events: [{
+      contract: "flow.resource-handoff-event/v1",
+      payload: {
+        type: "resource_handoff_consumer_released",
+        consumer_run_id: holderRunId,
+        effect_id: effectId,
+      },
+    }],
+    ...fence,
+  });
+  for (const artifact of handoff.artifacts) {
+    const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
+    appendAuthorityEvents(database, {
+      streamId: artifactIdentity.streamId,
+      streamKind: artifactIdentity.streamKind,
+      events: [{
+        contract: "work.artifact-event/v1",
+        payload: {
+          type: "artifact_pins_transferred",
+          remove: [{ holder: "run", id: holderRunId }],
+          add: [],
+        },
+      }],
+      ...fence,
+    });
+  }
+  if (handoff.mutation_claim?.holder === holderRunId) {
+    const workspaceIdentity = workStreamIdentity(
+      "work.workspace/v1",
+      handoff.associated_workspace.subject_id,
+    );
+    appendAuthorityEvents(database, {
+      streamId: workspaceIdentity.streamId,
+      streamKind: workspaceIdentity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_claim_released",
+          claim_id: handoff.mutation_claim.claim_id,
+          holder: holderRunId,
+        },
+      }],
+      ...fence,
+    });
+  }
+}
+
+function appendTerminalConsumerHandoffReleases(database, {
+  prepared,
+  runId,
+  terminalEvent,
+}, fence) {
+  const releasableHandoffIds = terminalEvent.type === "run_cancelled"
+    ? terminalEvent.resource_dispositions
+      .filter(({ claim }) => claim.kind === "resource_handoff")
+      .reduce((releasable, { claim, disposition }) => {
+        const existing = releasable.get(claim.id) ?? true;
+        releasable.set(claim.id, existing && disposition === "released");
+        return releasable;
+      }, new Map())
+    : new Map(prepared.explicit_facts.resource_claims
+      .filter(({ kind }) => kind === "resource_handoff")
+      .map(({ id }) => [id, true]));
+  const handoffIds = [...releasableHandoffIds.entries()]
+    .filter(([, releasable]) => releasable)
+    .map(([handoffId]) => handoffId);
+  for (const handoffId of handoffIds) {
+    appendConsumerHandoffRelease(database, { handoffId, runId }, fence);
   }
 }
 
@@ -2142,14 +2569,25 @@ function recordEffectInvocationStarted(database, intent, {
   processIdentity,
 }) {
   const publication = intent.operation_input?.publication;
+  let publicationAuthority = null;
   if (publication !== undefined) {
-    handoffPublicationAuthorityContext(
+    publicationAuthority = handoffPublicationAuthorityContext(
       database,
       authorityDirectory,
       gitRetentionAdapter,
       gitWorkspaceObservationAdapter,
       intent,
       publication,
+    );
+  }
+  let cleanupAuthority = null;
+  if (intent.operation_input?.resource_cleanup !== undefined) {
+    cleanupAuthority = resourceCleanupAuthorityContext(
+      database,
+      authorityDirectory,
+      gitRetentionAdapter,
+      gitWorkspaceObservationAdapter,
+      intent,
     );
   }
   database.exec("BEGIN IMMEDIATE");
@@ -2159,6 +2597,64 @@ function recordEffectInvocationStarted(database, intent, {
       bootId,
       processIdentity,
     });
+    if (publicationAuthority !== null) {
+      const identity = workStreamIdentity(
+        "work.workspace/v1",
+        publicationAuthority.workspace.subject_id,
+      );
+      appendAuthorityEvents(database, {
+        streamId: identity.streamId,
+        streamKind: identity.streamKind,
+        events: [{
+          contract: "work.workspace-event/v1",
+          payload: {
+            type: "workspace_tainted",
+            taint: {
+              reason: "handoff_publication_in_flight",
+              evidence_digest: digest(intent),
+              source_effect_id: intent.effect_id,
+            },
+          },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+    }
+    if (cleanupAuthority !== null) {
+      appendAuthorityEvents(database, {
+        streamId: cleanupAuthority.identity.streamId,
+        streamKind: cleanupAuthority.identity.streamKind,
+        events: [{
+          contract: cleanupAuthority.identity.streamKind === "workspace"
+            ? "work.workspace-event/v1"
+            : cleanupAuthority.identity.streamKind === "artifact"
+              ? "work.artifact-event/v1"
+              : "flow.resource-handoff-event/v1",
+          payload: cleanupAuthority.identity.streamKind === "workspace"
+            ? {
+                type: "workspace_tainted",
+                taint: {
+                  reason: "resource_cleanup_in_flight",
+                  evidence_digest: digest(intent),
+                  source_effect_id: intent.effect_id,
+                },
+              }
+            : cleanupAuthority.identity.streamKind === "artifact" ? {
+                type: "artifact_collection_started",
+                effect_id: intent.effect_id,
+                evidence_digest: digest(intent),
+              } : {
+                type: "resource_handoff_cleanup_started",
+                effect_id: intent.effect_id,
+                evidence_digest: digest(intent),
+              },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+    }
     const handoffRequest = intent.operation_input?.resource_handoff;
     if (handoffRequest !== undefined) {
       const handoffIdentity = workStreamIdentity(
@@ -2646,6 +3142,56 @@ function launchRejection(code, prepared, authorityEvents, reason = null) {
     bundleDigest: stringOrNull(prepared?.bundle_digest),
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
+  });
+}
+
+function validateHumanWorkAuthority(database, command, fenceRun) {
+  const authority = command.human_authority;
+  const binding = buildHumanAuthorityBinding(
+    command,
+    command.type === "workspace_risk_acceptance"
+      ? "risk_acceptance"
+      : "destructive_reset",
+  );
+  if (authority?.schema !== "work.human-authority/v1" ||
+      authority.binding_digest !== digest(binding) ||
+      typeof authority.run_id !== "string" ||
+      typeof authority.checkpoint_id !== "string") {
+    return null;
+  }
+  const stream = readStream(database, authority.run_id);
+  const checkpoint = stream?.fold?.active_plan?.cards.find(({ id }) =>
+    id === authority.checkpoint_id);
+  const approved = stream?.records.some(({ payload }) =>
+    payload.type === "checkpoint_decided" &&
+    payload.checkpoint_id === authority.checkpoint_id &&
+    payload.decision === "approve");
+  const valid = stream?.fold?.phase === "succeeded" && approved === true &&
+    fenceRun(database, stream).watermark === authority.run_watermark &&
+    isDeepStrictEqual(checkpoint?.inputs?.human_authority, binding);
+  return freezeCanonical({
+    schema: "work.human-authority-validation/v1",
+    valid,
+    binding_digest: digest(binding),
+    authority_digest: digest(authority),
+    run_id: authority.run_id,
+    checkpoint_id: authority.checkpoint_id,
+    run_watermark: authority.run_watermark,
+  });
+}
+
+function createFailClosedWorkEvidenceAdapter() {
+  return Object.freeze({
+    validate() {
+      return freezeCanonical({
+        schema: "work.taint-disposition-validation/v1",
+        valid: false,
+        subject_id: null,
+        taint_evidence_digest: null,
+        disposition: null,
+        evidence_digest: null,
+      });
+    },
   });
 }
 

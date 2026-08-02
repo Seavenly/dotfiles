@@ -5,6 +5,11 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+# Resolve jq before isolating the fixture home so hook migration checks do not
+# depend on the host mise shim after its configuration directory changes.
+jq_bin="$(mise which jq)"
+jq_dir="$(dirname "$jq_bin")"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export HOME="$tmp/home"
@@ -13,6 +18,7 @@ export XDG_STATE_HOME="$tmp/state"
 export DOTFILES_CONTEXT_OS=Linux
 export DOTFILES_CONTEXT_ARCH=x86_64
 export MISE_TRUSTED_CONFIG_PATHS="$root"
+export PATH="$jq_dir:$PATH"
 mkdir -p "$HOME" "$XDG_STATE_HOME/dotfiles/migrations"
 printf 'font-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/004-sketchybar-app-font"
 printf 'defaults-revision\n' > "$XDG_STATE_HOME/dotfiles/migrations/005-macos-defaults-restart"
