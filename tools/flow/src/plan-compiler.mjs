@@ -661,6 +661,7 @@ function validateDelegateCard(card, proposal) {
   if (description?.schema !== "drovr.delegated-agent-description/v1" ||
       !isDigest(description.description_digest) ||
       !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.comparison_keys?.effective_authority) ||
       !isDigest(description.watermark?.content_sha256) ||
       typeof card.inputs.prompt !== "string" || !card.inputs.prompt ||
       !Number.isSafeInteger(card.inputs.wait_timeout_ms) ||
@@ -720,6 +721,9 @@ function validateDelegateFallback(card, primaryDescription) {
       fallback.activate_for_attempt < 2 ||
       description?.schema !== "drovr.delegated-agent-description/v1" ||
       !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.comparison_keys?.effective_authority) ||
+      !isDigest(description.watermark?.content_sha256) ||
       route?.description_digest !== description.description_digest ||
       route?.launch_comparison_key !== description.comparison_keys?.launch ||
       route?.configuration_watermark !== description.watermark?.content_sha256 ||

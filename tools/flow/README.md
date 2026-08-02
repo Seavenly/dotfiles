@@ -165,7 +165,9 @@ disabled, so this API does not authorize normal replacement launches.
   keys and must all appear in settlement proof. Ambiguous discovery remains
   reconciling. Cancellation is itself a recorded, recoverable effect that
   closes the discovered exact turn and hands the agent back to the durable
-  registry before quarantined delegate retirement settlement.
+  registry before quarantined delegate retirement settlement. If cancellation
+  occurs between declared managed cards, the recorded cancellation effect
+  retires the agent held by the run.
 - `query({ run_id })` rebuilds an immutable run projection from authority. With
   no request it returns the host run index. Registered `flow.query/v1`
   contracts dispatch through this same operation; the Stage 0 legacy inventory
@@ -290,8 +292,11 @@ those intents may close live turns before quarantined delegate settlement.
 Same-boot recovery adopts the
 exact outstanding intent under the new epoch without changing its idempotency
 identity.
-RunAuthority records each provider invocation start and validates reconciliation
-observations itself. Reconcilable reinvocation requires a latest durable,
+RunAuthority records each initial provider invocation start and validates
+reconciliation observations itself. Cancelled delegate settlement reuses that
+original invocation identity because a post-cancellation invocation marker
+would incorrectly describe new work; its separate cancellation effect records
+its own invocation start. Reconcilable reinvocation requires a latest durable,
 affirmative absence observation; one-shot uncertain effects may adopt exact
 presence but never invoke again. While an effect remains unresolved, terminal
 checkpoint and revision declines are withheld and constructed checkpoint

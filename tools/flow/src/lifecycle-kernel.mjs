@@ -66,10 +66,27 @@ export function decideLifecycle(fold, command) {
       .filter(({ effect_id: effectId }) => unresolvedEffectIds.has(effectId))
       .flatMap(({ resource_claims: resourceClaims }) => resourceClaims)
       .map((claim) => digest(claim)));
-    const delegateCancellations = fold.effect_intents
+    const effectsById = new Map(fold.effects.map((effect) => [
+      effect.effect_id,
+      effect,
+    ]));
+    const unresolvedDelegates = fold.effect_intents
       .filter((intent) => intent.effect_kind === "delegate" &&
         unresolvedEffectIds.has(intent.effect_id))
       .map((intent) => delegateCancellationIntent(intent));
+    const managedAgentHandoffs = fold.effect_intents
+      .filter((intent) => intent.effect_kind === "delegate" &&
+        !unresolvedEffectIds.has(intent.effect_id) &&
+        intent.managed_agent_binding?.terminal_card_id !== intent.card_id &&
+        effectsById.get(intent.effect_id)?.receipt?.provider_receipt
+          ?.terminal_disposition?.durable_holder === `flow.run:${fold.run_id}`)
+      .map((intent) => delegateCancellationIntent(intent, {
+        retireManagedAgent: true,
+      }));
+    const delegateCancellations = [
+      ...unresolvedDelegates,
+      ...managedAgentHandoffs,
+    ];
     return {
       schema: "flow.decision/v1",
       command_type: command.type,
@@ -254,12 +271,15 @@ export function decideLifecycle(fold, command) {
   );
 }
 
-function delegateCancellationIntent(delegateIntent) {
+function delegateCancellationIntent(delegateIntent, {
+  retireManagedAgent = false,
+} = {}) {
   const identity = digest({
     schema: "flow.delegate-cancellation-identity/v1",
     effect_id: delegateIntent.effect_id,
     attempt_id: delegateIntent.attempt_id,
     route_binding: delegateIntent.route_binding,
+    terminal_disposition: retireManagedAgent ? "retire" : "registry_handoff",
   });
   return {
     schema: "flow.effect-intent/v1",
@@ -269,6 +289,7 @@ function delegateCancellationIntent(delegateIntent) {
     attempt_id: `${delegateIntent.attempt_id}:cancellation`,
     delegate_attempt_id: delegateIntent.attempt_id,
     delegate_effect_id: delegateIntent.effect_id,
+    retire_managed_agent: retireManagedAgent,
     card_id: delegateIntent.card_id,
     classification: "caller_idempotent",
     operation_contract: delegateIntent.operation_contract,

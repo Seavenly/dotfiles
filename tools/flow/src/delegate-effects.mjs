@@ -174,6 +174,16 @@ async function executeDelegateCancellation(intent, port) {
     }
   }
   const agentId = intent.route_binding.agent_id;
+  const terminalDisposition = intent.retire_managed_agent === true
+    ? await retireDelegateAgent(current, intent, port)
+    : {
+      schema: "flow.resource-handoff/v1",
+      resource: { type: "drovr_agent", id: agentId },
+      durable_holder: "drovr.registry",
+      reason: "cancelled_delegate_settlement",
+      attempt_id: intent.delegate_attempt_id,
+      ...(turnDisposition ? { turn_disposition: turnDisposition } : {}),
+    };
   return freezeCanonical({
     schema: "flow.effect-receipt/v1",
     effect_id: intent.effect_id,
@@ -185,14 +195,7 @@ async function executeDelegateCancellation(intent, port) {
       delegate_effect_id: intent.delegate_effect_id,
       turn_id: current.turn?.id ?? null,
       drovr_watermark: current.watermark ?? null,
-      terminal_disposition: {
-        schema: "flow.resource-handoff/v1",
-        resource: { type: "drovr_agent", id: agentId },
-        durable_holder: "drovr.registry",
-        reason: "cancelled_delegate_settlement",
-        attempt_id: intent.delegate_attempt_id,
-        ...(turnDisposition ? { turn_disposition: turnDisposition } : {}),
-      },
+      terminal_disposition: terminalDisposition,
     },
   });
 }
@@ -261,6 +264,11 @@ async function executeDelegate(intent, port, validators) {
     current = discovered;
   } else {
     throw delegatedRuntimeError(discovered);
+  }
+
+  if (current.turn?.id &&
+      current.delegation?.agent_id !== intent.route_binding.agent_id) {
+    throw delegatedRuntimeError(current);
   }
 
   if (current.status !== "completed" && current.turn?.status !== "completed") {
@@ -450,7 +458,7 @@ async function settleTerminalDisposition({
     });
   }
   if (receipt.outcome === "succeeded" &&
-      intent.managed_agent_binding !== null &&
+      intent.managed_agent_binding?.terminal_card_id !== undefined &&
       intent.card_id !== intent.managed_agent_binding.terminal_card_id) {
     return freezeCanonical({
       ...receipt,
@@ -460,7 +468,7 @@ async function settleTerminalDisposition({
           schema: "flow.resource-handoff/v1",
           resource: {
             type: "drovr_agent",
-            id: current.delegation?.agent_id ?? intent.route_binding.agent_id,
+            id: intent.route_binding.agent_id,
           },
           durable_holder: `flow.run:${intent.run_id}`,
           reason: "declared_managed_agent_reuse",
@@ -470,6 +478,18 @@ async function settleTerminalDisposition({
       },
     });
   }
+  const disposition = await retireDelegateAgent(current, intent, port);
+  const priorEvidence = receipt.provider_receipt;
+  return freezeCanonical({
+    ...receipt,
+    provider_receipt: {
+      ...priorEvidence,
+      terminal_disposition: disposition,
+    },
+  });
+}
+
+async function retireDelegateAgent(current, intent, port) {
   let disposition;
   try {
     disposition = await port.retire({
@@ -502,14 +522,7 @@ async function settleTerminalDisposition({
     disposition.watermark?.schema === "drovr.agent-authority-watermark/v1" &&
     disposition.watermark.agent_id === expectedAgentId;
   if (!settled) throw delegatedRuntimeError(disposition);
-  const priorEvidence = receipt.provider_receipt;
-  return freezeCanonical({
-    ...receipt,
-    provider_receipt: {
-      ...priorEvidence,
-      terminal_disposition: disposition,
-    },
-  });
+  return disposition;
 }
 
 function provesClosedTurn(projection, expectedAgentId, expectedTurnId) {

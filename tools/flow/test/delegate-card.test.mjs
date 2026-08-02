@@ -1173,6 +1173,69 @@ test("declared cards reuse one exact managed agent until terminal retirement", a
     `${launch.run_id}:delegate-followup:attempt:1`);
 });
 
+test("cancelling between managed cards retires the held agent", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-held-agent"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  const first = proposal.graph.cards[1];
+  const binding = {
+    schema: "flow.managed-agent-binding/v1",
+    binding_id: "managed-agent:review",
+    card_ids: ["delegate-review", "delegate-followup"],
+    terminal_card_id: "delegate-followup",
+  };
+  first.inputs.managed_agent = binding;
+  const second = structuredClone(first);
+  second.id = "delegate-followup";
+  second.dependencies = [first.id];
+  proposal.graph.cards.push(second);
+  proposal.explicit_facts.limits.max_cards = 3;
+  proposal.requested_authority.commands.push("cancel");
+  let callerKey;
+  const retirements = [];
+  const runtime = delegateRuntime(authority, {
+    async dispatch(request) {
+      callerKey = request.caller_key;
+      return workingProjection(request);
+    },
+    async wait() {
+      return completedTurnProjection({ callerKey, description });
+    },
+    async retire(request) {
+      retirements.push(request);
+      return completePortOperations().retire(request);
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .cards.find(({ id }) => id === second.id).status === "ready");
+  const betweenCards = runtime.query({ run_id: launch.run_id });
+
+  assert.equal(retirements.length, 0);
+  runtime.command(betweenCards.legal_actions.find(
+    ({ type }) => type === "cancel",
+  ));
+  await until(() => retirements.length === 1);
+  const cancelled = runtime.query({ run_id: launch.run_id });
+  const cancellation = cancelled.effects.find(
+    ({ effect_kind: effectKind }) => effectKind === "delegate_cancellation",
+  );
+
+  assert.equal(cancelled.phase, "cancelled");
+  assert.equal(cancellation.receipt.provider_receipt
+    .terminal_disposition.status, "retired");
+  assert.equal(retirements[0].agent_id, "agent:delegate-review");
+  assert.deepEqual(cancelled.legal_actions, []);
+});
+
 test("prepare rejects ambient managed-agent reuse", async () => {
   const description = await compatibleDescription();
   const proposal = delegateCardProposal(description);
@@ -1236,6 +1299,83 @@ test("prepare rejects fallback inside an immutable managed-agent binding", async
     () => createFlowRuntime().prepare(proposal),
     (error) => error.reason === "invalid_managed_agent_binding",
   );
+});
+
+test("prepare rejects missing delegate authority digests", async () => {
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  delete proposal.graph.cards[1].inputs.description.comparison_keys
+    .effective_authority;
+
+  assert.throws(
+    () => createFlowRuntime().prepare(proposal),
+    (error) => error.reason === "invalid_delegate_binding",
+  );
+
+  const fallbackPrimary = await compatibleDescription();
+  const fallbackDescription = structuredClone(fallbackPrimary);
+  fallbackDescription.launch.harness = "claude";
+  const fallbackProposal = delegateCardProposal(fallbackPrimary, {
+    maxAttempts: 2,
+  });
+  fallbackProposal.graph.cards[1].inputs.fallback = {
+    schema: "flow.delegate-route-fallback/v1",
+    activate_for_attempt: 2,
+    description: fallbackDescription,
+    route: {
+      agent_id: "agent:delegate-fallback",
+      description_digest: fallbackDescription.description_digest,
+      launch_comparison_key: fallbackDescription.comparison_keys.launch,
+      configuration_watermark: fallbackDescription.watermark.content_sha256,
+    },
+    independent_from: {
+      relation: "different_harness",
+      description_digest: fallbackPrimary.description_digest,
+    },
+  };
+  delete fallbackDescription.comparison_keys.effective_authority;
+
+  assert.throws(
+    () => createFlowRuntime().prepare(fallbackProposal),
+    (error) => error.reason === "invalid_delegate_fallback",
+  );
+});
+
+test("a wrong discovered agent receives no steering input", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-wrong-steering"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  proposal.graph.cards[1].inputs.steering = [{
+    schema: "flow.delegate-steering-input/v1",
+    caller_id: "security",
+    prompt: "inspect sensitive context",
+  }];
+  let sends = 0;
+  const runtime = delegateRuntime(authority, {
+    async discover(request) {
+      return workingProjection({
+        agent_id: "agent:unexpected",
+        caller_key: request.caller_key,
+      });
+    },
+    async send() {
+      sends += 1;
+      assert.fail("steering must not be sent to a mismatched agent");
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects[0]
+    .status === "reconciling");
+
+  assert.equal(sends, 0);
 });
 
 test("a result from the wrong routed agent remains quarantined", async (t) => {

@@ -181,7 +181,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "exact_binding_ordered_caller_inputs_and_independent_validation",
     ambiguous_dispatch: "reconciling_without_fallback_activation",
     cancelled_settlement:
-      "recorded_exact_turn_cancellation_registry_handoff_then_quarantined_delegate_retirement",
+      "recorded_exact_turn_cancellation_registry_handoff_or_managed_retirement_then_quarantined_delegate_retirement",
     quarantine: "late_or_incompatible_correlated",
     terminal_disposition:
       "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
