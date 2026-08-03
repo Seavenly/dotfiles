@@ -609,7 +609,8 @@ export class HerdrClient {
           stagedAfterDelivery = snapshot;
         }
       }
-      if (!attachmentReady && !literalPromptReady) noAttachmentPolls += 1;
+      if (attachmentReady || literalPromptReady) break;
+      noAttachmentPolls += 1;
       if (
         noAttachmentPolls >= 2 &&
         prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
@@ -618,7 +619,6 @@ export class HerdrClient {
       ) {
         return result;
       }
-      if (attachmentReady || literalPromptReady) break;
       await this.delay(25);
     }
     if (!attachmentReady && !literalPromptReady) {

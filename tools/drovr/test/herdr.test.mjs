@@ -137,6 +137,36 @@ test("guarded pane excerpts reject a changed native session before reading", asy
   assert.equal(calls.some((args) => args.includes("read")), false);
 });
 
+test("guarded pane excerpts report uncertainty when native session is unavailable", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: "blocked",
+            }],
+          },
+        });
+      }
+      throw new Error("unavailable identity should not permit a pane read");
+    },
+  });
+
+  await assert.rejects(
+    () => client.agentExcerpt("managed-agent", { nativeSession: "native-before" }),
+    (error) => {
+      assert.equal(error.outcome, "uncertain");
+      return true;
+    },
+  );
+  assert.equal(calls.some((args) => args.includes("read")), false);
+});
+
 test("literal staged input targets the exact managed pane without a submit key", async () => {
   const calls = [];
   const client = new HerdrClient({
@@ -269,6 +299,54 @@ test("Claude prompt delivery accepts a fast short completion without staged text
 
   assert.equal(polls, 2);
   assert.equal(enterSent, false);
+});
+
+test("Claude prompt delivery submits literal text when it appears with completion", async () => {
+  const prompt = "Reply with the exact word: APPROVED.";
+  let promptSent = false;
+  let polls = 0;
+  let enterSent = false;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("list")) {
+        polls += 1;
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: enterSent
+                ? "working"
+                : polls >= 3
+                  ? "done"
+                  : "idle",
+              state_change_seq: enterSent ? 14 : polls >= 3 ? 13 : 12,
+            }],
+          },
+        });
+      }
+      if (args.includes("read")) {
+        return promptSent && polls >= 3
+          ? `────────\n❯ ${prompt}\n────────`
+          : "";
+      }
+      if (args.includes("prompt")) promptSent = true;
+      if (args.includes("send-keys")) enterSent = true;
+      return JSON.stringify({ result: { status: "accepted" } });
+    },
+  });
+
+  await client.prompt("managed-agent", prompt, {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
+
+  assert.equal(enterSent, true);
+  assert.equal(polls, 4);
 });
 
 test("Claude prompt delivery rejects a staged long single-line paste without an attachment token", async () => {

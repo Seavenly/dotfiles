@@ -130,6 +130,7 @@ test("captureTrace redacts credentials and machine-local paths before persistenc
             inline_url: "see https://example.com/x",
             credential_url: "https://alice:hunter2@internal.example.com/repo.git",
             token_url: "https://user:ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@github.com/o/r",
+            query_token_url: "https://example.com/cb?access_token=abc123",
             local_url: "file:///home/operator/private-project",
           },
         },
@@ -138,7 +139,11 @@ test("captureTrace redacts credentials and machine-local paths before persistenc
   );
   const serializedUrls = JSON.stringify(urls);
   assert.match(serializedUrls, /https:\/\/example\.com\/x/u);
-  assert.doesNotMatch(serializedUrls, /hunter2|ghp_A{10,}|file:\/\/\/home\/operator/u);
+  assert.doesNotMatch(
+    serializedUrls,
+    /hunter2|ghp_A{10,}|abc123|file:\/\/\/home\/operator/u,
+  );
+  assert.match(serializedUrls, /access_token=\[REDACTED\]/u);
   assert.match(serializedUrls, /file:<path:sha256:[0-9a-f]{64}>/u);
 
   assert.equal(
@@ -386,7 +391,8 @@ test("trace journals coordinate independent processes on one path", async (t) =>
   const script = `
     import { createTraceJournal } from ${JSON.stringify(traceModule)};
     const journal = createTraceJournal(process.env.TRACE_PATH);
-    for (const operation of ["agent.list", "agent.wait"]) {
+    for (let index = 0; index < 15; index += 1) {
+      const operation = index % 2 === 0 ? "agent.list" : "agent.wait";
       await journal.record({
         kind: "agent_observation",
         operation,
@@ -403,16 +409,18 @@ test("trace journals coordinate independent processes on one path", async (t) =>
     TRACE_PATH: path,
     DROVR_TRACE_STARTED_AT: String(Date.now()),
   };
-  await Promise.all([runNodeScript(script, env), runNodeScript(script, env)]);
+  await Promise.all(
+    Array.from({ length: 4 }, () => runNodeScript(script, env)),
+  );
 
   const trace = await traceFromJournal(path, {
     scenarioId: "journal-process-test",
     provenance: rawTrace().provenance,
   });
-  assert.equal(trace.events.length, 4);
+  assert.equal(trace.events.length, 60);
   assert.deepEqual(
     trace.events.map(({ sequence }) => sequence),
-    [1, 2, 3, 4],
+    Array.from({ length: 60 }, (_, index) => index + 1),
   );
   assert.ok(
     trace.events.every(

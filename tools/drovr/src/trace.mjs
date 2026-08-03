@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
   chmod,
   mkdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
@@ -32,8 +33,8 @@ const ABSOLUTE_PATH_GLOBAL = /(?<![\w.-])(?:\/(?:[^\s"'`\[\]()<>{},;]+\/)*[^\s"'
 const UNSAFE_ABSOLUTE_PATH_GLOBAL = /(?:^|[^\w.-])(?:\/{1,2}|[A-Z]:\\)[^\s"'`\[\]()<>{},;]+/giu;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu;
 const BEARER_GLOBAL = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
-const SECRET_ASSIGNMENT = /\b(?:api[_-]?key|password|secret|token)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}]+/iu;
-const SECRET_ASSIGNMENT_GLOBAL = /\b(?:api[_-]?key|password|secret|token)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}]+/giu;
+const SECRET_ASSIGNMENT = /\b(?:[\w-]+[_-])?(?:api[_-]?key|password|secret|token)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}]+/iu;
+const SECRET_ASSIGNMENT_GLOBAL = /\b(?:[\w-]+[_-])?(?:api[_-]?key|password|secret|token)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}]+/giu;
 const PRIVATE_KEY = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/u;
 const PRIVATE_KEY_GLOBAL = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/gu;
 const SAFE_STRUCTURED_TEXT = /^(?:(?:[-─\s❯])|\[Pasted text #\d+(?: [^\]\r\n]*)?\]|(?:QUALIFY|REPLAY|TRACE)-[A-Z0-9_-]+|\[REDACTED_TEXT sha256:[0-9a-f]{64}\]|\[REDACTED_PRIVATE_KEY\])+$/u;
@@ -362,8 +363,10 @@ async function withTraceJournalLock(path, operation) {
       await mkdir(lockPath, { mode: 0o700 });
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      if (await traceLockIsStale(lockPath)) {
-        await rm(lockPath, { recursive: true, force: true });
+      const lockStatus = await traceLockStatus(lockPath);
+      if (lockStatus === "vanished") continue;
+      if (lockStatus === "stale") {
+        await reclaimTraceLock(lockPath);
         continue;
       }
       if (Date.now() >= deadline) {
@@ -386,27 +389,39 @@ async function withTraceJournalLock(path, operation) {
   }
 }
 
-async function traceLockIsStale(lockPath) {
+async function traceLockStatus(lockPath) {
   let lockStats;
   try {
     lockStats = await stat(lockPath);
   } catch (error) {
-    return error?.code === "ENOENT";
+    if (error?.code === "ENOENT") return "vanished";
+    throw error;
   }
-  if (Date.now() - lockStats.mtimeMs < TRACE_LOCK_STALE_MS) return false;
+  if (Date.now() - lockStats.mtimeMs < TRACE_LOCK_STALE_MS) return "held";
   let owner;
   try {
     owner = Number.parseInt(await readFile(join(lockPath, "owner"), "utf8"), 10);
-  } catch {
-    return true;
+  } catch (error) {
+    return error?.code === "ENOENT" ? "vanished" : "stale";
   }
-  if (!Number.isSafeInteger(owner) || owner <= 0) return true;
+  if (!Number.isSafeInteger(owner) || owner <= 0) return "stale";
   try {
     process.kill(owner, 0);
-    return false;
+    return "held";
   } catch (error) {
-    return error?.code === "ESRCH";
+    return error?.code === "ESRCH" ? "stale" : "held";
   }
+}
+
+async function reclaimTraceLock(lockPath) {
+  const reclaimedPath = `${lockPath}.reclaim-${process.pid}-${randomUUID()}`;
+  try {
+    await rename(lockPath, reclaimedPath);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "EEXIST") return;
+    throw error;
+  }
+  await rm(reclaimedPath, { recursive: true, force: true });
 }
 
 function parseStartedAt(value) {
