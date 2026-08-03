@@ -567,7 +567,7 @@ test("Claude staged input recovery submits only the exact inspected prompt", asy
   assert.equal(submitted, true);
 });
 
-test("Claude staged recovery rechecks identity before the final snapshot inspection", async () => {
+test("Claude staged recovery checks identity immediately before the final snapshot inspection", async () => {
   let submitted = false;
   const calls = [];
   const client = new HerdrClient({
@@ -616,7 +616,7 @@ test("Claude staged recovery rechecks identity before the final snapshot inspect
   });
 
   const sendIndex = calls.indexOf("send-keys");
-  assert.deepEqual(calls.slice(0, sendIndex), ["list", "list", "read"]);
+  assert.deepEqual(calls.slice(0, sendIndex), ["list", "read"]);
   assert.equal(calls[sendIndex - 1], "read");
 });
 

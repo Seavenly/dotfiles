@@ -175,6 +175,7 @@ test("semantic production mutations require the registered compatibility digest"
       },
     },
     compatibility,
+    requireCompatibilityBinding: true,
     requireCompatibility: true,
   });
 
@@ -193,6 +194,86 @@ test("semantic production mutations require the registered compatibility digest"
   );
   assert.equal(nativeObservations, 0);
   assert.equal(nativePrompts, 0);
+});
+
+test("a command-runner injection cannot bypass the compatibility binding gate", async () => {
+  const runtimeFacts = runtime();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  runtimeFacts.calls.length = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    agent: {
+      status: "active",
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: "sha256:" + "0".repeat(64),
+      },
+    },
+  }, {
+    env: {},
+    run: runtimeFacts.run,
+    compatibility,
+  });
+
+  assert.equal(harness.capabilities.compatibility, "required");
+  await assert.rejects(
+    () => harness.deliverTurn({
+      agent: {
+        herdr: { name: "managed-agent", pane_id: "pane-1" },
+        native_session: "native-1",
+      },
+      prompt: "must not be delivered",
+    }),
+    (error) =>
+      error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed",
+  );
+  assert.deepEqual(runtimeFacts.calls, []);
+});
+
+test("task and group contexts block conflicting active-agent bindings", async () => {
+  let nativeCalls = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: "sha256:" + "1".repeat(64),
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: "sha256:" + "2".repeat(64),
+        },
+      },
+    ],
+  }, {
+    env: {},
+    run: async () => {
+      nativeCalls += 1;
+      throw new Error("native compatibility collection must not run");
+    },
+  });
+
+  assert.equal(harness.capabilities.compatibility, "required");
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) =>
+      error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed" &&
+      error.details?.expected === "sha256:" + "1".repeat(64) &&
+      error.details?.observed === "sha256:" + "2".repeat(64),
+  );
+  assert.equal(nativeCalls, 0);
 });
 
 test("semantic production mutations block agents with no compatibility digest", async () => {

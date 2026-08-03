@@ -202,6 +202,19 @@ test("replay does not correlate transcript output without settled identity evide
   assert.equal(replay.consumedEvents().length, 0);
 });
 
+test("replay zero-timeout waits do not claim unobserved evidence", async () => {
+  const replay = createReplayHarness(trace([]));
+  const result = await replay.harness.waitForTurn({
+    agent: managedAgent(),
+    turn: { inputs: [] },
+    timeoutMs: 0,
+  });
+
+  assert.equal(result.outcome, "still_running");
+  assert.equal(result.evidence, "uncertain");
+  assert.equal(result.observation, undefined);
+});
+
 test("replay compatibility blocks missing or changed exact facts before mutation", async () => {
   const unqualifiedTrace = trace([
     command(1, "agent.prompt", {

@@ -273,7 +273,7 @@ function createReplaySemanticAdapter({
           return {
             schema: "drovr.semantic-turn-evidence/v1",
             outcome: "still_running",
-            evidence: "present",
+            evidence: last?.evidence ?? "uncertain",
             observation: last,
           };
         }

@@ -54,6 +54,7 @@ export function createProductionSemanticHarness({
   compatibility,
   expectedCompatibility,
   expectedCompatibilityEvidenceDigest,
+  compatibilityBindingFailure,
   requireCompatibilityBinding = false,
   requireCompatibility = false,
 } = {}) {
@@ -67,9 +68,14 @@ export function createProductionSemanticHarness({
   });
   const native = productionNativeAdapter(harness, env);
   let qualifiedCompatibility = compatibility;
+  const compatibilityRequired =
+    requireCompatibility || requireCompatibilityBinding;
 
   async function ensureCompatibility() {
-    if (!requireCompatibility) return qualifiedCompatibility;
+    if (!compatibilityRequired) return qualifiedCompatibility;
+    if (compatibilityBindingFailure) {
+      throw compatibilityBindingError(compatibilityBindingFailure);
+    }
     if (
       requireCompatibilityBinding &&
       !expectedCompatibilityEvidenceDigest
@@ -131,7 +137,7 @@ export function createProductionSemanticHarness({
         observeWorkspace: typeof client.workspaceRecord === "function",
       },
       stagedInput: typeof client.inspectStagedInput === "function",
-      compatibility: requireCompatibility ? "required" : "optional",
+      compatibility: compatibilityRequired ? "required" : "optional",
     },
 
     async ensureRuntime() {
@@ -372,7 +378,7 @@ export function createProductionSemanticHarness({
           return {
             schema: TURN_EVIDENCE_SCHEMA,
             outcome: "still_running",
-            evidence: "present",
+            evidence: last?.evidence ?? "uncertain",
             observation: last,
           };
         }

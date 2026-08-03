@@ -127,12 +127,17 @@ Missing, changed, or explicitly unqualified facts return a typed
 `compatibility_blocked` result with legal recovery actions; they never authorize
 a mutation or a stale launch binding. Qualified results include the
 `drovr.compatibility/v1` evidence digest and explicit upstream gaps.
+Lifecycle cleanup uses the same binding gate: every non-retired managed agent
+in a task or group must carry one exact shared compatibility digest. Missing or
+conflicting bindings block before cleanup mutation.
 
 The current upstream gap is Herdr's lack of a typed native raw-key operation.
 The production adapter keeps that gesture local and guards every use with the
 exact managed identity and staged snapshot. Replay represents the gesture as
 an ordered semantic event, so tests can verify the same safety posture without
 reimplementing Herdr construction or pane parsing.
+The final identity observation and staged snapshot inspection are adjacent, but
+the upstream raw-key call still leaves an irreducible inspect-to-gesture window.
 
 ## Staged-input recovery invariant
 

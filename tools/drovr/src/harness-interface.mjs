@@ -87,22 +87,72 @@ export function createSemanticHarness(options = {}) {
 export function semanticHarnessFor(context, dependencies = {}) {
   const existing = dependencies.harness ?? dependencies.semanticHarness;
   if (existing) return createSemanticHarness({ adapter: existing });
-  const launchBinding = context.agent?.launch_binding;
+  const agents = managedAgents(context);
+  const compatibilityBinding = compatibilityBindingFor(agents);
+  // An injected Herdr client is the low-level test seam used by lifecycle
+  // fixtures. Production and run-only paths retain the binding gate even when
+  // they provide a command runner, because that runner does not replace the
+  // compatibility proof.
+  const requireCompatibilityBinding = dependencies.requireCompatibilityBinding ?? (
+    agents.length > 0 &&
+    (!dependencies.herdr || dependencies.requireCompatibility === true)
+  );
+  const primaryAgent = agents[0] ?? context.agent;
   return createSemanticHarness({
     ...dependencies,
     session: context.group?.herdr?.session,
-    harness: context.agent?.launch?.harness,
-    ...(context.agent
+    harness: primaryAgent?.launch?.harness,
+    ...(requireCompatibilityBinding
       ? {
           expectedCompatibilityEvidenceDigest:
-            launchBinding?.compatibility_evidence_digest,
-          requireCompatibilityBinding: true,
+            compatibilityBinding.digest,
+          ...(compatibilityBinding.failure
+            ? { compatibilityBindingFailure: compatibilityBinding.failure }
+            : {}),
+          requireCompatibilityBinding,
         }
       : {}),
     requireCompatibility: dependencies.requireCompatibility ?? (
       !dependencies.herdr && !dependencies.run
     ),
   });
+}
+
+function managedAgents(context) {
+  const candidates = Array.isArray(context?.agents)
+    ? context.agents
+    : context?.agent
+      ? [context.agent]
+      : [];
+  return candidates.filter((agent) => agent?.status !== "retired");
+}
+
+function compatibilityBindingFor(agents) {
+  if (agents.length === 0) return {};
+  const digests = agents.map(
+    (agent) => agent.launch_binding?.compatibility_evidence_digest,
+  );
+  if (digests.some((digest) => !digest)) {
+    return {
+      failure: {
+        expected: null,
+        observed: null,
+        reason: "missing",
+      },
+    };
+  }
+  const [expected] = digests;
+  const observed = digests.find((digest) => digest !== expected);
+  if (observed) {
+    return {
+      failure: {
+        expected,
+        observed,
+        reason: "changed",
+      },
+    };
+  }
+  return { digest: expected };
 }
 
 export function assertSemanticHarness(candidate) {

@@ -1,6 +1,6 @@
 import { loadConfiguration } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
-import { createSemanticHarness } from "./harness-interface.mjs";
+import { semanticHarnessFor } from "./harness-interface.mjs";
 import { readRecords, stateDirectory } from "./registry.mjs";
 
 export async function attach(
@@ -18,11 +18,13 @@ export async function attach(
       outcome: "invalid_arguments",
     });
   }
-  const harness = createSemanticHarness({
-    env,
-    session: configuration.session,
-    harness: agent.launch.harness,
-  });
+  const harness = semanticHarnessFor(
+    {
+      group: { herdr: { session: configuration.session } },
+      agent,
+    },
+    { env },
+  );
   const runtime = await harness.observeRuntime();
   if (runtime.evidence !== "present") {
     if (runtime.evidence === "absent") return 4;

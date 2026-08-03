@@ -197,6 +197,25 @@ test("production turn correlation settles uncertain without an overall timeout",
   assert.ok(pauses > 0);
 });
 
+test("production zero-timeout waits do not claim unobserved evidence", async () => {
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    herdr: {},
+  });
+  const result = await harness.waitForTurn({
+    agent: {
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      native_session: "native-1",
+    },
+    turn: { inputs: [] },
+    timeoutMs: 0,
+  });
+
+  assert.equal(result.outcome, "still_running");
+  assert.equal(result.evidence, "uncertain");
+  assert.equal(result.observation, undefined);
+});
+
 test("production block resume reports a newer block before native working evidence", async () => {
   const agent = {
     id: "agent-1",

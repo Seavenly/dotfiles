@@ -749,26 +749,6 @@ export class HerdrClient {
         outcome: "recovery_blocked",
       });
     }
-    const observedBeforeSend = await this.agentRecord(name);
-    if (
-      nativeSession &&
-      observedBeforeSend?.agent_session?.value !== nativeSession
-    ) {
-      throw new DrovrError(`Claude identity changed for ${name}`, {
-        code: 0,
-        outcome: "recovery_blocked",
-      });
-    }
-    if (
-      paneId !== undefined &&
-      paneId !== null &&
-      observedBeforeSend?.pane_id !== paneId
-    ) {
-      throw new DrovrError(`Herdr managed pane changed for ${name}`, {
-        code: 0,
-        outcome: "recovery_blocked",
-      });
-    }
     const staged = await this.inspectStagedInput(name, { harness });
     if (!staged || staged.token !== token) {
       throw new DrovrError(`Claude staged input changed for ${name}`, {
