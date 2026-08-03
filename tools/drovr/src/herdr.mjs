@@ -7,7 +7,17 @@ import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 import { execute } from "./process.mjs";
 import { createStagedInputReceipt } from "./staged-input-receipt.mjs";
-import { createTraceJournal, traceOperation, traceRequest } from "./trace.mjs";
+import {
+  createTraceJournal,
+  redactPaneSnapshot,
+  traceOperation,
+  traceRequest,
+} from "./trace.mjs";
+
+// A status-only fast-completion escape is safe only for short literal input;
+// longer single-line prompts must expose either their literal text or an
+// attachment token before Drovr sends the submit key.
+const CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH = 256;
 
 function parseJson(output, operation) {
   try {
@@ -40,7 +50,7 @@ export class HerdrClient {
         ? createTraceJournal(this.env.DROVR_TRACE_JOURNAL)
         : null);
     this.delay = async (milliseconds) => {
-      await this.trace?.record({
+      await this.recordTrace({
         kind: "delay",
         operation: "clock.delay",
         payload: { duration_ms: milliseconds },
@@ -75,10 +85,13 @@ export class HerdrClient {
   async recordCommand(operation, output, args = []) {
     if (!this.trace) return;
     if (operation.startsWith("agent.read.")) {
-      await this.trace.record({
+      await this.recordTrace({
         kind: "pane_snapshot",
         operation,
-        payload: { request: traceRequest(args), text: output },
+        payload: {
+          request: traceRequest(args),
+          text: redactPaneSnapshot(output),
+        },
       });
       return;
     }
@@ -91,7 +104,7 @@ export class HerdrClient {
     const kind = ["agent.list", "agent.wait"].includes(operation)
       ? "agent_observation"
       : "command_result";
-    await this.trace.record({
+    await this.recordTrace({
       kind,
       operation,
       payload: { request: traceRequest(args), envelope },
@@ -116,7 +129,7 @@ export class HerdrClient {
         // Preserve the sanitized stderr text when Herdr did not return JSON.
       }
     }
-    await this.trace?.record({
+    await this.recordTrace({
       kind: "error",
       operation,
       payload: {
@@ -124,6 +137,16 @@ export class HerdrClient {
         request: traceRequest(args),
       },
     });
+  }
+
+  async recordTrace(event) {
+    try {
+      await this.trace?.record(event);
+    } catch (error) {
+      // Trace capture is observational. A recorder failure must not turn a
+      // successful native command into a Herdr failure or poison later calls.
+      this.traceFailure ??= error;
+    }
   }
 
   async observationCommand(args) {
@@ -555,6 +578,7 @@ export class HerdrClient {
     // for progress and completion.
     let attachmentReady = false;
     let literalPromptReady = false;
+    let noAttachmentPolls = 0;
     let stagedAfterDelivery;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -580,9 +604,10 @@ export class HerdrClient {
           stagedAfterDelivery = snapshot;
         }
       }
+      if (!attachmentReady && !literalPromptReady) noAttachmentPolls += 1;
       if (
-        !attachmentReady &&
-        !literalPromptReady &&
+        noAttachmentPolls >= 2 &&
+        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
         !prompt.includes("\n") &&
         promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
       ) {

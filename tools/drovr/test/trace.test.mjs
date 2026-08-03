@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   TraceRecorder,
   captureTrace,
   createTraceJournal,
+  redactPaneSnapshot,
   readTrace,
   traceFromJournal,
   validateTrace,
@@ -70,6 +71,32 @@ test("captureTrace redacts credentials and machine-local paths before persistenc
   assert.doesNotMatch(serialized, /super-secret-token/u);
   assert.match(serialized, /QUALIFY-TRACE-OK/u);
   assert.doesNotThrow(() => validateTrace(trace));
+
+  const stack = captureTrace(
+    rawTrace({
+      events: [
+        {
+          sequence: 1,
+          at_ms: 0,
+          kind: "error",
+          operation: "agent.prompt",
+          payload: {
+            error: {
+              message: "at (/home/operator/.ssh/id_ed25519:1:1)",
+            },
+          },
+        },
+      ],
+    }),
+  );
+  assert.doesNotMatch(JSON.stringify(stack), /id_ed25519|\/home\/operator/u);
+
+  assert.equal(
+    redactPaneSnapshot(
+      "Claude status\n────────\n❯ QUALIFY-TRACE-PANE\n────────\n/home/operator/private-project",
+    ),
+    "────────\n❯ QUALIFY-TRACE-PANE\n────────",
+  );
 
   const unrelated = captureTrace(
     rawTrace({
@@ -245,6 +272,7 @@ test("trace journals retain ordered sanitized events for later versioned persist
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const path = join(scratch, "events.jsonl");
   const journal = createTraceJournal(path);
+  const sharedJournal = createTraceJournal(path);
   await journal.record({
     kind: "command_result",
     operation: "agent.prompt",
@@ -259,6 +287,16 @@ test("trace journals retain ordered sanitized events for later versioned persist
     kind: "delay",
     operation: "clock.delay",
     payload: { duration_ms: 25 },
+  });
+  await sharedJournal.record({
+    kind: "command_result",
+    operation: "agent.list",
+    payload: {
+      envelope: {
+        schema: "herdr.command/v1",
+        result: { agents: [] },
+      },
+    },
   });
   await journal.flush();
 
@@ -276,7 +314,59 @@ test("trace journals retain ordered sanitized events for later versioned persist
     [
       { sequence: 1, kind: "command_result" },
       { sequence: 2, kind: "delay" },
+      { sequence: 3, kind: "command_result" },
     ],
   );
   assert.doesNotMatch(JSON.stringify(trace), /\/home\/operator/u);
+});
+
+test("trace journal preserves captured sequence and timing instead of repairing them", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-trace-journal-validation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const path = join(scratch, "events.jsonl");
+  const journal = createTraceJournal(path);
+  await journal.record({
+    kind: "command_result",
+    operation: "agent.prompt",
+    payload: { envelope: { schema: "herdr.command/v1", result: {} } },
+  });
+  await journal.flush();
+  const source = await readFile(path, "utf8");
+  const event = JSON.parse(source);
+  event.sequence = 2;
+  await writeFile(path, `${JSON.stringify(event)}\n`);
+
+  await assert.rejects(
+    () => traceFromJournal(path, {
+      scenarioId: "journal-validation-test",
+      provenance: rawTrace().provenance,
+    }),
+    /invalid sequence/u,
+  );
+});
+
+test("trace capture failure is recorded without poisoning later Herdr calls", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-trace-journal-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const path = join(scratch, "events.jsonl");
+  const journal = createTraceJournal(path);
+
+  await journal.record({
+    kind: "command_result",
+    operation: "agent.prompt",
+    payload: { envelope: { schema: "herdr.command/v1", result: { value: 1n } } },
+  });
+  await journal.record({
+    kind: "command_result",
+    operation: "agent.list",
+    payload: { envelope: { schema: "herdr.command/v1", result: { agents: [] } } },
+  });
+  await journal.flush();
+
+  const trace = await traceFromJournal(path, {
+    scenarioId: "journal-failure-test",
+    provenance: rawTrace().provenance,
+  });
+  assert.equal(trace.events.length, 1);
+  assert.equal(trace.events[0].operation, "trace.capture");
 });

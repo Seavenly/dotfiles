@@ -31,8 +31,17 @@ test("transient staged-input reappearance is a discriminating contradiction afte
     action: "assert_reappeared_after_clear",
     status: "clear_contradicted",
     at_ms: 25,
-    stability_interval_ms: 20,
+    stability_interval_ms: 30,
   });
+});
+
+test("stable staged-input clear remains cleared after its stability interval", async () => {
+  const fixture = (await loadTraceFixtures()).find(
+    ({ id }) => id === "claude_unknown_staged_input_clear_and_reuse",
+  );
+  const result = await runTraceFixture(fixture);
+  assert.equal(result.result, "cleared");
+  assert.equal(result.observations.at(-1).status, "cleared");
 });
 
 test("mutated identity, timing, and staged-token fixtures fail closed", async () => {
@@ -48,7 +57,13 @@ test("mutated identity, timing, and staged-token fixtures fail closed", async ()
     {
       id: "delayed_transcript_settlement",
       mutate(fixture) {
-        fixture.trace.events[2].payload.duration_ms = 20;
+        [fixture.trace.events[2], fixture.trace.events[3]] = [
+          fixture.trace.events[3],
+          fixture.trace.events[2],
+        ];
+        fixture.trace.events.forEach((event, index) => {
+          event.sequence = index + 1;
+        });
       },
     },
     {

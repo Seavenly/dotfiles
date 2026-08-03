@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { createReplayHarness } from "../src/harness-replay.mjs";
 import { HerdrClient } from "../src/herdr.mjs";
 import { createTraceJournal, traceFromJournal } from "../src/trace.mjs";
 
@@ -92,4 +93,61 @@ test("Herdr error capture retains the sanitized native envelope", async (t) => {
   assert.equal(captured.envelope.schema, "herdr.error/v1");
   assert.match(captured.envelope.error.token, /^<token:sha256:[0-9a-f]{64}>$/u);
   assert.doesNotMatch(JSON.stringify(captured), /native-secret-token|\/home\/operator/u);
+});
+
+test("captured pane snapshots round-trip through the semantic replay harness", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-trace-roundtrip-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const path = join(scratch, "events.jsonl");
+  const journal = createTraceJournal(path);
+  const client = new HerdrClient({
+    session: "delegates",
+    trace: journal,
+    async run() {
+      return "Claude status\n────────\n❯ QUALIFY-ROUNDTRIP-PROMPT\n────────\n/home/operator/private-project";
+    },
+  });
+
+  const captured = await client.inspectStagedInput("managed-agent", {
+    harness: "claude",
+  });
+  await journal.flush();
+  const trace = await traceFromJournal(path, {
+    scenarioId: "trace-roundtrip-test",
+    provenance: {
+      drovr: "source sha256:drovr",
+      herdr: "herdr 0.7.5",
+      claude: "claude 2.1.199",
+      codex: "not_applicable",
+    },
+  });
+  const replay = createReplayHarness(trace, { harness: "claude" });
+  const replayed = await replay.client.inspectStagedInput("managed-agent", {
+    harness: "claude",
+  });
+
+  assert.equal(captured.display_text, "QUALIFY-ROUNDTRIP-PROMPT");
+  assert.deepEqual(replayed, captured);
+  assert.doesNotMatch(JSON.stringify(trace), /\/home\/operator/u);
+});
+
+test("trace recorder failures remain observational to Herdr callers", async () => {
+  const client = new HerdrClient({
+    session: "delegates",
+    trace: {
+      record() {
+        throw new Error("capture backend unavailable");
+      },
+    },
+    async run() {
+      return JSON.stringify({
+        result: {
+          agents: [{ name: "managed-agent", agent_status: "idle" }],
+        },
+      });
+    },
+  });
+
+  const observed = await client.agentRecord("managed-agent");
+  assert.equal(observed.agent_status, "idle");
 });

@@ -191,7 +191,7 @@ case "\${1:-} \${2:-}" in
     done
     [[ -f "$prompt_file" ]]
     [[ "$(cat "$prompt_file")" == $'This is a qualification sentinel.\\nReply exactly:\\nQUALIFY-CLAUDE-MULTILINE-OK' ]]
-    printf '%s\\n' '{"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
+    printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
     printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "agent get")
@@ -296,7 +296,9 @@ test("the Codex primary prompt scenario reuses one agent across file and stdin t
   await executable(
     join(fakeBin, "drovr"),
     `stdin_value=""
-printf '%s\\n' '{"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}' >> "$DROVR_TRACE_JOURNAL"
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
 if [[ \${1:-} == ask && "$*" != *--prompt-file* ]]; then stdin_value=$(cat); fi
 argv_json=$(printf '%s\\n' "$@" | jq -Rsc 'split("\\n")[:-1]')
 printf '{"argv":%s,"stdin":%s,"state_home":%s}\n' "$argv_json" "$(jq -Rn --arg value "$stdin_value" '$value')" "$(jq -Rn --arg value "$XDG_STATE_HOME" '$value')" >> ${JSON.stringify(invocationLog)}
@@ -388,7 +390,9 @@ test("live lifecycle settles exact native work before same-agent reuse", async (
   await executable(
     join(fakeBin, "drovr"),
     `printf '%s\n' "$*" >> ${JSON.stringify(invocationLog)}
-printf '%s\\n' '{"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}' >> "$DROVR_TRACE_JOURNAL"
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
 case "\${1:-} \${2:-}" in
   "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"codex":{"model":"gpt-5.6-luna","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:3333"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"codex-launch-capabilities","status":"pass","detail":"supported"},{"id":"codex-transcripts","status":"pass","detail":"available"},{"id":"codex-transcript-structure","status":"pass","detail":"supported"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"codex-native-session","status":"pass","detail":"supported"}]}}' ;;
   "group list") printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}' ;;
@@ -565,7 +569,9 @@ test("owned staged-input recovery may pass after the expected delegate failure",
     join(fakeBin, "drovr"),
     `fixture="$XDG_STATE_HOME/owned-fixture"
 mkdir -p "$fixture"
-printf '%s\\n' '{"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}' >> "$DROVR_TRACE_JOURNAL"
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
 case "\${1:-} \${2:-}" in
   "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:owned"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}' ;;
   "group list")

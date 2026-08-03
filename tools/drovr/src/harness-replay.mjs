@@ -129,7 +129,6 @@ class ReplayTimeline {
   constructor(trace) {
     this.trace = trace;
     this.consumed = new Set();
-    this.cursor = 0;
   }
 
   consumeOperation(operation, args, now) {
@@ -179,7 +178,6 @@ class ReplayTimeline {
       );
     }
     this.consumed.add(event.sequence);
-    this.cursor = Math.max(this.cursor, this.trace.events.indexOf(event) + 1);
     return event;
   }
 
@@ -210,7 +208,6 @@ class ReplayTimeline {
       });
     }
     this.consumed.add(event.sequence);
-    this.cursor = Math.max(this.cursor, this.trace.events.indexOf(event) + 1);
     return event;
   }
 

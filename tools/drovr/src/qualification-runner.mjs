@@ -379,6 +379,12 @@ async function runDeterministicReplayScenario({
   const beforeWorkspace = await workspaceFingerprint(cwd);
   let replayResult;
   let replayError;
+  let traceValidationError;
+  try {
+    validateTrace(fixture.trace);
+  } catch (error) {
+    traceValidationError = error;
+  }
   try {
     replayResult = await runTraceFixture(fixture);
   } catch (error) {
@@ -389,7 +395,7 @@ async function runDeterministicReplayScenario({
   const finishedAt = now().toISOString();
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
-  const passed = !replayError && callerWorkspaceUnchanged;
+  const passed = !replayError && !traceValidationError && callerWorkspaceUnchanged;
   const invocationRecords = [
     invocationRecord(
       ["drovr", "doctor"],
@@ -453,8 +459,10 @@ async function runDeterministicReplayScenario({
       {
         kind: "replay",
         id: "versioned_trace_schema",
-        disposition: "pass",
-        detail: "The captured trace passed redaction and ordering validation.",
+        disposition: traceValidationError ? "fail" : "pass",
+        detail: traceValidationError
+          ? `The fixture trace failed validation: ${traceValidationError.message}`
+          : "The versioned fixture trace passed redaction and ordering validation.",
       },
       {
         kind: "replay",
@@ -498,12 +506,13 @@ async function runDeterministicReplayScenario({
       prohibited_mutations_observed: prohibitedMutationObservations(
         scenario.prohibited_mutations,
         {
-          fullyObserved: true,
-          unchanged: true,
           basis: [
             "immutable versioned trace",
             "semantic replay operation ordering",
             "caller workspace fingerprint",
+            ...(replayResult?.mutation_proofs ?? []).map(
+              ({ operation, basis }) => `${operation}: ${basis}`,
+            ),
           ],
         },
       ),
@@ -553,7 +562,18 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
         },
       });
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== "ENOENT") {
+        const failedEvidence = traceCaptureFailure(
+          evidence,
+          "trace_capture_invalid",
+          "A live qualification produced a trace journal that failed validation.",
+        );
+        validateQualificationEvidence(failedEvidence);
+        await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+          mode: 0o600,
+        });
+        return { ...result, result: "fail" };
+      }
       if (!captureRequired) return result;
       const failedEvidence = traceCaptureFailure(
         evidence,
@@ -608,6 +628,9 @@ function hasCompleteTraceProvenance(provenance) {
 
 function hasCompleteLiveTrace(trace) {
   if (!hasCompleteTraceProvenance(trace.provenance)) return false;
+  if (trace.events.some(({ operation }) => operation === "trace.capture")) {
+    return false;
+  }
   const semanticEvents = trace.events.filter(({ kind }) =>
     ["command_result", "agent_observation", "pane_snapshot", "error"].includes(kind),
   );

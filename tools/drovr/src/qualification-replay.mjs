@@ -11,6 +11,8 @@ export async function runTraceFixture(fixture) {
   let lastStatus;
   let lastExtraction;
   let recoverySucceeded = false;
+  const mutationAttempts = new Set();
+  const mutationProofs = [];
   const assertions = [];
 
   for (const [index, step] of fixture.steps.entries()) {
@@ -42,7 +44,7 @@ export async function runTraceFixture(fixture) {
           observations.push({ action: step.action, status: "interrupted" });
           break;
         case "delay":
-          await replay.clock.delay(step.milliseconds);
+          await replay.client.delay(step.milliseconds);
           observations.push({ action: step.action, at_ms: replay.clock.now() });
           break;
         case "extract": {
@@ -61,6 +63,7 @@ export async function runTraceFixture(fixture) {
           observations.push({ action: step.action, text: lastInspection?.display_text ?? null });
           break;
         case "recover_clear": {
+          mutationAttempts.add("agent.send-keys");
           const token = step.token_from === "last_inspection"
             ? lastInspection?.token
             : step.token;
@@ -78,6 +81,7 @@ export async function runTraceFixture(fixture) {
           let error;
           try {
             if (step.method === "recover_clear") {
+              mutationAttempts.add("agent.send-keys");
               const token = step.token_from === "last_inspection"
                 ? lastInspection?.token
                 : step.token;
@@ -107,13 +111,19 @@ export async function runTraceFixture(fixture) {
           }
           break;
         case "assert_no_mutation":
+          assert.ok(
+            mutationAttempts.has(step.operation),
+            `mutation assertion for ${step.operation} must follow a semantic attempt`,
+          );
           assert.equal(
             replay.consumedEvents().some(({ operation }) => operation === step.operation),
             false,
           );
-          break;
-        case "assert_no_event_kind":
-          assert.equal(fixture.trace.events.some(({ kind }) => kind === step.kind), false);
+          mutationProofs.push({
+            operation: step.operation,
+            unchanged: true,
+            basis: "semantic method attempted and no mutation event was consumed",
+          });
           break;
         case "assert_last_status":
           lastObservation = await replay.client.agentRecord("managed-agent");
@@ -124,18 +134,30 @@ export async function runTraceFixture(fixture) {
           assert.equal(recoverySucceeded, true);
           assert.equal(lastInspection?.display_text, firstInspection?.display_text);
           assert.equal(lastInspection?.token, firstInspection?.token);
-          assert.ok(
-            replay.clock.now() > (step.stability_interval_ms ?? 0),
-            "reappearance must be observed beyond the stability interval",
-          );
-          const observedOutcome =
-            replay.clock.now() > (step.stability_interval_ms ?? 0)
-              ? "clear_contradicted"
-              : "clear_unstable";
+          const observedOutcome = clearDisposition({
+            reappeared: lastInspection !== null,
+            atMs: replay.clock.now(),
+            stabilityIntervalMs: step.stability_interval_ms ?? 0,
+          });
           if (step.expect_outcome !== undefined) {
             assert.equal(observedOutcome, step.expect_outcome);
           }
           lastStatus = observedOutcome;
+          observations.push({
+            action: step.action,
+            status: lastStatus,
+            at_ms: replay.clock.now(),
+            stability_interval_ms: step.stability_interval_ms ?? null,
+          });
+          break;
+        case "assert_clear_stable":
+          assert.equal(recoverySucceeded, true);
+          assert.equal(lastInspection, null);
+          assert.ok(
+            replay.clock.now() >= (step.stability_interval_ms ?? 0),
+            "stable clear must complete its stability interval",
+          );
+          lastStatus = "cleared";
           observations.push({
             action: step.action,
             status: lastStatus,
@@ -165,6 +187,16 @@ export async function runTraceFixture(fixture) {
     clock_ms: replay.clock.now(),
     observations,
     assertions,
+    mutation_proofs: mutationProofs,
     result: lastExtraction?.text ?? lastStatus ?? "completed",
   };
+}
+
+function clearDisposition({ reappeared, atMs, stabilityIntervalMs }) {
+  if (reappeared) {
+    return atMs < stabilityIntervalMs
+      ? "clear_contradicted"
+      : "clear_unstable";
+  }
+  return atMs >= stabilityIntervalMs ? "cleared" : "clear_unstable";
 }

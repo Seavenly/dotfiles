@@ -20,8 +20,8 @@ const TOKEN_KEY = /(?:^|[_-])(?:access[_-]?)?token$/iu;
 const TOKEN_DIGEST = /^<token:sha256:[0-9a-f]{64}>$/u;
 const PATH_KEY = /(?:^|_|-)(?:cwd|path|root|file|directory|workspace|state_home|runtime_dir)$/iu;
 const TEXT_KEY = /^(?:content|display_text|excerpt|message|prompt|raw|stderr|stdout|text)$/u;
-const ABSOLUTE_PATH = /(^|[\s"'=])(\/(?:[^\s"']+\/)*[^\s"']+|[A-Z]:\\[^\s"']*)/iu;
-const ABSOLUTE_PATH_GLOBAL = /(^|[\s"'=])(\/(?:[^\s"']+\/)*[^\s"']+|[A-Z]:\\[^\s"']*)/giu;
+const ABSOLUTE_PATH_GLOBAL = /(?<![\w.-])(?:\/(?:[^\s"'`]+\/)*[^\s"'`]+|[A-Z]:\\[^\s"'`]*)/giu;
+const UNSAFE_ABSOLUTE_PATH = /(?:^|[^\w.-])(?:\/{1,2}|[A-Z]:\\)[^\s"'`<>]*/iu;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu;
 const BEARER_GLOBAL = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
 const SECRET_ASSIGNMENT = /\b(?:api[_-]?key|password|secret|token)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}]+/iu;
@@ -29,6 +29,7 @@ const SECRET_ASSIGNMENT_GLOBAL = /\b(?:api[_-]?key|password|secret|token)\s*[:=]
 const PRIVATE_KEY = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/u;
 const PRIVATE_KEY_GLOBAL = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/gu;
 const SAFE_STRUCTURED_TEXT = /^(?:(?:[-─\s❯])|\[Pasted text #\d+(?: [^\]\r\n]*)?\]|(?:QUALIFY|REPLAY|TRACE)-[A-Z0-9_-]+|\[REDACTED_TEXT sha256:[0-9a-f]{64}\]|\[REDACTED_PRIVATE_KEY\])+$/u;
+const PASTED_TEXT = /\[Pasted text #\d+(?: [^\]\r\n]*)?\]/gu;
 
 export function traceOperation(args) {
   const sessionFlag = args.indexOf("--session");
@@ -120,35 +121,86 @@ export class TraceRecorder {
 }
 
 export function createTraceJournal(path) {
+  const existing = TRACE_JOURNALS.get(path);
+  if (existing) return existing;
+
   let queue = Promise.resolve();
   let sequence = 0;
-  const startedAt = Date.now();
-  return {
+  let previousAt = 0;
+  let captureFailure;
+  let failureRecorded = false;
+  let startedAt;
+  const append = async (event) => {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await appendFile(path, `${JSON.stringify(event)}\n`, {
+      mode: 0o600,
+    });
+    await chmod(path, 0o600);
+  };
+  const appendFailure = async () => {
+    if (failureRecorded) return;
+    const event = {
+      kind: "error",
+      operation: "trace.capture",
+      sequence: sequence + 1,
+      at_ms: Math.max(previousAt, Date.now() - (startedAt ?? Date.now())),
+      payload: {
+        request: { resource: "trace", action: "capture", target: null },
+        error: {
+          code: "trace_capture_failed",
+          outcome: "adapter_failure",
+          message: "Trace capture failed before the event could be persisted.",
+        },
+      },
+    };
+    try {
+      await append(event);
+      sequence = event.sequence;
+      previousAt = event.at_ms;
+      failureRecorded = true;
+    } catch {
+      // The journal may be unavailable. The in-memory failure still prevents
+      // a caller from mistaking a partial journal for complete evidence.
+    }
+  };
+  const journal = {
     record(event) {
-      queue = queue.then(async () => {
-        sequence += 1;
-        const captured = redactValue(
-          {
-            ...event,
-            sequence,
-            at_ms: Math.max(0, Date.now() - startedAt),
-          },
-          [],
-        );
-        assertSafeValue(captured);
-        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-        await appendFile(path, `${JSON.stringify(captured)}\n`, {
-          mode: 0o600,
-        });
-        await chmod(path, 0o600);
+      queue = queue.catch(() => undefined).then(async () => {
+        if (captureFailure) return;
+        const nextSequence = sequence + 1;
+        try {
+          startedAt ??= Date.now();
+          const captured = redactValue(
+            {
+              ...event,
+              sequence: nextSequence,
+              at_ms: Math.max(previousAt, Date.now() - startedAt),
+            },
+            [],
+          );
+          assertSafeValue(captured);
+          await append(captured);
+          sequence = nextSequence;
+          previousAt = captured.at_ms;
+        } catch (error) {
+          captureFailure = error;
+          await appendFailure();
+        }
       });
       return queue;
     },
     flush() {
       return queue;
     },
+    failure() {
+      return captureFailure;
+    },
   };
+  TRACE_JOURNALS.set(path, journal);
+  return journal;
 }
+
+const TRACE_JOURNALS = new Map();
 
 export async function traceFromJournal(path, { scenarioId, provenance }) {
   const source = await readFile(path, "utf8");
@@ -164,15 +216,16 @@ export async function traceFromJournal(path, { scenarioId, provenance }) {
         fail(`trace journal line ${index + 1} is invalid JSON: ${error.message}`);
       }
       if (!isRecord(event)) fail(`trace journal line ${index + 1} is not an object`);
-      const at = Number.isSafeInteger(event.at_ms) ? event.at_ms : previousAt;
-      previousAt = Math.max(previousAt, at);
-      return {
-        ...event,
-        sequence: index + 1,
-        at_ms: previousAt,
-      };
+      if (!Number.isSafeInteger(event.sequence) || event.sequence !== index + 1) {
+        fail(`trace journal line ${index + 1} has an invalid sequence`);
+      }
+      if (!Number.isSafeInteger(event.at_ms) || event.at_ms < previousAt) {
+        fail(`trace journal line ${index + 1} has invalid timing`);
+      }
+      previousAt = event.at_ms;
+      return event;
     });
-  return captureTrace({
+  return validateTrace({
     schema: TRACE_SCHEMA,
     version: TRACE_VERSION,
     scenario_id: scenarioId,
@@ -269,6 +322,50 @@ export function redactValue(value, path = [], options = {}) {
   );
 }
 
+export function redactPaneSnapshot(value) {
+  const text = String(value);
+  if (text.length === 0) return "";
+  if (SAFE_STRUCTURED_TEXT.test(text)) return text;
+
+  const lines = text.split(/\r?\n/u);
+  const dividers = lines.flatMap((line, index) =>
+    /^\s*[─━-]{3,}\s*$/u.test(line) ? [index] : [],
+  );
+  if (dividers.length >= 2) {
+    const region = lines.slice(dividers.at(-2) + 1, dividers.at(-1));
+    const promptLine = region.findIndex((line) => /^\s*❯/u.test(line));
+    if (promptLine >= 0) {
+      const displayLines = [
+        region[promptLine].replace(/^\s*❯[ \u00a0]?/u, ""),
+        ...region.slice(promptLine + 1),
+      ];
+      return [
+        "────────",
+        `❯${displayLines.map((line, index) =>
+          index === 0 ? ` ${redactPaneLine(line)}` : redactPaneLine(line),
+        ).join("\n")}`,
+        "────────",
+      ].join("\n");
+    }
+  }
+
+  const pasted = [...text.matchAll(PASTED_TEXT)].map(([match]) => match);
+  if (pasted.length > 0) return [...new Set(pasted)].join("\n");
+  return `[REDACTED_TEXT ${digestText(text)}]`;
+}
+
+function redactPaneLine(line) {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return "";
+  if (
+    SAFE_STRUCTURED_TEXT.test(trimmed) &&
+    !trimmed.includes("\n")
+  ) {
+    return trimmed;
+  }
+  return `[REDACTED_TEXT ${digestText(trimmed)}]`;
+}
+
 function validateProvenance(provenance) {
   if (!isRecord(provenance)) fail("trace provenance must be an object");
   for (const key of ["drovr", "herdr", "claude", "codex"]) {
@@ -340,15 +437,15 @@ function isUnsafeString(value, key) {
   if (BEARER.test(value) || SECRET_ASSIGNMENT.test(value) || PRIVATE_KEY.test(value)) {
     return true;
   }
-  if (PATH_KEY.test(key ?? "") && ABSOLUTE_PATH.test(value)) return true;
-  if (ABSOLUTE_PATH.test(value)) return true;
+  if (PATH_KEY.test(key ?? "") && UNSAFE_ABSOLUTE_PATH.test(value)) return true;
+  if (UNSAFE_ABSOLUTE_PATH.test(value)) return true;
   return false;
 }
 
 function redactString(value, key, options, path) {
   const pathRedacted = value.replace(
     ABSOLUTE_PATH_GLOBAL,
-    (_match, prefix, pathValue) => `${prefix}${redactPath(pathValue)}`,
+    (pathValue) => redactPath(pathValue),
   );
   const secretRedacted = pathRedacted
     .replace(BEARER_GLOBAL, "Bearer [REDACTED]")
