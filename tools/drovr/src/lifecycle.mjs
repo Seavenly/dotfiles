@@ -44,11 +44,6 @@ function corruptRelationship(kind, id) {
   });
 }
 
-function sessionFor(group) {
-  if (!group.herdr?.session) corruptRelationship("group", group.id);
-  return group.herdr.session;
-}
-
 function isUnboundAgent(agent) {
   return !agent.native_session;
 }
@@ -70,7 +65,7 @@ async function classifyManagedAgent({ agent, harness, observation }) {
   if (!observed && pane && !isUnboundAgent(agent)) {
     return { failure: { agent, status: "agent_lost" } };
   }
-  if (observed && !pane?.tab_id && !isUnboundAgent(agent)) {
+  if (observed && !pane?.tabId && !isUnboundAgent(agent)) {
     return { failure: { agent, status: "agent_lost" } };
   }
   return { observed, pane, paneId, observation };
@@ -302,10 +297,10 @@ async function preflightTaskCleanup({
     ) {
       return { failure: { task, agent, status: "uncertain" } };
     }
-    if (!pane?.tab_id) {
+    if (!pane?.tabId) {
       continue;
     }
-    tabIds.add(pane.tab_id);
+    tabIds.add(pane.tabId);
     agent.herdr.pane_id = paneId;
   }
   if (tabIds.size > 1) {
@@ -323,9 +318,9 @@ async function preflightTaskCleanup({
     return { failure: { task, status: "agent_lost" } };
   }
   if (
-    registeredTab?.workspace_id &&
+    registeredTab?.workspaceId &&
     group.herdr.workspace_id &&
-    registeredTab.workspace_id !== group.herdr.workspace_id
+    registeredTab.workspaceId !== group.herdr.workspace_id
   ) {
     return { failure: { task, status: "recovery_blocked" } };
   }
@@ -381,8 +376,8 @@ async function preflightIdleTab({ group, task, harness }) {
     harness.topology.observePane(idleTab.root_pane_id),
   ]);
   if (
-    tab?.workspace_id !== workspaceId ||
-    pane?.tab_id !== idleTab.tab_id
+    tab?.workspaceId !== workspaceId ||
+    pane?.tabId !== idleTab.tab_id
   ) {
     return { failure: { status: "recovery_blocked" } };
   }
@@ -397,17 +392,17 @@ async function ensureIdleTab({ registryDirectory, group, task, harness }) {
     label: `${group.label} idle`,
   });
   group.herdr.idle_tab = {
-    tab_id: created.tab_id,
-    root_pane_id: created.root_pane_id,
+    tab_id: created.tabId,
+    root_pane_id: created.rootPaneId,
   };
   await writeRecord(registryDirectory, "groups", group);
   const [tab, pane] = await Promise.all([
-    harness.topology.observeTab(created.tab_id),
-    harness.topology.observePane(created.root_pane_id),
+    harness.topology.observeTab(created.tabId),
+    harness.topology.observePane(created.rootPaneId),
   ]);
   return (
-    tab?.workspace_id === group.herdr.workspace_id &&
-    pane?.tab_id === created.tab_id
+    tab?.workspaceId === group.herdr.workspace_id &&
+    pane?.tabId === created.tabId
   );
 }
 
@@ -556,8 +551,8 @@ export async function retireAgent(agentId, dependencies = {}) {
       const { observed, pane, paneId } = classification;
       const turns = await readRecords(registryDirectory, "turns");
       if (observed) {
-        if (pane?.tab_id && pane.tab_id !== context.task.herdr.tab_id) {
-          context.task.herdr.tab_id = pane.tab_id;
+        if (pane?.tabId && pane.tabId !== context.task.herdr.tab_id) {
+          context.task.herdr.tab_id = pane.tabId;
           await writeRecord(registryDirectory, "tasks", context.task);
         }
         context.agent.herdr.pane_id = paneId;

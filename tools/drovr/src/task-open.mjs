@@ -81,12 +81,12 @@ export async function openTask(options, dependencies = {}) {
           status: "active",
           herdr: {
             session: configuration.session,
-            workspace_id: workspace.workspace_id,
+            workspace_id: workspace.workspaceId,
           },
           created_at: now(),
         };
-        initialPaneId = workspace.root_pane_id;
-        initialTabId = workspace.tab_id;
+        initialPaneId = workspace.rootPaneId;
+        initialTabId = workspace.tabId;
         await writeRecord(registryDirectory, "groups", group);
       }
 
@@ -155,8 +155,8 @@ export async function openTask(options, dependencies = {}) {
           cwd: identity.cwd,
           label: options.label ?? options.key,
         });
-        paneId = tab.root_pane_id;
-        tabId = tab.tab_id;
+        paneId = tab.rootPaneId;
+        tabId = tab.tabId;
       }
       await harness.topology.renameTask(tabId, options.label ?? options.key);
       const createdTask = {

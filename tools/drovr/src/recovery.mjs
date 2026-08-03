@@ -49,6 +49,9 @@ export async function reconcileOrRecoverAgent(
   if (duplicateOwner) {
     return blocked(initial, "duplicate_native_session");
   }
+  if (!initial.agent.native_session) {
+    return blocked(initial, "missing_native_session");
+  }
   if (observed.evidence !== "absent") {
     if (observed.evidence !== "present") {
       return blocked(initial, "native_session_mismatch");
@@ -77,15 +80,6 @@ export async function reconcileOrRecoverAgent(
   );
   if (safetyFailure) return blocked(initial, safetyFailure);
 
-  try {
-    const validation = await harness.validateRecovery({
-      agent: initial.agent,
-      task: initial.task,
-    });
-    if (validation.evidence !== "present") return blocked(initial, "missing_transcript");
-  } catch {
-    return blocked(initial, "launch_unsatisfied");
-  }
   try {
     const launchValidation = await harness.validateLaunch({
       specification: initial.agent.launch,
@@ -210,10 +204,10 @@ async function recoverySafetyFailure(context, env, harness, observations) {
     return "ambiguous_process_state";
   }
   if (
-    !processInfo?.shell_pid ||
-    !Array.isArray(processInfo.foreground_processes) ||
-    processInfo.foreground_processes.some(
-      ({ pid }) => pid !== processInfo.shell_pid,
+    !processInfo?.shellPid ||
+    !Array.isArray(processInfo.foregroundProcesses) ||
+    processInfo.foregroundProcesses.some(
+      ({ pid }) => pid !== processInfo.shellPid,
     )
   ) {
     return "ambiguous_process_state";
@@ -272,19 +266,19 @@ async function ensureRecoveryPane(
       label: context.task.label ?? context.task.key ?? context.task.id,
     });
     placement = {
-      tabId: createdTab.tab_id,
-      paneId: createdTab.root_pane_id,
+      tabId: createdTab.tabId,
+      paneId: createdTab.rootPaneId,
     };
   } else {
     const workspace = await harness.topology.createWorkspace({
       cwd: context.task.cwd,
       label: context.group.label ?? context.group.key ?? context.group.id,
     });
-    context.group.herdr.workspace_id = workspace.workspace_id;
+    context.group.herdr.workspace_id = workspace.workspaceId;
     await writeRecord(registryDirectory, "groups", context.group);
     placement = {
-      tabId: workspace.tab_id,
-      paneId: workspace.root_pane_id,
+      tabId: workspace.tabId,
+      paneId: workspace.rootPaneId,
     };
     if (harness.capabilities?.topology?.renameTask !== false) {
       await harness.topology.renameTask(
@@ -314,7 +308,13 @@ async function managedSiblingPane(
   );
   const liveObservations = observations ??
     await harness.observeAgents(activeAgents);
-  for (const [index, sibling] of activeAgents.entries()) {
+  const observationAgents = observations
+    ? context.agents ?? activeAgents
+    : activeAgents;
+  const observationByAgentId = new Map(
+    observationAgents.map((agent, index) => [agent.id, liveObservations[index]]),
+  );
+  for (const sibling of activeAgents) {
     if (
       sibling.id === context.agent.id ||
       sibling.task_id !== context.task.id ||
@@ -322,7 +322,7 @@ async function managedSiblingPane(
     ) {
       continue;
     }
-    const live = liveObservations[index];
+    const live = observationByAgentId.get(sibling.id);
     if (
       !live ||
       live.evidence !== "present" ||
@@ -332,7 +332,7 @@ async function managedSiblingPane(
       continue;
     }
     const pane = await harness.topology.observePane(sibling.herdr.pane_id);
-    if (pane?.tab_id === context.task.herdr.tab_id) {
+    if (pane?.tabId === context.task.herdr.tab_id) {
       return sibling.herdr.pane_id;
     }
   }

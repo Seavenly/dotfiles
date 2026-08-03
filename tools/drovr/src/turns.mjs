@@ -403,6 +403,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     timeoutMs: options.timeoutMs,
     afterBlock: acknowledgedBlock
       ? {
+          id: acknowledgedBlock.id,
           transition_token: blockTransitionToken(acknowledgedBlock),
           working_observed: Boolean(acknowledgedBlock.working_observed_at),
         }
@@ -427,6 +428,9 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       evidence,
       now,
     });
+  }
+  if (evidence.outcome === "block_changed") {
+    return { ...context, block: evidence.block };
   }
   if (evidence.outcome === "working_observed") {
     const recorded = await recordBlockWorkingObservation({

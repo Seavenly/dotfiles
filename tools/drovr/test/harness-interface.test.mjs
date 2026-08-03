@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createProductionSemanticHarness } from "../src/production-harness-adapter.mjs";
+import { observeAgents } from "../src/observations.mjs";
 import {
   SEMANTIC_HARNESS_EVIDENCE,
   SEMANTIC_HARNESS_INTERFACE,
@@ -54,8 +58,17 @@ test("identity evidence distinguishes exact, missing, changed, and uncertain obs
 
   assert.equal(identityEvidence(expected, expected).evidence, "present");
   assert.equal(identityEvidence(expected, null).evidence, "absent");
+  const paneRebind = identityEvidence(expected, {
+    ...expected,
+    pane: "pane-2",
+  });
+  assert.equal(paneRebind.evidence, "present");
+  assert.equal(paneRebind.pane_changed, true);
   assert.equal(
-    identityEvidence(expected, { ...expected, pane: "pane-2" }).evidence,
+    identityEvidence(expected, {
+      ...expected,
+      native_session: "native-2",
+    }).evidence,
     "changed",
   );
   assert.equal(
@@ -68,6 +81,227 @@ test("identity evidence distinguishes exact, missing, changed, and uncertain obs
     "changed",
     "uncertain",
   ]);
+});
+
+test("production turn correlation settles uncertain without an overall timeout", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-harness-correlation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const transcript = join(scratch, "session.jsonl");
+  await writeFile(transcript, "");
+  let now = 0;
+  let pauses = 0;
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    monotonicNow: () => now,
+    wallClock: () => 0,
+    delay: async (milliseconds) => {
+      pauses += 1;
+      now += milliseconds;
+    },
+    herdr: {
+      async waitForAgent() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          state_change_seq: 1,
+          agent_session: { value: "native-1" },
+        };
+      },
+    },
+  });
+
+  const result = await harness.waitForTurn({
+    agent,
+    turn: {
+      inputs: [{ text: "missing from transcript" }],
+      transcript_cursor: {
+        adapter: "codex-jsonl/v1",
+        path: transcript,
+        offset: 0,
+        anchor_start: 0,
+        anchor_sha256: createHash("sha256").update("").digest("hex"),
+      },
+    },
+  });
+
+  assert.equal(result.outcome, "uncertain");
+  assert.equal(result.evidence, "present");
+  assert.match(result.error, /not observed/u);
+  assert.ok(now >= 5_000);
+  assert.ok(pauses > 0);
+});
+
+test("production block resume reports a newer block before native working evidence", async () => {
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "blocked",
+          agent_session: { value: "native-1" },
+        };
+      },
+    },
+  });
+  const result = await harness.waitForTurn({
+    agent,
+    turn: { inputs: [] },
+    afterBlock: {
+      id: "acknowledged-block",
+      transition_token: 4,
+      working_observed: false,
+    },
+    refreshBlock: async () => ({ id: "new-block" }),
+  });
+  assert.equal(result.outcome, "block_changed");
+  assert.deepEqual(result.block, { id: "new-block" });
+});
+
+test("production unknown-input staging settles on a mismatch or disappearing agent", async () => {
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  let recordCalls = 0;
+  const mismatchHarness = createProductionSemanticHarness({
+    harness: "claude",
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async inspectStagedInput() {
+        recordCalls += 1;
+        return recordCalls === 1
+          ? null
+          : { token: "foreign", display_text: "different text" };
+      },
+      async sendPaneText() {},
+    },
+  });
+  const mismatch = await mismatchHarness.stageUnknownInput({
+    agent,
+    text: "authorized text",
+  });
+  assert.equal(mismatch.outcome, "recovery_blocked");
+  assert.equal(mismatch.evidence, "changed");
+
+  let disappearingCalls = 0;
+  const disappearingHarness = createProductionSemanticHarness({
+    harness: "claude",
+    herdr: {
+      async agentRecord() {
+        disappearingCalls += 1;
+        return disappearingCalls === 1
+          ? {
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_status: "idle",
+              agent_session: { value: "native-1" },
+            }
+          : null;
+      },
+      async inspectStagedInput() {
+        return null;
+      },
+      async sendPaneText() {},
+    },
+  });
+  const disappearing = await disappearingHarness.stageUnknownInput({
+    agent,
+    text: "authorized text",
+  });
+  assert.equal(disappearing.outcome, "recovery_blocked");
+  assert.equal(disappearing.evidence, "absent");
+});
+
+test("public observations retain agent_lost for unsafe identity evidence", async () => {
+  const agent = {
+    id: "agent-1",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const result = await observeAgents("delegates", [agent], {
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [{
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-2" },
+        }];
+      },
+    },
+  });
+  assert.deepEqual(result.observations.get(agent.id), {
+    status: "agent_lost",
+    reason: "native_session_mismatch",
+  });
+});
+
+test("production topology translates Herdr records into semantic facts", async () => {
+  const harness = createProductionSemanticHarness({
+    herdr: {
+      async paneRecord() {
+        return { pane_id: "pane-1", tab_id: "tab-1", workspace_id: "workspace-1" };
+      },
+      async paneProcessInfo() {
+        return { shell_pid: 10, foreground_processes: [{ pid: 10 }] };
+      },
+      async tabRecord() {
+        return { tab_id: "tab-1", workspace_id: "workspace-1" };
+      },
+      async workspaceRecord() {
+        return { workspace_id: "workspace-1" };
+      },
+      async paneLayout() {
+        return { panes: [{ pane_id: "pane-1", rect: { width: 100, height: 50 } }] };
+      },
+    },
+  });
+  assert.deepEqual(await harness.topology.observePane("pane-1"), {
+    paneId: "pane-1",
+    tabId: "tab-1",
+    workspaceId: "workspace-1",
+  });
+  assert.deepEqual(await harness.topology.observePaneProcess("pane-1"), {
+    shellPid: 10,
+    foregroundProcesses: [{ pid: 10 }],
+  });
+  assert.deepEqual(await harness.topology.observeTab("tab-1"), {
+    tabId: "tab-1",
+    workspaceId: "workspace-1",
+    rootPaneId: undefined,
+  });
+  assert.deepEqual(await harness.topology.observeWorkspace("workspace-1"), {
+    workspaceId: "workspace-1",
+    rootPaneId: undefined,
+  });
+  assert.deepEqual(await harness.topology.observeLayout("pane-1"), {
+    panes: [{ paneId: "pane-1", geometry: { width: 100, height: 50 } }],
+  });
 });
 
 test("production staged recovery reports a reappearing snapshot as changed evidence", async () => {
@@ -174,6 +408,11 @@ test("turn and lifecycle callers depend on the semantic seam, not low-level harn
       caller,
     );
     assert.doesNotMatch(source, /state_change_seq/u, caller);
+    assert.doesNotMatch(
+      source,
+      /(?:pane\?\.tab_id|registeredTab\.workspace_id|processInfo\.(?:shell_pid|foreground_processes)|layout\.panes.*(?:pane_id|rect))/u,
+      caller,
+    );
     if (caller !== "tools/drovr/src/turn-lifecycle.mjs") {
       assert.match(source, /harness-interface\.mjs/u, caller);
     }

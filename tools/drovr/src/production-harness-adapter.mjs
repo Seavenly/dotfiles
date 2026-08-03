@@ -1,6 +1,7 @@
 import { harnessAdapter } from "./harness-adapter.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HerdrClient } from "./herdr.mjs";
+import { identityEvidence } from "./semantic-evidence.mjs";
 import { turnAwaitsPostDeliverySettlement } from "./turn-record.mjs";
 
 const AGENT_OBSERVATION_SCHEMA = "drovr.semantic-agent-observation/v1";
@@ -19,7 +20,7 @@ export function createProductionSemanticHarness({
   delay,
   stabilityIntervalMs = configuredStabilityInterval(env),
   monotonicNow,
-  clock = monotonicNow ?? Date.now,
+  clock = monotonicNow ?? (() => performance.now()),
   wallClock = Date.now,
 } = {}) {
   const client =
@@ -46,7 +47,8 @@ export function createProductionSemanticHarness({
     },
 
     async ensureRuntime() {
-      return client.ensureSession?.();
+      await client.ensureSession?.();
+      return { outcome: "running", evidence: "present" };
     },
 
     async observeRuntime() {
@@ -356,6 +358,7 @@ export function createProductionSemanticHarness({
           }
           const latestTurn = refreshTurn ? await refreshTurn() : currentTurn;
           if (latestTurn.inputs.length !== observedInputCount) {
+            await pause(Math.min(25, remaining ?? 25));
             continue;
           }
           const deliveryObservationExpired =
@@ -378,9 +381,8 @@ export function createProductionSemanticHarness({
             }
             if (
               !deliveryObservationExpired &&
-              (remaining === undefined ||
-                (correlationDeadline !== undefined &&
-                  clock() < correlationDeadline))
+              correlationDeadline !== undefined &&
+              clock() < correlationDeadline
             ) {
               await pause(Math.min(25, remaining ?? 25));
               continue;
@@ -449,7 +451,11 @@ export function createProductionSemanticHarness({
       timeoutOutcome = "interrupted",
     } = {}) {
       const before = await this.observeAgent(agent);
-      if (before.evidence !== "present") {
+      if (
+        before.evidence !== "present" ||
+        !agent.native_session ||
+        before.identity?.native_session !== agent.native_session
+      ) {
         return turnEvidence(
           before.evidence === "absent" ? "agent_lost" : "uncertain",
           before,
@@ -665,13 +671,42 @@ export function createProductionSemanticHarness({
         return { ...before, outcome: "recovery_blocked" };
       }
       await client.sendPaneText(agent.herdr.pane_id, text);
-      for (;;) {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
         const after = await this.inspectStagedInput({ agent });
-        if (after.evidence !== "absent" && !after.snapshot) {
+        if (after.outcome === "recovery_blocked") {
+          return {
+            ...after,
+            outcome: "recovery_blocked",
+            reason: after.evidence === "absent"
+              ? "managed identity became absent while staging unknown input"
+              : "managed identity changed while staging unknown input",
+          };
+        }
+        if (after.evidence === "uncertain" || after.evidence === "changed") {
           return {
             ...after,
             outcome: "recovery_blocked",
             reason: "managed identity changed while staging unknown input",
+          };
+        }
+        if (after.evidence === "absent") {
+          await (delay ?? defaultDelay)(25);
+          continue;
+        }
+        if (!after.snapshot) {
+          return {
+            ...after,
+            outcome: "recovery_blocked",
+            evidence: "uncertain",
+            reason: "staged input evidence was incomplete",
+          };
+        }
+        if (after.snapshot.display_text !== text) {
+          return {
+            ...after,
+            outcome: "recovery_blocked",
+            evidence: "changed",
+            reason: "staged input differs from the authorized text",
           };
         }
         if (
@@ -686,6 +721,10 @@ export function createProductionSemanticHarness({
         }
         await (delay ?? defaultDelay)(25);
       }
+      throw new DrovrError(
+        "Herdr did not expose the exact staged unknown input",
+        { code: 4, outcome: "adapter_failure" },
+      );
     },
 
     async validateRecovery({ agent, task } = {}) {
@@ -715,39 +754,57 @@ export function createProductionSemanticHarness({
     },
 
     async attach({ agent, takeover = false } = {}) {
-      return client.attach(agent.herdr.name, { takeover });
+      const exitCode = await client.attach(agent.herdr.name, { takeover });
+      return {
+        outcome: exitCode === 0 ? "attached" : "attach_failed",
+        evidence: exitCode === 0 ? "present" : "uncertain",
+        exit_code: exitCode ?? 4,
+      };
     },
 
     topology: {
-      observePane: (paneId) => client.paneRecord?.(paneId),
-      observePaneProcess: (paneId) => client.paneProcessInfo?.(paneId),
-      observeTab: (tabId) => client.tabRecord?.(tabId),
-      observeWorkspace: (workspaceId) => client.workspaceRecord?.(workspaceId),
-      observeLayout: (paneId) => client.paneLayout?.(paneId),
+      observePane: async (paneId) =>
+        normalizePane(await client.paneRecord?.(paneId)),
+      observePaneProcess: async (paneId) =>
+        normalizePaneProcess(await client.paneProcessInfo?.(paneId)),
+      observeTab: async (tabId) =>
+        normalizeTab(await client.tabRecord?.(tabId)),
+      observeWorkspace: async (workspaceId) =>
+        normalizeWorkspace(await client.workspaceRecord?.(workspaceId)),
+      observeLayout: async (paneId) =>
+        normalizeLayout(await client.paneLayout?.(paneId)),
       createWorkspace: async ({ cwd, label }) => {
         if (typeof client.createWorkspace !== "function") return undefined;
         const result = await client.createWorkspace({ cwd, label });
         return {
-          workspace_id: result.workspaceId,
-          root_pane_id: result.paneId,
-          tab_id: result.tabId,
+          workspaceId: result.workspaceId,
+          rootPaneId: result.paneId,
+          tabId: result.tabId,
         };
       },
       createTaskTab: async ({ workspaceId, cwd, label }) => {
         if (typeof client.createTab !== "function") return undefined;
         const result = await client.createTab({ workspaceId, cwd, label });
-        return { tab_id: result.tabId, root_pane_id: result.paneId };
+        return { tabId: result.tabId, rootPaneId: result.paneId };
       },
       splitTaskPane: ({ paneId, direction, ratio, cwd }) =>
         client.splitPane?.({ paneId, direction, ratio, cwd }),
-      renameTask: (tabId, label) => client.renameTab?.(tabId, label),
+      renameTask: (tabId, label) =>
+        acknowledgeTopologyMutation(() => client.renameTab?.(tabId, label)),
       renameGroup: (workspaceId, label) =>
-        client.renameWorkspace?.(workspaceId, label),
-      renameAgentPane: (paneId, label) => client.renamePane?.(paneId, label),
-      closePane: (paneId) => client.closePane?.(paneId),
-      closeTaskTab: (tabId) => client.closeTab?.(tabId),
-      closeGroupWorkspace: (workspaceId) => client.closeWorkspace?.(workspaceId),
-      sendUnknownInput: (paneId, text) => client.sendPaneText?.(paneId, text),
+        acknowledgeTopologyMutation(() =>
+          client.renameWorkspace?.(workspaceId, label),
+        ),
+      renameAgentPane: (paneId, label) =>
+        acknowledgeTopologyMutation(() => client.renamePane?.(paneId, label)),
+      closePane: (paneId) =>
+        acknowledgeTopologyMutation(() => client.closePane?.(paneId)),
+      closeTaskTab: (tabId) =>
+        acknowledgeTopologyMutation(() => client.closeTab?.(tabId)),
+      closeGroupWorkspace: (workspaceId) =>
+        acknowledgeTopologyMutation(() => client.closeWorkspace?.(workspaceId)),
+      sendUnknownInput: (paneId, text) =>
+        acknowledgeTopologyMutation(() => client.sendPaneText?.(paneId, text)),
     },
   };
   return adapter;
@@ -776,45 +833,17 @@ function agentObservation(agent, observed, error) {
     };
   }
   const identity = observedIdentity(agent, observed);
-  const nativeSessionMissing =
-    Boolean(expected.native_session) && !identity.native_session;
-  const nativeSessionChanged =
-    Boolean(expected.native_session) &&
-    Boolean(identity.native_session) &&
-    expected.native_session !== identity.native_session;
-  const managedAgentChanged =
-    Boolean(expected.managed_agent) &&
-    Boolean(identity.managed_agent) &&
-    expected.managed_agent !== identity.managed_agent;
-  const identityChanged =
-    nativeSessionChanged || (managedAgentChanged && !nativeSessionMissing);
-  const paneChanged =
-    Boolean(expected.pane) &&
-    Boolean(identity.pane) &&
-    expected.pane !== identity.pane;
-  const unboundPaneChanged =
-    paneChanged && !expected.native_session && !identity.native_session;
+  const identityResult = identityEvidence(expected, identity);
   return {
     schema: AGENT_OBSERVATION_SCHEMA,
-    evidence:
-      identityChanged || unboundPaneChanged
-        ? "changed"
-        : nativeSessionMissing
-          ? "uncertain"
-          : "present",
+    evidence: identityResult.evidence,
     expected_identity: expected,
     identity,
     state: observed.agent_status ?? "unknown",
     transition_token: observed.state_change_seq ?? null,
     native: observed,
-    ...(identityChanged || unboundPaneChanged
-      ? {
-          reason: identityChanged
-            ? "managed identity changed"
-            : "unbound pane changed",
-        }
-      : {}),
-    ...(paneChanged ? { pane_changed: true } : {}),
+    ...(identityResult.reason ? { reason: identityResult.reason } : {}),
+    ...(identityResult.pane_changed ? { pane_changed: true } : {}),
   };
 }
 
@@ -832,6 +861,62 @@ function observedIdentity(agent, observed) {
     pane: observed.pane_id ?? null,
     native_session: observed.agent_session?.value ?? null,
   };
+}
+
+function normalizePane(pane) {
+  if (!pane) return pane;
+  return {
+    paneId: pane.pane_id ?? pane.paneId,
+    tabId: pane.tab_id ?? pane.tabId,
+    workspaceId: pane.workspace_id ?? pane.workspaceId,
+  };
+}
+
+function normalizePaneProcess(processInfo) {
+  if (!processInfo) return processInfo;
+  return {
+    shellPid: processInfo.shell_pid ?? processInfo.shellPid,
+    foregroundProcesses: Array.isArray(processInfo.foreground_processes)
+      ? processInfo.foreground_processes.map(({ pid }) => ({ pid }))
+      : processInfo.foregroundProcesses,
+  };
+}
+
+function normalizeTab(tab) {
+  if (!tab) return tab;
+  return {
+    tabId: tab.tab_id ?? tab.tabId,
+    workspaceId: tab.workspace_id ?? tab.workspaceId,
+    rootPaneId: tab.root_pane_id ?? tab.rootPaneId,
+  };
+}
+
+function normalizeWorkspace(workspace) {
+  if (!workspace) return workspace;
+  return {
+    workspaceId: workspace.workspace_id ?? workspace.workspaceId,
+    rootPaneId: workspace.root_pane_id ?? workspace.rootPaneId,
+  };
+}
+
+function normalizeLayout(layout) {
+  if (!layout) return layout;
+  return {
+    panes: Array.isArray(layout.panes)
+      ? layout.panes.map((pane) => ({
+          paneId: pane.pane_id ?? pane.paneId,
+          geometry: {
+            width: pane.rect?.width ?? pane.geometry?.width,
+            height: pane.rect?.height ?? pane.geometry?.height,
+          },
+        }))
+      : [],
+  };
+}
+
+async function acknowledgeTopologyMutation(operation) {
+  await operation();
+  return { outcome: "completed", evidence: "present" };
 }
 
 function assertDeliverableAgent(agent, observation) {
@@ -979,6 +1064,11 @@ async function waitForBlockResume({
       );
     }
     const currentBlock = refreshBlock ? await refreshBlock() : null;
+    if (currentBlock?.id && currentBlock.id !== afterBlock.id) {
+      return turnEvidence("block_changed", observed, {
+        block: currentBlock,
+      });
+    }
     if (currentBlock?.working_observed_at) {
       return turnEvidence("working_observed", observed, {
         working_observation:
@@ -1030,6 +1120,9 @@ function turnEvidence(outcome, observation, details = {}) {
 function nativeIdentityError(harness, observation) {
   if (observation?.evidence === "absent") {
     return "managed native agent was absent during the operation";
+  }
+  if (!observation?.expected_identity?.native_session) {
+    return `Herdr did not report the ${harnessLabel(harness)} native session identity`;
   }
   if (observation?.evidence === "changed") {
     return `Herdr reported a different ${harnessLabel(harness)} native session identity`;

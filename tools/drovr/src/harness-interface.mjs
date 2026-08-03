@@ -1,13 +1,12 @@
 import { createProductionSemanticHarness } from "./production-harness-adapter.mjs";
 
-export const SEMANTIC_HARNESS_INTERFACE = "drovr.semantic-harness/v1";
+export {
+  SEMANTIC_HARNESS_EVIDENCE,
+  evidenceResult,
+  identityEvidence,
+} from "./semantic-evidence.mjs";
 
-export const SEMANTIC_HARNESS_EVIDENCE = Object.freeze([
-  "present",
-  "absent",
-  "changed",
-  "uncertain",
-]);
+export const SEMANTIC_HARNESS_INTERFACE = "drovr.semantic-harness/v1";
 
 // These operations are semantic contracts. The production implementation may
 // use Herdr and native transcript adapters; a replay implementation may use an
@@ -121,28 +120,4 @@ export function assertSemanticHarness(candidate) {
     }
   }
   return candidate;
-}
-
-export function identityEvidence(expected, observed) {
-  if (observed === undefined) {
-    return { evidence: "uncertain", expected, observed: null };
-  }
-  if (observed === null) {
-    return { evidence: "absent", expected, observed: null };
-  }
-  const matches = Object.keys(expected ?? {}).every(
-    (key) => expected[key] === observed[key],
-  );
-  return {
-    evidence: matches ? "present" : "changed",
-    expected,
-    observed,
-  };
-}
-
-export function evidenceResult(evidence, details = {}) {
-  if (!SEMANTIC_HARNESS_EVIDENCE.includes(evidence)) {
-    throw new TypeError(`unknown semantic harness evidence: ${evidence}`);
-  }
-  return { evidence, ...details };
 }

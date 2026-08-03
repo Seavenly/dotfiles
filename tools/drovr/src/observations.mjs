@@ -35,10 +35,12 @@ export async function observeAgents(
         status: "agent_lost",
         reason: "agent_not_found",
       });
-    } else if (observed.evidence !== "present") {
+    } else if (!agent.native_session || observed.evidence !== "present") {
       observations.set(agent.id, {
-        status: "uncertain",
-        reason: "native_session_mismatch",
+        status: "agent_lost",
+        reason: !agent.native_session || observed.evidence === "changed"
+          ? "native_session_mismatch"
+          : "session_observation_uncertain",
       });
     } else {
       observations.set(agent.id, {

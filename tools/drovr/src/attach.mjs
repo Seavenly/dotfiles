@@ -23,6 +23,14 @@ export async function attach(
     session: configuration.session,
     harness: agent.launch.harness,
   });
-  await harness.ensureRuntime();
-  return harness.attach({ agent, takeover });
+  const runtime = await harness.observeRuntime();
+  if (runtime.evidence !== "present") {
+    if (runtime.evidence === "absent") return 4;
+    throw new DrovrError(
+      runtime.error?.message ?? "harness runtime could not be observed",
+      { code: 4, outcome: "adapter_failure" },
+    );
+  }
+  const result = await harness.attach({ agent, takeover });
+  return typeof result === "number" ? result : result.exit_code ?? 4;
 }

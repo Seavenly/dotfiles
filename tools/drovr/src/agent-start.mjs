@@ -65,8 +65,8 @@ async function paneForNewAgent(context, harness, registryDirectory) {
     );
     if (rootPane) {
       if (
-        !rootPane.tab_id ||
-        rootPane.tab_id !== context.task.herdr.tab_id
+        !rootPane.tabId ||
+        rootPane.tabId !== context.task.herdr.tab_id
       ) {
         throw new DrovrError(
           `task ${context.task.id} root pane moved to an unregistered tab`,
@@ -95,20 +95,20 @@ async function paneForNewAgent(context, harness, registryDirectory) {
         cwd: context.task.cwd,
         label: context.group.label,
       });
-      context.group.herdr.workspace_id = workspace.workspace_id;
+      context.group.herdr.workspace_id = workspace.workspaceId;
       await writeRecord(registryDirectory, "groups", context.group);
       tab = {
-        tab_id: workspace.tab_id,
-        root_pane_id: workspace.root_pane_id,
+        tab_id: workspace.tabId,
+        root_pane_id: workspace.rootPaneId,
       };
-      await harness.topology.renameTask(tab.tab_id, context.task.label);
+      await harness.topology.renameTask(tab.tabId, context.task.label);
     }
     context.task.herdr = {
-      tab_id: tab.tab_id,
-      root_pane_id: tab.root_pane_id,
+      tab_id: tab.tabId,
+      root_pane_id: tab.rootPaneId,
     };
     await writeRecord(registryDirectory, "tasks", context.task);
-    return tab.root_pane_id;
+    return tab.rootPaneId;
   }
 
   const registeredPaneIds = new Set(
@@ -123,7 +123,7 @@ async function paneForNewAgent(context, harness, registryDirectory) {
   const layout = await harness.topology.observeLayout(
     activeAgents[0].herdr.pane_id,
   );
-  const candidates = layout.panes.filter(({ pane_id: paneId }) =>
+  const candidates = layout.panes.filter(({ paneId }) =>
     registeredPaneIds.has(paneId),
   );
   if (candidates.length !== activeAgents.length) {
@@ -133,14 +133,16 @@ async function paneForNewAgent(context, harness, registryDirectory) {
     );
   }
   const target = candidates.reduce((largest, candidate) => {
-    const largestArea = largest.rect.width * largest.rect.height;
-    const candidateArea = candidate.rect.width * candidate.rect.height;
+    const largestArea =
+      largest.geometry.width * largest.geometry.height;
+    const candidateArea =
+      candidate.geometry.width * candidate.geometry.height;
     return candidateArea > largestArea ? candidate : largest;
   });
   const direction =
-    target.rect.width >= target.rect.height * 2 ? "right" : "down";
+    target.geometry.width >= target.geometry.height * 2 ? "right" : "down";
   return harness.topology.splitTaskPane({
-    paneId: target.pane_id,
+    paneId: target.paneId,
     direction,
     ratio: 0.5,
     cwd: context.task.cwd,

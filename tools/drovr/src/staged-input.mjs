@@ -18,13 +18,7 @@ export async function inspectAgentStagedInput(agentId, dependencies = {}) {
   const registryDirectory = stateDirectory(env);
   const context = await stagedInputContext(registryDirectory, agentId);
   const harness = client(context, env, dependencies);
-  const availability = await harness.observeAgent(context.agent);
-  if (availability.evidence === "absent") {
-    throw new DrovrError(
-      `Herdr session ${context.group.herdr.session} is not running`,
-      { code: 0, outcome: "session_missing" },
-    );
-  }
+  await requireRuntime(harness, context.group.herdr.session);
   const observed = await settledOwnedAgent(context, harness);
   return inspectContext(registryDirectory, context, harness, observed);
 }
@@ -38,12 +32,7 @@ export async function stageUnknownAgentInput(
   const registryDirectory = stateDirectory(env);
   const initial = await stagedInputContext(registryDirectory, agentId);
   const harness = client(initial, env, dependencies);
-  if ((await harness.observeAgent(initial.agent)).evidence === "absent") {
-    throw new DrovrError(
-      `Herdr session ${initial.group.herdr.session} is not running`,
-      { code: 0, outcome: "session_missing" },
-    );
-  }
+  await requireRuntime(harness, initial.group.herdr.session);
   return withResourceLock(
     registryDirectory,
     taskLifecycleLockKey(initial.task.id),
@@ -162,12 +151,18 @@ export async function recoverAgentStagedInput(
             token: inspected.staged_input.snapshot_token,
           });
           if (!["submitted", "cleared"].includes(recovered.outcome)) {
+            const outcome = publicRecoveryOutcome(recovered.outcome);
             throw new DrovrError(
               recovered.error ?? "staged-input recovery was not confirmed",
               {
-                code: 0,
-                outcome: recovered.outcome ?? "uncertain",
-                details: recovered,
+                code: outcome === "adapter_failure" ? 4 : 0,
+                outcome,
+                details: {
+                  ...recovered,
+                  ...(recovered.outcome && recovered.outcome !== outcome
+                    ? { adapter_outcome: recovered.outcome }
+                    : {}),
+                },
               },
             );
           }
@@ -281,4 +276,25 @@ function client(context, env, dependencies) {
 
 function blocked(message) {
   return new DrovrError(message, { code: 0, outcome: "recovery_blocked" });
+}
+
+async function requireRuntime(harness, session) {
+  const runtime = await harness.observeRuntime();
+  if (runtime.evidence === "present") return runtime;
+  if (runtime.evidence === "absent") {
+    throw new DrovrError(`Herdr session ${session} is not running`, {
+      code: 0,
+      outcome: "session_missing",
+    });
+  }
+  throw new DrovrError(
+    runtime.error?.message ?? "Herdr session status could not be observed",
+    { code: 4, outcome: "adapter_failure" },
+  );
+}
+
+function publicRecoveryOutcome(outcome) {
+  if (outcome === "clear_contradicted") return "recovery_blocked";
+  if (outcome === "clear_unstable") return "uncertain";
+  return outcome ?? "uncertain";
 }

@@ -50,6 +50,23 @@ The interface groups operations by the logical decision they support:
 - Internal topology: pane, tab, workspace, split, rename, close, and unknown
   input operations under `harness.topology`.
 
+Topology results are semantic facts, not raw Herdr records. The production
+adapter normalizes them as follows:
+
+- Pane observations: `paneId`, `tabId`, and `workspaceId`.
+- Tab observations: `tabId`, `workspaceId`, and `rootPaneId`.
+- Workspace observations: `workspaceId` and `rootPaneId`.
+- Process observations: `shellPid` and `foregroundProcesses`.
+- Layout observations: `panes[]` with `paneId` and `geometry.width` or
+  `geometry.height`.
+- Workspace and task-tab creation return `workspaceId`, `tabId`, and
+  `rootPaneId`. Rename, close, and input mutations return a typed completion
+  acknowledgement. Pane splitting returns the created pane identity.
+
+Durable registry records retain their `herdr` identity namespace for schema
+compatibility. That persistence shape is not the topology adapter result
+contract and is not copied through to replay observations.
+
 `waitForTurn` returns logical outcomes such as `completed`, `still_running`,
 `needs_input`, `agent_lost`, and `uncertain`. It owns the bounded polling,
 post-delivery transcript grace, ordered-input correlation, blocked-transition
@@ -86,8 +103,9 @@ replay.
 
 There is intentionally no second shallow wrapper around `HerdrClient`. The
 production adapter is the one internal implementation that translates native
-mechanisms into semantic results. The replay adapter will translate trace
-events into the same results rather than exposing a fake Herdr command API.
+mechanisms and normalizes topology facts into semantic results. The replay
+adapter will translate trace events into the same results rather than exposing
+a fake Herdr command API.
 
 ## Staged-input recovery invariant
 
@@ -98,8 +116,10 @@ For `clear`, the production adapter must observe the snapshot disappear, keep
 it absent for the configured stability interval, and perform a final exact
 identity observation before returning `cleared`. The default interval is 30
 seconds, matching the qualification contract. A snapshot that reappears is
-returned as `clear_contradicted` with `changed` evidence. A final identity that
-cannot be proven returns `clear_unstable`. The adapter never hides a
+returned internally as `clear_contradicted` with `changed` evidence. A final
+identity that cannot be proven is returned internally as `clear_unstable`.
+The public staged-input command maps those adapter details to
+`recovery_blocked` and `uncertain`, respectively. The adapter never hides a
 contradiction by launching a replacement agent or turn.
 
 For `submit`, the adapter returns `submitted` only after the exact managed
@@ -130,6 +150,8 @@ The migration from low-level callers follows these rules:
    the interface symmetrical.
 5. New callers use `semanticHarnessFor` and receive one shared adapter facade.
    They do not create a local Herdr polling or transcript-correlation seam.
+6. Read-only attach observes runtime presence without creating a missing
+   runtime session as a side effect.
 
 The deletion test in `test/harness-interface.test.mjs` asserts that the
 representative turn, lifecycle, recovery, staged-input, creation, observation,
