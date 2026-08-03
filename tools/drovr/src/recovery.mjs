@@ -2,8 +2,7 @@ import { stat } from "node:fs/promises";
 
 import { loadConfiguration } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
-import { harnessAdapter } from "./harness-adapter.mjs";
-import { HerdrClient } from "./herdr.mjs";
+import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
   stateDirectory,
@@ -27,44 +26,41 @@ export async function reconcileOrRecoverAgent(
   if (initial.agent.status !== "active" || initial.task.status !== "active") {
     return { ...initial, status: "recovery_blocked", reason: "resource_closed" };
   }
-  const herdr =
-    dependencies.herdr ??
-    new HerdrClient({
-      session: initial.group.herdr.session,
-      env,
-      run: dependencies.run,
-    });
-  await herdr.ensureSession();
+  const harness =
+    dependencies.harness ??
+    semanticHarnessFor(initial, { ...dependencies, env });
+  await harness.ensureRuntime();
 
-  const liveAgents = herdr.agentRecords ? await herdr.agentRecords() : null;
-  const observed = liveAgents
-    ? liveAgents.find(({ name }) => name === initial.agent.herdr.name)
-    : await herdr.agentRecord(initial.agent.herdr.name);
-  const duplicateOwner = (liveAgents ?? []).find(
-    (candidate) =>
-      candidate.name !== initial.agent.herdr.name &&
-      candidate.agent_session?.value === initial.agent.native_session,
+  const activeAgents = initial.agents ?? [initial.agent];
+  const observations = await harness.observeAgents(activeAgents);
+  const observedIndex = activeAgents.findIndex(
+    (agent) => agent.id === initial.agent.id,
   );
+  const observed = observations[observedIndex];
+  const duplicateOwner =
+    observed.reason === "duplicate_native_session" ||
+    observations.find(
+      (candidate, index) =>
+        index !== observedIndex &&
+        (candidate.reason === "duplicate_native_session" ||
+          (candidate.identity?.native_session &&
+            candidate.identity.native_session === initial.agent.native_session)),
+    );
   if (duplicateOwner) {
     return blocked(initial, "duplicate_native_session");
   }
-  if (observed) {
-    if (
-      !initial.agent.native_session ||
-      observed.agent_session?.value !== initial.agent.native_session
-    ) {
+  if (observed.evidence !== "absent") {
+    if (observed.evidence !== "present") {
       return blocked(initial, "native_session_mismatch");
     }
-    if (
-      observed.pane_id &&
-      observed.pane_id !== initial.agent.herdr.pane_id
-    ) {
+    if (observed.identity?.pane &&
+        observed.identity.pane !== initial.agent.herdr.pane_id) {
       await withResourceLock(
         registryDirectory,
         `agent:${agentId}`,
         async () => {
           const current = await recoveryContext(registryDirectory, agentId);
-          current.agent.herdr.pane_id = observed.pane_id;
+          current.agent.herdr.pane_id = observed.identity.pane;
           await writeRecord(registryDirectory, "agents", current.agent);
           initial.agent = current.agent;
         },
@@ -76,63 +72,52 @@ export async function reconcileOrRecoverAgent(
   const safetyFailure = await recoverySafetyFailure(
     initial,
     env,
-    herdr,
-    liveAgents,
+    harness,
+    observations,
   );
   if (safetyFailure) return blocked(initial, safetyFailure);
 
-  const adapter = harnessAdapter(initial.agent.launch.harness, env);
   try {
-    await adapter.validate(initial.agent.launch, {
-      env,
-      run: dependencies.run,
+    const validation = await harness.validateRecovery({
+      agent: initial.agent,
+      task: initial.task,
     });
+    if (validation.evidence !== "present") return blocked(initial, "missing_transcript");
+  } catch {
+    return blocked(initial, "launch_unsatisfied");
+  }
+  try {
+    const launchValidation = await harness.validateLaunch({
+      specification: initial.agent.launch,
+    });
+    if (launchValidation.evidence !== "present") {
+      return blocked(initial, "launch_unsatisfied");
+    }
   } catch {
     return blocked(initial, "launch_unsatisfied");
   }
   try {
     await ensureRecoveryPane(
       initial,
-      herdr,
+      harness,
       registryDirectory,
-      liveAgents,
+      observations,
     );
-    const launchRuntime = await adapter.prepareLaunch(
+    await harness.resumeAgent({
+      agent: initial.agent,
       registryDirectory,
-      initial.agent,
-    );
-    await adapter.resumeAgent(herdr, {
-      name: initial.agent.herdr.name,
-      paneId: initial.agent.herdr.pane_id,
-      label: initial.agent.label ?? initial.agent.key,
-      specification: initial.agent.launch,
-      nativeSession: initial.agent.native_session,
-      ...launchRuntime,
     });
   } catch (error) {
     return uncertain(initial, "resume_failed", error.message);
   }
 
-  let restored;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    restored = await herdr.agentRecord(initial.agent.herdr.name);
-    if (restored) break;
-    await (dependencies.delay ?? delay)(25);
-  }
-  if (restored?.agent_status === "working") {
-    try {
-      restored = await herdr.waitForAgent(
-        initial.agent.herdr.name,
-        dependencies.recoveryTimeoutMs ?? 120_000,
-      );
-    } catch (error) {
-      return uncertain(initial, "resume_settlement_failed", error.message);
-    }
-  }
+  const restored = await harness.waitForAgent(initial.agent, {
+    timeoutMs: dependencies.recoveryTimeoutMs ?? 120_000,
+  });
   if (
-    !restored ||
-    restored.agent_session?.value !== initial.agent.native_session ||
-    !["idle", "done"].includes(restored.agent_status)
+    restored.evidence !== "present" ||
+    restored.identity.native_session !== initial.agent.native_session ||
+    !["idle", "done"].includes(restored.state)
   ) {
     return uncertain(initial, "resume_identity_unconfirmed");
   }
@@ -155,32 +140,27 @@ export async function reconcileOrRecoverAgent(
         await writeRecord(registryDirectory, "turns", turn);
       }
       context.agent.recovered_at = now();
-      if (restored.pane_id) context.agent.herdr.pane_id = restored.pane_id;
+      if (restored.identity.pane) {
+        context.agent.herdr.pane_id = restored.identity.pane;
+      }
       await writeRecord(registryDirectory, "agents", context.agent);
       return { ...context, status: "recovered", observed: restored };
     },
   );
 }
 
-async function recoverySafetyFailure(context, env, herdr, liveAgents) {
+async function recoverySafetyFailure(context, env, harness, observations) {
   if (!context.agent.native_session) return "missing_native_session";
   try {
     if (!(await stat(context.task.cwd)).isDirectory()) return "missing_cwd";
   } catch {
     return "missing_cwd";
   }
-  const adapter = harnessAdapter(context.agent.launch.harness, env);
-  try {
-    const transcript = await adapter.locate(
-      adapter.root,
-      context.agent.native_session,
-    );
-    await adapter.validateTranscript(
-      transcript,
-      context.agent.native_session,
-      context.task.cwd,
-    );
-  } catch {
+  const transcript = await harness.validateRecovery({
+    agent: context.agent,
+    task: context.task,
+  });
+  if (transcript.evidence !== "present") {
     return "missing_transcript";
   }
   let configuration;
@@ -198,20 +178,23 @@ async function recoverySafetyFailure(context, env, herdr, liveAgents) {
   ) {
     return "launch_drift";
   }
-  if (herdr.paneRecord) {
+  if (harness.capabilities?.topology?.observePane !== false) {
     let pane;
     try {
-      pane = await herdr.paneRecord(context.agent.herdr.pane_id);
+      pane = await harness.topology.observePane(context.agent.herdr.pane_id);
     } catch {
       return "ambiguous_process_state";
     }
     if (!pane) {
-      if (herdr.tabRecord && (await herdr.tabRecord(context.task.herdr.tab_id))) {
+      if (
+        harness.capabilities?.topology?.observeTab !== false &&
+        (await harness.topology.observeTab(context.task.herdr.tab_id))
+      ) {
         const siblingPane = await managedSiblingPane(
           context,
-          herdr,
+          harness,
           stateDirectory(env),
-          liveAgents,
+          observations,
         );
         if (!siblingPane) return "ambiguous_process_state";
       }
@@ -220,7 +203,9 @@ async function recoverySafetyFailure(context, env, herdr, liveAgents) {
   }
   let processInfo;
   try {
-    processInfo = await herdr.paneProcessInfo(context.agent.herdr.pane_id);
+    processInfo = await harness.topology.observePaneProcess(
+      context.agent.herdr.pane_id,
+    );
   } catch {
     return "ambiguous_process_state";
   }
@@ -238,26 +223,26 @@ async function recoverySafetyFailure(context, env, herdr, liveAgents) {
 
 async function ensureRecoveryPane(
   context,
-  herdr,
+  harness,
   registryDirectory,
-  liveAgents,
+  observations,
 ) {
   if (
-    !herdr.paneRecord ||
-    (await herdr.paneRecord(context.agent.herdr.pane_id))
+    harness.capabilities?.topology?.observePane === false ||
+    (await harness.topology.observePane(context.agent.herdr.pane_id))
   ) {
     return;
   }
   let placement;
-  const taskTab = herdr.tabRecord
-    ? await herdr.tabRecord(context.task.herdr.tab_id)
-    : null;
+  const taskTab = harness.capabilities?.topology?.observeTab === false
+    ? null
+    : await harness.topology.observeTab(context.task.herdr.tab_id);
   if (taskTab) {
     const siblingPane = await managedSiblingPane(
       context,
-      herdr,
+      harness,
       registryDirectory,
-      liveAgents,
+      observations,
     );
     if (!siblingPane) {
       throw new DrovrError(
@@ -267,7 +252,7 @@ async function ensureRecoveryPane(
     }
     placement = {
       tabId: context.task.herdr.tab_id,
-      paneId: await herdr.splitPane({
+      paneId: await harness.topology.splitTaskPane({
         paneId: siblingPane,
         direction: "right",
         ratio: 0.5,
@@ -278,24 +263,31 @@ async function ensureRecoveryPane(
       context.task.herdr.root_pane_id = siblingPane;
     }
   } else if (
-    herdr.workspaceRecord &&
-    (await herdr.workspaceRecord(context.group.herdr.workspace_id))
+    harness.capabilities?.topology?.observeWorkspace !== false &&
+    (await harness.topology.observeWorkspace(context.group.herdr.workspace_id))
   ) {
-    placement = await herdr.createTab({
+    const createdTab = await harness.topology.createTaskTab({
       workspaceId: context.group.herdr.workspace_id,
       cwd: context.task.cwd,
       label: context.task.label ?? context.task.key ?? context.task.id,
     });
+    placement = {
+      tabId: createdTab.tab_id,
+      paneId: createdTab.root_pane_id,
+    };
   } else {
-    const workspace = await herdr.createWorkspace({
+    const workspace = await harness.topology.createWorkspace({
       cwd: context.task.cwd,
       label: context.group.label ?? context.group.key ?? context.group.id,
     });
-    context.group.herdr.workspace_id = workspace.workspaceId;
+    context.group.herdr.workspace_id = workspace.workspace_id;
     await writeRecord(registryDirectory, "groups", context.group);
-    placement = { tabId: workspace.tabId, paneId: workspace.paneId };
-    if (herdr.renameTab) {
-      await herdr.renameTab(
+    placement = {
+      tabId: workspace.tab_id,
+      paneId: workspace.root_pane_id,
+    };
+    if (harness.capabilities?.topology?.renameTask !== false) {
+      await harness.topology.renameTask(
         placement.tabId,
         context.task.label ?? context.task.key ?? context.task.id,
       );
@@ -312,18 +304,17 @@ async function ensureRecoveryPane(
 
 async function managedSiblingPane(
   context,
-  herdr,
+  harness,
   registryDirectory,
-  liveAgents,
+  observations,
 ) {
   const agents = await readRecords(registryDirectory, "agents");
-  const liveByName = new Map(
-    (liveAgents ?? (await herdr.agentRecords())).map((agent) => [
-      agent.name,
-      agent,
-    ]),
+  const activeAgents = agents.filter(
+    (agent) => agent.status === "active" && agent.task_id === context.task.id,
   );
-  for (const sibling of agents) {
+  const liveObservations = observations ??
+    await harness.observeAgents(activeAgents);
+  for (const [index, sibling] of activeAgents.entries()) {
     if (
       sibling.id === context.agent.id ||
       sibling.task_id !== context.task.id ||
@@ -331,15 +322,16 @@ async function managedSiblingPane(
     ) {
       continue;
     }
-    const live = liveByName.get(sibling.herdr.name);
+    const live = liveObservations[index];
     if (
       !live ||
-      live.pane_id !== sibling.herdr.pane_id ||
-      live.agent_session?.value !== sibling.native_session
+      live.evidence !== "present" ||
+      live.identity?.pane !== sibling.herdr.pane_id ||
+      live.identity?.native_session !== sibling.native_session
     ) {
       continue;
     }
-    const pane = await herdr.paneRecord(sibling.herdr.pane_id);
+    const pane = await harness.topology.observePane(sibling.herdr.pane_id);
     if (pane?.tab_id === context.task.herdr.tab_id) {
       return sibling.herdr.pane_id;
     }
@@ -356,7 +348,12 @@ async function recoveryContext(registryDirectory, agentId) {
       outcome: "invalid_arguments",
     });
   }
-  return context;
+  return {
+    ...context,
+    agents: registry.agents.filter(
+      (agent) => agent.task_id === context.task.id && agent.status === "active",
+    ),
+  };
 }
 
 function blocked(context, reason) {
@@ -370,8 +367,4 @@ function uncertain(context, reason, error) {
     reason,
     ...(error ? { error } : {}),
   };
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

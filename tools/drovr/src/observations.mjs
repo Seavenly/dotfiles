@@ -1,4 +1,4 @@
-import { HerdrClient } from "./herdr.mjs";
+import { createSemanticHarness } from "./harness-interface.mjs";
 
 export async function observeAgents(
   session,
@@ -6,42 +6,44 @@ export async function observeAgents(
   dependencies = {},
 ) {
   const env = dependencies.env ?? process.env;
-  const herdr =
-    dependencies.herdr ??
-    new HerdrClient({ session, env, run: dependencies.run });
-  const running = await herdr.sessionRunning();
+  const harness = createSemanticHarness({
+    ...dependencies,
+    env,
+    session,
+    harness: agents[0]?.launch?.harness ?? "codex",
+  });
+  const runtime = await harness.observeRuntime();
+  const running = runtime.evidence === "present";
   const observations = new Map();
-  if (!running) {
+  if (runtime.evidence !== "present") {
     for (const agent of agents) {
       observations.set(agent.id, {
-        status: "agent_lost",
-        reason: "session_missing",
+        status: runtime.evidence === "absent" ? "agent_lost" : "uncertain",
+        reason: runtime.evidence === "absent"
+          ? "session_missing"
+          : "session_observation_uncertain",
       });
     }
     return { running, observations };
   }
 
-  const observedAgents = await herdr.agentRecords();
-  const byName = new Map(observedAgents.map((agent) => [agent.name, agent]));
-  for (const agent of agents) {
-    const observed = byName.get(agent.herdr.name);
-    if (!observed) {
+  const semanticObservations = await harness.observeAgents(agents);
+  for (const [index, agent] of agents.entries()) {
+    const observed = semanticObservations[index];
+    if (observed.evidence === "absent") {
       observations.set(agent.id, {
         status: "agent_lost",
         reason: "agent_not_found",
       });
-    } else if (
-      !agent.native_session ||
-      observed.agent_session?.value !== agent.native_session
-    ) {
+    } else if (observed.evidence !== "present") {
       observations.set(agent.id, {
-        status: "agent_lost",
+        status: "uncertain",
         reason: "native_session_mismatch",
       });
     } else {
       observations.set(agent.id, {
-        status: observed.agent_status ?? "unknown",
-        pane_id: observed.pane_id ?? agent.herdr.pane_id,
+        status: observed.state ?? "unknown",
+        pane_id: observed.identity?.pane ?? agent.herdr.pane_id,
       });
     }
   }

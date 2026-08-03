@@ -4,8 +4,8 @@ import {
   acknowledgeBlockRecord,
   blockAwaitsWorkingObservation,
   blockRepresentsActiveTransition,
+  blockTransitionToken,
   createBlockRecord,
-  herdrStateChangedSinceBlock,
   observeBlockWorking,
   resolveBlockRecord,
   supersedeBlockRecord,
@@ -13,8 +13,7 @@ import {
 import { DrovrError } from "./errors.mjs";
 import { digestCanonical } from "./canonical-json.mjs";
 import { describeDelegatedAgent } from "./description.mjs";
-import { harnessAdapter } from "./harness-adapter.mjs";
-import { HerdrClient } from "./herdr.mjs";
+import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
   stateDirectory,
@@ -27,13 +26,10 @@ import {
   normalizeInputText,
   settleTurnRecord,
   terminalProofClassification,
-  turnAwaitsPostDeliverySettlement,
 } from "./turn-record.mjs";
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { reconcileOrRecoverAgent } from "./recovery.mjs";
 import { ownedStagedTurn } from "./staged-input-receipt.mjs";
-
-const TRANSCRIPT_SETTLE_GRACE_MS = 5000;
 
 async function turnContext(registryDirectory, turnId) {
   const turns = await readRecords(registryDirectory, "turns");
@@ -92,26 +88,8 @@ function corruptRelationship(kind, id, ownerId) {
   );
 }
 
-function owningSession(group) {
-  const session = group.herdr?.session;
-  if (typeof session !== "string" || session.length === 0) {
-    throw new DrovrError(
-      `registry group ${group.id} omits its owning Herdr session`,
-      { code: 5, outcome: "corrupt_registry" },
-    );
-  }
-  return session;
-}
-
-function client(session, env, dependencies) {
-  return (
-    dependencies.herdr ??
-    new HerdrClient({
-      session,
-      env,
-      run: dependencies.run,
-    })
-  );
+function harnessFor(context, env, dependencies) {
+  return semanticHarnessFor(context, { ...dependencies, env });
 }
 
 export async function startTurn(agentId, options, dependencies = {}) {
@@ -119,8 +97,8 @@ export async function startTurn(agentId, options, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await agentContext(registryDirectory, agentId);
-  const herdr = client(owningSession(initial.group), env, dependencies);
-  await herdr.ensureSession();
+  const harness = harnessFor(initial, env, dependencies);
+  await harness.ensureRuntime();
   return withResourceLock(
     registryDirectory,
     taskLifecycleLockKey(initial.task.id),
@@ -129,7 +107,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
         const availability = await reconcileOrRecoverAgent(agentId, {
           ...dependencies,
           env,
-          herdr,
+          harness,
           now,
         });
         if (!["reconciled", "recovered"].includes(availability.status)) {
@@ -139,14 +117,20 @@ export async function startTurn(agentId, options, dependencies = {}) {
           );
         }
       } else {
-        const observed = await herdr.agentRecord(initial.agent.herdr.name);
-        if (!observed) {
+        const observed = await harness.observeAgent(initial.agent);
+        if (observed.evidence === "absent") {
           throw new DrovrError(
             `Herdr did not report managed agent ${initial.agent.herdr.name}`,
             { code: 0, outcome: "uncertain" },
           );
         }
-        if (!["idle", "done"].includes(observed.agent_status)) {
+        if (observed.evidence !== "present") {
+          throw new DrovrError(
+            `managed agent ${agentId} identity could not be confirmed`,
+            { code: 0, outcome: "recovery_blocked" },
+          );
+        }
+        if (!["idle", "done"].includes(observed.state)) {
           throw new DrovrError(
             `agent ${agentId} is not settled in Herdr`,
             { code: 0, outcome: "task_busy" },
@@ -170,20 +154,26 @@ export async function startTurn(agentId, options, dependencies = {}) {
               { code: 0, outcome: "task_busy" },
             );
           }
-          const observed = await herdr.agentRecord(current.agent.herdr.name);
-          if (!observed) {
+          const observed = await harness.observeAgent(current.agent);
+          if (observed.evidence === "absent") {
             throw new DrovrError(
               `Herdr did not report managed agent ${current.agent.herdr.name}`,
               { code: 0, outcome: "uncertain" },
             );
           }
-          if (!["idle", "done"].includes(observed.agent_status)) {
+          if (observed.evidence !== "present") {
             throw new DrovrError(
-              `agent ${agentId} is not settled in Herdr (${observed.agent_status ?? "unknown"})`,
+              `managed agent ${agentId} identity could not be confirmed`,
+              { code: 0, outcome: "recovery_blocked" },
+            );
+          }
+          if (!["idle", "done"].includes(observed.state)) {
+            throw new DrovrError(
+              `agent ${agentId} is not settled in Herdr (${observed.state ?? "unknown"})`,
               { code: 0, outcome: "task_busy" },
             );
           }
-          const observedNativeSession = observed.agent_session?.value;
+          const observedNativeSession = observed.identity.native_session;
           if (
             current.agent.native_session &&
             current.agent.native_session !== observedNativeSession
@@ -209,15 +199,12 @@ export async function startTurn(agentId, options, dependencies = {}) {
             );
           }
 
-          if (
-            current.agent.launch.harness === "claude" &&
-            herdr.inspectStagedInput
-          ) {
-            const stagedInput = await herdr.inspectStagedInput(
-              current.agent.herdr.name,
-              { harness: "claude" },
-            );
-            if (stagedInput) {
+          if (current.agent.launch.harness === "claude") {
+            const stagedResult = await harness.inspectStagedInput({
+              agent: current.agent,
+            });
+            if (stagedResult.snapshot) {
+              const stagedInput = stagedResult.snapshot;
               const ownedTurn = turns.find(
                 (turn) => ownedStagedTurn(turn, current.agent, stagedInput),
               );
@@ -239,17 +226,17 @@ export async function startTurn(agentId, options, dependencies = {}) {
             }
           }
 
-          const adapter = harnessAdapter(current.agent.launch.harness, env);
           const turn = await prepareTurn({
             registryDirectory,
             agent: current.agent,
             task: current.task,
-            adapter,
+            harness,
             prompt: options.prompt,
             now,
             inventoryBeforeDelivery:
-              adapter.inventoryBeforeDelivery || !current.agent.native_session,
-            herdrStateChangeSeq: observed.state_change_seq,
+              current.agent.launch.harness === "claude" ||
+              !current.agent.native_session,
+            transitionToken: observed.transition_token,
             caller: options.caller,
             inputKey: options.inputKey,
             launchBinding: options.launchBinding,
@@ -262,7 +249,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
         agent: context.agent,
         turn: context.turn,
         prompt: options.prompt,
-        herdr,
+        harness,
         now,
       });
       return context;
@@ -388,12 +375,6 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
 export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
-  const clock = dependencies.clock ?? Date.now;
-  const wallClock = dependencies.wallClock ?? Date.now;
-  const delay =
-    dependencies.delay ??
-    ((milliseconds) =>
-      new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const registryDirectory = stateDirectory(env);
   let context = await turnContext(registryDirectory, turnId);
   let acknowledgedBlock;
@@ -405,184 +386,106 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       acknowledgedAt: now(),
     }));
   }
-  if (!acknowledgedBlock && context.turn.status !== "working") return context;
-
-  const herdr = client(owningSession(context.group), env, dependencies);
-  const deadline =
-    options.timeoutMs === undefined ? undefined : clock() + options.timeoutMs;
-  let correlationDeadline;
-  let correlationStage;
-  for (;;) {
-    context = await turnContext(registryDirectory, turnId);
-    if (acknowledgedBlock) {
-      const currentBlock = await currentBlockForTurn(
-        registryDirectory,
-        context.turn,
-      );
-      if (currentBlock.id !== acknowledgedBlock.id) {
-        return { ...context, block: currentBlock };
-      }
-      acknowledgedBlock = currentBlock;
-      if (
-        context.turn.status !== "working" &&
-        acknowledgedBlock.working_observed_at
-      ) {
-        return context;
-      }
-    } else if (context.turn.status !== "working") {
-      return context;
-    }
-    const observedInputCount = context.turn.inputs.length;
-    const remaining =
-      deadline === undefined ? undefined : Math.max(0, deadline - clock());
-    if (remaining === 0) {
-      return { ...context, wait_status: "still_running" };
-    }
-    if (blockAwaitsWorkingObservation(acknowledgedBlock)) {
-      const observed = await herdr.agentRecord(context.agent.herdr.name);
-      if (!observed) {
-        return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
-      }
-      const identityFailure = await settleUnverifiedNativeObservation({
-        registryDirectory,
-        turnId,
-        context,
-        observed,
-        env,
-        now,
-      });
-      if (identityFailure) return identityFailure;
-      if (observed?.agent_status === "working") {
-        const recorded = await recordBlockWorkingObservation({
-          registryDirectory,
-          turnId,
-          blockId: acknowledgedBlock.id,
-          observedAt: now(),
-          observation: "herdr_working_status",
-        });
-        if (recorded.currentBlock.id !== acknowledgedBlock.id) {
-          return { ...context, block: recorded.currentBlock };
-        }
-        acknowledgedBlock = recorded.block;
-        continue;
-      }
-      if (
-        ["idle", "done"].includes(observed?.agent_status) &&
-        herdrStateChangedSinceBlock(
-          acknowledgedBlock,
-          observed.state_change_seq,
-        )
-      ) {
-        const recorded = await recordBlockWorkingObservation({
-          registryDirectory,
-          turnId,
-          blockId: acknowledgedBlock.id,
-          observedAt: now(),
-          observation: "herdr_state_changed_before_settlement",
-        });
-        if (recorded.currentBlock.id !== acknowledgedBlock.id) {
-          return { ...context, block: recorded.currentBlock };
-        }
-        acknowledgedBlock = recorded.block;
-        continue;
-      }
-      if (observed?.agent_status === "blocked") {
-        if (
-          !blockRepresentsActiveTransition(acknowledgedBlock, {
-            herdrStateChangeSeq: observed.state_change_seq,
-          })
-        ) {
-          const blockedExcerpt = await herdr.agentExcerpt(
-            context.agent.herdr.name,
-          );
-          const reconciled = await withResourceLock(
-            registryDirectory,
-            `turn:${turnId}`,
-            async () =>
-              reconcileSettledObservation({
-                registryDirectory,
-                turnId,
-                observed,
-                observedInputCount,
-                blockedExcerpt,
-                env,
-                now,
-                retryCorrelation: true,
-              }),
-          );
-          if (!reconciled.retry_wait) return reconciled;
-          continue;
-        }
-        const currentBlock = await currentBlockForTurn(
-          registryDirectory,
-          context.turn,
-        );
-        if (currentBlock?.id !== acknowledgedBlock.id) {
-          return { ...context, block: currentBlock };
-        }
-      }
-      await delay(Math.min(25, remaining ?? 25));
-      continue;
-    }
-    const observed = await herdr.waitForAgent(
-      context.agent.herdr.name,
-      remaining,
-    );
-    if (observed?.drovr_status === "agent_lost" || !observed) {
-      return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
-    }
-    if (observed?.drovr_status === "still_running") {
-      return { ...context, wait_status: "still_running" };
-    }
-    const identityFailure = await settleUnverifiedNativeObservation({
+  if (!acknowledgedBlock && context.turn.status === "working") {
+    const currentBlock = await currentBlockForTurn(
       registryDirectory,
-      turnId,
+      context.turn,
+    );
+    if (blockAwaitsWorkingObservation(currentBlock)) {
+      acknowledgedBlock = currentBlock;
+    }
+  }
+  if (!acknowledgedBlock && context.turn.status !== "working") return context;
+  const harness = harnessFor(context, env, dependencies);
+  const evidence = await harness.waitForTurn({
+    agent: context.agent,
+    turn: context.turn,
+    timeoutMs: options.timeoutMs,
+    afterBlock: acknowledgedBlock
+      ? {
+          transition_token: blockTransitionToken(acknowledgedBlock),
+          working_observed: Boolean(acknowledgedBlock.working_observed_at),
+        }
+      : undefined,
+    delay: dependencies.delay,
+    refreshTurn: async () => (await turnContext(registryDirectory, turnId)).turn,
+    refreshBlock: async () => {
+      const latestTurn = (await turnContext(registryDirectory, turnId)).turn;
+      return currentBlockForTurn(registryDirectory, latestTurn);
+    },
+  });
+  if (evidence.outcome === "still_running") {
+    return { ...context, wait_status: "still_running" };
+  }
+  if (evidence.outcome === "agent_lost") {
+    return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
+  }
+  if (evidence.outcome === "needs_input") {
+    return recordSemanticBlock({
+      registryDirectory,
       context,
-      observed,
-      env,
+      evidence,
       now,
     });
-    if (identityFailure) return identityFailure;
-    const blockedExcerpt =
-      observed?.agent_status === "blocked"
-        ? await herdr.agentExcerpt(context.agent.herdr.name)
-        : undefined;
-    const deliveryObservationExpired = deliveryObservationGraceExpired(
-      context.turn,
-      observed?.state_change_seq,
-      wallClock(),
-    );
-
-    const reconciled = await withResourceLock(
-      registryDirectory,
-      `turn:${turnId}`,
-      async () =>
-        reconcileSettledObservation({
-          registryDirectory,
-          turnId,
-          observed,
-          observedInputCount,
-          blockedExcerpt,
-          env,
-          now,
-          retryCorrelation:
-            !deliveryObservationExpired &&
-            (correlationDeadline === undefined ||
-              clock() < correlationDeadline),
-          correlationStage,
-          deliveryObservationExpired,
-        }),
-    );
-    if (!reconciled.retry_wait) return reconciled;
-    if (
-      reconciled.correlation_pending &&
-      reconciled.correlation_stage !== correlationStage
-    ) {
-      correlationStage = reconciled.correlation_stage;
-      correlationDeadline = clock() + TRANSCRIPT_SETTLE_GRACE_MS;
-    }
-    await delay(25);
   }
+  if (evidence.outcome === "working_observed") {
+    const recorded = await recordBlockWorkingObservation({
+      registryDirectory,
+      turnId,
+      blockId: acknowledgedBlock.id,
+      observedAt: now(),
+      observation: evidence.working_observation,
+    });
+    if (recorded.currentBlock?.id !== acknowledgedBlock.id) {
+      return { ...context, block: recorded.currentBlock };
+    }
+    return waitForTurn(turnId, options, {
+      ...dependencies,
+      env,
+      now,
+      harness,
+    });
+  }
+  if (evidence.outcome !== "completed") {
+    return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+      const current = await turnContext(registryDirectory, turnId);
+      if (current.turn.status === "working") {
+        settleTurnRecord(current.turn, {
+          status: evidence.outcome === "unsupported_transcript"
+            ? "unsupported_transcript"
+            : "uncertain",
+          error: evidence.error,
+          settledAt: now(),
+        });
+        await writeRecord(registryDirectory, "turns", current.turn);
+      }
+      return current;
+    });
+  }
+  return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+    const current = await turnContext(registryDirectory, turnId);
+    if (current.turn.status !== "working") return current;
+    if (evidence.transcript_cursor) {
+      current.turn.transcript_cursor = evidence.transcript_cursor;
+    }
+    const observedNativeSession = evidence.observation?.identity?.native_session;
+    if (!current.agent.native_session && observedNativeSession) {
+      current.agent.native_session = observedNativeSession;
+      await writeRecord(registryDirectory, "agents", current.agent);
+    }
+    settleTurnRecord(current.turn, {
+      status: "completed",
+      result: evidence.result,
+      settledAt: now(),
+    });
+    await writeRecord(registryDirectory, "turns", current.turn);
+    const block = await currentBlockForTurn(registryDirectory, current.turn);
+    if (block && block.status !== "superseded") {
+      resolveBlockRecord(block, { resolvedAt: now() });
+      await writeRecord(registryDirectory, "blocks", block);
+    }
+    return current;
+  });
 }
 
 function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
@@ -600,30 +503,54 @@ function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
   });
 }
 
-async function settleUnverifiedNativeObservation({
+async function recordSemanticBlock({
   registryDirectory,
-  turnId,
   context,
-  observed,
-  env,
+  evidence,
   now,
 }) {
-  const identityError = nativeSessionObservationError(
-    context.agent,
-    observed,
-    harnessAdapter(context.agent.launch.harness, env).label,
+  return withResourceLock(
+    registryDirectory,
+    `turn:${context.turn.id}`,
+    async () => {
+      const current = await turnContext(
+        registryDirectory,
+        context.turn.id,
+      );
+      let block = await currentBlockForTurn(registryDirectory, current.turn);
+      const transitionToken = evidence.observation?.transition_token;
+      if (
+        block &&
+        blockRepresentsActiveTransition(block, {
+          transitionToken,
+        })
+      ) {
+        return { ...current, block };
+      }
+      const blockId = randomUUID();
+      if (block) {
+        supersedeBlockRecord(block, {
+          supersededAt: now(),
+          supersededBy: blockId,
+        });
+        await writeRecord(registryDirectory, "blocks", block);
+      }
+      block = createBlockRecord({
+        id: blockId,
+        turnId: current.turn.id,
+        agentId: current.agent.id,
+        taskId: current.task.id,
+        harness: current.agent.launch.harness,
+        excerpt: evidence.excerpt,
+        transitionToken,
+        createdAt: now(),
+      });
+      current.turn.block_ids = [...(current.turn.block_ids ?? []), block.id];
+      await writeRecord(registryDirectory, "turns", current.turn);
+      await writeRecord(registryDirectory, "blocks", block);
+      return { ...current, block };
+    },
   );
-  if (!identityError) return null;
-  return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
-    const current = await turnContext(registryDirectory, turnId);
-    if (current.turn.status !== "working") return current;
-    return settleUncertain(
-      registryDirectory,
-      current,
-      identityError,
-      now(),
-    );
-  });
 }
 
 async function acknowledgeCurrentBlock({
@@ -705,204 +632,6 @@ async function currentBlockForTurn(registryDirectory, turn) {
   return block;
 }
 
-async function reconcileSettledObservation({
-  registryDirectory,
-  turnId,
-  observed,
-  observedInputCount,
-  blockedExcerpt,
-  env,
-  now,
-  retryCorrelation,
-  correlationStage,
-  deliveryObservationExpired,
-}) {
-  const context = await turnContext(registryDirectory, turnId);
-  if (context.turn.status !== "working") return context;
-  if (context.turn.inputs.length !== observedInputCount) {
-    return { ...context, retry_wait: true };
-  }
-  const adapter = harnessAdapter(context.agent.launch.harness, env);
-  const identityError = nativeSessionObservationError(
-    context.agent,
-    observed,
-    adapter.label,
-  );
-  if (identityError) {
-    return settleUncertain(
-      registryDirectory,
-      context,
-      identityError,
-      now(),
-    );
-  }
-  const observedNativeSession = observed?.agent_session?.value;
-  if (!context.agent.native_session) {
-    if (!observedNativeSession) {
-      if (retryCorrelation) {
-        return { ...context, retry_wait: true, correlation_pending: true };
-      }
-      return settleUncertain(
-        registryDirectory,
-        context,
-        `Herdr did not report the ${adapter.label} native session identity`,
-        now(),
-      );
-    }
-    context.agent.native_session = observedNativeSession;
-    await writeRecord(registryDirectory, "agents", context.agent);
-  }
-  if (context.turn.transcript_cursor.transcript_root) {
-    try {
-      const transcriptPath = await adapter.locate(
-        context.turn.transcript_cursor.transcript_root,
-        context.agent.native_session,
-      );
-      context.turn.transcript_cursor = await adapter.resolveInventory(
-        context.turn.transcript_cursor,
-        transcriptPath,
-        context.agent.native_session,
-      );
-      await writeRecord(registryDirectory, "turns", context.turn);
-    } catch (error) {
-      const pendingStage = error.details?.correlation_stage ?? "transcript";
-      if (
-        error.details?.correlation_pending &&
-        (retryCorrelation || pendingStage !== correlationStage)
-      ) {
-        return {
-          ...context,
-          retry_wait: true,
-          correlation_pending: true,
-          correlation_stage: pendingStage,
-        };
-      }
-      settleTurnRecord(context.turn, {
-        status: error.outcome ?? "uncertain",
-        error: error.message,
-        settledAt: now(),
-      });
-      if (error.details?.correlation_pending) {
-        context.turn.late_result_recovery = "exact_transcript_correlation";
-      }
-      await writeRecord(registryDirectory, "turns", context.turn);
-      return context;
-    }
-  }
-
-  if (observed?.agent_status === "blocked") {
-    let block = await currentBlockForTurn(registryDirectory, context.turn);
-    if (
-      !blockRepresentsActiveTransition(block, {
-        herdrStateChangeSeq: observed.state_change_seq,
-      })
-    ) {
-      const blockId = randomUUID();
-      if (block) {
-        supersedeBlockRecord(block, {
-          supersededAt: now(),
-          supersededBy: blockId,
-        });
-        await writeRecord(registryDirectory, "blocks", block);
-      }
-      block = createBlockRecord({
-        id: blockId,
-        turnId: context.turn.id,
-        agentId: context.agent.id,
-        taskId: context.task.id,
-        harness: context.agent.launch.harness,
-        excerpt: blockedExcerpt,
-        herdrStateChangeSeq: observed.state_change_seq,
-        createdAt: now(),
-      });
-      context.turn.block_ids = [...(context.turn.block_ids ?? []), block.id];
-      await writeRecord(registryDirectory, "turns", context.turn);
-      await writeRecord(registryDirectory, "blocks", block);
-    }
-    return { ...context, block };
-  }
-  if (
-    ["idle", "done"].includes(observed?.agent_status) &&
-    turnAwaitsPostDeliverySettlement(
-      context.turn,
-      observed.state_change_seq,
-    ) &&
-    !deliveryObservationExpired
-  ) {
-    return { ...context, retry_wait: true };
-  }
-  if (!["idle", "done"].includes(observed?.agent_status)) {
-    return settleUncertain(registryDirectory, context, null, now());
-  }
-  const currentBlock = await currentBlockForTurn(
-    registryDirectory,
-    context.turn,
-  );
-  if (blockAwaitsWorkingObservation(currentBlock)) {
-    return { ...context, retry_wait: true };
-  }
-
-  let result;
-  try {
-    result = await adapter.extract(
-      context.turn.transcript_cursor,
-      context.turn.inputs.map(({ text }) => text),
-    );
-  } catch (error) {
-    const pendingStage = error.details?.correlation_stage ?? "transcript";
-    if (
-      !deliveryObservationExpired &&
-      error.details?.correlation_pending &&
-      (retryCorrelation || pendingStage !== correlationStage)
-    ) {
-      return {
-        ...context,
-        retry_wait: true,
-        correlation_pending: true,
-        correlation_stage: pendingStage,
-      };
-    }
-    settleTurnRecord(context.turn, {
-      status: error.outcome ?? "uncertain",
-      error: error.message,
-      settledAt: now(),
-    });
-    if (error.details?.correlation_pending) {
-      context.turn.late_result_recovery = "exact_transcript_correlation";
-    }
-    await writeRecord(registryDirectory, "turns", context.turn);
-    return context;
-  }
-  settleTurnRecord(context.turn, {
-    status: "completed",
-    result,
-    settledAt: now(),
-  });
-  await writeRecord(registryDirectory, "turns", context.turn);
-  if (currentBlock && currentBlock.status !== "superseded") {
-    resolveBlockRecord(currentBlock, { resolvedAt: now() });
-    await writeRecord(registryDirectory, "blocks", currentBlock);
-  }
-  return context;
-}
-
-function deliveryObservationGraceExpired(
-  turn,
-  herdrStateChangeSeq,
-  observedAtMs,
-) {
-  if (!turnAwaitsPostDeliverySettlement(turn, herdrStateChangeSeq)) {
-    return false;
-  }
-  const submittedAtMs = Date.parse(
-    turn.inputs[0]?.submitted_at ?? turn.created_at,
-  );
-  return (
-    Number.isFinite(submittedAtMs) &&
-    observedAtMs >= submittedAtMs + TRANSCRIPT_SETTLE_GRACE_MS
-  );
-}
-
 export async function sendToTurn(turnId, options, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
@@ -938,12 +667,12 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
   if (pendingCallerDelivery(initial.turn)) {
     return { ...initial, input_status: "reconciling" };
   }
-  const herdr = client(owningSession(initial.group), env, dependencies);
-  await herdr.ensureSession();
+  const harness = harnessFor(initial, env, dependencies);
+  await harness.ensureRuntime();
   const availability = await reconcileOrRecoverAgent(initial.agent.id, {
     ...dependencies,
     env,
-    herdr,
+    harness,
     now,
   });
   if (!["reconciled", "recovered"].includes(availability.status)) {
@@ -988,25 +717,20 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       ) {
         return { ...context, command_status: "task_busy" };
       }
-      const observed = await herdr.agentRecord(context.agent.herdr.name);
-      const identityError = nativeSessionObservationError(
-        context.agent,
-        observed,
-        harnessAdapter(context.agent.launch.harness, env).label,
-      );
-      if (identityError) {
+      const observed = await harness.observeAgent(context.agent);
+      if (observed.evidence !== "present") {
         settleTurnRecord(context.turn, {
           status: "uncertain",
-          error: identityError,
+          error: semanticIdentityError(observed, context.agent.launch.harness),
           settledAt: now(),
         });
         await writeRecord(registryDirectory, "turns", context.turn);
         return context;
       }
-      if (observed?.agent_status === "blocked") {
+      if (observed.state === "blocked") {
         return { ...context, reconcile_status: "needs_input" };
       }
-      if (observed?.agent_status !== "working") {
+      if (observed.state !== "working") {
         return { ...context, reconcile_status: "turn_closed" };
       }
 
@@ -1021,7 +745,7 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
         agent: context.agent,
         turn: context.turn,
         prompt,
-        herdr,
+        harness,
         now,
       });
       return context;
@@ -1188,12 +912,12 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   if (initial.turn.cleanup_requested_at) {
     return { ...initial, command_status: "task_busy" };
   }
-  const herdr = client(owningSession(initial.group), env, dependencies);
-  await herdr.ensureSession?.();
+  const harness = harnessFor(initial, env, dependencies);
+  await harness.ensureRuntime();
   const availability = await reconcileOrRecoverAgent(initial.agent.id, {
     ...dependencies,
     env,
-    herdr,
+    harness,
     now,
   });
   if (!["reconciled", "recovered"].includes(availability.status)) {
@@ -1218,11 +942,11 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   if (current.turn.status !== "working") {
     return { ...current, command_status: "turn_closed" };
   }
-  if (["idle", "done"].includes(availability.observed?.agent_status)) {
+  if (["idle", "done"].includes(availability.observed?.state)) {
     const reconciled = await waitForTurn(turnId, options, {
       ...dependencies,
       env,
-      herdr,
+      harness,
       now,
     });
     return {
@@ -1234,7 +958,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     };
   }
   if (
-    !["working", "blocked"].includes(availability.observed?.agent_status)
+    !["working", "blocked"].includes(availability.observed?.state)
   ) {
     return { ...current, command_status: "uncertain" };
   }
@@ -1259,46 +983,14 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     return cancellation;
   }
 
-  try {
-    await herdr.interruptAgent(initial.agent.herdr.name);
-  } catch (error) {
-    return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
-      const context = await turnContext(registryDirectory, turnId);
-      if (context.turn.status === "working") {
-        settleTurnRecord(context.turn, {
-          status: "uncertain",
-          error: `native interruption could not be delivered: ${error.message}`,
-          settledAt: now(),
-        });
-        await writeRecord(registryDirectory, "turns", context.turn);
-      }
-      return context;
-    });
-  }
-
-  let observed;
-  try {
-    observed = await herdr.waitForAgent(
-      initial.agent.herdr.name,
-      options.timeoutMs ?? 120_000,
-    );
-  } catch (error) {
-    observed = {
-      drovr_status: "settlement_failed",
-      error: error.message,
-    };
-  }
+  const interruption = await harness.interruptTurn({
+    agent: initial.agent,
+    timeoutMs: options.timeoutMs ?? 120_000,
+  });
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
     if (context.turn.status !== "working") return context;
-    const observedNativeSession = observed?.agent_session?.value;
-    const settled = ["idle", "done"].includes(observed?.agent_status);
-    const expectedSession = context.agent.native_session;
-    if (
-      settled &&
-      expectedSession &&
-      observedNativeSession === expectedSession
-    ) {
+    if (interruption.outcome === "cancelled") {
       settleTurnRecord(context.turn, {
         status: "cancelled",
         settledAt: now(),
@@ -1313,16 +1005,20 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
           await writeRecord(registryDirectory, "blocks", block);
         }
       }
+    } else if (interruption.outcome === "already_settled") {
+      return waitForTurn(turnId, options, {
+        ...dependencies,
+        env,
+        harness,
+        now,
+      });
     } else {
       settleTurnRecord(context.turn, {
-        status:
-          observed?.drovr_status === "still_running" ||
-          observed?.drovr_status === "settlement_failed"
-            ? "interrupted"
-            : "uncertain",
-        error: observed?.error
-          ? `native interruption settlement failed: ${observed.error}`
-          : "native interruption settlement could not be confirmed",
+        status: interruption.outcome === "interrupted"
+          ? "interrupted"
+          : "uncertain",
+        error: interruption.error ??
+          "native interruption settlement could not be confirmed",
         settledAt: now(),
       });
     }
@@ -1331,66 +1027,39 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   });
 }
 
-async function settleUncertain(registryDirectory, context, error, settledAt) {
-  settleTurnRecord(context.turn, {
-    status: "uncertain",
-    ...(error ? { error } : {}),
-    settledAt,
-  });
-  await writeRecord(registryDirectory, "turns", context.turn);
-  return context;
-}
-
-function nativeSessionObservationError(agent, observed, adapterLabel) {
-  if (!agent.native_session) return null;
-  const observedNativeSession = observed?.agent_session?.value;
-  if (observedNativeSession === agent.native_session) return null;
-  return observedNativeSession
-    ? `Herdr reported a different ${adapterLabel} native session identity`
-    : `Herdr did not report the ${adapterLabel} native session identity`;
+function semanticIdentityError(observation, harness = "codex") {
+  if (observation?.evidence === "absent") {
+    return "managed agent was lost while delivering input";
+  }
+  if (observation?.evidence === "changed") {
+    return `Herdr reported a different ${harness === "claude" ? "Claude" : "Codex"} native session identity`;
+  }
+  if (
+    observation?.evidence === "uncertain" &&
+    observation.expected_identity?.native_session &&
+    !observation.identity?.native_session
+  ) {
+    return `Herdr did not report the ${harness === "claude" ? "Claude" : "Codex"} native session identity`;
+  }
+  return "managed agent identity could not be confirmed";
 }
 
 export async function getTurn(turnId, { env = process.env } = {}) {
   const registryDirectory = stateDirectory(env);
   const context = await turnContext(registryDirectory, turnId);
   if (!lateResultRecoveryEligible(context.turn)) return context;
-  const adapter = harnessAdapter(context.agent.launch.harness, env);
-  let cursor = context.turn.transcript_cursor;
-  try {
-    if (cursor.transcript_root) {
-      const transcriptPath = await adapter.locate(
-        cursor.transcript_root,
-        context.agent.native_session,
-      );
-      cursor = await adapter.resolveInventory(
-        cursor,
-        transcriptPath,
-        context.agent.native_session,
-      );
-    }
-    const inputs = context.turn.inputs.map(({ text }) => text);
-    try {
-      const lateResult = await adapter.extract(cursor, inputs);
-      return { ...context, late_result: lateResult };
-    } catch {
-      const turns = await readRecords(registryDirectory, "turns");
-      for (const candidate of concatenatedClaudeRecoveryInputs(
-        context,
-        turns,
-        inputs,
-      )) {
-        try {
-          const lateResult = await adapter.extract(cursor, candidate);
-          return { ...context, late_result: lateResult };
-        } catch {
-          // Try the next exact combination of known staged Drovr inputs.
-        }
-      }
-    }
-    return context;
-  } catch {
-    return context;
-  }
+  const harness = semanticHarnessFor(context, { env });
+  const turns = await readRecords(registryDirectory, "turns");
+  const late = await harness.getLateResult({
+    agent: context.agent,
+    turn: context.turn,
+    alternateInputs: concatenatedClaudeRecoveryInputs(
+      context,
+      turns,
+      context.turn.inputs.map(({ text }) => text),
+    ),
+  });
+  return late ? { ...context, late_result: late.result } : context;
 }
 
 function concatenatedClaudeRecoveryInputs(context, turns, currentInputs) {

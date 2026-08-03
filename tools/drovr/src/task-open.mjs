@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { loadConfiguration } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
-import { HerdrClient } from "./herdr.mjs";
+import { createSemanticHarness } from "./harness-interface.mjs";
 import { resolveTaskIdentity } from "./identity.mjs";
 import {
   readRecords,
@@ -15,11 +15,11 @@ import {
 async function updateGroupLabel(
   group,
   label,
-  herdr,
+  harness,
   registryDirectory,
 ) {
   if (!label || label === group.label) return;
-  await herdr.renameWorkspace(group.herdr.workspace_id, label);
+  await harness.topology.renameGroup(group.herdr.workspace_id, label);
   group.label = label;
   await writeRecord(registryDirectory, "groups", group);
 }
@@ -58,14 +58,17 @@ export async function openTask(options, dependencies = {}) {
         });
       }
       const session = group?.herdr?.session ?? configuration.session;
-      const herdr =
-        dependencies.herdr ??
-        new HerdrClient({ session, env, run: dependencies.run });
-      await herdr.ensureSession();
+      const harness = createSemanticHarness({
+        ...dependencies,
+        env,
+        session,
+        harness: "codex",
+      });
+      await harness.ensureRuntime();
       let initialPaneId;
       let initialTabId;
       if (!group) {
-        const workspace = await herdr.createWorkspace({
+        const workspace = await harness.topology.createWorkspace({
           cwd: identity.cwd,
           label: identity.groupLabel,
         });
@@ -78,12 +81,12 @@ export async function openTask(options, dependencies = {}) {
           status: "active",
           herdr: {
             session: configuration.session,
-            workspace_id: workspace.workspaceId,
+            workspace_id: workspace.workspace_id,
           },
           created_at: now(),
         };
-        initialPaneId = workspace.paneId;
-        initialTabId = workspace.tabId;
+        initialPaneId = workspace.root_pane_id;
+        initialTabId = workspace.tab_id;
         await writeRecord(registryDirectory, "groups", group);
       }
 
@@ -128,11 +131,14 @@ export async function openTask(options, dependencies = {}) {
             await updateGroupLabel(
               group,
               options.groupLabel,
-              herdr,
+              harness,
               registryDirectory,
             );
             if (options.label && options.label !== current.label) {
-              await herdr.renameTab(current.herdr.tab_id, options.label);
+              await harness.topology.renameTask(
+                current.herdr.tab_id,
+                options.label,
+              );
               current.label = options.label;
               await writeRecord(registryDirectory, "tasks", current);
             }
@@ -144,15 +150,15 @@ export async function openTask(options, dependencies = {}) {
       let paneId = initialPaneId;
       let tabId = initialTabId ?? null;
       if (!paneId) {
-        const tab = await herdr.createTab({
+        const tab = await harness.topology.createTaskTab({
           workspaceId: group.herdr.workspace_id,
           cwd: identity.cwd,
           label: options.label ?? options.key,
         });
-        paneId = tab.paneId;
-        tabId = tab.tabId;
+        paneId = tab.root_pane_id;
+        tabId = tab.tab_id;
       }
-      await herdr.renameTab(tabId, options.label ?? options.key);
+      await harness.topology.renameTask(tabId, options.label ?? options.key);
       const createdTask = {
         schema: "drovr.task/v1",
         id: randomUUID(),
@@ -168,7 +174,7 @@ export async function openTask(options, dependencies = {}) {
       await updateGroupLabel(
         group,
         options.groupLabel,
-        herdr,
+        harness,
         registryDirectory,
       );
       return { group, task: createdTask };

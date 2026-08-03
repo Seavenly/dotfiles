@@ -1,6 +1,6 @@
 import { DrovrError } from "./errors.mjs";
 import { resolveBlockRecord } from "./block-record.mjs";
-import { HerdrClient } from "./herdr.mjs";
+import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
   stateDirectory,
@@ -16,11 +16,8 @@ import {
 } from "./registry-relationships.mjs";
 import { settleTurnRecord } from "./turn-record.mjs";
 
-function client(session, env, dependencies) {
-  return (
-    dependencies.herdr ??
-    new HerdrClient({ session, env, run: dependencies.run })
-  );
+function client(context, env, dependencies) {
+  return semanticHarnessFor(context, { ...dependencies, env });
 }
 
 async function lifecycleContext(registryDirectory, kind, id) {
@@ -52,73 +49,31 @@ function sessionFor(group) {
   return group.herdr.session;
 }
 
-function nativeIdentityMatches(agent, observed) {
-  return (
-    Boolean(agent.native_session) &&
-    observed?.agent_session?.value === agent.native_session
-  );
-}
-
 function isUnboundAgent(agent) {
   return !agent.native_session;
 }
 
-function managedIdentityMatches(agent, observed) {
-  return (
-    nativeIdentityMatches(agent, observed) ||
-    (isUnboundAgent(agent) &&
-      observed?.name === agent.herdr.name &&
-      observed?.pane_id === agent.herdr.pane_id)
-  );
-}
-
-async function liveAgentRecords(herdr, agents) {
-  if (agents.length === 0) return [];
-  if (herdr.agentRecords) return herdr.agentRecords();
-  const records = [];
-  for (const agent of agents) {
-    const observed = await herdr.agentRecord(agent.herdr.name);
-    if (observed) {
-      records.push({
-        ...observed,
-        name: observed.name ?? agent.herdr.name,
-      });
-    }
+async function classifyManagedAgent({ agent, harness, observation }) {
+  if (["changed", "uncertain"].includes(observation.evidence)) {
+    return {
+      failure: {
+        agent,
+        status: observation.evidence === "changed"
+          ? "recovery_blocked"
+          : "uncertain",
+      },
+    };
   }
-  return records;
-}
-
-async function classifyManagedAgent({ agent, herdr, liveAgents }) {
-  const namedAgents = liveAgents.filter(
-    ({ name }) => name === agent.herdr.name,
-  );
-  const nativeOwners = agent.native_session
-    ? liveAgents.filter(
-        (candidate) =>
-          candidate.agent_session?.value === agent.native_session,
-      )
-    : [];
-  if (
-    namedAgents.length > 1 ||
-    nativeOwners.length > 1 ||
-    (nativeOwners[0] && nativeOwners[0].name !== agent.herdr.name)
-  ) {
-    return { failure: { agent, status: "recovery_blocked" } };
-  }
-  const observed = namedAgents[0];
-  if (observed && !managedIdentityMatches(agent, observed)) {
-    return { failure: { agent, status: "recovery_blocked" } };
-  }
-
-  const paneId = observed?.pane_id ?? agent.herdr.pane_id;
-  const pane = await herdr.paneRecord(paneId);
+  const observed = observation.evidence === "present" ? observation : null;
+  const paneId = observation.identity?.pane ?? agent.herdr.pane_id;
+  const pane = await harness.topology.observePane(paneId);
   if (!observed && pane && !isUnboundAgent(agent)) {
     return { failure: { agent, status: "agent_lost" } };
   }
   if (observed && !pane?.tab_id && !isUnboundAgent(agent)) {
     return { failure: { agent, status: "agent_lost" } };
   }
-  return { observed, pane, paneId };
+  return { observed, pane, paneId, observation };
 }
 
 async function groupLifecycleContext(registryDirectory, groupId) {
@@ -180,7 +135,7 @@ async function forceInterruptActiveTurns({
   registryDirectory,
   agents,
   turns,
-  herdr,
+  harness,
   now,
   timeoutMs,
 }) {
@@ -205,14 +160,21 @@ async function forceInterruptActiveTurns({
         workingTurns.map((turn) => [turn.agent_id, turn]),
       );
       const outcomes = new Map();
-      const observations = new Map();
+      const observations = new Map(
+        (await harness.observeAgents(agents)).map((observation, index) => [
+          agents[index].id,
+          observation,
+        ]),
+      );
       for (const agent of agents) {
-        const observed = await herdr.agentRecord(agent.herdr.name);
-        observations.set(agent.id, observed);
-        if (observed && !managedIdentityMatches(agent, observed)) {
+        const observed = observations.get(agent.id);
+        if (["changed", "uncertain"].includes(observed.evidence)) {
           outcomes.set(agent.id, {
             status: "uncertain",
-            error: "native session identity changed during force cleanup",
+            error:
+              observed.evidence === "changed"
+                ? "native session identity changed during force cleanup"
+                : "managed agent identity could not be confirmed during force cleanup",
           });
         }
       }
@@ -232,24 +194,23 @@ async function forceInterruptActiveTurns({
 
       for (const agent of identityFailure ? [] : agents) {
         const observed = observations.get(agent.id);
-        if (["working", "blocked"].includes(observed?.agent_status)) {
+        if (["working", "blocked"].includes(observed?.state)) {
           try {
-            if (!workingByAgent.get(agent.id)?.cancellation_requested_at) {
-              await herdr.interruptAgent(agent.herdr.name);
-            }
-            const settled = await herdr.waitForAgent(
-              agent.herdr.name,
-              timeoutMs ?? 120_000,
-            );
-            if (
-              ["idle", "done"].includes(settled?.agent_status) &&
-              managedIdentityMatches(agent, settled)
-            ) {
+            const interruption = await harness.interruptTurn({
+              agent,
+              timeoutMs: timeoutMs ?? 120_000,
+              timeoutOutcome: "uncertain",
+              skipIfAlreadyRequested: Boolean(
+                workingByAgent.get(agent.id)?.cancellation_requested_at,
+              ),
+            });
+            if (["cancelled", "interrupted"].includes(interruption.outcome)) {
               outcomes.set(agent.id, { status: "interrupted" });
             } else {
               outcomes.set(agent.id, {
                 status: "uncertain",
-                error: "native interruption settlement could not be confirmed",
+                error: interruption.error ??
+                  "native interruption settlement could not be confirmed",
               });
             }
           } catch (error) {
@@ -303,8 +264,8 @@ async function preflightTaskCleanup({
   agents,
   turns,
   group,
-  herdr,
-  liveAgents,
+  harness,
+  observations,
   force,
 }) {
   const activeAgents = agents.filter(({ status }) => status === "active");
@@ -318,8 +279,8 @@ async function preflightTaskCleanup({
   for (const agent of activeAgents) {
     const classification = await classifyManagedAgent({
       agent,
-      herdr,
-      liveAgents,
+      harness,
+      observation: observations.get(agent.id),
     });
     if (classification.failure) {
       return { failure: { task, ...classification.failure } };
@@ -329,14 +290,14 @@ async function preflightTaskCleanup({
     observedBoundAgent ||= Boolean(observed && !unbound);
     if (
       !force &&
-      ["working", "blocked"].includes(observed?.agent_status)
+      ["working", "blocked"].includes(observed?.state)
     ) {
       return { failure: { task, agent, status: "task_busy" } };
     }
     if (
       observed &&
       !["idle", "done", "working", "blocked"].includes(
-        observed.agent_status,
+        observed.state,
       )
     ) {
       return { failure: { task, agent, status: "uncertain" } };
@@ -352,12 +313,12 @@ async function preflightTaskCleanup({
   }
   const tabId = [...tabIds][0] ?? task.herdr.tab_id;
   if (tabId !== task.herdr.tab_id) {
-    const originalTab = await herdr.tabRecord(task.herdr.tab_id);
+    const originalTab = await harness.topology.observeTab(task.herdr.tab_id);
     if (originalTab) {
       return { failure: { task, status: "recovery_blocked" } };
     }
   }
-  const registeredTab = await herdr.tabRecord(tabId);
+  const registeredTab = await harness.topology.observeTab(tabId);
   if (observedBoundAgent && !registeredTab) {
     return { failure: { task, status: "agent_lost" } };
   }
@@ -382,13 +343,13 @@ async function preflightTaskCleanup({
 async function executeTaskCleanup({
   registryDirectory,
   plan,
-  herdr,
+  harness,
   now,
 }) {
   if (plan.registered) {
-    await herdr.closeTab(plan.tabId);
+    await harness.topology.closeTaskTab(plan.tabId);
   }
-  if (await herdr.tabRecord(plan.tabId)) return false;
+  if (await harness.topology.observeTab(plan.tabId)) return false;
   await finalizeTaskCleanup({ registryDirectory, plan, now });
   return true;
 }
@@ -405,9 +366,9 @@ async function finalizeTaskCleanup({ registryDirectory, plan, now }) {
   await writeRecord(registryDirectory, "tasks", plan.task);
 }
 
-async function preflightIdleTab({ group, task, herdr }) {
+async function preflightIdleTab({ group, task, harness }) {
   const workspaceId = group.herdr.workspace_id;
-  if (!workspaceId || !(await herdr.workspaceRecord(workspaceId))) {
+  if (!workspaceId || !(await harness.topology.observeWorkspace(workspaceId))) {
     return { failure: { status: "recovery_blocked" } };
   }
   const idleTab = group.herdr.idle_tab;
@@ -416,8 +377,8 @@ async function preflightIdleTab({ group, task, herdr }) {
     return { failure: { status: "recovery_blocked" } };
   }
   const [tab, pane] = await Promise.all([
-    herdr.tabRecord(idleTab.tab_id),
-    herdr.paneRecord(idleTab.root_pane_id),
+    harness.topology.observeTab(idleTab.tab_id),
+    harness.topology.observePane(idleTab.root_pane_id),
   ]);
   if (
     tab?.workspace_id !== workspaceId ||
@@ -428,25 +389,25 @@ async function preflightIdleTab({ group, task, herdr }) {
   return { plan: { create: false } };
 }
 
-async function ensureIdleTab({ registryDirectory, group, task, herdr }) {
+async function ensureIdleTab({ registryDirectory, group, task, harness }) {
   if (group.herdr.idle_tab) return true;
-  const created = await herdr.createTab({
+  const created = await harness.topology.createTaskTab({
     workspaceId: group.herdr.workspace_id,
     cwd: task.cwd,
     label: `${group.label} idle`,
   });
   group.herdr.idle_tab = {
-    tab_id: created.tabId,
-    root_pane_id: created.paneId,
+    tab_id: created.tab_id,
+    root_pane_id: created.root_pane_id,
   };
   await writeRecord(registryDirectory, "groups", group);
   const [tab, pane] = await Promise.all([
-    herdr.tabRecord(created.tabId),
-    herdr.paneRecord(created.paneId),
+    harness.topology.observeTab(created.tab_id),
+    harness.topology.observePane(created.root_pane_id),
   ]);
   return (
     tab?.workspace_id === group.herdr.workspace_id &&
-    pane?.tab_id === created.tabId
+    pane?.tab_id === created.tab_id
   );
 }
 
@@ -480,12 +441,16 @@ export async function closeGroup(groupId, dependencies = {}) {
             return { ...context, task: busyTask, status: "task_busy" };
           }
 
-          const herdr = client(sessionFor(context.group), env, dependencies);
-          await herdr.ensureSession();
+          const harness = client(context, env, dependencies);
+          await harness.ensureRuntime();
           const activeAgents = context.agents.filter(
             ({ status }) => status === "active",
           );
-          const observedAgents = await liveAgentRecords(herdr, activeAgents);
+          const observedAgents = new Map(
+            (await harness.observeAgents(activeAgents)).map(
+              (observation, index) => [activeAgents[index].id, observation],
+            ),
+          );
           const plans = [];
           for (const task of context.tasks.filter(
             ({ status }) => status === "active",
@@ -498,8 +463,10 @@ export async function closeGroup(groupId, dependencies = {}) {
               agents,
               turns: context.turns,
               group: context.group,
-              herdr,
-              liveAgents: observedAgents,
+              harness,
+              observations: new Map(
+                agents.map((agent) => [agent.id, observedAgents.get(agent.id)]),
+              ),
               force,
             });
             if (preflight.failure) {
@@ -510,7 +477,9 @@ export async function closeGroup(groupId, dependencies = {}) {
 
           const workspaceId = context.group.herdr.workspace_id;
           if (!workspaceId) corruptRelationship("group", context.group.id);
-          const registeredWorkspace = await herdr.workspaceRecord(workspaceId);
+          const registeredWorkspace = await harness.topology.observeWorkspace(
+            workspaceId,
+          );
           if (
             !registeredWorkspace &&
             plans.some(({ registered }) => registered)
@@ -523,7 +492,7 @@ export async function closeGroup(groupId, dependencies = {}) {
                 registryDirectory,
                 agents: activeAgents,
                 turns: context.turns,
-                herdr,
+                harness,
                 now,
                 timeoutMs: dependencies.interruptTimeoutMs,
               })
@@ -532,12 +501,14 @@ export async function closeGroup(groupId, dependencies = {}) {
             return { ...context, ...interruption.failure };
           }
 
-          if (registeredWorkspace) await herdr.closeWorkspace(workspaceId);
-          if (await herdr.workspaceRecord(workspaceId)) {
+          if (registeredWorkspace) {
+            await harness.topology.closeGroupWorkspace(workspaceId);
+          }
+          if (await harness.topology.observeWorkspace(workspaceId)) {
             return { ...context, status: "uncertain" };
           }
           for (const plan of plans) {
-            if (await herdr.tabRecord(plan.tabId)) {
+            if (await harness.topology.observeTab(plan.tabId)) {
               return { ...context, task: plan.task, status: "uncertain" };
             }
           }
@@ -571,13 +542,13 @@ export async function retireAgent(agentId, dependencies = {}) {
       if (context.agent.status !== "active") {
         return { ...context, status: "retired" };
       }
-      const herdr = client(sessionFor(context.group), env, dependencies);
-      await herdr.ensureSession();
-      const observedAgents = await liveAgentRecords(herdr, [context.agent]);
+      const harness = client(context, env, dependencies);
+      await harness.ensureRuntime();
+      const [observation] = await harness.observeAgents([context.agent]);
       const classification = await classifyManagedAgent({
         agent: context.agent,
-        herdr,
-        liveAgents: observedAgents,
+        harness,
+        observation,
       });
       if (classification.failure) {
         return { ...context, status: classification.failure.status };
@@ -590,13 +561,13 @@ export async function retireAgent(agentId, dependencies = {}) {
           await writeRecord(registryDirectory, "tasks", context.task);
         }
         context.agent.herdr.pane_id = paneId;
-        await herdr.closePane(paneId);
-        if (await herdr.paneRecord(paneId)) {
+        await harness.topology.closePane(paneId);
+        if (await harness.topology.observePane(paneId)) {
           return { ...context, status: "uncertain" };
         }
       } else if (pane) {
-        await herdr.closePane(paneId);
-        if (await herdr.paneRecord(paneId)) {
+        await harness.topology.closePane(paneId);
+        if (await harness.topology.observePane(paneId)) {
           return { ...context, status: "uncertain" };
         }
       }
@@ -645,19 +616,28 @@ export async function closeTask(taskId, dependencies = {}) {
           if (!force && workingTurnsFor(context.agents, turns).length) {
             return { ...context, status: "task_busy" };
           }
-          const herdr = client(sessionFor(context.group), env, dependencies);
-          await herdr.ensureSession();
+          const harness = client(context, env, dependencies);
+          await harness.ensureRuntime();
           const activeAgents = context.agents.filter(
             ({ status }) => status === "active",
           );
-          const observedAgents = await liveAgentRecords(herdr, activeAgents);
+          const observedAgents = new Map(
+            (await harness.observeAgents(activeAgents)).map(
+              (observation, index) => [activeAgents[index].id, observation],
+            ),
+          );
           const preflight = await preflightTaskCleanup({
             task: context.task,
             agents: context.agents,
             turns,
             group: context.group,
-            herdr,
-            liveAgents: observedAgents,
+            harness,
+            observations: new Map(
+              context.agents.map((agent) => [
+                agent.id,
+                observedAgents.get(agent.id),
+              ]),
+            ),
             force,
           });
           if (preflight.failure) {
@@ -673,7 +653,7 @@ export async function closeTask(taskId, dependencies = {}) {
             ? await preflightIdleTab({
                 group: context.group,
                 task: context.task,
-                herdr,
+                harness,
               })
             : null;
           if (idlePreflight?.failure) {
@@ -685,7 +665,7 @@ export async function closeTask(taskId, dependencies = {}) {
                 registryDirectory,
                 agents: plan.agents,
                 turns: plan.workingTurns,
-                herdr,
+                harness,
                 now,
                 timeoutMs: dependencies.interruptTimeoutMs,
               })
@@ -700,7 +680,7 @@ export async function closeTask(taskId, dependencies = {}) {
               registryDirectory,
               group: context.group,
               task: context.task,
-              herdr,
+              harness,
             }))
           ) {
             return { ...context, status: "uncertain" };
@@ -709,7 +689,7 @@ export async function closeTask(taskId, dependencies = {}) {
             !(await executeTaskCleanup({
               registryDirectory,
               plan,
-              herdr,
+              harness,
               now,
             }))
           ) {

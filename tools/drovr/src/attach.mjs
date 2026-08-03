@@ -1,6 +1,6 @@
 import { loadConfiguration } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
-import { HerdrClient } from "./herdr.mjs";
+import { createSemanticHarness } from "./harness-interface.mjs";
 import { readRecords, stateDirectory } from "./registry.mjs";
 
 export async function attach(
@@ -18,6 +18,11 @@ export async function attach(
       outcome: "invalid_arguments",
     });
   }
-  const herdr = new HerdrClient({ session: configuration.session, env });
-  return herdr.attach(agent.herdr.name, { takeover });
+  const harness = createSemanticHarness({
+    env,
+    session: configuration.session,
+    harness: agent.launch.harness,
+  });
+  await harness.ensureRuntime();
+  return harness.attach({ agent, takeover });
 }

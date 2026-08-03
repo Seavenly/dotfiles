@@ -7,25 +7,21 @@ export async function prepareTurn({
   registryDirectory,
   agent,
   task,
-  adapter,
+  harness,
   prompt,
   now,
   inventoryBeforeDelivery = false,
-  herdrStateChangeSeq,
+  transitionToken,
   caller,
   inputKey,
   launchBinding,
 }) {
-  let cursor;
-  if (agent.native_session && !inventoryBeforeDelivery) {
-    const transcriptPath = await adapter.locate(
-      adapter.root,
-      agent.native_session,
-    );
-    cursor = await adapter.captureCursor(transcriptPath);
-  } else {
-    cursor = await adapter.captureInventory(adapter.root, task.cwd, now());
-  }
+  const prepared = await harness.prepareTurn({
+    agent,
+    task,
+    now,
+    inventoryBeforeDelivery,
+  });
   const submittedAt = now();
   const turn = createTurnRecord({
     id: randomUUID(),
@@ -33,8 +29,8 @@ export async function prepareTurn({
     taskId: task.id,
     prompt,
     submittedAt,
-    transcriptCursor: cursor,
-    herdrStateChangeSeq,
+    transcriptCursor: prepared.cursor,
+    transitionToken,
     caller,
     inputKey,
     launchBinding,
@@ -48,13 +44,11 @@ export async function deliverTurn({
   agent,
   turn,
   prompt,
-  herdr,
+  harness,
   now,
 }) {
   try {
-    const result = await herdr.prompt(agent.herdr.name, prompt, {
-      harness: agent.launch.harness,
-    });
+    const result = await harness.deliverTurn({ agent, prompt });
     const input = turn.inputs.at(-1);
     if (input?.delivery?.status === "recorded") {
       input.delivery = { status: "submitted", accepted_at: now() };

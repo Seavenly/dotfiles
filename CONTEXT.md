@@ -279,6 +279,14 @@ _Avoid_: Worker attempt, pane
 One request to a managed agent, including any ordered steering inputs and the final settled assistant result.
 _Avoid_: Native harness turn, prompt
 
+**Semantic harness**:
+The internal Drovr interface that delivers and observes logical turns, ordered input, identity, interruption, staged input, and recovery evidence without exposing Herdr commands, native prompt keys, polling, or transcript parsing to callers.
+_Avoid_: Herdr client wrapper, harness controller
+
+**Identity evidence**:
+Typed proof that the expected managed agent, pane, native session, staged snapshot, or ownership relationship is present, absent, changed, or uncertain.
+_Avoid_: Boolean health check, latest observation
+
 **Tracker issue**:
 An externally visible GitHub or Jira commitment that owns intent and acceptance criteria.
 _Avoid_: Kanban task, card

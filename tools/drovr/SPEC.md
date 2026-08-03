@@ -9,6 +9,11 @@ harness launch, transcript parsing, and lifecycle reconciliation.
 
 This document is the implementation authority for the initial Drovr release.
 
+The internal semantic boundary for the implementation is recorded in
+[HARNESS-INTERFACE.md](HARNESS-INTERFACE.md). It defines the typed evidence,
+identity preservation, adapter split, and migration invariants that keep the
+public Drovr contract independent of Herdr command and transcript mechanics.
+
 ## Objective
 
 An orchestration agent running in any harness can use Drovr to:

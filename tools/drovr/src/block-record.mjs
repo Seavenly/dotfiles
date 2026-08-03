@@ -5,9 +5,11 @@ export function createBlockRecord({
   taskId,
   harness,
   excerpt,
+  transitionToken,
   herdrStateChangeSeq,
   createdAt,
 }) {
+  const recordedTransitionToken = transitionToken ?? herdrStateChangeSeq;
   return {
     schema: "drovr.block/v1",
     id,
@@ -18,11 +20,15 @@ export function createBlockRecord({
     status: "open",
     excerpt,
     attach: { command: `drovr attach ${agentId}` },
-    ...(Number.isSafeInteger(herdrStateChangeSeq)
-      ? { herdr: { state_change_seq: herdrStateChangeSeq } }
+    ...(Number.isSafeInteger(recordedTransitionToken)
+      ? { herdr: { state_change_seq: recordedTransitionToken } }
       : {}),
     created_at: createdAt,
   };
+}
+
+export function blockTransitionToken(block) {
+  return block?.herdr?.state_change_seq;
 }
 
 export function acknowledgeBlockRecord(block, { acknowledgedAt }) {
@@ -45,25 +51,26 @@ export function blockAwaitsWorkingObservation(block) {
 
 export function blockRepresentsActiveTransition(
   block,
-  { herdrStateChangeSeq } = {},
+  { transitionToken, herdrStateChangeSeq } = {},
 ) {
   if (!(block?.status === "open" || blockAwaitsWorkingObservation(block))) {
     return false;
   }
-  const recordedStateChangeSeq = block.herdr?.state_change_seq;
+  const recordedStateChangeSeq = blockTransitionToken(block);
+  const observedTransitionToken = transitionToken ?? herdrStateChangeSeq;
   return (
     !Number.isSafeInteger(recordedStateChangeSeq) ||
-    !Number.isSafeInteger(herdrStateChangeSeq) ||
-    herdrStateChangeSeq <= recordedStateChangeSeq
+    !Number.isSafeInteger(observedTransitionToken) ||
+    observedTransitionToken <= recordedStateChangeSeq
   );
 }
 
-export function herdrStateChangedSinceBlock(block, herdrStateChangeSeq) {
-  const recordedStateChangeSeq = block?.herdr?.state_change_seq;
+export function herdrStateChangedSinceBlock(block, transitionToken) {
+  const recordedStateChangeSeq = blockTransitionToken(block);
   return (
     Number.isSafeInteger(recordedStateChangeSeq) &&
-    Number.isSafeInteger(herdrStateChangeSeq) &&
-    herdrStateChangeSeq > recordedStateChangeSeq
+    Number.isSafeInteger(transitionToken) &&
+    transitionToken > recordedStateChangeSeq
   );
 }
 

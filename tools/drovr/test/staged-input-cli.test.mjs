@@ -117,6 +117,7 @@ esac
     CLAUDE_CONFIG_DIR: claudeHome,
     XDG_STATE_HOME: join(scratch, "state"),
     DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+    DROVR_STAGED_INPUT_STABILITY_INTERVAL_MS: "0",
   };
   const registryDirectory = stateDirectory(env);
   const group = {

@@ -1,5 +1,5 @@
 import { DrovrError } from "./errors.mjs";
-import { HerdrClient } from "./herdr.mjs";
+import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
   stateDirectory,
@@ -17,15 +17,16 @@ export async function inspectAgentStagedInput(agentId, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
   const context = await stagedInputContext(registryDirectory, agentId);
-  const herdr = client(context, env, dependencies);
-  if (!(await herdr.sessionRunning())) {
+  const harness = client(context, env, dependencies);
+  const availability = await harness.observeAgent(context.agent);
+  if (availability.evidence === "absent") {
     throw new DrovrError(
       `Herdr session ${context.group.herdr.session} is not running`,
       { code: 0, outcome: "session_missing" },
     );
   }
-  const observed = await settledOwnedAgent(context, herdr);
-  return inspectContext(registryDirectory, context, herdr, observed);
+  const observed = await settledOwnedAgent(context, harness);
+  return inspectContext(registryDirectory, context, harness, observed);
 }
 
 export async function stageUnknownAgentInput(
@@ -36,8 +37,8 @@ export async function stageUnknownAgentInput(
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
   const initial = await stagedInputContext(registryDirectory, agentId);
-  const herdr = client(initial, env, dependencies);
-  if (!(await herdr.sessionRunning())) {
+  const harness = client(initial, env, dependencies);
+  if ((await harness.observeAgent(initial.agent)).evidence === "absent") {
     throw new DrovrError(
       `Herdr session ${initial.group.herdr.session} is not running`,
       { code: 0, outcome: "session_missing" },
@@ -52,11 +53,11 @@ export async function stageUnknownAgentInput(
         `agent-key:${initial.task.id}:${initial.agent.key}`,
         async () => {
           const context = await stagedInputContext(registryDirectory, agentId);
-          const observed = await settledOwnedAgent(context, herdr);
+          const observed = await settledOwnedAgent(context, harness);
           const before = await inspectContext(
             registryDirectory,
             context,
-            herdr,
+            harness,
             observed,
           );
           if (before.status !== "ready") {
@@ -75,29 +76,21 @@ export async function stageUnknownAgentInput(
               { code: 0, outcome: "task_busy" },
             );
           }
-          await herdr.sendPaneText(context.agent.herdr.pane_id, text);
-          for (let attempt = 0; attempt < 100; attempt += 1) {
-            const after = await settledOwnedAgent(context, herdr);
-            const inspected = await inspectContext(
-              registryDirectory,
-              context,
-              herdr,
-              after,
-            );
-            if (inspected.status === "staged_input") {
-              if (
-                inspected.staged_input.ownership === "unknown" &&
-                inspected.staged_input.display_text === text
-              ) {
-                return inspected;
-              }
-              throw blocked("staged input differs from the authorized text");
-            }
-            await herdr.delay(25);
+          const staged = await harness.stageUnknownInput({
+            agent: context.agent,
+            text,
+          });
+          if (
+            staged.outcome !== "staged_input" ||
+            staged.snapshot?.display_text !== text
+          ) {
+            throw blocked("staged input differs from the authorized text");
           }
-          throw new DrovrError(
-            "Herdr did not expose the exact staged unknown input",
-            { code: 4, outcome: "adapter_failure" },
+          return inspectContext(
+            registryDirectory,
+            context,
+            harness,
+            staged,
           );
         },
       ),
@@ -113,8 +106,8 @@ export async function recoverAgentStagedInput(
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await stagedInputContext(registryDirectory, agentId);
-  const herdr = client(initial, env, dependencies);
-  await herdr.ensureSession();
+  const harness = client(initial, env, dependencies);
+  await harness.ensureRuntime();
   return withResourceLock(
     registryDirectory,
     taskLifecycleLockKey(initial.task.id),
@@ -124,11 +117,11 @@ export async function recoverAgentStagedInput(
         `agent-key:${initial.task.id}:${initial.agent.key}`,
         async () => {
           const context = await stagedInputContext(registryDirectory, agentId);
-          const observed = await settledOwnedAgent(context, herdr);
+          const observed = await settledOwnedAgent(context, harness);
           const inspected = await inspectContext(
             registryDirectory,
             context,
-            herdr,
+            harness,
             observed,
           );
           if (
@@ -163,12 +156,21 @@ export async function recoverAgentStagedInput(
           if (!clearsUnknown && (!turn || turn.status !== "uncertain")) {
             throw blocked("the owning logical turn is no longer recoverable");
           }
-          await herdr.recoverStagedInput(context.agent.herdr.name, {
+          const recovered = await harness.recoverStagedInput({
+            agent: context.agent,
             action: clearsUnknown ? "clear" : action,
-            harness: "claude",
             token: inspected.staged_input.snapshot_token,
-            nativeSession: context.agent.native_session,
           });
+          if (!["submitted", "cleared"].includes(recovered.outcome)) {
+            throw new DrovrError(
+              recovered.error ?? "staged-input recovery was not confirmed",
+              {
+                code: 0,
+                outcome: recovered.outcome ?? "uncertain",
+                details: recovered,
+              },
+            );
+          }
           if (turn) {
             turn.staged_input.recovery = {
               action: action === "submit" ? "submitted" : "cleared",
@@ -187,10 +189,11 @@ export async function recoverAgentStagedInput(
   );
 }
 
-async function inspectContext(registryDirectory, context, herdr, observed) {
-  const staged = await herdr.inspectStagedInput(context.agent.herdr.name, {
-    harness: "claude",
-  });
+async function inspectContext(registryDirectory, context, harness, observed) {
+  const stagedResult = observed?.snapshot
+    ? observed
+    : await harness.inspectStagedInput({ agent: context.agent });
+  const staged = stagedResult.snapshot;
   if (!staged) return { ...context, status: "ready", observed };
   const turns = await readRecords(registryDirectory, "turns");
   const ownedTurn = turns.find(
@@ -255,33 +258,25 @@ async function stagedInputContext(registryDirectory, agentId) {
   return context;
 }
 
-async function settledOwnedAgent(context, herdr) {
-  const observed = await herdr.agentRecord(context.agent.herdr.name);
-  if (!observed) throw blocked("managed Claude agent is not present");
-  if (
-    observed.agent_session?.value !== context.agent.native_session ||
-    (observed.pane_id && observed.pane_id !== context.agent.herdr.pane_id)
-  ) {
+async function settledOwnedAgent(context, harness) {
+  const observation = await harness.observeAgent(context.agent);
+  if (observation.evidence === "absent") {
+    throw blocked("managed Claude agent is not present");
+  }
+  if (observation.evidence !== "present") {
     throw blocked("managed Claude identity does not match the registry");
   }
-  if (!["idle", "done"].includes(observed.agent_status)) {
+  if (!["idle", "done"].includes(observation.state)) {
     throw new DrovrError("managed Claude agent is not settled", {
       code: 0,
       outcome: "task_busy",
     });
   }
-  return observed;
+  return observation;
 }
 
 function client(context, env, dependencies) {
-  return (
-    dependencies.herdr ??
-    new HerdrClient({
-      session: context.group.herdr.session,
-      env,
-      run: dependencies.run,
-    })
-  );
+  return semanticHarnessFor(context, { ...dependencies, env });
 }
 
 function blocked(message) {

@@ -7,6 +7,11 @@ registry discovery, status observation, cancellation, retirement, task and
 group cleanup, Herdr restart reconciliation, and conservative native-session
 recovery.
 
+Turn, lifecycle, identity, and staged-input callers use the internal semantic
+harness boundary described in [HARNESS-INTERFACE.md](HARNESS-INTERFACE.md).
+It keeps Herdr topology, native prompt behavior, transcript correlation, and
+temporal recovery evidence inside production and replay adapters.
+
 The versioned known-incident and qualification contract lives under
 [`qualification/`](qualification/README.md). Validate its scenario completeness
 and runner evidence shapes with:
