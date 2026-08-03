@@ -7,6 +7,17 @@ import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 import { execute } from "./process.mjs";
 import { createStagedInputReceipt } from "./staged-input-receipt.mjs";
+import {
+  createTraceJournal,
+  redactPaneSnapshot,
+  traceOperation,
+  traceRequest,
+} from "./trace.mjs";
+
+// A status-only fast-completion escape is safe only for short literal input;
+// longer single-line prompts must expose either their literal text or an
+// attachment token before Drovr sends the submit key.
+const CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH = 256;
 
 function parseJson(output, operation) {
   try {
@@ -29,20 +40,36 @@ export class HerdrClient {
     env = process.env,
     delay = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    trace,
   } = {}) {
     this.session = session;
     this.run = run;
     this.env = withoutCallerHerdrContext(env);
-    this.delay = delay;
+    this.trace = trace ??
+      (this.env.DROVR_TRACE_JOURNAL
+        ? createTraceJournal(this.env.DROVR_TRACE_JOURNAL)
+        : null);
+    this.delay = async (milliseconds) => {
+      await this.recordTrace({
+        kind: "delay",
+        operation: "clock.delay",
+        payload: { duration_ms: milliseconds },
+      });
+      return delay(milliseconds);
+    };
   }
 
   async sessionCommand(args, options = {}) {
+    const operation = traceOperation(args);
     try {
-      return await this.run("herdr", ["--session", this.session, ...args], {
+      const output = await this.run("herdr", ["--session", this.session, ...args], {
         env: this.env,
         ...options,
       });
+      await this.recordCommand(operation, output, args);
+      return output;
     } catch (error) {
+      await this.recordError(operation, error, args);
       const wrapped = new DrovrError(
         `Herdr ${args.slice(0, 2).join(" ")} failed: ${error.message}`,
         {
@@ -52,6 +79,72 @@ export class HerdrClient {
       );
       wrapped.adapterFailure = error;
       throw wrapped;
+    }
+  }
+
+  async recordCommand(operation, output, args = []) {
+    if (!this.trace) return;
+    if (operation.startsWith("agent.read.")) {
+      await this.recordTrace({
+        kind: "pane_snapshot",
+        operation,
+        payload: {
+          request: traceRequest(args),
+          text: redactPaneSnapshot(output),
+        },
+      });
+      return;
+    }
+    let envelope;
+    try {
+      envelope = JSON.parse(output);
+    } catch {
+      envelope = { raw: output };
+    }
+    const kind = ["agent.list", "agent.wait"].includes(operation)
+      ? "agent_observation"
+      : "command_result";
+    await this.recordTrace({
+      kind,
+      operation,
+      payload: { request: traceRequest(args), envelope },
+    });
+  }
+
+  async recordError(operation, error, args = []) {
+    const capturedError = {
+      code: error.code ?? "adapter_failure",
+      outcome: error.outcome ?? "adapter_failure",
+      message: error.message,
+    };
+    if (typeof error.stdout === "string") capturedError.stdout = error.stdout;
+    if (typeof error.stderr === "string") capturedError.stderr = error.stderr;
+    if (typeof error.stderr === "string") {
+      try {
+        const envelope = JSON.parse(error.stderr);
+        if (envelope && typeof envelope === "object" && !Array.isArray(envelope)) {
+          capturedError.envelope = envelope;
+        }
+      } catch {
+        // Preserve the sanitized stderr text when Herdr did not return JSON.
+      }
+    }
+    await this.recordTrace({
+      kind: "error",
+      operation,
+      payload: {
+        error: capturedError,
+        request: traceRequest(args),
+      },
+    });
+  }
+
+  async recordTrace(event) {
+    try {
+      await this.trace?.record(event);
+    } catch {
+      // Trace capture is observational. A recorder failure must not turn a
+      // successful native command into a Herdr failure or poison later calls.
     }
   }
 
@@ -74,7 +167,7 @@ export class HerdrClient {
     });
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (await this.sessionRunning()) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await this.delay(25);
     }
     throw new DrovrError(`Herdr session ${this.session} did not start`, {
       code: 4,
@@ -89,7 +182,9 @@ export class HerdrClient {
         env: this.env,
         timeout: HERDR_OBSERVATION_TIMEOUT_MS,
       });
+      await this.recordCommand("session.list", output, ["session", "list", "--json"]);
     } catch (error) {
+      await this.recordError("session.list", error, ["session", "list", "--json"]);
       throw new DrovrError(`Herdr session list failed: ${error.message}`, {
         code: 4,
         outcome: "adapter_failure",
@@ -232,7 +327,7 @@ export class HerdrClient {
       } catch (error) {
         if (!isAgentPaneBusy(error)) throw error;
         lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await this.delay(50);
       }
     }
     throw lastError;
@@ -262,7 +357,7 @@ export class HerdrClient {
         ]);
       } catch (error) {
         if (!isPaneNotFound(error)) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await this.delay(50);
         continue;
       }
       const result = parseJson(output, "pane process-info").result
@@ -273,7 +368,7 @@ export class HerdrClient {
       ) {
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.delay(50);
     }
     throw new DrovrError(`Herdr pane ${paneId} did not reach a shell prompt`, {
       code: 4,
@@ -407,7 +502,10 @@ export class HerdrClient {
     }
   }
 
-  async agentExcerpt(name) {
+  async agentExcerpt(name, { nativeSession } = {}) {
+    if (typeof nativeSession === "string") {
+      assertNativeSession(name, await this.agentRecord(name), nativeSession);
+    }
     return this.observationCommand([
       "agent",
       "read",
@@ -450,6 +548,9 @@ export class HerdrClient {
   async prompt(name, prompt, options = {}) {
     const observedBeforeDelivery =
       options.observedBeforeDelivery ?? (await this.agentRecord(name));
+    if (typeof options.nativeSession === "string") {
+      assertNativeSession(name, observedBeforeDelivery, options.nativeSession);
+    }
     const harness = options.harness ?? observedBeforeDelivery?.agent;
     const guardsClaudeStagedSubmission =
       harness === "claude" &&
@@ -482,6 +583,7 @@ export class HerdrClient {
     // for progress and completion.
     let attachmentReady = false;
     let literalPromptReady = false;
+    let noAttachmentPolls = 0;
     let stagedAfterDelivery;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -507,14 +609,24 @@ export class HerdrClient {
           stagedAfterDelivery = snapshot;
         }
       }
-      if (attachmentReady) break;
+      if (attachmentReady || literalPromptReady) break;
+      noAttachmentPolls += 1;
+      if (
+        noAttachmentPolls >= 2 &&
+        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
+        !prompt.includes("\n") &&
+        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
+      ) {
+        return result;
+      }
       await this.delay(25);
     }
     if (!attachmentReady && !literalPromptReady) {
-      // A short prompt can complete before the first post-delivery poll. A new
-      // done observation proves that the native agent transitioned, while the
-      // exact transcript still remains completion authority.
+      // A short prompt can complete before the first post-delivery poll. A
+      // new done observation proves that the native agent transitioned, while
+      // the exact transcript remains completion authority.
       if (
+        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
         !prompt.includes("\n") &&
         promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
       ) {
@@ -528,7 +640,10 @@ export class HerdrClient {
     await this.sessionCommand(["agent", "send-keys", name, "enter"]);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await this.agentRecord(name);
-      if (promptSubmissionObserved(observed)) {
+      if (
+        promptSubmissionObserved(observed) ||
+        promptCompletionObserved(observedBeforeDelivery, observed)
+      ) {
         return result;
       }
       await this.delay(25);
@@ -681,6 +796,22 @@ function withoutCallerHerdrContext(env) {
 
 function promptSubmissionObserved(observed) {
   return ["working", "blocked"].includes(observed?.agent_status);
+}
+
+function assertNativeSession(name, observed, expected) {
+  if (observed?.agent_session?.value === expected) return;
+  const observedSession = observed?.agent_session?.value;
+  const identityObserved =
+    typeof observedSession === "string" && observedSession.length > 0;
+  throw new DrovrError(
+    identityObserved
+      ? `Herdr native session changed for ${name}`
+      : `Herdr did not report a native session for ${name}`,
+    {
+      code: 0,
+      outcome: identityObserved ? "recovery_blocked" : "uncertain",
+    },
+  );
 }
 
 function promptCompletionObserved(before, after) {

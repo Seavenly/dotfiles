@@ -21,6 +21,13 @@ import {
   loadQualificationCatalog,
   validateQualificationCatalog,
 } from "./qualification-catalog.mjs";
+import { runTraceFixture } from "./qualification-replay.mjs";
+import { loadTraceFixture } from "./qualification-traces.mjs";
+import {
+  traceFromJournal,
+  traceJournalFailurePath,
+  validateTrace,
+} from "./trace.mjs";
 
 const execFileAsync = promisify(execFileCallback);
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -157,6 +164,11 @@ async function runScenarioPrerequisites({
   const stateHome = join(scratch, "state");
   const runtimeDirectory = join(scratch, "runtime");
   const startedAt = now().toISOString();
+  const traceJournalPath = join(
+    evidenceDirectory,
+    `.${scenario.id}-${startedAt.replaceAll(":", "-")}.journal.jsonl`,
+  );
+  const traceStartedAt = Date.now();
   const deadline = createDeadline(
     scenario.execution.limits?.max_elapsed ?? "30s",
   );
@@ -167,6 +179,8 @@ async function runScenarioPrerequisites({
     DOTFILES_ROOT: REPOSITORY_ROOT,
     XDG_STATE_HOME: stateHome,
     XDG_RUNTIME_DIR: runtimeDirectory,
+    DROVR_TRACE_JOURNAL: traceJournalPath,
+    DROVR_TRACE_STARTED_AT: String(traceStartedAt),
   };
   const invocationStartedAt = now().toISOString();
   const execution = await executeDrovr(drovrCommand, ["doctor"], {
@@ -185,8 +199,13 @@ async function runScenarioPrerequisites({
     scenario.execution.kind === "real_herdr_harness" &&
     !scenarioPrerequisitesReady(scenario, execution.envelope);
   const executor = scenarioExecutors.get(scenario.id);
-  if (!blocked && executor) {
-    return await executor({
+  const effectiveExecutor =
+    executor ??
+    (scenario.execution.kind === "deterministic_trace_replay"
+      ? runDeterministicReplayScenario
+      : null);
+  if (!blocked && effectiveExecutor) {
+    const result = await effectiveExecutor({
       catalog,
       scenario,
       evidenceDirectory,
@@ -203,6 +222,12 @@ async function runScenarioPrerequisites({
       doctorFinishedAt: invocationFinishedAt,
       versions,
       deadline,
+      traceJournalPath,
+    });
+    return await attachCapturedTrace({
+      result,
+      traceJournalPath,
+      scenario,
     });
   }
   const runnerFailure = executionFailure([
@@ -308,9 +333,10 @@ async function runScenarioPrerequisites({
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,
   });
+  await removeTraceArtifacts(traceJournalPath);
   return { id: scenario.id, result: disposition, evidence: evidencePath };
   } catch (error) {
-    return recordScenarioFailure({
+    const failureResult = await recordScenarioFailure({
       catalog,
       scenario,
       evidenceDirectory,
@@ -321,6 +347,8 @@ async function runScenarioPrerequisites({
         DOTFILES_ROOT: REPOSITORY_ROOT,
         XDG_STATE_HOME: stateHome,
         XDG_RUNTIME_DIR: runtimeDirectory,
+        DROVR_TRACE_JOURNAL: traceJournalPath,
+        DROVR_TRACE_STARTED_AT: String(traceStartedAt),
       },
       scratch,
       stateHome,
@@ -330,7 +358,363 @@ async function runScenarioPrerequisites({
       deadline,
       error,
     });
+    return await attachCapturedTrace({
+      result: failureResult,
+      traceJournalPath,
+      scenario,
+    });
   }
+}
+
+async function runDeterministicReplayScenario({
+  catalog,
+  scenario,
+  evidenceDirectory,
+  cwd,
+  now,
+  startedAt,
+  doctorExecution,
+  doctorStartedAt,
+  doctorFinishedAt,
+  versions,
+  stateHome,
+  runtimeDirectory,
+  scratch,
+  deadline,
+}) {
+  const fixture = await loadTraceFixture(scenario.id);
+  const beforeWorkspace = await workspaceFingerprint(cwd);
+  let replayResult;
+  let replayError;
+  let traceValidationError;
+  try {
+    validateTrace(fixture.trace);
+  } catch (error) {
+    traceValidationError = error;
+  }
+  try {
+    replayResult = await runTraceFixture(fixture);
+  } catch (error) {
+    replayError = error;
+  }
+  deadline.completeScenario();
+  const afterWorkspace = await workspaceFingerprint(cwd);
+  const finishedAt = now().toISOString();
+  const callerWorkspaceUnchanged =
+    JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
+  const passed = !replayError && !traceValidationError && callerWorkspaceUnchanged;
+  const invocationRecords = [
+    invocationRecord(
+      ["drovr", "doctor"],
+      doctorExecution,
+      doctorStartedAt,
+      doctorFinishedAt,
+    ),
+  ];
+  const ownedResources = [
+    { kind: "state_root", identity: stateHome },
+    { kind: "runtime_root", identity: runtimeDirectory },
+  ];
+  const evidence = {
+    schema: "drovr.qualification-evidence/v1",
+    catalog_version: catalog.version,
+    catalog_digest: digestCanonical(catalog),
+    scenario_id: scenario.id,
+    execution_kind: scenario.execution.kind,
+    versions,
+    environment: {
+      os: platform(),
+      architecture: arch(),
+      isolated_state_root: stateHome,
+      isolated_runtime_root: runtimeDirectory,
+      cwd: resolve(cwd),
+      managed_session_identity: replayNativeSession(fixture.trace),
+    },
+    limits: {
+      declared: scenario.execution.limits ?? {
+        max_turns: 0,
+        max_retries: 0,
+        max_elapsed: "0s",
+      },
+      measured: {
+        turns: fixture.steps.filter(({ action }) => action === "prompt").length,
+        retries: 0,
+        elapsed_ms: deadline.scenarioElapsedMs(),
+      },
+      cleanup: deadline.cleanupMeasurement(),
+    },
+    live_run_justification: null,
+    configuration_deviation_justification: null,
+    invocations: invocationRecords,
+    observations: [
+      {
+        type: "trace_provenance",
+        provenance: fixture.trace.provenance,
+      },
+      {
+        type: "deterministic_replay",
+        fixture_id: fixture.id,
+        declared_safety_invariants: scenario.safety_invariants,
+        step_assertions: replayResult?.assertions ?? [],
+        result: replayResult ?? {
+          status: "fail",
+          error: replayError?.message ?? "replay did not produce a result",
+        },
+      },
+    ],
+    assertions: [
+      {
+        kind: "replay",
+        id: "versioned_trace_schema",
+        disposition: traceValidationError ? "fail" : "pass",
+        detail: traceValidationError
+          ? `The fixture trace failed validation: ${traceValidationError.message}`
+          : "The versioned fixture trace passed redaction and ordering validation.",
+      },
+      {
+        kind: "replay",
+        id: "semantic_harness_replay",
+        disposition: passed ? "pass" : "fail",
+        detail: replayError?.message ?? "All fixture steps passed through semantic Drovr seams.",
+      },
+      {
+        kind: "replay",
+        id: "replayed_fixture_steps",
+        disposition: passed ? "pass" : "fail",
+        detail: replayError?.message ??
+          `Passed ${replayResult?.assertions?.length ?? 0} ordered fixture steps.`,
+      },
+      {
+        kind: "invariant",
+        id: "caller_owned_workspace_preservation",
+        disposition: callerWorkspaceUnchanged ? "pass" : "fail",
+        detail: "The caller workspace fingerprint was unchanged before and after replay.",
+      },
+    ],
+    result: {
+      disposition: passed ? "pass" : "fail",
+      reason: {
+        code: passed ? "scenario_completed" : "replay_assertion_failed",
+        message: replayError?.message ??
+          (callerWorkspaceUnchanged
+            ? "The deterministic trace replay completed and preserved the caller workspace."
+            : "The deterministic replay changed the caller workspace fingerprint."),
+      },
+    },
+    trace: fixture.trace,
+    cleanup_receipt: {
+      schema: "drovr.qualification-cleanup-receipt/v1",
+      scenario_id: scenario.id,
+      owned_resources: ownedResources,
+      resource_dispositions: ownedResources.map((resource) => ({
+        ...resource,
+        disposition: resourceDisposition(resource.kind, true),
+      })),
+      prohibited_mutations_observed: prohibitedMutationObservations(
+        scenario.prohibited_mutations,
+        {
+          basis: [
+            "immutable versioned trace",
+            "semantic replay operation ordering",
+            "caller workspace fingerprint",
+          ],
+          proofs: replayResult?.mutation_proofs ?? [],
+        },
+      ),
+      caller_owned_workspace: {
+        path: resolve(cwd),
+        before: beforeWorkspace,
+        after: afterWorkspace,
+      },
+      unresolved_obligations: [],
+      completed_at: finishedAt,
+    },
+    started_at: startedAt,
+    finished_at: finishedAt,
+  };
+  await rm(scratch, { recursive: true, force: true });
+  const evidencePath = await writeEvidence(
+    evidenceDirectory,
+    scenario.id,
+    startedAt,
+    evidence,
+  );
+  return {
+    id: scenario.id,
+    result: passed ? "pass" : "fail",
+    evidence: evidencePath,
+  };
+}
+
+async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
+  if (scenario.execution.kind !== "real_herdr_harness") {
+    await removeTraceArtifacts(traceJournalPath);
+    return result;
+  }
+  const captureRequired = result.result === "pass";
+  const captureFailurePath = traceJournalFailurePath(traceJournalPath);
+  const captureFailureRecorded = await fileExists(captureFailurePath);
+  try {
+    const evidence = JSON.parse(await readFile(result.evidence, "utf8"));
+    const versions = evidence.versions ?? {};
+    let trace;
+    try {
+      trace = await traceFromJournal(traceJournalPath, {
+        scenarioId: scenario.id,
+        provenance: {
+          drovr: versions.drovr ?? "unavailable",
+          herdr: versions.herdr ?? "unavailable",
+          claude: versions.claude ?? "unavailable",
+          codex: versions.codex ?? "unavailable",
+        },
+      });
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        const failedEvidence = traceCaptureFailure(
+          evidence,
+          "trace_capture_invalid",
+          "A live qualification produced a trace journal that failed validation.",
+        );
+        validateQualificationEvidence(failedEvidence);
+        await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+          mode: 0o600,
+        });
+        return { ...result, result: "fail" };
+      }
+      if (captureFailureRecorded) {
+        const failedEvidence = traceCaptureFailure(
+          evidence,
+          "trace_capture_incomplete",
+          "Trace capture failed before a complete journal could be persisted.",
+        );
+        validateQualificationEvidence(failedEvidence);
+        await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+          mode: 0o600,
+        });
+        return { ...result, result: "fail" };
+      }
+      if (!captureRequired) return result;
+      const failedEvidence = traceCaptureFailure(
+        evidence,
+        "trace_capture_missing",
+        "A successful live qualification produced no sanitized trace journal.",
+      );
+      validateQualificationEvidence(failedEvidence);
+      await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      return { ...result, result: "fail" };
+    }
+    if (captureFailureRecorded) {
+      const failedEvidence = traceCaptureFailure(
+        evidence,
+        "trace_capture_incomplete",
+        "Trace capture reported a failure while persisting the live journal.",
+        trace,
+      );
+      validateQualificationEvidence(failedEvidence);
+      await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      return { ...result, result: "fail" };
+    }
+    const traceComplete = hasCompleteLiveTrace(trace);
+    if (captureRequired && !traceComplete) {
+      const failedEvidence = traceCaptureFailure(
+        evidence,
+        "trace_capture_incomplete",
+        trace.events.length === 0
+          ? "A successful live qualification produced an empty trace."
+          : !hasCompleteTraceProvenance(trace.provenance)
+            ? "A successful live qualification lacked exact tool provenance."
+            : "A successful live qualification lacked request-bound semantic events.",
+        trace,
+      );
+      validateQualificationEvidence(failedEvidence);
+      await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      return { ...result, result: "fail" };
+    }
+    evidence.trace = trace;
+    validateQualificationEvidence(evidence);
+    await writeFile(result.evidence, `${JSON.stringify(evidence, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    return result;
+  } finally {
+    await removeTraceArtifacts(traceJournalPath);
+  }
+}
+
+async function removeTraceArtifacts(traceJournalPath) {
+  await rm(traceJournalPath, { force: true });
+  await rm(traceJournalFailurePath(traceJournalPath), { force: true });
+  await rm(`${traceJournalPath}.lock`, { recursive: true, force: true });
+}
+
+async function fileExists(path) {
+  try {
+    await readFile(path, "utf8");
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function hasCompleteTraceProvenance(provenance) {
+  return ["drovr", "herdr", "claude", "codex"].every((key) => {
+    const value = provenance?.[key];
+    return (
+      typeof value === "string" &&
+      value.length > 0 &&
+      !/^(?:unavailable|not_applicable|drovr\.command\/v1)/u.test(value)
+    );
+  });
+}
+
+function hasCompleteLiveTrace(trace) {
+  if (!hasCompleteTraceProvenance(trace.provenance)) return false;
+  if (trace.events.some(({ operation }) => operation === "trace.capture")) {
+    return false;
+  }
+  const semanticEvents = trace.events.filter(({ kind }) =>
+    ["command_result", "agent_observation", "pane_snapshot", "error"].includes(kind),
+  );
+  return (
+    semanticEvents.length > 0 &&
+    semanticEvents.every(({ payload }) => payload.request !== undefined)
+  );
+}
+
+function traceCaptureFailure(evidence, code, message, trace) {
+  if (trace !== undefined) evidence.trace = trace;
+  evidence.assertions = [
+    ...(evidence.assertions ?? []),
+    {
+      kind: "capture",
+      id: "trace_capture",
+      disposition: "fail",
+      detail: message,
+    },
+  ];
+  evidence.result = {
+    disposition: "fail",
+    reason: { code, message },
+  };
+  return evidence;
+}
+
+function replayNativeSession(trace) {
+  for (const event of trace.events) {
+    const agents = event.payload?.envelope?.result?.agents;
+    const nativeSession = agents?.find(
+      ({ agent_session }) => typeof agent_session?.value === "string",
+    )?.agent_session?.value;
+    if (nativeSession) return nativeSession;
+  }
+  return null;
 }
 
 async function runUnknownStagedInputScenario({
@@ -2165,6 +2549,7 @@ function validateQualificationEvidence(evidence) {
   ) {
     throw new Error("qualification evidence does not satisfy its versioned contract");
   }
+  if (evidence.trace !== undefined) validateTrace(evidence.trace);
   if (
     !Array.isArray(evidence.invocations) ||
     evidence.invocations.some(
@@ -2524,13 +2909,28 @@ export function resourceDisposition(kind, cleanupComplete) {
 
 export function prohibitedMutationObservations(
   descriptions,
-  { fullyObserved = false, unchanged = false, basis = [] } = {},
+  { fullyObserved = false, unchanged = false, proofs = [], basis = [] } = {},
 ) {
-  return descriptions.map((description) => ({
-    description,
-    unchanged: fullyObserved ? Boolean(unchanged) : "not_observed",
-    basis,
-  }));
+  return descriptions.map((description) => {
+    const matchingProofs = proofs.filter(
+      (proof) => proof.description === description,
+    );
+    const observed = fullyObserved || matchingProofs.length > 0;
+    return {
+      description,
+      unchanged: observed
+        ? matchingProofs.length > 0
+          ? matchingProofs.every(({ unchanged: proofUnchanged }) => proofUnchanged)
+          : Boolean(unchanged)
+        : "not_observed",
+      basis: [
+        ...basis,
+        ...matchingProofs.map(
+          ({ operation, basis: proofBasis }) => `${operation}: ${proofBasis}`,
+        ),
+      ],
+    };
+  });
 }
 
 async function fileFingerprint(path) {

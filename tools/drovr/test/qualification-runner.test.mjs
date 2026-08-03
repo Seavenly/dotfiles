@@ -123,6 +123,46 @@ exit 5
   assert.notEqual(invocation.state_home, process.env.XDG_STATE_HOME);
 });
 
+test("a deterministic scenario replays its trace into qualification evidence", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-replay-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeDrovr = join(scratch, "drovr");
+  const evidenceDirectory = join(scratch, "evidence");
+  const caller = join(scratch, "caller");
+  await mkdir(caller);
+  await executable(
+    fakeDrovr,
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:runner-test"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+printf '%s\\n' '{"schema":"drovr.command/v1","command":"unexpected","ok":false,"error":{"outcome":"unexpected_call","message":"unexpected replay command"}}'
+exit 5
+`,
+  );
+
+  const report = await runQualification({
+    scenarioIds: ["codex_startup_context_before_prompt"],
+    evidenceDirectory,
+    drovrCommand: fakeDrovr,
+    cwd: caller,
+    env: { ...process.env, DROVR_TRACE_JOURNAL: undefined },
+  });
+
+  assert.equal(report.status, "pass");
+  assert.equal(report.scenarios[0].result, "pass");
+  const evidence = JSON.parse(
+    await readFile(report.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(evidence.execution_kind, "deterministic_trace_replay");
+  assert.equal(evidence.result.disposition, "pass");
+  assert.equal(evidence.trace.schema, "drovr.harness-trace/v1");
+  assert.equal(evidence.trace.scenario_id, "codex_startup_context_before_prompt");
+  assert.equal(evidence.trace.provenance.herdr, "herdr 0.7.5");
+  assert.equal(evidence.trace.events.length > 0, true);
+  assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
+});
+
 test("a selected live prompt-file scenario runs with unique isolated resources and cleans them", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-live-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -151,6 +191,7 @@ case "\${1:-} \${2:-}" in
     done
     [[ -f "$prompt_file" ]]
     [[ "$(cat "$prompt_file")" == $'This is a qualification sentinel.\\nReply exactly:\\nQUALIFY-CLAUDE-MULTILINE-OK' ]]
+    printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
     printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "agent get")
@@ -191,6 +232,8 @@ esac
     await readFile(report.scenarios[0].evidence, "utf8"),
   );
   assert.equal(evidence.result.disposition, "pass");
+  assert.equal(evidence.trace.schema, "drovr.harness-trace/v1");
+  assert.equal(evidence.trace.events[0].operation, "agent.prompt");
   assert.equal(evidence.versions.drovr, "drovr source sha256:1111");
   assert.equal(evidence.versions.model, "haiku");
   assert.equal(evidence.versions.reasoning_effort, "low");
@@ -253,6 +296,9 @@ test("the Codex primary prompt scenario reuses one agent across file and stdin t
   await executable(
     join(fakeBin, "drovr"),
     `stdin_value=""
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
 if [[ \${1:-} == ask && "$*" != *--prompt-file* ]]; then stdin_value=$(cat); fi
 argv_json=$(printf '%s\\n' "$@" | jq -Rsc 'split("\\n")[:-1]')
 printf '{"argv":%s,"stdin":%s,"state_home":%s}\n' "$argv_json" "$(jq -Rn --arg value "$stdin_value" '$value')" "$(jq -Rn --arg value "$XDG_STATE_HOME" '$value')" >> ${JSON.stringify(invocationLog)}
@@ -344,8 +390,11 @@ test("live lifecycle settles exact native work before same-agent reuse", async (
   await executable(
     join(fakeBin, "drovr"),
     `printf '%s\n' "$*" >> ${JSON.stringify(invocationLog)}
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
 case "\${1:-} \${2:-}" in
-  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"codex":{"model":"gpt-5.6-luna","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:3333"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"codex-launch-capabilities","status":"pass","detail":"supported"},{"id":"codex-transcripts","status":"pass","detail":"available"},{"id":"codex-transcript-structure","status":"pass","detail":"supported"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"codex-native-session","status":"pass","detail":"supported"}]}}' ;;
+  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"codex":{"model":"gpt-5.6-luna","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:3333"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"codex-launch-capabilities","status":"pass","detail":"supported"},{"id":"codex-transcripts","status":"pass","detail":"available"},{"id":"codex-transcript-structure","status":"pass","detail":"supported"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"codex-native-session","status":"pass","detail":"supported"}]}}' ;;
   "group list") printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}' ;;
   "task open") printf '%s\n' '{"schema":"drovr.command/v1","command":"task open","ok":true,"result":{"status":"completed","group":{"id":"group-cancel-1","key":"qualification"},"task":{"id":"task-cancel-1","key":"task","cwd":"/tmp/work"}}}' ;;
   "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","key":"agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only","native_session":"codex-session-cancel"}}}' ;;
@@ -520,8 +569,11 @@ test("owned staged-input recovery may pass after the expected delegate failure",
     join(fakeBin, "drovr"),
     `fixture="$XDG_STATE_HOME/owned-fixture"
 mkdir -p "$fixture"
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
 case "\${1:-} \${2:-}" in
-  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:owned"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}' ;;
+  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:owned"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}' ;;
   "group list")
     if [[ -f "$fixture/group" && ! -f "$fixture/closed" ]]; then
       key=$(cat "$fixture/group")
@@ -657,6 +709,32 @@ test("prohibited-mutation receipts distinguish proof from unobserved state", () 
       unchanged: false,
     })[0].unchanged,
     false,
+  );
+  assert.deepEqual(
+    prohibitedMutationObservations(["known guarded operation", "unproven operation"], {
+      basis: ["semantic replay"],
+      proofs: [{
+        description: "known guarded operation",
+        operation: "agent.prompt",
+        unchanged: true,
+        basis: "guard rejected before mutation",
+      }],
+    }),
+    [
+      {
+        description: "known guarded operation",
+        unchanged: true,
+        basis: [
+          "semantic replay",
+          "agent.prompt: guard rejected before mutation",
+        ],
+      },
+      {
+        description: "unproven operation",
+        unchanged: "not_observed",
+        basis: ["semantic replay"],
+      },
+    ],
   );
 });
 

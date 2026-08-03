@@ -216,6 +216,7 @@ export function createProductionSemanticHarness({
       try {
         await client.prompt(agent.herdr.name, prompt, {
           harness,
+          nativeSession: agent.native_session,
           observedBeforeDelivery: before.native,
         });
         return {
@@ -318,7 +319,9 @@ export function createProductionSemanticHarness({
         }
 
         if (observed.state === "blocked") {
-          const excerpt = await client.agentExcerpt(agent.herdr.name);
+          const excerpt = await client.agentExcerpt(agent.herdr.name, {
+            nativeSession: agent.native_session,
+          });
           return turnEvidence("needs_input", observed, { excerpt });
         }
         if (observed.state === "working") {
@@ -346,7 +349,9 @@ export function createProductionSemanticHarness({
           }
           if (waited.state === "working") continue;
           if (waited.state === "blocked") {
-            const excerpt = await client.agentExcerpt(agent.herdr.name);
+            const excerpt = await client.agentExcerpt(agent.herdr.name, {
+              nativeSession: agent.native_session,
+            });
             return turnEvidence("needs_input", waited, { excerpt });
           }
         }
@@ -1095,7 +1100,9 @@ async function waitForBlockResume({
       });
     }
     if (observed.state === "blocked" && stateChanged) {
-      const excerpt = await client.agentExcerpt(agent.herdr.name);
+      const excerpt = await client.agentExcerpt(agent.herdr.name, {
+        nativeSession: agent.native_session,
+      });
       return turnEvidence("needs_input", observed, { excerpt });
     }
     await pause(Math.min(25, remaining ?? 25));

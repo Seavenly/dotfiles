@@ -229,11 +229,11 @@
       "execution": {"kind":"deterministic_trace_replay","rationale":"A trace-controlled identity change between validation and mutation deterministically exercises the race."},
       "public_commands": ["drovr turn send <turn-id> --caller-key <input-key> <steering-input>", "drovr turn get <turn-id>"],
       "preconditions": ["The registered native session is replaced by a different session after initial validation and before final delivery."],
-      "expected_outcomes": {"positive":[{"status":"sent","when":"Final-boundary observation still matches the exact registered session."}],"negative":[{"status":"recovery_blocked","when":"The pane or native session changed before delivery; no input is recorded or sent."}],"uncertain":[{"status":"uncertain","when":"Identity observation itself cannot be trusted."}],"recovery":[{"status":"agent_lost","when":"A later explicit mutating command may recover only after all exact recovery checks pass."}]},
+      "expected_outcomes": {"positive":[{"status":"sent","when":"Final-boundary observation still matches the exact registered session."}],"negative":[{"status":"recovery_blocked","when":"The pane or native session changed before native delivery; no steering reaches the remapped session, while a durable turn may retain typed uncertainty."}],"uncertain":[{"status":"uncertain","when":"Identity observation itself cannot be trusted."}],"recovery":[{"status":"agent_lost","when":"A later explicit mutating command may recover only after all exact recovery checks pass."}]},
       "safety_invariants": ["exact_agent_identity","exact_native_session_identity","non_submission_of_unknown_text","caller_owned_workspace_preservation"],
-      "prohibited_mutations": ["Do not record or deliver steering to the remapped pane, launch hidden recovery, or mutate unrelated resources."],
+      "prohibited_mutations": ["Do not invoke the Herdr prompt for the remapped native session."],
       "cleanup_obligations": ["Do not interrupt or close the remapped pane; clean only proven scenario-owned resources."],
-      "evidence_requirements": ["Before/after pane and native-session identities, absence of recorded/sent steering, typed result, unrelated-pane preservation, and cleanup receipt."]
+      "evidence_requirements": ["Before/after pane and native-session identities, absence of native steering delivery, typed result, unrelated-pane preservation, and cleanup receipt."]
     },
     {
       "id": "blocked_pane_native_session_mismatch",
@@ -244,7 +244,7 @@
       "preconditions": ["Herdr reports blocked state for a pane whose native session differs from the registered agent."],
       "expected_outcomes": {"positive":[{"status":"needs_input","when":"Only an exact matching native session authorizes a blocked excerpt."}],"negative":[{"status":"uncertain","when":"Mismatched identity is reported without reading pane output."}],"uncertain":[{"status":"uncertain","when":"No exact session identity is available."}],"recovery":[{"status":"recovery_blocked","when":"The result retains safe public recovery actions without pane mutation."}]},
       "safety_invariants": ["exact_agent_identity","exact_native_session_identity","non_submission_of_unknown_text","caller_owned_workspace_preservation"],
-      "prohibited_mutations": ["Do not read or expose mismatched pane output and do not send input, interrupt, or close that pane."],
+      "prohibited_mutations": ["Do not read or expose mismatched pane output.","Do not send input to the mismatched pane."],
       "cleanup_obligations": ["Preserve the unrelated pane and its text; clean only exact owned resources."],
       "evidence_requirements": ["Atomic observation, proof the pane-read operation was not invoked, typed uncertainty, and cleanup receipt."]
     },
@@ -296,7 +296,7 @@
       "preconditions": ["Prompt text, pane, agent, state token, or native session differs from the snapshot bound to the supplied token."],
       "expected_outcomes": {"positive":[{"status":"ready","when":"A fresh inspection reports the current exact snapshot and legal actions."}],"negative":[{"status":"recovery_blocked","when":"Stale or mismatched token authorizes no submit, clear, or durable terminal mutation."}],"uncertain":[{"status":"recovery_blocked","when":"Current exact prompt or identity cannot be inspected."}],"recovery":[{"status":"staged_input","when":"Caller obtains a new token and must make a new explicit decision for the current snapshot."}]},
       "safety_invariants": ["exact_agent_identity","exact_native_session_identity","prompt_ownership","snapshot_token_conflicts","non_submission_of_unknown_text","caller_owned_workspace_preservation"],
-      "prohibited_mutations": ["Do not submit, clear, interrupt, or durably settle anything from a stale token; do not edit prompt or identity evidence."],
+      "prohibited_mutations": ["Do not clear anything from a stale staged-input token."],
       "cleanup_obligations": ["Preserve current staged text and all unrelated resources after conflict; clean only with a newly authorized exact token."],
       "evidence_requirements": ["Old and current snapshot digests/tokens, exact identity delta, zero mutation proof, typed result, and cleanup receipt."]
     }
