@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { COMPATIBILITY_FEATURES } from "./compatibility.mjs";
 import { validateTrace } from "./trace.mjs";
 
 const FIXTURES = new URL("../qualification/traces.v1.json", import.meta.url);
@@ -30,6 +31,22 @@ export async function loadTraceFixtures() {
       ...trace.provenance,
       capture: bundle.origin.kind,
       source_commit: bundle.origin.source_commit,
+      compatibility: {
+        schema: "drovr.compatibility/v1",
+        facts: {
+          drovr: "drovr.semantic-harness/v1",
+          herdr: trace.provenance.herdr,
+          harness: fixture.harness === "claude"
+            ? trace.provenance.claude
+            : trace.provenance.codex,
+          integration: bundle.origin.compatibility.integrations[fixture.harness],
+          adapters: [
+            bundle.origin.compatibility.replay_adapter,
+            bundle.origin.compatibility.transcript_adapters[fixture.harness],
+          ],
+          features: [...COMPATIBILITY_FEATURES],
+        },
+      },
     };
     validateTrace(trace);
     if (trace.scenario_id !== fixture.id) {

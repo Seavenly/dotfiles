@@ -531,7 +531,19 @@ export class HerdrClient {
     ]);
   }
 
-  async sendPaneText(paneId, text) {
+  async sendPaneText(paneId, text, { agentName, nativeSession } = {}) {
+    if (agentName) {
+      const observed = await this.agentRecord(agentName);
+      if (nativeSession !== undefined) {
+        assertNativeSession(agentName, observed, nativeSession);
+      }
+      if (observed?.pane_id !== paneId) {
+        throw new DrovrError(`Herdr managed pane changed for ${agentName}`, {
+          code: 0,
+          outcome: "recovery_blocked",
+        });
+      }
+    }
     return this.sessionCommand(["pane", "send-text", paneId, text]);
   }
 
@@ -550,6 +562,16 @@ export class HerdrClient {
       options.observedBeforeDelivery ?? (await this.agentRecord(name));
     if (typeof options.nativeSession === "string") {
       assertNativeSession(name, observedBeforeDelivery, options.nativeSession);
+    }
+    if (
+      options.paneId !== undefined &&
+      options.paneId !== null &&
+      observedBeforeDelivery?.pane_id !== options.paneId
+    ) {
+      throw new DrovrError(`Herdr managed pane changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
     }
     const harness = options.harness ?? observedBeforeDelivery?.agent;
     const guardsClaudeStagedSubmission =
@@ -637,6 +659,20 @@ export class HerdrClient {
         { code: 4, outcome: "adapter_failure" },
       );
     }
+    const observedBeforeSubmit = await this.agentRecord(name);
+    if (typeof options.nativeSession === "string") {
+      assertNativeSession(name, observedBeforeSubmit, options.nativeSession);
+    }
+    if (
+      options.paneId !== undefined &&
+      options.paneId !== null &&
+      observedBeforeSubmit?.pane_id !== options.paneId
+    ) {
+      throw new DrovrError(`Herdr managed pane changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
     await this.sessionCommand(["agent", "send-keys", name, "enter"]);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await this.agentRecord(name);
@@ -676,7 +712,7 @@ export class HerdrClient {
 
   async recoverStagedInput(
     name,
-    { action, harness, nativeSession, token } = {},
+    { action, harness, nativeSession, paneId, token } = {},
   ) {
     if (harness !== "claude" || !["clear", "submit"].includes(action)) {
       throw new DrovrError("unsupported staged-input recovery action", {
@@ -703,9 +739,39 @@ export class HerdrClient {
         outcome: "recovery_blocked",
       });
     }
+    if (
+      paneId !== undefined &&
+      paneId !== null &&
+      observedBefore.pane_id !== paneId
+    ) {
+      throw new DrovrError(`Herdr managed pane changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
     const staged = await this.inspectStagedInput(name, { harness });
     if (!staged || staged.token !== token) {
       throw new DrovrError(`Claude staged input changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
+    const observedBeforeSend = await this.agentRecord(name);
+    if (
+      nativeSession &&
+      observedBeforeSend?.agent_session?.value !== nativeSession
+    ) {
+      throw new DrovrError(`Claude identity changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
+    if (
+      paneId !== undefined &&
+      paneId !== null &&
+      observedBeforeSend?.pane_id !== paneId
+    ) {
+      throw new DrovrError(`Herdr managed pane changed for ${name}`, {
         code: 0,
         outcome: "recovery_blocked",
       });
@@ -724,6 +790,16 @@ export class HerdrClient {
         observed?.agent_session?.value !== nativeSession
       ) {
         throw new DrovrError(`Claude identity changed for ${name}`, {
+          code: 0,
+          outcome: "recovery_blocked",
+        });
+      }
+      if (
+        paneId !== undefined &&
+        paneId !== null &&
+        observed?.pane_id !== paneId
+      ) {
+        throw new DrovrError(`Herdr managed pane changed for ${name}`, {
           code: 0,
           outcome: "recovery_blocked",
         });
@@ -754,7 +830,19 @@ export class HerdrClient {
     );
   }
 
-  async interruptAgent(name) {
+  async interruptAgent(name, { nativeSession, paneId } = {}) {
+    if (nativeSession !== undefined || paneId !== undefined) {
+      const observed = await this.agentRecord(name);
+      if (nativeSession !== undefined) {
+        assertNativeSession(name, observed, nativeSession);
+      }
+      if (paneId !== undefined && observed?.pane_id !== paneId) {
+        throw new DrovrError(`Herdr managed pane changed for ${name}`, {
+          code: 0,
+          outcome: "recovery_blocked",
+        });
+      }
+    }
     return this.sessionCommand(["agent", "send-keys", name, "ctrl+c"]);
   }
 

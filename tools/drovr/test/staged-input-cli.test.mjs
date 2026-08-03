@@ -16,6 +16,14 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
+import { collectProductionCompatibility } from "../src/compatibility.mjs";
+import {
+  createAgentLaunchBinding,
+} from "../src/description.mjs";
+import {
+  loadConfiguration,
+  resolveLaunchSpecification,
+} from "../src/config.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { createTurnRecord, settleTurnRecord } from "../src/turn-record.mjs";
 import { createStagedInputReceipt } from "../src/staged-input-receipt.mjs";
@@ -50,12 +58,32 @@ test("public CLI recovers owned input and explicitly clears unknown input", asyn
   const snapshotToken = createHash("sha256")
     .update("Exact Drovr work")
     .digest("hex");
+  const fakeClaude = join(fakeBin, "claude");
+  await writeFile(
+    fakeClaude,
+    `#!/usr/bin/env bash
+if [[ \${1:-} == --version ]]; then
+  printf '2.1.199 (Claude Code)\\n'
+  exit
+fi
+printf '%s\\n' '--model --effort --permission-mode manual dontAsk acceptEdits auto bypassPermissions --allowedTools --append-system-prompt --append-system-prompt-file'
+`,
+  );
+  await chmod(fakeClaude, 0o755);
   const fakeHerdr = join(fakeBin, "herdr");
   await writeFile(
     fakeHerdr,
     `#!/usr/bin/env bash
 set -euo pipefail
 state=${JSON.stringify(herdrState)}
+if [[ \${1:-} == --version ]]; then
+  printf 'herdr 0.7.5\\n'
+  exit
+fi
+if [[ \${1:-} == integration && \${2:-} == status ]]; then
+  printf 'claude: current (v7)\\ncodex: current (v6)\\n'
+  exit
+fi
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"persisted-session","running":true}]}\\n'
   exit
@@ -160,10 +188,34 @@ esac
       model: "opus",
       effort: "medium",
       capability: "read-only",
+      native: {
+        permission_mode: "dontAsk",
+        allowed_tools: [
+          "Read",
+          "Glob",
+          "Grep",
+          "Bash(git diff *)",
+          "Bash(git status *)",
+          "Bash(git log *)",
+          "Bash(git show *)",
+          "Bash(git rev-parse *)",
+        ],
+      },
     },
     herdr: { name: "managed-agent", pane_id: "pane-agent-1" },
     native_session: nativeSession,
   };
+  const configuration = await loadConfiguration({ env });
+  agent.launch = resolveLaunchSpecification(configuration, agent.launch);
+  const compatibility = await collectProductionCompatibility({
+    harness: "claude",
+    env,
+  });
+  agent.launch_binding = createAgentLaunchBinding(
+    configuration,
+    agent.launch,
+    { compatibility },
+  );
   const turn = createTurnRecord({
     id: "turn-1",
     agentId: agent.id,

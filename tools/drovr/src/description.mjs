@@ -5,6 +5,12 @@ import {
   loadConfiguration,
   resolveLaunchSpecification,
 } from "./config.mjs";
+import {
+  assertQualifiedCompatibility,
+  collectProductionCompatibility,
+  PRODUCTION_ADAPTER_ID,
+  qualifyCompatibility,
+} from "./compatibility.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 
@@ -129,6 +135,10 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     env: dependencies.env ?? process.env,
   });
   const resolved = resolveLaunchSpecification(configuration, request.launch);
+  const compatibility = await requestedCompatibility(
+    request.launch.harness ?? resolved.harness,
+    dependencies,
+  );
   const launch = launchDescription(configuration, resolved);
   const effectiveAuthority = deepFreeze({
     schema: SCHEMAS.effective_authority,
@@ -144,17 +154,27 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     schema: SCHEMAS.feature_advertisement,
     features: DROVR_ADVERTISED_FEATURES,
   });
-  const watermark = configurationWatermark(configuration, featureAdvertisement);
+  const watermark = configurationWatermark(
+    configuration,
+    featureAdvertisement,
+    compatibility,
+  );
   const callerMetadata = canonicalizeJson(request.caller_metadata);
-  const comparisonKeys = deepFreeze({
+  const comparisonKeys = {
     launch: digestCanonical(launch),
     effective_authority: digestCanonical(effectiveAuthority),
     credential_reference: digestCanonical(credentialReference),
     configuration_catalog: watermark.content_sha256,
-  });
+    ...(compatibility
+      ? { compatibility: digestCanonical(compatibility) }
+      : {}),
+  };
+  const schemas = compatibility
+    ? { ...SCHEMAS, compatibility: "drovr.compatibility/v1" }
+    : SCHEMAS;
   const identity = {
     schema: SCHEMAS.description,
-    schemas: SCHEMAS,
+    schemas,
     watermark,
     launch,
     effective_authority: effectiveAuthority,
@@ -163,6 +183,7 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     feature_advertisement: featureAdvertisement,
     caller_metadata: callerMetadata,
     comparison_keys: comparisonKeys,
+    ...(compatibility ? { compatibility } : {}),
   };
 
   return deepFreeze({
@@ -172,7 +193,11 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
   });
 }
 
-export function createAgentLaunchBinding(configuration, resolved) {
+export function createAgentLaunchBinding(
+  configuration,
+  resolved,
+  { compatibility } = {},
+) {
   const featureAdvertisement = deepFreeze({
     schema: SCHEMAS.feature_advertisement,
     features: DROVR_ADVERTISED_FEATURES,
@@ -183,8 +208,46 @@ export function createAgentLaunchBinding(configuration, resolved) {
     configuration_watermark: configurationWatermark(
       configuration,
       featureAdvertisement,
+      compatibility,
     ).content_sha256,
+    ...(compatibility
+      ? { compatibility_evidence_digest: compatibility.evidence_digest }
+      : {}),
   });
+}
+
+async function requestedCompatibility(harness, dependencies) {
+  if (!dependencies.requireCompatibility && dependencies.compatibility === undefined) {
+    return null;
+  }
+  let compatibility = dependencies.compatibility;
+  if (!compatibility) {
+    compatibility = await collectProductionCompatibility({
+      harness,
+      env: dependencies.env ?? process.env,
+      run: dependencies.run,
+      expected: dependencies.expectedCompatibility,
+    });
+  } else {
+    compatibility = qualifyCompatibility(compatibility, {
+      harness,
+      expected: dependencies.expectedCompatibility,
+      adapter: PRODUCTION_ADAPTER_ID,
+    });
+  }
+  try {
+    assertQualifiedCompatibility(compatibility);
+  } catch (error) {
+    throw new DrovrError(
+      `Drovr compatibility is ${compatibility?.reason ?? "unqualified"}`,
+      {
+        code: 0,
+        outcome: "compatibility_blocked",
+        details: { compatibility },
+      },
+    );
+  }
+  return deepFreeze(compatibility);
 }
 
 function launchDescription(configuration, resolved) {
@@ -198,7 +261,11 @@ function launchDescription(configuration, resolved) {
   });
 }
 
-function configurationWatermark(configuration, featureAdvertisement) {
+function configurationWatermark(
+  configuration,
+  featureAdvertisement,
+  compatibility,
+) {
   return deepFreeze({
     schema: "drovr.authority-watermark/v1",
     authority: "drovr.configuration-catalog",
@@ -208,6 +275,7 @@ function configurationWatermark(configuration, featureAdvertisement) {
       authority_dimensions: AUTHORITY_DIMENSIONS,
       credential_references: ["ambient/claude", "ambient/codex"],
       feature_advertisement: featureAdvertisement,
+      ...(compatibility ? { compatibility } : {}),
       fingerprints: logicalFingerprints(
         configuration.directory,
         configuration.fingerprints,

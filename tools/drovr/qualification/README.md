@@ -34,11 +34,12 @@ delays, and errors while they run, then validate the sanitized trace before
 adding it to evidence. Credentials, bearer values, private keys, machine-local
 paths, and non-sentinel text are rejected or redacted before persistence.
 
-Replay consumes the recorded operation order through the same semantic Herdr
-and harness-adapter seams used by Drovr, and advances a controllable clock from
-recorded delay events. It does not sleep or return canned method results; an
-altered operation, identity, token, transcript boundary, or delay fails the
-replay.
+Replay consumes the recorded operation order through the same semantic harness
+interface used by production, and advances a controllable clock from recorded
+delay events. Each fixture carries exact replay, transcript-adapter, and
+semantic-feature compatibility facts. It does not sleep or return canned
+method results; an altered operation, identity, token, transcript boundary,
+delay, or compatibility fact fails the replay.
 
 Run one focused live scenario and retain its evidence outside the caller-owned
 workspace:

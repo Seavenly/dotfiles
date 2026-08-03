@@ -34,8 +34,8 @@ export const SEMANTIC_HARNESS_OPERATIONS = Object.freeze([
 ]);
 
 // Topology is still part of the internal seam, but its values are opaque
-// topology facts rather than Herdr command results. Keeping it grouped makes
-// it possible for a future replay adapter to model placement without teaching
+// topology facts rather than Herdr command results. Keeping it grouped lets
+// the production and replay adapters model placement without teaching
 // lifecycle callers about panes, tabs, or workspaces.
 export const SEMANTIC_HARNESS_TOPOLOGY_OPERATIONS = Object.freeze([
   "observePane",
@@ -56,7 +56,12 @@ export const SEMANTIC_HARNESS_TOPOLOGY_OPERATIONS = Object.freeze([
 ]);
 
 export function createSemanticHarness(options = {}) {
-  const candidate = options.adapter ?? createProductionSemanticHarness(options);
+  const candidate = options.adapter ?? createProductionSemanticHarness({
+    ...options,
+    requireCompatibility: options.requireCompatibility ?? (
+      !options.herdr && !options.run
+    ),
+  });
   assertSemanticHarness(candidate);
 
   const harness = {
@@ -86,6 +91,9 @@ export function semanticHarnessFor(context, dependencies = {}) {
     ...dependencies,
     session: context.group?.herdr?.session,
     harness: context.agent?.launch?.harness,
+    requireCompatibility: dependencies.requireCompatibility ?? (
+      !dependencies.herdr && !dependencies.run
+    ),
   });
 }
 

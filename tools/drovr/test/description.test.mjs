@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { digestCanonical } from "../src/canonical-json.mjs";
 import {
   DROVR_ADVERTISED_FEATURE_IDS,
   describeDelegatedAgent,
@@ -166,4 +167,64 @@ test("identical catalogs and inputs produce identical identity-bearing descripti
   });
 
   assert.deepEqual(relocated, original);
+});
+
+test("description binds exact compatibility facts when qualification is required", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-description-compatibility-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const run = async (command, args) => {
+    if (command === "herdr" && args[0] === "--version") return "herdr 0.7.5";
+    if (command === "herdr") return "codex: current (v6)\nclaude: current (v7)";
+    if (command === "codex" && args[0] === "--version") return "codex-cli 0.145.0";
+    throw new Error(`unexpected runtime probe: ${command}`);
+  };
+  const description = await describeDelegatedAgent(
+    {
+      schema: "drovr.delegated-agent-description-request/v1",
+      launch: { harness: "codex", capability: "read-only" },
+      caller_metadata: { run_id: "compatibility" },
+    },
+    {
+      env: {
+        ...process.env,
+        DROVR_CONFIG_DIR: join(repositoryRoot, "config", "drovr"),
+        XDG_STATE_HOME: join(scratch, "state"),
+      },
+      run,
+      requireCompatibility: true,
+    },
+  );
+
+  assert.equal(description.compatibility.status, "qualified");
+  assert.equal(description.compatibility.facts.integration, "herdr-codex/v6");
+  assert.equal(
+    description.comparison_keys.compatibility,
+    digestCanonical(description.compatibility),
+  );
+  assert.equal(description.schemas.compatibility, "drovr.compatibility/v1");
+  assert.match(description.watermark.content_sha256, /^sha256:[0-9a-f]{64}$/u);
+});
+
+test("description returns a typed compatibility block for an unqualified runtime", async () => {
+  await assert.rejects(
+    () => describeDelegatedAgent(
+      {
+        schema: "drovr.delegated-agent-description-request/v1",
+        launch: { harness: "codex", capability: "read-only" },
+        caller_metadata: {},
+      },
+      {
+        env: {
+          ...process.env,
+          DROVR_CONFIG_DIR: join(repositoryRoot, "config", "drovr"),
+        },
+        requireCompatibility: true,
+        run: async () => {
+          throw new Error("runtime probe unavailable");
+        },
+      },
+    ),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.compatibility?.legal_actions.includes("run_drovr_doctor"),
+  );
 });

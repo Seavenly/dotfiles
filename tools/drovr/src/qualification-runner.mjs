@@ -18,6 +18,12 @@ import { promisify } from "node:util";
 
 import { digestCanonical } from "./canonical-json.mjs";
 import {
+  COMPATIBILITY_FEATURES,
+  COMPATIBILITY_SCHEMA,
+  PRODUCTION_ADAPTER_ID,
+  qualifyCompatibility,
+} from "./compatibility.mjs";
+import {
   loadQualificationCatalog,
   validateQualificationCatalog,
 } from "./qualification-catalog.mjs";
@@ -566,6 +572,7 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
           herdr: versions.herdr ?? "unavailable",
           claude: versions.claude ?? "unavailable",
           codex: versions.codex ?? "unavailable",
+          compatibility: liveCompatibility(versions, scenarioHarness(scenario)),
         },
       });
     } catch (error) {
@@ -664,7 +671,7 @@ async function fileExists(path) {
 }
 
 function hasCompleteTraceProvenance(provenance) {
-  return ["drovr", "herdr", "claude", "codex"].every((key) => {
+  const exactVersions = ["drovr", "herdr", "claude", "codex"].every((key) => {
     const value = provenance?.[key];
     return (
       typeof value === "string" &&
@@ -672,6 +679,35 @@ function hasCompleteTraceProvenance(provenance) {
       !/^(?:unavailable|not_applicable|drovr\.command\/v1)/u.test(value)
     );
   });
+  const facts = provenance?.compatibility?.facts;
+  const harness = typeof facts?.integration === "string" &&
+      facts.integration.startsWith("herdr-claude/")
+    ? "claude"
+    : typeof facts?.integration === "string" &&
+        facts.integration.startsWith("herdr-codex/")
+      ? "codex"
+      : null;
+  let compatibility;
+  try {
+    compatibility = harness
+      ? qualifyCompatibility(provenance.compatibility, {
+          harness,
+          adapter: PRODUCTION_ADAPTER_ID,
+        })
+      : null;
+  } catch {
+    compatibility = null;
+  }
+  return exactVersions &&
+    compatibility?.status === "qualified" &&
+    [facts?.drovr, facts?.herdr, facts?.harness, facts?.integration].every(
+      (value) =>
+        typeof value === "string" &&
+        value.length > 0 &&
+        !/^(?:unavailable|not_applicable|drovr\.command\/v1)$/u.test(value),
+    ) &&
+    Array.isArray(facts?.adapters) &&
+    Array.isArray(facts?.features);
 }
 
 function hasCompleteLiveTrace(trace) {
@@ -2807,6 +2843,31 @@ function versionsFromDoctor(envelope) {
     model: null,
     reasoning_effort: null,
   };
+}
+
+function liveCompatibility(versions, harness) {
+  return {
+    schema: COMPATIBILITY_SCHEMA,
+    facts: {
+      drovr: "drovr.semantic-harness/v1",
+      herdr: versions.herdr ?? "unavailable",
+      harness: versions[harness] ?? "unavailable",
+      integration: integrationIdentity(versions.integration?.[harness], harness),
+      adapters: [PRODUCTION_ADAPTER_ID, `${harness}-jsonl/v1`],
+      features: [...COMPATIBILITY_FEATURES],
+    },
+  };
+}
+
+function scenarioHarness(scenario) {
+  return scenario.id.startsWith("claude_") ? "claude" : "codex";
+}
+
+function integrationIdentity(value, harness) {
+  if (typeof value !== "string") return "unavailable";
+  if (value.startsWith(`herdr-${harness}/v`)) return value;
+  const match = value.match(/\(v(\d+)\)/u);
+  return match ? `herdr-${harness}/v${match[1]}` : value;
 }
 
 function qualificationLaunch(envelope, harness) {

@@ -68,6 +68,13 @@ test("public describe command returns an exact launch without initializing state
   const scratch = await mkdtemp(join(tmpdir(), "drovr-describe-cli-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const stateHome = join(scratch, "state");
+  const fakeBin = join(scratch, "bin");
+  await mkdir(fakeBin, { recursive: true });
+  await executable(
+    join(fakeBin, "herdr"),
+    'if [[ ${1:-} == --version ]]; then echo "herdr 0.7.5"; else printf "codex: current (v6)\\nclaude: current (v7)\\n"; fi\n',
+  );
+  await executable(join(fakeBin, "codex"), 'echo "codex-cli 0.145.0"\n');
 
   const { stdout } = await execFileAsync(
     drovr,
@@ -85,6 +92,7 @@ test("public describe command returns an exact launch without initializing state
       env: {
         ...process.env,
         DOTFILES_ROOT: root,
+        PATH: `${fakeBin}:${process.env.PATH}`,
         DROVR_CONFIG_DIR: join(root, "config", "drovr"),
         XDG_STATE_HOME: stateHome,
       },
@@ -961,7 +969,11 @@ test("delegate returns the correlated final Claude Code message", async (t) => {
   await mkdir(herdrState, { recursive: true });
   await executable(
     join(fakeBin, "claude"),
-    `touch ${JSON.stringify(join(herdrState, "claude-validated"))}
+    `if [[ \${1:-} == --version ]]; then
+  printf '2.1.199 (Claude Code)\\n'
+  exit
+fi
+touch ${JSON.stringify(join(herdrState, "claude-validated"))}
 printf '%s\n' '--model --effort --permission-mode manual dontAsk acceptEdits auto bypassPermissions --allowedTools --append-system-prompt --allow-dangerously-skip-permissions'
 `,
   );
@@ -998,6 +1010,14 @@ printf '%s\n' '--model --effort --permission-mode manual dontAsk acceptEdits aut
 transcript=${JSON.stringify(transcript)}
 taskCwd=${JSON.stringify(canonicalCwd)}
 nativeSession=${JSON.stringify(nativeSession)}
+if [[ \${1:-} == --version ]]; then
+  printf 'herdr 0.7.5\\n'
+  exit
+fi
+if [[ \${1:-} == integration && \${2:-} == status ]]; then
+  printf 'claude: current (v7)\\ncodex: current (v6)\\n'
+  exit
+fi
 if [[ -n \${HERDR_ENV:-} || -n \${HERDR_PANE_ID:-} || -n \${HERDR_TAB_ID:-} || -n \${HERDR_WORKSPACE_ID:-} ]]; then
   touch "$herdrState/caller-context-leaked"
 fi

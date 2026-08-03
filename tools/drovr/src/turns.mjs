@@ -98,6 +98,12 @@ export async function startTurn(agentId, options, dependencies = {}) {
   const registryDirectory = stateDirectory(env);
   const initial = await agentContext(registryDirectory, agentId);
   const harness = harnessFor(initial, env, dependencies);
+  if (harness.capabilities?.compatibility === "required") {
+    const validation = await harness.validateLaunch({
+      specification: initial.agent.launch,
+    });
+    validateCompatibilityBinding(initial.agent, validation.compatibility);
+  }
   await harness.ensureRuntime();
   return withResourceLock(
     registryDirectory,
@@ -342,7 +348,18 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
             .map((key) => [key, initial.agent.launch[key]]),
         ),
         caller_metadata: options.callerMetadata,
-      }, { env });
+      }, {
+        env,
+        requireCompatibility: dependencies.requireCompatibility ?? (
+          !dependencies.herdr &&
+          !dependencies.harness &&
+          !dependencies.semanticHarness &&
+          !dependencies.run
+        ),
+        ...(dependencies.expectedCompatibility
+          ? { expectedCompatibility: dependencies.expectedCompatibility }
+          : {}),
+      });
       if (
         exactDescription.comparison_keys.launch !==
           options.launchBinding.comparison_key ||
@@ -354,6 +371,25 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
         throw new DrovrError(
           `agent ${agentId} description identity does not match the requested launch binding`,
           { code: 0, outcome: "launch_binding_conflict" },
+        );
+      }
+      if (
+        Boolean(exactDescription.compatibility) !==
+          Boolean(options.launchBinding.compatibility_evidence_digest) ||
+        (exactDescription.compatibility &&
+          options.launchBinding.compatibility_evidence_digest !==
+            exactDescription.compatibility.evidence_digest)
+      ) {
+        throw new DrovrError(
+          `agent ${agentId} compatibility evidence does not match the requested launch binding`,
+          {
+            code: 0,
+            outcome: "compatibility_blocked",
+            details: {
+              compatibility: exactDescription.compatibility,
+              legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+            },
+          },
         );
       }
       validateAgentLaunchBinding(initial, options.launchBinding);
@@ -813,6 +849,23 @@ function validateAgentLaunchBinding(context, requested) {
   const { agent } = context;
   const actual = agent.launch_binding;
   if (
+    actual.compatibility_evidence_digest !==
+    requested.compatibility_evidence_digest
+  ) {
+    throw new DrovrError(
+      `agent ${agent.id} has a changed runtime compatibility binding`,
+      {
+        code: 0,
+        outcome: "compatibility_blocked",
+        details: {
+          expected: requested.compatibility_evidence_digest ?? null,
+          observed: actual.compatibility_evidence_digest ?? null,
+          legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+        },
+      },
+    );
+  }
+  if (
     actual.comparison_key !== requested.comparison_key ||
     actual.configuration_watermark !== requested.configuration_watermark
   ) {
@@ -825,6 +878,24 @@ function validateAgentLaunchBinding(context, requested) {
       },
     );
   }
+}
+
+function validateCompatibilityBinding(agent, compatibility) {
+  const expected = agent.launch_binding?.compatibility_evidence_digest;
+  if (expected && expected === compatibility?.evidence_digest) return;
+  throw new DrovrError(
+    `agent ${agent.id} has no exact qualified runtime compatibility binding`,
+    {
+      code: 0,
+      outcome: "compatibility_blocked",
+      details: {
+        expected: expected ?? null,
+        observed: compatibility?.evidence_digest ?? null,
+        compatibility: compatibility ?? null,
+        legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+      },
+    },
+  );
 }
 
 function requireAgentLaunchBinding(context) {
@@ -854,11 +925,14 @@ function validateLaunchBinding(binding) {
     !isDigest(binding.comparison_key) ||
     !isDigest(binding.configuration_watermark) ||
     !isDigest(binding.description_digest) ||
+    (Object.hasOwn(binding, "compatibility_evidence_digest") &&
+      !isDigest(binding.compatibility_evidence_digest)) ||
     Object.keys(binding).some((key) => ![
       "schema",
       "comparison_key",
       "configuration_watermark",
       "description_digest",
+      "compatibility_evidence_digest",
     ].includes(key))
   ) {
     throw new DrovrError("invalid exact launch binding", {

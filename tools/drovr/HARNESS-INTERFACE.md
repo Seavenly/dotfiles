@@ -65,7 +65,10 @@ adapter normalizes them as follows:
   `geometry.height`.
 - Workspace and task-tab creation return `workspaceId`, `tabId`, and
   `rootPaneId`. Rename, close, and input mutations return a typed completion
-  acknowledgement. Pane splitting returns the created pane identity.
+  acknowledgement. Pane splitting returns the created pane identity. The
+  `sendUnknownInput` topology operation accepts an agent identity and text,
+  then re-observes the exact managed agent and native session before sending
+  to its registered pane; a bare pane ID is not a valid mutation target.
 
 Durable registry records retain their `herdr` identity namespace for schema
 compatibility. That persistence shape is not the topology adapter result
@@ -103,17 +106,33 @@ The shared contract is harness-neutral:
 
 The production implementation is
 [`src/production-harness-adapter.mjs`](src/production-harness-adapter.mjs).
-The deterministic `trace-replay` implementation uses the same interface and
-is the intended home for replayed turn, cancellation, and staged-input traces
-(tracked by issue #66). Its test double in `harness-interface.test.mjs` is only
-an interface contract test; it is not a production substitute for trace
-replay.
+The deterministic `trace-replay` implementation in
+[`src/harness-replay.mjs`](src/harness-replay.mjs) uses the same interface for
+replayed turn, cancellation, and staged-input traces. It consumes ordered
+semantic evidence, transcript records, and clock events; it does not expose a
+fake Herdr command client to callers.
 
 There is intentionally no second shallow wrapper around `HerdrClient`. The
 production adapter is the one internal implementation that translates native
 mechanisms and normalizes topology facts into semantic results. The replay
-adapter will translate trace events into the same results rather than exposing
-a fake Herdr command API.
+adapter translates trace events into the same results rather than exposing a
+fake Herdr command API.
+
+## Compatibility qualification
+
+Production launch and public description paths qualify exact Drovr, Herdr,
+harness, integration, transcript-adapter, and semantic-feature identities.
+Replay fixtures carry equivalent facts for the replay and transcript adapters.
+Missing, changed, or explicitly unqualified facts return a typed
+`compatibility_blocked` result with legal recovery actions; they never authorize
+a mutation or a stale launch binding. Qualified results include the
+`drovr.compatibility/v1` evidence digest and explicit upstream gaps.
+
+The current upstream gap is Herdr's lack of a typed native raw-key operation.
+The production adapter keeps that gesture local and guards every use with the
+exact managed identity and staged snapshot. Replay represents the gesture as
+an ordered semantic event, so tests can verify the same safety posture without
+reimplementing Herdr construction or pane parsing.
 
 ## Staged-input recovery invariant
 
@@ -172,7 +191,7 @@ and attachment callers no longer contain low-level harness dependencies. If
 the semantic module is removed, those callers fail to import or lose their
 semantic operations instead of silently retaining independent mechanism logic.
 
-Future migration work is to add the deterministic trace-replay adapter and
-replace shallow Herdr-shaped fixtures with interface-level traces. Production
-Herdr behavior remains bounded and directly qualified against the existing
-live incident catalog.
+Future migration work is to expand captured live traces and topology coverage.
+Production Herdr behavior remains bounded and directly qualified against the
+existing live incident catalog, while deterministic fixtures stay at the
+semantic interface boundary.

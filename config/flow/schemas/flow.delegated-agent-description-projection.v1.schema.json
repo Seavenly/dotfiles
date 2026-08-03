@@ -42,7 +42,8 @@
             "delegated_agent_port_unavailable",
             "description_unavailable",
             "incompatible_feature_advertisement",
-            "contradictory_description"
+            "contradictory_description",
+            "compatibility_blocked"
           ]
         },
         "findings": {
@@ -56,7 +57,14 @@
               "feature_id": { "type": ["string", "null"] },
               "field": { "type": "string" },
               "reason": {
-                "enum": ["missing", "unavailable", "weakened", "contradictory"]
+                "enum": [
+                  "missing",
+                  "changed",
+                  "unqualified",
+                  "unavailable",
+                  "weakened",
+                  "contradictory"
+                ]
               }
             },
             "required": ["reason"]
@@ -73,7 +81,11 @@
           "refresh_delegated_runtime_description",
           "repair_delegated_runtime_contract",
           "repair_delegated_agent_port",
-          "retry_delegated_runtime_description"
+          "retry_delegated_runtime_description",
+          "refresh_compatibility",
+          "run_drovr_doctor",
+          "qualify_compatibility",
+          "retire_stale_launch"
         ]
       }
     }
@@ -133,7 +145,8 @@
             "capacity": { "const": "drovr.capacity/v1" },
             "credential_reference": { "const": "drovr.credential-reference/v1" },
             "feature_advertisement": { "const": "drovr.feature-advertisement/v1" },
-            "caller_metadata": { "const": "opaque-json/v1" }
+            "caller_metadata": { "const": "opaque-json/v1" },
+            "compatibility": { "const": "drovr.compatibility/v1" }
           }
         },
         "watermark": { "$ref": "#/$defs/watermark" },
@@ -283,6 +296,9 @@
           }
         },
         "caller_metadata": {},
+        "compatibility": {
+          "$ref": "#/$defs/compatibility"
+        },
         "comparison_keys": {
           "type": "object",
           "additionalProperties": false,
@@ -296,7 +312,8 @@
             "launch": { "$ref": "#/$defs/digest" },
             "effective_authority": { "$ref": "#/$defs/digest" },
             "credential_reference": { "$ref": "#/$defs/digest" },
-            "configuration_catalog": { "$ref": "#/$defs/digest" }
+            "configuration_catalog": { "$ref": "#/$defs/digest" },
+            "compatibility": { "$ref": "#/$defs/digest" }
           }
         },
         "legal_actions": {
@@ -308,6 +325,76 @@
             { "const": "refresh_description" }
           ],
           "items": false
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "status",
+        "reason",
+        "facts",
+        "evidence_digest",
+        "legal_actions",
+        "upstream_gaps"
+      ],
+      "properties": {
+        "schema": { "const": "drovr.compatibility/v1" },
+        "status": { "const": "qualified" },
+        "reason": { "type": "null" },
+        "facts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "drovr",
+            "herdr",
+            "harness",
+            "integration",
+            "adapters",
+            "features"
+          ],
+          "properties": {
+            "drovr": { "type": "string", "minLength": 1 },
+            "herdr": { "type": "string", "minLength": 1 },
+            "harness": { "type": "string", "minLength": 1 },
+            "integration": { "type": "string", "minLength": 1 },
+            "adapters": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "features": {
+              "type": "array",
+              "minItems": 5,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "evidence_digest": { "$ref": "#/$defs/digest" },
+        "legal_actions": { "type": "array", "maxItems": 0 },
+        "upstream_gaps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "operation",
+              "status",
+              "posture",
+              "safe_local_posture"
+            ],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "operation": { "type": "string", "minLength": 1 },
+              "status": { "const": "upstream_gap" },
+              "posture": { "type": "string", "minLength": 1 },
+              "safe_local_posture": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       }
     }

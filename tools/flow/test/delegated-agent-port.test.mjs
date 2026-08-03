@@ -54,6 +54,128 @@ test("DelegatedAgentPort exposes the exact compatible lifecycle description", as
   ]);
 });
 
+test("DelegatedAgentPort projects missing compatibility as a typed block", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    dependencies: {
+      ...repositoryDrovrDependencies(),
+      requireCompatibility: true,
+      run: async (command, args) => {
+        if (command === "herdr" && args[0] === "--version") {
+          return "herdr 0.7.5";
+        }
+        if (command === "codex" && args[0] === "--version") {
+          return "codex-cli 0.145.0";
+        }
+        return "";
+      },
+    },
+  });
+
+  const blocked = await port.describe(request);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "compatibility_blocked");
+  assert.deepEqual(blocked.compatibility.findings, [
+    { field: "integration", reason: "missing" },
+  ]);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "refresh_compatibility",
+    "run_drovr_doctor",
+  ]);
+});
+
+test("DelegatedAgentPort rejects a description that omits required compatibility", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    describeDrovr: (descriptionRequest) =>
+      describeDelegatedAgent(
+        descriptionRequest,
+        repositoryDrovrDependencies(),
+      ),
+    dependencies: {
+      ...repositoryDrovrDependencies(),
+      requireCompatibility: true,
+    },
+  });
+
+  const blocked = await port.describe(request);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "compatibility_blocked");
+  assert.deepEqual(blocked.compatibility.findings, [
+    { field: "compatibility", reason: "missing" },
+  ]);
+});
+
+test("DelegatedAgentPort rejects self-authored compatibility without qualified facts", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    dependencies: {
+      ...repositoryDrovrDependencies(),
+      requireCompatibility: true,
+    },
+    async describeDrovr(drovrRequest) {
+      const description = await supportedDescription(
+        drovrRequest,
+        repositoryDrovrDependencies(),
+      );
+      description.schemas.compatibility = "drovr.compatibility/v1";
+      description.compatibility = {
+        schema: "drovr.compatibility/v1",
+        status: "qualified",
+        reason: null,
+        facts: {
+          drovr: "forged-drovr",
+          herdr: "forged-herdr",
+          harness: "forged-harness",
+          integration: "forged-integration",
+          adapters: ["forged-adapter-1", "forged-adapter-2"],
+          features: [
+            "forged-feature-1",
+            "forged-feature-2",
+            "forged-feature-3",
+            "forged-feature-4",
+            "forged-feature-5",
+          ],
+        },
+        evidence_digest: digest({
+          drovr: "forged-drovr",
+          herdr: "forged-herdr",
+          harness: "forged-harness",
+          integration: "forged-integration",
+          adapters: ["forged-adapter-1", "forged-adapter-2"],
+          features: [
+            "forged-feature-1",
+            "forged-feature-2",
+            "forged-feature-3",
+            "forged-feature-4",
+            "forged-feature-5",
+          ],
+        }),
+        legal_actions: [],
+        upstream_gaps: [{
+          id: "forged-gap/v1",
+          operation: "forged.operation",
+          status: "upstream_gap",
+          posture: "forged",
+          safe_local_posture: "forged",
+        }],
+      };
+      description.comparison_keys.compatibility = digest(
+        description.compatibility,
+      );
+      rebindDescriptionDigest(description);
+      return description;
+    },
+  });
+
+  const blocked = await port.describe(request);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "compatibility_blocked");
+  assert.deepEqual(blocked.compatibility.findings, [
+    { field: "compatibility", reason: "missing" },
+  ]);
+});
+
 test("DelegatedAgentPort exposes the complete authority-derived lifecycle", async () => {
   const calls = [];
   const context = lifecycleContext();

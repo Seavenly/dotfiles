@@ -188,7 +188,9 @@ export async function runCli(argv) {
 
   if (argv[0] === "describe") {
     const request = parseDescriptionArguments(argv.slice(1));
-    const result = await describeDelegatedAgent(request);
+    const result = await describeDelegatedAgent(request, {
+      requireCompatibility: true,
+    });
     process.stdout.write(`${JSON.stringify({
       schema: "drovr.command/v1",
       command: "describe",

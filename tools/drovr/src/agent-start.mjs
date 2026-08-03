@@ -156,14 +156,25 @@ export async function startAgent(taskId, options, dependencies = {}) {
   const initial = await contextFor(registryDirectory, taskId);
   const configuration = await loadConfiguration({ env });
   const specification = resolveLaunchSpecification(configuration, options);
-  const launchBinding = createAgentLaunchBinding(configuration, specification);
+  const requireCompatibility = dependencies.requireCompatibility ?? (
+    !dependencies.herdr &&
+    !dependencies.harness &&
+    !dependencies.semanticHarness &&
+    !dependencies.run
+  );
   const harness = createSemanticHarness({
     ...dependencies,
     env,
     session: initial.group.herdr.session,
     harness: specification.harness,
+    requireCompatibility,
   });
-  await harness.validateLaunch({ specification });
+  const launchValidation = await harness.validateLaunch({ specification });
+  const launchBinding = createAgentLaunchBinding(
+    configuration,
+    specification,
+    { compatibility: launchValidation.compatibility },
+  );
   await harness.ensureRuntime();
 
   return withResourceLock(
@@ -201,6 +212,24 @@ export async function startAgent(taskId, options, dependencies = {}) {
           throw new DrovrError(
             `agent key ${options.key} already has a different launch specification`,
             { code: 0, outcome: "configuration_conflict" },
+          );
+        }
+        if (
+          launchBinding.compatibility_evidence_digest &&
+          agent.launch_binding?.compatibility_evidence_digest !==
+            launchBinding.compatibility_evidence_digest
+        ) {
+          throw new DrovrError(
+            `agent key ${options.key} has an unqualified or changed runtime compatibility binding`,
+            {
+              code: 0,
+              outcome: "compatibility_blocked",
+              details: {
+                expected: launchBinding.compatibility_evidence_digest,
+                observed: agent.launch_binding?.compatibility_evidence_digest ?? null,
+                legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+              },
+            },
           );
         }
         let observed;

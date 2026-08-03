@@ -14,6 +14,7 @@ export function repositoryDrovrDependencies(env = process.env) {
       ...env,
       DROVR_CONFIG_DIR: repositoryDrovrConfigDirectory,
     },
+    requireCompatibility: false,
   };
 }
 

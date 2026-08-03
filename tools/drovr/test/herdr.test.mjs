@@ -41,6 +41,37 @@ test("Herdr mutations do not inherit the observation bound", async () => {
   assert.equal(observedTimeout, undefined);
 });
 
+test("guarded interruption rejects a remapped native target before sending keys", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-after" },
+            }],
+          },
+        });
+      }
+      throw new Error("interrupt should not be delivered");
+    },
+  });
+
+  await assert.rejects(
+    () => client.interruptAgent("managed-agent", {
+      nativeSession: "native-before",
+      paneId: "pane-1",
+    }),
+    (error) => error.outcome === "recovery_blocked",
+  );
+  assert.equal(calls.some((args) => args.includes("send-keys")), false);
+});
+
 test("guarded prompt rejects a changed native session before delivery", async () => {
   const calls = [];
   const client = new HerdrClient({
@@ -187,6 +218,37 @@ test("literal staged input targets the exact managed pane without a submit key",
     "pane-agent-1",
     "QUALIFY-UNKNOWN-STAGED",
   ]]);
+});
+
+test("guarded staged input rejects a remapped pane before sending text", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-after",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      throw new Error("staged text should not be sent");
+    },
+  });
+
+  await assert.rejects(
+    () => client.sendPaneText("pane-before", "QUALIFY-UNKNOWN-STAGED", {
+      agentName: "managed-agent",
+      nativeSession: "native-1",
+    }),
+    (error) => error.outcome === "recovery_blocked",
+  );
+  assert.equal(calls.some((args) => args.includes("send-text")), false);
 });
 
 test("Herdr waits preserve their caller-selected bound", async () => {
@@ -346,7 +408,7 @@ test("Claude prompt delivery submits literal text when it appears with completio
   });
 
   assert.equal(enterSent, true);
-  assert.equal(polls, 4);
+  assert.equal(polls, 5);
 });
 
 test("Claude prompt delivery rejects a staged long single-line paste without an attachment token", async () => {

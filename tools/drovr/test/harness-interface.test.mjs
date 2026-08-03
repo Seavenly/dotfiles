@@ -86,6 +86,7 @@ test("identity evidence distinguishes exact, missing, changed, and uncertain obs
 test("production interrupt permits an exact managed identity without native binding", async () => {
   let observations = 0;
   let interruptions = 0;
+  let interruptionOptions;
   const agent = {
     id: "agent-1",
     herdr: { name: "managed-agent", pane_id: "pane-1" },
@@ -103,8 +104,9 @@ test("production interrupt permits an exact managed identity without native bind
           agent_session: { value: "native-observed" },
         };
       },
-      async interruptAgent() {
+      async interruptAgent(_name, options) {
         interruptions += 1;
+        interruptionOptions = options;
       },
     },
   });
@@ -113,6 +115,10 @@ test("production interrupt permits an exact managed identity without native bind
 
   assert.equal(result.outcome, "cancelled");
   assert.equal(interruptions, 1);
+  assert.deepEqual(interruptionOptions, {
+    nativeSession: "native-observed",
+    paneId: "pane-1",
+  });
 
   let blockedInterruptions = 0;
   const reboundHarness = createProductionSemanticHarness({
@@ -308,6 +314,37 @@ test("production unknown-input staging settles on a mismatch or disappearing age
   });
   assert.equal(disappearing.outcome, "recovery_blocked");
   assert.equal(disappearing.evidence, "absent");
+});
+
+test("production topology unknown-input writes require exact semantic agent identity", async () => {
+  let writes = 0;
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-after",
+          agent_status: "idle",
+          agent_session: { value: "native-2" },
+        };
+      },
+      async sendPaneText() {
+        writes += 1;
+      },
+    },
+  });
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-before" },
+    native_session: "native-1",
+  };
+
+  await assert.rejects(
+    () => harness.topology.sendUnknownInput({ agent, text: "unsafe" }),
+    (error) => error.outcome === "recovery_blocked",
+  );
+  assert.equal(writes, 0);
 });
 
 test("public observations retain agent_lost for unsafe identity evidence", async () => {

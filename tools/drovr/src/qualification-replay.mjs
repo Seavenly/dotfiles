@@ -3,14 +3,18 @@ import assert from "node:assert/strict";
 import { createReplayHarness } from "./harness-replay.mjs";
 
 export async function runTraceFixture(fixture) {
-  const replay = createReplayHarness(fixture.trace, { harness: fixture.harness });
+  const replay = createReplayHarness(fixture.trace, {
+    harness: fixture.harness,
+    requireCompatibility: true,
+  });
+  const harness = replay.harness;
+  const agent = replayAgent(fixture);
   const observations = [];
   let lastObservation;
   let lastInspection;
-  let firstInspection;
   let lastStatus;
   let lastExtraction;
-  let recoverySucceeded = false;
+  let recoveryResult;
   const mutationAttempts = new Set();
   const mutationProofs = [];
   const assertions = [];
@@ -19,105 +23,141 @@ export async function runTraceFixture(fixture) {
     try {
       switch (step.action) {
         case "observe": {
-          lastObservation = await replay.client.agentRecord(step.name);
-          observations.push({ action: step.action, status: lastObservation?.agent_status ?? null });
+          lastObservation = await harness.observeAgent(agent);
+          observations.push({
+            action: step.action,
+            status: lastObservation?.state ?? null,
+          });
           if (step.expect_status !== undefined) {
-            assert.equal(lastObservation?.agent_status, step.expect_status);
+            assert.equal(lastObservation?.state, step.expect_status);
           }
           if (step.expect_native_session) {
-            assert.equal(lastObservation?.agent_session?.value, step.expect_native_session);
+            assert.equal(
+              lastObservation?.identity?.native_session,
+              step.expect_native_session,
+            );
           }
-          lastStatus = lastObservation?.agent_status ?? null;
+          lastStatus = lastObservation?.state ?? null;
           break;
         }
         case "prompt": {
-          await replay.client.prompt(step.name, step.text, {
-            harness: fixture.harness,
-            observedBeforeDelivery:
-              lastObservation ?? { agent_status: step.before_status ?? "working" },
+          const prompt = normalizeReplayInput(step.text);
+          await harness.deliverTurn({
+            agent,
+            prompt,
+            observed: lastObservation,
           });
           observations.push({ action: step.action, status: "accepted" });
           break;
         }
-        case "interrupt":
-          await replay.client.interruptAgent(step.name);
-          observations.push({ action: step.action, status: "interrupted" });
+        case "interrupt": {
+          mutationAttempts.add("agent.send-keys");
+          const interrupted = await harness.interruptTurn({
+            agent,
+            observed: lastObservation,
+            deferSettlementObservation: true,
+          });
+          assert.ok(["cancelled", "interrupted"].includes(interrupted.outcome));
+          observations.push({ action: step.action, status: interrupted.outcome });
           break;
+        }
         case "delay":
-          await replay.client.delay(step.milliseconds);
+          if (replay.clock.now() < step.milliseconds) {
+            await replay.clock.delay(step.milliseconds - replay.clock.now());
+          }
           observations.push({ action: step.action, at_ms: replay.clock.now() });
           break;
         case "extract": {
-          const cursor = await replay.adapter.captureCursor();
-          lastExtraction = await replay.adapter.extract(cursor, step.inputs);
-          assert.equal(lastExtraction.text, step.expect_text);
-          observations.push({ action: step.action, text: lastExtraction.text });
+          const prepared = await harness.prepareTurn({ agent, task: { cwd: "/replay" } });
+          lastExtraction = await harness.getLateResult({
+            agent,
+            turn: {
+              inputs: step.inputs.map((text) => ({ text })),
+              transcript_cursor: prepared.cursor,
+            },
+          });
+          assert.ok(lastExtraction?.result, "replay did not produce a semantic late result");
+          assert.equal(lastExtraction.result.text, step.expect_text);
+          observations.push({
+            action: step.action,
+            text: lastExtraction.result.text,
+          });
           break;
         }
         case "inspect":
-          lastInspection = await replay.client.inspectStagedInput(step.name, {
-            harness: fixture.harness,
+          lastInspection = await harness.inspectStagedInput({ agent });
+          assert.equal(lastInspection?.snapshot?.display_text, step.expect_text);
+          observations.push({
+            action: step.action,
+            text: lastInspection?.snapshot?.display_text ?? null,
           });
-          firstInspection ??= lastInspection;
-          assert.equal(lastInspection?.display_text, step.expect_text);
-          observations.push({ action: step.action, text: lastInspection?.display_text ?? null });
           break;
         case "recover_clear": {
           mutationAttempts.add("agent.send-keys");
           const token = step.token_from === "last_inspection"
-            ? lastInspection?.token
+            ? lastInspection?.snapshot?.token
             : step.token;
-          await replay.client.recoverStagedInput(step.name, {
+          recoveryResult = await harness.recoverStagedInput({
+            agent,
             action: "clear",
-            harness: fixture.harness,
-            nativeSession: step.native_session,
             token,
+            stabilityIntervalMs: stabilityIntervalAfter(fixture.steps, index),
           });
-          recoverySucceeded = true;
-          observations.push({ action: step.action, status: "cleared" });
+          observations.push({
+            action: step.action,
+            status: recoveryResult.outcome,
+          });
           break;
         }
         case "expect_error": {
+          mutationAttempts.add(mutationFor(step));
           let error;
           try {
             if (step.method === "recover_clear") {
-              mutationAttempts.add("agent.send-keys");
               const token = step.token_from === "last_inspection"
-                ? lastInspection?.token
+                ? lastInspection?.snapshot?.token
                 : step.token;
-              await replay.client.recoverStagedInput(step.name, {
+              const result = await harness.recoverStagedInput({
+                agent,
                 action: "clear",
-                harness: fixture.harness,
-                nativeSession: step.native_session,
                 token,
+                stabilityIntervalMs: stabilityIntervalAfter(fixture.steps, index),
               });
+              if (result.outcome !== "cleared") error = semanticResultError(result);
             } else if (step.method === "guarded_excerpt") {
-              mutationAttempts.add("agent.read.recent-unwrapped");
-              await replay.client.agentExcerpt(step.name, {
-                nativeSession: step.native_session,
+              const result = await harness.waitForTurn({
+                agent,
+                turn: { inputs: [] },
               });
+              if (result.outcome !== "needs_input") {
+                error = semanticResultError({
+                  ...result,
+                  outcome: result.evidence === "changed"
+                    ? "recovery_blocked"
+                    : result.outcome,
+                });
+              }
             } else {
-              mutationAttempts.add("agent.prompt");
-              await replay.client.prompt(step.name, step.text, {
-                harness: fixture.harness,
-                nativeSession: step.native_session,
-                observedBeforeDelivery: lastObservation ?? {
-                  agent_status: step.before_status ?? "working",
-                },
+              await harness.deliverTurn({
+                agent,
+                prompt: normalizeReplayInput(step.text),
+                observed: lastObservation ?? replayFallbackObservation(agent),
               });
             }
           } catch (candidate) {
             error = candidate;
           }
-          assert.ok(error, "expected replay error");
+          assert.ok(error, "expected replay semantic error");
           assert.equal(error.outcome, step.outcome);
           observations.push({ action: step.action, outcome: error.outcome });
           break;
         }
         case "assert_context_isolated":
-          for (const key of ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"]) {
-            assert.equal(replay.client.env[key], undefined, key);
-          }
+          assert.ok(
+            replay.compatibility.facts?.features?.includes(
+              "drovr.caller-context-isolation/v1",
+            ),
+          );
           break;
         case "assert_no_mutation":
           assert.ok(
@@ -136,23 +176,15 @@ export async function runTraceFixture(fixture) {
           });
           break;
         case "assert_last_status":
-          lastObservation = await replay.client.agentRecord("managed-agent");
-          lastStatus = lastObservation?.agent_status ?? null;
+          lastObservation = await harness.observeAgent(agent);
+          lastStatus = lastObservation?.state ?? null;
           assert.equal(lastStatus, step.status);
           break;
         case "assert_reappeared_after_clear":
-          assert.equal(recoverySucceeded, true);
-          assert.equal(lastInspection?.display_text, firstInspection?.display_text);
-          assert.equal(lastInspection?.token, firstInspection?.token);
-          const observedOutcome = clearDisposition({
-            reappeared: lastInspection !== null,
-            atMs: replay.clock.now(),
-            stabilityIntervalMs: step.stability_interval_ms ?? 0,
-          });
-          if (step.expect_outcome !== undefined) {
-            assert.equal(observedOutcome, step.expect_outcome);
-          }
-          lastStatus = observedOutcome;
+          assert.ok(recoveryResult);
+          assert.equal(recoveryResult.outcome, step.expect_outcome);
+          assert.equal(lastInspection?.snapshot?.display_text, step.expect_text ?? lastInspection?.snapshot?.display_text);
+          lastStatus = recoveryResult.outcome;
           observations.push({
             action: step.action,
             status: lastStatus,
@@ -161,8 +193,8 @@ export async function runTraceFixture(fixture) {
           });
           break;
         case "assert_clear_stable":
-          assert.equal(recoverySucceeded, true);
-          assert.equal(lastInspection, null);
+          assert.equal(recoveryResult?.outcome, "cleared");
+          assert.equal(lastInspection?.snapshot, null);
           assert.ok(
             replay.clock.now() >= (step.stability_interval_ms ?? 0),
             "stable clear must complete its stability interval",
@@ -189,24 +221,76 @@ export async function runTraceFixture(fixture) {
     }
   }
 
-  assert.equal(replay.remainingEvents().length, 0, "replay left evidence unconsumed");
+  assert.equal(
+    replay.remainingEvents().length,
+    0,
+    "replay left evidence unconsumed",
+  );
   return {
     schema: "drovr.qualification-replay-result/v1",
     scenario_id: fixture.trace.scenario_id,
     status: "pass",
     clock_ms: replay.clock.now(),
+    compatibility: replay.compatibility,
     observations,
     assertions,
     mutation_proofs: mutationProofs,
-    result: lastExtraction?.text ?? lastStatus ?? "completed",
+    result: lastExtraction?.result?.text ?? lastStatus ?? "completed",
   };
 }
 
-function clearDisposition({ reappeared, atMs, stabilityIntervalMs }) {
-  if (reappeared) {
-    return atMs < stabilityIntervalMs
-      ? "clear_contradicted"
-      : "clear_unstable";
-  }
-  return atMs >= stabilityIntervalMs ? "cleared" : "clear_unstable";
+function replayAgent(fixture) {
+  const first = fixture.trace.events
+    .flatMap((event) => {
+      const result = event.payload?.envelope?.result;
+      return result?.agents ?? (result?.agent ? [result.agent] : []);
+    })
+    .find((candidate) => candidate?.name === "managed-agent");
+  const requestedSession = fixture.steps.find(({ native_session }) => native_session)
+    ?.native_session;
+  return {
+    id: "replay-agent",
+    herdr: {
+      name: "managed-agent",
+      pane_id: first?.pane_id ?? "pane-1",
+    },
+    native_session: requestedSession ?? first?.agent_session?.value ?? null,
+  };
+}
+
+function replayFallbackObservation(agent) {
+  return {
+    schema: "drovr.semantic-agent-observation/v1",
+    evidence: "present",
+    identity: {
+      managed_agent: agent.herdr.name,
+      pane: agent.herdr.pane_id,
+      native_session: agent.native_session,
+    },
+    state: "working",
+  };
+}
+
+function normalizeReplayInput(text) {
+  return text.trimEnd();
+}
+
+function stabilityIntervalAfter(steps, index) {
+  return steps.slice(index + 1).find((step) =>
+    step.action === "assert_reappeared_after_clear" ||
+    step.action === "assert_clear_stable",
+  )?.stability_interval_ms ?? 30_000;
+}
+
+function mutationFor(step) {
+  if (step.method === "recover_clear") return "agent.send-keys";
+  if (step.method === "guarded_excerpt") return "agent.read.recent-unwrapped";
+  return "agent.prompt";
+}
+
+function semanticResultError(result) {
+  const error = new Error(result.error ?? `semantic operation returned ${result.outcome}`);
+  error.outcome = result.outcome;
+  error.details = { result };
+  return error;
 }

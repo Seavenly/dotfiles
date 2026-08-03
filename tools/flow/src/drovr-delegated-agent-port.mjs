@@ -4,6 +4,10 @@ import {
   describeDelegatedAgent,
 } from "../../drovr/src/description.mjs";
 import {
+  PRODUCTION_ADAPTER_ID,
+  qualifyCompatibility,
+} from "../../drovr/src/compatibility.mjs";
+import {
   cancelTurn,
   discoverTurn,
   dispatchTurn,
@@ -117,12 +121,16 @@ export function createDrovrDelegatedAgentPort({
       }
 
       let description;
+      const requireCompatibility = dependencies.requireCompatibility ?? true;
       try {
         description = await describeDrovr({
           schema: "drovr.delegated-agent-description-request/v1",
           launch: structuredClone(request.launch),
           caller_metadata: structuredClone(request.caller_metadata),
-        }, dependencies);
+        }, {
+          ...dependencies,
+          requireCompatibility,
+        });
       } catch (error) {
         if (error?.outcome === "unsupported_configuration") {
           return blockedProjection({
@@ -134,6 +142,15 @@ export function createDrovrDelegatedAgentPort({
           return blockedProjection({
             code: "description_unavailable",
             legalNextActions: repairActions(),
+          });
+        }
+        if (error?.outcome === "compatibility_blocked") {
+          const compatibility = error.details?.compatibility;
+          return blockedProjection({
+            code: "compatibility_blocked",
+            findings: compatibilityFindings(compatibility),
+            legalNextActions: compatibility?.legal_actions ??
+              ["refresh_compatibility", "run_drovr_doctor"],
           });
         }
         return blockedProjection({
@@ -153,12 +170,23 @@ export function createDrovrDelegatedAgentPort({
           description,
           request,
           validateDescriptionStructure,
+          { requireCompatibility },
         );
       } catch {
         return blockedProjection({
           code: "contradictory_description",
           findings: [{ field: "description", reason: "contradictory" }],
           legalNextActions: repairActions(),
+        });
+      }
+      if (
+        contradiction?.field === "compatibility" &&
+        requireCompatibility
+      ) {
+        return blockedProjection({
+          code: "compatibility_blocked",
+          findings: [contradiction],
+          legalNextActions: ["refresh_compatibility", "run_drovr_doctor"],
         });
       }
       if (
@@ -223,6 +251,12 @@ export function createDrovrDelegatedAgentPort({
             comparison_key: description.comparison_keys.launch,
             configuration_watermark: description.watermark.content_sha256,
             description_digest: description.description_digest,
+            ...(description.compatibility
+              ? {
+                  compatibility_evidence_digest:
+                    description.compatibility.evidence_digest,
+                }
+              : {}),
           },
           prompt: request.prompt,
         }, dependencies);
@@ -406,6 +440,14 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
   try {
     return await execute();
   } catch (error) {
+    if (error?.outcome === "compatibility_blocked") {
+      return lifecycleBlock(
+        operation,
+        "compatibility_blocked",
+        error.details?.compatibility?.legal_actions ??
+          ["refresh_compatibility", "run_drovr_doctor"],
+      );
+    }
     if (
       conflictProjection &&
       identityConflict(error?.outcome)
@@ -518,6 +560,7 @@ function descriptionContradiction(
   description,
   request,
   validateDescriptionStructure,
+  { requireCompatibility = false } = {},
 ) {
   const structureFinding = descriptionStructureContradiction(
     description,
@@ -544,6 +587,39 @@ function descriptionContradiction(
       field: "effective_authority.capability",
       reason: "contradictory",
     };
+  }
+  if (description.compatibility) {
+    const qualification = qualifyCompatibility(
+      description.compatibility,
+      {
+        harness: description.launch.harness,
+        adapter: PRODUCTION_ADAPTER_ID,
+      },
+    );
+    if (qualification.status !== "qualified") {
+      return {
+        field: "compatibility",
+        reason: qualification.reason ?? "unqualified",
+      };
+    }
+    if (!sameCanonicalValue(qualification, description.compatibility)) {
+      return { field: "compatibility", reason: "contradictory" };
+    }
+    if (
+      description.compatibility.status !== "qualified" ||
+      description.compatibility.evidence_digest !==
+        digest(description.compatibility.facts) ||
+      description.comparison_keys?.compatibility !==
+        digest(description.compatibility)
+    ) {
+      return {
+        field: "compatibility",
+        reason: "contradictory",
+      };
+    }
+  }
+  if (requireCompatibility && !description.compatibility) {
+    return { field: "compatibility", reason: "missing" };
   }
   if (!sameCanonicalValue(
     description.effective_authority.dimensions,
@@ -651,6 +727,23 @@ function repairActions() {
     "repair_delegated_runtime_contract",
     "refresh_delegated_runtime_description",
   ];
+}
+
+function compatibilityFindings(compatibility) {
+  const findings = [
+    ...(compatibility?.missing ?? []).map(({ fact, reason }) => ({
+      field: fact,
+      reason: reason ?? "missing",
+    })),
+    ...(compatibility?.mismatches ?? []).map(({ field, reason }) => ({
+      field,
+      reason: reason === "unqualified" ? "unqualified" : "changed",
+    })),
+  ];
+  if (findings.length > 0) return findings;
+  return compatibility?.reason
+    ? [{ field: "compatibility", reason: compatibility.reason }]
+    : [];
 }
 
 function validRequest(request) {

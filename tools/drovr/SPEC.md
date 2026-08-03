@@ -436,6 +436,7 @@ including:
 - `launch_binding_conflict`
 - `launch_binding_missing`
 - `launch_binding_stale`
+- `compatibility_blocked`
 - `agent_lost`
 - `recovery_blocked`
 - `session_missing`

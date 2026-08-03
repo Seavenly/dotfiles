@@ -122,12 +122,16 @@ test("captured pane snapshots round-trip through the semantic replay harness", a
     },
   });
   const replay = createReplayHarness(trace, { harness: "claude" });
-  const replayed = await replay.client.inspectStagedInput("managed-agent", {
-    harness: "claude",
+  const replayed = await replay.harness.inspectStagedInput({
+    agent: {
+      id: "managed-agent",
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      native_session: null,
+    },
   });
 
   assert.equal(captured.display_text, "QUALIFY-ROUNDTRIP-PROMPT");
-  assert.deepEqual(replayed, captured);
+  assert.deepEqual(replayed.snapshot, captured);
   assert.doesNotMatch(JSON.stringify(trace), /\/home\/operator/u);
 });
 

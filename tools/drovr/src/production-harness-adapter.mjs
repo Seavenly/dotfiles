@@ -1,4 +1,33 @@
-import { harnessAdapter } from "./harness-adapter.mjs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import {
+  captureClaudeTranscriptCursor,
+  captureClaudeTranscriptInventory,
+  extractClaudeTurn,
+  locateClaudeTranscript,
+  resolveClaudeInventoryCursor,
+  validateClaudeTranscript,
+} from "./claude-transcript.mjs";
+import {
+  prepareClaudeLaunch,
+  validateClaudeLaunchSpecification,
+} from "./claude.mjs";
+import { validateCodexLaunchSpecification } from "./codex.mjs";
+import {
+  assertQualifiedCompatibility,
+  collectProductionCompatibility,
+  PRODUCTION_ADAPTER_ID,
+  qualifyCompatibility,
+} from "./compatibility.mjs";
+import {
+  captureTranscriptCursor,
+  captureTranscriptInventory,
+  extractCodexTurn,
+  locateCodexTranscript,
+  resolveInventoryCursor,
+  validateCodexTranscript,
+} from "./codex-transcript.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HerdrClient } from "./herdr.mjs";
 import { identityEvidence } from "./semantic-evidence.mjs";
@@ -22,6 +51,9 @@ export function createProductionSemanticHarness({
   monotonicNow,
   clock = monotonicNow ?? (() => performance.now()),
   wallClock = Date.now,
+  compatibility,
+  expectedCompatibility,
+  requireCompatibility = false,
 } = {}) {
   const client =
     herdr ??
@@ -30,8 +62,39 @@ export function createProductionSemanticHarness({
       env,
       run,
       ...(delay ? { delay } : {}),
+  });
+  const native = productionNativeAdapter(harness, env);
+  let qualifiedCompatibility = compatibility;
+
+  async function ensureCompatibility() {
+    if (!requireCompatibility) return qualifiedCompatibility;
+    if (!qualifiedCompatibility) {
+      qualifiedCompatibility = await collectProductionCompatibility({
+        harness,
+        env,
+        run,
+        expected: expectedCompatibility,
+      });
+    }
+    qualifiedCompatibility = qualifyCompatibility(qualifiedCompatibility, {
+      expected: expectedCompatibility,
+      harness,
+      adapter: PRODUCTION_ADAPTER_ID,
     });
-  const native = harnessAdapter(harness, env);
+    try {
+      assertQualifiedCompatibility(qualifiedCompatibility);
+    } catch (error) {
+      throw new DrovrError(
+        `Drovr compatibility is ${qualifiedCompatibility?.reason ?? "unqualified"}`,
+        {
+          code: 0,
+          outcome: "compatibility_blocked",
+          details: { compatibility: qualifiedCompatibility },
+        },
+      );
+    }
+    return qualifiedCompatibility;
+  }
 
   const adapter = {
     schema: "drovr.semantic-harness/v1",
@@ -44,9 +107,11 @@ export function createProductionSemanticHarness({
         observeWorkspace: typeof client.workspaceRecord === "function",
       },
       stagedInput: typeof client.inspectStagedInput === "function",
+      compatibility: requireCompatibility ? "required" : "optional",
     },
 
     async ensureRuntime() {
+      await ensureCompatibility();
       await client.ensureSession?.();
       return { outcome: "ensured" };
     },
@@ -64,8 +129,13 @@ export function createProductionSemanticHarness({
     },
 
     async validateLaunch({ specification } = {}) {
+      const launchCompatibility = await ensureCompatibility();
       await native.validate(specification, { env, run });
-      return { outcome: "validated", evidence: "present" };
+      return {
+        outcome: "validated",
+        evidence: "present",
+        ...(launchCompatibility ? { compatibility: launchCompatibility } : {}),
+      };
     },
 
     async observeAgent(agent) {
@@ -158,6 +228,7 @@ export function createProductionSemanticHarness({
     },
 
     async startAgent({ agent, launchRuntime, registryDirectory } = {}) {
+      await ensureCompatibility();
       const launch = launchRuntime ?? (await native.prepareLaunch?.(
         registryDirectory,
         agent,
@@ -173,6 +244,7 @@ export function createProductionSemanticHarness({
     },
 
     async resumeAgent({ agent, launchRuntime, registryDirectory } = {}) {
+      await ensureCompatibility();
       const launch = launchRuntime ?? (await native.prepareLaunch?.(
         registryDirectory,
         agent,
@@ -211,12 +283,16 @@ export function createProductionSemanticHarness({
     },
 
     async deliverTurn({ agent, prompt, observed } = {}) {
+      await ensureCompatibility();
       const before = observed ?? (await this.observeAgent(agent));
       assertDeliverableAgent(agent, before);
       try {
         await client.prompt(agent.herdr.name, prompt, {
           harness,
-          nativeSession: agent.native_session,
+          nativeSession: agent.native_session ?? before.identity?.native_session,
+          ...(typeof before.identity?.pane === "string"
+            ? { paneId: before.identity.pane }
+            : {}),
           observedBeforeDelivery: before.native,
         });
         return {
@@ -458,6 +534,7 @@ export function createProductionSemanticHarness({
       skipIfAlreadyRequested = false,
       timeoutOutcome = "interrupted",
     } = {}) {
+      await ensureCompatibility();
       const before = await this.observeAgent(agent);
       if (before.evidence !== "present") {
         return turnEvidence(
@@ -471,7 +548,14 @@ export function createProductionSemanticHarness({
       }
       if (!skipIfAlreadyRequested) {
         try {
-          await client.interruptAgent(agent.herdr.name);
+          await client.interruptAgent(agent.herdr.name, {
+            ...(typeof before.identity?.native_session === "string"
+              ? { nativeSession: before.identity.native_session }
+              : {}),
+            ...(before.identity?.pane
+              ? { paneId: before.identity.pane }
+              : {}),
+          });
         } catch (error) {
           return turnEvidence("uncertain", before, {
             error: `native interruption could not be delivered: ${error.message}`,
@@ -547,6 +631,7 @@ export function createProductionSemanticHarness({
     },
 
     async recoverStagedInput({ agent, action, token } = {}) {
+      await ensureCompatibility();
       const inspected = await this.inspectStagedInput({ agent });
       if (inspected.evidence !== "present" || !inspected.snapshot) {
         return {
@@ -567,7 +652,10 @@ export function createProductionSemanticHarness({
           action,
           harness,
           token,
-          nativeSession: agent.native_session,
+          nativeSession: agent.native_session ?? inspected.identity?.native_session,
+          ...(typeof inspected.identity?.pane === "string"
+            ? { paneId: inspected.identity.pane }
+            : {}),
         });
         if (action === "submit") {
           const submitted = await this.observeAgent(agent);
@@ -670,6 +758,7 @@ export function createProductionSemanticHarness({
     },
 
     async stageUnknownInput({ agent, text } = {}) {
+      await ensureCompatibility();
       const before = await this.inspectStagedInput({ agent });
       if (before.outcome !== "ready") {
         return {
@@ -680,7 +769,12 @@ export function createProductionSemanticHarness({
             "managed identity could not be proven before staging unknown input",
         };
       }
-      await client.sendPaneText(agent.herdr.pane_id, text);
+      await client.sendPaneText(agent.herdr.pane_id, text, {
+        agentName: agent.herdr.name,
+        ...(typeof before.identity?.native_session === "string"
+          ? { nativeSession: before.identity.native_session }
+          : {}),
+      });
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const after = await this.inspectStagedInput({ agent });
         if (after.outcome === "recovery_blocked") {
@@ -764,6 +858,7 @@ export function createProductionSemanticHarness({
     },
 
     async attach({ agent, takeover = false } = {}) {
+      await ensureCompatibility();
       const exitCode = await client.attach(agent.herdr.name, { takeover });
       return {
         outcome: exitCode === 0 ? "attached" : "attach_failed",
@@ -784,6 +879,7 @@ export function createProductionSemanticHarness({
       observeLayout: async (paneId) =>
         normalizeLayout(await client.paneLayout?.(paneId)),
       createWorkspace: async ({ cwd, label }) => {
+        await ensureCompatibility();
         if (typeof client.createWorkspace !== "function") return undefined;
         const result = await client.createWorkspace({ cwd, label });
         return {
@@ -793,28 +889,67 @@ export function createProductionSemanticHarness({
         };
       },
       createTaskTab: async ({ workspaceId, cwd, label }) => {
+        await ensureCompatibility();
         if (typeof client.createTab !== "function") return undefined;
         const result = await client.createTab({ workspaceId, cwd, label });
         return { tabId: result.tabId, rootPaneId: result.paneId };
       },
-      splitTaskPane: ({ paneId, direction, ratio, cwd }) =>
-        client.splitPane?.({ paneId, direction, ratio, cwd }),
-      renameTask: (tabId, label) =>
-        acknowledgeTopologyMutation(() => client.renameTab?.(tabId, label)),
-      renameGroup: (workspaceId, label) =>
-        acknowledgeTopologyMutation(() =>
+      splitTaskPane: async ({ paneId, direction, ratio, cwd }) => {
+        await ensureCompatibility();
+        return client.splitPane?.({ paneId, direction, ratio, cwd });
+      },
+      renameTask: async (tabId, label) => {
+        await ensureCompatibility();
+        return acknowledgeTopologyMutation(() => client.renameTab?.(tabId, label));
+      },
+      renameGroup: async (workspaceId, label) => {
+        await ensureCompatibility();
+        return acknowledgeTopologyMutation(() =>
           client.renameWorkspace?.(workspaceId, label),
-        ),
-      renameAgentPane: (paneId, label) =>
-        acknowledgeTopologyMutation(() => client.renamePane?.(paneId, label)),
-      closePane: (paneId) =>
-        acknowledgeTopologyMutation(() => client.closePane?.(paneId)),
-      closeTaskTab: (tabId) =>
-        acknowledgeTopologyMutation(() => client.closeTab?.(tabId)),
-      closeGroupWorkspace: (workspaceId) =>
-        acknowledgeTopologyMutation(() => client.closeWorkspace?.(workspaceId)),
-      sendUnknownInput: (paneId, text) =>
-        acknowledgeTopologyMutation(() => client.sendPaneText?.(paneId, text)),
+        );
+      },
+      renameAgentPane: async (paneId, label) => {
+        await ensureCompatibility();
+        return acknowledgeTopologyMutation(() => client.renamePane?.(paneId, label));
+      },
+      closePane: async (paneId) => {
+        await ensureCompatibility();
+        return acknowledgeTopologyMutation(() => client.closePane?.(paneId));
+      },
+      closeTaskTab: async (tabId) => {
+        await ensureCompatibility();
+        return acknowledgeTopologyMutation(() => client.closeTab?.(tabId));
+      },
+      closeGroupWorkspace: async (workspaceId) => {
+        await ensureCompatibility();
+        return acknowledgeTopologyMutation(() => client.closeWorkspace?.(workspaceId));
+      },
+      sendUnknownInput: async ({ agent, text } = {}) => {
+        await ensureCompatibility();
+        const before = await adapter.observeAgent(agent);
+        if (before.evidence !== "present") {
+          throw new DrovrError(
+            `managed agent ${agent?.id ?? "unknown"} identity is ${before.evidence}`,
+            {
+              code: 0,
+              outcome: before.evidence === "absent"
+                ? "agent_lost"
+                : "recovery_blocked",
+              details: { observation: before },
+            },
+          );
+        }
+        return acknowledgeTopologyMutation(() => client.sendPaneText(
+          agent.herdr.pane_id,
+          text,
+          {
+            agentName: agent.herdr.name,
+            ...(typeof before.identity?.native_session === "string"
+              ? { nativeSession: before.identity.native_session }
+              : {}),
+          },
+        ));
+      },
     },
   };
   return adapter;
@@ -1254,4 +1389,39 @@ function configuredStabilityInterval(env) {
   return Number.isSafeInteger(configured) && configured >= 0
     ? Math.min(configured, MAX_STAGED_INPUT_STABILITY_MS)
     : 30_000;
+}
+
+function productionNativeAdapter(harness, env = process.env) {
+  const home = env.HOME ?? homedir();
+  if (harness === "claude") {
+    return {
+      label: "Claude",
+      root: join(env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"), "projects"),
+      locate: locateClaudeTranscript,
+      validateTranscript: validateClaudeTranscript,
+      captureCursor: captureClaudeTranscriptCursor,
+      captureInventory: captureClaudeTranscriptInventory,
+      resolveInventory: resolveClaudeInventoryCursor,
+      extract: extractClaudeTurn,
+      inventoryBeforeDelivery: true,
+      prepareLaunch: prepareClaudeLaunch,
+      startAgent: (herdr, options) => herdr.startClaudeAgent(options),
+      resumeAgent: (herdr, options) => herdr.resumeClaudeAgent(options),
+      validate: validateClaudeLaunchSpecification,
+    };
+  }
+  return {
+    label: "Codex",
+    root: join(env.CODEX_HOME ?? join(home, ".codex"), "sessions"),
+    locate: locateCodexTranscript,
+    validateTranscript: validateCodexTranscript,
+    captureCursor: captureTranscriptCursor,
+    captureInventory: captureTranscriptInventory,
+    resolveInventory: resolveInventoryCursor,
+    extract: extractCodexTurn,
+    prepareLaunch: async () => ({}),
+    startAgent: (herdr, options) => herdr.startCodexAgent(options),
+    resumeAgent: (herdr, options) => herdr.resumeCodexAgent(options),
+    validate: validateCodexLaunchSpecification,
+  };
 }
