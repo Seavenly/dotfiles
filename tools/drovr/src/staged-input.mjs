@@ -28,6 +28,82 @@ export async function inspectAgentStagedInput(agentId, dependencies = {}) {
   return inspectContext(registryDirectory, context, herdr, observed);
 }
 
+export async function stageUnknownAgentInput(
+  agentId,
+  { text },
+  dependencies = {},
+) {
+  const env = dependencies.env ?? process.env;
+  const registryDirectory = stateDirectory(env);
+  const initial = await stagedInputContext(registryDirectory, agentId);
+  const herdr = client(initial, env, dependencies);
+  if (!(await herdr.sessionRunning())) {
+    throw new DrovrError(
+      `Herdr session ${initial.group.herdr.session} is not running`,
+      { code: 0, outcome: "session_missing" },
+    );
+  }
+  return withResourceLock(
+    registryDirectory,
+    taskLifecycleLockKey(initial.task.id),
+    () =>
+      withResourceLock(
+        registryDirectory,
+        `agent-key:${initial.task.id}:${initial.agent.key}`,
+        async () => {
+          const context = await stagedInputContext(registryDirectory, agentId);
+          const observed = await settledOwnedAgent(context, herdr);
+          const before = await inspectContext(
+            registryDirectory,
+            context,
+            herdr,
+            observed,
+          );
+          if (before.status !== "ready") {
+            throw blocked("managed Claude agent already has staged input");
+          }
+          const turns = await readRecords(registryDirectory, "turns");
+          if (
+            turns.some(
+              (candidate) =>
+                candidate.agent_id === agentId &&
+                candidate.status === "working",
+            )
+          ) {
+            throw new DrovrError(
+              `agent ${agentId} already has an open logical turn`,
+              { code: 0, outcome: "task_busy" },
+            );
+          }
+          await herdr.sendPaneText(context.agent.herdr.pane_id, text);
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            const after = await settledOwnedAgent(context, herdr);
+            const inspected = await inspectContext(
+              registryDirectory,
+              context,
+              herdr,
+              after,
+            );
+            if (inspected.status === "staged_input") {
+              if (
+                inspected.staged_input.ownership === "unknown" &&
+                inspected.staged_input.display_text === text
+              ) {
+                return inspected;
+              }
+              throw blocked("staged input differs from the authorized text");
+            }
+            await herdr.delay(25);
+          }
+          throw new DrovrError(
+            "Herdr did not expose the exact staged unknown input",
+            { code: 4, outcome: "adapter_failure" },
+          );
+        },
+      ),
+  );
+}
+
 export async function recoverAgentStagedInput(
   agentId,
   { action, token },

@@ -72,7 +72,9 @@ case "\${1:-} \${2:-}" in
     printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"${nativeSession}"}}]}}\\n' "$status" "$seq"
     ;;
   "agent read")
-    if [[ -f "$state/cleared" ]]; then
+    if [[ -f "$state/staged-by-command" ]]; then
+      printf '────────\\n❯ %s\\n────────\\n' "$(cat "$state/staged-by-command")"
+    elif [[ -f "$state/cleared" ]]; then
       printf '────────\\n❯\\n────────\\n'
     elif [[ -f "$state/replaced" ]]; then
       printf '────────\\n❯ replacement staged work\\n────────\\n'
@@ -85,9 +87,16 @@ case "\${1:-} \${2:-}" in
   "agent send-keys")
     [[ \${3:-} == managed-agent ]]
     if [[ \${4:-} == enter ]]; then touch "$state/submitted"
-    elif [[ \${4:-} == esc && \${5:-} == esc ]]; then touch "$state/cleared"
+    elif [[ \${4:-} == esc && \${5:-} == esc ]]; then
+      rm -f "$state/staged-by-command"
+      touch "$state/cleared"
     else exit 1
     fi
+    printf '{"result":{"status":"sent"}}\\n'
+    ;;
+  "pane send-text")
+    [[ \${3:-} == pane-agent-1 ]]
+    printf '%s' "\${4:-}" > "$state/staged-by-command"
     printf '{"result":{"status":"sent"}}\\n'
     ;;
   "agent prompt")
@@ -299,6 +308,31 @@ esac
   assert.equal(asked.result.status, "completed");
   assert.equal(asked.result.turn.result.text, "Follow-up result");
   assert.equal((await readRecords(registryDirectory, "turns")).length, 3);
+
+  const unknownPromptFile = join(scratch, "unknown-prompt.txt");
+  await writeFile(unknownPromptFile, "QUALIFY-UNKNOWN-STAGED");
+  const stagedByCommand = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
+    "--stage-unknown-file",
+    unknownPromptFile,
+  ]);
+  assert.equal(stagedByCommand.result.status, "staged_input");
+  assert.equal(stagedByCommand.result.staged_input.ownership, "unknown");
+  assert.equal(
+    stagedByCommand.result.staged_input.display_text,
+    "QUALIFY-UNKNOWN-STAGED",
+  );
+  assert.equal((await readRecords(registryDirectory, "turns")).length, 3);
+  const clearedStagedByCommand = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
+    "--clear-unknown",
+    stagedByCommand.result.staged_input.token,
+  ]);
+  assert.equal(clearedStagedByCommand.result.status, "cleared");
 });
 
 async function runDrovr(env, argv) {

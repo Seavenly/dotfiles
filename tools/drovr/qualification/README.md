@@ -90,11 +90,14 @@ and are recorded in the evidence invocation list rather than repeated in every
 scenario entry.
 
 Unknown staged-input scenarios explicitly label their native text as a
-runner-authored stimulus. The clear-and-reuse and transient-reappearance
-entries remain separate because they guard distinct incident outcomes: stable
-absence is a pass for the former, while any reappearance is retained as a
-typed contradiction for the latter. Only the stable-clear scenario is included
-in the unattended set.
+runner-authored stimulus. The runner stages that exact text through the
+guarded public `agent staged-input --stage-unknown-file` command, which targets
+the exact registered pane without submitting it and verifies the resulting
+unknown snapshot. The clear-and-reuse and transient-reappearance entries remain
+separate because they guard distinct incident outcomes: stable absence is a
+pass for the former, while any reappearance is retained as a typed contradiction
+for the latter. Only the stable-clear scenario is included in the unattended
+set.
 
 The runner may read native transcripts and Herdr observations as evidence, but
 it must exercise behavior only through public Drovr commands. It must never

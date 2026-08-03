@@ -181,6 +181,7 @@ drovr agent start TASK_ID --key AGENT_KEY
 drovr agent list --task TASK_ID --status active --harness codex
 drovr agent get AGENT_ID
 drovr agent staged-input AGENT_ID
+drovr agent staged-input AGENT_ID --stage-unknown-file PROMPT_FILE
 drovr agent retire AGENT_ID
 drovr task close TASK_ID
 drovr task close TASK_ID --force
@@ -242,6 +243,12 @@ acting. Submit continues the original uncertain logical turn and later
 `turn get` can project its exactly correlated transcript result. Clear sends one
 guarded interrupt and verifies the same Claude session remains settled with an
 empty prompt box. A stale token never mutates the terminal.
+
+`--stage-unknown-file PATH` is a guarded diagnostic and qualification stimulus.
+It writes the file's normalized text to the exact registered Claude pane without
+sending a submit key or creating a logical turn, then requires the same text to
+be visible as an unknown staged-input snapshot. It refuses an active turn,
+existing staged text, an unsettled agent, or a changed pane or native session.
 
 `drovr attach` remains a raw interactive terminal. Native interrupt or EOF keys
 can terminate Claude and its Herdr pane, so staged-input inspection and recovery

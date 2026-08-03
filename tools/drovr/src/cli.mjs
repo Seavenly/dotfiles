@@ -42,6 +42,7 @@ import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
 import {
   inspectAgentStagedInput,
   recoverAgentStagedInput,
+  stageUnknownAgentInput,
 } from "./staged-input.mjs";
 
 const HELP = `Usage:
@@ -68,7 +69,7 @@ const HELP = `Usage:
   drovr agent start TASK_ID [options]
   drovr agent list [--task TASK_ID] [--status STATUS] [--harness HARNESS]
   drovr agent get AGENT_ID
-  drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN]
+  drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN | --stage-unknown-file PATH]
   drovr agent retire AGENT_ID
   drovr attach AGENT_ID [--takeover] [--json-result]
 
@@ -367,13 +368,20 @@ export async function runCli(argv) {
     let context;
     if (trailing.length === 0) {
       context = await inspectAgentStagedInput(agentId);
+    } else if (
+      trailing.length === 2 &&
+      trailing[0] === "--stage-unknown-file"
+    ) {
+      context = await stageUnknownAgentInput(agentId, {
+        text: await resolvePrompt(undefined, trailing[1]),
+      });
     } else {
       if (
         trailing.length !== 2 ||
         !["--submit", "--clear", "--clear-unknown"].includes(trailing[0])
       ) {
         invalidArguments(
-          "agent staged-input accepts --submit TOKEN, --clear TOKEN, or --clear-unknown TOKEN",
+          "agent staged-input accepts --submit TOKEN, --clear TOKEN, --clear-unknown TOKEN, or --stage-unknown-file PATH",
         );
       }
       context = await recoverAgentStagedInput(agentId, {

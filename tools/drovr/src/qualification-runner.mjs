@@ -28,7 +28,6 @@ const PROCESS_EXIT_GRACE_MS = 5_000;
 const CLEANUP_LIMIT_MS = 65_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
-export const HERDR_DETACH_SEQUENCE = "\u0001q";
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -359,6 +358,8 @@ async function runUnknownStagedInputScenario({
   const groupKey = `qualification-${scenario.id}-${suffix}`;
   const launch = qualificationLaunch(doctorExecution.envelope, "claude");
   const unknownText = `QUALIFY-UNKNOWN-STAGED-${suffix}`;
+  const unknownPromptPath = join(scratch, "unknown-staged-input.txt");
+  await writeFile(unknownPromptPath, unknownText);
   const records = [
     invocationRecord(
       ["drovr", "doctor"],
@@ -416,9 +417,9 @@ async function runUnknownStagedInputScenario({
     );
   }
   const agentId = agentStart?.execution.envelope?.result?.agent?.id;
-  let attached;
-  let beforeAttach;
-  let afterAttach;
+  let stagedDelivery;
+  let beforeStage;
+  let afterStage;
   let inspected;
   let cleared;
   const stabilityObservations = [];
@@ -429,20 +430,20 @@ async function runUnknownStagedInputScenario({
       ["turn", "list", "--agent", agentId],
       "turn list",
     );
-    beforeAttach = await invoke(["agent", "get", agentId], "agent get");
-    if (beforeAttach.execution.envelope?.result?.status === "completed") {
-      attached = await invokeAttachWithStagedText({
-        command: drovrCommand,
-        agentId,
-        text: unknownText,
-        cwd,
-        env: scenarioEnvironment,
-        now,
-        deadline,
-        timeoutMs: 15_000,
-      });
-      records.push(attached.record);
-      afterAttach = await invoke(["agent", "get", agentId], "agent get");
+    beforeStage = await invoke(["agent", "get", agentId], "agent get");
+    if (beforeStage.execution.envelope?.result?.status === "completed") {
+      stagedDelivery = await invoke(
+        [
+          "agent",
+          "staged-input",
+          agentId,
+          "--stage-unknown-file",
+          unknownPromptPath,
+        ],
+        "agent staged-input",
+        { timeoutMs: 15_000 },
+      );
+      afterStage = await invoke(["agent", "get", agentId], "agent get");
       inspected = await invoke(
         ["agent", "staged-input", agentId],
         "agent staged-input",
@@ -534,7 +535,11 @@ async function runUnknownStagedInputScenario({
   const afterWorkspace = await workspaceFingerprint(cwd);
   const staged = inspected?.execution.envelope?.result?.staged_input;
   const exactUnknownStaged =
-    attached?.execution.envelope?.result?.status === "detached" &&
+    stagedDelivery?.execution.envelope?.result?.status === "staged_input" &&
+    stagedDelivery.execution.envelope.result.staged_input?.ownership ===
+      "unknown" &&
+    stagedDelivery.execution.envelope.result.staged_input?.display_text ===
+      unknownText &&
     inspected?.execution.envelope?.result?.status === "staged_input" &&
     staged?.ownership === "unknown" &&
     staged?.display_text === unknownText;
@@ -550,8 +555,9 @@ async function runUnknownStagedInputScenario({
   );
   const observedNativeSessions = nativeSessionValues([
     agentStart,
-    beforeAttach,
-    afterAttach,
+    beforeStage,
+    stagedDelivery,
+    afterStage,
     inspected,
     cleared,
     ...stabilityObservations,
@@ -575,7 +581,6 @@ async function runUnknownStagedInputScenario({
       "QUALIFY-CLAUDE-REUSE-OK";
   const envelopeClaimsUnknownSubmission = records.some(
     ({ envelope }) =>
-      envelope.command !== "attach" &&
       JSON.stringify(envelope).includes(unknownText) &&
       envelope.result?.turn?.input_count > 0,
   );
@@ -608,10 +613,9 @@ async function runUnknownStagedInputScenario({
     clearInvocations.every(({ argv }) =>
       argv[argv.indexOf("--clear-unknown") + 1] === staged?.token,
     );
-  const observedAgentIds = records.flatMap(({ envelope }) => [
-    envelope.result?.agent?.id,
-    envelope.command === "attach" ? envelope.result?.agent_id : null,
-  ]).filter((id) => typeof id === "string");
+  const observedAgentIds = records
+    .map(({ envelope }) => envelope.result?.agent?.id)
+    .filter((id) => typeof id === "string");
   const managedAgentPreserved =
     observedAgentIds.length > 0 &&
     observedAgentIds.every((id) => id === agentId);
@@ -635,7 +639,7 @@ async function runUnknownStagedInputScenario({
     callerWorkspaceUnchanged &&
     unrelatedResourcesUnchanged;
   const preconditionBlocked =
-    beforeAttach?.execution.envelope?.result?.status !== "completed";
+    beforeStage?.execution.envelope?.result?.status !== "completed";
   const runnerFailure =
     executionFailure(records) ??
     deadlineFailure(deadline) ??
@@ -2335,141 +2339,6 @@ async function executeDrovr(command, args, options) {
     };
     child.stdin.end(input);
   });
-}
-
-async function invokeAttachWithStagedText({
-  command,
-  agentId,
-  text,
-  cwd,
-  env,
-  now,
-  timeoutMs,
-  deadline,
-}) {
-  const publicArgv = [
-    "drovr",
-    "attach",
-    agentId,
-    "--json-result",
-  ];
-  const startedAt = now().toISOString();
-  const commandLine = [command, ...publicArgv.slice(1)]
-    .map(shellQuote)
-    .join(" ");
-  const scriptArgs =
-    platform() === "darwin"
-      ? ["-q", "/dev/null", command, ...publicArgv.slice(1)]
-      : ["-q", "-f", "-c", commandLine, "/dev/null"];
-  const execution = await executeInteractiveAttach("script", scriptArgs, {
-    cwd,
-    env,
-    timeoutMs: deadline.commandTimeout(timeoutMs),
-    text,
-  });
-  const envelopeError = validateDrovrEnvelope("attach", execution.envelope);
-  if (envelopeError) {
-    execution.envelope = invalidEnvelope("attach", envelopeError);
-    execution.exitCode ||= 5;
-  }
-  const finishedAt = now().toISOString();
-  return {
-    execution,
-    record: invocationRecord(publicArgv, execution, startedAt, finishedAt),
-  };
-}
-
-function executeInteractiveAttach(command, args, { cwd, env, timeoutMs, text }) {
-  return new Promise((resolveExecution) => {
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    activeChildren.add(child);
-    const stdout = [];
-    const stderr = [];
-    let failure;
-    let timedOut = false;
-    let settled = false;
-    const stageTimer = setTimeout(() => child.stdin.write(text), 1_000);
-    const detachTimer = setTimeout(
-      () => child.stdin.write(HERDR_DETACH_SEQUENCE),
-      2_000,
-    );
-    const deadline = setTimeout(() => {
-      timedOut = true;
-      terminateChild(child);
-    }, timeoutMs);
-    const hardDeadline = setTimeout(
-      () => finish(null, true),
-      timeoutMs + PROCESS_EXIT_GRACE_MS,
-    );
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.once("error", (error) => {
-      failure = error;
-    });
-    child.once("close", (code) => finish(code, false));
-    const finish = (code, hardBound) => {
-      if (settled) return;
-      settled = true;
-      activeChildren.delete(child);
-      clearTermination(child);
-      clearTimeout(stageTimer);
-      clearTimeout(detachTimer);
-      clearTimeout(deadline);
-      clearTimeout(hardDeadline);
-      if (hardBound) {
-        child.stdout.destroy();
-        child.stderr.destroy();
-        child.stdin.destroy();
-        child.unref();
-      }
-      const output = Buffer.concat(stdout).toString("utf8");
-      const interrupted = interruptionRequested && !timedOut;
-      const envelope = parseLastEnvelope(
-        output,
-        interrupted
-          ? "Qualification was interrupted by the operator"
-          : timedOut || hardBound
-          ? `interactive attach exceeded ${timeoutMs}ms`
-          : failure?.message ?? Buffer.concat(stderr).toString("utf8").trim(),
-      );
-      resolveExecution({
-        exitCode: interrupted ? 130 : timedOut || hardBound ? 124 : (code ?? (failure ? 127 : 5)),
-        envelope: interrupted
-          ? invalidEnvelope("attach", "Qualification was interrupted by the operator", "operator_interrupted")
-          : timedOut || hardBound
-            ? invalidEnvelope("attach", `interactive attach exceeded ${timeoutMs}ms`, "process_timeout")
-            : envelope,
-      });
-    };
-  });
-}
-
-function parseLastEnvelope(output, failureMessage) {
-  const marker = '{"schema":"drovr.command/v1","command":"attach"';
-  const start = output.lastIndexOf(marker);
-  if (start === -1) {
-    return invalidEnvelope(
-      "attach",
-      failureMessage || "interactive attach returned no completion envelope",
-    );
-  }
-  const line = output.slice(start).split(/\r?\n/u)[0].trim();
-  try {
-    const envelope = JSON.parse(line);
-    if (typeof envelope.ok !== "boolean") throw new Error("missing ok");
-    return envelope;
-  } catch (error) {
-    return invalidEnvelope("attach", `invalid completion envelope: ${error.message}`);
-  }
-}
-
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
 }
 
 function terminateChild(child) {

@@ -433,6 +433,10 @@ export class HerdrClient {
     ]);
   }
 
+  async sendPaneText(paneId, text) {
+    return this.sessionCommand(["pane", "send-text", paneId, text]);
+  }
+
   async attach(name, { takeover = false } = {}) {
     const args = ["--session", this.session, "agent", "attach", name];
     if (takeover) args.push("--takeover");

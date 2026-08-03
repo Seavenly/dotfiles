@@ -49,6 +49,10 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr turn cancel TURN_ID/);
   assert.match(stdout, /drovr task open \[options\]/);
   assert.match(stdout, /drovr agent start TASK_ID \[options\]/);
+  assert.match(
+    stdout,
+    /drovr agent staged-input AGENT_ID \[--submit TOKEN \| --clear TOKEN \| --clear-unknown TOKEN \| --stage-unknown-file PATH\]/,
+  );
   assert.match(stdout, /drovr agent retire AGENT_ID/);
   assert.match(stdout, /drovr task close TASK_ID/);
   assert.match(

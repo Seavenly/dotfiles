@@ -16,7 +16,6 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import {
-  HERDR_DETACH_SEQUENCE,
   interruptQualification,
   compareUnrelatedGroups,
   nativeSessionValues,
@@ -659,15 +658,6 @@ test("prohibited-mutation receipts distinguish proof from unobserved state", () 
     })[0].unchanged,
     false,
   );
-});
-
-test("interactive qualification uses the tracked Herdr prefix to detach", async () => {
-  const configPath = fileURLToPath(
-    new URL("../../../config/herdr/config.toml", import.meta.url),
-  );
-  const config = await readFile(configPath, "utf8");
-  assert.match(config, /^prefix = "ctrl\+a"$/mu);
-  assert.equal(HERDR_DETACH_SEQUENCE, "\u0001q");
 });
 
 test("full live selection is catalog-derived and excludes operator-staged scenarios", async () => {
