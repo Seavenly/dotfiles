@@ -98,8 +98,8 @@ async function paneForNewAgent(context, harness, registryDirectory) {
       context.group.herdr.workspace_id = workspace.workspaceId;
       await writeRecord(registryDirectory, "groups", context.group);
       tab = {
-        tab_id: workspace.tabId,
-        root_pane_id: workspace.rootPaneId,
+        tabId: workspace.tabId,
+        rootPaneId: workspace.rootPaneId,
       };
       await harness.topology.renameTask(tab.tabId, context.task.label);
     }

@@ -48,7 +48,7 @@ export function createProductionSemanticHarness({
 
     async ensureRuntime() {
       await client.ensureSession?.();
-      return { outcome: "running", evidence: "present" };
+      return { outcome: "ensured" };
     },
 
     async observeRuntime() {
@@ -86,12 +86,15 @@ export function createProductionSemanticHarness({
             );
         const byName = new Map(
           observed
-            .filter(Boolean)
-            .map((candidate, index) => [
-              candidate.name ?? agents[index]?.herdr?.name,
-              candidate,
-            ]),
+            .filter((candidate) => candidate?.name)
+            .map((candidate) => [candidate.name, candidate]),
         );
+        if (observed.length === agents.length) {
+          for (const [index, candidate] of observed.entries()) {
+            if (candidate?.name || !agents[index]?.herdr?.name) continue;
+            byName.set(agents[index].herdr.name, candidate);
+          }
+        }
         const records = agents.map((agent) =>
           agentObservation(agent, byName.get(agent.herdr.name)),
         );
@@ -451,11 +454,7 @@ export function createProductionSemanticHarness({
       timeoutOutcome = "interrupted",
     } = {}) {
       const before = await this.observeAgent(agent);
-      if (
-        before.evidence !== "present" ||
-        !agent.native_session ||
-        before.identity?.native_session !== agent.native_session
-      ) {
+      if (before.evidence !== "present") {
         return turnEvidence(
           before.evidence === "absent" ? "agent_lost" : "uncertain",
           before,
@@ -667,7 +666,7 @@ export function createProductionSemanticHarness({
 
     async stageUnknownInput({ agent, text } = {}) {
       const before = await this.inspectStagedInput({ agent });
-      if (before.evidence !== "absent") {
+      if (before.outcome !== "ready") {
         return { ...before, outcome: "recovery_blocked" };
       }
       await client.sendPaneText(agent.herdr.pane_id, text);
@@ -1121,11 +1120,14 @@ function nativeIdentityError(harness, observation) {
   if (observation?.evidence === "absent") {
     return "managed native agent was absent during the operation";
   }
+  if (observation?.evidence === "changed") {
+    if (observation.reason === "unbound pane changed") {
+      return "managed pane identity changed during the operation";
+    }
+    return `Herdr reported a different ${harnessLabel(harness)} native session identity`;
+  }
   if (!observation?.expected_identity?.native_session) {
     return `Herdr did not report the ${harnessLabel(harness)} native session identity`;
-  }
-  if (observation?.evidence === "changed") {
-    return `Herdr reported a different ${harnessLabel(harness)} native session identity`;
   }
   if (
     observation?.evidence === "uncertain" &&

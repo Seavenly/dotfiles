@@ -34,6 +34,10 @@ IDs remain exact opaque values in durable records and semantic results. Callers
 pass them back to the interface but do not interpret their native format or
 sequence Herdr commands around them.
 
+`ensureRuntime` is a mutating setup acknowledgement; it does not claim that a
+runtime was independently observed. Callers that need runtime evidence use
+`observeRuntime`.
+
 ## Operations
 
 The interface groups operations by the logical decision they support:
@@ -78,7 +82,9 @@ observations, but it does not add a second polling or correlation loop.
 an interruption that remains unconfirmed, and changed or uncertain identity.
 Force cleanup requests the `uncertain` timeout outcome; ordinary cancellation
 uses the public `interrupted` outcome. Neither path treats an unconfirmed
-interrupt as cancellation.
+interrupt as cancellation. An agent without a durable native-session binding
+may still be interrupted when its managed name and pane identity are observed
+exactly; this does not infer or persist a native session.
 
 ## Claude and Codex
 
@@ -152,6 +158,11 @@ The migration from low-level callers follows these rules:
    They do not create a local Herdr polling or transcript-correlation seam.
 6. Read-only attach observes runtime presence without creating a missing
    runtime session as a side effect.
+
+Public observation warnings use `agent_lost` for an unsafe managed identity.
+`native_session_mismatch` identifies a changed or unbound managed identity;
+`session_observation_uncertain` identifies an observation that could not prove
+identity. These are warning reasons, not additional lifecycle statuses.
 
 The deletion test in `test/harness-interface.test.mjs` asserts that the
 representative turn, lifecycle, recovery, staged-input, creation, observation,

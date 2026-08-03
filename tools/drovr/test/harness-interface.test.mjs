@@ -83,6 +83,38 @@ test("identity evidence distinguishes exact, missing, changed, and uncertain obs
   ]);
 });
 
+test("production interrupt permits an exact managed identity without native binding", async () => {
+  let observations = 0;
+  let interruptions = 0;
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: null,
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    herdr: {
+      async agentRecord() {
+        observations += 1;
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: observations === 1 ? "working" : "idle",
+          agent_session: { value: "native-observed" },
+        };
+      },
+      async interruptAgent() {
+        interruptions += 1;
+      },
+    },
+  });
+
+  const result = await harness.interruptTurn({ agent });
+
+  assert.equal(result.outcome, "cancelled");
+  assert.equal(interruptions, 1);
+});
+
 test("production turn correlation settles uncertain without an overall timeout", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-harness-correlation-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -203,6 +235,29 @@ test("production unknown-input staging settles on a mismatch or disappearing age
   });
   assert.equal(mismatch.outcome, "recovery_blocked");
   assert.equal(mismatch.evidence, "changed");
+
+  let absentWrites = 0;
+  const absentHarness = createProductionSemanticHarness({
+    harness: "claude",
+    herdr: {
+      async agentRecord() {
+        return null;
+      },
+      async inspectStagedInput() {
+        return null;
+      },
+      async sendPaneText() {
+        absentWrites += 1;
+      },
+    },
+  });
+  const absent = await absentHarness.stageUnknownInput({
+    agent,
+    text: "authorized text",
+  });
+  assert.equal(absent.outcome, "recovery_blocked");
+  assert.equal(absent.evidence, "absent");
+  assert.equal(absentWrites, 0);
 
   let disappearingCalls = 0;
   const disappearingHarness = createProductionSemanticHarness({

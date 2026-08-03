@@ -296,5 +296,29 @@ async function requireRuntime(harness, session) {
 function publicRecoveryOutcome(outcome) {
   if (outcome === "clear_contradicted") return "recovery_blocked";
   if (outcome === "clear_unstable") return "uncertain";
-  return outcome ?? "uncertain";
+  if (outcome === "adapter_failure") return "adapter_failure";
+  if (PUBLIC_RECOVERY_OUTCOMES.has(outcome)) return outcome;
+  return "uncertain";
 }
+
+const PUBLIC_RECOVERY_OUTCOMES = new Set([
+  "completed",
+  "still_running",
+  "needs_input",
+  "cancelled",
+  "interrupted",
+  "uncertain",
+  "task_busy",
+  "task_closed",
+  "turn_closed",
+  "configuration_conflict",
+  "caller_key_conflict",
+  "launch_binding_conflict",
+  "launch_binding_missing",
+  "launch_binding_stale",
+  "agent_lost",
+  "recovery_blocked",
+  "session_missing",
+  "unsupported_configuration",
+  "unsupported_transcript",
+]);

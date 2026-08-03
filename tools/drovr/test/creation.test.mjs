@@ -743,6 +743,33 @@ test("first agent recreates a task tab when its registered root disappeared", as
   });
 });
 
+test("first agent recreates its workspace when the registered workspace disappeared", async (t) => {
+  const fixture = await firstAgentTopologyFixture(
+    t,
+    {
+      async paneRecord() {
+        return null;
+      },
+      async tabRecord() {
+        return null;
+      },
+    },
+    { workspaceExists: false },
+  );
+
+  const started = await fixture.start();
+
+  assert.equal(started.agent.herdr.pane_id, "pane-new");
+  assert.equal(fixture.agentStarts.length, 1);
+  const [task] = await readRecords(fixture.registryDirectory, "tasks");
+  assert.deepEqual(task.herdr, {
+    tab_id: "tab-new",
+    root_pane_id: "pane-new",
+  });
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  assert.equal(group.herdr.workspace_id, "workspace-new");
+});
+
 test("first agent refuses a root pane moved to another tab", async (t) => {
   const fixture = await firstAgentTopologyFixture(t, {
     async paneRecord() {
@@ -951,7 +978,11 @@ async function readinessFixture(
   };
 }
 
-async function firstAgentTopologyFixture(t, observations) {
+async function firstAgentTopologyFixture(
+  t,
+  observations,
+  { workspaceExists = true } = {},
+) {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-first-agent-pane-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const cwd = join(scratch, "work");
@@ -988,7 +1019,14 @@ async function firstAgentTopologyFixture(t, observations) {
     async ensureSession() {},
     ...observations,
     async workspaceRecord() {
-      return { workspace_id: "workspace-first" };
+      return workspaceExists ? { workspace_id: "workspace-first" } : null;
+    },
+    async createWorkspace() {
+      return {
+        workspaceId: "workspace-new",
+        paneId: "pane-new",
+        tabId: "tab-new",
+      };
     },
     async createTab() {
       return { tabId: "tab-new", paneId: "pane-new" };
