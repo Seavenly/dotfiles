@@ -113,6 +113,28 @@ test("production interrupt permits an exact managed identity without native bind
 
   assert.equal(result.outcome, "cancelled");
   assert.equal(interruptions, 1);
+
+  let blockedInterruptions = 0;
+  const reboundHarness = createProductionSemanticHarness({
+    harness: "codex",
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-rebound",
+          agent_status: "working",
+        };
+      },
+      async interruptAgent() {
+        blockedInterruptions += 1;
+      },
+    },
+  });
+  const rebound = await reboundHarness.interruptTurn({ agent });
+
+  assert.equal(rebound.outcome, "uncertain");
+  assert.match(rebound.error, /managed pane identity changed/u);
+  assert.equal(blockedInterruptions, 0);
 });
 
 test("production turn correlation settles uncertain without an overall timeout", async (t) => {

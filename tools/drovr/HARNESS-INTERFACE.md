@@ -83,8 +83,10 @@ an interruption that remains unconfirmed, and changed or uncertain identity.
 Force cleanup requests the `uncertain` timeout outcome; ordinary cancellation
 uses the public `interrupted` outcome. Neither path treats an unconfirmed
 interrupt as cancellation. An agent without a durable native-session binding
-may still be interrupted when its managed name and pane identity are observed
-exactly; this does not infer or persist a native session.
+may still be interrupted when its managed identity is exact and no conflicting
+identity is observed. An unbound pane rebind without a corroborating native
+identity remains blocked; interruption does not infer or persist a native
+session.
 
 ## Claude and Codex
 

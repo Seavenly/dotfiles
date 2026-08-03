@@ -667,7 +667,13 @@ export function createProductionSemanticHarness({
     async stageUnknownInput({ agent, text } = {}) {
       const before = await this.inspectStagedInput({ agent });
       if (before.outcome !== "ready") {
-        return { ...before, outcome: "recovery_blocked" };
+        return {
+          ...before,
+          outcome: "recovery_blocked",
+          reason:
+            before.reason ??
+            "managed identity could not be proven before staging unknown input",
+        };
       }
       await client.sendPaneText(agent.herdr.pane_id, text);
       for (let attempt = 0; attempt < 100; attempt += 1) {
