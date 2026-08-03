@@ -26,6 +26,8 @@ const execFileAsync = promisify(execFileCallback);
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const PROCESS_EXIT_GRACE_MS = 5_000;
 const CLEANUP_LIMIT_MS = 65_000;
+const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
+const SETUP_COMMAND_LIMIT_MS = 10_000;
 export const HERDR_DETACH_SEQUENCE = "\u0001q";
 const activeChildren = new Set();
 const terminatingChildren = new Map();
@@ -117,11 +119,20 @@ export async function runQualification({
 
 export function selectScenarios(catalog, scenarioIds, { fullLive = false } = {}) {
   if (fullLive) {
-    return catalog.scenarios.filter(
+    const selected = catalog.scenarios.filter(
       ({ execution }) =>
         execution.kind === "real_herdr_harness" &&
         execution.unattended === true,
     );
+    const missingExecutor = selected.find(
+      ({ id }) => !scenarioExecutors.has(id),
+    );
+    if (missingExecutor) {
+      throw new QualificationUsageError(
+        `unattended scenario has no executor: ${missingExecutor.id}`,
+      );
+    }
+    return selected;
   }
   if (!Array.isArray(scenarioIds) || scenarioIds.length === 0) {
     throw new QualificationUsageError("at least one --scenario is required");
@@ -272,7 +283,7 @@ async function runScenarioPrerequisites({
       owned_resources: ownedResources,
       resource_dispositions: ownedResources.map((resource) => ({
         ...resource,
-        disposition: "absent",
+        disposition: resourceDisposition(resource.kind, true),
       })),
       prohibited_mutations_observed: prohibitedMutationObservations(
         scenario.prohibited_mutations,
@@ -453,7 +464,7 @@ async function runUnknownStagedInputScenario({
           staged.token,
         ],
         "agent staged-input",
-        { timeoutMs: 30_000 },
+        { timeoutMs: 15_000 },
       );
       const stabilityMs = parseDuration(
         scenario.execution.limits.stability_interval,
@@ -484,11 +495,11 @@ async function runUnknownStagedInputScenario({
             "ask",
             agentId,
             "--timeout",
-            "2m",
+            "60s",
             "Reply exactly: QUALIFY-CLAUDE-REUSE-OK",
           ],
           "ask",
-          { timeoutMs: 125_000 },
+          { timeoutMs: 65_000 },
         );
       }
     }
@@ -574,12 +585,36 @@ async function runUnknownStagedInputScenario({
       ({ execution: observation }) => observation.envelope?.result?.turn,
     ),
     reuseTurnId: reuse?.execution.envelope?.result?.turn?.id,
-    unknownPayloadSha256: createHash("sha256")
+    unknownPayloadSha256: `sha256:${createHash("sha256")
       .update(unknownText)
-      .digest("hex"),
+      .digest("hex")}`,
   });
+  const turnHistoryObserved =
+    Array.isArray(beforeTurnList?.execution.envelope?.result?.turns) &&
+    Array.isArray(afterTurnList?.execution.envelope?.result?.turns) &&
+    afterTurnDetails.length ===
+      afterTurnList.execution.envelope.result.turns.length &&
+    afterTurnDetails.every(
+      ({ execution: observation }) => observation.envelope?.ok === true,
+    );
   const unknownTextSubmitted =
     envelopeClaimsUnknownSubmission || !noUnknownLogicalInput;
+  const clearInvocations = records.filter(
+    ({ argv }) => argv[1] === "agent" && argv[2] === "staged-input" &&
+      argv.includes("--clear-unknown"),
+  );
+  const clearedOnlyExactSnapshot =
+    clearInvocations.length <= 1 &&
+    clearInvocations.every(({ argv }) =>
+      argv[argv.indexOf("--clear-unknown") + 1] === staged?.token,
+    );
+  const observedAgentIds = records.flatMap(({ envelope }) => [
+    envelope.result?.agent?.id,
+    envelope.command === "attach" ? envelope.result?.agent_id : null,
+  ]).filter((id) => typeof id === "string");
+  const managedAgentPreserved =
+    observedAgentIds.length > 0 &&
+    observedAgentIds.every((id) => id === agentId);
   const cleanupComplete = cleanup?.execution.envelope?.result?.status === "closed";
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
@@ -715,11 +750,14 @@ async function runUnknownStagedInputScenario({
       prohibited_mutations_observed: prohibitedMutationObservations(
         scenario.prohibited_mutations,
         {
-          fullyObserved: true,
+          fullyObserved:
+            scenario.id === "claude_unknown_staged_input_clear_and_reuse" &&
+            exactUnknownStaged &&
+            turnHistoryObserved,
           unchanged:
             !unknownTextSubmitted &&
-            exactUnknownStaged &&
-            sameAgentReuse &&
+            clearedOnlyExactSnapshot &&
+            managedAgentPreserved &&
             callerWorkspaceUnchanged,
           basis: [
             "public turn history",
@@ -1587,10 +1625,9 @@ async function runPromptFileScenario({
     deadline,
   });
   const beforeGroups = await invoke(["group", "list"], "group list");
-  const behaviorTimeoutMs = Math.max(
-    1_000,
-    parseDuration(limits.max_elapsed) - 30_000,
-  );
+  const behaviorTimeoutMs = isOwnedRecovery
+    ? 45_000
+    : Math.max(1_000, parseDuration(limits.max_elapsed) - 60_000);
   const delegate = await invoke(
     [
       "delegate",
@@ -1990,10 +2027,18 @@ async function invokeDrovr({
 
 function createInvocationRecorder({ records, ...defaults }) {
   return async (args, expectedCommand, options = {}) => {
+    const defaultTimeoutMs = ["task open", "agent start"].includes(
+      expectedCommand,
+    )
+      ? SETUP_COMMAND_LIMIT_MS
+      : requiredSuccessCommands.has(expectedCommand)
+      ? OBSERVATION_COMMAND_LIMIT_MS
+      : undefined;
     const result = await invokeDrovr({
       ...defaults,
       args,
       expectedCommand,
+      ...(defaultTimeoutMs ? { timeoutMs: defaultTimeoutMs } : {}),
       ...options,
     });
     records.push(result.record);
@@ -2564,11 +2609,29 @@ export function proveUnknownInputWasNotSubmitted({
 }) {
   if (!Array.isArray(beforeTurns) || !Array.isArray(afterTurns)) return false;
   if (
+    [...beforeTurns, ...afterTurns].some(
+      (turn) =>
+        typeof turn?.id !== "string" ||
+        !Number.isInteger(turn?.input_count),
+    )
+  ) {
+    return false;
+  }
+  if (
     typeof unknownPayloadSha256 === "string" &&
     afterTurns.some((turn) =>
       turn?.inputs?.some(
         (input) => input?.payload_sha256 === unknownPayloadSha256,
       ))
+  ) {
+    return false;
+  }
+  const afterById = new Map(afterTurns.map((turn) => [turn.id, turn]));
+  if (
+    beforeTurns.some((before) => {
+      const after = afterById.get(before.id);
+      return !after || after.input_count !== before.input_count;
+    })
   ) {
     return false;
   }
@@ -2674,6 +2737,18 @@ function aggregateStatus(results) {
   return "pass";
 }
 
+const requiredSuccessCommands = new Set([
+  "group list",
+  "task list",
+  "agent list",
+  "turn list",
+  "turn get",
+  "agent get",
+  "group close",
+  "task open",
+  "agent start",
+]);
+
 function executionFailure(records) {
   const outcomes = new Map([
     ["operator_interrupted", "Qualification was interrupted by the operator."],
@@ -2686,8 +2761,10 @@ function executionFailure(records) {
     if (outcomes.has(outcome)) {
       return { code: outcome, message: outcomes.get(outcome) };
     }
-    if (record.envelope?.command === "doctor") continue;
-    if (record.envelope?.ok !== true) {
+    if (
+      requiredSuccessCommands.has(record.envelope?.command) &&
+      record.envelope?.ok !== true
+    ) {
       return {
         code: outcome ?? "drovr_command_failed",
         message:

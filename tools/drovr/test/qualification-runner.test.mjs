@@ -200,6 +200,14 @@ esac
   assert.equal(evidence.limits.measured.retries, 0);
   assert.equal(evidence.invocations.length, 7);
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
+  const catalog = await loadQualificationCatalog();
+  const scenario = catalog.scenarios.find(
+    ({ id }) => id === "claude_multiline_paste_conversion",
+  );
+  const emittedAssertions = new Set(evidence.assertions.map(({ id }) => id));
+  assert.ok(
+    scenario.safety_invariants.every((id) => emittedAssertions.has(id)),
+  );
   assert.ok(
     evidence.cleanup_receipt.resource_dispositions.some(
       ({ kind, disposition }) => kind === "group" && disposition === "closed",
@@ -449,14 +457,14 @@ test("unknown-input evidence helpers fail closed on missing observations", () =>
 });
 
 test("unknown-input proof permits only the one expected reuse turn", () => {
-  const unknownPayloadSha256 = "unknown-sha";
+  const unknownPayloadSha256 = `sha256:${"a".repeat(64)}`;
   assert.equal(
     proveUnknownInputWasNotSubmitted({
       beforeTurns: [],
       afterTurns: [{
         id: "reuse-1",
         input_count: 1,
-        inputs: [{ payload_sha256: "reuse-sha" }],
+        inputs: [{ payload_sha256: `sha256:${"b".repeat(64)}` }],
       }],
       reuseTurnId: "reuse-1",
       unknownPayloadSha256,
@@ -487,6 +495,141 @@ test("unknown-input proof permits only the one expected reuse turn", () => {
       unknownPayloadSha256,
     }),
     false,
+  );
+  assert.equal(
+    proveUnknownInputWasNotSubmitted({
+      beforeTurns: [{ id: "existing-1", input_count: 1 }],
+      afterTurns: [
+        { id: "existing-1", input_count: 2, inputs: [{ sequence: 1 }, { sequence: 2 }] },
+        { id: "reuse-1", input_count: 1 },
+      ],
+      reuseTurnId: "reuse-1",
+      unknownPayloadSha256,
+    }),
+    false,
+  );
+});
+
+test("owned staged-input recovery may pass after the expected delegate failure", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-owned-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  await mkdir(fakeBin);
+  await mkdir(join(scratch, "caller"));
+  await executable(
+    join(fakeBin, "drovr"),
+    `fixture="$XDG_STATE_HOME/owned-fixture"
+mkdir -p "$fixture"
+case "\${1:-} \${2:-}" in
+  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:owned"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}' ;;
+  "group list")
+    if [[ -f "$fixture/group" && ! -f "$fixture/closed" ]]; then
+      key=$(cat "$fixture/group")
+      printf '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[{"id":"group-owned-1","key":"%s"}]}}\n' "$key"
+    else
+      printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}'
+    fi ;;
+  "delegate --group")
+    printf '%s' "$3" > "$fixture/group"
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":false,"error":{"outcome":"adapter_failure","message":"Claude already has staged prompt text"}}'
+    exit 4 ;;
+  "task list") printf '%s\n' '{"schema":"drovr.command/v1","command":"task list","ok":true,"result":{"status":"completed","tasks":[{"id":"task-owned-1","key":"task-owned","cwd":"/tmp/work"}]}}' ;;
+  "agent list") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent list","ok":true,"result":{"status":"completed","agents":[{"id":"agent-owned-1","key":"agent-owned","harness":"claude","model":"haiku","effort":"low"}]}}' ;;
+  "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-owned-1","key":"agent-owned","harness":"claude","model":"haiku","effort":"low","native_session":"claude-owned-session"}}}' ;;
+  "turn list") printf '%s\n' '{"schema":"drovr.command/v1","command":"turn list","ok":true,"result":{"status":"completed","turns":[{"id":"turn-owned-1","status":"uncertain","input_count":1}]}}' ;;
+  "agent staged-input")
+    if [[ "$*" == *--submit* ]]; then
+      printf '%s\n' '{"schema":"drovr.command/v1","command":"agent staged-input","ok":true,"result":{"status":"submitted","agent":{"id":"agent-owned-1"}}}'
+    else
+      printf '%s\n' '{"schema":"drovr.command/v1","command":"agent staged-input","ok":true,"result":{"status":"staged_input","agent":{"id":"agent-owned-1"},"staged_input":{"ownership":"drovr","turn_id":"turn-owned-1","token":"owned-token"}}}'
+    fi ;;
+  "turn get") printf '%s\n' '{"schema":"drovr.command/v1","command":"turn get","ok":true,"result":{"status":"late_result","group":{"id":"group-owned-1"},"task":{"id":"task-owned-1"},"agent":{"id":"agent-owned-1"},"turn":{"id":"turn-owned-1","status":"uncertain","input_count":1,"late_result":{"text":"QUALIFY-CLAUDE-OWNED-STAGED-OK"}}}}' ;;
+  "group close")
+    touch "$fixture/closed"
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"group close","ok":true,"result":{"status":"closed","group":{"id":"group-owned-1"}}}' ;;
+  *) printf '%s\n' '{"schema":"drovr.command/v1","command":"unexpected","ok":false,"error":{"outcome":"unexpected_call","message":"unexpected"}}'; exit 5 ;;
+esac
+`,
+  );
+
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [
+      runner,
+      "--scenario",
+      "claude_owned_staged_input_submit",
+      "--evidence-dir",
+      evidenceDirectory,
+    ],
+    {
+      encoding: "utf8",
+      cwd: join(scratch, "caller"),
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    },
+  );
+  const report = JSON.parse(stdout);
+  assert.equal(report.status, "pass");
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+  assert.equal(evidence.result.disposition, "pass");
+  assert.equal(
+    evidence.assertions.find(
+      ({ id }) => id === "exact_owned_snapshot_submitted_to_original_turn",
+    ).disposition,
+    "pass",
+  );
+});
+
+test("blocked unknown-input setup does not claim a prohibited mutation", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-unknown-block-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  await mkdir(fakeBin);
+  await mkdir(join(scratch, "caller"));
+  await executable(
+    join(fakeBin, "drovr"),
+    `case "\${1:-} \${2:-}" in
+  "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:unknown"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}' ;;
+  "group list") printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}' ;;
+  "task open") printf '%s\n' '{"schema":"drovr.command/v1","command":"task open","ok":true,"result":{"status":"completed","group":{"id":"group-unknown-1"},"task":{"id":"task-unknown-1"}}}' ;;
+  "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-unknown-1"},"agent":{"id":"agent-unknown-1","harness":"claude","model":"haiku","effort":"low","native_session":"claude-unknown-session"}}}' ;;
+  "turn list") printf '%s\n' '{"schema":"drovr.command/v1","command":"turn list","ok":true,"result":{"status":"completed","turns":[]}}' ;;
+  "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"working","agent":{"id":"agent-unknown-1","native_session":"claude-unknown-session"}}}' ;;
+  "group close") printf '%s\n' '{"schema":"drovr.command/v1","command":"group close","ok":true,"result":{"status":"closed","group":{"id":"group-unknown-1"}}}' ;;
+  *) printf '%s\n' '{"schema":"drovr.command/v1","command":"unexpected","ok":false,"error":{"outcome":"unexpected_call","message":"unexpected"}}'; exit 5 ;;
+esac
+`,
+  );
+
+  let failure;
+  try {
+    await execFileAsync(
+      process.execPath,
+      [
+        runner,
+        "--scenario",
+        "claude_unknown_staged_input_clear_and_reuse",
+        "--evidence-dir",
+        evidenceDirectory,
+      ],
+      {
+        encoding: "utf8",
+        cwd: join(scratch, "caller"),
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      },
+    );
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure?.code, 3);
+  const report = JSON.parse(failure.stdout);
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+  assert.equal(evidence.result.disposition, "blocked");
+  assert.ok(
+    evidence.cleanup_receipt.prohibited_mutations_observed.every(
+      ({ unchanged }) => unchanged === "not_observed",
+    ),
   );
 });
 
@@ -540,6 +683,20 @@ test("full live selection is catalog-derived and excludes operator-staged scenar
   );
   assert.ok(
     !selected.some(({ id }) => id === "claude_owned_staged_input_submit"),
+  );
+  assert.ok(
+    !selected.some(
+      ({ id }) => id === "claude_staged_input_transient_clear_reappears",
+    ),
+  );
+  const invalidCatalog = structuredClone(catalog);
+  invalidCatalog.scenarios.push({
+    ...structuredClone(selected[0]),
+    id: "live_scenario_without_executor",
+  });
+  assert.throws(
+    () => selectScenarios(invalidCatalog, [], { fullLive: true }),
+    /unattended scenario has no executor/u,
   );
 });
 

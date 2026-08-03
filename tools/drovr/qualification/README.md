@@ -52,6 +52,10 @@ uncertain-turn staged-input precondition cannot be manufactured on a healthy
 system through public commands. Run it by name as a bounded incident-capture
 scenario: it attempts delivery and exercises recovery only when that exact
 owned receipt emerges; healthy direct completion is not a recovery pass.
+`claude_staged_input_transient_clear_reappears` is also explicit-only because
+it shares the stable-clear executor and is useful when capturing a suspected
+reappearance incident, not as a second unattended Claude run with duplicate
+behavior.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or
@@ -68,6 +72,9 @@ The embedded `drovr.qualification-cleanup-receipt/v1` binds every created
 resource to its disposition, records prohibited-mutation checks, proves the
 caller-owned workspace was preserved, and retains unresolved cleanup duties
 instead of manufacturing a clean pass.
+Turn resources are reported as `retained` after successful cleanup because
+their durable history remains in the isolated registry until the scenario
+state root is removed.
 
 The live runner stays on public Drovr commands. For Claude prompt-file
 scenarios it proves end-to-end completion, one logical input, prompt-source
@@ -86,7 +93,8 @@ Unknown staged-input scenarios explicitly label their native text as a
 runner-authored stimulus. The clear-and-reuse and transient-reappearance
 entries remain separate because they guard distinct incident outcomes: stable
 absence is a pass for the former, while any reappearance is retained as a
-typed contradiction for the latter.
+typed contradiction for the latter. Only the stable-clear scenario is included
+in the unattended set.
 
 The runner may read native transcripts and Herdr observations as evidence, but
 it must exercise behavior only through public Drovr commands. It must never
