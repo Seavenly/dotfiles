@@ -14,6 +14,11 @@ import {
   traceRequest,
 } from "./trace.mjs";
 
+// A status-only fast-completion escape is safe only for short literal input;
+// longer single-line prompts must expose either their literal text or an
+// attachment token before Drovr sends the submit key.
+const CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH = 256;
+
 function parseJson(output, operation) {
   try {
     return JSON.parse(output);
@@ -578,6 +583,7 @@ export class HerdrClient {
     // for progress and completion.
     let attachmentReady = false;
     let literalPromptReady = false;
+    let noAttachmentPolls = 0;
     let stagedAfterDelivery;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -603,10 +609,29 @@ export class HerdrClient {
           stagedAfterDelivery = snapshot;
         }
       }
+      if (!attachmentReady && !literalPromptReady) noAttachmentPolls += 1;
+      if (
+        noAttachmentPolls >= 2 &&
+        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
+        !prompt.includes("\n") &&
+        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
+      ) {
+        return result;
+      }
       if (attachmentReady || literalPromptReady) break;
       await this.delay(25);
     }
     if (!attachmentReady && !literalPromptReady) {
+      // A short prompt can complete before the first post-delivery poll. A
+      // new done observation proves that the native agent transitioned, while
+      // the exact transcript remains completion authority.
+      if (
+        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
+        !prompt.includes("\n") &&
+        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
+      ) {
+        return result;
+      }
       throw new DrovrError(
         `Herdr did not expose Claude's staged attachment for ${name}`,
         { code: 4, outcome: "adapter_failure" },
@@ -775,10 +800,18 @@ function promptSubmissionObserved(observed) {
 
 function assertNativeSession(name, observed, expected) {
   if (observed?.agent_session?.value === expected) return;
-  throw new DrovrError(`Herdr native session changed for ${name}`, {
-    code: 0,
-    outcome: "recovery_blocked",
-  });
+  const observedSession = observed?.agent_session?.value;
+  const identityObserved =
+    typeof observedSession === "string" && observedSession.length > 0;
+  throw new DrovrError(
+    identityObserved
+      ? `Herdr native session changed for ${name}`
+      : `Herdr did not report a native session for ${name}`,
+    {
+      code: 0,
+      outcome: identityObserved ? "recovery_blocked" : "uncertain",
+    },
+  );
 }
 
 function promptCompletionObserved(before, after) {

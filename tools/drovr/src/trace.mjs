@@ -38,6 +38,7 @@ const PRIVATE_KEY = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+
 const PRIVATE_KEY_GLOBAL = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/gu;
 const SAFE_STRUCTURED_TEXT = /^(?:(?:[-─\s❯])|\[Pasted text #\d+(?: [^\]\r\n]*)?\]|(?:QUALIFY|REPLAY|TRACE)-[A-Z0-9_-]+|\[REDACTED_TEXT sha256:[0-9a-f]{64}\]|\[REDACTED_PRIVATE_KEY\])+$/u;
 const PASTED_TEXT = /\[Pasted text #\d+(?: [^\]\r\n]*)?\]/gu;
+const PUBLIC_URL_SCHEMES = new Set(["http", "https", "ws", "wss"]);
 const TRACE_LOCK_RETRY_MS = 5;
 const TRACE_LOCK_STALE_MS = 30_000;
 
@@ -146,6 +147,7 @@ export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_S
   let captureFailure;
   let failureRecorded = false;
   let startedAtMs = parseStartedAt(startedAt);
+  let journalStateCache;
   const append = async (event) => {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await appendFile(path, `${JSON.stringify(event)}\n`, {
@@ -173,45 +175,59 @@ export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_S
         }) + "\n",
         { flag: "wx", mode: 0o600 },
       );
-    } catch (error) {
-      if (error?.code !== "EEXIST") return;
+    } catch {
+      // The trace.capture event is the primary signal when the marker already
+      // exists or the sidecar cannot be written.
     }
   };
-  const appendFailure = async () => {
+  const updateJournalStateCache = async (event) => {
+    const fileStats = await traceJournalStats(path);
+    if (!fileStats) throw new Error("trace journal disappeared after append");
+    journalStateCache = {
+      sequence: event.sequence,
+      previousAt: event.at_ms,
+      ...fileStats,
+    };
+  };
+  const appendFailure = async ({ skipJournal = false } = {}) => {
     if (failureRecorded) return;
-    try {
-      await withTraceJournalLock(path, async () => {
-        if (await failureMarkerExists()) {
-          failureRecorded = true;
-          return;
-        }
-        const state = await readJournalState(path);
-        sequence = state.sequence;
-        previousAt = state.previousAt;
-        startedAtMs ??= Date.now() - previousAt;
-        const event = {
-          kind: "error",
-          operation: "trace.capture",
-          sequence: sequence + 1,
-          at_ms: traceAt(Date.now(), startedAtMs, previousAt),
-          payload: {
-            request: { resource: "trace", action: "capture", target: null },
-            error: {
-              code: "trace_capture_failed",
-              outcome: "adapter_failure",
-              message: "Trace capture failed before the event could be persisted.",
+    if (!skipJournal) {
+      try {
+        await withTraceJournalLock(path, async () => {
+          if (await failureMarkerExists()) {
+            failureRecorded = true;
+            return;
+          }
+          const state = await readJournalStateIfChanged(path, journalStateCache);
+          journalStateCache = state;
+          sequence = state.sequence;
+          previousAt = state.previousAt;
+          startedAtMs ??= Date.now() - previousAt;
+          const event = {
+            kind: "error",
+            operation: "trace.capture",
+            sequence: sequence + 1,
+            at_ms: traceAt(Date.now(), startedAtMs, previousAt),
+            payload: {
+              request: { resource: "trace", action: "capture", target: null },
+              error: {
+                code: "trace_capture_failed",
+                outcome: "adapter_failure",
+                message: "Trace capture failed before the event could be persisted.",
+              },
             },
-          },
-        };
-        await append(event);
-        sequence = event.sequence;
-        previousAt = event.at_ms;
-        failureRecorded = true;
-      });
-    } catch {
-      // The durable marker below is the cross-process failure signal. If the
-      // journal directory itself is unavailable, the caller still keeps the
-      // native operation's result independent from capture.
+          };
+          await append(event);
+          await updateJournalStateCache(event);
+          sequence = event.sequence;
+          previousAt = event.at_ms;
+          failureRecorded = true;
+        });
+      } catch {
+        // The durable marker below is the cross-process failure signal. If the
+        // journal directory itself is unavailable, the caller still keeps the
+        // native operation's result independent from capture.
+      }
     }
     await writeFailureMarker();
   };
@@ -229,7 +245,8 @@ export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_S
               failureRecorded = true;
               return;
             }
-            const state = await readJournalState(path);
+            const state = await readJournalStateIfChanged(path, journalStateCache);
+            journalStateCache = state;
             sequence = state.sequence;
             previousAt = state.previousAt;
             startedAtMs ??= Date.now() - previousAt;
@@ -243,6 +260,7 @@ export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_S
             );
             assertSafeValue(captured);
             await append(captured);
+            await updateJournalStateCache(captured);
             sequence = captured.sequence;
             previousAt = captured.at_ms;
           });
@@ -251,7 +269,7 @@ export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_S
         }
         if (failure) {
           captureFailure = failure;
-          await appendFailure();
+          await appendFailure({ skipJournal: failure?.code === "ETIMEDOUT" });
         }
       });
       return queue;
@@ -264,12 +282,35 @@ export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_S
   return journal;
 }
 
-async function readJournalState(path) {
+async function readJournalStateIfChanged(path, cachedState) {
+  const fileStats = await traceJournalStats(path);
+  if (!fileStats) {
+    if (
+      cachedState?.size === 0 &&
+      cachedState?.mtimeMs === 0 &&
+      cachedState?.ino === 0
+    ) {
+      return cachedState;
+    }
+    return emptyJournalState();
+  }
+  if (
+    cachedState &&
+    cachedState.size === fileStats.size &&
+    cachedState.mtimeMs === fileStats.mtimeMs &&
+    cachedState.ino === fileStats.ino
+  ) {
+    return cachedState;
+  }
+  return readJournalState(path, fileStats);
+}
+
+async function readJournalState(path, fileStats) {
   let source;
   try {
     source = await readFile(path, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT") return { sequence: 0, previousAt: 0 };
+    if (error?.code === "ENOENT") return emptyJournalState();
     throw error;
   }
   let sequence = 0;
@@ -291,7 +332,25 @@ async function readJournalState(path) {
     sequence = event.sequence;
     previousAt = event.at_ms;
   }
-  return { sequence, previousAt };
+  return { sequence, previousAt, ...fileStats };
+}
+
+async function traceJournalStats(path) {
+  try {
+    const fileStats = await stat(path);
+    return {
+      size: fileStats.size,
+      mtimeMs: fileStats.mtimeMs,
+      ino: fileStats.ino,
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function emptyJournalState() {
+  return { sequence: 0, previousAt: 0, size: 0, mtimeMs: 0, ino: 0 };
 }
 
 async function withTraceJournalLock(path, operation) {
@@ -652,7 +711,14 @@ function hasUnsafeAbsolutePath(value) {
 
 function isPublicUrlPath(source, pathValue, offset) {
   if (!pathValue.startsWith("//")) return false;
-  return /^[A-Za-z][A-Za-z0-9+.-]*:$/.test(source.slice(0, offset));
+  const schemeMatch = source
+    .slice(0, offset)
+    .match(/(?:^|[^\w.-])([A-Za-z][A-Za-z0-9+.-]*):$/u);
+  if (!schemeMatch || !PUBLIC_URL_SCHEMES.has(schemeMatch[1].toLowerCase())) {
+    return false;
+  }
+  const authority = pathValue.slice(2).split(/[/?#]/u, 1)[0];
+  return authority.length > 0 && !authority.includes("@");
 }
 
 function digestText(value) {

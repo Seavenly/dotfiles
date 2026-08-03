@@ -117,6 +117,30 @@ test("captureTrace redacts credentials and machine-local paths before persistenc
     ),
   );
 
+  const urls = captureTrace(
+    rawTrace({
+      events: [
+        {
+          sequence: 1,
+          at_ms: 0,
+          kind: "agent_observation",
+          operation: "agent.list",
+          payload: {
+            public_url: "https://example.com/x",
+            inline_url: "see https://example.com/x",
+            credential_url: "https://alice:hunter2@internal.example.com/repo.git",
+            token_url: "https://user:ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@github.com/o/r",
+            local_url: "file:///home/operator/private-project",
+          },
+        },
+      ],
+    }),
+  );
+  const serializedUrls = JSON.stringify(urls);
+  assert.match(serializedUrls, /https:\/\/example\.com\/x/u);
+  assert.doesNotMatch(serializedUrls, /hunter2|ghp_A{10,}|file:\/\/\/home\/operator/u);
+  assert.match(serializedUrls, /file:<path:sha256:[0-9a-f]{64}>/u);
+
   assert.equal(
     redactPaneSnapshot(
       "Claude status\n────────\n❯ QUALIFY-TRACE-PANE\n────────\n/home/operator/private-project",
