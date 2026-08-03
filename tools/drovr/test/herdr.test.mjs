@@ -41,6 +41,28 @@ test("Herdr mutations do not inherit the observation bound", async () => {
   assert.equal(observedTimeout, undefined);
 });
 
+test("literal staged input targets the exact managed pane without a submit key", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      return JSON.stringify({ result: { status: "sent" } });
+    },
+  });
+
+  await client.sendPaneText("pane-agent-1", "QUALIFY-UNKNOWN-STAGED");
+
+  assert.deepEqual(calls, [[
+    "--session",
+    "delegates",
+    "pane",
+    "send-text",
+    "pane-agent-1",
+    "QUALIFY-UNKNOWN-STAGED",
+  ]]);
+});
+
 test("Herdr waits preserve their caller-selected bound", async () => {
   const observedTimeouts = [];
   const client = new HerdrClient({

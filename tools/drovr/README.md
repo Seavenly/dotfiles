@@ -15,6 +15,19 @@ and runner evidence shapes with:
 npm --silent --prefix tools/drovr run qualification:validate
 ```
 
+Run one named black-box scenario or the unattended live set with isolated
+runtime state and retained evidence:
+
+```sh
+qualification_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --scenario codex_live_prompt_sources_and_reuse \
+  --evidence-dir "$qualification_evidence_dir"
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --full-live \
+  --evidence-dir "$qualification_evidence_dir"
+```
+
 After convergence, diagnose the local runtime:
 
 ```sh
@@ -168,6 +181,7 @@ drovr agent start TASK_ID --key AGENT_KEY
 drovr agent list --task TASK_ID --status active --harness codex
 drovr agent get AGENT_ID
 drovr agent staged-input AGENT_ID
+drovr agent staged-input AGENT_ID --stage-unknown-file PROMPT_FILE
 drovr agent retire AGENT_ID
 drovr task close TASK_ID
 drovr task close TASK_ID --force
@@ -229,6 +243,12 @@ acting. Submit continues the original uncertain logical turn and later
 `turn get` can project its exactly correlated transcript result. Clear sends one
 guarded interrupt and verifies the same Claude session remains settled with an
 empty prompt box. A stale token never mutates the terminal.
+
+`--stage-unknown-file PATH` is a guarded diagnostic and qualification stimulus.
+It writes the file's normalized text to the exact registered Claude pane without
+sending a submit key or creating a logical turn, then requires the same text to
+be visible as an unknown staged-input snapshot. It refuses an active turn,
+existing staged text, an unsettled agent, or a changed pane or native session.
 
 `drovr attach` remains a raw interactive terminal. Native interrupt or EOF keys
 can terminate Claude and its Herdr pane, so staged-input inspection and recovery

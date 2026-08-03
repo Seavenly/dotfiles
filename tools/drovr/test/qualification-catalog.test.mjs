@@ -40,10 +40,13 @@ test("the versioned qualification catalog is complete and runner-ready", async (
   assert.deepEqual(Object.keys(catalog.safety_invariants).sort(), [
     "caller_owned_workspace_preservation",
     "exact_agent_identity",
+    "exact_launch_configuration",
     "exact_native_session_identity",
     "non_submission_of_unknown_text",
     "prompt_ownership",
+    "prompt_source_preservation",
     "snapshot_token_conflicts",
+    "unrelated_herdr_resource_preservation",
   ]);
 
   for (const scenario of catalog.scenarios) {

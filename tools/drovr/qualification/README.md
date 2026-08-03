@@ -20,17 +20,84 @@ catalog that omits either execution class.
 
 ## Evidence contract
 
-A future runner records one `drovr.qualification-evidence/v1` result per
-scenario. The catalog defines its required fields before runner implementation,
-including exact version bindings, model and reasoning effort, declared and
-measured limits, ordered public invocations, typed observations, assertions,
-and one embedded cleanup receipt. Deterministic replay records why live use was
-not needed. A live run records why replay could not prove the behavior.
+The black-box runner records one `drovr.qualification-evidence/v1` result per
+scenario. It validates every public `drovr.command/v1` envelope and records
+exact source, integration, executable, model, and reasoning-effort versions;
+declared and measured limits; ordered public invocations; typed observations;
+assertions; and one embedded cleanup receipt.
+
+Run one focused live scenario and retain its evidence outside the caller-owned
+workspace:
+
+```sh
+qualification_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --scenario codex_live_prompt_sources_and_reuse \
+  --evidence-dir "$qualification_evidence_dir"
+```
+
+Run the cost-bounded Codex-primary set plus the minimal Claude-specific set
+unattended:
+
+```sh
+qualification_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:run -- \
+  --full-live \
+  --evidence-dir "$qualification_evidence_dir"
+```
+
+`--full-live` is derived from catalog scenarios marked `unattended = true`.
+`claude_owned_staged_input_submit` is intentionally excluded because its exact
+uncertain-turn staged-input precondition cannot be manufactured on a healthy
+system through public commands. Run it by name as a bounded incident-capture
+scenario: it attempts delivery and exercises recovery only when that exact
+owned receipt emerges; healthy direct completion is not a recovery pass.
+`claude_staged_input_transient_clear_reappears` is also explicit-only because
+it shares the stable-clear executor and is useful when capturing a suspected
+reappearance incident, not as a second unattended Claude run with duplicate
+behavior.
+
+Exit status `0` means every selected scenario passed. Status `3` means
+prerequisites blocked execution, a replay executor was explicitly deferred, or
+a mixed run was incomplete; status `4` means a scenario assertion failed. Each
+non-pass retains evidence. Missing or incompatible prerequisites never become
+a pass.
+
+Catalog `max_elapsed` bounds scenario work through the final behavioral
+observation. Cleanup then receives a separate 65-second wall-time budget,
+recorded under `limits.cleanup`; command termination grace is included in both
+bounds. Exhausting either budget produces typed failure evidence.
 
 The embedded `drovr.qualification-cleanup-receipt/v1` binds every created
 resource to its disposition, records prohibited-mutation checks, proves the
 caller-owned workspace was preserved, and retains unresolved cleanup duties
 instead of manufacturing a clean pass.
+Turn resources are reported as `retained` after successful cleanup because
+their durable history remains in the isolated registry until the scenario
+state root is removed.
+
+The live runner stays on public Drovr commands. For Claude prompt-file
+scenarios it proves end-to-end completion, one logical input, prompt-source
+preservation, exact identities, and an exact sentinel result. Private
+paste-conversion and submit mechanics are covered by the adapter tests and are
+not overstated as directly observed live evidence. A prohibited mutation is
+reported as `not_observed` whenever every clause cannot be checked through the
+public interface.
+
+Catalog `public_commands` list the behavior under qualification. Common
+isolation, discovery, observation, and cleanup commands are runner mechanics
+and are recorded in the evidence invocation list rather than repeated in every
+scenario entry.
+
+Unknown staged-input scenarios explicitly label their native text as a
+runner-authored stimulus. The runner stages that exact text through the
+guarded public `agent staged-input --stage-unknown-file` command, which targets
+the exact registered pane without submitting it and verifies the resulting
+unknown snapshot. The clear-and-reuse and transient-reappearance entries remain
+separate because they guard distinct incident outcomes: stable absence is a
+pass for the former, while any reappearance is retained as a typed contradiction
+for the latter. Only the stable-clear scenario is included in the unattended
+set.
 
 The runner may read native transcripts and Herdr observations as evidence, but
 it must exercise behavior only through public Drovr commands. It must never
@@ -46,11 +113,11 @@ Herdr resources to manufacture success.
   establish. Each such scenario names its harness and hard turn, retry, and
   elapsed-time limits.
 
-Every live scenario uses the smallest configured supported model and lowest
-supported reasoning effort that can exercise the mechanism; any deviation is
-recorded in its evidence. Generic live coverage belongs on Codex. Claude is
-reserved for Claude-specific behavior and the minimum later shared-parity
-evidence.
+Every live scenario uses the tracked qualification configuration in
+`config/drovr/config.toml`: `gpt-5.6-luna` with `low` effort for Codex and
+`haiku` with `low` effort for Claude. Any future deviation must be recorded in
+its evidence. Generic live coverage belongs on Codex. Claude is reserved for
+Claude-specific behavior and the minimum shared-parity evidence.
 
 ## Scope
 

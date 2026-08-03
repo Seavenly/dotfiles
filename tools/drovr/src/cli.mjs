@@ -42,6 +42,7 @@ import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
 import {
   inspectAgentStagedInput,
   recoverAgentStagedInput,
+  stageUnknownAgentInput,
 } from "./staged-input.mjs";
 
 const HELP = `Usage:
@@ -68,9 +69,9 @@ const HELP = `Usage:
   drovr agent start TASK_ID [options]
   drovr agent list [--task TASK_ID] [--status STATUS] [--harness HARNESS]
   drovr agent get AGENT_ID
-  drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN]
+  drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN | --stage-unknown-file PATH]
   drovr agent retire AGENT_ID
-  drovr attach AGENT_ID [--takeover]
+  drovr attach AGENT_ID [--takeover] [--json-result]
 
 Commands:
   doctor    Diagnose configuration and runtime prerequisites
@@ -367,13 +368,20 @@ export async function runCli(argv) {
     let context;
     if (trailing.length === 0) {
       context = await inspectAgentStagedInput(agentId);
+    } else if (
+      trailing.length === 2 &&
+      trailing[0] === "--stage-unknown-file"
+    ) {
+      context = await stageUnknownAgentInput(agentId, {
+        text: await resolvePrompt(undefined, trailing[1]),
+      });
     } else {
       if (
         trailing.length !== 2 ||
         !["--submit", "--clear", "--clear-unknown"].includes(trailing[0])
       ) {
         invalidArguments(
-          "agent staged-input accepts --submit TOKEN, --clear TOKEN, or --clear-unknown TOKEN",
+          "agent staged-input accepts --submit TOKEN, --clear TOKEN, --clear-unknown TOKEN, or --stage-unknown-file PATH",
         );
       }
       context = await recoverAgentStagedInput(agentId, {
@@ -417,13 +425,41 @@ export async function runCli(argv) {
   }
 
   if (argv[0] === "attach") {
-    if (argv.length < 2 || argv.length > 3) {
-      invalidArguments("attach requires AGENT_ID and optional --takeover");
+    if (argv.length < 2 || argv.length > 4) {
+      invalidArguments(
+        "attach requires AGENT_ID and optional --takeover and --json-result",
+      );
     }
-    if (argv[2] && argv[2] !== "--takeover") {
-      invalidArguments(`unknown attach option: ${argv[2]}`);
+    const options = argv.slice(2);
+    if (
+      options.some(
+        (option) => !["--takeover", "--json-result"].includes(option),
+      ) ||
+      new Set(options).size !== options.length
+    ) {
+      invalidArguments(`unknown or repeated attach option: ${argv[2]}`);
     }
-    return attach(argv[1], { takeover: argv[2] === "--takeover" });
+    const code = await attach(argv[1], {
+      takeover: options.includes("--takeover"),
+    });
+    if (options.includes("--json-result")) {
+      process.stdout.write(
+        `${JSON.stringify({
+          schema: "drovr.command/v1",
+          command: "attach",
+          ok: code === 0,
+          ...(code === 0
+            ? { result: { status: "detached", agent_id: argv[1] } }
+            : {
+                error: {
+                  outcome: "attach_failed",
+                  message: `interactive attach exited with status ${code}`,
+                },
+              }),
+        })}\n`,
+      );
+    }
+    return code;
   }
 
   invalidArguments(`unsupported command: ${argv[0]}`);

@@ -1,10 +1,45 @@
-import { access, open, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, open, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { loadConfiguration } from "./config.mjs";
 import { walkFiles } from "./files.mjs";
 import { execute } from "./process.mjs";
+
+const DROVR_ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const REPOSITORY_ROOT = dirname(dirname(DROVR_ROOT));
+
+async function implementationCheck() {
+  try {
+    const paths = [
+      ...(await walkFiles(join(DROVR_ROOT, "src"))),
+      ...(await walkFiles(join(DROVR_ROOT, "scripts"))),
+      join(DROVR_ROOT, "package.json"),
+      join(REPOSITORY_ROOT, "bin", "drovr"),
+    ].sort();
+    const hash = createHash("sha256");
+    for (const path of paths) {
+      const source = await readFile(path);
+      hash.update(relative(REPOSITORY_ROOT, path));
+      hash.update("\0");
+      hash.update(source);
+      hash.update("\0");
+    }
+    return {
+      id: "drovr",
+      status: "pass",
+      detail: `drovr source sha256:${hash.digest("hex")}`,
+    };
+  } catch (error) {
+    return {
+      id: "drovr",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 async function commandCheck(id, command, args, run) {
   try {
@@ -146,6 +181,7 @@ export async function diagnose({ env = process.env, run = execute } = {}) {
   );
   const checks = [
     { id: "node", status: "pass", detail: process.version },
+    await implementationCheck(),
     configurationCheck,
     await commandCheck("herdr", "herdr", ["--version"], run),
     await commandCheck("codex", "codex", ["--version"], run),
@@ -166,7 +202,7 @@ export async function diagnose({ env = process.env, run = execute } = {}) {
         id: `${harness}-integration`,
         status: current ? "pass" : "fail",
         detail: current
-          ? "current"
+          ? `current (v${match[1]})`
           : "required Herdr integration is not current",
       });
       if (harness === "codex") {
@@ -206,6 +242,7 @@ export async function diagnose({ env = process.env, run = execute } = {}) {
     result: {
       status: ok ? "ready" : "unavailable",
       defaults: configuration?.defaults ?? null,
+      qualification: configuration?.qualification ?? null,
       checks,
     },
   };

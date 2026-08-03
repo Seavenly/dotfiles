@@ -18,6 +18,10 @@ const HARNESS_DEFAULTS = {
   claude: { model: "sonnet", effort: "high" },
   codex: { model: "gpt-5.6-sol", effort: "high" },
 };
+const QUALIFICATION_DEFAULTS = {
+  claude: { model: "haiku", effort: "low" },
+  codex: { model: "gpt-5.6-luna", effort: "low" },
+};
 const CODEX_CAPABILITY_CONTRACT = {
   "read-only": {
     sandbox: "read-only",
@@ -199,6 +203,20 @@ export async function loadConfiguration({ env = process.env } = {}) {
   if (!CAPABILITIES.includes(defaults.capability)) {
     throw new DrovrError(`${rootPath}: invalid capability default`);
   }
+  const qualification = root.document.qualification ?? QUALIFICATION_DEFAULTS;
+  for (const harness of HARNESSES) {
+    const selected = qualification[harness];
+    if (
+      !selected ||
+      typeof selected.model !== "string" ||
+      selected.model.length === 0 ||
+      !EFFORTS.includes(selected.effort)
+    ) {
+      throw new DrovrError(
+        `${rootPath}: invalid ${harness} qualification model or effort`,
+      );
+    }
+  }
 
   const capabilities = {};
   const fingerprints = {};
@@ -283,6 +301,7 @@ export async function loadConfiguration({ env = process.env } = {}) {
     directory,
     session: root.document.session ?? "delegates",
     defaults,
+    qualification,
     capabilities,
     roles,
     fingerprints,

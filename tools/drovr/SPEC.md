@@ -316,7 +316,7 @@ drovr task close TASK_ID [--force]
 drovr agent start TASK_ID [options]
 drovr agent list [filters]
 drovr agent get AGENT_ID
-drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN]
+drovr agent staged-input AGENT_ID [--submit TOKEN | --clear TOKEN | --clear-unknown TOKEN | --stage-unknown-file PATH]
 drovr agent retire AGENT_ID
 
 drovr turn start AGENT_ID [options] [PROMPT]
@@ -487,6 +487,13 @@ A mismatch or changed native identity returns `recovery_blocked` without
 terminal mutation. Unknown prompt text is preserved by default; the operator may
 explicitly authorize clearing that exact inspected snapshot with
 `--clear-unknown TOKEN`.
+
+`--stage-unknown-file PATH` provides a bounded public stimulus for diagnostics
+and qualification. It may write normalized file content only to the exact
+registered pane of a settled Claude agent with no existing staged text or open
+logical turn. It never sends a submit key or creates a turn, and succeeds only
+after the same native session exposes the exact text as an unknown staged-input
+snapshot. Any identity, state, or content mismatch fails closed.
 
 Native waiting first returns an already-settled observation rather than waiting
 for another state change. If the pre-delivery state persists past the bounded
