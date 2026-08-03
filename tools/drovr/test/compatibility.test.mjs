@@ -6,6 +6,7 @@ import {
   collectProductionCompatibility,
   qualifyCompatibility,
 } from "../src/compatibility.mjs";
+import { semanticHarnessFor } from "../src/harness-interface.mjs";
 import { createProductionSemanticHarness } from "../src/production-harness-adapter.mjs";
 
 function runtime({ integration = "codex: current (v6)" } = {}) {
@@ -136,4 +137,81 @@ test("compatibility rejects malformed version and identity facts", async () => {
   assert.ok(malformed.mismatches.some(({ field }) => field === "herdr"));
   assert.ok(malformed.mismatches.some(({ field }) => field === "adapters"));
   assert.ok(malformed.mismatches.some(({ field }) => field === "features"));
+});
+
+test("semantic production mutations require the registered compatibility digest", async () => {
+  const { run } = runtime();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run,
+    env: {},
+  });
+  let nativeObservations = 0;
+  let nativePrompts = 0;
+  const context = {
+    group: { herdr: { session: "delegates" } },
+    agent: {
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: "sha256:" + "0".repeat(64),
+      },
+    },
+  };
+  const harness = semanticHarnessFor(context, {
+    env: {},
+    run,
+    herdr: {
+      async agentRecord() {
+        nativeObservations += 1;
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async prompt() {
+        nativePrompts += 1;
+      },
+    },
+    compatibility,
+    requireCompatibility: true,
+  });
+
+  await assert.rejects(
+    () => harness.deliverTurn({
+      agent: {
+        herdr: { name: "managed-agent", pane_id: "pane-1" },
+        native_session: "native-1",
+      },
+      prompt: "must not be delivered",
+    }),
+    (error) =>
+      error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed" &&
+      error.details?.legal_actions?.includes("retire_stale_launch"),
+  );
+  assert.equal(nativeObservations, 0);
+  assert.equal(nativePrompts, 0);
+});
+
+test("semantic production mutations block agents with no compatibility digest", async () => {
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    agent: { launch: { harness: "codex" }, launch_binding: {} },
+  }, {
+    env: {},
+    run: async () => {
+      throw new Error("compatibility collection must not run");
+    },
+    requireCompatibility: true,
+  });
+
+  await assert.rejects(
+    () => harness.interruptTurn({ agent: {} }),
+    (error) =>
+      error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing" &&
+      error.details?.legal_actions?.includes("refresh_compatibility"),
+  );
 });

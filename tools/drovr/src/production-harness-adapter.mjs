@@ -53,6 +53,8 @@ export function createProductionSemanticHarness({
   wallClock = Date.now,
   compatibility,
   expectedCompatibility,
+  expectedCompatibilityEvidenceDigest,
+  requireCompatibilityBinding = false,
   requireCompatibility = false,
 } = {}) {
   const client =
@@ -68,6 +70,16 @@ export function createProductionSemanticHarness({
 
   async function ensureCompatibility() {
     if (!requireCompatibility) return qualifiedCompatibility;
+    if (
+      requireCompatibilityBinding &&
+      !expectedCompatibilityEvidenceDigest
+    ) {
+      throw compatibilityBindingError({
+        expected: null,
+        observed: null,
+        reason: "missing",
+      });
+    }
     if (!qualifiedCompatibility) {
       qualifiedCompatibility = await collectProductionCompatibility({
         harness,
@@ -92,6 +104,18 @@ export function createProductionSemanticHarness({
           details: { compatibility: qualifiedCompatibility },
         },
       );
+    }
+    if (
+      expectedCompatibilityEvidenceDigest &&
+      qualifiedCompatibility.evidence_digest !==
+        expectedCompatibilityEvidenceDigest
+    ) {
+      throw compatibilityBindingError({
+        expected: expectedCompatibilityEvidenceDigest,
+        observed: qualifiedCompatibility.evidence_digest,
+        compatibility: qualifiedCompatibility,
+        reason: "changed",
+      });
     }
     return qualifiedCompatibility;
   }
@@ -953,6 +977,30 @@ export function createProductionSemanticHarness({
     },
   };
   return adapter;
+}
+
+function compatibilityBindingError({
+  expected,
+  observed,
+  compatibility = null,
+  reason,
+}) {
+  return new DrovrError(
+    reason === "missing"
+      ? "agent has no exact qualified runtime compatibility binding"
+      : "agent runtime compatibility differs from its launch binding",
+    {
+      code: 0,
+      outcome: "compatibility_blocked",
+      details: {
+        expected,
+        observed,
+        reason,
+        compatibility,
+        legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+      },
+    },
+  );
 }
 
 function agentObservation(agent, observed, error) {

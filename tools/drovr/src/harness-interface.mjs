@@ -87,10 +87,18 @@ export function createSemanticHarness(options = {}) {
 export function semanticHarnessFor(context, dependencies = {}) {
   const existing = dependencies.harness ?? dependencies.semanticHarness;
   if (existing) return createSemanticHarness({ adapter: existing });
+  const launchBinding = context.agent?.launch_binding;
   return createSemanticHarness({
     ...dependencies,
     session: context.group?.herdr?.session,
     harness: context.agent?.launch?.harness,
+    ...(context.agent
+      ? {
+          expectedCompatibilityEvidenceDigest:
+            launchBinding?.compatibility_evidence_digest,
+          requireCompatibilityBinding: true,
+        }
+      : {}),
     requireCompatibility: dependencies.requireCompatibility ?? (
       !dependencies.herdr && !dependencies.run
     ),

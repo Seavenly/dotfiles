@@ -167,6 +167,41 @@ test("replay exposes the semantic Interface and equivalent typed evidence", asyn
   assert.equal(settled.result.text, "QUALIFY-REPLAY-DONE");
 });
 
+test("replay does not correlate transcript output without settled identity evidence", async () => {
+  const replay = createReplayHarness(
+    trace([
+      {
+        sequence: 1,
+        at_ms: 0,
+        kind: "transcript_event",
+        operation: "transcript.read",
+        payload: {
+          harness: "codex",
+          record: {
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              phase: "final_answer",
+              content: [{ type: "output_text", text: "QUALIFY-PROBE-DONE" }],
+            },
+          },
+        },
+      },
+    ]),
+  );
+
+  const result = await replay.harness.waitForTurn({
+    agent: managedAgent(),
+    turn: { inputs: [{ text: "QUALIFY-PROBE" }] },
+  });
+
+  assert.equal(result.outcome, "uncertain");
+  assert.equal(result.evidence, "uncertain");
+  assert.match(result.error, /settled identity evidence/u);
+  assert.equal(replay.consumedEvents().length, 0);
+});
+
 test("replay compatibility blocks missing or changed exact facts before mutation", async () => {
   const unqualifiedTrace = trace([
     command(1, "agent.prompt", {

@@ -567,6 +567,59 @@ test("Claude staged input recovery submits only the exact inspected prompt", asy
   assert.equal(submitted, true);
 });
 
+test("Claude staged recovery rechecks identity before the final snapshot inspection", async () => {
+  let submitted = false;
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    async run(_file, args) {
+      if (args.includes("read")) {
+        calls.push("read");
+        return "────────\n❯ Exact staged work\n────────";
+      }
+      if (args.includes("list")) {
+        calls.push("list");
+        return JSON.stringify({
+          result: {
+            agents: [
+              {
+                name: "managed-agent",
+                pane_id: "pane-1",
+                agent_status: submitted ? "working" : "idle",
+                state_change_seq: submitted ? 13 : 12,
+                agent_session: { value: "native-1" },
+              },
+            ],
+          },
+        });
+      }
+      if (args.includes("send-keys")) {
+        calls.push("send-keys");
+        submitted = true;
+      }
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  const staged = await client.inspectStagedInput("managed-agent", {
+    harness: "claude",
+  });
+  calls.length = 0;
+
+  await client.recoverStagedInput("managed-agent", {
+    harness: "claude",
+    action: "submit",
+    nativeSession: "native-1",
+    paneId: "pane-1",
+    token: staged.token,
+  });
+
+  const sendIndex = calls.indexOf("send-keys");
+  assert.deepEqual(calls.slice(0, sendIndex), ["list", "list", "read"]);
+  assert.equal(calls[sendIndex - 1], "read");
+});
+
 test("Claude failed submission returns an exact Drovr-owned staged-input receipt", async () => {
   let promptSent = false;
   const client = new HerdrClient({

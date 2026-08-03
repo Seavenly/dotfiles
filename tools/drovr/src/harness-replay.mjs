@@ -286,6 +286,15 @@ function createReplaySemanticAdapter({
           continue;
         }
         if (next.kind === "transcript_event") {
+          if (
+            last?.evidence !== "present" ||
+            !["idle", "done"].includes(last.state)
+          ) {
+            return turnEvidence("uncertain", last, {
+              error:
+                "replay cannot correlate a turn without settled identity evidence",
+            });
+          }
           const correlated = await correlateReplayTurn({
             transcript,
             agent,
