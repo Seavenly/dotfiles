@@ -4,6 +4,7 @@ import { open, readFile, stat } from "node:fs/promises";
 import { DrovrError } from "./errors.mjs";
 import { walkFiles } from "./files.mjs";
 import { normalizeInputText } from "./turn-record.mjs";
+import { createTraceJournal } from "./trace.mjs";
 
 export async function locateJsonlTranscript({
   root,
@@ -73,7 +74,7 @@ export async function readJsonlRecordsAfterCursor(cursor, harness) {
       { outcome: "unsupported_transcript" },
     );
   }
-  return current
+  const records = current
     .subarray(cursor.offset)
     .toString("utf8")
     .split(/\r?\n/u)
@@ -88,6 +89,21 @@ export async function readJsonlRecordsAfterCursor(cursor, harness) {
         );
       }
     });
+  if (process.env.DROVR_TRACE_JOURNAL) {
+    const journal = createTraceJournal(process.env.DROVR_TRACE_JOURNAL);
+    for (const record of records) {
+      await journal.record({
+        kind: "transcript_event",
+        operation: "transcript.read",
+        payload: {
+          harness,
+          record,
+        },
+      });
+    }
+    await journal.flush();
+  }
+  return records;
 }
 
 export function initialJsonlCursor(adapter, path, capturedAt) {

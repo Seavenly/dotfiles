@@ -7,6 +7,7 @@ import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 import { execute } from "./process.mjs";
 import { createStagedInputReceipt } from "./staged-input-receipt.mjs";
+import { createTraceJournal, traceOperation, traceRequest } from "./trace.mjs";
 
 function parseJson(output, operation) {
   try {
@@ -29,20 +30,36 @@ export class HerdrClient {
     env = process.env,
     delay = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    trace,
   } = {}) {
     this.session = session;
     this.run = run;
     this.env = withoutCallerHerdrContext(env);
-    this.delay = delay;
+    this.trace = trace ??
+      (this.env.DROVR_TRACE_JOURNAL
+        ? createTraceJournal(this.env.DROVR_TRACE_JOURNAL)
+        : null);
+    this.delay = async (milliseconds) => {
+      await this.trace?.record({
+        kind: "delay",
+        operation: "clock.delay",
+        payload: { duration_ms: milliseconds },
+      });
+      return delay(milliseconds);
+    };
   }
 
   async sessionCommand(args, options = {}) {
+    const operation = traceOperation(args);
     try {
-      return await this.run("herdr", ["--session", this.session, ...args], {
+      const output = await this.run("herdr", ["--session", this.session, ...args], {
         env: this.env,
         ...options,
       });
+      await this.recordCommand(operation, output, args);
+      return output;
     } catch (error) {
+      await this.recordError(operation, error, args);
       const wrapped = new DrovrError(
         `Herdr ${args.slice(0, 2).join(" ")} failed: ${error.message}`,
         {
@@ -53,6 +70,60 @@ export class HerdrClient {
       wrapped.adapterFailure = error;
       throw wrapped;
     }
+  }
+
+  async recordCommand(operation, output, args = []) {
+    if (!this.trace) return;
+    if (operation.startsWith("agent.read.")) {
+      await this.trace.record({
+        kind: "pane_snapshot",
+        operation,
+        payload: { request: traceRequest(args), text: output },
+      });
+      return;
+    }
+    let envelope;
+    try {
+      envelope = JSON.parse(output);
+    } catch {
+      envelope = { raw: output };
+    }
+    const kind = ["agent.list", "agent.wait"].includes(operation)
+      ? "agent_observation"
+      : "command_result";
+    await this.trace.record({
+      kind,
+      operation,
+      payload: { request: traceRequest(args), envelope },
+    });
+  }
+
+  async recordError(operation, error, args = []) {
+    const capturedError = {
+      code: error.code ?? "adapter_failure",
+      outcome: error.outcome ?? "adapter_failure",
+      message: error.message,
+    };
+    if (typeof error.stdout === "string") capturedError.stdout = error.stdout;
+    if (typeof error.stderr === "string") capturedError.stderr = error.stderr;
+    if (typeof error.stderr === "string") {
+      try {
+        const envelope = JSON.parse(error.stderr);
+        if (envelope && typeof envelope === "object" && !Array.isArray(envelope)) {
+          capturedError.envelope = envelope;
+        }
+      } catch {
+        // Preserve the sanitized stderr text when Herdr did not return JSON.
+      }
+    }
+    await this.trace?.record({
+      kind: "error",
+      operation,
+      payload: {
+        error: capturedError,
+        request: traceRequest(args),
+      },
+    });
   }
 
   async observationCommand(args) {
@@ -74,7 +145,7 @@ export class HerdrClient {
     });
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (await this.sessionRunning()) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await this.delay(25);
     }
     throw new DrovrError(`Herdr session ${this.session} did not start`, {
       code: 4,
@@ -89,7 +160,9 @@ export class HerdrClient {
         env: this.env,
         timeout: HERDR_OBSERVATION_TIMEOUT_MS,
       });
+      await this.recordCommand("session.list", output, ["session", "list", "--json"]);
     } catch (error) {
+      await this.recordError("session.list", error, ["session", "list", "--json"]);
       throw new DrovrError(`Herdr session list failed: ${error.message}`, {
         code: 4,
         outcome: "adapter_failure",
@@ -232,7 +305,7 @@ export class HerdrClient {
       } catch (error) {
         if (!isAgentPaneBusy(error)) throw error;
         lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await this.delay(50);
       }
     }
     throw lastError;
@@ -262,7 +335,7 @@ export class HerdrClient {
         ]);
       } catch (error) {
         if (!isPaneNotFound(error)) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await this.delay(50);
         continue;
       }
       const result = parseJson(output, "pane process-info").result
@@ -273,7 +346,7 @@ export class HerdrClient {
       ) {
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.delay(50);
     }
     throw new DrovrError(`Herdr pane ${paneId} did not reach a shell prompt`, {
       code: 4,
@@ -506,6 +579,14 @@ export class HerdrClient {
         if (snapshot?.display_text === prompt) {
           stagedAfterDelivery = snapshot;
         }
+      }
+      if (
+        !attachmentReady &&
+        !literalPromptReady &&
+        !prompt.includes("\n") &&
+        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
+      ) {
+        return result;
       }
       if (attachmentReady) break;
       await this.delay(25);

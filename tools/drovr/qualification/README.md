@@ -26,6 +26,20 @@ exact source, integration, executable, model, and reasoning-effort versions;
 declared and measured limits; ordered public invocations; typed observations;
 assertions; and one embedded cleanup receipt.
 
+Deterministic scenarios run through the semantic Herdr replay seam. Their
+evidence embeds a `drovr.harness-trace/v1` trace from the versioned
+[`traces.v1.json`](traces.v1.json) fixture bundle. Live scenarios also journal
+Herdr command results, agent observations, pane snapshots, transcript events,
+delays, and errors while they run, then validate the sanitized trace before
+adding it to evidence. Credentials, bearer values, private keys, machine-local
+paths, and non-sentinel text are rejected or redacted before persistence.
+
+Replay consumes the recorded operation order through the same semantic Herdr
+and harness-adapter seams used by Drovr, and advances a controllable clock from
+recorded delay events. It does not sleep or return canned method results; an
+altered operation, identity, token, transcript boundary, or delay fails the
+replay.
+
 Run one focused live scenario and retain its evidence outside the caller-owned
 workspace:
 
