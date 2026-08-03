@@ -1,6 +1,11 @@
 {
   "schema": "drovr.harness-trace-fixtures/v1",
   "version": 1,
+  "origin": {
+    "kind": "synthetic_semantic_fixture",
+    "captured": false,
+    "source_commit": "1bd06882d4d6a9468f55c290cd5a6a9d1313c5ed"
+  },
   "fixtures": [
     {
       "id": "codex_prompt_file_trailing_newline",
@@ -107,7 +112,9 @@
       },
       "steps": [
         {"action":"observe","name":"managed-agent","expect_native_session":"codex-session-before"},
-        {"action":"observe","name":"managed-agent","expect_native_session":"codex-session-after"}
+        {"action":"observe","name":"managed-agent","expect_native_session":"codex-session-after"},
+        {"action":"expect_error","method":"prompt","name":"managed-agent","native_session":"codex-session-before","text":"QUALIFY-IDENTITY-STEERING","outcome":"recovery_blocked"},
+        {"action":"assert_no_mutation","operation":"agent.prompt","description":"Do not invoke the Herdr prompt for the remapped native session."}
       ]
     },
     {
@@ -120,11 +127,16 @@
         "scenario_id": "blocked_pane_native_session_mismatch",
         "provenance": {"drovr":"source commit 1bd06882d4d6a9468f55c290cd5a6a9d1313c5ed","herdr":"herdr 0.7.5","claude":"2.1.199 (Claude Code)","codex":"codex-cli 0.145.0"},
         "events": [
-          {"sequence":1,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"blocked","pane_id":"caller-pane","agent_session":{"value":"caller-session"}}]}}}}
+          {"sequence":1,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"blocked","pane_id":"caller-pane","agent_session":{"value":"caller-session"}}]}}}},
+          {"sequence":2,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"blocked","pane_id":"caller-pane","agent_session":{"value":"caller-session"}}]}}}}
         ]
       },
       "steps": [
-        {"action":"observe","name":"managed-agent","expect_status":"blocked"}
+        {"action":"observe","name":"managed-agent","expect_status":"blocked"},
+        {"action":"expect_error","method":"prompt","name":"managed-agent","native_session":"managed-session","text":"QUALIFY-BLOCKED-STEERING","outcome":"recovery_blocked"},
+        {"action":"assert_no_mutation","operation":"agent.prompt","description":"Do not send input to the mismatched pane."},
+        {"action":"expect_error","method":"guarded_excerpt","name":"managed-agent","native_session":"managed-session","outcome":"recovery_blocked"},
+        {"action":"assert_no_mutation","operation":"agent.read.recent-unwrapped","description":"Do not read or expose mismatched pane output."}
       ]
     },
     {
@@ -216,7 +228,7 @@
       "steps": [
         {"action":"inspect","name":"managed-agent","expect_text":"QUALIFY-STAGED-TOKEN-A"},
         {"action":"expect_error","method":"recover_clear","name":"managed-agent","native_session":"claude-session-token","token_from":"last_inspection","outcome":"recovery_blocked"},
-        {"action":"assert_no_mutation","operation":"agent.send-keys"}
+        {"action":"assert_no_mutation","operation":"agent.send-keys","description":"Do not clear anything from a stale staged-input token."}
       ]
     },
     {
@@ -262,11 +274,10 @@
           {"sequence":2,"at_ms":0,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯\n────────"}},
           {"sequence":3,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}},
           {"sequence":4,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"done","state_change_seq":2,"agent_session":{"value":"claude-session-fast"}}]}}}},
-          {"sequence":5,"at_ms":0,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯\n────────"}},
-          {"sequence":6,"at_ms":25,"kind":"delay","operation":"clock.delay","payload":{"duration_ms":25}},
-          {"sequence":7,"at_ms":25,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"done","state_change_seq":2,"agent_session":{"value":"claude-session-fast"}}]}}}},
-          {"sequence":8,"at_ms":25,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯\n────────"}},
-          {"sequence":9,"at_ms":25,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"done","state_change_seq":2,"agent_session":{"value":"claude-session-fast"}}]}}}}
+          {"sequence":5,"at_ms":0,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯ QUALIFY-FAST-COMPLETION\n────────"}},
+          {"sequence":6,"at_ms":0,"kind":"command_result","operation":"agent.send-keys","payload":{"envelope":{"schema":"herdr.command/v1","result":{"status":"submitted"}}}},
+          {"sequence":7,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"working","state_change_seq":2,"agent_session":{"value":"claude-session-fast"}}]}}}},
+          {"sequence":8,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"done","state_change_seq":3,"agent_session":{"value":"claude-session-fast"}}]}}}}
         ]
       },
       "steps": [

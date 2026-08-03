@@ -710,6 +710,32 @@ test("prohibited-mutation receipts distinguish proof from unobserved state", () 
     })[0].unchanged,
     false,
   );
+  assert.deepEqual(
+    prohibitedMutationObservations(["known guarded operation", "unproven operation"], {
+      basis: ["semantic replay"],
+      proofs: [{
+        description: "known guarded operation",
+        operation: "agent.prompt",
+        unchanged: true,
+        basis: "guard rejected before mutation",
+      }],
+    }),
+    [
+      {
+        description: "known guarded operation",
+        unchanged: true,
+        basis: [
+          "semantic replay",
+          "agent.prompt: guard rejected before mutation",
+        ],
+      },
+      {
+        description: "unproven operation",
+        unchanged: "not_observed",
+        basis: ["semantic replay"],
+      },
+    ],
+  );
 });
 
 test("full live selection is catalog-derived and excludes operator-staged scenarios", async () => {

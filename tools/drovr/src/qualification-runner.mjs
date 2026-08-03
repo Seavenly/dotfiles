@@ -23,7 +23,11 @@ import {
 } from "./qualification-catalog.mjs";
 import { runTraceFixture } from "./qualification-replay.mjs";
 import { loadTraceFixture } from "./qualification-traces.mjs";
-import { traceFromJournal, validateTrace } from "./trace.mjs";
+import {
+  traceFromJournal,
+  traceJournalFailurePath,
+  validateTrace,
+} from "./trace.mjs";
 
 const execFileAsync = promisify(execFileCallback);
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -164,6 +168,7 @@ async function runScenarioPrerequisites({
     evidenceDirectory,
     `.${scenario.id}-${startedAt.replaceAll(":", "-")}.journal.jsonl`,
   );
+  const traceStartedAt = Date.now();
   const deadline = createDeadline(
     scenario.execution.limits?.max_elapsed ?? "30s",
   );
@@ -175,6 +180,7 @@ async function runScenarioPrerequisites({
     XDG_STATE_HOME: stateHome,
     XDG_RUNTIME_DIR: runtimeDirectory,
     DROVR_TRACE_JOURNAL: traceJournalPath,
+    DROVR_TRACE_STARTED_AT: String(traceStartedAt),
   };
   const invocationStartedAt = now().toISOString();
   const execution = await executeDrovr(drovrCommand, ["doctor"], {
@@ -327,7 +333,7 @@ async function runScenarioPrerequisites({
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,
   });
-  await rm(traceJournalPath, { force: true });
+  await removeTraceArtifacts(traceJournalPath);
   return { id: scenario.id, result: disposition, evidence: evidencePath };
   } catch (error) {
     const failureResult = await recordScenarioFailure({
@@ -342,6 +348,7 @@ async function runScenarioPrerequisites({
         XDG_STATE_HOME: stateHome,
         XDG_RUNTIME_DIR: runtimeDirectory,
         DROVR_TRACE_JOURNAL: traceJournalPath,
+        DROVR_TRACE_STARTED_AT: String(traceStartedAt),
       },
       scratch,
       stateHome,
@@ -510,10 +517,8 @@ async function runDeterministicReplayScenario({
             "immutable versioned trace",
             "semantic replay operation ordering",
             "caller workspace fingerprint",
-            ...(replayResult?.mutation_proofs ?? []).map(
-              ({ operation, basis }) => `${operation}: ${basis}`,
-            ),
           ],
+          proofs: replayResult?.mutation_proofs ?? [],
         },
       ),
       caller_owned_workspace: {
@@ -543,10 +548,12 @@ async function runDeterministicReplayScenario({
 
 async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
   if (scenario.execution.kind !== "real_herdr_harness") {
-    await rm(traceJournalPath, { force: true });
+    await removeTraceArtifacts(traceJournalPath);
     return result;
   }
   const captureRequired = result.result === "pass";
+  const captureFailurePath = traceJournalFailurePath(traceJournalPath);
+  const captureFailureRecorded = await fileExists(captureFailurePath);
   try {
     const evidence = JSON.parse(await readFile(result.evidence, "utf8"));
     const versions = evidence.versions ?? {};
@@ -574,11 +581,36 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
         });
         return { ...result, result: "fail" };
       }
+      if (captureFailureRecorded) {
+        const failedEvidence = traceCaptureFailure(
+          evidence,
+          "trace_capture_incomplete",
+          "Trace capture failed before a complete journal could be persisted.",
+        );
+        validateQualificationEvidence(failedEvidence);
+        await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+          mode: 0o600,
+        });
+        return { ...result, result: "fail" };
+      }
       if (!captureRequired) return result;
       const failedEvidence = traceCaptureFailure(
         evidence,
         "trace_capture_missing",
         "A successful live qualification produced no sanitized trace journal.",
+      );
+      validateQualificationEvidence(failedEvidence);
+      await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      return { ...result, result: "fail" };
+    }
+    if (captureFailureRecorded) {
+      const failedEvidence = traceCaptureFailure(
+        evidence,
+        "trace_capture_incomplete",
+        "Trace capture reported a failure while persisting the live journal.",
+        trace,
       );
       validateQualificationEvidence(failedEvidence);
       await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
@@ -611,7 +643,23 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
     });
     return result;
   } finally {
-    await rm(traceJournalPath, { force: true });
+    await removeTraceArtifacts(traceJournalPath);
+  }
+}
+
+async function removeTraceArtifacts(traceJournalPath) {
+  await rm(traceJournalPath, { force: true });
+  await rm(traceJournalFailurePath(traceJournalPath), { force: true });
+  await rm(`${traceJournalPath}.lock`, { recursive: true, force: true });
+}
+
+async function fileExists(path) {
+  try {
+    await readFile(path, "utf8");
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -2861,13 +2909,28 @@ export function resourceDisposition(kind, cleanupComplete) {
 
 export function prohibitedMutationObservations(
   descriptions,
-  { fullyObserved = false, unchanged = false, basis = [] } = {},
+  { fullyObserved = false, unchanged = false, proofs = [], basis = [] } = {},
 ) {
-  return descriptions.map((description) => ({
-    description,
-    unchanged: fullyObserved ? Boolean(unchanged) : "not_observed",
-    basis,
-  }));
+  return descriptions.map((description) => {
+    const matchingProofs = proofs.filter(
+      (proof) => proof.description === description,
+    );
+    const observed = fullyObserved || matchingProofs.length > 0;
+    return {
+      description,
+      unchanged: observed
+        ? matchingProofs.length > 0
+          ? matchingProofs.every(({ unchanged: proofUnchanged }) => proofUnchanged)
+          : Boolean(unchanged)
+        : "not_observed",
+      basis: [
+        ...basis,
+        ...matchingProofs.map(
+          ({ operation, basis: proofBasis }) => `${operation}: ${proofBasis}`,
+        ),
+      ],
+    };
+  });
 }
 
 async function fileFingerprint(path) {

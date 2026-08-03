@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import {
   createTraceJournal,
   redactPaneSnapshot,
   readTrace,
+  traceJournalFailurePath,
   traceFromJournal,
   validateTrace,
   writeTrace,
@@ -91,11 +93,43 @@ test("captureTrace redacts credentials and machine-local paths before persistenc
   );
   assert.doesNotMatch(JSON.stringify(stack), /id_ed25519|\/home\/operator/u);
 
+  assert.doesNotThrow(() =>
+    captureTrace(
+      rawTrace({
+        events: [
+          {
+            sequence: 1,
+            at_ms: 0,
+            kind: "agent_observation",
+            operation: "agent.list",
+            payload: {
+              envelope: {
+                schema: "herdr.command/v1",
+                result: {
+                  detail: "3 / 5 turns; claude / haiku; yes / no",
+                  url: "https://example.com/x",
+                },
+              },
+            },
+          },
+        ],
+      }),
+    ),
+  );
+
   assert.equal(
     redactPaneSnapshot(
       "Claude status\n────────\n❯ QUALIFY-TRACE-PANE\n────────\n/home/operator/private-project",
     ),
     "────────\n❯ QUALIFY-TRACE-PANE\n────────",
+  );
+  assert.match(
+    redactPaneSnapshot("Claude status\n────────\n❯ private prompt\n────────"),
+    /^────────\n❯ \[REDACTED_TEXT sha256:[0-9a-f]{64}\]\n────────$/u,
+  );
+  assert.equal(
+    redactPaneSnapshot("unrelated [Pasted text #1] and [Pasted text #1]"),
+    "[Pasted text #1]\n[Pasted text #1]",
   );
 
   const unrelated = captureTrace(
@@ -320,6 +354,49 @@ test("trace journals retain ordered sanitized events for later versioned persist
   assert.doesNotMatch(JSON.stringify(trace), /\/home\/operator/u);
 });
 
+test("trace journals coordinate independent processes on one path", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-trace-journal-processes-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const path = join(scratch, "events.jsonl");
+  const traceModule = new URL("../src/trace.mjs", import.meta.url).href;
+  const script = `
+    import { createTraceJournal } from ${JSON.stringify(traceModule)};
+    const journal = createTraceJournal(process.env.TRACE_PATH);
+    for (const operation of ["agent.list", "agent.wait"]) {
+      await journal.record({
+        kind: "agent_observation",
+        operation,
+        payload: {
+          request: { resource: "agent", action: operation.slice(6), target: null },
+          envelope: { schema: "herdr.command/v1", result: { agents: [] } },
+        },
+      });
+    }
+    await journal.flush();
+  `;
+  const env = {
+    ...process.env,
+    TRACE_PATH: path,
+    DROVR_TRACE_STARTED_AT: String(Date.now()),
+  };
+  await Promise.all([runNodeScript(script, env), runNodeScript(script, env)]);
+
+  const trace = await traceFromJournal(path, {
+    scenarioId: "journal-process-test",
+    provenance: rawTrace().provenance,
+  });
+  assert.equal(trace.events.length, 4);
+  assert.deepEqual(
+    trace.events.map(({ sequence }) => sequence),
+    [1, 2, 3, 4],
+  );
+  assert.ok(
+    trace.events.every(
+      (event, index) => index === 0 || event.at_ms >= trace.events[index - 1].at_ms,
+    ),
+  );
+});
+
 test("trace journal preserves captured sequence and timing instead of repairing them", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-trace-journal-validation-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -369,4 +446,29 @@ test("trace capture failure is recorded without poisoning later Herdr calls", as
   });
   assert.equal(trace.events.length, 1);
   assert.equal(trace.events[0].operation, "trace.capture");
+  assert.match(
+    await readFile(traceJournalFailurePath(path), "utf8"),
+    /trace-capture-failure\/v1/u,
+  );
 });
+
+function runNodeScript(script, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
+      env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`child exited with ${code}: ${stderr}`));
+    });
+  });
+}

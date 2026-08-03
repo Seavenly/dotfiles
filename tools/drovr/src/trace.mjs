@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
-import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { canonicalizeJson } from "./canonical-json.mjs";
 
@@ -20,8 +28,8 @@ const TOKEN_KEY = /(?:^|[_-])(?:access[_-]?)?token$/iu;
 const TOKEN_DIGEST = /^<token:sha256:[0-9a-f]{64}>$/u;
 const PATH_KEY = /(?:^|_|-)(?:cwd|path|root|file|directory|workspace|state_home|runtime_dir)$/iu;
 const TEXT_KEY = /^(?:content|display_text|excerpt|message|prompt|raw|stderr|stdout|text)$/u;
-const ABSOLUTE_PATH_GLOBAL = /(?<![\w.-])(?:\/(?:[^\s"'`]+\/)*[^\s"'`]+|[A-Z]:\\[^\s"'`]*)/giu;
-const UNSAFE_ABSOLUTE_PATH = /(?:^|[^\w.-])(?:\/{1,2}|[A-Z]:\\)[^\s"'`<>]*/iu;
+const ABSOLUTE_PATH_GLOBAL = /(?<![\w.-])(?:\/(?:[^\s"'`\[\]()<>{},;]+\/)*[^\s"'`\[\]()<>{},;]+|[A-Z]:\\[^\s"'`\[\]()<>{},;]+)/giu;
+const UNSAFE_ABSOLUTE_PATH_GLOBAL = /(?:^|[^\w.-])(?:\/{1,2}|[A-Z]:\\)[^\s"'`\[\]()<>{},;]+/giu;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu;
 const BEARER_GLOBAL = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
 const SECRET_ASSIGNMENT = /\b(?:api[_-]?key|password|secret|token)\s*[:=]\s*(?!\[REDACTED\])[^\s,;}]+/iu;
@@ -30,6 +38,14 @@ const PRIVATE_KEY = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+
 const PRIVATE_KEY_GLOBAL = /-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----/gu;
 const SAFE_STRUCTURED_TEXT = /^(?:(?:[-─\s❯])|\[Pasted text #\d+(?: [^\]\r\n]*)?\]|(?:QUALIFY|REPLAY|TRACE)-[A-Z0-9_-]+|\[REDACTED_TEXT sha256:[0-9a-f]{64}\]|\[REDACTED_PRIVATE_KEY\])+$/u;
 const PASTED_TEXT = /\[Pasted text #\d+(?: [^\]\r\n]*)?\]/gu;
+const TRACE_LOCK_RETRY_MS = 5;
+const TRACE_LOCK_STALE_MS = 30_000;
+
+const TRACE_JOURNALS = new Map();
+
+export function traceJournalFailurePath(path) {
+  return `${path}.failure`;
+}
 
 export function traceOperation(args) {
   const sessionFlag = args.indexOf("--session");
@@ -120,7 +136,7 @@ export class TraceRecorder {
   }
 }
 
-export function createTraceJournal(path) {
+export function createTraceJournal(path, { startedAt = process.env.DROVR_TRACE_STARTED_AT } = {}) {
   const existing = TRACE_JOURNALS.get(path);
   if (existing) return existing;
 
@@ -129,7 +145,7 @@ export function createTraceJournal(path) {
   let previousAt = 0;
   let captureFailure;
   let failureRecorded = false;
-  let startedAt;
+  let startedAtMs = parseStartedAt(startedAt);
   const append = async (event) => {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await appendFile(path, `${JSON.stringify(event)}\n`, {
@@ -137,53 +153,104 @@ export function createTraceJournal(path) {
     });
     await chmod(path, 0o600);
   };
+  const failurePath = traceJournalFailurePath(path);
+  const failureMarkerExists = async () => {
+    try {
+      await readFile(failurePath, "utf8");
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  };
+  const writeFailureMarker = async () => {
+    try {
+      await writeFile(
+        failurePath,
+        JSON.stringify({
+          schema: "drovr.trace-capture-failure/v1",
+          code: "trace_capture_failed",
+        }) + "\n",
+        { flag: "wx", mode: 0o600 },
+      );
+    } catch (error) {
+      if (error?.code !== "EEXIST") return;
+    }
+  };
   const appendFailure = async () => {
     if (failureRecorded) return;
-    const event = {
-      kind: "error",
-      operation: "trace.capture",
-      sequence: sequence + 1,
-      at_ms: Math.max(previousAt, Date.now() - (startedAt ?? Date.now())),
-      payload: {
-        request: { resource: "trace", action: "capture", target: null },
-        error: {
-          code: "trace_capture_failed",
-          outcome: "adapter_failure",
-          message: "Trace capture failed before the event could be persisted.",
-        },
-      },
-    };
     try {
-      await append(event);
-      sequence = event.sequence;
-      previousAt = event.at_ms;
-      failureRecorded = true;
+      await withTraceJournalLock(path, async () => {
+        if (await failureMarkerExists()) {
+          failureRecorded = true;
+          return;
+        }
+        const state = await readJournalState(path);
+        sequence = state.sequence;
+        previousAt = state.previousAt;
+        startedAtMs ??= Date.now() - previousAt;
+        const event = {
+          kind: "error",
+          operation: "trace.capture",
+          sequence: sequence + 1,
+          at_ms: traceAt(Date.now(), startedAtMs, previousAt),
+          payload: {
+            request: { resource: "trace", action: "capture", target: null },
+            error: {
+              code: "trace_capture_failed",
+              outcome: "adapter_failure",
+              message: "Trace capture failed before the event could be persisted.",
+            },
+          },
+        };
+        await append(event);
+        sequence = event.sequence;
+        previousAt = event.at_ms;
+        failureRecorded = true;
+      });
     } catch {
-      // The journal may be unavailable. The in-memory failure still prevents
-      // a caller from mistaking a partial journal for complete evidence.
+      // The durable marker below is the cross-process failure signal. If the
+      // journal directory itself is unavailable, the caller still keeps the
+      // native operation's result independent from capture.
     }
+    await writeFailureMarker();
   };
   const journal = {
     record(event) {
       queue = queue.catch(() => undefined).then(async () => {
         if (captureFailure) return;
-        const nextSequence = sequence + 1;
+        let failure;
         try {
-          startedAt ??= Date.now();
-          const captured = redactValue(
-            {
-              ...event,
-              sequence: nextSequence,
-              at_ms: Math.max(previousAt, Date.now() - startedAt),
-            },
-            [],
-          );
-          assertSafeValue(captured);
-          await append(captured);
-          sequence = nextSequence;
-          previousAt = captured.at_ms;
+          await withTraceJournalLock(path, async () => {
+            if (await failureMarkerExists()) {
+              failure = new TraceValidationError(
+                "trace capture previously failed in another process",
+              );
+              failureRecorded = true;
+              return;
+            }
+            const state = await readJournalState(path);
+            sequence = state.sequence;
+            previousAt = state.previousAt;
+            startedAtMs ??= Date.now() - previousAt;
+            const captured = redactValue(
+              {
+                ...event,
+                sequence: sequence + 1,
+                at_ms: traceAt(Date.now(), startedAtMs, previousAt),
+              },
+              [],
+            );
+            assertSafeValue(captured);
+            await append(captured);
+            sequence = captured.sequence;
+            previousAt = captured.at_ms;
+          });
         } catch (error) {
-          captureFailure = error;
+          failure = error;
+        }
+        if (failure) {
+          captureFailure = failure;
           await appendFailure();
         }
       });
@@ -192,15 +259,105 @@ export function createTraceJournal(path) {
     flush() {
       return queue;
     },
-    failure() {
-      return captureFailure;
-    },
   };
   TRACE_JOURNALS.set(path, journal);
   return journal;
 }
 
-const TRACE_JOURNALS = new Map();
+async function readJournalState(path) {
+  let source;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return { sequence: 0, previousAt: 0 };
+    throw error;
+  }
+  let sequence = 0;
+  let previousAt = 0;
+  for (const [index, line] of source.split(/\r?\n/u).filter(Boolean).entries()) {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (error) {
+      fail(`trace journal line ${index + 1} is invalid JSON: ${error.message}`);
+    }
+    if (!isRecord(event)) fail(`trace journal line ${index + 1} is not an object`);
+    if (!Number.isSafeInteger(event.sequence) || event.sequence !== sequence + 1) {
+      fail(`trace journal line ${index + 1} has an invalid sequence`);
+    }
+    if (!Number.isSafeInteger(event.at_ms) || event.at_ms < previousAt) {
+      fail(`trace journal line ${index + 1} has invalid timing`);
+    }
+    sequence = event.sequence;
+    previousAt = event.at_ms;
+  }
+  return { sequence, previousAt };
+}
+
+async function withTraceJournalLock(path, operation) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const lockPath = `${path}.lock`;
+  const deadline = Date.now() + TRACE_LOCK_STALE_MS;
+  for (;;) {
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (await traceLockIsStale(lockPath)) {
+        await rm(lockPath, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        const timeout = new Error("timed out waiting for the trace journal lock");
+        timeout.code = "ETIMEDOUT";
+        throw timeout;
+      }
+      await new Promise((resolve) => setTimeout(resolve, TRACE_LOCK_RETRY_MS));
+      continue;
+    }
+
+    try {
+      await writeFile(join(lockPath, "owner"), `${process.pid}\n`, {
+        mode: 0o600,
+      });
+      return await operation();
+    } finally {
+      await rm(lockPath, { recursive: true, force: true });
+    }
+  }
+}
+
+async function traceLockIsStale(lockPath) {
+  let lockStats;
+  try {
+    lockStats = await stat(lockPath);
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
+  if (Date.now() - lockStats.mtimeMs < TRACE_LOCK_STALE_MS) return false;
+  let owner;
+  try {
+    owner = Number.parseInt(await readFile(join(lockPath, "owner"), "utf8"), 10);
+  } catch {
+    return true;
+  }
+  if (!Number.isSafeInteger(owner) || owner <= 0) return true;
+  try {
+    process.kill(owner, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+}
+
+function parseStartedAt(value) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function traceAt(now, startedAt, previousAt) {
+  return Math.max(previousAt, Math.max(0, now - startedAt));
+}
 
 export async function traceFromJournal(path, { scenarioId, provenance }) {
   const source = await readFile(path, "utf8");
@@ -323,6 +480,9 @@ export function redactValue(value, path = [], options = {}) {
 }
 
 export function redactPaneSnapshot(value) {
+  // Pane replay deliberately preserves only the Claude prompt-box grammar and
+  // qualification sentinels. Arbitrary visible text is represented by a
+  // digest so a captured terminal cannot become a secret-bearing fixture.
   const text = String(value);
   if (text.length === 0) return "";
   if (SAFE_STRUCTURED_TEXT.test(text)) return text;
@@ -350,7 +510,7 @@ export function redactPaneSnapshot(value) {
   }
 
   const pasted = [...text.matchAll(PASTED_TEXT)].map(([match]) => match);
-  if (pasted.length > 0) return [...new Set(pasted)].join("\n");
+  if (pasted.length > 0) return pasted.join("\n");
   return `[REDACTED_TEXT ${digestText(text)}]`;
 }
 
@@ -437,15 +597,16 @@ function isUnsafeString(value, key) {
   if (BEARER.test(value) || SECRET_ASSIGNMENT.test(value) || PRIVATE_KEY.test(value)) {
     return true;
   }
-  if (PATH_KEY.test(key ?? "") && UNSAFE_ABSOLUTE_PATH.test(value)) return true;
-  if (UNSAFE_ABSOLUTE_PATH.test(value)) return true;
+  if (PATH_KEY.test(key ?? "") && hasUnsafeAbsolutePath(value)) return true;
+  if (hasUnsafeAbsolutePath(value)) return true;
   return false;
 }
 
 function redactString(value, key, options, path) {
   const pathRedacted = value.replace(
     ABSOLUTE_PATH_GLOBAL,
-    (pathValue) => redactPath(pathValue),
+    (pathValue, offset, source) =>
+      isPublicUrlPath(source, pathValue, offset) ? pathValue : redactPath(pathValue),
   );
   const secretRedacted = pathRedacted
     .replace(BEARER_GLOBAL, "Bearer [REDACTED]")
@@ -476,6 +637,22 @@ function traceInput(value) {
 
 function redactPath(value) {
   return `<path:${digestText(value)}>`;
+}
+
+function hasUnsafeAbsolutePath(value) {
+  UNSAFE_ABSOLUTE_PATH_GLOBAL.lastIndex = 0;
+  for (const match of value.matchAll(UNSAFE_ABSOLUTE_PATH_GLOBAL)) {
+    const markerOffset = match[0].search(/(?:\/{1,2}|[A-Z]:\\)/u);
+    const absoluteOffset = match.index + markerOffset;
+    const pathValue = match[0].slice(markerOffset);
+    if (!isPublicUrlPath(value, pathValue, absoluteOffset)) return true;
+  }
+  return false;
+}
+
+function isPublicUrlPath(source, pathValue, offset) {
+  if (!pathValue.startsWith("//")) return false;
+  return /^[A-Za-z][A-Za-z0-9+.-]*:$/.test(source.slice(0, offset));
 }
 
 function digestText(value) {

@@ -41,6 +41,70 @@ test("Herdr mutations do not inherit the observation bound", async () => {
   assert.equal(observedTimeout, undefined);
 });
 
+test("guarded prompt rejects a changed native session before delivery", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: "working",
+              agent_session: { value: "native-after" },
+            }],
+          },
+        });
+      }
+      throw new Error("prompt should not be delivered");
+    },
+  });
+
+  await assert.rejects(
+    () => client.prompt("managed-agent", "QUALIFY-IDENTITY-GUARD", {
+      nativeSession: "native-before",
+    }),
+    (error) => {
+      assert.equal(error.outcome, "recovery_blocked");
+      return true;
+    },
+  );
+  assert.equal(calls.some((args) => args.includes("prompt")), false);
+});
+
+test("guarded pane excerpts reject a changed native session before reading", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: "blocked",
+              agent_session: { value: "caller-session" },
+            }],
+          },
+        });
+      }
+      throw new Error("mismatched pane should not be read");
+    },
+  });
+
+  await assert.rejects(
+    () => client.agentExcerpt("managed-agent", { nativeSession: "managed-session" }),
+    (error) => {
+      assert.equal(error.outcome, "recovery_blocked");
+      return true;
+    },
+  );
+  assert.equal(calls.some((args) => args.includes("read")), false);
+});
+
 test("literal staged input targets the exact managed pane without a submit key", async () => {
   const calls = [];
   const client = new HerdrClient({
@@ -471,7 +535,7 @@ test("Claude prompt delivery lets a long single-line literal convert before subm
       }
       if (args.includes("read")) {
         if (!promptSent) return "";
-        return delaySteps >= 3 ? "[Pasted text #1 +1 lines]" : prompt;
+        return delaySteps >= 3 ? "[Pasted text #1 +1 lines]" : "";
       }
       if (args.includes("prompt")) promptSent = true;
       if (args.includes("send-keys")) enterSent = true;
@@ -532,6 +596,47 @@ test("Claude long single-line delivery does not treat an early settled observati
 
   assert.equal(enterSent, true);
   assert.ok(delaySteps >= 2);
+});
+
+test("Claude long single-line delivery rejects after exhausted polls without an attachment", async () => {
+  const prompt = "x".repeat(1600);
+  let enterSent = false;
+  let delaySteps = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {
+      delaySteps += 1;
+    },
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: enterSent ? "working" : "done",
+              state_change_seq: enterSent ? 14 : 13,
+            }],
+          },
+        });
+      }
+      if (args.includes("read")) return "";
+      if (args.includes("send-keys")) enterSent = true;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await assert.rejects(
+    () => client.prompt("managed-agent", prompt, {
+      harness: "claude",
+      observedBeforeDelivery: {
+        agent_status: "idle",
+        state_change_seq: 12,
+      },
+    }),
+    /did not expose Claude's staged attachment/u,
+  );
+  assert.equal(enterSent, false);
+  assert.equal(delaySteps, 100);
 });
 
 test("Claude prompt delivery does not send another Enter after work starts", async () => {

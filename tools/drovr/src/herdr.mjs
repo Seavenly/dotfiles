@@ -14,11 +14,6 @@ import {
   traceRequest,
 } from "./trace.mjs";
 
-// A status-only fast-completion escape is safe only for short literal input;
-// longer single-line prompts must expose either their literal text or an
-// attachment token before Drovr sends the submit key.
-const CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH = 256;
-
 function parseJson(output, operation) {
   try {
     return JSON.parse(output);
@@ -142,10 +137,9 @@ export class HerdrClient {
   async recordTrace(event) {
     try {
       await this.trace?.record(event);
-    } catch (error) {
+    } catch {
       // Trace capture is observational. A recorder failure must not turn a
       // successful native command into a Herdr failure or poison later calls.
-      this.traceFailure ??= error;
     }
   }
 
@@ -503,7 +497,10 @@ export class HerdrClient {
     }
   }
 
-  async agentExcerpt(name) {
+  async agentExcerpt(name, { nativeSession } = {}) {
+    if (typeof nativeSession === "string") {
+      assertNativeSession(name, await this.agentRecord(name), nativeSession);
+    }
     return this.observationCommand([
       "agent",
       "read",
@@ -546,6 +543,9 @@ export class HerdrClient {
   async prompt(name, prompt, options = {}) {
     const observedBeforeDelivery =
       options.observedBeforeDelivery ?? (await this.agentRecord(name));
+    if (typeof options.nativeSession === "string") {
+      assertNativeSession(name, observedBeforeDelivery, options.nativeSession);
+    }
     const harness = options.harness ?? observedBeforeDelivery?.agent;
     const guardsClaudeStagedSubmission =
       harness === "claude" &&
@@ -578,7 +578,6 @@ export class HerdrClient {
     // for progress and completion.
     let attachmentReady = false;
     let literalPromptReady = false;
-    let noAttachmentPolls = 0;
     let stagedAfterDelivery;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -604,28 +603,10 @@ export class HerdrClient {
           stagedAfterDelivery = snapshot;
         }
       }
-      if (!attachmentReady && !literalPromptReady) noAttachmentPolls += 1;
-      if (
-        noAttachmentPolls >= 2 &&
-        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
-        !prompt.includes("\n") &&
-        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
-      ) {
-        return result;
-      }
-      if (attachmentReady) break;
+      if (attachmentReady || literalPromptReady) break;
       await this.delay(25);
     }
     if (!attachmentReady && !literalPromptReady) {
-      // A short prompt can complete before the first post-delivery poll. A new
-      // done observation proves that the native agent transitioned, while the
-      // exact transcript still remains completion authority.
-      if (
-        !prompt.includes("\n") &&
-        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
-      ) {
-        return result;
-      }
       throw new DrovrError(
         `Herdr did not expose Claude's staged attachment for ${name}`,
         { code: 4, outcome: "adapter_failure" },
@@ -634,7 +615,10 @@ export class HerdrClient {
     await this.sessionCommand(["agent", "send-keys", name, "enter"]);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await this.agentRecord(name);
-      if (promptSubmissionObserved(observed)) {
+      if (
+        promptSubmissionObserved(observed) ||
+        promptCompletionObserved(observedBeforeDelivery, observed)
+      ) {
         return result;
       }
       await this.delay(25);
@@ -787,6 +771,14 @@ function withoutCallerHerdrContext(env) {
 
 function promptSubmissionObserved(observed) {
   return ["working", "blocked"].includes(observed?.agent_status);
+}
+
+function assertNativeSession(name, observed, expected) {
+  if (observed?.agent_session?.value === expected) return;
+  throw new DrovrError(`Herdr native session changed for ${name}`, {
+    code: 0,
+    outcome: "recovery_blocked",
+  });
 }
 
 function promptCompletionObserved(before, after) {

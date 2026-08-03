@@ -54,6 +54,7 @@ export async function deliverTurn({
   try {
     const result = await herdr.prompt(agent.herdr.name, prompt, {
       harness: agent.launch.harness,
+      nativeSession: agent.native_session,
     });
     const input = turn.inputs.at(-1);
     if (input?.delivery?.status === "recorded") {

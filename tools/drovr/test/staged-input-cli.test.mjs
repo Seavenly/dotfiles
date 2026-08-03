@@ -64,8 +64,9 @@ fi
 shift 2
 case "\${1:-} \${2:-}" in
   "agent list")
-    if [[ -f "$state/asked" ]]; then status=done; seq=15
-    elif [[ -f "$state/settled" ]]; then status=idle; seq=14
+    if [[ -f "$state/settled" ]]; then status=idle; seq=14
+    elif [[ -f "$state/asked" ]]; then status=done; seq=15
+    elif [[ -f "$state/follow-up-complete" ]]; then status=done; seq=16
     elif [[ -f "$state/submitted" ]]; then status=working; seq=13
     else status=idle; seq=12
     fi
@@ -74,21 +75,31 @@ case "\${1:-} \${2:-}" in
   "agent read")
     if [[ -f "$state/staged-by-command" ]]; then
       printf '────────\\n❯ %s\\n────────\\n' "$(cat "$state/staged-by-command")"
-    elif [[ -f "$state/cleared" ]]; then
-      printf '────────\\n❯\\n────────\\n'
     elif [[ -f "$state/replaced" ]]; then
       printf '────────\\n❯ replacement staged work\\n────────\\n'
+    elif [[ -f "$state/asked" ]]; then
+      printf '────────\\n❯ follow-up\\n────────\\n'
     elif [[ -f "$state/settled" ]]; then
       printf '────────\\n❯ operator staged work\\n────────\\n'
+    elif [[ -f "$state/cleared" ]]; then
+      printf '────────\\n❯\\n────────\\n'
+    elif [[ -f "$state/follow-up-complete" || -f "$state/submitted" ]]; then
+      printf '────────\\n❯\\n────────\\n'
     else
       printf '────────\\n❯ Exact Drovr work\\n────────\\n'
     fi
     ;;
   "agent send-keys")
     [[ \${3:-} == managed-agent ]]
-    if [[ \${4:-} == enter ]]; then touch "$state/submitted"
+    if [[ \${4:-} == enter ]]; then
+      touch "$state/submitted"
+      if [[ -f "$state/asked" ]]; then
+        rm -f "$state/asked"
+        touch "$state/follow-up-complete"
+      fi
     elif [[ \${4:-} == esc && \${5:-} == esc ]]; then
       rm -f "$state/staged-by-command"
+      rm -f "$state/replaced" "$state/settled" "$state/submitted"
       touch "$state/cleared"
     else exit 1
     fi

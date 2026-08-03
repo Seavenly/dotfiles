@@ -494,6 +494,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
         ) {
           const blockedExcerpt = await herdr.agentExcerpt(
             context.agent.herdr.name,
+            { nativeSession: context.agent.native_session },
           );
           const reconciled = await withResourceLock(
             registryDirectory,
@@ -545,7 +546,9 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     if (identityFailure) return identityFailure;
     const blockedExcerpt =
       observed?.agent_status === "blocked"
-        ? await herdr.agentExcerpt(context.agent.herdr.name)
+        ? await herdr.agentExcerpt(context.agent.herdr.name, {
+            nativeSession: context.agent.native_session,
+          })
         : undefined;
     const deliveryObservationExpired = deliveryObservationGraceExpired(
       context.turn,

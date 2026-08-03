@@ -91,10 +91,19 @@ export async function runTraceFixture(fixture) {
                 nativeSession: step.native_session,
                 token,
               });
+            } else if (step.method === "guarded_excerpt") {
+              mutationAttempts.add("agent.read.recent-unwrapped");
+              await replay.client.agentExcerpt(step.name, {
+                nativeSession: step.native_session,
+              });
             } else {
+              mutationAttempts.add("agent.prompt");
               await replay.client.prompt(step.name, step.text, {
                 harness: fixture.harness,
-                observedBeforeDelivery: { agent_status: step.before_status ?? "working" },
+                nativeSession: step.native_session,
+                observedBeforeDelivery: lastObservation ?? {
+                  agent_status: step.before_status ?? "working",
+                },
               });
             }
           } catch (candidate) {
@@ -121,6 +130,7 @@ export async function runTraceFixture(fixture) {
           );
           mutationProofs.push({
             operation: step.operation,
+            description: step.description,
             unchanged: true,
             basis: "semantic method attempted and no mutation event was consumed",
           });
