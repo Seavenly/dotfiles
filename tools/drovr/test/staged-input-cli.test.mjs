@@ -411,13 +411,24 @@ esac
   ]);
   assert.equal(clearedStagedByCommand.result.status, "cleared");
 
-  await writeFile(join(herdrState, "missing-seq"), "");
-  const missingTransition = await runDrovr(env, [
+  const stagedBeforeMissingTransition = await runDrovr(env, [
     "agent",
     "staged-input",
     agent.id,
     "--stage-unknown-file",
     unknownPromptFile,
+  ]);
+  assert.equal(stagedBeforeMissingTransition.result.status, "staged_input");
+  assert.equal(
+    stagedBeforeMissingTransition.result.staged_input.display_text,
+    "QUALIFY-UNKNOWN-STAGED",
+  );
+
+  await writeFile(join(herdrState, "missing-seq"), "");
+  const missingTransition = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
   ]);
   assert.equal(missingTransition.result.status, "staged_input");
   assert.equal(missingTransition.result.staged_input.snapshot_token, null);

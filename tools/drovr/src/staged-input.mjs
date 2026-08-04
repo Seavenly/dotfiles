@@ -73,7 +73,9 @@ export async function stageUnknownAgentInput(
             staged.outcome !== "staged_input" ||
             staged.snapshot?.display_text !== text
           ) {
-            throw blocked("staged input differs from the authorized text");
+            throw blocked(
+              staged.reason ?? "staged input differs from the authorized text",
+            );
           }
           return inspectContext(
             registryDirectory,

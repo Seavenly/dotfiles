@@ -83,8 +83,10 @@ receipts keep text ownership separate from this freshness token, so a receipt
 remains discoverable after an intervening transition while recovery still
 requires a fresh current token. If Herdr omits a safe `state_change_seq`, the
 snapshot may be reported for diagnosis but no recovery token or mutation action
-is issued. The anti-replay guarantee therefore depends on Herdr advancing this
-counter for the clear transition.
+is issued. The transition-bound check is defense in depth; its anti-replay
+guarantee therefore depends on Herdr advancing this counter for the clear
+transition. Until a live clear qualification confirms that behavior, it must
+not be treated as the sole reappearance guard.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or

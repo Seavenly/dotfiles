@@ -510,14 +510,18 @@ token for Drovr-owned input, or the current recovery authorization for unknown
 input. If transition evidence is missing or inconsistent, the inspection keeps
 the visible text for diagnosis but returns `snapshot_token: null`, `token: null`,
 an empty `actions` array, and a typed `reason`; it never emits a mutation
-command.
+command. Receipts written while transition binding was part of `snapshot_token`
+remain recognized as owned through the recorded
+`state_change_seq_before_delivery`.
 
 `--stage-unknown-file PATH` provides a bounded public stimulus for diagnostics
 and qualification. It may write normalized file content only to the exact
 registered pane of a settled Claude agent with no existing staged text or open
 logical turn. It never sends a submit key or creates a turn, and succeeds only
 after the same native session exposes the exact text as an unknown staged-input
-snapshot. Any identity, state, or content mismatch fails closed.
+snapshot. Claude staging also requires exact native transition evidence before
+the pane write; missing evidence returns `recovery_blocked` without sending
+text. Any identity, state, or content mismatch fails closed.
 
 Native waiting first returns an already-settled observation rather than waiting
 for another state change. If the pre-delivery state persists past the bounded

@@ -873,6 +873,17 @@ export function createProductionSemanticHarness({
             "managed identity could not be proven before staging unknown input",
         };
       }
+      if (
+        harness === "claude" &&
+        !Number.isSafeInteger(before.transition_token)
+      ) {
+        return {
+          ...before,
+          outcome: "recovery_blocked",
+          reason:
+            "staged input lacks an exact native transition token before staging unknown input",
+        };
+      }
       await client.sendPaneText(agent.herdr.pane_id, text, {
         agentName: agent.herdr.name,
         ...(typeof before.identity?.native_session === "string"

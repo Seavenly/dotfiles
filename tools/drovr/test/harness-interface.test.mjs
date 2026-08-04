@@ -268,6 +268,7 @@ test("production unknown-input staging settles on a mismatch or disappearing age
           name: "managed-agent",
           pane_id: "pane-1",
           agent_status: "idle",
+          state_change_seq: 1,
           agent_session: { value: "native-1" },
         };
       },
@@ -321,6 +322,7 @@ test("production unknown-input staging settles on a mismatch or disappearing age
               name: "managed-agent",
               pane_id: "pane-1",
               agent_status: "idle",
+              state_change_seq: 1,
               agent_session: { value: "native-1" },
             }
           : null;
@@ -337,6 +339,46 @@ test("production unknown-input staging settles on a mismatch or disappearing age
   });
   assert.equal(disappearing.outcome, "recovery_blocked");
   assert.equal(disappearing.evidence, "absent");
+});
+
+test("production unknown-input staging refuses missing transition evidence before writing", async () => {
+  let writes = 0;
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "claude",
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async inspectStagedInput() {
+        return null;
+      },
+      async sendPaneText() {
+        writes += 1;
+      },
+    },
+  });
+
+  const result = await harness.stageUnknownInput({
+    agent,
+    text: "authorized text",
+  });
+  assert.equal(result.outcome, "recovery_blocked");
+  assert.equal(result.evidence, "absent");
+  assert.equal(
+    result.reason,
+    "staged input lacks an exact native transition token before staging unknown input",
+  );
+  assert.equal(writes, 0);
 });
 
 test("production topology unknown-input writes require exact semantic agent identity", async () => {
