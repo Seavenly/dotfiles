@@ -20,6 +20,9 @@ function runtime({ integration = "codex: current (v6)" } = {}) {
     if (command === "codex" && args[0] === "--version") {
       return "codex-cli 0.145.0\n";
     }
+    if (command === "claude" && args[0] === "--version") {
+      return "2.1.199 (Claude Code)\n";
+    }
     if (command === "codex") {
       return "--model --sandbox --ask-for-approval --search\n";
     }
@@ -235,7 +238,7 @@ test("a command-runner injection cannot bypass the compatibility binding gate", 
   assert.deepEqual(runtimeFacts.calls, []);
 });
 
-test("task and group contexts block conflicting active-agent bindings", async () => {
+test("binding enforcement rejects conflicting same-harness active-agent bindings", async () => {
   let nativeCalls = 0;
   const harness = semanticHarnessFor({
     group: { herdr: { session: "delegates" } },
@@ -274,6 +277,122 @@ test("task and group contexts block conflicting active-agent bindings", async ()
       error.details?.observed === "sha256:" + "2".repeat(64),
   );
   assert.equal(nativeCalls, 0);
+});
+
+test("binding enforcement qualifies mixed harnesses independently", async () => {
+  const runtimeFacts = runtime();
+  const codexCompatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  const claudeCompatibility = await collectProductionCompatibility({
+    harness: "claude",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  runtimeFacts.calls.length = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: codexCompatibility.evidence_digest,
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "claude" },
+        launch_binding: {
+          compatibility_evidence_digest: claudeCompatibility.evidence_digest,
+        },
+      },
+    ],
+  }, {
+    env: {},
+    run: runtimeFacts.run,
+    herdr: { async ensureSession() {} },
+    compatibility: codexCompatibility,
+    requireCompatibility: true,
+  });
+
+  await harness.ensureRuntime();
+  assert.ok(
+    runtimeFacts.calls.some(
+      ([command, args]) => command === "claude" && args[0] === "--version",
+    ),
+  );
+});
+
+test("teardown can qualify the current runtime without the stale launch binding", async () => {
+  const runtimeFacts = runtime();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  let closed = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    agent: {
+      status: "active",
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: "sha256:" + "0".repeat(64),
+      },
+    },
+  }, {
+    env: {},
+    herdr: {
+      async closePane() {
+        closed += 1;
+      },
+    },
+    compatibility,
+    requireCompatibility: true,
+    requireCompatibilityBinding: false,
+  });
+
+  await harness.topology.closePane("pane-1");
+  assert.equal(closed, 1);
+});
+
+test("recovery binding follows the subject agent instead of active siblings", async () => {
+  const runtimeFacts = runtime();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    agent: {
+      status: "active",
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: compatibility.evidence_digest,
+      },
+    },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: "sha256:" + "0".repeat(64),
+        },
+      },
+    ],
+  }, {
+    env: {},
+    herdr: { async ensureSession() {} },
+    compatibility,
+    requireCompatibility: true,
+  });
+
+  await harness.ensureRuntime();
 });
 
 test("semantic production mutations block agents with no compatibility digest", async () => {

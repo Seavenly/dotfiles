@@ -556,6 +556,10 @@ test("turn and lifecycle callers depend on the semantic seam, not low-level harn
   );
   assert.match(turnLifecycle, /harness\.prepareTurn/u);
   assert.match(turnLifecycle, /harness\.deliverTurn/u);
+  const lifecycle = await readFile(`${root}/tools/drovr/src/lifecycle.mjs`, "utf8");
+  assert.match(lifecycle, /requireCompatibilityBinding:\s*false/u);
+  const attach = await readFile(`${root}/tools/drovr/src/attach.mjs`, "utf8");
+  assert.match(attach, /requireCompatibilityBinding:\s*false/u);
 });
 
 function semanticAdapter({ calls, implementation }) {

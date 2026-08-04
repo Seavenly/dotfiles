@@ -54,6 +54,7 @@ export function createProductionSemanticHarness({
   compatibility,
   expectedCompatibility,
   expectedCompatibilityEvidenceDigest,
+  expectedCompatibilityBindings = [],
   compatibilityBindingFailure,
   requireCompatibilityBinding = false,
   requireCompatibility = false,
@@ -68,6 +69,9 @@ export function createProductionSemanticHarness({
   });
   const native = productionNativeAdapter(harness, env);
   let qualifiedCompatibility = compatibility;
+  const qualifiedByHarness = new Map(
+    compatibility ? [[harness, compatibility]] : [],
+  );
   const compatibilityRequired =
     requireCompatibility || requireCompatibilityBinding;
 
@@ -76,54 +80,91 @@ export function createProductionSemanticHarness({
     if (compatibilityBindingFailure) {
       throw compatibilityBindingError(compatibilityBindingFailure);
     }
-    if (
-      requireCompatibilityBinding &&
-      !expectedCompatibilityEvidenceDigest
-    ) {
+    const bindings = expectedCompatibilityBindings.length > 0
+      ? expectedCompatibilityBindings
+      : expectedCompatibilityEvidenceDigest
+        ? [{
+            harness,
+            evidence_digest: expectedCompatibilityEvidenceDigest,
+          }]
+        : [];
+    if (requireCompatibilityBinding && bindings.length === 0) {
       throw compatibilityBindingError({
         expected: null,
         observed: null,
         reason: "missing",
       });
     }
-    if (!qualifiedCompatibility) {
-      qualifiedCompatibility = await collectProductionCompatibility({
-        harness,
+    const primaryExpected = bindings.find(
+      ({ harness: bindingHarness }) => bindingHarness === harness,
+    )?.evidence_digest;
+    qualifiedCompatibility = await qualifiedCompatibilityFor(
+      harness,
+      qualifiedCompatibility,
+      expectedCompatibility,
+      primaryExpected,
+    );
+    for (const binding of bindings) {
+      const observed = binding.harness === harness
+        ? qualifiedCompatibility
+        : await qualifiedCompatibilityFor(binding.harness);
+      if (observed.evidence_digest !== binding.evidence_digest) {
+        throw compatibilityBindingError({
+          expected: binding.evidence_digest,
+          observed: observed.evidence_digest,
+          compatibility: observed,
+          reason: "changed",
+        });
+      }
+    }
+    return qualifiedCompatibility;
+  }
+
+  async function qualifiedCompatibilityFor(
+    targetHarness,
+    supplied,
+    expected,
+    expectedEvidenceDigest,
+  ) {
+    let candidate = qualifiedByHarness.get(targetHarness) ?? supplied;
+    if (!candidate) {
+      candidate = await collectProductionCompatibility({
+        harness: targetHarness,
         env,
         run,
-        expected: expectedCompatibility,
+        expected,
       });
     }
-    qualifiedCompatibility = qualifyCompatibility(qualifiedCompatibility, {
-      expected: expectedCompatibility,
-      harness,
+    candidate = qualifyCompatibility(candidate, {
+      expected,
+      harness: targetHarness,
       adapter: PRODUCTION_ADAPTER_ID,
     });
     try {
-      assertQualifiedCompatibility(qualifiedCompatibility);
+      assertQualifiedCompatibility(candidate);
     } catch (error) {
       throw new DrovrError(
-        `Drovr compatibility is ${qualifiedCompatibility?.reason ?? "unqualified"}`,
+        `Drovr compatibility is ${candidate?.reason ?? "unqualified"}`,
         {
           code: 0,
           outcome: "compatibility_blocked",
-          details: { compatibility: qualifiedCompatibility },
+          details: { compatibility: candidate },
         },
       );
     }
     if (
-      expectedCompatibilityEvidenceDigest &&
-      qualifiedCompatibility.evidence_digest !==
-        expectedCompatibilityEvidenceDigest
+      expectedEvidenceDigest &&
+      candidate.evidence_digest !== expectedEvidenceDigest
     ) {
       throw compatibilityBindingError({
-        expected: expectedCompatibilityEvidenceDigest,
-        observed: qualifiedCompatibility.evidence_digest,
-        compatibility: qualifiedCompatibility,
+        expected: expectedEvidenceDigest,
+        observed: candidate.evidence_digest,
+        compatibility: candidate,
         reason: "changed",
       });
     }
-    return qualifiedCompatibility;
+    qualifiedByHarness.set(targetHarness, candidate);
+    return candidate;
   }
 
   const adapter = {

@@ -23,7 +23,13 @@ export async function attach(
       group: { herdr: { session: configuration.session } },
       agent,
     },
-    { env },
+    {
+      env,
+      requireCompatibility: true,
+      // Attaching is diagnostic access and must remain available to inspect or
+      // retire a launch after its persisted runtime binding has drifted.
+      requireCompatibilityBinding: false,
+    },
   );
   const runtime = await harness.observeRuntime();
   if (runtime.evidence !== "present") {

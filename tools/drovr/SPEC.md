@@ -532,7 +532,11 @@ reconciled terminal status instead of waiting for a future native transition.
 If identity-safe recovery is blocked before interruption, cancellation records
 the logical turn as `uncertain` and retains the typed recovery outcome.
 
-`agent retire` terminates the harness process and closes its managed pane.
+`agent retire` terminates the harness process and closes its managed pane. Work
+delivery and identity-sensitive recovery require the persisted compatibility
+binding, but `agent retire`, task/group close, and `attach` qualify the current
+runtime without requiring that old binding to match. This keeps
+`retire_stale_launch` a performable recovery action after a runtime upgrade.
 
 ### Steering
 

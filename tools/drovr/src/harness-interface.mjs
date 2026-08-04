@@ -106,6 +106,9 @@ export function semanticHarnessFor(context, dependencies = {}) {
       ? {
           expectedCompatibilityEvidenceDigest:
             compatibilityBinding.digest,
+          ...(compatibilityBinding.bindings
+            ? { expectedCompatibilityBindings: compatibilityBinding.bindings }
+            : {}),
           ...(compatibilityBinding.failure
             ? { compatibilityBindingFailure: compatibilityBinding.failure }
             : {}),
@@ -119,40 +122,50 @@ export function semanticHarnessFor(context, dependencies = {}) {
 }
 
 function managedAgents(context) {
-  const candidates = Array.isArray(context?.agents)
-    ? context.agents
-    : context?.agent
-      ? [context.agent]
+  const candidates = context?.agent
+    ? [context.agent]
+    : Array.isArray(context?.agents)
+      ? context.agents
       : [];
   return candidates.filter((agent) => agent?.status !== "retired");
 }
 
 function compatibilityBindingFor(agents) {
   if (agents.length === 0) return {};
-  const digests = agents.map(
-    (agent) => agent.launch_binding?.compatibility_evidence_digest,
-  );
-  if (digests.some((digest) => !digest)) {
-    return {
-      failure: {
-        expected: null,
-        observed: null,
-        reason: "missing",
-      },
-    };
+  const byHarness = new Map();
+  for (const agent of agents) {
+    const digest = agent.launch_binding?.compatibility_evidence_digest;
+    if (!digest) {
+      return {
+        failure: {
+          expected: null,
+          observed: null,
+          reason: "missing",
+        },
+      };
+    }
+    const agentHarness = agent.launch?.harness ?? "codex";
+    const existing = byHarness.get(agentHarness);
+    if (existing && existing !== digest) {
+      return {
+        failure: {
+          expected: existing,
+          observed: digest,
+          reason: "changed",
+        },
+      };
+    }
+    byHarness.set(agentHarness, digest);
   }
-  const [expected] = digests;
-  const observed = digests.find((digest) => digest !== expected);
-  if (observed) {
-    return {
-      failure: {
-        expected,
-        observed,
-        reason: "changed",
-      },
-    };
-  }
-  return { digest: expected };
+  const bindings = [...byHarness.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([agentHarness, digest]) => ({
+      harness: agentHarness,
+      evidence_digest: digest,
+    }));
+  return bindings.length === 1
+    ? { digest: bindings[0].evidence_digest }
+    : { bindings };
 }
 
 export function assertSemanticHarness(candidate) {

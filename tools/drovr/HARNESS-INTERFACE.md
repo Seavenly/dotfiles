@@ -125,11 +125,14 @@ harness, integration, transcript-adapter, and semantic-feature identities.
 Replay fixtures carry equivalent facts for the replay and transcript adapters.
 Missing, changed, or explicitly unqualified facts return a typed
 `compatibility_blocked` result with legal recovery actions; they never authorize
-a mutation or a stale launch binding. Qualified results include the
+work delivery or identity-sensitive recovery under a stale launch binding.
+Qualified results include the
 `drovr.compatibility/v1` evidence digest and explicit upstream gaps.
-Lifecycle cleanup uses the same binding gate: every non-retired managed agent
-in a task or group must carry one exact shared compatibility digest. Missing or
-conflicting bindings block before cleanup mutation.
+Work delivery and identity-sensitive recovery use the exact persisted launch
+binding. Teardown and attach still qualify the current runtime, but do not
+require the old binding to match, so `agent retire` remains the legal recovery
+path for a stale launch. When binding checks cover multiple harnesses, agents
+are compared within their own harness group rather than across harnesses.
 
 The current upstream gap is Herdr's lack of a typed native raw-key operation.
 The production adapter keeps that gesture local and guards every use with the

@@ -17,7 +17,14 @@ import {
 import { settleTurnRecord } from "./turn-record.mjs";
 
 function client(context, env, dependencies) {
-  return semanticHarnessFor(context, { ...dependencies, env });
+  return semanticHarnessFor(context, {
+    ...dependencies,
+    env,
+    // Teardown is the recovery path for stale launches. It still qualifies
+    // the current runtime, but must be able to retire resources after the
+    // persisted launch digest has become stale.
+    requireCompatibilityBinding: false,
+  });
 }
 
 async function lifecycleContext(registryDirectory, kind, id) {
