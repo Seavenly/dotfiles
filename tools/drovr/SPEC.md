@@ -481,18 +481,25 @@ the turn `uncertain`; it is not treated as native settlement.
 
 When Drovr observes an empty Claude prompt box become staged during its own
 delivery attempt but cannot confirm submission, the uncertain turn retains an
-exact staged-input receipt. The receipt binds the complete visible literal input,
-original input digest, agent, pane, native session, and pre-delivery state token.
-Attachment placeholders and partial visible matches are never ownership proof.
-`agent staged-input` compares the current prompt-box snapshot with that receipt.
-An exact match may be submitted or cleared non-interactively with the returned
-token. Submission remains correlated to the original uncertain logical turn and
-never creates a replacement turn. Clearing sends one guarded interrupt key and
-succeeds only after the same native session is settled with an empty prompt box.
-A mismatch or changed native identity returns `recovery_blocked` without
-terminal mutation. Unknown prompt text is preserved by default; the operator may
-explicitly authorize clearing that exact inspected snapshot with
-`--clear-unknown TOKEN`.
+exact staged-input receipt. The receipt binds the complete visible literal input
+through its text digest, original input digest, agent, pane, native session, and
+pre-delivery state token. The text digest answers the ownership question and is
+kept separate from the current recovery authorization. Attachment placeholders
+and partial visible matches are never ownership proof. `agent staged-input`
+compares the current prompt-box text with that receipt, then obtains a fresh
+snapshot token that binds the same text digest to the exact native state
+transition observed with it. An exact owned receipt may be submitted or cleared
+non-interactively with the returned receipt token, even if the native transition
+advanced after delivery; the fresh snapshot token still has to match immediately
+before the guarded native action. Submission remains correlated to the original
+uncertain logical turn and never creates a replacement turn. Clearing sends one
+guarded interrupt key and succeeds only after the same native session is settled
+with an empty prompt box. A mismatch, changed native identity, missing native
+transition token, or stale snapshot authorization returns `recovery_blocked`
+without terminal mutation. Unknown prompt text is preserved by default; the
+operator may explicitly authorize clearing that exact inspected snapshot with
+`--clear-unknown TOKEN`. That token is current inspection authorization and must
+be re-inspected after a native state transition.
 
 `--stage-unknown-file PATH` provides a bounded public stimulus for diagnostics
 and qualification. It may write normalized file content only to the exact

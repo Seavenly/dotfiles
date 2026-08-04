@@ -194,6 +194,26 @@ async function inspectContext(registryDirectory, context, harness, observed) {
   const ownedTurn = turns.find(
     (turn) => ownedStagedTurn(turn, context.agent, staged),
   );
+  const hasRecoveryToken = typeof staged.token === "string";
+  const actions = hasRecoveryToken
+    ? ownedTurn
+      ? [
+          {
+            action: "submit",
+            command: `drovr agent staged-input ${context.agent.id} --submit ${ownedTurn.staged_input.token}`,
+          },
+          {
+            action: "clear",
+            command: `drovr agent staged-input ${context.agent.id} --clear ${ownedTurn.staged_input.token}`,
+          },
+        ]
+      : [
+          {
+            action: "clear_unknown",
+            command: `drovr agent staged-input ${context.agent.id} --clear-unknown ${staged.token}`,
+          },
+        ]
+    : [];
   return {
     ...context,
     status: "staged_input",
@@ -201,26 +221,13 @@ async function inspectContext(registryDirectory, context, harness, observed) {
     staged_input: {
       display_text: staged.display_text,
       snapshot_token: staged.token,
-      token: ownedTurn?.staged_input.token ?? staged.token,
+      token: hasRecoveryToken
+        ? ownedTurn?.staged_input.token ?? staged.token
+        : null,
       ownership: ownedTurn ? "drovr" : "unknown",
       ...(ownedTurn ? { turn_id: ownedTurn.id } : {}),
-      actions: ownedTurn
-        ? [
-            {
-              action: "submit",
-              command: `drovr agent staged-input ${context.agent.id} --submit ${ownedTurn.staged_input.token}`,
-            },
-            {
-              action: "clear",
-              command: `drovr agent staged-input ${context.agent.id} --clear ${ownedTurn.staged_input.token}`,
-            },
-          ]
-        : [
-            {
-              action: "clear_unknown",
-              command: `drovr agent staged-input ${context.agent.id} --clear-unknown ${staged.token}`,
-            },
-          ],
+      actions,
+      ...(staged.reason ? { reason: staged.reason } : {}),
     },
   };
 }

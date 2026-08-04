@@ -144,8 +144,13 @@ the upstream raw-key call still leaves an irreducible inspect-to-gesture window.
 
 ## Staged-input recovery invariant
 
-Recovery is bound to the exact staged snapshot token and the exact managed
-agent/native-session identity captured by inspection.
+Recovery is bound to the exact visible staged text, the exact managed
+agent/native-session identity captured by inspection, and a fresh snapshot token
+that binds the text digest to the native state transition observed immediately
+before the action. Durable receipt ownership uses the text identity; the
+transition-bound token is a separate freshness precondition. Missing transition
+evidence produces no recovery token and fails closed before any native key is
+sent.
 
 For `clear`, the production adapter must observe the snapshot disappear, keep
 it absent for the configured stability interval, and perform a final exact

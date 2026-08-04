@@ -752,7 +752,7 @@ export class HerdrClient {
       });
     }
     if (
-      transitionToken !== undefined &&
+      !Number.isSafeInteger(transitionToken) ||
       observedBefore.state_change_seq !== transitionToken
     ) {
       throw new DrovrError(`Claude staged input changed for ${name}`, {

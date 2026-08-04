@@ -563,6 +563,7 @@ test("Claude staged input recovery submits only the exact inspected prompt", asy
     harness: "claude",
     action: "submit",
     token: staged.token,
+    transitionToken: 12,
   });
 
   assert.equal(submitted, true);
@@ -614,6 +615,7 @@ test("Claude staged recovery checks identity immediately before the final snapsh
     nativeSession: "native-1",
     paneId: "pane-1",
     token: staged.token,
+    transitionToken: 12,
   });
 
   const sendIndex = calls.indexOf("send-keys");
@@ -763,6 +765,7 @@ test("Claude staged input recovery clears only the exact inspected prompt", asyn
     harness: "claude",
     nativeSession: "native-1",
     token: staged.token,
+    transitionToken: 12,
   });
 
   assert.equal(cleared, true);
@@ -805,6 +808,44 @@ test("Claude staged input recovery rejects a stale native transition before send
         nativeSession: "native-1",
         token: stagedInputTextToken("Exact staged work"),
         transitionToken: 1,
+      }),
+    (error) => error.outcome === "recovery_blocked",
+  );
+  assert.equal(sendKeys, 0);
+});
+
+test("Claude staged input recovery requires an exact native transition token", async () => {
+  let sendKeys = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: "idle",
+              state_change_seq: 2,
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("read")) {
+        return "────────\n❯ Exact staged work\n────────";
+      }
+      if (args.includes("send-keys")) sendKeys += 1;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      client.recoverStagedInput("managed-agent", {
+        action: "clear",
+        harness: "claude",
+        nativeSession: "native-1",
+        token: stagedInputTextToken("Exact staged work"),
       }),
     (error) => error.outcome === "recovery_blocked",
   );

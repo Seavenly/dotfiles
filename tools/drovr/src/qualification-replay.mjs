@@ -235,11 +235,14 @@ export async function runTraceFixture(fixture) {
             ? recoveryMutationEndSequence
             : recoveryMutationStartSequence;
           assertNoConsumedOperation(replay, step.operation, mutationBoundary);
+          const attempted = mutationAttempts.has(step.operation);
           mutationProofs.push({
             operation: step.operation,
             description: step.description,
-            unchanged: "not_observed",
-            basis: "no follow-up semantic mutation was attempted through the replay interface",
+            unchanged: attempted ? true : "not_observed",
+            basis: attempted
+              ? "semantic method attempted and no follow-up mutation event was consumed through the replay interface"
+              : "no follow-up semantic mutation was attempted through the replay interface",
           });
           break;
         }

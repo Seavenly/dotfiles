@@ -26,7 +26,10 @@ import {
 } from "../src/config.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { createTurnRecord, settleTurnRecord } from "../src/turn-record.mjs";
-import { createStagedInputReceipt } from "../src/staged-input-receipt.mjs";
+import {
+  bindStagedInputToken,
+  createStagedInputReceipt,
+} from "../src/staged-input-receipt.mjs";
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -95,7 +98,8 @@ case "\${1:-} \${2:-}" in
     if [[ -f "$state/settled" ]]; then status=idle; seq=14
     elif [[ -f "$state/asked" ]]; then status=done; seq=15
     elif [[ -f "$state/follow-up-complete" ]]; then status=done; seq=16
-    elif [[ -f "$state/submitted" ]]; then status=working; seq=13
+    elif [[ -f "$state/submitted" ]]; then status=working; seq=14
+    elif [[ -f "$state/advanced" ]]; then status=idle; seq=13
     else status=idle; seq=12
     fi
     printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"${nativeSession}"}}]}}\\n' "$status" "$seq"
@@ -261,10 +265,15 @@ esac
   await writeRecord(registryDirectory, "agents", agent);
   await writeRecord(registryDirectory, "turns", completedTurn);
   await writeRecord(registryDirectory, "turns", turn);
+  await writeFile(join(herdrState, "advanced"), "");
 
   const inspected = await runDrovr(env, ["agent", "staged-input", agent.id]);
   assert.equal(inspected.result.staged_input.ownership, "drovr");
   assert.equal(inspected.result.staged_input.turn_id, turn.id);
+  assert.equal(
+    inspected.result.staged_input.snapshot_token,
+    bindStagedInputToken(snapshotToken, 13),
+  );
   const submitAction = inspected.result.staged_input.actions.find(
     ({ action }) => action === "submit",
   );

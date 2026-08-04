@@ -78,7 +78,13 @@ snapshot reappears after the interval. Replay proves that the later snapshot
 is observed without submitting it, replacing the agent, or resuming a native
 process implicitly. Staged-input tokens bind the visible snapshot digest to
 the exact native state transition observed with it, so the pre-clear token is
-rejected if identical text reappears under a later transition.
+rejected if identical text reappears under a later transition. Durable owned
+receipts keep text ownership separate from this freshness token, so a receipt
+remains discoverable after an intervening transition while recovery still
+requires a fresh current token. If Herdr omits a safe `state_change_seq`, the
+snapshot may be reported for diagnosis but no recovery token or mutation action
+is issued. The anti-replay guarantee therefore depends on Herdr advancing this
+counter for the clear transition.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or

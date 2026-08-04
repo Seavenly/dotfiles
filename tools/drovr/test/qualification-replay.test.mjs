@@ -81,8 +81,8 @@ test("delayed staged-input reappearance after stable clear stays unknown without
       {
         operation: "agent.send-keys",
         description: "Do not send keys for reappeared unknown staged input.",
-        unchanged: "not_observed",
-        basis: "no follow-up semantic mutation was attempted through the replay interface",
+        unchanged: true,
+        basis: "semantic method attempted and no follow-up mutation event was consumed through the replay interface",
       },
       {
         operation: "agent.start",
@@ -100,7 +100,7 @@ test("delayed staged-input reappearance after stable clear stays unknown without
   );
 });
 
-test("delayed reappearance rejects an injected post-clear mutation event", async () => {
+test("delayed reappearance rejects an injected unconsumed post-clear event", async () => {
   const fixture = structuredClone(
     (await loadTraceFixtures()).find(
       ({ id }) => id === "claude_staged_input_delayed_reappearance_after_clear",

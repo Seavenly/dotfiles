@@ -183,7 +183,7 @@ exit 5
     ),
     [
       { description: "Do not submit reappeared unknown staged input.", unchanged: "not_observed" },
-      { description: "Do not send keys for reappeared unknown staged input.", unchanged: "not_observed" },
+      { description: "Do not send keys for reappeared unknown staged input.", unchanged: true },
       { description: "Do not replace the managed agent after reappearance.", unchanged: "not_observed" },
       { description: "Do not repair the native process implicitly.", unchanged: "not_observed" },
       { description: "Do not edit registry, transcript, or caller files.", unchanged: "not_observed" },

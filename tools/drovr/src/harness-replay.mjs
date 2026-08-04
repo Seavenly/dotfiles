@@ -1043,14 +1043,14 @@ function turnEvidence(outcome, observation, details = {}) {
 }
 
 function stagedEvidence(agent, outcome, evidence, snapshot, observed) {
-  const semanticSnapshot = snapshot && observed
+  const semanticSnapshot = snapshot
     ? {
-        token:
-          bindStagedInputToken(snapshot.token, observed.transition_token) ??
-          snapshot.token,
+        token: observed
+          ? bindStagedInputToken(snapshot.token, observed.transition_token)
+          : null,
         display_text: snapshot.display_text,
       }
-    : snapshot;
+    : null;
   return {
     schema: "drovr.semantic-staged-input/v1",
     outcome,
@@ -1067,6 +1067,11 @@ function stagedEvidence(agent, outcome, evidence, snapshot, observed) {
       : {}),
     ...(observed?.transition_token !== undefined
       ? { transition_token: observed.transition_token }
+      : {}),
+    ...(snapshot && !semanticSnapshot.token
+      ? {
+          reason: "staged snapshot lacks an exact native transition token",
+        }
       : {}),
   };
 }

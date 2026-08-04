@@ -131,7 +131,14 @@ test("captured pane snapshots round-trip through the semantic replay harness", a
   });
 
   assert.equal(captured.display_text, "QUALIFY-ROUNDTRIP-PROMPT");
-  assert.deepEqual(replayed.snapshot, captured);
+  assert.deepEqual(replayed.snapshot, {
+    token: null,
+    display_text: captured.display_text,
+  });
+  assert.equal(
+    replayed.reason,
+    "staged snapshot lacks an exact native transition token",
+  );
   assert.doesNotMatch(JSON.stringify(trace), /\/home\/operator/u);
 });
 

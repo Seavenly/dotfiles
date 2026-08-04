@@ -3,9 +3,7 @@ import { createHash } from "node:crypto";
 export function createStagedInputReceipt({ agentName, observed, prompt, snapshot }) {
   const receipt = {
     ownership: "drovr",
-    snapshot_token:
-      bindStagedInputToken(snapshot.token, observed.state_change_seq) ??
-      snapshot.token,
+    snapshot_token: stagedInputTextToken(snapshot.display_text),
     display_text: snapshot.display_text,
     prompt_sha256: sha256(prompt),
     agent_name: agentName,
@@ -30,12 +28,21 @@ export function stagedInputTextToken(displayText) {
 
 export function ownedStagedTurn(turn, agent, snapshot) {
   const receipt = turn.staged_input;
+  const textToken =
+    typeof snapshot?.display_text === "string"
+      ? stagedInputTextToken(snapshot.display_text)
+      : null;
+  const legacyBoundToken = bindStagedInputToken(
+    textToken,
+    receipt?.state_change_seq_before_delivery,
+  );
   return (
     turn.agent_id === agent.id &&
     turn.status === "uncertain" &&
     receipt?.ownership === "drovr" &&
     !receipt.recovery &&
-    receipt.snapshot_token === snapshot.token &&
+    (receipt.snapshot_token === textToken ||
+      receipt.snapshot_token === legacyBoundToken) &&
     receipt.prompt_sha256 === sha256(turn.inputs.at(-1)?.text ?? "") &&
     receipt.agent_name === agent.herdr.name &&
     receipt.pane_id === agent.herdr.pane_id &&
