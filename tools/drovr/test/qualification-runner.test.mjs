@@ -123,7 +123,7 @@ exit 5
   assert.notEqual(invocation.state_home, process.env.XDG_STATE_HOME);
 });
 
-test("a deterministic scenario replays its trace into qualification evidence", async (t) => {
+test("deterministic scenarios replay their traces into qualification evidence", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-replay-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const fakeDrovr = join(scratch, "drovr");
@@ -142,7 +142,10 @@ exit 5
   );
 
   const report = await runQualification({
-    scenarioIds: ["codex_startup_context_before_prompt"],
+    scenarioIds: [
+      "codex_startup_context_before_prompt",
+      "claude_staged_input_delayed_reappearance_after_clear",
+    ],
     evidenceDirectory,
     drovrCommand: fakeDrovr,
     cwd: caller,
@@ -151,6 +154,7 @@ exit 5
 
   assert.equal(report.status, "pass");
   assert.equal(report.scenarios[0].result, "pass");
+  assert.equal(report.scenarios[1].result, "pass");
   const evidence = JSON.parse(
     await readFile(report.scenarios[0].evidence, "utf8"),
   );
@@ -161,6 +165,31 @@ exit 5
   assert.equal(evidence.trace.provenance.herdr, "herdr 0.7.5");
   assert.equal(evidence.trace.events.length > 0, true);
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
+
+  const delayedEvidence = JSON.parse(
+    await readFile(report.scenarios[1].evidence, "utf8"),
+  );
+  const delayedReplay = delayedEvidence.observations.find(
+    ({ type }) => type === "deterministic_replay",
+  ).result;
+  assert.equal(delayedReplay.result, "cleared");
+  assert.deepEqual(
+    delayedReplay.mutation_proofs.map(({ operation }) => operation),
+    ["agent.prompt", "agent.send-keys", "agent.start", "agent.resume"],
+  );
+  assert.deepEqual(
+    delayedEvidence.cleanup_receipt.prohibited_mutations_observed.map(
+      ({ description, unchanged }) => ({ description, unchanged }),
+    ),
+    [
+      { description: "Do not submit reappeared unknown staged input.", unchanged: true },
+      { description: "Do not send keys for reappeared unknown staged input.", unchanged: true },
+      { description: "Do not replace the managed agent after reappearance.", unchanged: true },
+      { description: "Do not repair the native process implicitly.", unchanged: true },
+      { description: "Do not edit registry, transcript, or caller files.", unchanged: "not_observed" },
+    ],
+  );
+  assert.equal(delayedEvidence.cleanup_receipt.unresolved_obligations.length, 0);
 });
 
 test("a selected live prompt-file scenario runs with unique isolated resources and cleans them", async (t) => {

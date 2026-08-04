@@ -33,6 +33,10 @@ test("transient staged-input reappearance is a discriminating contradiction afte
     at_ms: 25,
     stability_interval_ms: 30,
   });
+  assert.deepEqual(
+    result.mutation_proofs.map(({ operation }) => operation),
+    ["agent.prompt", "agent.send-keys", "agent.start", "agent.resume"],
+  );
 });
 
 test("stable staged-input clear remains cleared after its stability interval", async () => {
@@ -42,6 +46,54 @@ test("stable staged-input clear remains cleared after its stability interval", a
   const result = await runTraceFixture(fixture);
   assert.equal(result.result, "cleared");
   assert.equal(result.observations.at(-1).status, "cleared");
+});
+
+test("delayed staged-input reappearance after stable clear stays unknown without repair", async () => {
+  const fixture = (await loadTraceFixtures()).find(
+    ({ id }) => id === "claude_staged_input_delayed_reappearance_after_clear",
+  );
+  assert.ok(fixture, "post-stability reappearance fixture is required");
+
+  const result = await runTraceFixture(fixture);
+
+  assert.equal(result.result, "cleared");
+  assert.deepEqual(result.observations.at(-1), {
+    action: "assert_reappeared_after_clear",
+    status: "cleared",
+    at_ms: 55,
+    stability_interval_ms: 30,
+  });
+  assert.deepEqual(
+    result.mutation_proofs.filter(({ operation }) =>
+      ["agent.prompt", "agent.send-keys", "agent.start", "agent.resume"].includes(operation),
+    ),
+    [
+      {
+        operation: "agent.prompt",
+        description: "Do not submit reappeared unknown staged input.",
+        unchanged: true,
+        basis: "clear recovery and post-clear observation consumed no mutation event",
+      },
+      {
+        operation: "agent.send-keys",
+        description: "Do not send keys for reappeared unknown staged input.",
+        unchanged: true,
+        basis: "clear recovery and post-clear observation consumed no mutation event",
+      },
+      {
+        operation: "agent.start",
+        description: "Do not replace the managed agent after reappearance.",
+        unchanged: true,
+        basis: "clear recovery and post-clear observation consumed no mutation event",
+      },
+      {
+        operation: "agent.resume",
+        description: "Do not repair the native process implicitly.",
+        unchanged: true,
+        basis: "clear recovery and post-clear observation consumed no mutation event",
+      },
+    ],
+  );
 });
 
 test("mutated identity, timing, and staged-token fixtures fail closed", async () => {
@@ -71,6 +123,13 @@ test("mutated identity, timing, and staged-token fixtures fail closed", async ()
       mutate(fixture) {
         fixture.trace.events[0].payload.text =
           "────────\n❯ QUALIFY-STAGED-TOKEN-ALTERED\n────────";
+      },
+    },
+    {
+      id: "claude_staged_input_delayed_reappearance_after_clear",
+      mutate(fixture) {
+        fixture.trace.events[10].payload.text =
+          "────────\n❯ QUALIFY-DELAYED-REAPPEARANCE-ALTERED\n────────";
       },
     },
   ];

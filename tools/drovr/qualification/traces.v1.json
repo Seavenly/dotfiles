@@ -325,7 +325,11 @@
         {"action":"recover_clear","name":"managed-agent","native_session":"claude-session-transient","token_from":"last_inspection"},
         {"action":"delay","milliseconds":25},
         {"action":"inspect","name":"managed-agent","expect_text":"QUALIFY-TRANSIENT-PROMPT"},
-        {"action":"assert_reappeared_after_clear","stability_interval_ms":30,"expect_outcome":"clear_contradicted"}
+        {"action":"assert_reappeared_after_clear","stability_interval_ms":30,"expect_outcome":"clear_contradicted"},
+        {"action":"assert_no_followup_mutation","operation":"agent.prompt","description":"Do not submit reappeared unknown staged input."},
+        {"action":"assert_no_followup_mutation","operation":"agent.send-keys","description":"Do not send keys for reappeared unknown staged input."},
+        {"action":"assert_no_followup_mutation","operation":"agent.start","description":"Do not replace the managed agent after reappearance."},
+        {"action":"assert_no_followup_mutation","operation":"agent.resume","description":"Do not repair the native process implicitly."}
       ]
     },
     {
@@ -355,6 +359,45 @@
         {"action":"delay","milliseconds":30},
         {"action":"inspect","name":"managed-agent"},
         {"action":"assert_clear_stable","stability_interval_ms":30}
+      ]
+    },
+    {
+      "id": "claude_staged_input_delayed_reappearance_after_clear",
+      "harness": "claude",
+      "coverage": ["staged_input_recovery", "post_stability_reappearance", "non_submission", "no_hidden_repair"],
+      "trace": {
+        "schema": "drovr.harness-trace/v1",
+        "version": 1,
+        "scenario_id": "claude_staged_input_delayed_reappearance_after_clear",
+        "provenance": {"drovr":"source commit 1bd06882d4d6a9468f55c290cd5a6a9d1313c5ed","herdr":"herdr 0.7.5","claude":"2.1.199 (Claude Code)","codex":"codex-cli 0.145.0"},
+        "events": [
+          {"sequence":1,"at_ms":0,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯ QUALIFY-DELAYED-REAPPEARANCE-PROMPT\n────────"}},
+          {"sequence":2,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"idle","state_change_seq":1,"agent_session":{"value":"claude-session-delayed"}}]}}}},
+          {"sequence":3,"at_ms":0,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯ QUALIFY-DELAYED-REAPPEARANCE-PROMPT\n────────"}},
+          {"sequence":4,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"idle","state_change_seq":1,"agent_session":{"value":"claude-session-delayed"}}]}}}},
+          {"sequence":5,"at_ms":0,"kind":"command_result","operation":"agent.send-keys","payload":{"envelope":{"schema":"herdr.command/v1","result":{"status":"cleared"}}}},
+          {"sequence":6,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"idle","state_change_seq":2,"agent_session":{"value":"claude-session-delayed"}}]}}}},
+          {"sequence":7,"at_ms":0,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯\n────────"}},
+          {"sequence":8,"at_ms":30,"kind":"delay","operation":"clock.delay","payload":{"duration_ms":30}},
+          {"sequence":9,"at_ms":30,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯\n────────"}},
+          {"sequence":10,"at_ms":55,"kind":"delay","operation":"clock.delay","payload":{"duration_ms":25}},
+          {"sequence":11,"at_ms":55,"kind":"pane_snapshot","operation":"agent.read.visible","payload":{"text":"────────\n❯ QUALIFY-DELAYED-REAPPEARANCE-PROMPT\n────────"}},
+          {"sequence":12,"at_ms":55,"kind":"agent_observation","operation":"agent.list","payload":{"envelope":{"schema":"herdr.command/v1","result":{"agents":[{"name":"managed-agent","agent_status":"idle","state_change_seq":2,"agent_session":{"value":"claude-session-delayed"}}]}}}}
+        ]
+      },
+      "steps": [
+        {"action":"inspect","name":"managed-agent","expect_text":"QUALIFY-DELAYED-REAPPEARANCE-PROMPT"},
+        {"action":"recover_clear","name":"managed-agent","native_session":"claude-session-delayed","token_from":"last_inspection"},
+        {"action":"delay","milliseconds":30},
+        {"action":"inspect","name":"managed-agent"},
+        {"action":"assert_clear_stable","stability_interval_ms":30},
+        {"action":"delay","milliseconds":55},
+        {"action":"inspect","name":"managed-agent","expect_text":"QUALIFY-DELAYED-REAPPEARANCE-PROMPT"},
+        {"action":"assert_reappeared_after_clear","stability_interval_ms":30,"expect_outcome":"cleared","expect_text":"QUALIFY-DELAYED-REAPPEARANCE-PROMPT","expect_token":"<token:sha256:3c6ba536e763e048ec2e76b91b69ab19c78d14a8c48037e3944269d3917e59de>","expect_inspection_outcome":"staged_input","expect_inspection_evidence":"present"},
+        {"action":"assert_no_followup_mutation","operation":"agent.prompt","description":"Do not submit reappeared unknown staged input."},
+        {"action":"assert_no_followup_mutation","operation":"agent.send-keys","description":"Do not send keys for reappeared unknown staged input."},
+        {"action":"assert_no_followup_mutation","operation":"agent.start","description":"Do not replace the managed agent after reappearance."},
+        {"action":"assert_no_followup_mutation","operation":"agent.resume","description":"Do not repair the native process implicitly."}
       ]
     },
     {

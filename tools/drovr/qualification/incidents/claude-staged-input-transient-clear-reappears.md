@@ -30,6 +30,19 @@ Drovr then recognized the same managed agent and native session, reported
   replacement, registry edits, transcript edits, or mutation of caller-owned
   files.
 
+The fault matrix keeps the two timing boundaries separate:
+
+- Reappearance during the qualified stability interval is a
+  `clear_contradicted` result and never becomes clear success.
+- Reappearance after the interval is observed as a new unknown staged snapshot
+  after the earlier `cleared` result. It does not authorize submission,
+  replacement, or implicit process resume.
+
+The post-interval case is deterministic replay coverage. A same-native-session
+resume, if explicitly exercised in a future scenario, must have its own exact
+identity and receipt assertions rather than being counted as part of clear
+success.
+
 The executable contract is scenario
 `claude_staged_input_transient_clear_reappears` in
 [`../catalog.v1.json`](../catalog.v1.json).

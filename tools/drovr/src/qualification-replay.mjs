@@ -15,6 +15,8 @@ export async function runTraceFixture(fixture) {
   let lastStatus;
   let lastExtraction;
   let recoveryResult;
+  let recoveryMutationStart;
+  let recoveryMutationEnd;
   const mutationAttempts = new Set();
   const mutationProofs = [];
   const assertions = [];
@@ -94,6 +96,7 @@ export async function runTraceFixture(fixture) {
           break;
         case "recover_clear": {
           mutationAttempts.add("agent.send-keys");
+          recoveryMutationStart = replay.consumedEvents().length;
           const token = step.token_from === "last_inspection"
             ? lastInspection?.snapshot?.token
             : step.token;
@@ -103,6 +106,7 @@ export async function runTraceFixture(fixture) {
             token,
             stabilityIntervalMs: stabilityIntervalAfter(fixture.steps, index),
           });
+          recoveryMutationEnd = replay.consumedEvents().length;
           observations.push({
             action: step.action,
             status: recoveryResult.outcome,
@@ -184,12 +188,52 @@ export async function runTraceFixture(fixture) {
           assert.ok(recoveryResult);
           assert.equal(recoveryResult.outcome, step.expect_outcome);
           assert.equal(lastInspection?.snapshot?.display_text, step.expect_text ?? lastInspection?.snapshot?.display_text);
+          if (step.expect_token) {
+            assert.equal(
+              lastInspection?.snapshot?.token,
+              normalizeExpectedToken(step.expect_token),
+            );
+          }
+          if (step.expect_inspection_outcome) {
+            assert.equal(lastInspection?.outcome, step.expect_inspection_outcome);
+          }
+          if (step.expect_inspection_evidence) {
+            assert.equal(lastInspection?.evidence, step.expect_inspection_evidence);
+          }
           lastStatus = recoveryResult.outcome;
           observations.push({
             action: step.action,
             status: lastStatus,
             at_ms: replay.clock.now(),
             stability_interval_ms: step.stability_interval_ms ?? null,
+          });
+          break;
+        case "assert_no_followup_mutation":
+          assert.ok(recoveryResult, "follow-up mutation assertion requires clear recovery");
+          assert.notEqual(
+            recoveryMutationStart,
+            undefined,
+            "follow-up mutation assertion requires a recorded clear boundary",
+          );
+          assert.notEqual(
+            recoveryMutationEnd,
+            undefined,
+            "follow-up mutation assertion requires a recorded clear completion",
+          );
+          const mutationStart = step.operation === "agent.send-keys"
+            ? recoveryMutationEnd
+            : recoveryMutationStart;
+          assert.equal(
+            replay.consumedEvents()
+              .slice(mutationStart)
+              .some(({ operation }) => operation === step.operation),
+            false,
+          );
+          mutationProofs.push({
+            operation: step.operation,
+            description: step.description,
+            unchanged: true,
+            basis: "clear recovery and post-clear observation consumed no mutation event",
           });
           break;
         case "assert_clear_stable":
@@ -273,6 +317,11 @@ function replayFallbackObservation(agent) {
 
 function normalizeReplayInput(text) {
   return text.trimEnd();
+}
+
+function normalizeExpectedToken(token) {
+  const digest = /^<token:sha256:([0-9a-f]{64})>$/u.exec(token)?.[1];
+  return digest ?? token;
 }
 
 function stabilityIntervalAfter(steps, index) {

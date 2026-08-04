@@ -70,7 +70,13 @@ owned receipt emerges; healthy direct completion is not a recovery pass.
 `claude_staged_input_transient_clear_reappears` is also explicit-only because
 it shares the stable-clear executor and is useful when capturing a suspected
 reappearance incident, not as a second unattended Claude run with duplicate
-behavior.
+behavior. Its replay fixture covers reappearance inside the qualified
+stability interval. The deterministic
+`claude_staged_input_delayed_reappearance_after_clear` fixture covers the
+other boundary: the clear reaches `cleared`, then an identical unknown
+snapshot reappears after the interval. Replay proves that the later snapshot
+is observed without submitting it, replacing the agent, or resuming a native
+process implicitly.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or
@@ -111,8 +117,9 @@ the exact registered pane without submitting it and verifies the resulting
 unknown snapshot. The clear-and-reuse and transient-reappearance entries remain
 separate because they guard distinct incident outcomes: stable absence is a
 pass for the former, while any reappearance is retained as a typed contradiction
-for the latter. Only the stable-clear scenario is included in the unattended
-set.
+for the latter. The delayed post-stability replay retains the earlier clear as
+`cleared` while proving the later unknown snapshot cannot trigger hidden
+repair. Only the stable-clear scenario is included in the unattended set.
 
 The runner may read native transcripts and Herdr observations as evidence, but
 it must exercise behavior only through public Drovr commands. It must never

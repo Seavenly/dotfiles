@@ -13,7 +13,7 @@ test("the versioned qualification catalog is complete and runner-ready", async (
   assert.equal(catalog.schema, "drovr.qualification-catalog/v1");
   assert.equal(catalog.version, 1);
   assert.equal(summary.scenario_count, catalog.scenarios.length);
-  assert.ok(summary.scenario_count >= 15);
+  assert.ok(summary.scenario_count >= 18);
   assert.deepEqual(summary.execution_kinds, [
     "deterministic_trace_replay",
     "real_herdr_harness",
@@ -35,6 +35,14 @@ test("the versioned qualification catalog is complete and runner-ready", async (
       "staged_prompt_clearing",
       "staged_prompt_submission",
       "transient_clear_reappearance",
+    ],
+  );
+  assert.deepEqual(
+    catalog.known_incidents.find(({ id }) => id === "transient_clear_reappearance")
+      .scenarios.sort(),
+    [
+      "claude_staged_input_delayed_reappearance_after_clear",
+      "claude_staged_input_transient_clear_reappears",
     ],
   );
   assert.deepEqual(Object.keys(catalog.safety_invariants).sort(), [

@@ -16,6 +16,9 @@ test("qualification traces cover every deterministic incident boundary", async (
     "late_result",
     "token_change",
     "error_envelope",
+    "post_stability_reappearance",
+    "non_submission",
+    "no_hidden_repair",
   ]) {
     assert.ok(coverage.has(required), required);
   }

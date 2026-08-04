@@ -482,6 +482,69 @@ test("production staged recovery reports a reappearing snapshot as changed evide
   assert.ok(result.stability.observations >= 2);
 });
 
+test("production staged recovery exposes post-stability reappearance without hidden repair", async () => {
+  let inspection = 0;
+  let elapsed = 0;
+  let recoverCalls = 0;
+  let resumeCalls = 0;
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "claude",
+    stabilityIntervalMs: 30,
+    wallClock: () => elapsed,
+    delay: async (milliseconds) => {
+      elapsed += milliseconds;
+    },
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          state_change_seq: 7,
+          agent_session: { value: "native-1" },
+        };
+      },
+      async inspectStagedInput() {
+        inspection += 1;
+        if (inspection === 1) {
+          return { token: "snapshot-1", display_text: "unknown input" };
+        }
+        if (inspection <= 3) return null;
+        return { token: "snapshot-1", display_text: "unknown input" };
+      },
+      async recoverStagedInput() {
+        recoverCalls += 1;
+      },
+      async resumeClaudeAgent() {
+        resumeCalls += 1;
+      },
+    },
+  });
+
+  const cleared = await harness.recoverStagedInput({
+    agent,
+    action: "clear",
+    token: "snapshot-1",
+  });
+  const reappeared = await harness.inspectStagedInput({ agent });
+
+  assert.equal(cleared.outcome, "cleared");
+  assert.equal(cleared.stability.interval_ms, 30);
+  assert.equal(reappeared.outcome, "staged_input");
+  assert.equal(reappeared.evidence, "present");
+  assert.deepEqual(reappeared.snapshot, {
+    token: "snapshot-1",
+    display_text: "unknown input",
+  });
+  assert.equal(recoverCalls, 1);
+  assert.equal(resumeCalls, 0);
+});
+
 test("production staged recovery fails closed when native identity changes", async () => {
   let recordCalls = 0;
   const agent = {
