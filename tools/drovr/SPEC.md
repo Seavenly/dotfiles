@@ -501,6 +501,17 @@ operator may explicitly authorize clearing that exact inspected snapshot with
 `--clear-unknown TOKEN`. That token is current inspection authorization and must
 be re-inspected after a native state transition.
 
+The public field name `snapshot_token` is retained in both surfaces for
+compatibility but has context-specific meaning. In a durable turn receipt
+returned by `turn get`, it is the visible-text digest used for ownership. In a
+current `agent staged-input` inspection, it is the transition-bound recovery
+authorization. The inspection's `token` is the command token: an owned receipt
+token for Drovr-owned input, or the current recovery authorization for unknown
+input. If transition evidence is missing or inconsistent, the inspection keeps
+the visible text for diagnosis but returns `snapshot_token: null`, `token: null`,
+an empty `actions` array, and a typed `reason`; it never emits a mutation
+command.
+
 `--stage-unknown-file PATH` provides a bounded public stimulus for diagnostics
 and qualification. It may write normalized file content only to the exact
 registered pane of a settled Claude agent with no existing staged text or open

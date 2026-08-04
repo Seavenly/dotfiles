@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createProductionSemanticHarness } from "../src/production-harness-adapter.mjs";
-import { bindStagedInputToken } from "../src/staged-input-receipt.mjs";
+import {
+  bindStagedInputToken,
+  stagedInputTextToken,
+} from "../src/staged-input-receipt.mjs";
 import { observeAgents } from "../src/observations.mjs";
 import {
   SEMANTIC_HARNESS_EVIDENCE,
@@ -462,10 +465,16 @@ test("production staged recovery reports a reappearing snapshot as changed evide
       async inspectStagedInput() {
         inspection += 1;
         if (inspection === 1) {
-          return { token: "snapshot-1", display_text: "owned input" };
+          return {
+            token: stagedInputTextToken("owned input"),
+            display_text: "owned input",
+          };
         }
         if (inspection === 2) return null;
-        return { token: "snapshot-1", display_text: "owned input" };
+        return {
+          token: stagedInputTextToken("owned input"),
+          display_text: "owned input",
+        };
       },
       async recoverStagedInput() {},
     },
@@ -474,7 +483,7 @@ test("production staged recovery reports a reappearing snapshot as changed evide
   const result = await harness.recoverStagedInput({
     agent,
     action: "clear",
-    token: bindStagedInputToken("snapshot-1", 7),
+    token: bindStagedInputToken(stagedInputTextToken("owned input"), 7),
   });
 
   assert.equal(result.outcome, "clear_contradicted");
@@ -514,7 +523,10 @@ test("production staged recovery exposes post-stability reappearance without hid
       async inspectStagedInput() {
         inspection += 1;
         if (!cleared || inspection >= 5) {
-          return { token: "snapshot-1", display_text: "unknown input" };
+          return {
+            token: stagedInputTextToken("unknown input"),
+            display_text: "unknown input",
+          };
         }
         return null;
       },
@@ -571,7 +583,10 @@ test("production staged inspection with missing transition evidence issues no re
         };
       },
       async inspectStagedInput() {
-        return { token: "snapshot-1", display_text: "unknown input" };
+        return {
+          token: stagedInputTextToken("unknown input"),
+          display_text: "unknown input",
+        };
       },
       async recoverStagedInput() {
         recoverCalls += 1;
@@ -585,6 +600,50 @@ test("production staged inspection with missing transition evidence issues no re
   assert.equal(
     inspected.reason,
     "staged snapshot lacks an exact native transition token",
+  );
+
+  const blocked = await harness.recoverStagedInput({
+    agent,
+    action: "clear",
+    token: null,
+  });
+  assert.equal(blocked.outcome, "recovery_blocked");
+  assert.equal(recoverCalls, 0);
+});
+
+test("production staged inspection rejects a native token that disagrees with visible text", async () => {
+  let recoverCalls = 0;
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "claude",
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          state_change_seq: 1,
+          agent_session: { value: "native-1" },
+        };
+      },
+      async inspectStagedInput() {
+        return { token: "foreign-token", display_text: "unknown input" };
+      },
+      async recoverStagedInput() {
+        recoverCalls += 1;
+      },
+    },
+  });
+
+  const inspected = await harness.inspectStagedInput({ agent });
+  assert.equal(inspected.snapshot.token, null);
+  assert.equal(
+    inspected.reason,
+    "staged snapshot token does not match its visible text",
   );
 
   const blocked = await harness.recoverStagedInput({
@@ -620,7 +679,10 @@ test("production staged recovery fails closed when native identity changes", asy
         };
       },
       async inspectStagedInput() {
-        return { token: "snapshot-1", display_text: "owned input" };
+        return {
+          token: stagedInputTextToken("owned input"),
+          display_text: "owned input",
+        };
       },
       async recoverStagedInput() {},
     },
@@ -629,7 +691,7 @@ test("production staged recovery fails closed when native identity changes", asy
   const result = await harness.recoverStagedInput({
     agent,
     action: "clear",
-    token: bindStagedInputToken("snapshot-1", 1),
+    token: bindStagedInputToken(stagedInputTextToken("owned input"), 1),
   });
 
   assert.equal(result.outcome, "clear_unstable");

@@ -690,9 +690,17 @@ export function createProductionSemanticHarness({
       const snapshot = await client.inspectStagedInput(agent.herdr.name, {
         harness,
       });
-      const token = snapshot
-        ? bindStagedInputToken(snapshot.token, observed.transition_token)
+      const nativeToken = snapshot
+        ? stagedInputTextToken(snapshot.display_text)
         : null;
+      const token = snapshot && snapshot.token === nativeToken
+        ? bindStagedInputToken(nativeToken, observed.transition_token)
+        : null;
+      const reason = snapshot && snapshot.token !== nativeToken
+        ? "staged snapshot token does not match its visible text"
+        : snapshot && !token
+          ? "staged snapshot lacks an exact native transition token"
+          : null;
       return {
         schema: STAGED_INPUT_EVIDENCE_SCHEMA,
         outcome: snapshot ? "staged_input" : "ready",
@@ -705,11 +713,7 @@ export function createProductionSemanticHarness({
           : null,
         identity: observed.identity,
         transition_token: observed.transition_token,
-        ...(snapshot && !token
-          ? {
-              reason: "staged snapshot lacks an exact native transition token",
-            }
-          : {}),
+        ...(reason ? { reason } : {}),
       };
     },
 
@@ -727,6 +731,15 @@ export function createProductionSemanticHarness({
           ...inspected,
           outcome: "recovery_blocked",
           reason: "staged snapshot lacks an exact native transition token",
+        };
+      }
+      if (typeof inspected.snapshot.token !== "string") {
+        return {
+          ...inspected,
+          outcome: "recovery_blocked",
+          reason:
+            inspected.reason ??
+            "staged snapshot lacks an exact recovery authorization token",
         };
       }
       if (inspected.snapshot.token !== token) {

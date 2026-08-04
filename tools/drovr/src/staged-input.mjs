@@ -227,7 +227,7 @@ async function inspectContext(registryDirectory, context, harness, observed) {
       ownership: ownedTurn ? "drovr" : "unknown",
       ...(ownedTurn ? { turn_id: ownedTurn.id } : {}),
       actions,
-      ...(staged.reason ? { reason: staged.reason } : {}),
+      ...(stagedResult.reason ? { reason: stagedResult.reason } : {}),
     },
   };
 }

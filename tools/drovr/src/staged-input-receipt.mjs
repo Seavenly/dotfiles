@@ -32,6 +32,8 @@ export function ownedStagedTurn(turn, agent, snapshot) {
     typeof snapshot?.display_text === "string"
       ? stagedInputTextToken(snapshot.display_text)
       : null;
+  // Receipts written while transition binding was part of snapshot_token still
+  // use the recorded pre-delivery transition for their migration comparison.
   const legacyBoundToken = bindStagedInputToken(
     textToken,
     receipt?.state_change_seq_before_delivery,

@@ -23,6 +23,7 @@ export async function runTraceFixture(fixture) {
   let recoveryMutationEndSequence;
   let recoveryToken;
   const mutationAttempts = new Set();
+  const followupMutationAttempts = new Set();
   const mutationProofs = [];
   const assertions = [];
 
@@ -48,6 +49,8 @@ export async function runTraceFixture(fixture) {
           break;
         }
         case "prompt": {
+          mutationAttempts.add("agent.prompt");
+          if (recoveryResult) followupMutationAttempts.add("agent.prompt");
           const prompt = normalizeReplayInput(step.text);
           await harness.deliverTurn({
             agent,
@@ -59,6 +62,7 @@ export async function runTraceFixture(fixture) {
         }
         case "interrupt": {
           mutationAttempts.add("agent.send-keys");
+          if (recoveryResult) followupMutationAttempts.add("agent.send-keys");
           const interrupted = await harness.interruptTurn({
             agent,
             observed: lastObservation,
@@ -100,6 +104,7 @@ export async function runTraceFixture(fixture) {
           });
           break;
         case "recover_clear": {
+          followupMutationAttempts.clear();
           mutationAttempts.add("agent.send-keys");
           recoveryMutationStartSequence = consumedSequenceBoundary(replay);
           const token = step.token_from === "last_inspection"
@@ -120,7 +125,9 @@ export async function runTraceFixture(fixture) {
           break;
         }
         case "expect_error": {
-          mutationAttempts.add(mutationFor(step));
+          const operation = mutationFor(step);
+          mutationAttempts.add(operation);
+          if (recoveryResult) followupMutationAttempts.add(operation);
           let error;
           try {
             if (step.method === "recover_clear") {
@@ -235,7 +242,7 @@ export async function runTraceFixture(fixture) {
             ? recoveryMutationEndSequence
             : recoveryMutationStartSequence;
           assertNoConsumedOperation(replay, step.operation, mutationBoundary);
-          const attempted = mutationAttempts.has(step.operation);
+          const attempted = followupMutationAttempts.has(step.operation);
           mutationProofs.push({
             operation: step.operation,
             description: step.description,

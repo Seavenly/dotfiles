@@ -41,6 +41,21 @@ test("owned staged receipts survive transition changes and the intermediate toke
 
   assert.equal(ownedStagedTurn(turn, agent, currentSnapshot), true);
   assert.equal(
+    ownedStagedTurn(turn, agent, {
+      token: bindStagedInputToken(stagedInputTextToken("Other work"), 13),
+      display_text: "Other work",
+    }),
+    false,
+  );
+  assert.equal(
+    ownedStagedTurn(
+      turn,
+      { ...agent, herdr: { ...agent.herdr, pane_id: "pane-2" } },
+      currentSnapshot,
+    ),
+    false,
+  );
+  assert.equal(
     ownedStagedTurn(
       {
         ...turn,

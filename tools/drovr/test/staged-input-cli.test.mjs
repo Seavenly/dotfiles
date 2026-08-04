@@ -102,6 +102,10 @@ case "\${1:-} \${2:-}" in
     elif [[ -f "$state/advanced" ]]; then status=idle; seq=13
     else status=idle; seq=12
     fi
+    if [[ -f "$state/missing-seq" ]]; then
+      printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","agent_session":{"value":"${nativeSession}"}}]}}\\n' "$status"
+      exit
+    fi
     printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"${nativeSession}"}}]}}\\n' "$status" "$seq"
     ;;
   "agent read")
@@ -406,6 +410,23 @@ esac
     stagedByCommand.result.staged_input.token,
   ]);
   assert.equal(clearedStagedByCommand.result.status, "cleared");
+
+  await writeFile(join(herdrState, "missing-seq"), "");
+  const missingTransition = await runDrovr(env, [
+    "agent",
+    "staged-input",
+    agent.id,
+    "--stage-unknown-file",
+    unknownPromptFile,
+  ]);
+  assert.equal(missingTransition.result.status, "staged_input");
+  assert.equal(missingTransition.result.staged_input.snapshot_token, null);
+  assert.equal(missingTransition.result.staged_input.token, null);
+  assert.deepEqual(missingTransition.result.staged_input.actions, []);
+  assert.equal(
+    missingTransition.result.staged_input.reason,
+    "staged snapshot lacks an exact native transition token",
+  );
 });
 
 async function runDrovr(env, argv) {

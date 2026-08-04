@@ -37,6 +37,15 @@ test("transient staged-input reappearance is a discriminating contradiction afte
     result.mutation_proofs.map(({ operation }) => operation),
     ["agent.prompt", "agent.send-keys", "agent.start", "agent.resume"],
   );
+  assert.deepEqual(
+    result.mutation_proofs.find(({ operation }) => operation === "agent.send-keys"),
+    {
+      operation: "agent.send-keys",
+      description: "Do not send keys for reappeared unknown staged input.",
+      unchanged: "not_observed",
+      basis: "no follow-up semantic mutation was attempted through the replay interface",
+    },
+  );
 });
 
 test("stable staged-input clear remains cleared after its stability interval", async () => {

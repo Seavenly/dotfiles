@@ -19,7 +19,10 @@ import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
 import { describeDelegatedAgent } from "../src/description.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
-import { bindStagedInputToken } from "../src/staged-input-receipt.mjs";
+import {
+  bindStagedInputToken,
+  stagedInputTextToken,
+} from "../src/staged-input-receipt.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
 import {
   cancelTurn,
@@ -320,7 +323,10 @@ test("start refuses unknown staged Claude input before creating a logical turn",
       return observed;
     },
     async inspectStagedInput() {
-      return { token: "a".repeat(64), display_text: "operator staged work" };
+      return {
+        token: stagedInputTextToken("operator staged work"),
+        display_text: "operator staged work",
+      };
     },
     async prompt() {
       assert.fail("a new prompt must not be delivered over staged input");
@@ -338,7 +344,7 @@ test("start refuses unknown staged Claude input before creating a logical turn",
       assert.equal(error.details.staged_input.ownership, "unknown");
       assert.equal(
         error.details.staged_input.token,
-        bindStagedInputToken("a".repeat(64), 12),
+        bindStagedInputToken(stagedInputTextToken("operator staged work"), 12),
       );
       return true;
     },
