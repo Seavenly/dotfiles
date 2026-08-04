@@ -327,6 +327,109 @@ test("binding enforcement qualifies mixed harnesses independently", async () => 
   );
 });
 
+test("binding enforcement rejects a stale secondary harness in a mixed set", async () => {
+  const runtimeFacts = runtime();
+  const codexCompatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  const claudeCompatibility = await collectProductionCompatibility({
+    harness: "claude",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  const staleDigest = "sha256:" + "f".repeat(64);
+  runtimeFacts.calls.length = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: codexCompatibility.evidence_digest,
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "claude" },
+        launch_binding: {
+          compatibility_evidence_digest: staleDigest,
+        },
+      },
+    ],
+  }, {
+    env: {},
+    run: runtimeFacts.run,
+    herdr: { async ensureSession() {} },
+    compatibility: codexCompatibility,
+    requireCompatibility: true,
+  });
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) =>
+      error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed" &&
+      error.details?.expected === staleDigest &&
+      error.details?.observed === claudeCompatibility.evidence_digest,
+  );
+  assert.ok(
+    runtimeFacts.calls.some(
+      ([command, args]) => command === "claude" && args[0] === "--version",
+    ),
+  );
+});
+
+test("binding enforcement rejects same-harness conflicts inside a mixed set", async () => {
+  let nativeCalls = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: "sha256:" + "1".repeat(64),
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "claude" },
+        launch_binding: {
+          compatibility_evidence_digest: "sha256:" + "3".repeat(64),
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: "sha256:" + "2".repeat(64),
+        },
+      },
+    ],
+  }, {
+    env: {},
+    run: async () => {
+      nativeCalls += 1;
+      throw new Error("native compatibility collection must not run");
+    },
+  });
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) =>
+      error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed" &&
+      error.details?.expected === "sha256:" + "1".repeat(64) &&
+      error.details?.observed === "sha256:" + "2".repeat(64),
+  );
+  assert.equal(nativeCalls, 0);
+});
+
 test("teardown can qualify the current runtime without the stale launch binding", async () => {
   const runtimeFacts = runtime();
   const compatibility = await collectProductionCompatibility({
