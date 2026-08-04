@@ -76,7 +76,9 @@ stability interval. The deterministic
 other boundary: the clear reaches `cleared`, then an identical unknown
 snapshot reappears after the interval. Replay proves that the later snapshot
 is observed without submitting it, replacing the agent, or resuming a native
-process implicitly.
+process implicitly. Staged-input tokens bind the visible snapshot digest to
+the exact native state transition observed with it, so the pre-clear token is
+rejected if identical text reappears under a later transition.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or

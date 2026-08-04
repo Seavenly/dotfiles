@@ -2976,12 +2976,15 @@ export function prohibitedMutationObservations(
     const matchingProofs = proofs.filter(
       (proof) => proof.description === description,
     );
-    const observed = fullyObserved || matchingProofs.length > 0;
+    const observedProofs = matchingProofs.filter(
+      ({ unchanged }) => typeof unchanged === "boolean",
+    );
+    const observed = fullyObserved || observedProofs.length > 0;
     return {
       description,
       unchanged: observed
-        ? matchingProofs.length > 0
-          ? matchingProofs.every(({ unchanged: proofUnchanged }) => proofUnchanged)
+        ? observedProofs.length > 0
+          ? observedProofs.every(({ unchanged: proofUnchanged }) => proofUnchanged)
           : Boolean(unchanged)
         : "not_observed",
       basis: [

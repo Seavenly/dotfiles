@@ -19,6 +19,7 @@ import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
 import { describeDelegatedAgent } from "../src/description.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
+import { bindStagedInputToken } from "../src/staged-input-receipt.mjs";
 import { appendTurnInput, createTurnRecord } from "../src/turn-record.mjs";
 import {
   cancelTurn,
@@ -335,7 +336,10 @@ test("start refuses unknown staged Claude input before creating a logical turn",
     (error) => {
       assert.equal(error.outcome, "recovery_blocked");
       assert.equal(error.details.staged_input.ownership, "unknown");
-      assert.equal(error.details.staged_input.token, "a".repeat(64));
+      assert.equal(
+        error.details.staged_input.token,
+        bindStagedInputToken("a".repeat(64), 12),
+      );
       return true;
     },
   );

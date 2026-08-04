@@ -11,6 +11,10 @@ import {
   createSemanticHarness,
 } from "./harness-interface.mjs";
 import { identityEvidence } from "./semantic-evidence.mjs";
+import {
+  bindStagedInputToken,
+  stagedInputTextToken,
+} from "./staged-input-receipt.mjs";
 import { correlateTranscriptRecords } from "./transcript.mjs";
 import { traceRequest, validateTrace } from "./trace.mjs";
 
@@ -463,6 +467,12 @@ function createReplaySemanticAdapter({
       const before = await inspectStagedForRecovery(agent);
       if (before.evidence !== "present" || !before.snapshot) {
         throw recoveryBlocked(before);
+      }
+      if (!Number.isSafeInteger(before.transition_token)) {
+        throw recoveryBlocked({
+          ...before,
+          reason: "staged snapshot lacks an exact native transition token",
+        });
       }
       if (before.snapshot.token !== token) {
         const blocked = {
@@ -1033,12 +1043,23 @@ function turnEvidence(outcome, observation, details = {}) {
 }
 
 function stagedEvidence(agent, outcome, evidence, snapshot, observed) {
+  const semanticSnapshot = snapshot && observed
+    ? {
+        token:
+          bindStagedInputToken(snapshot.token, observed.transition_token) ??
+          snapshot.token,
+        display_text: snapshot.display_text,
+      }
+    : snapshot;
   return {
     schema: "drovr.semantic-staged-input/v1",
     outcome,
     evidence,
-    snapshot: snapshot
-      ? { token: snapshot.token, display_text: snapshot.display_text }
+    snapshot: semanticSnapshot
+      ? {
+          token: semanticSnapshot.token,
+          display_text: semanticSnapshot.display_text,
+        }
       : null,
     identity: observed?.identity ?? registeredIdentity(agent),
     ...(observed?.expected_identity
@@ -1065,7 +1086,7 @@ function claudePromptBoxSnapshot(text) {
   ].join("\n").trimEnd();
   if (displayText.trim().length === 0) return null;
   return {
-    token: createHash("sha256").update(displayText).digest("hex"),
+    token: stagedInputTextToken(displayText),
     display_text: displayText,
   };
 }

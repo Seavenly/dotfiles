@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 
 import { createReplayHarness } from "./harness-replay.mjs";
+import {
+  bindStagedInputToken,
+  stagedInputTextToken,
+} from "./staged-input-receipt.mjs";
 
 export async function runTraceFixture(fixture) {
   const replay = createReplayHarness(fixture.trace, {
@@ -15,8 +19,9 @@ export async function runTraceFixture(fixture) {
   let lastStatus;
   let lastExtraction;
   let recoveryResult;
-  let recoveryMutationStart;
-  let recoveryMutationEnd;
+  let recoveryMutationStartSequence;
+  let recoveryMutationEndSequence;
+  let recoveryToken;
   const mutationAttempts = new Set();
   const mutationProofs = [];
   const assertions = [];
@@ -96,17 +101,18 @@ export async function runTraceFixture(fixture) {
           break;
         case "recover_clear": {
           mutationAttempts.add("agent.send-keys");
-          recoveryMutationStart = replay.consumedEvents().length;
+          recoveryMutationStartSequence = consumedSequenceBoundary(replay);
           const token = step.token_from === "last_inspection"
             ? lastInspection?.snapshot?.token
             : step.token;
+          recoveryToken = token;
           recoveryResult = await harness.recoverStagedInput({
             agent,
             action: "clear",
             token,
             stabilityIntervalMs: stabilityIntervalAfter(fixture.steps, index),
           });
-          recoveryMutationEnd = replay.consumedEvents().length;
+          recoveryMutationEndSequence = consumedSequenceBoundary(replay);
           observations.push({
             action: step.action,
             status: recoveryResult.outcome,
@@ -118,9 +124,7 @@ export async function runTraceFixture(fixture) {
           let error;
           try {
             if (step.method === "recover_clear") {
-              const token = step.token_from === "last_inspection"
-                ? lastInspection?.snapshot?.token
-                : step.token;
+              const token = tokenForStep(step, lastInspection, recoveryToken);
               const result = await harness.recoverStagedInput({
                 agent,
                 action: "clear",
@@ -168,10 +172,7 @@ export async function runTraceFixture(fixture) {
             mutationAttempts.has(step.operation),
             `mutation assertion for ${step.operation} must follow a semantic attempt`,
           );
-          assert.equal(
-            replay.consumedEvents().some(({ operation }) => operation === step.operation),
-            false,
-          );
+          assertNoConsumedOperation(replay, step.operation);
           mutationProofs.push({
             operation: step.operation,
             description: step.description,
@@ -185,13 +186,23 @@ export async function runTraceFixture(fixture) {
           assert.equal(lastStatus, step.status);
           break;
         case "assert_reappeared_after_clear":
+        case "assert_delayed_reappearance_after_clear":
           assert.ok(recoveryResult);
           assert.equal(recoveryResult.outcome, step.expect_outcome);
           assert.equal(lastInspection?.snapshot?.display_text, step.expect_text ?? lastInspection?.snapshot?.display_text);
-          if (step.expect_token) {
+          if (step.expect_snapshot_token_for_text) {
             assert.equal(
               lastInspection?.snapshot?.token,
-              normalizeExpectedToken(step.expect_token),
+              bindStagedInputToken(
+                stagedInputTextToken(step.expect_snapshot_token_for_text),
+                step.expect_transition_token ?? lastInspection?.transition_token,
+              ),
+            );
+          }
+          if (step.expect_transition_token !== undefined) {
+            assert.equal(
+              lastInspection?.transition_token,
+              step.expect_transition_token,
             );
           }
           if (step.expect_inspection_outcome) {
@@ -208,34 +219,30 @@ export async function runTraceFixture(fixture) {
             stability_interval_ms: step.stability_interval_ms ?? null,
           });
           break;
-        case "assert_no_followup_mutation":
+        case "assert_no_followup_mutation": {
           assert.ok(recoveryResult, "follow-up mutation assertion requires clear recovery");
           assert.notEqual(
-            recoveryMutationStart,
+            recoveryMutationStartSequence,
             undefined,
             "follow-up mutation assertion requires a recorded clear boundary",
           );
           assert.notEqual(
-            recoveryMutationEnd,
+            recoveryMutationEndSequence,
             undefined,
             "follow-up mutation assertion requires a recorded clear completion",
           );
-          const mutationStart = step.operation === "agent.send-keys"
-            ? recoveryMutationEnd
-            : recoveryMutationStart;
-          assert.equal(
-            replay.consumedEvents()
-              .slice(mutationStart)
-              .some(({ operation }) => operation === step.operation),
-            false,
-          );
+          const mutationBoundary = step.operation === "agent.send-keys"
+            ? recoveryMutationEndSequence
+            : recoveryMutationStartSequence;
+          assertNoConsumedOperation(replay, step.operation, mutationBoundary);
           mutationProofs.push({
             operation: step.operation,
             description: step.description,
-            unchanged: true,
-            basis: "clear recovery and post-clear observation consumed no mutation event",
+            unchanged: "not_observed",
+            basis: "no follow-up semantic mutation was attempted through the replay interface",
           });
           break;
+        }
         case "assert_clear_stable":
           assert.equal(recoveryResult?.outcome, "cleared");
           assert.equal(lastInspection?.snapshot, null);
@@ -319,16 +326,37 @@ function normalizeReplayInput(text) {
   return text.trimEnd();
 }
 
-function normalizeExpectedToken(token) {
-  const digest = /^<token:sha256:([0-9a-f]{64})>$/u.exec(token)?.[1];
-  return digest ?? token;
-}
-
 function stabilityIntervalAfter(steps, index) {
   return steps.slice(index + 1).find((step) =>
     step.action === "assert_reappeared_after_clear" ||
+    step.action === "assert_delayed_reappearance_after_clear" ||
     step.action === "assert_clear_stable",
   )?.stability_interval_ms ?? 30_000;
+}
+
+function consumedSequenceBoundary(replay) {
+  return replay.consumedEvents().reduce(
+    (maximum, event) => Math.max(maximum, event.sequence),
+    0,
+  );
+}
+
+function assertNoConsumedOperation(replay, operation, afterSequence = 0) {
+  assert.equal(
+    replay.consumedEvents().some(
+      ({ sequence, operation: consumedOperation }) =>
+        sequence > afterSequence && consumedOperation === operation,
+    ),
+    false,
+  );
+}
+
+function tokenForStep(step, lastInspection, recoveryToken) {
+  if (step.token_from === "last_inspection") {
+    return lastInspection?.snapshot?.token;
+  }
+  if (step.token_from === "recovery") return recoveryToken;
+  return step.token;
 }
 
 function mutationFor(step) {

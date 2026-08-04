@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { HerdrClient } from "../src/herdr.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "../src/limits.mjs";
+import { stagedInputTextToken } from "../src/staged-input-receipt.mjs";
 
 test("Herdr observations use the advertised command bound", async () => {
   const observedTimeouts = [];
@@ -769,6 +770,45 @@ test("Claude staged input recovery clears only the exact inspected prompt", asyn
     await client.inspectStagedInput("managed-agent", { harness: "claude" }),
     null,
   );
+});
+
+test("Claude staged input recovery rejects a stale native transition before sending keys", async () => {
+  let sendKeys = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: "idle",
+              state_change_seq: 2,
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("read")) {
+        return "────────\n❯ Exact staged work\n────────";
+      }
+      if (args.includes("send-keys")) sendKeys += 1;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      client.recoverStagedInput("managed-agent", {
+        action: "clear",
+        harness: "claude",
+        nativeSession: "native-1",
+        token: stagedInputTextToken("Exact staged work"),
+        transitionToken: 1,
+      }),
+    (error) => error.outcome === "recovery_blocked",
+  );
+  assert.equal(sendKeys, 0);
 });
 
 test("Claude prompt delivery lets a long single-line literal convert before submitting", async () => {

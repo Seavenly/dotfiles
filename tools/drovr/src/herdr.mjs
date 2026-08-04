@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 
 import { claudeAgentArguments } from "./claude.mjs";
 import { codexAgentArguments } from "./codex.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
 import { execute } from "./process.mjs";
-import { createStagedInputReceipt } from "./staged-input-receipt.mjs";
+import {
+  createStagedInputReceipt,
+  stagedInputTextToken,
+} from "./staged-input-receipt.mjs";
 import {
   createTraceJournal,
   redactPaneSnapshot,
@@ -712,7 +714,7 @@ export class HerdrClient {
 
   async recoverStagedInput(
     name,
-    { action, harness, nativeSession, paneId, token } = {},
+    { action, harness, nativeSession, paneId, token, transitionToken } = {},
   ) {
     if (harness !== "claude" || !["clear", "submit"].includes(action)) {
       throw new DrovrError("unsupported staged-input recovery action", {
@@ -745,6 +747,15 @@ export class HerdrClient {
       observedBefore.pane_id !== paneId
     ) {
       throw new DrovrError(`Herdr managed pane changed for ${name}`, {
+        code: 0,
+        outcome: "recovery_blocked",
+      });
+    }
+    if (
+      transitionToken !== undefined &&
+      observedBefore.state_change_seq !== transitionToken
+    ) {
+      throw new DrovrError(`Claude staged input changed for ${name}`, {
         code: 0,
         outcome: "recovery_blocked",
       });
@@ -929,7 +940,7 @@ function claudePromptBoxSnapshot(text) {
   if (promptText.trim().length === 0) return null;
   const displayText = promptText.trimEnd();
   return {
-    token: createHash("sha256").update(displayText).digest("hex"),
+    token: stagedInputTextToken(displayText),
     display_text: displayText,
   };
 }

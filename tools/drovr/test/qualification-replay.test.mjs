@@ -57,11 +57,15 @@ test("delayed staged-input reappearance after stable clear stays unknown without
   const result = await runTraceFixture(fixture);
 
   assert.equal(result.result, "cleared");
-  assert.deepEqual(result.observations.at(-1), {
-    action: "assert_reappeared_after_clear",
+  assert.deepEqual(result.observations.at(-2), {
+    action: "assert_delayed_reappearance_after_clear",
     status: "cleared",
     at_ms: 55,
     stability_interval_ms: 30,
+  });
+  assert.deepEqual(result.observations.at(-1), {
+    action: "expect_error",
+    outcome: "recovery_blocked",
   });
   assert.deepEqual(
     result.mutation_proofs.filter(({ operation }) =>
@@ -71,29 +75,54 @@ test("delayed staged-input reappearance after stable clear stays unknown without
       {
         operation: "agent.prompt",
         description: "Do not submit reappeared unknown staged input.",
-        unchanged: true,
-        basis: "clear recovery and post-clear observation consumed no mutation event",
+        unchanged: "not_observed",
+        basis: "no follow-up semantic mutation was attempted through the replay interface",
       },
       {
         operation: "agent.send-keys",
         description: "Do not send keys for reappeared unknown staged input.",
-        unchanged: true,
-        basis: "clear recovery and post-clear observation consumed no mutation event",
+        unchanged: "not_observed",
+        basis: "no follow-up semantic mutation was attempted through the replay interface",
       },
       {
         operation: "agent.start",
         description: "Do not replace the managed agent after reappearance.",
-        unchanged: true,
-        basis: "clear recovery and post-clear observation consumed no mutation event",
+        unchanged: "not_observed",
+        basis: "no follow-up semantic mutation was attempted through the replay interface",
       },
       {
         operation: "agent.resume",
         description: "Do not repair the native process implicitly.",
-        unchanged: true,
-        basis: "clear recovery and post-clear observation consumed no mutation event",
+        unchanged: "not_observed",
+        basis: "no follow-up semantic mutation was attempted through the replay interface",
       },
     ],
   );
+});
+
+test("delayed reappearance rejects an injected post-clear mutation event", async () => {
+  const fixture = structuredClone(
+    (await loadTraceFixtures()).find(
+      ({ id }) => id === "claude_staged_input_delayed_reappearance_after_clear",
+    ),
+  );
+  fixture.steps = fixture.steps.filter(
+    ({ action }) => action !== "assert_no_followup_mutation",
+  );
+  fixture.trace.events.push({
+    sequence: fixture.trace.events.length + 1,
+    at_ms: 55,
+    kind: "command_result",
+    operation: "agent.prompt",
+    payload: {
+      envelope: {
+        schema: "herdr.command/v1",
+        result: { status: "sent" },
+      },
+    },
+  });
+
+  await assert.rejects(() => runTraceFixture(fixture), /unconsumed/u);
 });
 
 test("mutated identity, timing, and staged-token fixtures fail closed", async () => {

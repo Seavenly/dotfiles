@@ -5,6 +5,7 @@ import {
   loadQualificationCatalog,
   validateQualificationCatalog,
 } from "../src/qualification-catalog.mjs";
+import { loadTraceFixtures } from "../src/qualification-traces.mjs";
 
 test("the versioned qualification catalog is complete and runner-ready", async () => {
   const catalog = await loadQualificationCatalog();
@@ -93,5 +94,37 @@ test("qualification evidence and cleanup receipts have versioned required shapes
     catalog.contracts.cleanup_receipt.required_fields.includes(
       "caller_owned_workspace",
     ),
+  );
+});
+
+test("replay mutation proofs are declared by their catalog scenarios", async () => {
+  const catalog = await loadQualificationCatalog();
+  const fixtures = await loadTraceFixtures();
+  for (const fixture of fixtures) {
+    const scenario = catalog.scenarios.find(({ id }) => id === fixture.id);
+    if (!scenario) continue;
+    const proofDescriptions = fixture.steps
+      .filter(({ action }) =>
+        ["assert_no_mutation", "assert_no_followup_mutation"].includes(action),
+      )
+      .map(({ description }) => description);
+    for (const description of proofDescriptions) {
+      assert.ok(
+        scenario.prohibited_mutations.includes(description),
+        `${fixture.id} proof is not declared in the catalog: ${description}`,
+      );
+    }
+  }
+  const delayed = fixtures.find(
+    ({ id }) => id === "claude_staged_input_delayed_reappearance_after_clear",
+  );
+  assert.ok(
+    delayed.steps.some(
+      ({ action, method, outcome }) =>
+        action === "expect_error" &&
+        method === "recover_clear" &&
+        outcome === "recovery_blocked",
+    ),
+    "delayed reappearance must exercise stale-token rejection",
   );
 });

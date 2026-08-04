@@ -182,10 +182,10 @@ exit 5
       ({ description, unchanged }) => ({ description, unchanged }),
     ),
     [
-      { description: "Do not submit reappeared unknown staged input.", unchanged: true },
-      { description: "Do not send keys for reappeared unknown staged input.", unchanged: true },
-      { description: "Do not replace the managed agent after reappearance.", unchanged: true },
-      { description: "Do not repair the native process implicitly.", unchanged: true },
+      { description: "Do not submit reappeared unknown staged input.", unchanged: "not_observed" },
+      { description: "Do not send keys for reappeared unknown staged input.", unchanged: "not_observed" },
+      { description: "Do not replace the managed agent after reappearance.", unchanged: "not_observed" },
+      { description: "Do not repair the native process implicitly.", unchanged: "not_observed" },
       { description: "Do not edit registry, transcript, or caller files.", unchanged: "not_observed" },
     ],
   );
@@ -764,6 +764,17 @@ test("prohibited-mutation receipts distinguish proof from unobserved state", () 
         basis: ["semantic replay"],
       },
     ],
+  );
+  assert.equal(
+    prohibitedMutationObservations(["unexercised operation"], {
+      proofs: [{
+        description: "unexercised operation",
+        operation: "agent.resume",
+        unchanged: "not_observed",
+        basis: "no semantic attempt was recorded",
+      }],
+    })[0].unchanged,
+    "not_observed",
   );
 });
 

@@ -31,6 +31,7 @@ import {
 import { DrovrError } from "./errors.mjs";
 import { HerdrClient } from "./herdr.mjs";
 import { identityEvidence } from "./semantic-evidence.mjs";
+import { bindStagedInputToken } from "./staged-input-receipt.mjs";
 import { turnAwaitsPostDeliverySettlement } from "./turn-record.mjs";
 
 const AGENT_OBSERVATION_SCHEMA = "drovr.semantic-agent-observation/v1";
@@ -68,6 +69,7 @@ export function createProductionSemanticHarness({
       ...(delay ? { delay } : {}),
   });
   const native = productionNativeAdapter(harness, env);
+  const nativeStagedTokens = new Map();
   let qualifiedCompatibility = compatibility;
   const qualifiedByHarness = new Map(
     compatibility ? [[harness, compatibility]] : [],
@@ -686,13 +688,22 @@ export function createProductionSemanticHarness({
       const snapshot = await client.inspectStagedInput(agent.herdr.name, {
         harness,
       });
+      const token = snapshot
+        ? bindStagedInputToken(snapshot.token, observed.transition_token)
+        : null;
+      if (snapshot && token) {
+        nativeStagedTokens.set(stagedTokenKey(agent), {
+          semantic: token,
+          native: snapshot.token,
+        });
+      }
       return {
         schema: STAGED_INPUT_EVIDENCE_SCHEMA,
         outcome: snapshot ? "staged_input" : "ready",
         evidence: snapshot ? "present" : "absent",
         snapshot: snapshot
           ? {
-              token: snapshot.token,
+              token: token ?? snapshot.token,
               display_text: snapshot.display_text,
             }
           : null,
@@ -710,6 +721,13 @@ export function createProductionSemanticHarness({
           outcome: "recovery_blocked",
         };
       }
+      if (!Number.isSafeInteger(inspected.transition_token)) {
+        return {
+          ...inspected,
+          outcome: "recovery_blocked",
+          reason: "staged snapshot lacks an exact native transition token",
+        };
+      }
       if (inspected.snapshot.token !== token) {
         return {
           ...inspected,
@@ -718,11 +736,23 @@ export function createProductionSemanticHarness({
           reason: "staged snapshot token changed",
         };
       }
+      const nativeToken = nativeStagedTokens.get(stagedTokenKey(agent));
+      if (
+        !nativeToken ||
+        nativeToken.semantic !== inspected.snapshot.token
+      ) {
+        return {
+          ...inspected,
+          outcome: "recovery_blocked",
+          reason: "staged snapshot authorization is no longer current",
+        };
+      }
       try {
         const native = await client.recoverStagedInput(agent.herdr.name, {
           action,
           harness,
-          token,
+          token: nativeToken.native,
+          transitionToken: inspected.transition_token,
           nativeSession: agent.native_session ?? inspected.identity?.native_session,
           ...(typeof inspected.identity?.pane === "string"
             ? { paneId: inspected.identity.pane }
@@ -1093,6 +1123,14 @@ function registeredIdentity(agent) {
     pane: agent.herdr?.pane_id ?? null,
     native_session: agent.native_session ?? null,
   };
+}
+
+function stagedTokenKey(agent) {
+  return [
+    agent?.herdr?.name ?? agent?.name ?? "",
+    agent?.herdr?.pane_id ?? agent?.pane_id ?? "",
+    agent?.native_session ?? "",
+  ].join("\u0000");
 }
 
 function observedIdentity(agent, observed) {
