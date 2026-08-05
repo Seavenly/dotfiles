@@ -61,7 +61,7 @@
     "after_staging",
     "after_clear",
     "post_clear",
-    "after_process_restart"
+    "after_process_reentry"
   ],
   "required_assertion_groups": [
     [

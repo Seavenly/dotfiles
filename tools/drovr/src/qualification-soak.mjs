@@ -27,6 +27,17 @@ const QUALIFICATION_RUNNER_URL = new URL(
 );
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const execFileAsync = promisify(execFileCallback);
+const PROCESS_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024;
+const CLEANUP_LIMIT_MS = 65_000;
+const PROCESS_EXIT_GRACE_MS = CLEANUP_LIMIT_MS + 5_000;
+const activeProcesses = new Set();
+const terminatingProcesses = new Map();
+let soakInterruptionRequested = false;
+
+export function interruptSoak() {
+  soakInterruptionRequested = true;
+  for (const child of activeProcesses) terminateProcess(child);
+}
 
 export async function loadSoakPlan(url = DEFAULT_PLAN_URL) {
   return JSON.parse(await readFile(url, "utf8"));
@@ -182,6 +193,7 @@ export async function runSoak({
   verificationRunner,
   cycleRunner,
 } = {}) {
+  soakInterruptionRequested = false;
   requireCondition(
     typeof evidenceDirectory === "string" && evidenceDirectory.length > 0,
     "evidenceDirectory is required",
@@ -218,23 +230,37 @@ export async function runSoak({
     catalog_digest: catalogDigest,
   };
   const verification = suppliedVerification ?? (
-    verificationRunner
-      ? await verificationRunner({ cwd, env, source, catalog })
-      : await runVerificationSuites({
-          cwd,
-          env,
-          evidenceDirectory: absoluteEvidenceDirectory,
-          drovrCommand,
-        })
+    soakInterruptionRequested
+      ? {
+          interrupted: {
+            status: "fail",
+            message: "The soak was interrupted before verification completed.",
+          },
+        }
+      : verificationRunner
+        ? await verificationRunner({ cwd, env, source, catalog })
+        : await runVerificationSuites({
+            cwd,
+            env,
+            evidenceDirectory: absoluteEvidenceDirectory,
+            drovrCommand,
+          })
   );
   const allVerification = {
     ...(setup.verification ?? {}),
     ...(verification ?? {}),
   };
+  if (soakInterruptionRequested) {
+    allVerification.interrupted ??= {
+      status: "fail",
+      message: "The soak was interrupted before all qualification cycles completed.",
+    };
+  }
   const definitions = buildCycleDefinitions(plan, catalog);
   const runCycle = cycleRunner ?? runQualificationCycle;
   const cycles = [];
   for (const definition of definitions) {
+    if (soakInterruptionRequested) break;
     let execution;
     try {
       execution = await runCycle({
@@ -599,7 +625,7 @@ async function runQualificationCycle({
     {
       cwd,
       env: { ...env, DOTFILES_ROOT: REPOSITORY_ROOT },
-      timeoutMs: maxElapsed + 75_000,
+      timeoutMs: maxElapsed + CLEANUP_LIMIT_MS,
     },
   );
   const report = parseJsonOutput(processResult.stdout);
@@ -821,9 +847,12 @@ function bindingFromCycleEvidence(evidence, binding, harness) {
 
 function normalizeIntegration(value, harness) {
   if (typeof value !== "string") return null;
-  if (value.startsWith(`herdr-${harness}/v`)) return value;
-  const match = value.match(/\(v(\d+)\)/u);
-  return match ? `herdr-${harness}/v${match[1]}` : value;
+  const normalized = value.trim();
+  if (new RegExp(`^herdr-${harness}/v\\d+$`, "u").test(normalized)) {
+    return normalized;
+  }
+  const match = normalized.match(/\(v(\d+)\)/u);
+  return match ? `herdr-${harness}/v${match[1]}` : null;
 }
 
 async function runPublicJsonCommand(command, args, { cwd, env, now, timeoutMs }) {
@@ -887,24 +916,29 @@ function runProcess(command, args, { cwd, env, timeoutMs }) {
       env: { ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const output = { stdout: "", stderr: "" };
+    activeProcesses.add(child);
+    const output = { stdout: [], stderr: [] };
+    const outputBytes = { stdout: 0, stderr: 0 };
     let timedOut = false;
     let settled = false;
-    let killTimer;
     const started = Date.now();
     const append = (key, chunk) => {
-      const remaining = 2 * 1024 * 1024 - Buffer.byteLength(output[key]);
+      const remaining = PROCESS_OUTPUT_LIMIT_BYTES - outputBytes[key];
       if (remaining <= 0) return;
-      const text = chunk.toString("utf8");
-      output[key] += text.slice(0, remaining);
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const retained = bytes.subarray(0, remaining);
+      output[key].push(retained);
+      outputBytes[key] += retained.length;
     };
     const finish = (exitCode, signal, error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
+      activeProcesses.delete(child);
+      clearProcessTermination(child);
       resolveResult({
-        ...output,
+        stdout: Buffer.concat(output.stdout).toString("utf8"),
+        stderr: Buffer.concat(output.stderr).toString("utf8"),
         exitCode: typeof exitCode === "number" ? exitCode : null,
         signal: signal ?? null,
         timedOut,
@@ -918,10 +952,33 @@ function runProcess(command, args, { cwd, env, timeoutMs }) {
     child.on("close", (exitCode, signal) => finish(exitCode, signal));
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      terminateProcess(child);
     }, timeoutMs);
   });
+}
+
+function terminateProcess(child) {
+  if (terminatingProcesses.has(child)) return;
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    return;
+  }
+  const killTimer = setTimeout(() => {
+    terminatingProcesses.delete(child);
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The child may have exited after the graceful termination request.
+    }
+  }, PROCESS_EXIT_GRACE_MS);
+  terminatingProcesses.set(child, killTimer);
+}
+
+function clearProcessTermination(child) {
+  const killTimer = terminatingProcesses.get(child);
+  if (killTimer) clearTimeout(killTimer);
+  terminatingProcesses.delete(child);
 }
 
 function parseJsonOutput(output) {
@@ -970,33 +1027,35 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
     const harness = cycle?.harness;
     const state = harness && consecutive[harness];
     let valid = cycle?.result === "pass";
+    const addFailure = (code, message) => {
+      failures.push(failure(cycleNumber, code, message, harness));
+    };
 
     if (cycle?.result !== "pass") {
-      failures.push(failure(
-        cycleNumber,
+      addFailure(
         "cycle_failed",
         "The cycle did not complete successfully and restarted its consecutive count.",
-      ));
+      );
     }
 
     if (!state) {
-      failures.push(failure(cycleNumber, "unsupported_harness", "Cycle harness is not codex or claude."));
+      addFailure("unsupported_harness", "Cycle harness is not codex or claude.");
       valid = false;
     }
 
     if (binding && !sameValue(cycle?.binding, binding)) {
-      failures.push(failure(cycleNumber, "binding_drift", "Cycle compatibility binding differs from the soak binding."));
+      addFailure("binding_drift", "Cycle compatibility binding differs from the soak binding.");
       valid = false;
     }
 
     if (cycle?.manual_repair !== false) {
-      failures.push(failure(cycleNumber, "manual_repair_not_proven", "The cycle did not prove that no manual repair was used."));
+      addFailure("manual_repair_not_proven", "The cycle did not prove that no manual repair was used.");
       valid = false;
     }
 
     const policyFailure = executionPolicyFailure(cycle?.execution_policy);
     if (policyFailure) {
-      failures.push(failure(cycleNumber, "execution_policy_not_proven", policyFailure));
+      addFailure("execution_policy_not_proven", policyFailure);
       valid = false;
     }
 
@@ -1005,65 +1064,60 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
       plan.required_assertion_groups,
     );
     if (assertionFailure) {
-      failures.push(failure(cycleNumber, "cycle_contract_failed", assertionFailure));
+      addFailure("cycle_contract_failed", assertionFailure);
       valid = false;
     }
 
-    if (cycle?.state_sequence?.anti_replay_gap === true) {
-      failures.push(failure(
-        cycleNumber,
+    const sequence = cycle?.state_sequence;
+    const sequenceAntiReplayGap = stateSequenceAntiReplayGap(sequence);
+    const recordAntiReplayGap = () => {
+      addFailure(
         "anti_replay_gap",
-        "Herdr state_change_seq did not advance across the clear transition.",
-      ));
+        "Herdr state_change_seq did not advance monotonically across the clear transition.",
+      );
       residualLimitations.push({
         code: "anti_replay_gap",
         cycle: cycleNumber,
         message: "The live staged-input transition counter did not prove a fresh clear transition.",
       });
       valid = false;
+    };
+
+    if (
+      !cycle?.coverage?.includes("staged_input_recovery") &&
+      (sequenceAntiReplayGap === true || sequence?.anti_replay_gap === true)
+    ) {
+      recordAntiReplayGap();
     }
 
     if (cycle?.coverage?.includes("staged_input_recovery")) {
-      const sequence = cycle.state_sequence;
       const missingPhases = (plan.required_state_sequence_phases ?? []).filter(
         (phase) => !Number.isSafeInteger(sequence?.[phase]),
       );
       if (missingPhases.length > 0) {
-        failures.push(failure(
-          cycleNumber,
+        addFailure(
           "state_sequence_incomplete",
           `Staged-input evidence is missing state_change_seq phases: ${missingPhases.join(", ")}.`,
-        ));
+        );
         valid = false;
-      } else if (sequence.after_clear === sequence.before_staging) {
-        failures.push(failure(
-          cycleNumber,
-          "anti_replay_gap",
-          "Herdr state_change_seq did not advance across the clear transition.",
-        ));
-        residualLimitations.push({
-          code: "anti_replay_gap",
-          cycle: cycleNumber,
-          message: "The live staged-input transition counter did not prove a fresh clear transition.",
-        });
-        valid = false;
+      } else if (sequenceAntiReplayGap !== false) {
+        recordAntiReplayGap();
       }
     }
 
     const cleanupFailure = cleanupContractFailure(cycle?.cleanup);
     if (cleanupFailure) {
-      failures.push(failure(cycleNumber, "cleanup_not_settled", cleanupFailure));
+      addFailure("cleanup_not_settled", cleanupFailure);
       valid = false;
     }
 
     if (harness === "claude" && state && cycleNumber > state.required) {
       if (typeof cycle.additional_coverage_reason !== "string" ||
           cycle.additional_coverage_reason.trim().length === 0) {
-        failures.push(failure(
-          cycleNumber,
+        addFailure(
           "claude_extra_cycle_reason_missing",
           "Every Claude cycle beyond the minimum needs a named coverage reason.",
-        ));
+        );
         valid = false;
       }
     }
@@ -1072,11 +1126,10 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
       harness === "claude" &&
       (typeof cycle.claude_reason !== "string" || cycle.claude_reason.trim().length === 0)
     ) {
-      failures.push(failure(
-        cycleNumber,
+      addFailure(
         "claude_reason_missing",
         "Every Claude cycle must record why its live turn was required.",
-      ));
+      );
       valid = false;
     }
 
@@ -1087,11 +1140,10 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
     if (valid) {
       for (const coverage of cycle.coverage ?? []) observedCoverage.add(coverage);
     } else if (cycle?.result === "pass") {
-      failures.push(failure(
-        cycleNumber,
+      addFailure(
         "cycle_assertion_failed",
         "A passing cycle failed one or more soak safety contracts.",
-      ));
+      );
     }
     if (cycle?.residual_limitations) {
       residualLimitations.push(...cycle.residual_limitations);
@@ -1245,9 +1297,10 @@ export function bindingFromDoctorAndDescriptions({
     (doctor?.result?.checks ?? []).map(({ id, detail }) => [id, detail]),
   );
   const integration = (harness) => {
-    const detail = checks.get(`${harness}-integration`) ?? "unavailable";
-    const match = String(detail).match(/current \((v\d+)\)/u);
-    return match ? `herdr-${harness}/${match[1]}` : detail;
+    return normalizeIntegration(
+      checks.get(`${harness}-integration`),
+      harness,
+    );
   };
   return {
     drovr_commit: drovrCommit ?? null,
@@ -1335,13 +1388,35 @@ function requiredBindingFailures(fields, binding) {
     .filter((field) => {
       const value = binding?.[field];
       if (field === "source_clean") return value !== true;
-      return value === null || value === undefined ||
-        (typeof value === "string" && value.trim().length === 0);
+      if (field === "catalog_version") {
+        return !Number.isSafeInteger(value) || value <= 0;
+      }
+      if (["integrations", "models", "reasoning_effort"].includes(field)) {
+        return !isRecord(value) || HARNESS_NAMES.some(
+          (harness) => bindingValueMissing(value[harness]),
+        );
+      }
+      return bindingValueMissing(value);
     })
     .map((field) => ({
       code: "binding_incomplete",
       message: `Soak binding is missing ${field}.`,
     }));
+}
+
+function bindingValueMissing(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized.length === 0 ||
+      /^(?:unavailable|unknown|not(?:[-_ ]available|[-_ ]applicable))/u.test(normalized);
+  }
+  if (Array.isArray(value)) return value.length === 0 || value.some(bindingValueMissing);
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    return entries.length === 0 || entries.some(([, entry]) => bindingValueMissing(entry));
+  }
+  return typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0;
 }
 
 function deduplicateResiduals(residuals) {
@@ -1358,14 +1433,15 @@ function followUpWork(failures) {
   const seen = new Set();
   return failures
     .filter(({ code }) => code !== "cycle_assertion_failed")
-    .map(({ cycle, code, message }) => ({
+    .map(({ harness, cycle, code, message }) => ({
+      harness,
       cycle,
       code,
       action: `Resolve ${code} and rerun the affected qualification coverage.`,
       evidence: message,
     }))
     .filter((item) => {
-      const key = `${item.cycle}:${item.code}`;
+      const key = `${item.harness ?? "global"}:${item.cycle ?? "global"}:${item.code}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -1376,8 +1452,28 @@ function sameValue(left, right) {
   return digestCanonical(left) === digestCanonical(right);
 }
 
-function failure(cycle, code, message) {
-  return { cycle, code, message };
+function stateSequenceAntiReplayGap(sequence) {
+  const phases = [
+    "before_staging",
+    "after_staging",
+    "after_clear",
+    "post_clear",
+    "after_process_reentry",
+  ];
+  if (!phases.every((phase) => Number.isSafeInteger(sequence?.[phase]))) {
+    return "unobserved";
+  }
+  const values = phases.map((phase) => sequence[phase]);
+  const monotonic = values.every(
+    (value, index) => index === 0 || value >= values[index - 1],
+  );
+  return monotonic && sequence.after_clear > sequence.after_staging
+    ? false
+    : true;
+}
+
+function failure(cycle, code, message, harness = null) {
+  return { harness, cycle, code, message };
 }
 
 function requireNonEmptyStrings(value, path, { allowEmpty = false } = {}) {

@@ -110,6 +110,16 @@ exit 5
   assert.equal(evidence.versions.claude, "2.1.199 (Claude Code)");
   assert.equal(evidence.result.disposition, "blocked");
   assert.equal(evidence.result.reason.code, "prerequisite_unavailable");
+  assert.deepEqual(evidence.execution_policy, {
+    interface: "public_drovr_cli",
+    manual_repair: false,
+    registry_surgery: false,
+    transcript_surgery: false,
+    agent_replacement: false,
+    raw_manual_keys: false,
+    hidden_retry: false,
+    caller_workspace_mutation: false,
+  });
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
   assert.equal(evidence.cleanup_receipt.owned_resources.length, 2);
 
@@ -121,6 +131,50 @@ exit 5
   assert.match(invocation.state_home, /\/state$/u);
   assert.match(invocation.runtime_dir, /\/runtime$/u);
   assert.notEqual(invocation.state_home, process.env.XDG_STATE_HOME);
+});
+
+test("an initial live launch failure is not misreported as a reuse failure", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-launch-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  const caller = join(scratch, "caller");
+  await mkdir(fakeBin);
+  await mkdir(caller);
+  await executable(
+    join(fakeBin, "drovr"),
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:launch-failure"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+if [[ \${1:-} == group && \${2:-} == list ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}'
+  exit 0
+fi
+if [[ \${1:-} == delegate ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"delegate","ok":false,"error":{"outcome":"adapter_failure","message":"Claude workspace trust prompt blocked startup"}}'
+  exit 4
+fi
+exit 5
+`,
+  );
+
+  const report = await runQualification({
+    scenarioIds: ["claude_soak_multiline_reuse"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: caller,
+    env: { ...process.env },
+  });
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+
+  assert.equal(report.status, "fail");
+  assert.equal(evidence.result.reason.code, "adapter_failure");
+  assert.equal(
+    evidence.result.reason.message,
+    "Claude workspace trust prompt blocked startup",
+  );
+  assert.notEqual(evidence.result.reason.code, "scenario_assertion_failed");
 });
 
 test("deterministic scenarios replay their traces into qualification evidence", async (t) => {

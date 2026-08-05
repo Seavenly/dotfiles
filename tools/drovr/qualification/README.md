@@ -119,9 +119,11 @@ not be treated as the sole reappearance guard.
 The promotion soak's staged-input cycle records the transition sequence before
 staging, after staging, after the double-Escape clear, after qualified stable
 absence, and after a separate public Drovr process observes the same agent
-again. A missing or unchanged clear transition counter is an unqualified
-anti-replay gap. The soak does not manufacture a transient reappearance; the
-existing transient scenario remains an explicit incident-capture scenario.
+again. That final phase is process re-entry only - the Herdr/native process is
+not manually restarted by the qualification. A missing or unchanged clear
+transition counter is an unqualified anti-replay gap. The soak does not
+manufacture a transient reappearance; the existing transient scenario remains
+an explicit incident-capture scenario.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or
@@ -131,8 +133,9 @@ a pass.
 
 Catalog `max_elapsed` bounds scenario work through the final behavioral
 observation. Cleanup then receives a separate 65-second wall-time budget,
-recorded under `limits.cleanup`; command termination grace is included in both
-bounds. Exhausting either budget produces typed failure evidence.
+recorded under `limits.cleanup`. The soak supervisor forwards interruption and
+allows a separate graceful-exit window before force termination so cleanup can
+persist its receipt. Exhausting either budget produces typed failure evidence.
 
 The embedded `drovr.qualification-cleanup-receipt/v1` binds every created
 resource to its disposition, records prohibited-mutation checks, proves the

@@ -15,7 +15,7 @@
   "contracts": {
     "qualification_evidence": {
       "schema": "drovr.qualification-evidence/v1",
-      "required_fields": ["schema", "catalog_version", "catalog_digest", "scenario_id", "execution_kind", "versions", "environment", "limits", "live_run_justification", "configuration_deviation_justification", "invocations", "observations", "assertions", "result", "cleanup_receipt", "started_at", "finished_at"],
+      "required_fields": ["schema", "catalog_version", "catalog_digest", "scenario_id", "execution_kind", "versions", "environment", "limits", "live_run_justification", "configuration_deviation_justification", "invocations", "observations", "assertions", "result", "execution_policy", "cleanup_receipt", "started_at", "finished_at"],
       "fields": {
         "schema": "Exact literal drovr.qualification-evidence/v1.",
         "catalog_version": "Positive integer catalog version used by the run.",
@@ -31,6 +31,7 @@
         "observations": "Ordered typed Drovr results and identity-bearing observations; no private registry or transcript repair.",
         "assertions": "Positive, negative, uncertain, recovery, invariant, and prohibited-mutation assertions with pass or fail disposition.",
         "result": "pass, fail, blocked, or skipped with a typed reason and retained evidence references.",
+        "execution_policy": "Exact public-command and no-repair policy used for the scenario.",
         "cleanup_receipt": "One embedded drovr.qualification-cleanup-receipt/v1 document.",
         "started_at": "RFC 3339 UTC timestamp.",
         "finished_at": "RFC 3339 UTC timestamp."

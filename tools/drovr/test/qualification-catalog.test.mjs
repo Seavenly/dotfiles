@@ -91,6 +91,11 @@ test("qualification evidence and cleanup receipts have versioned required shapes
     ),
   );
   assert.ok(
+    catalog.contracts.qualification_evidence.required_fields.includes(
+      "execution_policy",
+    ),
+  );
+  assert.ok(
     catalog.contracts.cleanup_receipt.required_fields.includes(
       "caller_owned_workspace",
     ),

@@ -2,7 +2,7 @@
 
 import { resolve } from "node:path";
 
-import { runSoak } from "../src/qualification-soak.mjs";
+import { interruptSoak, runSoak } from "../src/qualification-soak.mjs";
 
 class SoakUsageError extends Error {}
 
@@ -28,10 +28,20 @@ function parseArguments(argv) {
   return { evidenceDirectory, ...(drovrCommand ? { drovrCommand } : {}) };
 }
 
+let interruptionCount = 0;
+const interrupt = () => {
+  interruptionCount += 1;
+  interruptSoak();
+};
+process.on("SIGINT", interrupt);
+process.on("SIGTERM", interrupt);
+
 try {
   const report = await runSoak(parseArguments(process.argv.slice(2)));
   process.stdout.write(`${JSON.stringify(report)}\n`);
-  process.exitCode = report.status === "promote" ? 0 : 4;
+  process.exitCode = interruptionCount > 0
+    ? 130
+    : report.status === "promote" ? 0 : 4;
 } catch (error) {
   const usage = error instanceof SoakUsageError;
   process.stdout.write(
@@ -45,4 +55,7 @@ try {
     })}\n`,
   );
   process.exitCode = usage ? 2 : 5;
+} finally {
+  process.off("SIGINT", interrupt);
+  process.off("SIGTERM", interrupt);
 }

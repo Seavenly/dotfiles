@@ -41,7 +41,7 @@ const PLAN = {
     "after_staging",
     "after_clear",
     "post_clear",
-    "after_process_restart",
+    "after_process_reentry",
   ],
   required_assertion_groups: [
     [
@@ -148,7 +148,7 @@ function passingCycles() {
           after_staging: 2,
           after_clear: 3,
           post_clear: 3,
-          after_process_restart: 3,
+          after_process_reentry: 3,
           anti_replay_gap: false,
         },
       }),
@@ -205,7 +205,7 @@ test("staged-input anti-replay gaps and binding drift fail closed", () => {
       after_staging: 4,
       after_clear: 4,
       post_clear: 4,
-      after_process_restart: 4,
+      after_process_reentry: 4,
       anti_replay_gap: true,
     },
   });
@@ -215,6 +215,96 @@ test("staged-input anti-replay gaps and binding drift fail closed", () => {
   assert.equal(decision.decision, "unqualified");
   assert.ok(decision.failures.some(({ code }) => code === "anti_replay_gap"));
   assert.ok(decision.failures.some(({ code }) => code === "binding_drift"));
+});
+
+test("anti-replay validation requires a fresh clear transition", () => {
+  const cycles = passingCycles();
+  cycles[0] = cycle("codex", 1, [
+    "multiline_or_long_input",
+    "steering_or_follow_up",
+    "cancellation_or_timeout",
+    "cleanup",
+  ], {
+    state_sequence: {
+      before_staging: 1,
+      after_staging: 2,
+      after_clear: 2,
+      post_clear: 2,
+      after_process_reentry: 2,
+      anti_replay_gap: false,
+    },
+  });
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(decision.failures.some(({ code }) => code === "anti_replay_gap"));
+});
+
+test("incomplete state sequences remain explicitly unobserved", () => {
+  const cycles = passingCycles();
+  cycles[10].state_sequence = {
+    before_staging: 1,
+    after_staging: 2,
+    after_clear: 3,
+    post_clear: 3,
+    after_process_reentry: null,
+    anti_replay_gap: "unobserved",
+  };
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(
+    decision.failures.some(({ code }) => code === "state_sequence_incomplete"),
+  );
+});
+
+test("nested binding fields and invalid integration details fail closed", () => {
+  const incompleteBinding = {
+    ...BINDING,
+    integrations: { claude: null, codex: "unavailable" },
+  };
+  const decision = evaluateSoak({
+    plan: PLAN,
+    binding: incompleteBinding,
+    cycles: passingCycles(),
+  });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(decision.failures.some(({ code }) => code === "binding_incomplete"));
+  const binding = bindingFromDoctorAndDescriptions({
+    doctor: {
+      result: {
+        checks: [
+          { id: "claude-integration", detail: "unavailable" },
+          { id: "codex-integration", detail: "current (v6)" },
+        ],
+      },
+    },
+  });
+  assert.equal(binding.integrations.claude, null);
+  assert.equal(binding.integrations.codex, "herdr-codex/v6");
+});
+
+test("follow-up work keeps harness-local cycle failures distinct", () => {
+  const decision = evaluateSoak({
+    plan: PLAN,
+    binding: BINDING,
+    cycles: [
+      cycle("codex", 1, ["cleanup"], { result: "fail" }),
+      cycle("claude", 1, ["cleanup"], { result: "fail" }),
+    ],
+  });
+  const cycleFailures = decision.follow_up_work.filter(
+    ({ code }) => code === "cycle_failed",
+  );
+
+  assert.deepEqual(
+    cycleFailures.map(({ harness, cycle }) => ({ harness, cycle })),
+    [
+      { harness: "codex", cycle: 1 },
+      { harness: "claude", cycle: 1 },
+    ],
+  );
 });
 
 test("manual repair and private mutation policy violations fail closed", () => {
@@ -258,7 +348,7 @@ test("an extra Claude cycle needs a named coverage reason", () => {
           after_staging: 2,
           after_clear: 3,
           post_clear: 3,
-          after_process_restart: 3,
+          after_process_reentry: 3,
           anti_replay_gap: false,
         },
         additional_coverage_reason: "Recheck the live clear transition counter.",
@@ -435,7 +525,7 @@ function fakeEvidence(definition, binding) {
             after_staging: 2,
             after_clear: 3,
             post_clear: 3,
-            after_process_restart: 3,
+            after_process_reentry: 3,
             anti_replay_gap: false,
           },
         }

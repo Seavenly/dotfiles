@@ -42,6 +42,13 @@ const PROCESS_EXIT_GRACE_MS = 5_000;
 const CLEANUP_LIMIT_MS = 65_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
+const stateSequencePhases = [
+  "before_staging",
+  "after_staging",
+  "after_clear",
+  "post_clear",
+  "after_process_reentry",
+];
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -349,6 +356,7 @@ async function runScenarioPrerequisites({
     ],
     assertions: prerequisiteAssertions(execution.envelope),
     result: { disposition, reason },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     cleanup_receipt: {
       schema: "drovr.qualification-cleanup-receipt/v1",
       scenario_id: scenario.id,
@@ -549,6 +557,7 @@ async function runDeterministicReplayScenario({
             : "The deterministic replay changed the caller workspace fingerprint."),
       },
     },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     trace: fixture.trace,
     cleanup_receipt: {
       schema: "drovr.qualification-cleanup-receipt/v1",
@@ -884,7 +893,7 @@ async function runUnknownStagedInputScenario({
   let inspected;
   let cleared;
   let postClearObservation;
-  let afterProcessRestart;
+  let afterProcessReentry;
   let beforeStageObservation;
   const stabilityObservations = [];
   let reuse;
@@ -963,13 +972,13 @@ async function runUnknownStagedInputScenario({
           ["agent", "staged-input", agentId],
           "agent staged-input",
         );
-        afterProcessRestart = await invoke(
+        afterProcessReentry = await invoke(
           ["agent", "staged-input", agentId],
           "agent staged-input",
         );
         if (
           postClearObservation.execution.envelope?.result?.status === "ready" &&
-          afterProcessRestart.execution.envelope?.result?.status === "ready"
+          afterProcessReentry.execution.envelope?.result?.status === "ready"
         ) {
           reuse = await invoke(
             [
@@ -1036,8 +1045,8 @@ async function runUnknownStagedInputScenario({
   ) ?? (
     postClearObservation?.execution.envelope?.result?.status === "staged_input"
       ? postClearObservation
-      : afterProcessRestart?.execution.envelope?.result?.status === "staged_input"
-        ? afterProcessRestart
+      : afterProcessReentry?.execution.envelope?.result?.status === "staged_input"
+        ? afterProcessReentry
         : null
   );
   const observedNativeSessions = nativeSessionValues([
@@ -1050,7 +1059,7 @@ async function runUnknownStagedInputScenario({
     cleared,
     ...stabilityObservations,
     postClearObservation,
-    afterProcessRestart,
+    afterProcessReentry,
     finalAgent,
   ]);
   const managedNativeSession = observedNativeSessions[0] ?? null;
@@ -1073,16 +1082,17 @@ async function runUnknownStagedInputScenario({
     post_clear: stateChangeSeqFromExecution(
       postClearObservation ?? stabilityObservations.at(-1),
     ),
-    after_process_restart: stateChangeSeqFromExecution(
-      afterProcessRestart ?? finalAgent,
+    after_process_reentry: stateChangeSeqFromExecution(
+      afterProcessReentry ?? finalAgent,
     ),
   };
-  const stateSequenceComplete = Object.values(stateSequence).every(
-    (value) => Number.isSafeInteger(value),
+  const stateSequenceComplete = stateSequencePhases.every(
+    (phase) => Number.isSafeInteger(stateSequence[phase]),
   );
-  const antiReplayGap =
+  const antiReplayGap = stateSequenceAntiReplayGap(stateSequence);
+  const processReentryStable =
     stateSequenceComplete &&
-    stateSequence.after_clear === stateSequence.before_staging;
+    stateSequence.post_clear === stateSequence.after_process_reentry;
   const sameAgentReuse =
     reuse?.execution.envelope?.result?.status === "completed" &&
     reuse.execution.envelope.result.agent?.id === agentId &&
@@ -1142,7 +1152,8 @@ async function runUnknownStagedInputScenario({
     exactNativeSession &&
     exactLaunchConfiguration &&
     stateSequenceComplete &&
-    !antiReplayGap &&
+    antiReplayGap === false &&
+    processReentryStable &&
     stableClear &&
     sameAgentReuse &&
     !unknownTextSubmitted &&
@@ -1224,7 +1235,7 @@ async function runUnknownStagedInputScenario({
       { kind: "positive", id: "exact_unknown_snapshot_inspected", disposition: exactUnknownStaged ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
       { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
-      { kind: "invariant", id: "state_change_seq_transition", disposition: stateSequenceComplete && !antiReplayGap ? "pass" : "fail" },
+      { kind: "invariant", id: "state_change_seq_transition", disposition: stateSequenceComplete && antiReplayGap === false && processReentryStable ? "pass" : "fail" },
       { kind: "positive", id: "clear_absent_for_stability_interval", disposition: stableClear ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_clear", disposition: sameAgentReuse ? "pass" : "fail" },
       { kind: "invariant", id: "non_submission_of_unknown_text", disposition: unknownTextSubmitted ? "fail" : "pass" },
@@ -1248,7 +1259,7 @@ async function runUnknownStagedInputScenario({
           ? "The disposable Claude agent did not expose an exact native-session identity."
             : passed
             ? "Unknown staged input stayed absent for the full interval and the same agent was reused."
-            : antiReplayGap
+            : antiReplayGap === true
             ? "Herdr did not advance state_change_seq across the clear transition; the cycle remains unqualified."
             : "Staging, stable clearing, no-submission, reuse, or cleanup evidence was incomplete."),
         ...(clearContradiction
@@ -1310,7 +1321,7 @@ async function runUnknownStagedInputScenario({
       ...stateSequence,
       anti_replay_gap: antiReplayGap,
       post_clear_reappeared: Boolean(clearContradiction),
-      process_reentry: "the prior Drovr CLI process exited and a new public Drovr process observed the same Herdr session; the Herdr/native process was not restarted",
+      process_reentry: "a separate public Drovr process observed the same Herdr session; the Herdr/native process was intentionally not restarted because this qualification does not permit manual termination or resume",
     },
     execution_policy: PUBLIC_QUALIFICATION_POLICY,
     started_at: startedAt,
@@ -1442,6 +1453,7 @@ async function recordScenarioFailure({
         message: error instanceof Error ? error.message : String(error),
       },
     },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     cleanup_receipt: {
       schema: "drovr.qualification-cleanup-receipt/v1",
       scenario_id: scenario.id,
@@ -1789,6 +1801,7 @@ async function runCodexLifecycleScenario({
           : "Lifecycle, identity, safety, or cleanup evidence was incomplete."),
       },
     },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     cleanup_receipt: {
       schema: "drovr.qualification-cleanup-receipt/v1",
       scenario_id: scenario.id,
@@ -2211,6 +2224,14 @@ async function runPromptFileScenario({
     result?.agent?.harness === harness &&
     result?.agent?.model === model &&
     result?.agent?.effort === launch.effort;
+  const initialFailure = !directCompleted && !isOwnedRecovery
+    ? {
+        code: delegate.execution.envelope?.error?.outcome ??
+          "initial_turn_not_completed",
+        message: delegate.execution.envelope?.error?.message ??
+          `The initial ${harness} turn did not complete with the expected qualification sentinel.`,
+      }
+    : null;
   let reuse;
   if (reuseAfterCompletion && directCompleted && typeof directAgentId === "string") {
     const reusePrompt = typeof specification.reusePrompt === "function"
@@ -2470,18 +2491,20 @@ async function runPromptFileScenario({
     result: {
       disposition,
       reason: {
-        code: runnerFailure?.code ?? (ownedPreconditionBlocked
+        code: runnerFailure?.code ?? initialFailure?.code ?? (ownedPreconditionBlocked
           ? "live_precondition_unavailable"
           : passed
             ? "scenario_completed"
             : "scenario_assertion_failed"),
-        message: runnerFailure?.message ?? (ownedPreconditionBlocked
+        message: runnerFailure?.message ?? initialFailure?.message ?? (ownedPreconditionBlocked
           ? "The failed Claude turn did not expose a recoverable exact owned staged-input snapshot."
-          : passed
-            ? "The live scenario completed and all safety and cleanup assertions passed."
-            : reuseAfterCompletion && !sameAgentReuse
-              ? "The initial result did not settle a same-agent correction/re-review turn."
-              : "One or more live scenario, safety, or cleanup assertions failed."),
+          : initialFailure
+            ? initialFailure.message
+            : passed
+              ? "The live scenario completed and all safety and cleanup assertions passed."
+              : reuseAfterCompletion && !sameAgentReuse
+                ? "The initial result did not settle a same-agent correction/re-review turn."
+                : "One or more live scenario, safety, or cleanup assertions failed."),
       },
     },
     execution_policy: PUBLIC_QUALIFICATION_POLICY,
@@ -2724,6 +2747,7 @@ function validateQualificationEvidence(evidence) {
     "observations",
     "assertions",
     "result",
+    "execution_policy",
     "cleanup_receipt",
     "started_at",
     "finished_at",
@@ -2733,6 +2757,14 @@ function validateQualificationEvidence(evidence) {
     required.some((field) => !Object.hasOwn(evidence, field))
   ) {
     throw new Error("qualification evidence does not satisfy its versioned contract");
+  }
+  if (
+    !evidence.execution_policy ||
+    Object.entries(PUBLIC_QUALIFICATION_POLICY).some(
+      ([key, expected]) => evidence.execution_policy[key] !== expected,
+    )
+  ) {
+    throw new Error("qualification evidence does not satisfy its execution policy");
   }
   if (evidence.trace !== undefined) validateTrace(evidence.trace);
   if (
@@ -3085,6 +3117,19 @@ function stateChangeSeqFromExecution(observation) {
     result?.staged_input?.state_change_seq,
   ];
   return candidates.find((value) => Number.isSafeInteger(value)) ?? null;
+}
+
+function stateSequenceAntiReplayGap(sequence) {
+  if (!stateSequencePhases.every((phase) => Number.isSafeInteger(sequence?.[phase]))) {
+    return "unobserved";
+  }
+  const values = stateSequencePhases.map((phase) => sequence[phase]);
+  const monotonic = values.every(
+    (value, index) => index === 0 || value >= values[index - 1],
+  );
+  return monotonic && sequence.after_clear > sequence.after_staging
+    ? false
+    : true;
 }
 
 export function proveUnknownInputWasNotSubmitted({
