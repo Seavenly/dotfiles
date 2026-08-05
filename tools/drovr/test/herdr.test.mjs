@@ -1074,6 +1074,32 @@ test("agent wait returns Herdr's atomic settled agent observation", async () => 
   ]);
 });
 
+test("agent wait rounds fractional milliseconds for Herdr's integer CLI option", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{ name: "managed-agent", agent_status: "working" }],
+          },
+        });
+      }
+      return JSON.stringify({
+        result: {
+          agent: { name: "managed-agent", agent_status: "idle" },
+        },
+      });
+    },
+  });
+
+  await client.waitForAgent("managed-agent", 179535.280282);
+
+  assert.equal(calls.at(-1).at(-1), "179535");
+});
+
 test("agent wait returns an already settled observation without blocking", async () => {
   const calls = [];
   const client = new HerdrClient({

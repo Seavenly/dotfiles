@@ -844,7 +844,7 @@ export class HerdrClient {
     }
     const args = ["agent", "wait", name];
     if (timeoutMs !== undefined) {
-      args.push("--timeout", String(timeoutMs));
+      args.push("--timeout", String(Math.max(1, Math.floor(timeoutMs))));
     }
     let output;
     try {

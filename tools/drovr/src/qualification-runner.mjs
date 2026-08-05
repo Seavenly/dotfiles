@@ -2576,6 +2576,7 @@ async function invokeDrovr({
     : await executeDrovr(command, args, {
         cwd,
         env,
+        expectedCommand,
         timeout: effectiveTimeout,
         input,
         ignoreInterruption: cleanup,
@@ -2845,7 +2846,14 @@ export function validateDrovrEnvelope(expectedCommand, envelope) {
 }
 
 async function executeDrovr(command, args, options) {
-  const { cwd, env, timeout = 30_000, input, ignoreInterruption = false } = options;
+  const {
+    cwd,
+    env,
+    expectedCommand = args.slice(0, 2).join(" "),
+    timeout = 30_000,
+    input,
+    ignoreInterruption = false,
+  } = options;
   return new Promise((resolveExecution) => {
     const child = spawn(command, args, {
       cwd,
@@ -2898,9 +2906,9 @@ async function executeDrovr(command, args, options) {
         exitCode: interrupted ? 130 : timedOut || hardBound ? 124 : (code ?? (failure ? 127 : 5)),
         envelope:
           interrupted
-            ? invalidEnvelope(args.slice(0, 2).join(" "), message, "operator_interrupted")
+            ? invalidEnvelope(expectedCommand, message, "operator_interrupted")
             : timedOut || hardBound
-              ? invalidEnvelope(args.slice(0, 2).join(" "), message, "process_timeout")
+              ? invalidEnvelope(expectedCommand, message, "process_timeout")
               : parseEnvelope(output, message),
       });
     };
