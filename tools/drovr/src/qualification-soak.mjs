@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -13,6 +13,11 @@ import {
 import {
   CYCLE_EVIDENCE_REQUIRED_FIELDS,
 } from "./qualification-contracts.mjs";
+import {
+  CLEANUP_LIMIT_MS,
+  interruptProcesses,
+  runProcess,
+} from "./qualification-process.mjs";
 import { PUBLIC_QUALIFICATION_POLICY } from "./qualification-policy.mjs";
 import {
   STATE_SEQUENCE_PHASES,
@@ -34,16 +39,11 @@ const QUALIFICATION_RUNNER_URL = new URL(
 );
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const execFileAsync = promisify(execFileCallback);
-const PROCESS_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024;
-const CLEANUP_LIMIT_MS = 65_000;
-export const PROCESS_EXIT_GRACE_MS = CLEANUP_LIMIT_MS + 5_000;
-const activeProcesses = new Set();
-const terminatingProcesses = new Map();
 let soakInterruptionRequested = false;
 
 export function interruptSoak() {
   soakInterruptionRequested = true;
-  for (const child of activeProcesses) terminateProcess(child);
+  interruptProcesses();
 }
 
 export async function loadSoakPlan(url = DEFAULT_PLAN_URL) {
@@ -71,6 +71,15 @@ export function validateSoakPlan(plan) {
   }
 
   requireNonEmptyStrings(plan.required_coverage, "required_coverage");
+  requireNonEmptyStrings(
+    plan.required_state_sequence_phases,
+    "required_state_sequence_phases",
+  );
+  requireCondition(
+    JSON.stringify(plan.required_state_sequence_phases) ===
+      JSON.stringify(STATE_SEQUENCE_PHASES),
+    "required_state_sequence_phases must match the state-sequence contract",
+  );
   requireCondition(
     Array.isArray(plan.required_assertion_groups) &&
       plan.required_assertion_groups.length > 0,
@@ -171,17 +180,6 @@ export function validateSoakPlanAgainstCatalog(plan, catalog) {
     requireCondition(
       availableCoverage.has(coverage),
       `required_coverage is not provided by scenario_coverage: ${coverage}`,
-    );
-  }
-  if (plan.required_coverage.includes("staged_input_recovery")) {
-    requireNonEmptyStrings(
-      plan.required_state_sequence_phases,
-      "required_state_sequence_phases",
-    );
-    requireCondition(
-      JSON.stringify(plan.required_state_sequence_phases) ===
-        JSON.stringify(STATE_SEQUENCE_PHASES),
-      "required_state_sequence_phases must match the state-sequence contract",
     );
   }
   return {
@@ -921,82 +919,6 @@ function verificationResult(processResult, command, report) {
   };
 }
 
-export function runProcess(
-  command,
-  args,
-  { cwd, env, timeoutMs, terminationGraceMs = PROCESS_EXIT_GRACE_MS },
-) {
-  return new Promise((resolveResult) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: { ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    activeProcesses.add(child);
-    const output = { stdout: [], stderr: [] };
-    const outputBytes = { stdout: 0, stderr: 0 };
-    let timedOut = false;
-    let settled = false;
-    const started = Date.now();
-    const append = (key, chunk) => {
-      const remaining = PROCESS_OUTPUT_LIMIT_BYTES - outputBytes[key];
-      if (remaining <= 0) return;
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const retained = bytes.subarray(0, remaining);
-      output[key].push(retained);
-      outputBytes[key] += retained.length;
-    };
-    const finish = (exitCode, signal, error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      activeProcesses.delete(child);
-      clearProcessTermination(child);
-      resolveResult({
-        stdout: Buffer.concat(output.stdout).toString("utf8"),
-        stderr: Buffer.concat(output.stderr).toString("utf8"),
-        exitCode: typeof exitCode === "number" ? exitCode : null,
-        signal: signal ?? null,
-        timedOut,
-        elapsedMs: Date.now() - started,
-        ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
-      });
-    };
-    child.stdout.on("data", (chunk) => append("stdout", chunk));
-    child.stderr.on("data", (chunk) => append("stderr", chunk));
-    child.on("error", (error) => finish(null, null, error));
-    child.on("close", (exitCode, signal) => finish(exitCode, signal));
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      terminateProcess(child, terminationGraceMs);
-    }, timeoutMs);
-  });
-}
-
-function terminateProcess(child, graceMs = PROCESS_EXIT_GRACE_MS) {
-  if (terminatingProcesses.has(child)) return;
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    return;
-  }
-  const killTimer = setTimeout(() => {
-    terminatingProcesses.delete(child);
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // The child may have exited after the graceful termination request.
-    }
-  }, graceMs);
-  terminatingProcesses.set(child, killTimer);
-}
-
-function clearProcessTermination(child) {
-  const killTimer = terminatingProcesses.get(child);
-  if (killTimer) clearTimeout(killTimer);
-  terminatingProcesses.delete(child);
-}
-
 function parseJsonOutput(output) {
   const trimmed = output.trim();
   if (!trimmed) return null;
@@ -1085,11 +1007,9 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
     }
 
     const sequence = cycle?.state_sequence;
-    const requiredStateSequencePhases =
-      plan.required_state_sequence_phases ?? STATE_SEQUENCE_PHASES;
     const sequenceAntiReplayGap = stateSequenceAntiReplayGap(
       sequence,
-      requiredStateSequencePhases,
+      plan.required_state_sequence_phases,
     );
     const recordAntiReplayGap = () => {
       addFailure(

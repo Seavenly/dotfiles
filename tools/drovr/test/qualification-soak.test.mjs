@@ -10,15 +10,19 @@ import {
   evaluateSoak,
   interruptSoak,
   loadSoakPlan,
-  PROCESS_EXIT_GRACE_MS,
   runSoak,
-  runProcess,
   validateSoakPlanAgainstCatalog,
   validateSoakPlan,
 } from "../src/qualification-soak.mjs";
 import { loadQualificationCatalog } from "../src/qualification-catalog.mjs";
 import { digestCanonical } from "../src/canonical-json.mjs";
+import {
+  CLEANUP_LIMIT_MS,
+  PROCESS_EXIT_GRACE_MS,
+  runProcess,
+} from "../src/qualification-process.mjs";
 import { PUBLIC_QUALIFICATION_POLICY } from "../src/qualification-policy.mjs";
+import { stateSequenceAntiReplayGap } from "../src/qualification-state-sequence.mjs";
 
 const PLAN = {
   schema: "drovr.qualification-soak-plan/v1",
@@ -105,6 +109,39 @@ test("soak configuration binding preserves each harness watermark in one digest"
   assert.equal(
     configurationDigestFromDescriptions({ codex: descriptions.codex }),
     null,
+  );
+});
+
+test("state-sequence validation fails closed when required phases are omitted", () => {
+  assert.equal(
+    stateSequenceAntiReplayGap(
+      {
+        before_staging: 1,
+        after_staging: 2,
+        after_clear: 3,
+      },
+      ["before_staging", "after_staging", "after_clear"],
+    ),
+    "unobserved",
+  );
+});
+
+test("soak plans reject state-sequence phase drift before evaluation", () => {
+  const driftedPlan = {
+    ...PLAN,
+    required_coverage: PLAN.required_coverage.filter(
+      (coverage) => coverage !== "staged_input_recovery",
+    ),
+    required_state_sequence_phases: PLAN.required_state_sequence_phases.slice(0, 3),
+  };
+
+  assert.throws(
+    () => validateSoakPlan(driftedPlan),
+    /required_state_sequence_phases must match/u,
+  );
+  assert.throws(
+    () => evaluateSoak({ plan: driftedPlan, binding: BINDING }),
+    /required_state_sequence_phases must match/u,
   );
 });
 
@@ -535,7 +572,7 @@ test("runSoak retains a failure artifact when a child evidence receipt is incomp
 
 test("runProcess force-terminates a child after the graceful window", async () => {
   const terminationGraceMs = 50;
-  assert.ok(PROCESS_EXIT_GRACE_MS > 5_000);
+  assert.ok(PROCESS_EXIT_GRACE_MS > CLEANUP_LIMIT_MS);
   const result = await runProcess(
     process.execPath,
     ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],

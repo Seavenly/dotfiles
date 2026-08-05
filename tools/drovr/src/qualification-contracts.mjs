@@ -38,3 +38,10 @@ export const CYCLE_EVIDENCE_REQUIRED_FIELDS = Object.freeze(
     CYCLE_EVIDENCE_REQUIRED_FIELD_NAMES.has(field),
   ),
 );
+
+if (
+  CYCLE_EVIDENCE_REQUIRED_FIELDS.length !==
+  CYCLE_EVIDENCE_REQUIRED_FIELD_NAMES.size
+) {
+  throw new Error("cycle evidence contract contains an unknown required field");
+}

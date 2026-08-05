@@ -31,12 +31,11 @@ import {
 import {
   QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
 } from "./qualification-contracts.mjs";
+import { CLEANUP_LIMIT_MS } from "./qualification-process.mjs";
 import { runTraceFixture } from "./qualification-replay.mjs";
 import { loadTraceFixture } from "./qualification-traces.mjs";
 import {
-  STATE_SEQUENCE_PHASES,
   stateSequenceAntiReplayGap,
-  stateSequenceComplete,
 } from "./qualification-state-sequence.mjs";
 import {
   traceFromJournal,
@@ -46,8 +45,7 @@ import {
 
 const execFileAsync = promisify(execFileCallback);
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
-const PROCESS_EXIT_GRACE_MS = 5_000;
-const CLEANUP_LIMIT_MS = 65_000;
+const COMMAND_EXIT_GRACE_MS = 5_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
 const activeChildren = new Set();
@@ -1101,14 +1099,7 @@ async function runUnknownStagedInputScenario({
       afterProcessReentry ?? finalAgent,
     ),
   };
-  const stateSequenceIsComplete = stateSequenceComplete(
-    stateSequence,
-    STATE_SEQUENCE_PHASES,
-  );
   const antiReplayGap = stateSequenceAntiReplayGap(stateSequence);
-  const processReentryStable =
-    stateSequenceIsComplete &&
-    stateSequence.post_clear === stateSequence.after_process_reentry;
   const sameAgentReuse =
     reuse?.execution.envelope?.result?.status === "completed" &&
     reuse.execution.envelope.result.agent?.id === agentId &&
@@ -1167,9 +1158,7 @@ async function runUnknownStagedInputScenario({
     exactUnknownStaged &&
     exactNativeSession &&
     exactLaunchConfiguration &&
-    stateSequenceIsComplete &&
     antiReplayGap === false &&
-    processReentryStable &&
     stableClear &&
     sameAgentReuse &&
     !unknownTextSubmitted &&
@@ -1251,7 +1240,7 @@ async function runUnknownStagedInputScenario({
       { kind: "positive", id: "exact_unknown_snapshot_inspected", disposition: exactUnknownStaged ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
       { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
-      { kind: "invariant", id: "state_change_seq_transition", disposition: stateSequenceIsComplete && antiReplayGap === false && processReentryStable ? "pass" : "fail" },
+      { kind: "invariant", id: "state_change_seq_transition", disposition: antiReplayGap === false ? "pass" : "fail" },
       { kind: "positive", id: "clear_absent_for_stability_interval", disposition: stableClear ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_clear", disposition: sameAgentReuse ? "pass" : "fail" },
       { kind: "invariant", id: "non_submission_of_unknown_text", disposition: unknownTextSubmitted ? "fail" : "pass" },
@@ -2917,7 +2906,7 @@ async function executeDrovr(command, args, options) {
     }, timeout);
     const hardTimer = setTimeout(
       () => finish(null, true),
-      timeout + PROCESS_EXIT_GRACE_MS,
+      timeout + COMMAND_EXIT_GRACE_MS,
     );
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
@@ -3351,7 +3340,7 @@ function createDeadline(duration) {
       0,
       Math.min(
         requestedMs,
-        absoluteDeadline - Date.now() - PROCESS_EXIT_GRACE_MS,
+        absoluteDeadline - Date.now() - COMMAND_EXIT_GRACE_MS,
       ),
     );
   return {

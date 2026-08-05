@@ -10,7 +10,8 @@ export function stateSequenceComplete(
   sequence,
   phases = STATE_SEQUENCE_PHASES,
 ) {
-  return phases.every((phase) => Number.isSafeInteger(sequence?.[phase]));
+  return hasRequiredPhases(phases) &&
+    phases.every((phase) => Number.isSafeInteger(sequence?.[phase]));
 }
 
 export function stateSequenceAntiReplayGap(
@@ -27,4 +28,9 @@ export function stateSequenceAntiReplayGap(
     sequence.post_clear === sequence.after_process_reentry
     ? false
     : true;
+}
+
+function hasRequiredPhases(phases) {
+  return Array.isArray(phases) &&
+    STATE_SEQUENCE_PHASES.every((phase) => phases.includes(phase));
 }

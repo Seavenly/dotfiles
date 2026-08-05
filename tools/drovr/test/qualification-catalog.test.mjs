@@ -98,6 +98,7 @@ test("qualification evidence and cleanup receipts have versioned required shapes
       catalog.contracts.qualification_evidence.required_fields.includes(field),
     ),
   );
+  assert.equal(CYCLE_EVIDENCE_REQUIRED_FIELDS.length, 11);
   assert.ok(
     catalog.contracts.qualification_evidence.required_fields.includes(
       "cleanup_receipt",
