@@ -8,8 +8,11 @@ import {
   bindingFromDoctorAndDescriptions,
   configurationDigestFromDescriptions,
   evaluateSoak,
+  interruptSoak,
   loadSoakPlan,
+  PROCESS_EXIT_GRACE_MS,
   runSoak,
+  runProcess,
   validateSoakPlanAgainstCatalog,
   validateSoakPlan,
 } from "../src/qualification-soak.mjs";
@@ -240,6 +243,24 @@ test("anti-replay validation requires a fresh clear transition", () => {
   assert.ok(decision.failures.some(({ code }) => code === "anti_replay_gap"));
 });
 
+test("anti-replay validation requires stable process re-entry", () => {
+  const cycles = passingCycles();
+  cycles[0] = cycle("codex", 1, ["staged_input_recovery", "cleanup"], {
+    state_sequence: {
+      before_staging: 1,
+      after_staging: 2,
+      after_clear: 3,
+      post_clear: 3,
+      after_process_reentry: 4,
+      anti_replay_gap: false,
+    },
+  });
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(decision.failures.some(({ code }) => code === "anti_replay_gap"));
+});
+
 test("incomplete state sequences remain explicitly unobserved", () => {
   const cycles = passingCycles();
   cycles[10].state_sequence = {
@@ -283,6 +304,17 @@ test("nested binding fields and invalid integration details fail closed", () => 
   });
   assert.equal(binding.integrations.claude, null);
   assert.equal(binding.integrations.codex, "herdr-codex/v6");
+});
+
+test("version bindings require version-bearing identities", () => {
+  const decision = evaluateSoak({
+    plan: PLAN,
+    binding: { ...BINDING, claude: "spawn claude ENOENT" },
+    cycles: passingCycles(),
+  });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(decision.failures.some(({ code }) => code === "binding_incomplete"));
 });
 
 test("follow-up work keeps harness-local cycle failures distinct", () => {
@@ -412,7 +444,52 @@ test("runSoak aggregates isolated cycle evidence into a durable promotion report
   assert.equal(report.decision.consecutive.codex.longest, 11);
   assert.equal(report.decision.consecutive.claude.longest, 4);
   assert.deepEqual(report.decision.coverage.missing, []);
+  assert.deepEqual(report.unattempted_cycles, []);
   assert.equal(JSON.parse(await readFile(report.report_path)).status, "promote");
+});
+
+test("runSoak records interruption and unattempted cycles durably", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-soak-interrupted-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const plan = await loadSoakPlan();
+  const catalog = await loadQualificationCatalog();
+  const binding = {
+    ...BINDING,
+    drovr_source: "drovr source sha256:implementation",
+    catalog_digest: digestCanonical(catalog),
+  };
+  const report = await runSoak({
+    plan,
+    catalog,
+    evidenceDirectory: scratch,
+    binding,
+    setupResult: { binding, invocations: [], verification: {} },
+    verification: {
+      deterministic: { status: "pass" },
+      fault_matrix: { status: "pass" },
+    },
+    cycleRunner: async (definition) => {
+      if (definition.harness === "codex" && definition.number === 3) {
+        interruptSoak();
+      }
+      return { status: "pass", evidence: fakeEvidence(definition, binding) };
+    },
+  });
+
+  assert.equal(report.status, "unqualified");
+  assert.equal(report.cycles.length, 3);
+  assert.equal(report.verification.interrupted.status, "fail");
+  assert.deepEqual(report.unattempted_cycles[0], {
+    harness: "codex",
+    number: 4,
+    scenario_id: "codex_soak_reusable_review_cycle",
+    status: "not_attempted",
+  });
+  assert.equal(report.cycles.length + report.unattempted_cycles.length, 15);
+  assert.deepEqual(
+    JSON.parse(await readFile(report.report_path)).unattempted_cycles,
+    report.unattempted_cycles,
+  );
 });
 
 test("runSoak retains a failure artifact when a child evidence receipt is incomplete", async (t) => {
@@ -454,6 +531,25 @@ test("runSoak retains a failure artifact when a child evidence receipt is incomp
     JSON.parse(await readFile(failurePath)).schema,
     "drovr.qualification-cycle-failure/v1",
   );
+});
+
+test("runProcess force-terminates a child after the graceful window", async () => {
+  const terminationGraceMs = 50;
+  assert.ok(PROCESS_EXIT_GRACE_MS > 5_000);
+  const result = await runProcess(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      timeoutMs: 100,
+      terminationGraceMs,
+    },
+  );
+
+  assert.equal(result.timedOut, true);
+  assert.equal(result.signal, "SIGKILL");
+  assert.ok(result.elapsedMs >= terminationGraceMs - 10);
 });
 
 function fakeEvidence(definition, binding) {

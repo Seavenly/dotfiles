@@ -37,7 +37,11 @@ its evidence.
 The soak also runs the deterministic replay suite, the catalog-derived
 `--full-live` conformance suite, and the fault matrix at the same source
 commit. Exit status `0` means `promote`; status `4` means the durable report
-is `unqualified`; status `5` means the soak could not produce a report.
+is `unqualified`; status `5` means the soak could not produce a report; status
+`130` means an operator interrupted the soak. An interrupted run retains its
+partial report when possible and records `verification.interrupted` plus
+`unattempted_cycles` so truncation is not mistaken for an ordinary failed
+cycle.
 
 Every scenario declares only public `drovr` commands, required preconditions,
 typed positive, negative, uncertain, and recovery outcomes, applicable safety

@@ -46,7 +46,9 @@ npm --silent --prefix tools/drovr run qualification:soak -- \
 The soak writes a durable report and per-cycle evidence under the supplied
 directory. It promotes only when the exact source, configuration, native
 integration, model, reasoning-effort, catalog, cleanup, and verification
-bindings are stable and every consecutive-cycle requirement passes.
+bindings are stable and every consecutive-cycle requirement passes. An
+operator interruption exits with status `130`; the partial report is retained
+when possible and identifies interrupted verification and unattempted cycles.
 
 After convergence, diagnose the local runtime:
 

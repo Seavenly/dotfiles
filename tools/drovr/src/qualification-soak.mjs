@@ -10,7 +10,14 @@ import {
   loadQualificationCatalog,
   validateQualificationCatalog,
 } from "./qualification-catalog.mjs";
+import {
+  CYCLE_EVIDENCE_REQUIRED_FIELDS,
+} from "./qualification-contracts.mjs";
 import { PUBLIC_QUALIFICATION_POLICY } from "./qualification-policy.mjs";
+import {
+  STATE_SEQUENCE_PHASES,
+  stateSequenceAntiReplayGap,
+} from "./qualification-state-sequence.mjs";
 
 export const SOAK_SCHEMA = "drovr.qualification-soak-plan/v1";
 export const SOAK_DECISION_SCHEMA = "drovr.qualification-soak-decision/v1";
@@ -29,7 +36,7 @@ const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const execFileAsync = promisify(execFileCallback);
 const PROCESS_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024;
 const CLEANUP_LIMIT_MS = 65_000;
-const PROCESS_EXIT_GRACE_MS = CLEANUP_LIMIT_MS + 5_000;
+export const PROCESS_EXIT_GRACE_MS = CLEANUP_LIMIT_MS + 5_000;
 const activeProcesses = new Set();
 const terminatingProcesses = new Map();
 let soakInterruptionRequested = false;
@@ -171,6 +178,11 @@ export function validateSoakPlanAgainstCatalog(plan, catalog) {
       plan.required_state_sequence_phases,
       "required_state_sequence_phases",
     );
+    requireCondition(
+      JSON.stringify(plan.required_state_sequence_phases) ===
+        JSON.stringify(STATE_SEQUENCE_PHASES),
+      "required_state_sequence_phases must match the state-sequence contract",
+    );
   }
   return {
     scenario_count: plannedScenarioIds.size,
@@ -250,12 +262,6 @@ export async function runSoak({
     ...(setup.verification ?? {}),
     ...(verification ?? {}),
   };
-  if (soakInterruptionRequested) {
-    allVerification.interrupted ??= {
-      status: "fail",
-      message: "The soak was interrupted before all qualification cycles completed.",
-    };
-  }
   const definitions = buildCycleDefinitions(plan, catalog);
   const runCycle = cycleRunner ?? runQualificationCycle;
   const cycles = [];
@@ -319,6 +325,21 @@ export async function runSoak({
     cycles.push(summary);
   }
 
+  const unattemptedCycles = soakInterruptionRequested
+    ? definitions.slice(cycles.length).map((definition) => ({
+        harness: definition.harness,
+        number: definition.number,
+        scenario_id: definition.scenarioId,
+        status: "not_attempted",
+      }))
+    : [];
+  if (soakInterruptionRequested) {
+    allVerification.interrupted ??= {
+      status: "fail",
+      message: "The soak was interrupted before all qualification cycles completed.",
+    };
+  }
+
   const decision = evaluateSoak({
     plan,
     binding,
@@ -348,6 +369,7 @@ export async function runSoak({
     },
     verification: allVerification,
     cycles,
+    unattempted_cycles: unattemptedCycles,
     decision,
     started_at: startedAt,
     finished_at: finishedAt,
@@ -675,19 +697,9 @@ async function readCycleEvidence(execution) {
 }
 
 function validateCycleEvidence(evidence, definition, catalog, catalogDigest) {
-  const required = [
-    "schema",
-    "catalog_version",
-    "catalog_digest",
-    "scenario_id",
-    "versions",
-    "limits",
-    "invocations",
-    "assertions",
-    "result",
-    "cleanup_receipt",
-    "execution_policy",
-  ];
+  const required = catalog.contracts.qualification_evidence.required_fields.filter(
+    (field) => CYCLE_EVIDENCE_REQUIRED_FIELDS.includes(field),
+  );
   if (
     !isRecord(evidence) ||
     required.some((field) => !Object.hasOwn(evidence, field))
@@ -909,7 +921,11 @@ function verificationResult(processResult, command, report) {
   };
 }
 
-function runProcess(command, args, { cwd, env, timeoutMs }) {
+export function runProcess(
+  command,
+  args,
+  { cwd, env, timeoutMs, terminationGraceMs = PROCESS_EXIT_GRACE_MS },
+) {
   return new Promise((resolveResult) => {
     const child = spawn(command, args, {
       cwd,
@@ -952,12 +968,12 @@ function runProcess(command, args, { cwd, env, timeoutMs }) {
     child.on("close", (exitCode, signal) => finish(exitCode, signal));
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
-      terminateProcess(child);
+      terminateProcess(child, terminationGraceMs);
     }, timeoutMs);
   });
 }
 
-function terminateProcess(child) {
+function terminateProcess(child, graceMs = PROCESS_EXIT_GRACE_MS) {
   if (terminatingProcesses.has(child)) return;
   try {
     child.kill("SIGTERM");
@@ -971,7 +987,7 @@ function terminateProcess(child) {
     } catch {
       // The child may have exited after the graceful termination request.
     }
-  }, PROCESS_EXIT_GRACE_MS);
+  }, graceMs);
   terminatingProcesses.set(child, killTimer);
 }
 
@@ -1069,7 +1085,12 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
     }
 
     const sequence = cycle?.state_sequence;
-    const sequenceAntiReplayGap = stateSequenceAntiReplayGap(sequence);
+    const requiredStateSequencePhases =
+      plan.required_state_sequence_phases ?? STATE_SEQUENCE_PHASES;
+    const sequenceAntiReplayGap = stateSequenceAntiReplayGap(
+      sequence,
+      requiredStateSequencePhases,
+    );
     const recordAntiReplayGap = () => {
       addFailure(
         "anti_replay_gap",
@@ -1391,6 +1412,9 @@ function requiredBindingFailures(fields, binding) {
       if (field === "catalog_version") {
         return !Number.isSafeInteger(value) || value <= 0;
       }
+      if (["herdr", "claude", "codex"].includes(field)) {
+        return versionBindingMissing(value);
+      }
       if (["integrations", "models", "reasoning_effort"].includes(field)) {
         return !isRecord(value) || HARNESS_NAMES.some(
           (harness) => bindingValueMissing(value[harness]),
@@ -1402,6 +1426,11 @@ function requiredBindingFailures(fields, binding) {
       code: "binding_incomplete",
       message: `Soak binding is missing ${field}.`,
     }));
+}
+
+function versionBindingMissing(value) {
+  return typeof value !== "string" ||
+    !/\b\d+\.\d+(?:\.\d+)?\b/u.test(value.trim());
 }
 
 function bindingValueMissing(value) {
@@ -1450,26 +1479,6 @@ function followUpWork(failures) {
 
 function sameValue(left, right) {
   return digestCanonical(left) === digestCanonical(right);
-}
-
-function stateSequenceAntiReplayGap(sequence) {
-  const phases = [
-    "before_staging",
-    "after_staging",
-    "after_clear",
-    "post_clear",
-    "after_process_reentry",
-  ];
-  if (!phases.every((phase) => Number.isSafeInteger(sequence?.[phase]))) {
-    return "unobserved";
-  }
-  const values = phases.map((phase) => sequence[phase]);
-  const monotonic = values.every(
-    (value, index) => index === 0 || value >= values[index - 1],
-  );
-  return monotonic && sequence.after_clear > sequence.after_staging
-    ? false
-    : true;
 }
 
 function failure(cycle, code, message, harness = null) {

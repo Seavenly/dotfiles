@@ -1,5 +1,9 @@
 import { readFile } from "node:fs/promises";
 
+import {
+  QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
+} from "./qualification-contracts.mjs";
+
 const CATALOG_URL = new URL("../qualification/catalog.v1.json", import.meta.url);
 
 const OUTCOME_KINDS = ["positive", "negative", "uncertain", "recovery"];
@@ -39,6 +43,11 @@ export function validateQualificationCatalog(catalog) {
     catalog.contracts?.qualification_evidence,
     "drovr.qualification-evidence/v1",
     "contracts.qualification_evidence",
+  );
+  requireCondition(
+    JSON.stringify(catalog.contracts.qualification_evidence.required_fields) ===
+      JSON.stringify(QUALIFICATION_EVIDENCE_REQUIRED_FIELDS),
+    "contracts.qualification_evidence.required_fields must match the runner contract",
   );
   requireNonEmptyStrings(
     catalog.execution_policy?.live_default_configuration,

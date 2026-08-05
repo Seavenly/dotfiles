@@ -28,8 +28,16 @@ import {
   loadQualificationCatalog,
   validateQualificationCatalog,
 } from "./qualification-catalog.mjs";
+import {
+  QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
+} from "./qualification-contracts.mjs";
 import { runTraceFixture } from "./qualification-replay.mjs";
 import { loadTraceFixture } from "./qualification-traces.mjs";
+import {
+  STATE_SEQUENCE_PHASES,
+  stateSequenceAntiReplayGap,
+  stateSequenceComplete,
+} from "./qualification-state-sequence.mjs";
 import {
   traceFromJournal,
   traceJournalFailurePath,
@@ -42,13 +50,6 @@ const PROCESS_EXIT_GRACE_MS = 5_000;
 const CLEANUP_LIMIT_MS = 65_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
-const stateSequencePhases = [
-  "before_staging",
-  "after_staging",
-  "after_clear",
-  "post_clear",
-  "after_process_reentry",
-];
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -283,6 +284,7 @@ async function runScenarioPrerequisites({
       result,
       traceJournalPath,
       scenario,
+      catalog,
     });
   }
   const runnerFailure = executionFailure([
@@ -385,7 +387,10 @@ async function runScenarioPrerequisites({
     evidenceDirectory,
     `${scenario.id}-${startedAt.replaceAll(":", "-")}.json`,
   );
-  validateQualificationEvidence(evidence);
+  validateQualificationEvidence(
+    evidence,
+    catalog.contracts.qualification_evidence.required_fields,
+  );
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,
   });
@@ -418,6 +423,7 @@ async function runScenarioPrerequisites({
       result: failureResult,
       traceJournalPath,
       scenario,
+      catalog,
     });
   }
 }
@@ -595,6 +601,7 @@ async function runDeterministicReplayScenario({
     scenario.id,
     startedAt,
     evidence,
+    catalog.contracts.qualification_evidence.required_fields,
   );
   return {
     id: scenario.id,
@@ -603,12 +610,20 @@ async function runDeterministicReplayScenario({
   };
 }
 
-async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
+async function attachCapturedTrace({
+  result,
+  traceJournalPath,
+  scenario,
+  catalog,
+}) {
   if (scenario.execution.kind !== "real_herdr_harness") {
     await removeTraceArtifacts(traceJournalPath);
     return result;
   }
   const captureRequired = result.result === "pass";
+  const requiredFields =
+    catalog?.contracts?.qualification_evidence?.required_fields ??
+    QUALIFICATION_EVIDENCE_REQUIRED_FIELDS;
   const captureFailurePath = traceJournalFailurePath(traceJournalPath);
   const captureFailureRecorded = await fileExists(captureFailurePath);
   try {
@@ -633,7 +648,7 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
           "trace_capture_invalid",
           "A live qualification produced a trace journal that failed validation.",
         );
-        validateQualificationEvidence(failedEvidence);
+        validateQualificationEvidence(failedEvidence, requiredFields);
         await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
           mode: 0o600,
         });
@@ -645,7 +660,7 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
           "trace_capture_incomplete",
           "Trace capture failed before a complete journal could be persisted.",
         );
-        validateQualificationEvidence(failedEvidence);
+        validateQualificationEvidence(failedEvidence, requiredFields);
         await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
           mode: 0o600,
         });
@@ -657,7 +672,7 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
         "trace_capture_missing",
         "A successful live qualification produced no sanitized trace journal.",
       );
-      validateQualificationEvidence(failedEvidence);
+      validateQualificationEvidence(failedEvidence, requiredFields);
       await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
         mode: 0o600,
       });
@@ -670,7 +685,7 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
         "Trace capture reported a failure while persisting the live journal.",
         trace,
       );
-      validateQualificationEvidence(failedEvidence);
+      validateQualificationEvidence(failedEvidence, requiredFields);
       await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
         mode: 0o600,
       });
@@ -688,14 +703,14 @@ async function attachCapturedTrace({ result, traceJournalPath, scenario }) {
             : "A successful live qualification lacked request-bound semantic events.",
         trace,
       );
-      validateQualificationEvidence(failedEvidence);
+      validateQualificationEvidence(failedEvidence, requiredFields);
       await writeFile(result.evidence, `${JSON.stringify(failedEvidence, null, 2)}\n`, {
         mode: 0o600,
       });
       return { ...result, result: "fail" };
     }
     evidence.trace = trace;
-    validateQualificationEvidence(evidence);
+    validateQualificationEvidence(evidence, requiredFields);
     await writeFile(result.evidence, `${JSON.stringify(evidence, null, 2)}\n`, {
       mode: 0o600,
     });
@@ -1086,12 +1101,13 @@ async function runUnknownStagedInputScenario({
       afterProcessReentry ?? finalAgent,
     ),
   };
-  const stateSequenceComplete = stateSequencePhases.every(
-    (phase) => Number.isSafeInteger(stateSequence[phase]),
+  const stateSequenceIsComplete = stateSequenceComplete(
+    stateSequence,
+    STATE_SEQUENCE_PHASES,
   );
   const antiReplayGap = stateSequenceAntiReplayGap(stateSequence);
   const processReentryStable =
-    stateSequenceComplete &&
+    stateSequenceIsComplete &&
     stateSequence.post_clear === stateSequence.after_process_reentry;
   const sameAgentReuse =
     reuse?.execution.envelope?.result?.status === "completed" &&
@@ -1151,7 +1167,7 @@ async function runUnknownStagedInputScenario({
     exactUnknownStaged &&
     exactNativeSession &&
     exactLaunchConfiguration &&
-    stateSequenceComplete &&
+    stateSequenceIsComplete &&
     antiReplayGap === false &&
     processReentryStable &&
     stableClear &&
@@ -1235,7 +1251,7 @@ async function runUnknownStagedInputScenario({
       { kind: "positive", id: "exact_unknown_snapshot_inspected", disposition: exactUnknownStaged ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
       { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
-      { kind: "invariant", id: "state_change_seq_transition", disposition: stateSequenceComplete && antiReplayGap === false && processReentryStable ? "pass" : "fail" },
+      { kind: "invariant", id: "state_change_seq_transition", disposition: stateSequenceIsComplete && antiReplayGap === false && processReentryStable ? "pass" : "fail" },
       { kind: "positive", id: "clear_absent_for_stability_interval", disposition: stableClear ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_clear", disposition: sameAgentReuse ? "pass" : "fail" },
       { kind: "invariant", id: "non_submission_of_unknown_text", disposition: unknownTextSubmitted ? "fail" : "pass" },
@@ -1333,6 +1349,7 @@ async function runUnknownStagedInputScenario({
     scenario.id,
     startedAt,
     evidence,
+    catalog.contracts.qualification_evidence.required_fields,
   );
   return { id: scenario.id, result: disposition, evidence: evidencePath };
 }
@@ -1491,6 +1508,7 @@ async function recordScenarioFailure({
     scenario.id,
     startedAt,
     evidence,
+    catalog.contracts.qualification_evidence.required_fields,
   );
   return { id: scenario.id, result: "fail", evidence: evidencePath };
 }
@@ -1839,6 +1857,7 @@ async function runCodexLifecycleScenario({
     scenario.id,
     startedAt,
     evidence,
+    catalog.contracts.qualification_evidence.required_fields,
   );
   return { id: scenario.id, result: passed ? "pass" : "fail", evidence: evidencePath };
 }
@@ -2109,6 +2128,7 @@ async function runCodexPromptScenario({
     scenario.id,
     startedAt,
     evidence,
+    catalog.contracts.qualification_evidence.required_fields,
   );
   return { id: scenario.id, result: passed ? "pass" : "fail", evidence: evidencePath };
 }
@@ -2555,6 +2575,7 @@ async function runPromptFileScenario({
     scenario.id,
     startedAt,
     evidence,
+    catalog.contracts.qualification_evidence.required_fields,
   );
   return { id: scenario.id, result: disposition, evidence: evidencePath };
 }
@@ -2719,39 +2740,28 @@ function parseDuration(value) {
   return Number(match[1]) * { ms: 1, s: 1_000, m: 60_000 }[match[2]];
 }
 
-async function writeEvidence(directory, scenarioId, startedAt, evidence) {
+async function writeEvidence(
+  directory,
+  scenarioId,
+  startedAt,
+  evidence,
+  requiredFields = QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
+) {
   const evidencePath = join(
     directory,
     `${scenarioId}-${startedAt.replaceAll(":", "-")}.json`,
   );
-  validateQualificationEvidence(evidence);
+  validateQualificationEvidence(evidence, requiredFields);
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,
   });
   return evidencePath;
 }
 
-function validateQualificationEvidence(evidence) {
-  const required = [
-    "schema",
-    "catalog_version",
-    "catalog_digest",
-    "scenario_id",
-    "execution_kind",
-    "versions",
-    "environment",
-    "limits",
-    "live_run_justification",
-    "configuration_deviation_justification",
-    "invocations",
-    "observations",
-    "assertions",
-    "result",
-    "execution_policy",
-    "cleanup_receipt",
-    "started_at",
-    "finished_at",
-  ];
+function validateQualificationEvidence(
+  evidence,
+  required = QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
+) {
   if (
     evidence?.schema !== "drovr.qualification-evidence/v1" ||
     required.some((field) => !Object.hasOwn(evidence, field))
@@ -3117,19 +3127,6 @@ function stateChangeSeqFromExecution(observation) {
     result?.staged_input?.state_change_seq,
   ];
   return candidates.find((value) => Number.isSafeInteger(value)) ?? null;
-}
-
-function stateSequenceAntiReplayGap(sequence) {
-  if (!stateSequencePhases.every((phase) => Number.isSafeInteger(sequence?.[phase]))) {
-    return "unobserved";
-  }
-  const values = stateSequencePhases.map((phase) => sequence[phase]);
-  const monotonic = values.every(
-    (value, index) => index === 0 || value >= values[index - 1],
-  );
-  return monotonic && sequence.after_clear > sequence.after_staging
-    ? false
-    : true;
 }
 
 export function proveUnknownInputWasNotSubmitted({

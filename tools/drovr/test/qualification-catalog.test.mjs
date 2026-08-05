@@ -5,6 +5,10 @@ import {
   loadQualificationCatalog,
   validateQualificationCatalog,
 } from "../src/qualification-catalog.mjs";
+import {
+  CYCLE_EVIDENCE_REQUIRED_FIELDS,
+  QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
+} from "../src/qualification-contracts.mjs";
 import { loadTraceFixtures } from "../src/qualification-traces.mjs";
 
 test("the versioned qualification catalog is complete and runner-ready", async () => {
@@ -84,6 +88,15 @@ test("qualification evidence and cleanup receipts have versioned required shapes
   assert.equal(
     catalog.contracts.cleanup_receipt.schema,
     "drovr.qualification-cleanup-receipt/v1",
+  );
+  assert.deepEqual(
+    catalog.contracts.qualification_evidence.required_fields,
+    QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
+  );
+  assert.ok(
+    CYCLE_EVIDENCE_REQUIRED_FIELDS.every((field) =>
+      catalog.contracts.qualification_evidence.required_fields.includes(field),
+    ),
   );
   assert.ok(
     catalog.contracts.qualification_evidence.required_fields.includes(
