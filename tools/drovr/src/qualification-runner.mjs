@@ -2911,7 +2911,7 @@ async function executeDrovr(command, args, options) {
             ? invalidEnvelope(expectedCommand, message, "operator_interrupted")
             : timedOut || hardBound
               ? invalidEnvelope(expectedCommand, message, "process_timeout")
-              : parseEnvelope(output, message),
+              : parseEnvelope(output, message, expectedCommand),
       });
     };
     child.stdin.end(input);
@@ -2962,7 +2962,11 @@ function boundedDelay(milliseconds) {
   });
 }
 
-function parseEnvelope(stdout, failureMessage = "Drovr returned no result envelope") {
+function parseEnvelope(
+  stdout,
+  failureMessage = "Drovr returned no result envelope",
+  expectedCommand = "doctor",
+) {
   try {
     const envelope = JSON.parse(stdout);
     if (envelope?.schema !== "drovr.command/v1") {
@@ -2970,7 +2974,7 @@ function parseEnvelope(stdout, failureMessage = "Drovr returned no result envelo
     }
     return envelope;
   } catch (error) {
-    return invalidEnvelope("doctor", `${failureMessage}: ${error.message}`);
+    return invalidEnvelope(expectedCommand, `${failureMessage}: ${error.message}`);
   }
 }
 
