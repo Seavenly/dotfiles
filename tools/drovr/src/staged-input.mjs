@@ -179,6 +179,9 @@ export async function recoverAgentStagedInput(
             ...context,
             status: action === "submit" ? "submitted" : "cleared",
             staged_input: inspected.staged_input,
+            transition_token: Number.isSafeInteger(recovered.transition_token)
+              ? recovered.transition_token
+              : inspected.staged_input.transition_token ?? null,
             ...(turn ? { turn } : {}),
           };
         },
@@ -190,8 +193,20 @@ async function inspectContext(registryDirectory, context, harness, observed) {
   const stagedResult = observed?.snapshot
     ? observed
     : await harness.inspectStagedInput({ agent: context.agent });
+  const stateChangeSeq = Number.isSafeInteger(stagedResult?.transition_token)
+    ? stagedResult.transition_token
+    : Number.isSafeInteger(observed?.transition_token)
+      ? observed.transition_token
+      : null;
   const staged = stagedResult.snapshot;
-  if (!staged) return { ...context, status: "ready", observed };
+  if (!staged) {
+    return {
+      ...context,
+      status: "ready",
+      observed,
+      transition_token: stateChangeSeq,
+    };
+  }
   const turns = await readRecords(registryDirectory, "turns");
   const ownedTurn = turns.find(
     (turn) => ownedStagedTurn(turn, context.agent, staged),
@@ -227,6 +242,7 @@ async function inspectContext(registryDirectory, context, harness, observed) {
         ? ownedTurn?.staged_input.token ?? staged.token
         : null,
       ownership: ownedTurn ? "drovr" : "unknown",
+      transition_token: stateChangeSeq,
       ...(ownedTurn ? { turn_id: ownedTurn.id } : {}),
       actions,
       ...(stagedResult.reason ? { reason: stagedResult.reason } : {}),

@@ -63,10 +63,10 @@
     "unrelated_herdr_resource_preservation": "Before and after public inventories prove that resources outside the scenario-owned group remain unchanged."
   },
   "known_incidents": [
-    {"id":"codex_prompt_normalization","summary":"Prompt-file and stdin trailing newlines were recorded but not submitted, so every exact Codex correlation failed.","scenarios":["codex_prompt_file_trailing_newline","codex_live_prompt_sources_and_reuse"],"source_evidence":["Git commit 1e3e4665d4241419ad573d208077a20d845289bc"]},
+    {"id":"codex_prompt_normalization","summary":"Prompt-file and stdin trailing newlines were recorded but not submitted, so every exact Codex correlation failed.","scenarios":["codex_prompt_file_trailing_newline","codex_live_prompt_sources_and_reuse","codex_soak_reusable_review_cycle"],"source_evidence":["Git commit 1e3e4665d4241419ad573d208077a20d845289bc"]},
     {"id":"codex_startup_context","summary":"Codex wrote AGENTS.md and environment context before the first prompt and Drovr treated that startup material as foreign input.","scenarios":["codex_startup_context_before_prompt"],"source_evidence":["Git commit 1e3e4665d4241419ad573d208077a20d845289bc"]},
-    {"id":"claude_multiline_conversion","summary":"Claude converted multiline input into a staged paste but Drovr waited without submitting it.","scenarios":["claude_multiline_paste_conversion"],"source_evidence":["Git commit c4d92840ed5f47e3eadd58c669b8e5f53817424a"]},
-    {"id":"claude_long_paste_conversion","summary":"Claude converted a long single-line input into a staged attachment that required one guarded submit.","scenarios":["claude_long_single_line_paste_conversion"],"source_evidence":["Git commit a5371cdc0ec4060c38b0da36ab1ce6cdae228f4f"]},
+    {"id":"claude_multiline_conversion","summary":"Claude converted multiline input into a staged paste but Drovr waited without submitting it.","scenarios":["claude_multiline_paste_conversion","claude_soak_multiline_reuse"],"source_evidence":["Git commit c4d92840ed5f47e3eadd58c669b8e5f53817424a"]},
+    {"id":"claude_long_paste_conversion","summary":"Claude converted a long single-line input into a staged attachment that required one guarded submit.","scenarios":["claude_long_single_line_paste_conversion","claude_soak_long_reuse"],"source_evidence":["Git commit a5371cdc0ec4060c38b0da36ab1ce6cdae228f4f"]},
     {"id":"staged_prompt_submission","summary":"A failed Drovr delivery left owned staged input that had to resume the original uncertain turn, never create a replacement turn.","scenarios":["claude_owned_staged_input_submit"],"source_evidence":["Git commit 83860fcf24bd8c1a0e27856fd04149effe19246c"]},
     {"id":"claude_staged_prompt_concatenation","summary":"An older failed Claude staged prompt was concatenated with the next prompt, so only that exact known combination could recover a non-authoritative late result.","scenarios":["claude_failed_staged_prompt_concatenated_late_result"],"source_evidence":["Git commits 4bcfc02fc85cd1bc0c5cb33775747656ec210cf3 and 152ecec4e4ad02222e4371a4970ce623200112cd"]},
     {"id":"staged_prompt_clearing","summary":"Claude treated the old clear key as copy; exact staged input required the documented double-Escape gesture and same-session verification.","scenarios":["claude_unknown_staged_input_clear_and_reuse"],"source_evidence":["Git commit 82e7091cbee18596c215fa052a5ada7075ab1a0c"]},
@@ -104,6 +104,19 @@
       "prohibited_mutations": ["Do not steer or interrupt a mismatched native session, claim cancellation without settlement, mutate private state, or replace the agent."],
       "cleanup_obligations": ["Settle or retain typed uncertainty, then close only the scenario-owned group and preserve unrelated Herdr resources."],
       "evidence_requirements": ["Ordered steering, wait, cancellation and reuse envelopes, identity observations, exact versions, enforced limits, workspace fingerprint, and cleanup receipt."]
+    },
+    {
+      "id": "codex_soak_reusable_review_cycle",
+      "title": "Codex soak cycles complete correction and re-review on one agent",
+      "observed_failure": "A reusable review cycle could complete its first turn but lose exact identity or ordered follow-up input before the correction result settled.",
+      "execution": {"kind":"real_herdr_harness","unattended":false,"harnesses":["codex"],"rationale":"The promotion soak needs a bounded live cycle with an initial review, a newline-terminated prompt-file correction, and a final same-agent re-review after the qualification process has crossed command boundaries.","limits":{"max_turns":2,"max_retries":0,"max_elapsed":"4m"}},
+      "public_commands": ["drovr delegate --group <group> --task-key <task> --agent-key <agent> --cwd <workspace> --harness codex --prompt-file <initial-file>", "drovr ask <agent-id> <follow-up-sentinel>"],
+      "preconditions": ["Disposable real Codex agent using the tracked smallest configured model and lowest supported effort."],
+      "expected_outcomes": {"positive":[{"status":"completed","when":"The initial review and exact correction/re-review complete on one managed agent and native session."}],"negative":[{"status":"uncertain","when":"The follow-up cannot be bound to the original managed agent or native session."}],"uncertain":[{"status":"uncertain","when":"Either result or ordered input is not proven within the bound."}],"recovery":[{"status":"completed","when":"A later exact follow-up completes after the initial command process exits."}]},
+      "safety_invariants": ["exact_agent_identity","exact_native_session_identity","exact_launch_configuration","prompt_source_preservation","caller_owned_workspace_preservation","unrelated_herdr_resource_preservation"],
+      "prohibited_mutations": ["Do not edit prompt sources, native transcripts, registry records, or caller files; do not replace the managed agent or retry a hidden turn."],
+      "cleanup_obligations": ["Close only the scenario-owned group after both turns settle; retain exact evidence if cleanup is blocked."],
+      "evidence_requirements": ["Initial and follow-up turn counts, exact agent and native-session identity reuse, model and effort, prompt-source digest, command process boundaries, workspace preservation, and cleanup receipt."]
     },
     {
       "id": "codex_prompt_file_trailing_newline",
@@ -158,6 +171,32 @@
       "evidence_requirements": ["Public end-to-end completion with one logical input, exact prompt-source digest and sentinel result, exact agent and native-session identities, observed model and effort, limits, and cleanup receipt. Internal conversion and submit mechanics remain covered by the Claude adapter tests rather than private live-state inspection."]
     },
     {
+      "id": "claude_soak_multiline_reuse",
+      "title": "Claude multiline soak cycles reuse one managed agent",
+      "observed_failure": "A multiline Claude review could complete while a correction/re-review was sent to a different native session or hidden replacement agent.",
+      "execution": {"kind":"real_herdr_harness","unattended":false,"harnesses":["claude"],"rationale":"A live Claude editor is required to prove multiline paste conversion, while the soak adds an ordered same-agent follow-up through a separate public Drovr process.","limits":{"max_turns":2,"max_retries":0,"max_elapsed":"4m"}},
+      "public_commands": ["drovr delegate --group <group> --task-key <task> --agent-key <agent> --cwd <workspace> --harness claude --prompt-file <multiline-file>", "drovr ask <agent-id> <follow-up-sentinel>"],
+      "preconditions": ["Disposable real Claude agent using the smallest configured model and lowest supported effort; deterministic multiline sentinel prompt."],
+      "expected_outcomes": {"positive":[{"status":"completed","when":"The multiline initial result and same-agent follow-up complete with exact native-session identity."}],"negative":[{"status":"uncertain","when":"The visible paste or follow-up identity is not exact."}],"uncertain":[{"status":"uncertain","when":"Either result remains unresolved within the bounded interval."}],"recovery":[{"status":"completed","when":"The follow-up settles from durable public state after the initial command exits."}]},
+      "safety_invariants": ["exact_agent_identity","exact_native_session_identity","exact_launch_configuration","prompt_source_preservation","caller_owned_workspace_preservation","unrelated_herdr_resource_preservation"],
+      "prohibited_mutations": ["Do not submit pre-existing or partially matched text, replace the managed agent, edit registry or transcripts, or mutate caller files."],
+      "cleanup_obligations": ["Close only the scenario-owned group after both turns settle; retain exact evidence if cleanup is blocked."],
+      "evidence_requirements": ["Multiline prompt-source digest, two live turn results, same-agent and native-session identity proofs, model and effort, bounded turn count, and cleanup receipt."]
+    },
+    {
+      "id": "claude_soak_long_reuse",
+      "title": "Claude long-input soak cycles reuse one managed agent",
+      "observed_failure": "A long Claude paste could settle without proving that a later re-review used the same managed agent and native session.",
+      "execution": {"kind":"real_herdr_harness","unattended":false,"harnesses":["claude"],"rationale":"A real Claude editor is required to prove long-input attachment conversion, and the promotion soak must prove durable same-agent follow-up across public command processes.","limits":{"max_turns":2,"max_retries":0,"max_elapsed":"4m"}},
+      "public_commands": ["drovr delegate --group <group> --task-key <task> --agent-key <agent> --cwd <workspace> --harness claude --prompt-file <long-file>", "drovr ask <agent-id> <follow-up-sentinel>"],
+      "preconditions": ["Disposable real Claude agent using the smallest configured model and lowest supported effort; deterministic long single-line sentinel prompt."],
+      "expected_outcomes": {"positive":[{"status":"completed","when":"The long-input initial result and same-agent follow-up complete with exact native-session identity."}],"negative":[{"status":"uncertain","when":"The visible attachment or follow-up identity is not exact."}],"uncertain":[{"status":"uncertain","when":"Either result remains unresolved within the bounded interval."}],"recovery":[{"status":"completed","when":"The follow-up settles from durable public state after the initial command exits."}]},
+      "safety_invariants": ["exact_agent_identity","exact_native_session_identity","exact_launch_configuration","prompt_source_preservation","caller_owned_workspace_preservation","unrelated_herdr_resource_preservation"],
+      "prohibited_mutations": ["Do not submit pre-existing or partially matched text, replace the managed agent, edit registry or transcripts, or mutate caller files."],
+      "cleanup_obligations": ["Close only the scenario-owned group after both turns settle; retain exact evidence if cleanup is blocked."],
+      "evidence_requirements": ["Long prompt-source digest, two live turn results, same-agent and native-session identity proofs, model and effort, bounded turn count, and cleanup receipt."]
+    },
+    {
       "id": "claude_owned_staged_input_submit",
       "title": "Owned staged input resumes its original uncertain turn",
       "observed_failure": "Recovery risked submitting unknown text or creating replacement work instead of continuing the exact failed delivery.",
@@ -187,7 +226,7 @@
       "id": "claude_unknown_staged_input_clear_and_reuse",
       "title": "Unknown staged input clears stably before same-agent reuse",
       "observed_failure": "The prior key copied selected Claude paste input instead of clearing it, while a point-in-time empty prompt could be mistaken for success.",
-      "execution": {"kind":"real_herdr_harness","unattended":true,"harnesses":["claude"],"rationale":"The double-Escape gesture, stable absence interval, and reuse require the real native editor.","limits":{"max_turns":1,"max_retries":0,"max_elapsed":"4m","stability_interval":"30s"}},
+      "execution": {"kind":"real_herdr_harness","unattended":true,"harnesses":["claude"],"rationale":"The initial delegate result, double-Escape gesture, stable absence interval, and same-agent reuse require the real native editor.","limits":{"max_turns":2,"max_retries":0,"max_elapsed":"4m","stability_interval":"30s"}},
       "public_commands": ["drovr agent staged-input <agent-id> --stage-unknown-file <prompt-file>", "drovr agent staged-input <agent-id>", "drovr agent staged-input <agent-id> --clear-unknown <snapshot-token>", "drovr ask <agent-id> <sentinel-prompt>"],
       "preconditions": ["Completed Claude agent has exact inspected unknown staged text and explicit operator authorization for that token."],
       "expected_outcomes": {"positive":[{"status":"cleared","when":"Absence persists for the bounded stability interval and final exact-agent/session observation."}],"negative":[{"status":"recovery_blocked","when":"Token, text, agent, pane, or native session conflicts."}],"uncertain":[{"status":"clear_unstable","when":"Stable absence cannot be proven."}],"recovery":[{"status":"completed","when":"A later sentinel turn completes on the same managed agent and native session."}]},

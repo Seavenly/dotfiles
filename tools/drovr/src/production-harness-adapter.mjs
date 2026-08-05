@@ -772,6 +772,7 @@ export function createProductionSemanticHarness({
               outcome: "submitted",
               evidence: "present",
               identity: submitted.identity,
+              transition_token: submitted.transition_token,
               stability: { interval_ms: 0, observations: 1 },
               native,
             };
@@ -803,6 +804,7 @@ export function createProductionSemanticHarness({
                 interval_ms: wallClock() - started,
                 observations: observations.length,
               },
+              transition_token: observation.transition_token,
               contradiction: "staged_snapshot_reappeared",
             };
           }
@@ -816,6 +818,7 @@ export function createProductionSemanticHarness({
                 interval_ms: wallClock() - started,
                 observations: observations.length,
               },
+              transition_token: observation.transition_token,
               reason: "managed identity changed during staged-input clearing",
             };
           }
@@ -832,6 +835,7 @@ export function createProductionSemanticHarness({
                   interval_ms: elapsed,
                   observations: observations.length,
                 },
+                transition_token: finalObservation.transition_token,
               };
             }
             return {
@@ -843,6 +847,7 @@ export function createProductionSemanticHarness({
                 interval_ms: elapsed,
                 observations: observations.length,
               },
+              transition_token: finalObservation.transition_token,
               native,
             };
           }

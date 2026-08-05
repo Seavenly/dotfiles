@@ -11,6 +11,34 @@ Validate it deterministically with:
 npm --silent --prefix tools/drovr run qualification:validate
 ```
 
+The validator also checks the versioned promotion soak plan. Run the bounded
+live promotion soak with evidence outside the caller-owned workspace:
+
+```sh
+soak_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:soak -- \
+  --evidence-dir "$soak_evidence_dir"
+```
+
+The soak binds the exact source commit, Herdr and native integration versions,
+Claude Code and Codex versions, qualification models and effort, configuration
+watermark, and catalog digest before running ten Codex cycles, three consecutive
+Claude cycles, the bounded Codex lifecycle coverage cycle, and one explicitly
+justified extra Claude staged-input cycle. Each cycle is a fresh qualification
+process using isolated Drovr state, while the scenario itself proves same-agent
+and same-native-session reuse through public commands. The extra Claude cycle
+is accepted only with a named reason that Codex and deterministic replay cannot
+provide the native editor coverage.
+The report records every cycle, live turn/retry/elapsed measurements, cleanup
+receipt, verification-suite result, and a final `promote` or `unqualified`
+decision. A failed cycle resets that harness's consecutive streak and retains
+its evidence.
+
+The soak also runs the deterministic replay suite, the catalog-derived
+`--full-live` conformance suite, and the fault matrix at the same source
+commit. Exit status `0` means `promote`; status `4` means the durable report
+is `unqualified`; status `5` means the soak could not produce a report.
+
 Every scenario declares only public `drovr` commands, required preconditions,
 typed positive, negative, uncertain, and recovery outcomes, applicable safety
 invariants, cleanup obligations, and the evidence needed to distinguish a true
@@ -87,6 +115,13 @@ is issued. The transition-bound check is defense in depth; its anti-replay
 guarantee therefore depends on Herdr advancing this counter for the clear
 transition. Until a live clear qualification confirms that behavior, it must
 not be treated as the sole reappearance guard.
+
+The promotion soak's staged-input cycle records the transition sequence before
+staging, after staging, after the double-Escape clear, after qualified stable
+absence, and after a separate public Drovr process observes the same agent
+again. A missing or unchanged clear transition counter is an unqualified
+anti-replay gap. The soak does not manufacture a transient reappearance; the
+existing transient scenario remains an explicit incident-capture scenario.
 
 Exit status `0` means every selected scenario passed. Status `3` means
 prerequisites blocked execution, a replay executor was explicitly deferred, or

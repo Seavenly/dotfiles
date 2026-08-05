@@ -1,0 +1,96 @@
+{
+  "schema": "drovr.qualification-soak-plan/v1",
+  "version": 1,
+  "catalog_version": 1,
+  "minimum_consecutive_cycles": {
+    "codex": 10,
+    "claude": 3
+  },
+  "cycle_scenarios": {
+    "codex": [
+      "codex_soak_reusable_review_cycle"
+    ],
+    "claude": [
+      "claude_soak_multiline_reuse",
+      "claude_soak_long_reuse"
+    ]
+  },
+  "supporting_scenarios": [
+    "codex_live_lifecycle_recovery",
+    "claude_unknown_staged_input_clear_and_reuse"
+  ],
+  "supporting_scenario_reasons": {
+    "claude_unknown_staged_input_clear_and_reuse": "This extra Claude cycle is required because only Claude's native editor can prove the double-Escape clear, qualified staged-input absence, and post-clear reappearance path; Codex and deterministic replay cannot exercise that native editor behavior."
+  },
+  "scenario_coverage": {
+    "codex_soak_reusable_review_cycle": [
+      "multiline_or_long_input",
+      "follow_up_or_correction",
+      "cleanup"
+    ],
+    "codex_live_lifecycle_recovery": [
+      "steering_or_follow_up",
+      "cancellation_or_timeout",
+      "cleanup"
+    ],
+    "claude_soak_multiline_reuse": [
+      "multiline_or_long_input",
+      "follow_up_or_correction",
+      "cleanup"
+    ],
+    "claude_soak_long_reuse": [
+      "multiline_or_long_input",
+      "follow_up_or_correction",
+      "cleanup"
+    ],
+    "claude_unknown_staged_input_clear_and_reuse": [
+      "staged_input_recovery",
+      "follow_up_or_correction",
+      "cleanup"
+    ]
+  },
+  "required_coverage": [
+    "multiline_or_long_input",
+    "steering_or_follow_up",
+    "cancellation_or_timeout",
+    "staged_input_recovery",
+    "cleanup"
+  ],
+  "required_state_sequence_phases": [
+    "before_staging",
+    "after_staging",
+    "after_clear",
+    "post_clear",
+    "after_process_restart"
+  ],
+  "required_assertion_groups": [
+    [
+      "same_managed_agent_across_turns",
+      "same_agent_reuse_after_initial",
+      "same_agent_reuse_after_clear",
+      "same_agent_reuse_after_recovery"
+    ],
+    [
+      "exact_native_session_identity"
+    ],
+    [
+      "caller_owned_workspace_preservation"
+    ],
+    [
+      "owned_group_closed"
+    ]
+  ],
+  "required_binding_fields": [
+    "drovr_commit",
+    "source_clean",
+    "herdr",
+    "integrations",
+    "claude",
+    "codex",
+    "models",
+    "reasoning_effort",
+    "configuration_digest",
+    "catalog_version",
+    "catalog_digest"
+  ]
+}

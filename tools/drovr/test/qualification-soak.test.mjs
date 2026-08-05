@@ -1,0 +1,422 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+  evaluateSoak,
+  loadSoakPlan,
+  runSoak,
+  validateSoakPlanAgainstCatalog,
+  validateSoakPlan,
+} from "../src/qualification-soak.mjs";
+import { loadQualificationCatalog } from "../src/qualification-catalog.mjs";
+import { digestCanonical } from "../src/canonical-json.mjs";
+import { PUBLIC_QUALIFICATION_POLICY } from "../src/qualification-policy.mjs";
+
+const PLAN = {
+  schema: "drovr.qualification-soak-plan/v1",
+  version: 1,
+  catalog_version: 1,
+  minimum_consecutive_cycles: {
+    codex: 10,
+    claude: 3,
+  },
+  cycle_scenarios: {
+    codex: ["codex_soak_reusable_review_cycle"],
+    claude: ["claude_soak_multiline_reuse"],
+  },
+  required_coverage: [
+    "multiline_or_long_input",
+    "steering_or_follow_up",
+    "cancellation_or_timeout",
+    "staged_input_recovery",
+    "cleanup",
+  ],
+  required_state_sequence_phases: [
+    "before_staging",
+    "after_staging",
+    "after_clear",
+    "post_clear",
+    "after_process_restart",
+  ],
+  required_assertion_groups: [
+    [
+      "same_managed_agent_across_turns",
+      "same_agent_reuse_after_initial",
+      "same_agent_reuse_after_clear",
+      "same_agent_reuse_after_recovery",
+    ],
+    ["exact_native_session_identity"],
+    ["caller_owned_workspace_preservation"],
+    ["owned_group_closed"],
+  ],
+  required_binding_fields: [
+    "drovr_commit",
+    "source_clean",
+    "herdr",
+    "integrations",
+    "claude",
+    "codex",
+    "models",
+    "reasoning_effort",
+    "configuration_digest",
+    "catalog_version",
+    "catalog_digest",
+  ],
+};
+
+const BINDING = {
+  drovr_commit: "commit-70",
+  source_clean: true,
+  herdr: "herdr 0.7.5",
+  integrations: { claude: "herdr-claude/v7", codex: "herdr-codex/v6" },
+  claude: "2.1.199 (Claude Code)",
+  codex: "codex-cli 0.145.0",
+  models: { claude: "haiku", codex: "gpt-5.6-luna" },
+  reasoning_effort: { claude: "low", codex: "low" },
+  configuration_digest: "sha256:configuration",
+  catalog_version: 1,
+  catalog_digest: "sha256:catalog",
+};
+
+const EXECUTION_POLICY = PUBLIC_QUALIFICATION_POLICY;
+
+function cycle(harness, number, coverage, overrides = {}) {
+  return {
+    harness,
+    number,
+    result: "pass",
+    coverage,
+    binding: BINDING,
+    assertions: [
+      { id: "same_agent_reuse_after_initial", disposition: "pass" },
+      { id: "exact_native_session_identity", disposition: "pass" },
+      { id: "caller_owned_workspace_preservation", disposition: "pass" },
+      { id: "owned_group_closed", disposition: "pass" },
+    ],
+    cleanup: {
+      status: "complete",
+      unresolved_obligations: [],
+    },
+    manual_repair: false,
+    execution_policy: EXECUTION_POLICY,
+    ...(harness === "claude"
+      ? { claude_reason: "The live Claude path proves editor-specific reuse." }
+      : {}),
+    ...overrides,
+  };
+}
+
+function passingCycles() {
+  return [
+    ...Array.from({ length: 10 }, (_, index) =>
+      cycle("codex", index + 1, [
+        "multiline_or_long_input",
+        "steering_or_follow_up",
+        "cancellation_or_timeout",
+        "cleanup",
+      ]),
+    ),
+    ...Array.from({ length: 3 }, (_, index) =>
+      cycle("claude", index + 1, ["staged_input_recovery", "cleanup"], {
+        state_sequence: {
+          before_staging: 1,
+          after_staging: 2,
+          after_clear: 3,
+          post_clear: 3,
+          after_process_restart: 3,
+          anti_replay_gap: false,
+        },
+      }),
+    ),
+  ];
+}
+
+test("soak decision promotes only a fully bound 10/3 consecutive run", () => {
+  validateSoakPlan(PLAN);
+  const decision = evaluateSoak({
+    plan: PLAN,
+    binding: BINDING,
+    cycles: passingCycles(),
+  });
+
+  assert.equal(decision.decision, "promote");
+  assert.equal(decision.consecutive.codex.longest, 10);
+  assert.equal(decision.consecutive.claude.longest, 3);
+  assert.deepEqual(decision.coverage.missing, []);
+  assert.deepEqual(decision.residual_limitations, []);
+});
+
+test("a failed cycle resets the consecutive count and remains in the decision evidence", () => {
+  const cycles = passingCycles();
+  cycles[4] = cycle("codex", 5, ["cleanup"], {
+    result: "fail",
+    assertions: [
+      { id: "same_agent_reuse_after_initial", disposition: "fail" },
+    ],
+    failure: { code: "turn_uncertain" },
+  });
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.equal(decision.consecutive.codex.longest, 5);
+  assert.ok(
+    decision.failures.some(
+      ({ cycle: cycleNumber, message }) =>
+        cycleNumber === 5 && /cycle|consecutive/u.test(message),
+    ),
+  );
+});
+
+test("staged-input anti-replay gaps and binding drift fail closed", () => {
+  const cycles = passingCycles();
+  cycles[0] = cycle("codex", 1, [
+    "multiline_or_long_input",
+    "steering_or_follow_up",
+    "cancellation_or_timeout",
+    "cleanup",
+  ], {
+    state_sequence: {
+      before_staging: 4,
+      after_staging: 4,
+      after_clear: 4,
+      post_clear: 4,
+      after_process_restart: 4,
+      anti_replay_gap: true,
+    },
+  });
+  cycles[1].binding = { ...BINDING, herdr: "herdr 0.7.6" };
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(decision.failures.some(({ code }) => code === "anti_replay_gap"));
+  assert.ok(decision.failures.some(({ code }) => code === "binding_drift"));
+});
+
+test("manual repair and private mutation policy violations fail closed", () => {
+  const cycles = passingCycles();
+  cycles[0].execution_policy = {
+    ...EXECUTION_POLICY,
+    transcript_surgery: true,
+  };
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "unqualified");
+  assert.ok(
+    decision.failures.some(({ code }) => code === "execution_policy_not_proven"),
+  );
+});
+
+test("an extra Claude cycle needs a named coverage reason", () => {
+  const withoutReason = evaluateSoak({
+    plan: PLAN,
+    binding: BINDING,
+    cycles: [
+      ...passingCycles(),
+      cycle("claude", 4, ["staged_input_recovery"]),
+    ],
+  });
+  assert.equal(withoutReason.decision, "unqualified");
+  assert.ok(
+    withoutReason.failures.some(
+      ({ code }) => code === "claude_extra_cycle_reason_missing",
+    ),
+  );
+
+  const withReason = evaluateSoak({
+    plan: PLAN,
+    binding: BINDING,
+    cycles: [
+      ...passingCycles(),
+      cycle("claude", 4, ["staged_input_recovery"], {
+        state_sequence: {
+          before_staging: 1,
+          after_staging: 2,
+          after_clear: 3,
+          post_clear: 3,
+          after_process_restart: 3,
+          anti_replay_gap: false,
+        },
+        additional_coverage_reason: "Recheck the live clear transition counter.",
+      }),
+    ],
+  });
+  assert.equal(withReason.decision, "promote");
+  assert.ok(
+    !withReason.failures.some(
+      ({ code }) => code === "claude_extra_cycle_reason_missing",
+    ),
+  );
+});
+
+test("runSoak aggregates isolated cycle evidence into a durable promotion report", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-soak-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const plan = await loadSoakPlan();
+  const catalog = await loadQualificationCatalog();
+  validateSoakPlanAgainstCatalog(plan, catalog);
+  const binding = {
+    ...BINDING,
+    drovr_source: "drovr source sha256:implementation",
+    catalog_digest: digestCanonical(catalog),
+  };
+  const definitions = [];
+  const report = await runSoak({
+    plan,
+    catalog,
+    evidenceDirectory: scratch,
+    binding,
+    setupResult: {
+      binding,
+      invocations: [],
+      verification: {},
+    },
+    verification: {
+      deterministic: { status: "pass" },
+      fault_matrix: { status: "pass" },
+    },
+    cycleRunner: async (definition) => {
+      definitions.push(definition);
+      return {
+        status: "pass",
+        evidence: fakeEvidence(definition, binding),
+      };
+    },
+  });
+
+  assert.equal(report.status, "promote", JSON.stringify(report.decision));
+  assert.equal(report.cycles.length, 15);
+  assert.equal(definitions.at(-2).scenarioId, "codex_live_lifecycle_recovery");
+  assert.equal(
+    definitions.at(-1).scenarioId,
+    "claude_unknown_staged_input_clear_and_reuse",
+  );
+  assert.match(
+    definitions.at(-1).additionalCoverageReason,
+    /Codex and deterministic replay cannot/u,
+  );
+  assert.equal(report.decision.consecutive.codex.longest, 11);
+  assert.equal(report.decision.consecutive.claude.longest, 4);
+  assert.deepEqual(report.decision.coverage.missing, []);
+  assert.equal(JSON.parse(await readFile(report.report_path)).status, "promote");
+});
+
+test("runSoak retains a failure artifact when a child evidence receipt is incomplete", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-soak-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const plan = await loadSoakPlan();
+  const catalog = await loadQualificationCatalog();
+  const binding = {
+    ...BINDING,
+    drovr_source: "drovr source sha256:implementation",
+    catalog_digest: digestCanonical(catalog),
+  };
+  const report = await runSoak({
+    plan,
+    catalog,
+    evidenceDirectory: scratch,
+    binding,
+    setupResult: { binding, invocations: [], verification: {} },
+    verification: {
+      deterministic: { status: "pass" },
+      fault_matrix: { status: "pass" },
+    },
+    cycleRunner: async (definition) => {
+      const evidence = fakeEvidence(definition, binding);
+      if (definition.harness === "codex" && definition.number === 1) {
+        delete evidence.cleanup_receipt;
+      }
+      return { status: "pass", evidence };
+    },
+  });
+
+  assert.equal(report.status, "unqualified");
+  assert.ok(
+    report.decision.failures.some(({ code }) => code === "cleanup_not_settled"),
+  );
+  const failurePath = report.cycles[0].evidence_path;
+  assert.match(failurePath, /cycle-failure\.json$/u);
+  assert.equal(
+    JSON.parse(await readFile(failurePath)).schema,
+    "drovr.qualification-cycle-failure/v1",
+  );
+});
+
+function fakeEvidence(definition, binding) {
+  const assertions = [
+    {
+      id: definition.scenarioId === "codex_live_lifecycle_recovery"
+        ? "same_agent_reuse_after_recovery"
+        : definition.scenarioId === "claude_unknown_staged_input_clear_and_reuse"
+          ? "same_agent_reuse_after_clear"
+          : "same_agent_reuse_after_initial",
+      disposition: "pass",
+    },
+    { id: "exact_native_session_identity", disposition: "pass" },
+    { id: "caller_owned_workspace_preservation", disposition: "pass" },
+    { id: "owned_group_closed", disposition: "pass" },
+  ];
+  return {
+    schema: "drovr.qualification-evidence/v1",
+    catalog_version: 1,
+    catalog_digest: binding.catalog_digest,
+    scenario_id: definition.scenarioId,
+    versions: {
+      drovr: binding.drovr_source,
+      herdr: binding.herdr,
+      integration: {
+        codex: "current (v6)",
+        claude: "current (v7)",
+      },
+      codex: binding.codex,
+      claude: binding.claude,
+      model: binding.models[definition.harness],
+      reasoning_effort: binding.reasoning_effort[definition.harness],
+    },
+    limits: { measured: { turns: 2, retries: 0, elapsed_ms: 10 } },
+    invocations: [],
+    live_run_justification: definition.harness === "claude"
+      ? "The live Claude editor path is required for this cycle."
+      : "The Codex live path provides primary soak coverage.",
+    assertions,
+    result: { disposition: "pass" },
+    execution_policy: {
+      interface: "public_drovr_cli",
+      manual_repair: false,
+      registry_surgery: false,
+      transcript_surgery: false,
+      agent_replacement: false,
+      raw_manual_keys: false,
+      hidden_retry: false,
+      caller_workspace_mutation: false,
+    },
+    cleanup_receipt: {
+      schema: "drovr.qualification-cleanup-receipt/v1",
+      scenario_id: definition.scenarioId,
+      owned_resources: [],
+      resource_dispositions: [],
+      prohibited_mutations_observed: [],
+      caller_owned_workspace: {
+        path: "/tmp/caller",
+        before: {},
+        after: {},
+      },
+      unresolved_obligations: [],
+      completed_at: "2026-08-05T00:00:00.000Z",
+    },
+    ...(definition.scenarioId === "claude_unknown_staged_input_clear_and_reuse"
+      ? {
+          state_sequence: {
+            before_staging: 1,
+            after_staging: 2,
+            after_clear: 3,
+            post_clear: 3,
+            after_process_restart: 3,
+            anti_replay_gap: false,
+          },
+        }
+      : {}),
+  };
+}

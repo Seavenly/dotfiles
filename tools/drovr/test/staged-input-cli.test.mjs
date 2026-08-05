@@ -278,6 +278,8 @@ esac
     inspected.result.staged_input.snapshot_token,
     bindStagedInputToken(snapshotToken, 13),
   );
+  assert.equal(inspected.result.state_change_seq, 13);
+  assert.equal(inspected.result.staged_input.state_change_seq, 13);
   const submitAction = inspected.result.staged_input.actions.find(
     ({ action }) => action === "submit",
   );
@@ -333,6 +335,7 @@ esac
 
   const unknown = await runDrovr(env, ["agent", "staged-input", agent.id]);
   assert.equal(unknown.result.staged_input.ownership, "unknown");
+  assert.equal(unknown.result.state_change_seq, 14);
   const mismatched = await runDrovr(env, [
     "agent",
     "staged-input",

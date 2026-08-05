@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { digestCanonical } from "./canonical-json.mjs";
+import { PUBLIC_QUALIFICATION_POLICY } from "./qualification-policy.mjs";
 import {
   COMPATIBILITY_FEATURES,
   COMPATIBILITY_SCHEMA,
@@ -45,16 +46,33 @@ const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
 let interruptionRequested = false;
+const correctionReviewPrompt = (expected) =>
+  `This is the ordered correction and re-review qualification sentinel.\nReview the correction on the same request, then reply exactly:\n${expected}\n`;
 const scenarioExecutors = new Map([
   ["codex_live_prompt_sources_and_reuse", runCodexPromptScenario],
   ["codex_live_lifecycle_recovery", runCodexLifecycleScenario],
+  ["codex_soak_reusable_review_cycle", runPromptFileScenario],
   ["claude_multiline_paste_conversion", runPromptFileScenario],
   ["claude_long_single_line_paste_conversion", runPromptFileScenario],
+  ["claude_soak_multiline_reuse", runPromptFileScenario],
+  ["claude_soak_long_reuse", runPromptFileScenario],
   ["claude_owned_staged_input_submit", runPromptFileScenario],
   ["claude_unknown_staged_input_clear_and_reuse", runUnknownStagedInputScenario],
   ["claude_staged_input_transient_clear_reappears", runUnknownStagedInputScenario],
 ]);
 const promptFileSpecifications = new Map([
+  [
+    "codex_soak_reusable_review_cycle",
+    {
+      harness: "codex",
+      expectedResponse: "QUALIFY-CODEX-SOAK-INITIAL-OK",
+      reuseResponse: "QUALIFY-CODEX-SOAK-REVIEW-OK",
+      reuseAfterCompletion: true,
+      reusePrompt: correctionReviewPrompt,
+      prompt: (expected) =>
+        `This is a qualification review sentinel.\nReply exactly:\n${expected}\n`,
+    },
+  ],
   [
     "claude_multiline_paste_conversion",
     {
@@ -81,6 +99,30 @@ const promptFileSpecifications = new Map([
       ownedRecovery: true,
       prompt: (expected) =>
         `This is a qualification sentinel.\nReply exactly:\n${expected}\n`,
+    },
+  ],
+  [
+    "claude_soak_multiline_reuse",
+    {
+      harness: "claude",
+      expectedResponse: "QUALIFY-CLAUDE-SOAK-MULTILINE-OK",
+      reuseResponse: "QUALIFY-CLAUDE-SOAK-REVIEW-OK",
+      reuseAfterCompletion: true,
+      reusePrompt: correctionReviewPrompt,
+      prompt: (expected) =>
+        `This is a qualification review sentinel.\nReply exactly:\n${expected}\n`,
+    },
+  ],
+  [
+    "claude_soak_long_reuse",
+    {
+      harness: "claude",
+      expectedResponse: "QUALIFY-CLAUDE-SOAK-LONG-OK",
+      reuseResponse: "QUALIFY-CLAUDE-SOAK-REVIEW-OK",
+      reuseAfterCompletion: true,
+      reusePrompt: correctionReviewPrompt,
+      prompt: (expected) =>
+        `Context marker: ${"x".repeat(2_400)}. Reply exactly: ${expected}\n`,
     },
   ],
 ]);
@@ -797,51 +839,53 @@ async function runUnknownStagedInputScenario({
     deadline,
   });
   const beforeGroups = await invoke(["group", "list"], "group list");
-  const taskOpen = await invoke(
+  const delegate = await invoke(
     [
-      "task",
-      "open",
+      "delegate",
       "--group",
       groupKey,
       "--group-label",
       `Qualification ${scenario.id}`,
-      "--key",
+      "--task-key",
       `task-${suffix}`,
+      "--agent-key",
+      `agent-${suffix}`,
       "--cwd",
       workspace,
+      "--harness",
+      "claude",
+      "--model",
+      launch.model,
+      "--effort",
+      launch.effort,
+      "--capability",
+      "read-only",
+      "--timeout",
+      "60s",
+      "Reply exactly: QUALIFY-CLAUDE-STAGED-INITIAL-OK",
     ],
-    "task open",
+    "delegate",
+    { timeoutMs: 65_000 },
   );
-  const taskId = taskOpen.execution.envelope?.result?.task?.id;
-  const groupId = taskOpen.execution.envelope?.result?.group?.id;
-  let agentStart;
-  if (typeof taskId === "string") {
-    agentStart = await invoke(
-      [
-        "agent",
-        "start",
-        taskId,
-        "--key",
-        `agent-${suffix}`,
-        "--harness",
-        "claude",
-        "--model",
-        launch.model,
-        "--effort",
-        launch.effort,
-        "--capability",
-        "read-only",
-      ],
-      "agent start",
-      { timeoutMs: 15_000 },
+  const initialResult = delegate.execution.envelope?.result;
+  let group = initialResult?.group;
+  if (!group?.id) {
+    const discovery = await invoke(["group", "list"], "group list");
+    group = discovery.execution.envelope?.result?.groups?.find(
+      (candidate) => candidate.key === groupKey,
     );
   }
-  const agentId = agentStart?.execution.envelope?.result?.agent?.id;
+  const taskId = initialResult?.task?.id;
+  const groupId = group?.id;
+  const agentId = initialResult?.agent?.id;
   let stagedDelivery;
   let beforeStage;
   let afterStage;
   let inspected;
   let cleared;
+  let postClearObservation;
+  let afterProcessRestart;
+  let beforeStageObservation;
   const stabilityObservations = [];
   let reuse;
   let beforeTurnList;
@@ -852,6 +896,10 @@ async function runUnknownStagedInputScenario({
     );
     beforeStage = await invoke(["agent", "get", agentId], "agent get");
     if (beforeStage.execution.envelope?.result?.status === "completed") {
+      beforeStageObservation = await invoke(
+        ["agent", "staged-input", agentId],
+        "agent staged-input",
+      );
       stagedDelivery = await invoke(
         [
           "agent",
@@ -863,11 +911,11 @@ async function runUnknownStagedInputScenario({
         "agent staged-input",
         { timeoutMs: 15_000 },
       );
-      afterStage = await invoke(["agent", "get", agentId], "agent get");
-      inspected = await invoke(
+      afterStage = await invoke(
         ["agent", "staged-input", agentId],
         "agent staged-input",
       );
+      inspected = afterStage;
     }
     const staged = inspected?.execution.envelope?.result?.staged_input;
     if (
@@ -911,17 +959,30 @@ async function runUnknownStagedInputScenario({
           ({ execution }) => execution.envelope?.result?.status === "ready",
         );
       if (stable) {
-        reuse = await invoke(
-          [
-            "ask",
-            agentId,
-            "--timeout",
-            "60s",
-            "Reply exactly: QUALIFY-CLAUDE-REUSE-OK",
-          ],
-          "ask",
-          { timeoutMs: 65_000 },
+        postClearObservation = await invoke(
+          ["agent", "staged-input", agentId],
+          "agent staged-input",
         );
+        afterProcessRestart = await invoke(
+          ["agent", "staged-input", agentId],
+          "agent staged-input",
+        );
+        if (
+          postClearObservation.execution.envelope?.result?.status === "ready" &&
+          afterProcessRestart.execution.envelope?.result?.status === "ready"
+        ) {
+          reuse = await invoke(
+            [
+              "ask",
+              agentId,
+              "--timeout",
+              "60s",
+              correctionReviewPrompt("QUALIFY-CLAUDE-REUSE-OK"),
+            ],
+            "ask",
+            { timeoutMs: 65_000 },
+          );
+        }
       }
     }
   }
@@ -972,15 +1033,24 @@ async function runUnknownStagedInputScenario({
   const clearContradiction = stabilityObservations.find(
     ({ execution: observation }) =>
       observation.envelope?.result?.status === "staged_input",
+  ) ?? (
+    postClearObservation?.execution.envelope?.result?.status === "staged_input"
+      ? postClearObservation
+      : afterProcessRestart?.execution.envelope?.result?.status === "staged_input"
+        ? afterProcessRestart
+        : null
   );
   const observedNativeSessions = nativeSessionValues([
-    agentStart,
+    delegate,
+    beforeStageObservation,
     beforeStage,
     stagedDelivery,
     afterStage,
     inspected,
     cleared,
     ...stabilityObservations,
+    postClearObservation,
+    afterProcessRestart,
     finalAgent,
   ]);
   const managedNativeSession = observedNativeSessions[0] ?? null;
@@ -990,10 +1060,29 @@ async function runUnknownStagedInputScenario({
     observedNativeSessions.length >= 3 &&
     observedNativeSessions.every((value) => value === managedNativeSession) &&
     (!reuse || finalNativeSession === managedNativeSession);
-  const observedModel = agentStart?.execution.envelope?.result?.agent?.model;
-  const observedEffort = agentStart?.execution.envelope?.result?.agent?.effort;
+  const observedModel = initialResult?.agent?.model;
+  const observedEffort = initialResult?.agent?.effort;
   const exactLaunchConfiguration =
     observedModel === launch.model && observedEffort === launch.effort;
+  const stateSequence = {
+    before_staging: stateChangeSeqFromExecution(beforeStageObservation),
+    after_staging: stateChangeSeqFromExecution(afterStage ?? stagedDelivery),
+    after_clear: stateChangeSeqFromExecution(
+      cleared ?? stabilityObservations[0],
+    ),
+    post_clear: stateChangeSeqFromExecution(
+      postClearObservation ?? stabilityObservations.at(-1),
+    ),
+    after_process_restart: stateChangeSeqFromExecution(
+      afterProcessRestart ?? finalAgent,
+    ),
+  };
+  const stateSequenceComplete = Object.values(stateSequence).every(
+    (value) => Number.isSafeInteger(value),
+  );
+  const antiReplayGap =
+    stateSequenceComplete &&
+    stateSequence.after_clear === stateSequence.before_staging;
   const sameAgentReuse =
     reuse?.execution.envelope?.result?.status === "completed" &&
     reuse.execution.envelope.result.agent?.id === agentId &&
@@ -1052,6 +1141,8 @@ async function runUnknownStagedInputScenario({
     exactUnknownStaged &&
     exactNativeSession &&
     exactLaunchConfiguration &&
+    stateSequenceComplete &&
+    !antiReplayGap &&
     stableClear &&
     sameAgentReuse &&
     !unknownTextSubmitted &&
@@ -1079,6 +1170,9 @@ async function runUnknownStagedInputScenario({
     ...(groupId ? [{ kind: "group", identity: groupId }] : []),
     ...(taskId ? [{ kind: "task", identity: taskId }] : []),
     ...(agentId ? [{ kind: "agent", identity: agentId }] : []),
+    ...(initialResult?.turn?.id
+      ? [{ kind: "turn", identity: initialResult.turn.id }]
+      : []),
     ...(reuse?.execution.envelope?.result?.turn?.id
       ? [
           {
@@ -1114,7 +1208,9 @@ async function runUnknownStagedInputScenario({
     limits: {
       declared: scenario.execution.limits,
       measured: {
-        turns: reuse ? 1 : 0,
+        turns:
+          (initialResult?.turn ? 1 : 0) +
+          (reuse?.execution.envelope?.result?.turn ? 1 : 0),
         retries: 0,
         elapsed_ms: deadline.scenarioElapsedMs(),
       },
@@ -1128,6 +1224,7 @@ async function runUnknownStagedInputScenario({
       { kind: "positive", id: "exact_unknown_snapshot_inspected", disposition: exactUnknownStaged ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
       { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
+      { kind: "invariant", id: "state_change_seq_transition", disposition: stateSequenceComplete && !antiReplayGap ? "pass" : "fail" },
       { kind: "positive", id: "clear_absent_for_stability_interval", disposition: stableClear ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_clear", disposition: sameAgentReuse ? "pass" : "fail" },
       { kind: "invariant", id: "non_submission_of_unknown_text", disposition: unknownTextSubmitted ? "fail" : "pass" },
@@ -1149,8 +1246,10 @@ async function runUnknownStagedInputScenario({
           ? "The exact unknown staged-input snapshot reappeared during the bounded stability interval."
           : preconditionBlocked
           ? "The disposable Claude agent did not expose an exact native-session identity."
-          : passed
+            : passed
             ? "Unknown staged input stayed absent for the full interval and the same agent was reused."
+            : antiReplayGap
+            ? "Herdr did not advance state_change_seq across the clear transition; the cycle remains unqualified."
             : "Staging, stable clearing, no-submission, reuse, or cleanup evidence was incomplete."),
         ...(clearContradiction
           ? {
@@ -1207,6 +1306,13 @@ async function runUnknownStagedInputScenario({
           ],
       completed_at: finishedAt,
     },
+    state_sequence: {
+      ...stateSequence,
+      anti_replay_gap: antiReplayGap,
+      post_clear_reappeared: Boolean(clearContradiction),
+      process_reentry: "the prior Drovr CLI process exited and a new public Drovr process observed the same Herdr session; the Herdr/native process was not restarted",
+    },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     started_at: startedAt,
     finished_at: finishedAt,
   };
@@ -1951,6 +2057,7 @@ async function runCodexPromptScenario({
           : "The Codex multi-turn scenario or one of its safety assertions failed."),
       },
     },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     cleanup_receipt: {
       schema: "drovr.qualification-cleanup-receipt/v1",
       scenario_id: scenario.id,
@@ -2017,6 +2124,7 @@ async function runPromptFileScenario({
   const specification = promptFileSpecifications.get(scenario.id);
   if (!specification) throw new Error(`missing prompt-file specification: ${scenario.id}`);
   const isOwnedRecovery = specification.ownedRecovery === true;
+  const reuseAfterCompletion = specification.reuseAfterCompletion === true;
   const harness = specification.harness;
   const launch = qualificationLaunch(doctorExecution.envelope, harness);
   const model = launch.model;
@@ -2093,6 +2201,33 @@ async function runPromptFileScenario({
   let initialAgent = typeof directAgentId === "string"
     ? await invoke(["agent", "get", directAgentId], "agent get")
     : null;
+  const result = delegate.execution.envelope?.result;
+  const directCompleted =
+    delegate.execution.exitCode === 0 &&
+    delegate.execution.envelope.ok === true &&
+    result?.status === "completed" &&
+    result?.turn?.input_count === 1 &&
+    result?.turn?.result?.text?.trim() === expectedResponse &&
+    result?.agent?.harness === harness &&
+    result?.agent?.model === model &&
+    result?.agent?.effort === launch.effort;
+  let reuse;
+  if (reuseAfterCompletion && directCompleted && typeof directAgentId === "string") {
+    const reusePrompt = typeof specification.reusePrompt === "function"
+      ? specification.reusePrompt(specification.reuseResponse)
+      : correctionReviewPrompt(specification.reuseResponse);
+    reuse = await invoke(
+      [
+        "ask",
+        directAgentId,
+        "--timeout",
+        `${behaviorTimeoutMs}ms`,
+        reusePrompt,
+      ],
+      "ask",
+      { timeoutMs: behaviorTimeoutMs + 5_000 },
+    );
+  }
   let recoveredTask;
   let recoveredAgent;
   let recoveredTurn;
@@ -2184,7 +2319,7 @@ async function runPromptFileScenario({
   const promptSourceAfter = await fileFingerprint(promptPath);
   const promptSourceUnchanged =
     JSON.stringify(promptSourceBefore) === JSON.stringify(promptSourceAfter);
-  const result = delegate.execution.envelope?.result;
+  const reuseResult = reuse?.execution.envelope?.result;
   const projectedTurn = ownedProjection?.execution.envelope?.result?.turn;
   const ownedRecovered =
     ownedInspection?.execution.envelope?.result?.status === "staged_input" &&
@@ -2205,15 +2340,6 @@ async function runPromptFileScenario({
   const unrelatedResourcesUnchanged = unrelatedResources.unchanged;
   const callerWorkspaceUnchanged =
     JSON.stringify(beforeWorkspace) === JSON.stringify(afterWorkspace);
-  const directCompleted =
-    delegate.execution.exitCode === 0 &&
-    delegate.execution.envelope.ok === true &&
-    result?.status === "completed" &&
-    result?.turn?.input_count === 1 &&
-    result?.turn?.result?.text?.trim() === expectedResponse &&
-    result?.agent?.harness === harness &&
-    result?.agent?.model === model &&
-    result?.agent?.effort === launch.effort;
   const observedAgent =
     result?.agent ??
     finalAgent?.execution.envelope?.result?.agent ??
@@ -2222,6 +2348,13 @@ async function runPromptFileScenario({
   const observedEffort = observedAgent?.effort;
   const exactLaunchConfiguration =
     observedModel === model && observedEffort === launch.effort;
+  const sameAgentReuse =
+    !reuseAfterCompletion ||
+    (reuseResult?.status === "completed" &&
+      reuseResult.agent?.id === managedAgentId &&
+      reuseResult.agent?.native_session === managedNativeSession &&
+      reuseResult.turn?.input_count === 1 &&
+      reuseResult.turn?.result?.text?.trim() === specification.reuseResponse);
   const runnerFailure =
     executionFailure(invocationRecords) ??
     deadlineFailure(deadline) ??
@@ -2233,6 +2366,7 @@ async function runPromptFileScenario({
     exactLaunchConfiguration &&
     promptSourceUnchanged &&
     (isOwnedRecovery ? ownedRecovered : directCompleted) &&
+    sameAgentReuse &&
     cleanupComplete &&
     unrelatedResourcesUnchanged &&
     callerWorkspaceUnchanged;
@@ -2264,6 +2398,9 @@ async function runPromptFileScenario({
     ...(!result?.turn?.id && recoveredTurn?.id
       ? [{ kind: "turn", identity: recoveredTurn.id }]
       : []),
+    ...(reuseResult?.turn?.id
+      ? [{ kind: "turn", identity: reuseResult.turn.id }]
+      : []),
   ];
   const evidence = {
     schema: "drovr.qualification-evidence/v1",
@@ -2287,7 +2424,10 @@ async function runPromptFileScenario({
     limits: {
       declared: limits,
       measured: {
-        turns: result?.turn || recoveredTurn ? 1 : 0,
+        turns:
+          (result?.turn ? 1 : 0) +
+          (reuseResult?.turn ? 1 : 0) +
+          (!result?.turn && recoveredTurn ? 1 : 0),
         retries: 0,
         elapsed_ms: deadline.scenarioElapsedMs(),
       },
@@ -2320,6 +2460,9 @@ async function runPromptFileScenario({
       { kind: "invariant", id: "prompt_source_preservation", disposition: promptSourceUnchanged ? "pass" : "fail" },
       { kind: "invariant", id: "caller_owned_workspace_preservation", disposition: callerWorkspaceUnchanged ? "pass" : "fail" },
       { kind: "invariant", id: "unrelated_herdr_resource_preservation", disposition: unrelatedResourcesUnchanged ? "pass" : "fail" },
+      ...(reuseAfterCompletion
+        ? [{ kind: "recovery", id: "same_agent_reuse_after_initial", disposition: sameAgentReuse ? "pass" : "fail" }]
+        : []),
       { kind: "cleanup", id: "owned_group_closed", disposition: cleanupComplete ? "pass" : "fail" },
     ],
     result: {
@@ -2334,9 +2477,12 @@ async function runPromptFileScenario({
           ? "The failed Claude turn did not expose a recoverable exact owned staged-input snapshot."
           : passed
             ? "The live scenario completed and all safety and cleanup assertions passed."
-            : "One or more live scenario, safety, or cleanup assertions failed."),
+            : reuseAfterCompletion && !sameAgentReuse
+              ? "The initial result did not settle a same-agent correction/re-review turn."
+              : "One or more live scenario, safety, or cleanup assertions failed."),
       },
     },
+    execution_policy: PUBLIC_QUALIFICATION_POLICY,
     cleanup_receipt: {
       schema: "drovr.qualification-cleanup-receipt/v1",
       scenario_id: scenario.id,
@@ -2914,6 +3060,17 @@ export function nativeSessionValues(observations) {
         observation?.execution?.envelope?.result?.agent?.native_session,
     )
     .filter((value) => typeof value === "string" && value.length > 0);
+}
+
+function stateChangeSeqFromExecution(observation) {
+  const result = observation?.execution?.envelope?.result;
+  const candidates = [
+    result?.state_change_seq,
+    result?.agent?.state_change_seq,
+    result?.agent?.observation?.state_change_seq,
+    result?.staged_input?.state_change_seq,
+  ];
+  return candidates.find((value) => Number.isSafeInteger(value)) ?? null;
 }
 
 export function proveUnknownInputWasNotSubmitted({

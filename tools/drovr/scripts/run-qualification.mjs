@@ -12,6 +12,7 @@ function parseArguments(argv) {
   const scenarioIds = [];
   let evidenceDirectory;
   let fullLive = false;
+  let drovrCommand = "drovr";
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const value = argv[index + 1];
@@ -23,6 +24,9 @@ function parseArguments(argv) {
       index += 1;
     } else if (argument === "--full-live") {
       fullLive = true;
+    } else if (argument === "--drovr-command" && value) {
+      drovrCommand = value;
+      index += 1;
     } else {
       throw new QualificationUsageError(`unsupported or incomplete option: ${argument}`);
     }
@@ -39,6 +43,7 @@ function parseArguments(argv) {
     scenarioIds,
     fullLive,
     evidenceDirectory,
+    drovrCommand,
   };
 }
 

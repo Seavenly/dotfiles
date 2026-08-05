@@ -524,6 +524,11 @@ function parseCloseArguments(argv, command, identifier) {
 }
 
 function stagedInputCommandResult(context) {
+  const stateChangeSeq = Number.isSafeInteger(context.transition_token)
+    ? context.transition_token
+    : Number.isSafeInteger(context.staged_input?.transition_token)
+      ? context.staged_input.transition_token
+      : null;
   return {
     schema: "drovr.command/v1",
     command: "agent staged-input",
@@ -535,9 +540,16 @@ function stagedInputCommandResult(context) {
         key: context.agent.key,
         harness: context.agent.launch.harness,
         native_session: context.agent.native_session,
+        state_change_seq: stateChangeSeq,
       },
+      state_change_seq: stateChangeSeq,
       ...(context.staged_input
-        ? { staged_input: context.staged_input }
+        ? {
+            staged_input: {
+              ...context.staged_input,
+              state_change_seq: stateChangeSeq,
+            },
+          }
         : {}),
       ...(context.turn
         ? {

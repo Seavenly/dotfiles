@@ -33,6 +33,21 @@ npm --silent --prefix tools/drovr run qualification:run -- \
   --evidence-dir "$qualification_evidence_dir"
 ```
 
+Run the version-bound promotion soak (ten Codex cycles, three consecutive Claude
+cycles, an explicitly justified extra Claude staged-input cycle, staged-input
+transition checks, and the Codex lifecycle coverage cycle):
+
+```sh
+soak_evidence_dir=$(mktemp -d)
+npm --silent --prefix tools/drovr run qualification:soak -- \
+  --evidence-dir "$soak_evidence_dir"
+```
+
+The soak writes a durable report and per-cycle evidence under the supplied
+directory. It promotes only when the exact source, configuration, native
+integration, model, reasoning-effort, catalog, cleanup, and verification
+bindings are stable and every consecutive-cycle requirement passes.
+
 After convergence, diagnose the local runtime:
 
 ```sh

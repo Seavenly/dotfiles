@@ -232,6 +232,30 @@ scenario, including proof that prohibited mutations and caller-owned workspace
 changes did not occur.
 _Avoid_: Teardown log, cleanup success flag
 
+**Qualification soak**:
+A bounded, version-bound promotion run that evaluates consecutive live
+qualification cycles and required deterministic, live-conformance, and fault
+verification at one exact Drovr source commit.
+_Avoid_: Test batch, retry loop
+
+**Soak cycle**:
+One isolated live qualification scenario execution within a qualification
+soak, with exact managed-agent and native-session reuse, measurements, policy
+proof, and a qualification cleanup receipt.
+_Avoid_: Agent attempt, test case
+
+**Soak binding**:
+The exact Drovr commit, source cleanliness, Herdr and native integration
+versions, executable versions, model and reasoning configuration, configuration
+digest, and qualification-catalog identity required for one soak decision.
+_Avoid_: Environment snapshot, compatibility hint
+
+**Soak decision**:
+The immutable promote or unqualified result derived from every recorded soak
+cycle, required coverage, consecutive streak, verification result, binding,
+and residual limitation.
+_Avoid_: Promotion flag, test summary
+
 **Delegated agent port**:
 The non-authoritative Flow interface that requests an exact delegated-runtime
 description and independently checks it before plan preparation may bind it.
@@ -377,6 +401,9 @@ _Avoid_: Migration record, replacement run
   advertisement**, and **comparison keys**, without launching delegated work.
 - A **delegation group** contains **delegated tasks**; each delegated task owns
   **managed agents**, and each managed agent processes **logical turns**.
+- A **qualification soak** evaluates **soak cycles** against one **soak
+  binding**; its **soak decision** promotes only when the required streaks,
+  coverage, policy, cleanup, and verification evidence all pass.
 - A **tracker issue** may own one **flow run** without exposing its internal
   **flow cards** or **legacy Kanban cards**.
 - A **review candidate** becomes externally complete only through its
