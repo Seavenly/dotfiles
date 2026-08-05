@@ -2352,7 +2352,9 @@ async function runPromptFileScenario({
     !reuseAfterCompletion ||
     (reuseResult?.status === "completed" &&
       reuseResult.agent?.id === managedAgentId &&
-      reuseResult.agent?.native_session === managedNativeSession &&
+      (reuseResult.agent?.native_session ??
+        finalAgent?.execution.envelope?.result?.agent?.native_session) ===
+        managedNativeSession &&
       reuseResult.turn?.input_count === 1 &&
       reuseResult.turn?.result?.text?.trim() === specification.reuseResponse);
   const runnerFailure =

@@ -477,16 +477,14 @@ async function collectSoakSetup({
           : "description did not match the qualification launch"),
     };
   }
-  const configurationDigests = Object.values(descriptions)
-    .map((description) => description?.result?.watermark?.content_sha256)
-    .filter((value) => typeof value === "string");
+  const configurationWatermarks = configurationWatermarksFromDescriptions(descriptions);
+  const configurationDigests = Object.values(configurationWatermarks);
+  const configurationDigest = configurationDigestFromDescriptions(descriptions);
   verification.configuration_digest = {
-    status:
-      configurationDigests.length === HARNESS_NAMES.length &&
-      new Set(configurationDigests).size === 1
-        ? "pass"
-        : "fail",
+    status: configurationDigest === null ? "fail" : "pass",
     values: configurationDigests,
+    by_harness: configurationWatermarks,
+    digest: configurationDigest,
   };
   return {
     binding: bindingFromDoctorAndDescriptions({
@@ -1251,9 +1249,6 @@ export function bindingFromDoctorAndDescriptions({
     const match = String(detail).match(/current \((v\d+)\)/u);
     return match ? `herdr-${harness}/${match[1]}` : detail;
   };
-  const watermark = Object.values(descriptions)
-    .map((description) => description?.result?.watermark?.content_sha256)
-    .find((value) => typeof value === "string") ?? null;
   return {
     drovr_commit: drovrCommit ?? null,
     drovr_source: checks.get("drovr") ?? null,
@@ -1272,10 +1267,26 @@ export function bindingFromDoctorAndDescriptions({
       claude: doctor?.result?.qualification?.claude?.effort ?? null,
       codex: doctor?.result?.qualification?.codex?.effort ?? null,
     },
-    configuration_digest: watermark,
+    configuration_digest: configurationDigestFromDescriptions(descriptions),
     catalog_version: catalogVersion ?? null,
     catalog_digest: catalogDigest ?? null,
   };
+}
+
+export function configurationWatermarksFromDescriptions(descriptions = {}) {
+  return Object.fromEntries(
+    HARNESS_NAMES.map((harness) => [
+      harness,
+      descriptions[harness]?.result?.watermark?.content_sha256 ?? null,
+    ]),
+  );
+}
+
+export function configurationDigestFromDescriptions(descriptions = {}) {
+  const watermarks = configurationWatermarksFromDescriptions(descriptions);
+  return HARNESS_NAMES.every((harness) => typeof watermarks[harness] === "string")
+    ? digestCanonical(watermarks)
+    : null;
 }
 
 export function soakPlanPath() {

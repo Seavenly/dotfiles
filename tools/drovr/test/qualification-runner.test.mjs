@@ -192,7 +192,7 @@ exit 5
   assert.equal(delayedEvidence.cleanup_receipt.unresolved_obligations.length, 0);
 });
 
-test("a selected live prompt-file scenario runs with unique isolated resources and cleans them", async (t) => {
+test("a reusable live prompt-file scenario accepts identity from the final agent projection", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-live-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const fakeBin = join(scratch, "bin");
@@ -219,9 +219,12 @@ case "\${1:-} \${2:-}" in
       previous="$argument"
     done
     [[ -f "$prompt_file" ]]
-    [[ "$(cat "$prompt_file")" == $'This is a qualification sentinel.\\nReply exactly:\\nQUALIFY-CLAUDE-MULTILINE-OK' ]]
-    printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
-    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
+    grep -Fq 'QUALIFY-CLAUDE-SOAK-MULTILINE-OK' "$prompt_file"
+    printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
+    ;;
+  "ask agent-live-1")
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"ask","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low"},"turn":{"id":"turn-live-2","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-REVIEW-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "agent get")
     printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","native_session":"claude-session-1"}}}'
@@ -243,7 +246,7 @@ esac
     [
       runner,
       "--scenario",
-      "claude_multiline_paste_conversion",
+      "claude_soak_multiline_reuse",
       "--evidence-dir",
       evidenceDirectory,
     ],
@@ -267,14 +270,12 @@ esac
   assert.equal(evidence.versions.model, "haiku");
   assert.equal(evidence.versions.reasoning_effort, "low");
   assert.equal(evidence.environment.managed_session_identity, "claude-session-1");
-  assert.equal(evidence.limits.measured.turns, 1);
+  assert.equal(evidence.limits.measured.turns, 2);
   assert.equal(evidence.limits.measured.retries, 0);
-  assert.equal(evidence.invocations.length, 7);
+  assert.equal(evidence.invocations.length, 8);
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
   const catalog = await loadQualificationCatalog();
-  const scenario = catalog.scenarios.find(
-    ({ id }) => id === "claude_multiline_paste_conversion",
-  );
+  const scenario = catalog.scenarios.find(({ id }) => id === "claude_soak_multiline_reuse");
   const emittedAssertions = new Set(evidence.assertions.map(({ id }) => id));
   assert.ok(
     scenario.safety_invariants.every((id) => emittedAssertions.has(id)),
@@ -300,6 +301,7 @@ esac
       ["group", "list"],
       ["delegate", "--group"],
       ["agent", "get"],
+      ["ask", "agent-live-1"],
       ["agent", "get"],
       ["group", "close"],
       ["group", "list"],
@@ -308,7 +310,7 @@ esac
   assert.equal(new Set(invocations.map(({ state_home }) => state_home)).size, 1);
   assert.equal(new Set(invocations.map(({ runtime_dir }) => runtime_dir)).size, 1);
   const delegateArguments = invocations[2].argv;
-  assert.match(delegateArguments[2], /^qualification-claude_multiline_paste_conversion-/u);
+  assert.match(delegateArguments[2], /^qualification-claude_soak_multiline_reuse-/u);
   assert.equal(delegateArguments[delegateArguments.indexOf("--harness") + 1], "claude");
   assert.equal(delegateArguments[delegateArguments.indexOf("--model") + 1], "haiku");
   assert.equal(delegateArguments[delegateArguments.indexOf("--effort") + 1], "low");

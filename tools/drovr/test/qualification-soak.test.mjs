@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  bindingFromDoctorAndDescriptions,
+  configurationDigestFromDescriptions,
   evaluateSoak,
   loadSoakPlan,
   runSoak,
@@ -82,6 +84,26 @@ const BINDING = {
 };
 
 const EXECUTION_POLICY = PUBLIC_QUALIFICATION_POLICY;
+
+test("soak configuration binding preserves each harness watermark in one digest", () => {
+  const descriptions = {
+    codex: { result: { watermark: { content_sha256: "sha256:codex" } } },
+    claude: { result: { watermark: { content_sha256: "sha256:claude" } } },
+  };
+  const digest = configurationDigestFromDescriptions(descriptions);
+  assert.equal(
+    digest,
+    digestCanonical({ codex: "sha256:codex", claude: "sha256:claude" }),
+  );
+  assert.equal(
+    bindingFromDoctorAndDescriptions({ descriptions }).configuration_digest,
+    digest,
+  );
+  assert.equal(
+    configurationDigestFromDescriptions({ codex: descriptions.codex }),
+    null,
+  );
+});
 
 function cycle(harness, number, coverage, overrides = {}) {
   return {
