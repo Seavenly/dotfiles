@@ -117,11 +117,9 @@ test("managed runtime capture binds native session and foreground process identi
         return JSON.stringify({
           result: {
             process_info: {
-              environment: { PATH: "/managed/bin:/usr/bin" },
               foreground_processes: [{
                 pid: 42,
                 name: "codex",
-                environment: { PATH: "/managed/bin:/usr/bin" },
                 argv0: executablePath,
                 argv: [executablePath, "--sandbox", "read-only"],
                 cmdline: `${executablePath} --sandbox read-only`,
@@ -130,6 +128,9 @@ test("managed runtime capture binds native session and foreground process identi
             },
           },
         });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return "codex --sandbox PATH=/managed/bin:/usr/bin HOME=/workspace\n";
       }
       if (file === "lsof") return `p42\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {
@@ -201,11 +202,9 @@ test("managed runtime capture blocks a same-path executable replacement", async 
         return JSON.stringify({
           result: {
             process_info: {
-              environment: { PATH: "/managed/bin:/usr/bin" },
               foreground_processes: [{
                 pid: 42,
                 name: "codex",
-                environment: { PATH: "/managed/bin:/usr/bin" },
                 argv0: executablePath,
                 argv: [executablePath],
                 cmdline: executablePath,
@@ -214,6 +213,9 @@ test("managed runtime capture blocks a same-path executable replacement", async 
             },
           },
         });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return "codex --sandbox PATH=/managed/bin:/usr/bin HOME=/workspace\n";
       }
       if (file === "lsof") return `p42\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {
@@ -271,11 +273,9 @@ test("managed runtime capture blocks a foreground process with the wrong executa
         return JSON.stringify({
           result: {
             process_info: {
-              environment: { PATH: "/managed/bin:/usr/bin" },
               foreground_processes: [{
                 pid: 42,
                 name: "codex",
-                environment: { PATH: "/managed/bin:/usr/bin" },
                 argv0: "/opt/other/codex",
                 argv: ["/opt/other/codex", "--sandbox", "read-only"],
                 cmdline: "/opt/other/codex --sandbox read-only",
@@ -402,11 +402,9 @@ test("managed runtime observation blocks a changed managed PATH", async () => {
         return JSON.stringify({
           result: {
             process_info: {
-              environment: { PATH: "/changed/bin:/usr/bin" },
               foreground_processes: [{
                 pid: 42,
                 name: "codex",
-                environment: { PATH: "/changed/bin:/usr/bin" },
                 argv0: executablePath,
                 argv: [executablePath],
                 cmdline: executablePath,
@@ -415,6 +413,9 @@ test("managed runtime observation blocks a changed managed PATH", async () => {
             },
           },
         });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return "codex --sandbox PATH=/changed/bin:/usr/bin HOME=/workspace\n";
       }
       if (file === "lsof") return `p42\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 
 import { claudeAgentArguments } from "./claude.mjs";
 import { codexAgentArguments } from "./codex.mjs";
@@ -14,6 +14,10 @@ import { execute } from "./process.mjs";
 import {
   MANAGED_RUNTIME_OBSERVATION_FIELDS,
 } from "./managed-runtime-identity.mjs";
+import {
+  processEnvironmentPath,
+  processExecutablePath,
+} from "./process-identity.mjs";
 import {
   createStagedInputReceipt,
   stagedInputTextToken,
@@ -1249,40 +1253,6 @@ function executableName(value) {
     .toLowerCase();
 }
 
-async function processExecutablePath(candidate, expectedPaths, client) {
-  if (!Number.isSafeInteger(candidate.pid) || candidate.pid <= 0) return null;
-  try {
-    return await realpath(`/proc/${candidate.pid}/exe`)
-      .then((path) => expectedPaths.has(path) ? path : null);
-  } catch {
-    // macOS and restricted Linux environments do not expose /proc.
-  }
-  if (!client?.run) {
-    return null;
-  }
-  for (const args of [
-    ["ps", ["-p", String(candidate.pid), "-o", "comm="]],
-    ["ps", ["-p", String(candidate.pid), "-o", "command="]],
-    ["lsof", ["-p", String(candidate.pid), "-a", "-d", "txt", "-Fn"]],
-  ]) {
-    try {
-      const output = String(await client.run(args[0], args[1], { env: client.env }));
-      const candidatePath = args[0] === "lsof"
-        ? output
-            .split(/\r?\n/u)
-            .find((line) => line.startsWith("n"))
-            ?.slice(1)
-        : output.trim().split(/\s+/u)[0];
-      if (!candidatePath?.startsWith("/")) continue;
-      const resolved = await realpath(candidatePath).catch(() => candidatePath);
-      if (expectedPaths.has(resolved)) return resolved;
-    } catch {
-      // Try the next platform-specific process lookup shape.
-    }
-  }
-  return null;
-}
-
 async function managedPanePath(processInfo, process, client) {
   const foregroundProcesses = Array.isArray(processInfo?.foreground_processes)
     ? processInfo.foreground_processes
@@ -1307,36 +1277,6 @@ async function managedPanePath(processInfo, process, client) {
   );
   if (direct) return direct;
   return processEnvironmentPath(process.pid, client);
-}
-
-async function processEnvironmentPath(pid, client) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  try {
-    const environment = await readFile(`/proc/${pid}/environ`);
-    const entry = environment
-      .toString()
-      .split("\u0000")
-      .find((value) => value.startsWith("PATH="));
-    if (entry?.length > "PATH=".length) return entry.slice("PATH=".length);
-  } catch {
-    // macOS and restricted Linux environments do not expose /proc.
-  }
-  try {
-    const output = await client.run(
-      "ps",
-      ["eww", "-p", String(pid), "-o", "command="],
-      { env: client.env },
-    );
-    const matches = [
-      ...String(output).matchAll(
-        /(?:^|\s)PATH=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|$)/gu,
-      ),
-    ];
-    const path = matches.at(-1)?.[1]?.trim();
-    return path || null;
-  } catch {
-    return null;
-  }
 }
 
 async function currentManagedIntegration(harness, client) {

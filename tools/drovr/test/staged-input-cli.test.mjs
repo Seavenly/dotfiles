@@ -96,7 +96,7 @@ fi
 shift 2
 case "\${1:-} \${2:-}" in
   "pane process-info")
-  printf '{"result":{"process_info":{"shell_pid":10,"environment":{"PATH":"%s"},"foreground_processes":[{"pid":10,"name":"bash","argv0":"/bin/bash","argv":["/bin/bash"],"cmdline":"/bin/bash","cwd":"%s"},{"pid":42,"name":"claude","environment":{"PATH":"%s"},"argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$PATH" "$state" "$PATH" "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "${cwd}"
+  printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"bash","argv0":"/bin/bash","argv":["/bin/bash"],"cmdline":"/bin/bash","cwd":"%s"},{"pid":42,"name":"claude","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$state" "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "${cwd}"
     ;;
   "pane run")
     marker=$(printf '%s\\n' "\${4:-}" | sed -n 's/.*\\(DROVR_RUNTIME_ID_[0-9a-f]*\\).*/\\1/p')
@@ -180,6 +180,12 @@ printf 'p42\\nn%s\\n' "$(command -v claude)"
 `,
   );
   await chmod(fakeLsof, 0o755);
+  const fakePs = join(fakeBin, "ps");
+  await writeFile(
+    fakePs,
+    '#!/usr/bin/env bash\nif [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "claude --sandbox PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
+  );
+  await chmod(fakePs, 0o755);
   const env = {
     ...process.env,
     PATH: `${fakeBin}:${process.env.PATH}`,

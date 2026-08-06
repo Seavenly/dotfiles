@@ -826,6 +826,26 @@ test("binding enforcement rejects a missing same-harness identity regardless of 
   }
 });
 
+test("binding enforcement derives managed identity requirements by default", async () => {
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [{
+      status: "active",
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: "sha256:" + "c".repeat(64),
+      },
+    }],
+  }, { env: {} });
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
+  );
+});
+
 test("binding conflicts report projected shared identity digests", async () => {
   const firstIdentity = managedIdentity();
   const secondIdentity = managedIdentity({
