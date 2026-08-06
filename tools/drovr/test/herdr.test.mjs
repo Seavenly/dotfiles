@@ -281,221 +281,6 @@ test("Herdr waits preserve their caller-selected bound", async () => {
   ]);
 });
 
-function stagedClaudePromptFixture({ calls } = {}) {
-  let promptSent = false;
-  let enterSent = false;
-  const client = new HerdrClient({
-    session: "delegates",
-    delay: async () => {},
-    async run(_file, args) {
-      calls?.push(args);
-      if (args.includes("list")) {
-        return JSON.stringify({
-          result: {
-            agents: [
-              {
-                name: "managed-agent",
-                agent_status: enterSent ? "working" : "idle",
-                state_change_seq: enterSent ? 13 : 12,
-              },
-            ],
-          },
-        });
-      }
-      if (args.includes("read")) {
-        return promptSent ? "[Pasted text #1 +1 lines]" : "";
-      }
-      if (args.includes("prompt")) promptSent = true;
-      if (args.includes("send-keys")) enterSent = true;
-      return JSON.stringify({ result: {} });
-    },
-  });
-  return { client, enterSent: () => enterSent };
-}
-
-test("Claude prompt delivery submits a staged long single-line paste", async () => {
-  const fixture = stagedClaudePromptFixture();
-
-  await fixture.client.prompt("managed-agent", "x".repeat(1600), {
-    harness: "claude",
-    observedBeforeDelivery: {
-      agent_status: "idle",
-      state_change_seq: 12,
-    },
-  });
-
-  assert.equal(fixture.enterSent(), true);
-});
-
-test("Claude prompt delivery accepts a fast short completion without staged text", async () => {
-  let polls = 0;
-  let enterSent = false;
-  const client = new HerdrClient({
-    session: "delegates",
-    delay: async () => {},
-    async run(_file, args) {
-      if (args.includes("list")) {
-        polls += 1;
-        return JSON.stringify({
-          result: {
-            agents: [{
-              name: "managed-agent",
-              agent_status: "done",
-              state_change_seq: 13,
-            }],
-          },
-        });
-      }
-      if (args.includes("read")) return "";
-      if (args.includes("send-keys")) enterSent = true;
-      return JSON.stringify({ result: { status: "accepted" } });
-    },
-  });
-
-  await client.prompt("managed-agent", "Reply yes", {
-    harness: "claude",
-    observedBeforeDelivery: {
-      agent_status: "idle",
-      state_change_seq: 12,
-    },
-  });
-
-  assert.equal(polls, 2);
-  assert.equal(enterSent, false);
-});
-
-test("Claude prompt delivery submits literal text when it appears with completion", async () => {
-  const prompt = "Reply with the exact word: APPROVED.";
-  let promptSent = false;
-  let polls = 0;
-  let enterSent = false;
-  const client = new HerdrClient({
-    session: "delegates",
-    delay: async () => {},
-    async run(_file, args) {
-      if (args.includes("list")) {
-        polls += 1;
-        return JSON.stringify({
-          result: {
-            agents: [{
-              name: "managed-agent",
-              agent_status: enterSent
-                ? "working"
-                : polls >= 3
-                  ? "done"
-                  : "idle",
-              state_change_seq: enterSent ? 14 : polls >= 3 ? 13 : 12,
-            }],
-          },
-        });
-      }
-      if (args.includes("read")) {
-        return promptSent && polls >= 3
-          ? `────────\n❯ ${prompt}\n────────`
-          : "";
-      }
-      if (args.includes("prompt")) promptSent = true;
-      if (args.includes("send-keys")) enterSent = true;
-      return JSON.stringify({ result: { status: "accepted" } });
-    },
-  });
-
-  await client.prompt("managed-agent", prompt, {
-    harness: "claude",
-    observedBeforeDelivery: {
-      agent_status: "idle",
-      state_change_seq: 12,
-    },
-  });
-
-  assert.equal(enterSent, true);
-  assert.equal(polls, 5);
-});
-
-test("Claude prompt delivery rejects a staged long single-line paste without an attachment token", async () => {
-  const client = new HerdrClient({
-    session: "delegates",
-    delay: async () => {},
-    async run(_file, args) {
-      if (args.includes("list")) {
-        return JSON.stringify({
-          result: {
-            agents: [
-              {
-                name: "managed-agent",
-                agent_status: "idle",
-                state_change_seq: 12,
-              },
-            ],
-          },
-        });
-      }
-      if (args.includes("read")) return "";
-      return JSON.stringify({ result: {} });
-    },
-  });
-
-  await assert.rejects(
-    client.prompt("managed-agent", "x".repeat(1600), {
-      harness: "claude",
-      observedBeforeDelivery: {
-        agent_status: "idle",
-        agent_session: { value: "native-1" },
-        pane_id: "pane-1",
-        state_change_seq: 12,
-      },
-    }),
-    {
-      code: 4,
-      message: "Herdr did not expose Claude's staged attachment for managed-agent",
-      outcome: "adapter_failure",
-    },
-  );
-});
-
-test("Claude prompt delivery submits a visible literal staged prompt", async () => {
-  const prompt = "Review the completed implementation and report actionable findings only.";
-  let promptSent = false;
-  let enterSent = false;
-  const client = new HerdrClient({
-    session: "delegates",
-    delay: async () => {},
-    async run(_file, args) {
-      if (args.includes("list")) {
-        return JSON.stringify({
-          result: {
-            agents: [
-              {
-                name: "managed-agent",
-                agent_status: enterSent ? "working" : "idle",
-                state_change_seq: enterSent ? 13 : 12,
-              },
-            ],
-          },
-        });
-      }
-      if (args.includes("read")) {
-        return promptSent
-          ? "────────\n❯ Review the completed implementation\n  and report actionable findings only.\n────────"
-          : "────────\n❯\n────────";
-      }
-      if (args.includes("prompt")) promptSent = true;
-      if (args.includes("send-keys")) enterSent = true;
-      return JSON.stringify({ result: {} });
-    },
-  });
-
-  await client.prompt("managed-agent", prompt, {
-    harness: "claude",
-    observedBeforeDelivery: {
-      agent_status: "idle",
-      state_change_seq: 12,
-    },
-  });
-
-  assert.equal(enterSent, true);
-});
-
 test("Claude prompt delivery refuses to append over staged prompt text", async () => {
   let promptCalls = 0;
   const client = new HerdrClient({
@@ -852,7 +637,7 @@ test("Claude staged input recovery requires an exact native transition token", a
   assert.equal(sendKeys, 0);
 });
 
-test("Claude prompt delivery lets a long single-line literal convert before submitting", async () => {
+test("Claude prompt delivery falls back when native submission remains unobserved", async () => {
   const prompt = "x".repeat(1200);
   let delaySteps = 0;
   let promptSent = false;
@@ -895,10 +680,10 @@ test("Claude prompt delivery lets a long single-line literal convert before subm
   });
 
   assert.equal(enterSent, true);
-  assert.ok(delaySteps >= 3);
+  assert.equal(delaySteps, 100);
 });
 
-test("Claude long single-line delivery does not treat an early settled observation as submission", async () => {
+test("Claude long single-line delivery does not add a second submission", async () => {
   const prompt = "x".repeat(1600);
   let delaySteps = 0;
   let promptSent = false;
@@ -937,11 +722,11 @@ test("Claude long single-line delivery does not treat an early settled observati
     },
   });
 
-  assert.equal(enterSent, true);
-  assert.ok(delaySteps >= 2);
+  assert.equal(enterSent, false);
+  assert.equal(delaySteps, 0);
 });
 
-test("Claude long single-line delivery rejects after exhausted polls without an attachment", async () => {
+test("Claude long single-line delivery does not require Drovr-side attachment polling", async () => {
   const prompt = "x".repeat(1600);
   let enterSent = false;
   let delaySteps = 0;
@@ -968,18 +753,15 @@ test("Claude long single-line delivery rejects after exhausted polls without an 
     },
   });
 
-  await assert.rejects(
-    () => client.prompt("managed-agent", prompt, {
-      harness: "claude",
-      observedBeforeDelivery: {
-        agent_status: "idle",
-        state_change_seq: 12,
-      },
-    }),
-    /did not expose Claude's staged attachment/u,
-  );
+  await client.prompt("managed-agent", prompt, {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
   assert.equal(enterSent, false);
-  assert.equal(delaySteps, 100);
+  assert.equal(delaySteps, 0);
 });
 
 test("Claude prompt delivery does not send another Enter after work starts", async () => {
@@ -1002,6 +784,47 @@ test("Claude prompt delivery does not send another Enter after work starts", asy
         });
       }
       if (args.includes("read")) return "";
+      if (args.includes("send-keys")) extraEnters += 1;
+      return JSON.stringify({ result: {} });
+    },
+  });
+
+  await client.prompt("managed-agent", "first line\nsecond line", {
+    harness: "claude",
+    observedBeforeDelivery: {
+      agent_status: "idle",
+      state_change_seq: 12,
+    },
+  });
+
+  assert.equal(extraEnters, 0);
+});
+
+test("Claude prompt delivery trusts Herdr 0.8 native prompt submission", async () => {
+  let promptSent = false;
+  let extraEnters = 0;
+  let delaySteps = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {
+      delaySteps += 1;
+    },
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              agent_status: promptSent && delaySteps >= 12 ? "working" : "idle",
+              state_change_seq: promptSent && delaySteps >= 12 ? 13 : 12,
+            }],
+          },
+        });
+      }
+      if (args.includes("read")) {
+        return promptSent ? "[Pasted text #1 +1 lines]" : "";
+      }
+      if (args.includes("prompt")) promptSent = true;
       if (args.includes("send-keys")) extraEnters += 1;
       return JSON.stringify({ result: {} });
     },

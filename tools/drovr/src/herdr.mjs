@@ -16,11 +16,6 @@ import {
   traceRequest,
 } from "./trace.mjs";
 
-// A status-only fast-completion escape is safe only for short literal input;
-// longer single-line prompts must expose either their literal text or an
-// attachment token before Drovr sends the submit key.
-const CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH = 256;
-
 function parseJson(output, operation) {
   try {
     return JSON.parse(output);
@@ -594,68 +589,38 @@ export class HerdrClient {
       name,
       prompt,
     ]);
-    if (!guardsClaudeStagedSubmission) {
-      return result;
-    }
+    if (!guardsClaudeStagedSubmission) return result;
 
-    // Claude can turn multiline and long single-line bracketed pastes into an
-    // attachment token asynchronously. Herdr 0.7.5 can send the submit key
-    // before that conversion finishes, leaving the prompt staged while the
-    // agent remains idle. Use the visible pane only to wait through attachment
-    // conversion or confirm literal single-line staging, then send one guarded
-    // submit key. Native state and transcript correlation remain authoritative
-    // for progress and completion.
-    let attachmentReady = false;
-    let literalPromptReady = false;
-    let noAttachmentPolls = 0;
+    // Herdr 0.8 owns Claude's paste conversion and submission timing. Wait
+    // for that native submission before using the explicit Enter fallback
+    // required by older Herdr integrations. The grace period is deliberately
+    // longer than Herdr's delayed-submit window so Drovr cannot race its own
+    // submit gesture and leave the prompt staged after a successful turn.
+    let attachmentObserved = false;
     let stagedAfterDelivery;
     let observedAfterDelivery;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       observedAfterDelivery = await this.agentRecord(name);
-      if (promptSubmissionObserved(observedAfterDelivery)) {
+      if (
+        promptSubmissionObserved(observedAfterDelivery) ||
+        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
+      ) {
         return result;
       }
       const visibleAfterDelivery = await this.agentVisibleText(name);
-      attachmentReady = newClaudeAttachmentTokenObserved(
-        visibleBeforeDelivery,
-        visibleAfterDelivery,
-      );
-      literalPromptReady ||=
-        !prompt.includes("\n") &&
-        newClaudeLiteralPromptObserved(
+      attachmentObserved ||=
+        newClaudeAttachmentTokenObserved(
           visibleBeforeDelivery,
           visibleAfterDelivery,
-          prompt,
         );
-      if (literalPromptReady) {
-        const snapshot = claudePromptBoxSnapshot(visibleAfterDelivery);
-        if (snapshot?.display_text === prompt) {
-          stagedAfterDelivery = snapshot;
-        }
-      }
-      if (attachmentReady || literalPromptReady) break;
-      noAttachmentPolls += 1;
-      if (
-        noAttachmentPolls >= 2 &&
-        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
-        !prompt.includes("\n") &&
-        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
-      ) {
-        return result;
+      const staged = claudePromptBoxSnapshot(visibleAfterDelivery);
+      if (staged?.display_text === prompt) {
+        stagedAfterDelivery = staged;
+        attachmentObserved = true;
       }
       await this.delay(25);
     }
-    if (!attachmentReady && !literalPromptReady) {
-      // A short prompt can complete before the first post-delivery poll. A
-      // new done observation proves that the native agent transitioned, while
-      // the exact transcript remains completion authority.
-      if (
-        prompt.length <= CLAUDE_SHORT_LITERAL_PROMPT_MAX_LENGTH &&
-        !prompt.includes("\n") &&
-        promptCompletionObserved(observedBeforeDelivery, observedAfterDelivery)
-      ) {
-        return result;
-      }
+    if (!attachmentObserved) {
       throw new DrovrError(
         `Herdr did not expose Claude's staged attachment for ${name}`,
         { code: 4, outcome: "adapter_failure" },
@@ -943,30 +908,6 @@ function claudePromptBoxSnapshot(text) {
     token: stagedInputTextToken(displayText),
     display_text: displayText,
   };
-}
-
-function newClaudeLiteralPromptObserved(before, after, prompt) {
-  const compactBefore = compactTerminalText(before);
-  const compactAfter = compactTerminalText(after);
-  const compactPrompt = compactTerminalText(prompt);
-  if (compactPrompt.length === 0) return false;
-  const chunkLength = Math.min(32, compactPrompt.length);
-  const offsets = new Set([
-    0,
-    Math.max(0, Math.floor((compactPrompt.length - chunkLength) / 2)),
-    Math.max(0, compactPrompt.length - chunkLength),
-  ]);
-  for (const offset of offsets) {
-    const chunk = compactPrompt.slice(offset, offset + chunkLength);
-    if (compactAfter.includes(chunk) && !compactBefore.includes(chunk)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function compactTerminalText(text) {
-  return String(text).replace(/\s/gu, "");
 }
 
 function isTimeout(error) {

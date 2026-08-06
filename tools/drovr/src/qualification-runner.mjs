@@ -1598,7 +1598,7 @@ async function runCodexLifecycleScenario({
         "turn",
         "start",
         agentId,
-        "Wait for one follow-up input before replying.",
+        "Run a shell command that sleeps for 8 seconds. Do not send a final answer until it completes. Then reply exactly: QUALIFY-CODEX-LIFECYCLE-HOLD-OK",
       ],
       "turn start",
       { timeoutMs: 30_000 },

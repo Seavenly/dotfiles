@@ -540,7 +540,7 @@ case "\${1:-} \${2:-}" in
   "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","key":"agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only","native_session":"codex-session-cancel"}}}' ;;
   "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-cancel-1","native_session":"codex-session-cancel"}}}' ;;
   "turn start")
-    if [[ "$*" == *"Wait for one"* ]]; then turn_id=turn-steer-1
+    if [[ "$*" == *"QUALIFY-CODEX-LIFECYCLE-HOLD-OK"* ]]; then turn_id=turn-steer-1
     elif [[ "$*" == *"QUALIFY-CODEX-TIMEOUT"* ]]; then turn_id=turn-timeout-2
     else turn_id=turn-cancel-3; fi
     printf '{"schema":"drovr.command/v1","command":"turn start","ok":true,"result":{"status":"working","group":{"id":"group-cancel-1"},"task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","harness":"codex","model":"gpt-5.6-luna","effort":"low"},"turn":{"id":"%s","status":"working","input_count":1},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["cancel"]}}\n' "$turn_id"
@@ -577,7 +577,9 @@ esac
     evidence.assertions.find(({ id }) => id === "same_agent_reuse_after_recovery").disposition,
     "pass",
   );
-  assert.deepEqual((await readFile(invocationLog, "utf8")).trim().split("\n").map((line) => line.split(" ").slice(0, 2).join(" ")), [
+  const invocationLogText = await readFile(invocationLog, "utf8");
+  assert.match(invocationLogText, /sleeps for 8 seconds/u);
+  assert.deepEqual(invocationLogText.trim().split("\n").map((line) => line.split(" ").slice(0, 2).join(" ")), [
     "doctor",
     "group list",
     "task open",

@@ -148,7 +148,7 @@ case "\${1:-} \${2:-}" in
     ;;
   "agent prompt")
     [[ -f "$state/cleared" && \${3:-} == managed-agent && \${4:-} == follow-up ]]
-    touch "$state/asked"
+    touch "$state/follow-up-complete"
     printf '%s\\n' '{"type":"user","message":{"role":"user","content":"follow-up"}}' '{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Follow-up result"}]}}' >> ${JSON.stringify(transcript)}
     printf '{"result":{"status":"sent"}}\\n'
     ;;
