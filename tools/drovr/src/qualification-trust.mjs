@@ -354,8 +354,8 @@ export async function preflightQualificationTrust({
     try {
       executable = await resolveExecutable(NATIVE_COMMANDS[harness], env);
       observedVersion = await readVersion(executable, env);
-    } catch (error) {
-      executableError = errorMessage(error);
+    } catch {
+      executableError = "The native executable version could not be observed safely.";
     }
     const observation = classifyTrustObservation({
       harness,
@@ -502,8 +502,11 @@ async function observeWorkspace(workspace) {
         mode: metadata.mode,
       }),
     };
-  } catch (error) {
-    return { ...fallback, error: errorMessage(error) };
+  } catch {
+    return {
+      ...fallback,
+      error: "The qualification workspace could not be observed safely.",
+    };
   }
 }
 
@@ -588,8 +591,15 @@ function parseCodexTrust(content, workspacePath) {
       trust_level: null,
     };
   }
-  if (entry.headers !== 1 || entry.trustValues.length !== 1) {
+  if (entry.headers !== 1 || entry.trustValues.length > 1) {
     throw new Error(`conflicting Codex trust entries for ${workspacePath}`);
+  }
+  if (entry.trustValues.length === 0) {
+    return {
+      workspace_path: workspacePath,
+      entry: "missing",
+      trust_level: null,
+    };
   }
   return {
     workspace_path: workspacePath,
@@ -742,8 +752,4 @@ function integrationFacts(harness, detail) {
 
 function firstReason(observations) {
   return Object.values(observations).find(({ reason }) => reason)?.reason ?? null;
-}
-
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
 }

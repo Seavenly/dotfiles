@@ -13,7 +13,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -29,6 +29,7 @@ import {
   resourceDisposition,
   runQualification,
   selectScenarios,
+  validateQualificationEvidence,
   validateDrovrEnvelope,
   workspaceFingerprint,
 } from "../src/qualification-runner.mjs";
@@ -336,6 +337,28 @@ exit 5
   assert.equal(observedWorkspace, await realpath(workspace));
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
   assert.equal(evidence.environment.qualification_workspace, observedWorkspace);
+  assert.equal(
+    evidence.environment.qualification_workspace_lock,
+    join(observedWorkspace, ".drovr-qualification-lock"),
+  );
+  assert.equal(
+    evidence.cleanup_receipt.resource_dispositions.find(
+      ({ kind }) => kind === "qualification_workspace_lock",
+    ).disposition,
+    "absent",
+  );
+  assert.equal(
+    evidence.cleanup_receipt.qualification_workspace.before.path,
+    observedWorkspace,
+  );
+  assert.equal(
+    evidence.cleanup_receipt.qualification_workspace.after.path,
+    observedWorkspace,
+  );
+  await assert.rejects(
+    stat(join(observedWorkspace, ".drovr-qualification-lock")),
+    { code: "ENOENT" },
+  );
   assert.deepEqual(
     evidence.cleanup_receipt.resource_dispositions.find(
       ({ kind }) => kind === "dedicated_qualification_workspace",
@@ -347,6 +370,124 @@ exit 5
     },
   );
   assert.equal(await readFile(invocationLog, "utf8"), "doctor\n");
+});
+
+test("stale dedicated workspace locks produce a typed block without takeover", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-stale-lock-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  const workspace = join(scratch, "dedicated-workspace");
+  const lock = join(workspace, ".drovr-qualification-lock");
+  await Promise.all([mkdir(fakeBin), mkdir(workspace), mkdir(lock)]);
+  let stalePid = 999_999;
+  while (true) {
+    try {
+      process.kill(stalePid, 0);
+      stalePid += 1;
+    } catch (error) {
+      assert.equal(error.code, "ESRCH");
+      break;
+    }
+  }
+  await writeFile(
+    join(lock, "owner.json"),
+    JSON.stringify({
+      schema: "drovr.qualification-lock-owner/v1",
+      pid: stalePid,
+      hostname: hostname(),
+      run_id: "stale-test",
+      started_at: "2026-01-01T00:00:00.000Z",
+      boot_uptime_ms: 1,
+    }),
+  );
+  await executable(
+    join(fakeBin, "drovr"),
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:stale-lock"},{"id":"herdr","status":"pass","detail":"herdr 0.8.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+exit 5
+`,
+  );
+  let preflightCalls = 0;
+  const report = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
+    trustPreflight: async () => {
+      preflightCalls += 1;
+      throw new Error("stale lock must block before trust preflight");
+    },
+  });
+
+  assert.equal(preflightCalls, 0);
+  assert.equal(report.status, "blocked");
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+  assert.equal(
+    evidence.trust_preflight.reason.code,
+    "qualification_workspace_lock_stale",
+  );
+  assert.match(evidence.trust_preflight.reason.message, new RegExp(lock));
+  assert.equal(
+    (await stat(join(lock, "owner.json"))).isFile(),
+    true,
+  );
+});
+
+test("invalid or unavailable configured workspaces block before native trust preflight", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-workspace-setup-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  await mkdir(fakeBin);
+  await executable(
+    join(fakeBin, "drovr"),
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:workspace-setup"},{"id":"herdr","status":"pass","detail":"herdr 0.8.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+exit 5
+`,
+  );
+  const run = async (workspaceValue) => {
+    let preflightCalls = 0;
+    const evidenceDirectory = join(scratch, `evidence-${preflightCalls}-${Math.random()}`);
+    const report = await runQualification({
+      scenarioIds: ["claude_multiline_paste_conversion"],
+      evidenceDirectory,
+      drovrCommand: join(fakeBin, "drovr"),
+      cwd: scratch,
+      env: {
+        ...process.env,
+        DROVR_QUALIFICATION_WORKSPACE: workspaceValue,
+      },
+      trustPreflight: async () => {
+        preflightCalls += 1;
+        throw new Error("workspace setup must block before trust preflight");
+      },
+    });
+    return { report, evidence: JSON.parse(await readFile(report.scenarios[0].evidence, "utf8")), preflightCalls };
+  };
+
+  const relative = await run("relative/qualification-workspace");
+  assert.equal(relative.report.status, "blocked");
+  assert.equal(relative.preflightCalls, 0);
+  assert.equal(
+    relative.evidence.trust_preflight.reason.code,
+    "qualification_workspace_not_absolute",
+  );
+
+  const unavailable = join(scratch, "workspace-file");
+  await writeFile(unavailable, "not a directory");
+  const filePath = await run(unavailable);
+  assert.equal(filePath.report.status, "blocked");
+  assert.equal(filePath.preflightCalls, 0);
+  assert.equal(
+    filePath.evidence.trust_preflight.reason.code,
+    "qualification_workspace_unavailable",
+  );
 });
 
 test("concurrent runs fail closed instead of sharing a dedicated workspace", async (t) => {
@@ -567,6 +708,27 @@ exit 5
   );
   assert.equal(evidence.execution_kind, "deterministic_trace_replay");
   assert.equal(evidence.result.disposition, "pass");
+  assert.throws(
+    () =>
+      validateQualificationEvidence({
+        ...evidence,
+        execution_kind: "real_herdr_harness",
+      }),
+    /live qualification pass or fail evidence requires a trusted preflight/u,
+  );
+  assert.throws(
+    () =>
+      validateQualificationEvidence({
+        ...evidence,
+        execution_kind: "real_herdr_harness",
+        result: {
+          ...evidence.result,
+          disposition: "fail",
+          reason: { code: "scenario_assertion_failed" },
+        },
+      }),
+    /live qualification pass or fail evidence requires a trusted preflight/u,
+  );
   assert.equal(evidence.trace.schema, "drovr.harness-trace/v1");
   assert.equal(evidence.trace.scenario_id, "codex_startup_context_before_prompt");
   assert.equal(evidence.trace.provenance.herdr, "herdr 0.7.5");
@@ -631,6 +793,12 @@ case "\${1:-} \${2:-}" in
     done
     [[ -f "$prompt_file" ]]
     grep -Fq 'QUALIFY-CLAUDE-SOAK-MULTILINE-OK' "$prompt_file"
+    if [[ "\${QUALIFICATION_MUTATE_TRUST:-}" == true ]]; then
+      jq '(.projects | keys[0]) as $workspace | .projects[$workspace].hasTrustDialogAccepted = false' "$CLAUDE_CONFIG_DIR/.claude.json" > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
+    else
+      jq '.numStartups = ((.numStartups // 0) + 1)' "$CLAUDE_CONFIG_DIR/.claude.json" > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
+    fi
+    mv "$CLAUDE_CONFIG_DIR/.claude.json.tmp" "$CLAUDE_CONFIG_DIR/.claude.json"
     printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
     printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
@@ -665,29 +833,39 @@ esac
     }),
   );
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    [
-      runner,
-      "--scenario",
-      "claude_soak_multiline_reuse",
-      "--evidence-dir",
-      evidenceDirectory,
-      "--drovr-command",
-      join(fakeBin, "drovr"),
-    ],
-    {
-      encoding: "utf8",
-      cwd: join(scratch, "caller"),
-      env: {
-        ...process.env,
-        PATH: `${fakeBin}:${process.env.PATH}`,
-        CLAUDE_CONFIG_DIR: claudeConfigDir,
-        DROVR_QUALIFICATION_WORKSPACE: workspace,
-      },
-    },
-  );
-  const report = JSON.parse(stdout);
+  const runCli = async (targetEvidenceDirectory, extraEnv = {}) => {
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          runner,
+          "--scenario",
+          "claude_soak_multiline_reuse",
+          "--evidence-dir",
+          targetEvidenceDirectory,
+          "--drovr-command",
+          join(fakeBin, "drovr"),
+        ],
+        {
+          encoding: "utf8",
+          cwd: join(scratch, "caller"),
+          env: {
+            ...process.env,
+            PATH: `${fakeBin}:${process.env.PATH}`,
+            CLAUDE_CONFIG_DIR: claudeConfigDir,
+            DROVR_QUALIFICATION_WORKSPACE: workspace,
+            ...extraEnv,
+          },
+        },
+      );
+      return { report: JSON.parse(stdout), failure: null };
+    } catch (failure) {
+      return { report: JSON.parse(failure.stdout), failure };
+    }
+  };
+
+  const firstRun = await runCli(evidenceDirectory);
+  const report = firstRun.report;
   assert.equal(report.status, "pass");
   assert.equal(report.scenarios[0].result, "pass");
   const evidence = JSON.parse(
@@ -706,6 +884,10 @@ esac
   assert.equal(
     evidence.cleanup_receipt.native_trust_configuration_preservation.status,
     "unchanged",
+  );
+  assert.equal(
+    evidence.cleanup_receipt.native_trust_configuration_preservation.harnesses.claude.file_digest_changed,
+    true,
   );
   assert.equal(
     evidence.assertions.find(
@@ -754,6 +936,25 @@ esac
   assert.equal(delegateArguments[delegateArguments.indexOf("--harness") + 1], "claude");
   assert.equal(delegateArguments[delegateArguments.indexOf("--model") + 1], "haiku");
   assert.equal(delegateArguments[delegateArguments.indexOf("--effort") + 1], "low");
+
+  const mutatedEvidenceDirectory = join(scratch, "evidence-mutated-trust");
+  const mutatedRun = await runCli(mutatedEvidenceDirectory, {
+    QUALIFICATION_MUTATE_TRUST: "true",
+  });
+  assert.equal(mutatedRun.failure?.code, 4);
+  assert.equal(mutatedRun.report.status, "fail");
+  const mutatedEvidence = JSON.parse(
+    await readFile(mutatedRun.report.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(mutatedEvidence.result.disposition, "fail");
+  assert.equal(
+    mutatedEvidence.result.reason.code,
+    "native_trust_configuration_changed_after_preflight",
+  );
+  assert.equal(
+    mutatedEvidence.cleanup_receipt.native_trust_configuration_preservation.harnesses.claude.after.trust_level,
+    false,
+  );
 });
 
 test("the Codex primary prompt scenario reuses one agent across file and stdin turns", async (t) => {

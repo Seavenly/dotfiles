@@ -141,13 +141,31 @@ child workspace.
 The runner does not write either caller-owned configuration, start native work
 before the preflight passes, submit `Enter`, send raw keys, or retry around a
 trust prompt. Set `DROVR_QUALIFICATION_WORKSPACE` to one dedicated absolute
-workspace before arranging a live pass. The runner canonicalizes that path and
-takes an exclusive run lock, so concurrent runs cannot adopt or mutate one
-another's trust state. The dedicated workspace is retained between runs; its
-Drovr state and runtime directories remain isolated per run. If the variable
-is omitted, the runner uses a disposable workspace and the exact pre-existing
-trust entry cannot be arranged in advance, so the run fails closed as
-untrusted.
+workspace before arranging a live pass. Relative values are rejected. The
+runner canonicalizes that path and creates an exclusive lock at
+`<workspace>/.drovr-qualification-lock/owner.json`, so concurrent runs cannot
+adopt or mutate one another's trust state. The lock owner records only a run
+identity, process ID, host, start timestamp, and boot-relative uptime. A live
+owner produces a typed busy block; a dead local owner produces a typed stale
+lock block. The runner never takes over a stale or unverifiable lock
+automatically.
+
+If a process or host is killed, first verify that no qualification run is
+active, then remove only the exact reported lock directory and retry:
+
+```sh
+qualification_lock="$DROVR_QUALIFICATION_WORKSPACE/.drovr-qualification-lock"
+rm -rf -- "$qualification_lock"
+```
+
+The dedicated workspace is retained between runs; its Drovr state and runtime
+directories remain isolated per run. Evidence records before and after
+fingerprints for this retained workspace so an operator can decide when to
+reset it. To reset it, inspect the retained evidence, remove the dedicated
+workspace, recreate it, and re-add the exact native trust entries. If the
+variable is omitted, the runner uses a disposable workspace and the exact
+pre-existing trust entry cannot be arranged in advance, so the run fails
+closed as untrusted.
 
 For example, choose and create a dedicated path, then use that exact canonical
 path in both native trust controls and the runner environment:
@@ -162,8 +180,9 @@ with the same `DROVR_QUALIFICATION_WORKSPACE` value. Evidence records
 `trust_preflight.configuration.created: false`, the dedicated workspace lock
 and cleanup posture, and only configuration paths, digests, trust facts, and
 the exact workspace binding - never configuration contents. A post-run
-read-only digest check records whether native trust configuration was
-preserved.
+read-only check compares the exact trust entry and value; native session
+bookkeeping elsewhere in `.claude.json` or Codex configuration may change, and
+its whole-file digest is retained only as a forensic fact.
 
 A trusted exact entry allows the live scenario to start. A missing, false,
 changed, malformed, otherwise ambiguous, or concurrently claimed observation

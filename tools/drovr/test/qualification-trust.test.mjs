@@ -210,9 +210,9 @@ test("Codex trust parsing ends project scope at unrelated tables", async (t) => 
     path: sourcePath,
     workspacePath: targetWorkspace,
   });
-  assert.equal(source.status, "ambiguous");
-  assert.equal(source.entry, "unreadable");
-  assert.doesNotMatch(source.error, /trusted/u);
+  assert.equal(source.status, "present");
+  assert.equal(source.entry, "missing");
+  assert.equal(source.trust_level, null);
 });
 
 test("Claude malformed trust configuration does not leak parser input", async (t) => {
@@ -231,6 +231,38 @@ test("Claude malformed trust configuration does not leak parser input", async (t
   assert.equal(source.status, "ambiguous");
   assert.equal(source.entry, "unreadable");
   assert.doesNotMatch(source.error, /SUPERSECRET|sk-ant/u);
+});
+
+test("native executable probe errors do not leak child stderr into trust evidence", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-trust-probe-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const bin = join(scratch, "bin");
+  const workspacePath = join(scratch, "workspace");
+  await Promise.all([mkdir(bin), mkdir(workspacePath)]);
+  const secret = "SECRET-STDERR-from-private-config";
+  await writeFile(
+    join(bin, "codex"),
+    `#!/usr/bin/env bash\nprintf '%s\\n' '${secret}' >&2\nexit 7\n`,
+  );
+  await chmod(join(bin, "codex"), 0o755);
+
+  const result = await preflightQualificationTrust({
+    harnesses: ["codex"],
+    workspace: workspacePath,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    versions: {
+      codex: "codex-cli 0.142.5",
+      integration: { codex: "current (v7)" },
+    },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.harnesses.codex.status, "ambiguous");
+  assert.equal(
+    result.harnesses.codex.source.error,
+    "The native executable version could not be observed safely.",
+  );
+  assert.doesNotMatch(result.harnesses.codex.source.error, /SECRET-STDERR/u);
 });
 
 test("trust preflight readiness rejects fabricated or drifted bindings", async (t) => {

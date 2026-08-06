@@ -48,7 +48,8 @@
         "resource_dispositions": "Per-resource retained, retired, closed, absent, or cleanup-blocked disposition with public-command evidence.",
         "prohibited_mutations_observed": "Fail-closed assertions for the scenario's prohibited_mutations. unchanged is Boolean only when every clause was observed through the public interface; otherwise it is not_observed with the available evidence basis. Unknown prompt text may change only for the one exact snapshot explicitly authorized by --clear-unknown.",
         "caller_owned_workspace": "Canonical path identity plus before and after Git status and content fingerprint evidence.",
-        "native_trust_configuration_preservation": "Live-only read-only before and after native trust configuration status, path, digest, exact workspace entry, and trust value; never configuration contents.",
+        "qualification_workspace": "Live-only before and after fingerprint of the dedicated or temporary qualification workspace, with dedicated workspaces explicitly retained for operator-controlled reset.",
+        "native_trust_configuration_preservation": "Live-only read-only before and after native trust configuration status, path, digest, exact workspace entry, and trust value; the exact entry controls preservation while whole-file digests remain forensic facts; never configuration contents.",
         "unresolved_obligations": "Typed non-empty details when cleanup is blocked; otherwise an empty array.",
         "completed_at": "RFC 3339 UTC timestamp after final cleanup observation."
       }
