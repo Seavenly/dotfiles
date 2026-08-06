@@ -56,8 +56,12 @@ function trustedPreflight({ harnesses, workspace }) {
           status: "trusted",
           workspace: exactWorkspace,
           executable: { path: `/test/${harness}`, version: "test" },
-          integration: { id: `herdr-${harness}/vtest`, detail: "current (vtest)" },
-          source: { status: "present", path: `/test/${harness}-trust`, digest: "sha256:test" },
+          integration: { id: `herdr-${harness}/v7`, detail: "current (v7)" },
+          source: {
+            status: "present",
+            path: `/test/${harness}-trust`,
+            digest: "sha256:test",
+          },
           origin: "pre_existing",
           reason: null,
           action: null,
@@ -873,6 +877,7 @@ test("blocked unknown-input setup does not claim a prohibited mutation", async (
     `case "\${1:-} \${2:-}" in
   "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:unknown"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}' ;;
   "group list") printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}' ;;
+  "delegate --group") printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-unknown-1"},"task":{"id":"task-unknown-1"},"agent":{"id":"agent-unknown-1","harness":"claude","model":"haiku","effort":"low"}}}' ;;
   "task open") printf '%s\n' '{"schema":"drovr.command/v1","command":"task open","ok":true,"result":{"status":"completed","group":{"id":"group-unknown-1"},"task":{"id":"task-unknown-1"}}}' ;;
   "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-unknown-1"},"agent":{"id":"agent-unknown-1","harness":"claude","model":"haiku","effort":"low","native_session":"claude-unknown-session"}}}' ;;
   "turn list") printf '%s\n' '{"schema":"drovr.command/v1","command":"turn list","ok":true,"result":{"status":"completed","turns":[]}}' ;;
@@ -883,28 +888,15 @@ esac
 `,
   );
 
-  let failure;
-  try {
-    await execFileAsync(
-      process.execPath,
-      [
-        runner,
-        "--scenario",
-        "claude_unknown_staged_input_clear_and_reuse",
-        "--evidence-dir",
-        evidenceDirectory,
-      ],
-      {
-        encoding: "utf8",
-        cwd: join(scratch, "caller"),
-        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
-      },
-    );
-  } catch (error) {
-    failure = error;
-  }
-  assert.equal(failure?.code, 3);
-  const report = JSON.parse(failure.stdout);
+  const report = await runQualification({
+    scenarioIds: ["claude_unknown_staged_input_clear_and_reuse"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: join(scratch, "caller"),
+    env: { ...process.env },
+    trustPreflight: trustedPreflight,
+  });
+  assert.equal(report.status, "blocked");
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
   assert.equal(evidence.result.disposition, "blocked");
   assert.ok(

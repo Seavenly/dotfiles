@@ -91,13 +91,24 @@ export function trustPreflightReady(result, harnesses = []) {
     result.configuration?.created === false &&
     typeof result.workspace?.path === "string" &&
     typeof result.workspace?.identity === "string" &&
+    typeof result.binding === "string" &&
     selected.length > 0 &&
-    selected.every(
-      (harness) =>
-        result.harnesses?.[harness]?.status === "trusted" &&
-        result.harnesses[harness].workspace?.path === result.workspace.path &&
-        result.harnesses[harness].workspace?.identity === result.workspace.identity,
-    )
+    selected.every((harness) => {
+      const observation = result.harnesses?.[harness];
+      return (
+        observation?.status === "trusted" &&
+        observation.workspace?.path === result.workspace.path &&
+        observation.workspace?.identity === result.workspace.identity &&
+        typeof observation.executable?.path === "string" &&
+        typeof observation.executable?.version === "string" &&
+        typeof observation.integration?.id === "string" &&
+        typeof observation.integration?.detail === "string" &&
+        observation.source?.status === "present" &&
+        typeof observation.source.path === "string" &&
+        typeof observation.source.digest === "string" &&
+        ["pre_existing", "created_for_run"].includes(observation.origin)
+      );
+    })
   );
 }
 
