@@ -1194,10 +1194,13 @@ export function summarizeQualificationEvidence(
   const dispositionsSettled = resourceDispositions?.every(({ disposition }) =>
     ["retained", "closed", "absent"].includes(disposition),
   ) === true;
-  const explicitRetainedHolder = (unresolvedObligations?.length ?? 0) > 0 &&
+  const explicitRetainedHolder =
+    (unresolvedObligations?.length ?? 0) > 0 &&
     unresolvedObligations.every(
-      ({ retained_state_root }) =>
-        typeof retained_state_root === "string" && retained_state_root.length > 0,
+      ({ retained_state_root, lock_path }) =>
+        (typeof retained_state_root === "string" &&
+          retained_state_root.trim().length > 0) ||
+        (typeof lock_path === "string" && lock_path.trim().length > 0),
     );
   const cleanupStatus = !cleanup || !resourceDispositions || !unresolvedObligations
     ? "blocked"

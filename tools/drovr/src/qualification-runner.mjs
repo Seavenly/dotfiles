@@ -58,6 +58,7 @@ const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const COMMAND_EXIT_GRACE_MS = 5_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
+const QUALIFICATION_BOOT_CLOCK_TOLERANCE_MS = 5 * 60 * 1_000;
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -709,12 +710,23 @@ async function classifyExistingQualificationWorkspaceLock(path) {
     return {
       reason: "qualification_workspace_lock_unverifiable",
       message:
-      `The dedicated qualification workspace lock ${path} belongs to host ${owner.hostname}; its owner cannot be classified from this host. Verify that no qualification run owns it, remove exactly that lock directory, and retry.`,
+        `The dedicated qualification workspace lock ${path} belongs to host ${owner.hostname}; its owner cannot be classified from this host. Verify that no qualification run owns it, remove exactly that lock directory, and retry.`,
     };
   }
+  const currentUptimeMs = Math.round(uptime() * 1_000);
+  const recordedBootUptimeMs = owner.boot_uptime_ms;
+  const recordedStartedAtMs = Date.parse(owner.started_at);
+  const recordedBootWallClockMs = recordedStartedAtMs - recordedBootUptimeMs;
+  const currentBootWallClockMs = Date.now() - currentUptimeMs;
+  const bootClockDriftMs = Math.abs(
+    recordedBootWallClockMs - currentBootWallClockMs,
+  );
   if (
-    Number.isFinite(owner.boot_uptime_ms) &&
-    owner.boot_uptime_ms > Math.round(uptime() * 1_000)
+    Number.isFinite(recordedBootUptimeMs) &&
+    (recordedBootUptimeMs > currentUptimeMs ||
+      (Number.isFinite(recordedStartedAtMs) &&
+        Number.isFinite(currentBootWallClockMs) &&
+        bootClockDriftMs > QUALIFICATION_BOOT_CLOCK_TOLERANCE_MS))
   ) {
     return {
       reason: "qualification_workspace_lock_stale",

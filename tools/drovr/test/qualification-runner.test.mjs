@@ -495,6 +495,37 @@ exit 5
       schema: "drovr.qualification-lock-owner/v1",
       pid: process.pid,
       hostname: hostname(),
+      run_id: "old-boot-test",
+      started_at: new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString(),
+      boot_uptime_ms: 1,
+    }),
+  );
+  const oldBootReport = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory: join(scratch, "evidence-old-boot"),
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
+    trustPreflight: async () => {
+      preflightCalls += 1;
+      throw new Error("old boot lock must block before trust preflight");
+    },
+  });
+  assert.equal(preflightCalls, 0);
+  const oldBootEvidence = JSON.parse(
+    await readFile(oldBootReport.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(
+    oldBootEvidence.trust_preflight.reason.code,
+    "qualification_workspace_lock_stale",
+  );
+
+  await writeFile(
+    join(lock, "owner.json"),
+    JSON.stringify({
+      schema: "drovr.qualification-lock-owner/v1",
+      pid: process.pid,
+      hostname: hostname(),
       run_id: "rebooted-stale-test",
       started_at: "2026-01-01T00:00:00.000Z",
       boot_uptime_ms: Math.round(uptime() * 1_000) + 60_000,
@@ -587,6 +618,10 @@ exit 5
 });
 
 test("a retained qualification lock records an explicit recovery obligation", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("permission-based lock-release failure requires a non-root user");
+    return;
+  }
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-retained-lock-"));
   const workspaceRoot = await mkdtemp(join(tmpdir(), "drovr-qualification-retained-workspace-"));
   const workspace = join(workspaceRoot, "dedicated-workspace");

@@ -11,6 +11,7 @@ import {
   interruptSoak,
   loadSoakPlan,
   runSoak,
+  summarizeQualificationEvidence,
   validateSoakPlanAgainstCatalog,
   validateSoakPlan,
 } from "../src/qualification-soak.mjs";
@@ -230,6 +231,43 @@ test("a failed cycle resets the consecutive count and remains in the decision ev
         cycleNumber === 5 && /cycle|consecutive/u.test(message),
     ),
   );
+});
+
+test("a retained qualification lock is a valid explicit soak holder", () => {
+  const evidence = {
+    scenario_id: "claude_soak_multiline_reuse",
+    assertions: [],
+    result: { disposition: "pass" },
+    cleanup_receipt: {
+      resource_dispositions: [
+        {
+          kind: "qualification_workspace_lock",
+          identity: "/tmp/qualification-workspace/.drovr-qualification-lock",
+          disposition: "retained",
+        },
+      ],
+      unresolved_obligations: [
+        {
+          code: "qualification_workspace_lock_retained",
+          lock_path: "/tmp/qualification-workspace/.drovr-qualification-lock",
+          action: "Verify no run is active, remove the lock, and retry.",
+        },
+      ],
+    },
+    execution_policy: EXECUTION_POLICY,
+    limits: { measured: {} },
+    versions: {},
+    trust_preflight: null,
+  };
+
+  const cycle = summarizeQualificationEvidence(evidence, {
+    harness: "claude",
+    number: 1,
+    binding: BINDING,
+    coverage: ["cleanup"],
+  });
+
+  assert.equal(cycle.cleanup.status, "retained");
 });
 
 test("staged-input anti-replay gaps and binding drift fail closed", () => {
