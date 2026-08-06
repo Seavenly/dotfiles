@@ -311,6 +311,12 @@ _Avoid_: Herdr client wrapper, harness controller
 Typed proof that the expected managed agent, pane, native session, staged snapshot, or ownership relationship is present, absent, changed, or uncertain.
 _Avoid_: Boolean health check, latest observation
 
+**Managed runtime identity**:
+The versioned binding of a managed agent to its exact pane, executable, managed
+PATH, native session, and foreground process, used to prove that later runtime
+operations still target the same execution.
+_Avoid_: Runtime health, process snapshot
+
 **Tracker issue**:
 An externally visible GitHub or Jira commitment that owns intent and acceptance criteria.
 _Avoid_: Kanban task, card

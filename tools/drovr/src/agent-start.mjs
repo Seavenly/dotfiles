@@ -2,9 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import { loadConfiguration, resolveLaunchSpecification } from "./config.mjs";
 import { DrovrError } from "./errors.mjs";
-import { createAgentLaunchBinding } from "./description.mjs";
+import {
+  bindAgentLaunchRuntime,
+  createAgentLaunchBinding,
+} from "./description.mjs";
 import {
   createSemanticHarness,
+  semanticHarnessFor,
 } from "./harness-interface.mjs";
 import {
   stateDirectory,
@@ -170,7 +174,7 @@ export async function startAgent(taskId, options, dependencies = {}) {
     requireCompatibility,
   });
   const launchValidation = await harness.validateLaunch({ specification });
-  const launchBinding = createAgentLaunchBinding(
+  let launchBinding = createAgentLaunchBinding(
     configuration,
     specification,
     { compatibility: launchValidation.compatibility },
@@ -234,10 +238,18 @@ export async function startAgent(taskId, options, dependencies = {}) {
         }
         let observed;
         if (agent.native_session) {
+          const recoveryHarness = (
+            dependencies.harness ?? dependencies.semanticHarness
+          )
+            ? harness
+            : semanticHarnessFor(
+                { ...context, agent },
+                { ...dependencies, env },
+              );
           const availability = await reconcileOrRecoverAgent(agent.id, {
             ...dependencies,
             env,
-            harness,
+            harness: recoveryHarness,
             now,
           });
           if (!["reconciled", "recovered"].includes(availability.status)) {
@@ -255,8 +267,40 @@ export async function startAgent(taskId, options, dependencies = {}) {
               agent,
               registryDirectory,
             });
+          } else if (
+            requiresManagedRuntimeBinding(harness) &&
+            !observed.compatibility?.managed_pane_identity
+          ) {
+            throw new DrovrError(
+              `agent ${agent.id} cannot be reused without an exact managed runtime identity`,
+              {
+                code: 0,
+                outcome: "compatibility_blocked",
+                details: {
+                  reason: observed.error?.details?.reason ?? "missing",
+                  legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+                },
+              },
+            );
           } else {
             observed = await waitForAgentReady(harness, agent, dependencies);
+            if (requiresManagedRuntimeBinding(harness)) {
+              const rebound = await harness.observeAgent(agent);
+              if (!rebound.compatibility?.managed_pane_identity) {
+                throw new DrovrError(
+                  `agent ${agent.id} could not retain an exact managed runtime identity while starting`,
+                  {
+                    code: 0,
+                    outcome: "compatibility_blocked",
+                    details: {
+                      reason: rebound.error?.details?.reason ?? "changed",
+                      legal_actions: ["refresh_compatibility", "retire_stale_launch"],
+                    },
+                  },
+                );
+              }
+              observed = rebound;
+            }
           }
         }
         if (
@@ -264,6 +308,13 @@ export async function startAgent(taskId, options, dependencies = {}) {
           observed.identity.pane !== agent.herdr.pane_id
         ) {
           agent.herdr.pane_id = observed.identity.pane;
+          await writeRecord(registryDirectory, "agents", agent);
+        }
+        if (observed.compatibility?.managed_pane_identity) {
+          agent.launch_binding = bindAgentLaunchRuntime(
+            agent.launch_binding,
+            observed.compatibility,
+          );
           await writeRecord(registryDirectory, "agents", agent);
         }
         const nativeSession = observed?.identity?.native_session;
@@ -282,13 +333,25 @@ export async function startAgent(taskId, options, dependencies = {}) {
         return { group: context.group, task: context.task, agent };
       }
 
+      const id = randomUUID();
+      const managedName = `drovr-${id.replaceAll("-", "").slice(0, 26)}`;
       const paneId = await paneForNewAgent(
         context,
         harness,
         registryDirectory,
       );
-      const id = randomUUID();
-      const managedName = `drovr-${id.replaceAll("-", "").slice(0, 26)}`;
+      const managedLaunchValidation = await harness.validateLaunch({
+        specification,
+        paneId,
+        agentName: managedName,
+      });
+      if (managedLaunchValidation.compatibility?.managed_pane_identity) {
+        launchBinding = createAgentLaunchBinding(
+          configuration,
+          specification,
+          { compatibility: managedLaunchValidation.compatibility },
+        );
+      }
       agent = {
         schema: "drovr.agent/v1",
         id,
@@ -310,6 +373,13 @@ export async function startAgent(taskId, options, dependencies = {}) {
         agent,
         registryDirectory,
       });
+      if (observed.compatibility?.managed_pane_identity) {
+        agent.launch_binding = bindAgentLaunchRuntime(
+          agent.launch_binding,
+          observed.compatibility,
+        );
+        await writeRecord(registryDirectory, "agents", agent);
+      }
       const nativeSession = observed?.identity?.native_session;
       if (
         observed.identity?.pane &&
@@ -325,6 +395,11 @@ export async function startAgent(taskId, options, dependencies = {}) {
       return { group: context.group, task: context.task, agent };
     },
   );
+}
+
+function requiresManagedRuntimeBinding(harness) {
+  return harness.implementation === "production-herdr" &&
+    harness.capabilities?.compatibility === "required";
 }
 
 export function agentStartCommandResult({ group, task, agent }) {
@@ -358,6 +433,12 @@ export function agentStartCommandResult({ group, task, agent }) {
         capability: agent.launch.capability,
         native: agent.launch.native,
         native_session: agent.native_session,
+        ...(agent.launch_binding?.managed_runtime_evidence_digest
+          ? {
+              managed_runtime_evidence_digest:
+                agent.launch_binding.managed_runtime_evidence_digest,
+            }
+          : {}),
       },
     },
   };

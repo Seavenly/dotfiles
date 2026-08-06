@@ -40,6 +40,7 @@ import {
 import {
   traceFromJournal,
   traceJournalFailurePath,
+  redactValue,
   validateTrace,
 } from "./trace.mjs";
 
@@ -627,6 +628,7 @@ async function attachCapturedTrace({
   try {
     const evidence = JSON.parse(await readFile(result.evidence, "utf8"));
     const versions = evidence.versions ?? {};
+    let managedIdentity = managedRuntimeIdentityFromEvidence(evidence);
     let trace;
     try {
       trace = await traceFromJournal(traceJournalPath, {
@@ -636,9 +638,33 @@ async function attachCapturedTrace({
           herdr: versions.herdr ?? "unavailable",
           claude: versions.claude ?? "unavailable",
           codex: versions.codex ?? "unavailable",
-          compatibility: liveCompatibility(versions, scenarioHarness(scenario)),
+          compatibility: liveCompatibility(
+            versions,
+            scenarioHarness(scenario),
+            managedIdentity,
+          ),
         },
       });
+      const tracedManagedIdentity = managedRuntimeIdentityFromEvidence(
+        trace.events,
+      );
+      if (!managedIdentity && tracedManagedIdentity) {
+        managedIdentity = tracedManagedIdentity;
+        trace = await traceFromJournal(traceJournalPath, {
+          scenarioId: scenario.id,
+          provenance: {
+            drovr: versions.drovr ?? "unavailable",
+            herdr: versions.herdr ?? "unavailable",
+            claude: versions.claude ?? "unavailable",
+            codex: versions.codex ?? "unavailable",
+            compatibility: liveCompatibility(
+              versions,
+              scenarioHarness(scenario),
+              managedIdentity,
+            ),
+          },
+        });
+      }
     } catch (error) {
       if (error?.code !== "ENOENT") {
         const failedEvidence = traceCaptureFailure(
@@ -689,7 +715,9 @@ async function attachCapturedTrace({
       });
       return { ...result, result: "fail" };
     }
-    const traceComplete = hasCompleteLiveTrace(trace);
+    const traceComplete = hasCompleteLiveTrace(trace, {
+      requireManagedRuntimeIdentity: captureRequired,
+    });
     if (captureRequired && !traceComplete) {
       const failedEvidence = traceCaptureFailure(
         evidence,
@@ -734,7 +762,10 @@ async function fileExists(path) {
   }
 }
 
-function hasCompleteTraceProvenance(provenance) {
+function hasCompleteTraceProvenance(
+  provenance,
+  { requireManagedRuntimeIdentity = false } = {},
+) {
   const exactVersions = ["drovr", "herdr", "claude", "codex"].every((key) => {
     const value = provenance?.[key];
     return (
@@ -757,6 +788,9 @@ function hasCompleteTraceProvenance(provenance) {
       ? qualifyCompatibility(provenance.compatibility, {
           harness,
           adapter: PRODUCTION_ADAPTER_ID,
+          requireManagedIdentity: Boolean(
+            provenance.compatibility?.managed_pane_identity,
+          ),
         })
       : null;
   } catch {
@@ -764,6 +798,8 @@ function hasCompleteTraceProvenance(provenance) {
   }
   return exactVersions &&
     compatibility?.status === "qualified" &&
+    (!requireManagedRuntimeIdentity ||
+      Boolean(provenance.compatibility?.managed_pane_identity)) &&
     [facts?.drovr, facts?.herdr, facts?.harness, facts?.integration].every(
       (value) =>
         typeof value === "string" &&
@@ -774,8 +810,13 @@ function hasCompleteTraceProvenance(provenance) {
     Array.isArray(facts?.features);
 }
 
-function hasCompleteLiveTrace(trace) {
-  if (!hasCompleteTraceProvenance(trace.provenance)) return false;
+function hasCompleteLiveTrace(
+  trace,
+  { requireManagedRuntimeIdentity = false } = {},
+) {
+  if (!hasCompleteTraceProvenance(trace.provenance, {
+    requireManagedRuntimeIdentity,
+  })) return false;
   if (trace.events.some(({ operation }) => operation === "trace.capture")) {
     return false;
   }
@@ -3043,7 +3084,7 @@ function versionsFromDoctor(envelope) {
   };
 }
 
-function liveCompatibility(versions, harness) {
+function liveCompatibility(versions, harness, managedIdentity) {
   return {
     schema: COMPATIBILITY_SCHEMA,
     facts: {
@@ -3054,7 +3095,38 @@ function liveCompatibility(versions, harness) {
       adapters: [PRODUCTION_ADAPTER_ID, `${harness}-jsonl/v1`],
       features: [...COMPATIBILITY_FEATURES],
     },
+    ...(managedIdentity
+      ? { managed_pane_identity: redactValue(managedIdentity) }
+      : {}),
   };
+}
+
+function managedRuntimeIdentityFromEvidence(value) {
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = managedRuntimeIdentityFromEvidence(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  if (
+    value.managed_runtime_identity?.schema ===
+    "drovr.managed-pane-runtime-identity/v1"
+  ) {
+    return value.managed_runtime_identity;
+  }
+  if (
+    value.managed_pane_identity?.schema ===
+    "drovr.managed-pane-runtime-identity/v1"
+  ) {
+    return value.managed_pane_identity;
+  }
+  for (const child of Object.values(value)) {
+    const found = managedRuntimeIdentityFromEvidence(child);
+    if (found) return found;
+  }
+  return null;
 }
 
 function scenarioHarness(scenario) {

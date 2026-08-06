@@ -16,6 +16,7 @@ import test from "node:test";
 
 import { captureTranscriptCursor } from "../src/codex-transcript.mjs";
 import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
+import { digestCanonical } from "../src/canonical-json.mjs";
 import { describeDelegatedAgent } from "../src/description.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
@@ -37,6 +38,53 @@ import {
 } from "../src/turns.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
+
+test("public turn summaries expose managed runtime evidence without private identity", () => {
+  const managedRuntimeIdentity = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    pane_id: "private-pane",
+    executable: { canonical_path: "/private/codex" },
+  };
+  const report = turnCommandResult("turn get", {
+    group: { id: "group-1", key: "group" },
+    task: { id: "task-1", key: "task", label: "Task", cwd: "/private/work" },
+    agent: {
+      id: "agent-1",
+      key: "agent",
+      label: "Agent",
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        capability: "read-only",
+      },
+      launch_binding: {
+        managed_runtime_evidence_digest: digestCanonical(managedRuntimeIdentity),
+      },
+    },
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      inputs: [],
+      launch_binding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: `sha256:${"a".repeat(64)}`,
+        configuration_watermark: `sha256:${"b".repeat(64)}`,
+        description_digest: `sha256:${"c".repeat(64)}`,
+        managed_runtime_identity: managedRuntimeIdentity,
+      },
+    },
+  });
+
+  assert.equal(
+    report.result.turn.launch_binding.managed_runtime_evidence_digest,
+    digestCanonical(managedRuntimeIdentity),
+  );
+  assert.equal(
+    Object.hasOwn(report.result.turn.launch_binding, "managed_runtime_identity"),
+    false,
+  );
+});
 
 test("caller-owned dispatch and ordered input survive caller exit and fail closed on conflicts", async (t) => {
   const fixture = await turnFixture(t);

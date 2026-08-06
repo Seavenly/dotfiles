@@ -87,6 +87,7 @@ const SCHEMAS = deepFreeze({
   credential_reference: "drovr.credential-reference/v1",
   feature_advertisement: "drovr.feature-advertisement/v1",
   caller_metadata: "opaque-json/v1",
+  managed_runtime_binding: "drovr.managed-runtime-binding/v1",
 });
 
 const CAPACITY = deepFreeze({
@@ -182,6 +183,7 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     credential_reference: credentialReference,
     feature_advertisement: featureAdvertisement,
     caller_metadata: callerMetadata,
+    managed_runtime_binding: managedRuntimeBinding(compatibility),
     comparison_keys: comparisonKeys,
     ...(compatibility ? { compatibility } : {}),
   };
@@ -190,6 +192,27 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     ...identity,
     description_digest: digestCanonical(identity),
     legal_actions: ["dispatch_exact_launch", "refresh_description"],
+  });
+}
+
+function managedRuntimeBinding(compatibility) {
+  const identity = compatibility?.managed_pane_identity;
+  const settled = Boolean(
+    identity?.native_session &&
+      Number.isSafeInteger(identity.process?.pid),
+  );
+  return deepFreeze({
+    schema: SCHEMAS.managed_runtime_binding,
+    status: settled
+      ? "bound"
+      : identity
+        ? "preflight_bound"
+        : "deferred",
+    exact_identity_required: true,
+    binding_phase: "agent_launch",
+    ...(compatibility?.managed_pane_evidence_digest
+      ? { evidence_digest: compatibility.managed_pane_evidence_digest }
+      : {}),
   });
 }
 
@@ -202,7 +225,7 @@ export function createAgentLaunchBinding(
     schema: SCHEMAS.feature_advertisement,
     features: DROVR_ADVERTISED_FEATURES,
   });
-  return deepFreeze({
+  const binding = {
     schema: "drovr.agent-launch-binding/v1",
     comparison_key: digestCanonical(launchDescription(configuration, resolved)),
     configuration_watermark: configurationWatermark(
@@ -213,6 +236,24 @@ export function createAgentLaunchBinding(
     ...(compatibility
       ? { compatibility_evidence_digest: compatibility.evidence_digest }
       : {}),
+  };
+  return compatibility?.managed_pane_identity
+    ? bindAgentLaunchRuntime(binding, compatibility)
+    : deepFreeze(binding);
+}
+
+export function bindAgentLaunchRuntime(binding, compatibility) {
+  const identity = compatibility?.managed_pane_identity;
+  if (!identity) {
+    throw new DrovrError(
+      "cannot bind an agent launch without managed pane identity evidence",
+      { code: 0, outcome: "compatibility_blocked" },
+    );
+  }
+  return deepFreeze({
+    ...structuredClone(binding),
+    managed_runtime_identity: structuredClone(identity),
+    managed_runtime_evidence_digest: digestCanonical(identity),
   });
 }
 
@@ -275,13 +316,23 @@ function configurationWatermark(
       authority_dimensions: AUTHORITY_DIMENSIONS,
       credential_references: ["ambient/claude", "ambient/codex"],
       feature_advertisement: featureAdvertisement,
-      ...(compatibility ? { compatibility } : {}),
+      ...(compatibility
+        ? { compatibility: compatibilityWatermark(compatibility) }
+        : {}),
       fingerprints: logicalFingerprints(
         configuration.directory,
         configuration.fingerprints,
       ),
     }),
   });
+}
+
+function compatibilityWatermark(compatibility) {
+  return Object.fromEntries(
+    Object.entries(compatibility).filter(
+      ([key]) => !key.startsWith("managed_pane_"),
+    ),
+  );
 }
 
 function feature(

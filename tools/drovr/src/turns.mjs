@@ -12,7 +12,10 @@ import {
 } from "./block-record.mjs";
 import { DrovrError } from "./errors.mjs";
 import { digestCanonical } from "./canonical-json.mjs";
-import { describeDelegatedAgent } from "./description.mjs";
+import {
+  bindAgentLaunchRuntime,
+  describeDelegatedAgent,
+} from "./description.mjs";
 import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
@@ -191,6 +194,13 @@ export async function startTurn(agentId, options, dependencies = {}) {
           }
           if (!current.agent.native_session && observedNativeSession) {
             current.agent.native_session = observedNativeSession;
+            await writeRecord(registryDirectory, "agents", current.agent);
+          }
+          if (observed.compatibility?.managed_pane_identity) {
+            current.agent.launch_binding = bindAgentLaunchRuntime(
+              current.agent.launch_binding,
+              observed.compatibility,
+            );
             await writeRecord(registryDirectory, "agents", current.agent);
           }
           if (
@@ -1296,6 +1306,12 @@ function summarizeAgent(agent) {
     model: agent.launch.model,
     effort: agent.launch.effort,
     capability: agent.launch.capability,
+    ...(agent.launch_binding?.managed_runtime_evidence_digest
+      ? {
+          managed_runtime_evidence_digest:
+            agent.launch_binding.managed_runtime_evidence_digest,
+        }
+      : {}),
   };
 }
 
@@ -1315,7 +1331,7 @@ function summarizeTurn(
     input_count: turn.inputs.length,
     ...(turn.caller ? { caller: structuredClone(turn.caller) } : {}),
     ...(turn.launch_binding
-      ? { launch_binding: structuredClone(turn.launch_binding) }
+      ? { launch_binding: summarizeLaunchBinding(turn.launch_binding) }
       : {}),
     ...(turn.settlement_proof
       ? { settlement_proof: structuredClone(turn.settlement_proof) }
@@ -1362,6 +1378,29 @@ function summarizeTurn(
     created_at: turn.created_at,
     ...(turn.settled_at ? { settled_at: turn.settled_at } : {}),
   };
+}
+
+function summarizeLaunchBinding(binding) {
+  const summary = Object.fromEntries(
+    [
+      "schema",
+      "comparison_key",
+      "configuration_watermark",
+      "description_digest",
+      "compatibility_evidence_digest",
+    ]
+      .filter((key) => binding[key] !== undefined)
+      .map((key) => [key, binding[key]]),
+  );
+  if (binding.managed_runtime_evidence_digest) {
+    summary.managed_runtime_evidence_digest =
+      binding.managed_runtime_evidence_digest;
+  } else if (binding.managed_runtime_identity) {
+    summary.managed_runtime_evidence_digest = digestCanonical(
+      binding.managed_runtime_identity,
+    );
+  }
+  return summary;
 }
 
 function turnAuthorityWatermark(turn) {

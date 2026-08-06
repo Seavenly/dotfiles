@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { digestCanonical } from "../src/canonical-json.mjs";
+import { redactValue } from "../src/trace.mjs";
 import {
   interruptQualification,
   compareUnrelatedGroups,
@@ -37,6 +39,50 @@ const runner = fileURLToPath(
 async function executable(path, source) {
   await writeFile(path, `#!/usr/bin/env bash\nset -euo pipefail\n${source}`);
   await chmod(path, 0o755);
+}
+
+function managedRuntimeIdentity({
+  harness,
+  managedAgent,
+  nativeSession,
+  model,
+  effort,
+}) {
+  const executablePath = `/managed/bin/${harness}`;
+  const version = harness === "claude"
+    ? "2.1.199 (Claude Code)"
+    : "codex-cli 0.145.0";
+  return JSON.stringify({
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness,
+    managed_agent: managedAgent,
+    pane_id: "pane-qualification-1",
+    executable: {
+      observed_path: executablePath,
+      canonical_path: executablePath,
+      version,
+      file_identity: {
+        device: 1,
+        inode: harness === "claude" ? 11 : 12,
+        size: 128,
+        mtime_ms: 1000,
+      },
+    },
+    managed_path_digest: `sha256:${"a".repeat(64)}`,
+    caller_path_digest: `sha256:${"b".repeat(64)}`,
+    integration: `herdr-${harness}/v${harness === "claude" ? 7 : 6}`,
+    native_session: nativeSession,
+    process: {
+      pid: 42,
+      name: harness,
+      argv0: executablePath,
+      argv: [executablePath, "--managed"],
+      cmdline: `${executablePath} --managed`,
+      cwd: "/tmp/work",
+    },
+    model,
+    effort,
+  });
 }
 
 test("a missing live prerequisite produces retained typed block evidence", async (t) => {
@@ -246,12 +292,23 @@ exit 5
   assert.equal(delayedEvidence.cleanup_receipt.unresolved_obligations.length, 0);
 });
 
-test("a reusable live prompt-file scenario accepts identity from the final agent projection", async (t) => {
+test("a reusable live prompt-file scenario accepts identity from the private runtime trace", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-live-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const fakeBin = join(scratch, "bin");
   const evidenceDirectory = join(scratch, "evidence");
   const invocationLog = join(scratch, "invocations.jsonl");
+  const managedIdentity = managedRuntimeIdentity({
+    harness: "claude",
+    managedAgent: "qualification-agent",
+    nativeSession: "claude-session-1",
+    model: "haiku",
+    effort: "low",
+  });
+  const managedIdentityDigest = digestCanonical(JSON.parse(managedIdentity));
+  const traceManagedIdentity = JSON.stringify(
+    redactValue(JSON.parse(managedIdentity)),
+  );
   await mkdir(fakeBin);
   await mkdir(join(scratch, "caller"));
   await executable(
@@ -275,13 +332,14 @@ case "\${1:-} \${2:-}" in
     [[ -f "$prompt_file" ]]
     grep -Fq 'QUALIFY-CLAUDE-SOAK-MULTILINE-OK' "$prompt_file"
     printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
-    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
+    printf '%s\\n' '{"sequence":2,"at_ms":0,"kind":"agent_observation","operation":"agent.runtime-identity","payload":{"request":{"resource":"agent","action":"runtime-identity","target":"qualification-agent"},"managed_runtime_identity":${traceManagedIdentity}}}' >> "$DROVR_TRACE_JOURNAL"
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only","managed_runtime_evidence_digest":"${managedIdentityDigest}"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "ask agent-live-1")
     printf '%s\n' '{"schema":"drovr.command/v1","command":"ask","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low"},"turn":{"id":"turn-live-2","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-REVIEW-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "agent get")
-    printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","native_session":"claude-session-1"}}}'
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","native_session":"claude-session-1","managed_runtime_evidence_digest":"${managedIdentityDigest}"}}}'
     ;;
   "group close")
     [[ "\${3:-}" == group-live-1 && "\${4:-}" == --force ]]
@@ -320,6 +378,14 @@ esac
   assert.equal(evidence.result.disposition, "pass");
   assert.equal(evidence.trace.schema, "drovr.harness-trace/v1");
   assert.equal(evidence.trace.events[0].operation, "agent.prompt");
+  assert.equal(
+    evidence.trace.provenance.compatibility.managed_pane_identity.native_session,
+    "claude-session-1",
+  );
+  assert.match(
+    evidence.trace.provenance.compatibility.managed_pane_identity.executable.canonical_path,
+    /^<path:sha256:[0-9a-f]{64}>$/u,
+  );
   assert.equal(evidence.versions.drovr, "drovr source sha256:1111");
   assert.equal(evidence.versions.model, "haiku");
   assert.equal(evidence.versions.reasoning_effort, "low");
@@ -395,10 +461,10 @@ case "\${1:-} \${2:-}" in
     printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}'
     ;;
   "delegate --group")
-    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-codex-1","key":"qualification-group"},"task":{"id":"task-codex-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-codex-1","key":"qualification-agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only"},"turn":{"id":"turn-codex-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CODEX-POSITIONAL-1-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-codex-1","key":"qualification-group"},"task":{"id":"task-codex-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-codex-1","key":"qualification-agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only","managed_runtime_identity":${managedRuntimeIdentity({ harness: "codex", managedAgent: "qualification-agent", nativeSession: "codex-session-1", model: "gpt-5.6-luna", effort: "low" })}},"turn":{"id":"turn-codex-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CODEX-POSITIONAL-1-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "agent get")
-    printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-codex-1","key":"qualification-agent","harness":"codex","native_session":"codex-session-1"}}}'
+    printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-codex-1","key":"qualification-agent","harness":"codex","native_session":"codex-session-1","managed_runtime_identity":${managedRuntimeIdentity({ harness: "codex", managedAgent: "qualification-agent", nativeSession: "codex-session-1", model: "gpt-5.6-luna", effort: "low" })}}}}'
     ;;
   "ask agent-codex-1")
     if [[ "$*" == *--prompt-file* ]]; then
@@ -537,7 +603,7 @@ case "\${1:-} \${2:-}" in
   "doctor ") printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"codex":{"model":"gpt-5.6-luna","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:3333"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"codex-launch-capabilities","status":"pass","detail":"supported"},{"id":"codex-transcripts","status":"pass","detail":"available"},{"id":"codex-transcript-structure","status":"pass","detail":"supported"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"codex-native-session","status":"pass","detail":"supported"}]}}' ;;
   "group list") printf '%s\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}' ;;
   "task open") printf '%s\n' '{"schema":"drovr.command/v1","command":"task open","ok":true,"result":{"status":"completed","group":{"id":"group-cancel-1","key":"qualification"},"task":{"id":"task-cancel-1","key":"task","cwd":"/tmp/work"}}}' ;;
-  "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","key":"agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only","native_session":"codex-session-cancel"}}}' ;;
+  "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","key":"agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only","native_session":"codex-session-cancel","managed_runtime_identity":${managedRuntimeIdentity({ harness: "codex", managedAgent: "agent", nativeSession: "codex-session-cancel", model: "gpt-5.6-luna", effort: "low" })}}}}' ;;
   "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-cancel-1","native_session":"codex-session-cancel"}}}' ;;
   "turn start")
     if [[ "$*" == *"QUALIFY-CODEX-LIFECYCLE-HOLD-OK"* ]]; then turn_id=turn-steer-1
@@ -729,7 +795,7 @@ case "\${1:-} \${2:-}" in
     exit 4 ;;
   "task list") printf '%s\n' '{"schema":"drovr.command/v1","command":"task list","ok":true,"result":{"status":"completed","tasks":[{"id":"task-owned-1","key":"task-owned","cwd":"/tmp/work"}]}}' ;;
   "agent list") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent list","ok":true,"result":{"status":"completed","agents":[{"id":"agent-owned-1","key":"agent-owned","harness":"claude","model":"haiku","effort":"low"}]}}' ;;
-  "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-owned-1","key":"agent-owned","harness":"claude","model":"haiku","effort":"low","native_session":"claude-owned-session"}}}' ;;
+  "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-owned-1","key":"agent-owned","harness":"claude","model":"haiku","effort":"low","native_session":"claude-owned-session","managed_runtime_identity":${managedRuntimeIdentity({ harness: "claude", managedAgent: "agent-owned", nativeSession: "claude-owned-session", model: "haiku", effort: "low" })}}}}' ;;
   "turn list") printf '%s\n' '{"schema":"drovr.command/v1","command":"turn list","ok":true,"result":{"status":"completed","turns":[{"id":"turn-owned-1","status":"uncertain","input_count":1}]}}' ;;
   "agent staged-input")
     if [[ "$*" == *--submit* ]]; then

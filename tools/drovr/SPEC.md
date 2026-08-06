@@ -344,6 +344,11 @@ also carries normalized effective authority, declared capacity, an ambient
 credential-reference identity with no secret material, opaque caller ownership
 metadata, deterministic comparison keys, and the complete flow-required
 feature advertisement. The configuration-catalog watermark binds those facts.
+When compatibility is requested without an already-observed managed pane, the
+description reports `managed_runtime_binding.status = deferred`; caller-level
+prerequisites are not a managed-pane qualification. Agent launch binds the
+exact pane, executable, PATH, native session, and foreground process before
+native startup, and later operations revalidate that binding.
 Declared capacity includes a 30-second Herdr observation bound, which applies
 to both session discovery and session-scoped read-only observations.
 Every feature entry carries an exact `supported` or `unavailable` availability

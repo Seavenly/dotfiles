@@ -1,4 +1,5 @@
 import { createProductionSemanticHarness } from "./production-harness-adapter.mjs";
+import { digestCanonical } from "./canonical-json.mjs";
 
 export {
   SEMANTIC_HARNESS_EVIDENCE,
@@ -56,11 +57,13 @@ export const SEMANTIC_HARNESS_TOPOLOGY_OPERATIONS = Object.freeze([
 ]);
 
 export function createSemanticHarness(options = {}) {
+  const requireCompatibility = options.requireCompatibility ?? (
+    !options.herdr && !options.run
+  );
   const candidate = options.adapter ?? createProductionSemanticHarness({
     ...options,
-    requireCompatibility: options.requireCompatibility ?? (
-      !options.herdr && !options.run
-    ),
+    requireCompatibility,
+    requireManagedRuntimeIdentity: options.requireManagedRuntimeIdentity ?? false,
   });
   assertSemanticHarness(candidate);
 
@@ -109,6 +112,12 @@ export function semanticHarnessFor(context, dependencies = {}) {
           ...(compatibilityBinding.bindings
             ? { expectedCompatibilityBindings: compatibilityBinding.bindings }
             : {}),
+          ...(compatibilityBinding.managedRuntimeIdentity
+            ? {
+                expectedManagedRuntimeIdentity:
+                  compatibilityBinding.managedRuntimeIdentity,
+              }
+            : {}),
           ...(compatibilityBinding.failure
             ? { compatibilityBindingFailure: compatibilityBinding.failure }
             : {}),
@@ -117,6 +126,10 @@ export function semanticHarnessFor(context, dependencies = {}) {
       : {}),
     requireCompatibility: dependencies.requireCompatibility ?? (
       !dependencies.herdr && !dependencies.run
+    ),
+    requireManagedRuntimeIdentity: dependencies.requireManagedRuntimeIdentity ?? (
+      (!dependencies.herdr && !dependencies.run) &&
+      (agents.length > 0 || dependencies.requireCompatibility === true)
     ),
   });
 }
@@ -145,27 +158,50 @@ function compatibilityBindingFor(agents) {
       };
     }
     const agentHarness = agent.launch?.harness ?? "codex";
+    const runtimeIdentity = agent.launch_binding?.managed_runtime_identity;
     const existing = byHarness.get(agentHarness);
-    if (existing && existing !== digest) {
+    if (existing && existing.digest !== digest) {
       return {
         failure: {
-          expected: existing,
+          expected: existing.digest,
           observed: digest,
           reason: "changed",
         },
       };
     }
-    byHarness.set(agentHarness, digest);
+    if (
+      existing?.runtimeIdentity &&
+      digestCanonical(existing.runtimeIdentity) !== digestCanonical(runtimeIdentity)
+    ) {
+      return {
+        failure: {
+          expected: digestCanonical(existing.runtimeIdentity),
+          observed: runtimeIdentity ? digestCanonical(runtimeIdentity) : null,
+          reason: "changed",
+        },
+      };
+    }
+    byHarness.set(agentHarness, { digest, runtimeIdentity });
   }
   const bindings = [...byHarness.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([agentHarness, digest]) => ({
+    .map(([agentHarness, { digest, runtimeIdentity }]) => ({
       harness: agentHarness,
       evidence_digest: digest,
+      ...(runtimeIdentity
+        ? { managed_runtime_identity: structuredClone(runtimeIdentity) }
+        : {}),
     }));
   return bindings.length === 1
-    ? { digest: bindings[0].evidence_digest }
-    : { bindings };
+    ? {
+        digest: bindings[0].evidence_digest,
+        ...(bindings[0].managed_runtime_identity
+          ? { managedRuntimeIdentity: bindings[0].managed_runtime_identity }
+          : {}),
+      }
+    : {
+        bindings,
+      };
 }
 
 export function assertSemanticHarness(candidate) {

@@ -24,6 +24,7 @@ import {
   loadConfiguration,
   resolveLaunchSpecification,
 } from "../src/config.mjs";
+import { HerdrClient } from "../src/herdr.mjs";
 import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import { createTurnRecord, settleTurnRecord } from "../src/turn-record.mjs";
 import {
@@ -94,6 +95,20 @@ fi
 [[ \${1:-} == --session && \${2:-} == persisted-session ]]
 shift 2
 case "\${1:-} \${2:-}" in
+  "pane process-info")
+  printf '{"result":{"process_info":{"shell_pid":10,"environment":{"PATH":"%s"},"foreground_processes":[{"pid":10,"name":"bash","argv0":"/bin/bash","argv":["/bin/bash"],"cmdline":"/bin/bash","cwd":"%s"},{"pid":42,"name":"claude","environment":{"PATH":"%s"},"argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$PATH" "$state" "$PATH" "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "${cwd}"
+    ;;
+  "pane run")
+    marker=$(printf '%s\\n' "\${4:-}" | sed -n 's/.*\\(DROVR_RUNTIME_ID_[0-9a-f]*\\).*/\\1/p')
+    printf '%s\t%s\t%s\t%s\n' "$marker" "$(command -v claude)" "2.1.199 (Claude Code)" "$PATH" > "$state/probe"
+    printf '{"result":{"status":"accepted"}}\n'
+    ;;
+  "pane read")
+    cat "$state/probe"
+    ;;
+  "lsof")
+    printf 'p42\nn%s\n' "$(command -v claude)"
+    ;;
   "agent list")
     if [[ -f "$state/settled" ]]; then status=idle; seq=14
     elif [[ -f "$state/asked" ]]; then status=done; seq=15
@@ -157,6 +172,14 @@ esac
 `,
   );
   await chmod(fakeHerdr, 0o755);
+  const fakeLsof = join(fakeBin, "lsof");
+  await writeFile(
+    fakeLsof,
+    `#!/usr/bin/env bash
+printf 'p42\\nn%s\\n' "$(command -v claude)"
+`,
+  );
+  await chmod(fakeLsof, 0o755);
   const env = {
     ...process.env,
     PATH: `${fakeBin}:${process.env.PATH}`,
@@ -215,9 +238,28 @@ esac
   };
   const configuration = await loadConfiguration({ env });
   agent.launch = resolveLaunchSpecification(configuration, agent.launch);
+  const herdr = new HerdrClient({
+    session: group.herdr.session,
+    env,
+  });
+  const executable = await herdr.probeManagedExecutable({
+    paneId: agent.herdr.pane_id,
+    harness: agent.launch.harness,
+  });
+  executable.managed_agent = agent.herdr.name;
+  const managedRuntimeIdentity = await herdr.captureManagedRuntimeIdentity({
+    agentName: agent.herdr.name,
+    paneId: agent.herdr.pane_id,
+    harness: agent.launch.harness,
+    executable,
+    model: agent.launch.model,
+    effort: agent.launch.effort,
+  });
   const compatibility = await collectProductionCompatibility({
     harness: "claude",
     env,
+    managedIdentity: managedRuntimeIdentity,
+    requireManagedIdentity: true,
   });
   agent.launch_binding = createAgentLaunchBinding(
     configuration,

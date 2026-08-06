@@ -63,6 +63,12 @@ export function summarizeAgent(agent) {
     effort: agent.launch.effort,
     capability: agent.launch.capability,
     native_session: agent.native_session,
+    ...(agent.launch_binding?.managed_runtime_evidence_digest
+      ? {
+          managed_runtime_evidence_digest:
+            agent.launch_binding.managed_runtime_evidence_digest,
+        }
+      : {}),
     created_at: agent.created_at,
     ...(agent.observation ? { observation: agent.observation } : {}),
     ...(agent.retired_at ? { retired_at: agent.retired_at } : {}),

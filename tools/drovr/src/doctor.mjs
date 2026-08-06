@@ -5,8 +5,14 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadConfiguration } from "./config.mjs";
+import {
+  collectProductionCompatibility,
+} from "./compatibility.mjs";
 import { walkFiles } from "./files.mjs";
+import { HerdrClient } from "./herdr.mjs";
 import { execute } from "./process.mjs";
+import { readRecords, stateDirectory } from "./registry.mjs";
+import { redactValue } from "./trace.mjs";
 
 const DROVR_ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const REPOSITORY_ROOT = dirname(dirname(DROVR_ROOT));
@@ -234,6 +240,22 @@ export async function diagnose({ env = process.env, run = execute } = {}) {
     });
   }
 
+  for (const harness of ["codex", "claude"]) {
+    const compatibility = await collectProductionCompatibility({
+      harness,
+      env,
+      run,
+    });
+    checks.push({
+      id: `${harness}-compatibility`,
+      status: compatibility.status === "qualified" ? "warn" : "fail",
+      detail: compatibility.status === "qualified"
+        ? `${compatibility.evidence_digest}; caller prerequisites pass; exact managed-pane identity is checked at launch and for active agents`
+        : compatibility.detail ?? `compatibility ${compatibility.reason}`,
+    });
+  }
+  checks.push(...await managedRuntimeChecks({ env, run }));
+
   const ok = checks.every(({ status }) => status !== "fail");
   return {
     schema: "drovr.command/v1",
@@ -246,4 +268,87 @@ export async function diagnose({ env = process.env, run = execute } = {}) {
       checks,
     },
   };
+}
+
+async function managedRuntimeChecks({ env, run }) {
+  let agents;
+  let groups;
+  let tasks;
+  try {
+    [agents, groups, tasks] = await Promise.all([
+      readRecords(stateDirectory(env), "agents"),
+      readRecords(stateDirectory(env), "groups"),
+      readRecords(stateDirectory(env), "tasks"),
+    ]);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [{
+        id: "managed-runtime-identity",
+        status: "warn",
+        detail: "no managed Herdr panes are registered; identity binds at native launch",
+      }];
+    }
+    return [{
+      id: "managed-runtime-identity",
+      status: "fail",
+      detail: error.message,
+    }];
+  }
+  const activeAgents = agents.filter(
+    (agent) => agent.status === "active",
+  );
+  if (activeAgents.length === 0) {
+    return [{
+      id: "managed-runtime-identity",
+      status: "warn",
+      detail: "no managed Herdr panes are registered; identity binds at native launch",
+    }];
+  }
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  const failures = [];
+  for (const agent of activeAgents) {
+    const task = taskById.get(agent.task_id);
+    const groupForAgent = groupById.get(task?.group_id);
+    const expectedIdentity = agent.launch_binding?.managed_runtime_identity;
+    if (!expectedIdentity) {
+      failures.push(`${agent.id}: managed identity is missing`);
+      continue;
+    }
+    if (!groupForAgent?.herdr?.session) {
+      failures.push(`${agent.id}: owning Herdr session is missing`);
+      continue;
+    }
+    try {
+      const client = new HerdrClient({ session: groupForAgent.herdr.session, env, run });
+      const identity = await client.observeManagedRuntime({
+        agentName: expectedIdentity.managed_agent,
+        expectedIdentity,
+        harness: agent.launch.harness,
+      });
+      const compatibility = await collectProductionCompatibility({
+        harness: agent.launch.harness,
+        env,
+        run,
+        managedIdentity: identity,
+        expectedManagedIdentity: expectedIdentity,
+        requireManagedIdentity: true,
+      });
+      if (
+        compatibility.status !== "qualified" ||
+        compatibility.evidence_digest !== agent.launch_binding.compatibility_evidence_digest
+      ) {
+        failures.push(`${agent.id}: managed runtime compatibility changed`);
+      }
+    } catch (error) {
+      failures.push(`${agent.id}: ${redactValue(error.message)}`);
+    }
+  }
+  return [{
+    id: "managed-runtime-identity",
+    status: failures.length === 0 ? "pass" : "fail",
+    detail: failures.length === 0
+      ? `verified ${activeAgents.length} managed Herdr pane${activeAgents.length === 1 ? "" : "s"}`
+      : failures.join("; "),
+  }];
 }

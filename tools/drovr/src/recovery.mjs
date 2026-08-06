@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 
 import { loadConfiguration } from "./config.mjs";
+import { bindAgentLaunchRuntime } from "./description.mjs";
 import { DrovrError } from "./errors.mjs";
 import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
@@ -90,6 +91,7 @@ export async function reconcileOrRecoverAgent(
   } catch {
     return blocked(initial, "launch_unsatisfied");
   }
+  let resumed;
   try {
     await ensureRecoveryPane(
       initial,
@@ -97,11 +99,14 @@ export async function reconcileOrRecoverAgent(
       registryDirectory,
       observations,
     );
-    await harness.resumeAgent({
+    resumed = await harness.resumeAgent({
       agent: initial.agent,
       registryDirectory,
     });
   } catch (error) {
+    if (error.outcome === "compatibility_blocked") {
+      return blocked(initial, "managed_runtime_identity");
+    }
     return uncertain(initial, "resume_failed", error.message);
   }
 
@@ -136,6 +141,12 @@ export async function reconcileOrRecoverAgent(
       context.agent.recovered_at = now();
       if (restored.identity.pane) {
         context.agent.herdr.pane_id = restored.identity.pane;
+      }
+      if (resumed?.compatibility?.managed_pane_identity) {
+        context.agent.launch_binding = bindAgentLaunchRuntime(
+          context.agent.launch_binding,
+          resumed.compatibility,
+        );
       }
       await writeRecord(registryDirectory, "agents", context.agent);
       return { ...context, status: "recovered", observed: restored };
