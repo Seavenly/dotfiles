@@ -768,6 +768,108 @@ test("binding enforcement permits distinct same-harness panes with shared execut
   await harness.ensureRuntime();
 });
 
+test("binding enforcement rejects a missing same-harness identity regardless of order", async () => {
+  const boundIdentity = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness: "codex",
+    managed_agent: "managed-agent",
+    pane_id: "pane-1",
+    executable: { canonical_path: "/opt/codex/bin/codex" },
+    managed_path_digest: "sha256:" + "1".repeat(64),
+    integration: "herdr-codex/v6",
+  };
+  const binding = {
+    compatibility_evidence_digest: "sha256:" + "c".repeat(64),
+  };
+  const boundAgent = {
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: {
+      ...binding,
+      managed_runtime_identity: boundIdentity,
+    },
+  };
+  const legacyAgent = {
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: { ...binding },
+  };
+
+  for (const agents of [
+    [boundAgent, legacyAgent],
+    [legacyAgent, boundAgent],
+  ]) {
+    let revalidations = 0;
+    const harness = semanticHarnessFor({
+      group: { herdr: { session: "delegates" } },
+      task: { id: "task-1" },
+      agents,
+    }, {
+      env: {},
+      herdr: {
+        async observeManagedRuntime() {
+          revalidations += 1;
+          throw new Error("binding gate should reject before revalidation");
+        },
+      },
+      requireCompatibility: true,
+      requireCompatibilityBinding: true,
+      requireManagedRuntimeIdentity: true,
+    });
+
+    await assert.rejects(
+      () => harness.ensureRuntime(),
+      (error) => error.outcome === "compatibility_blocked" &&
+        error.details?.reason === "missing",
+    );
+    assert.equal(revalidations, 0);
+  }
+});
+
+test("binding conflicts report projected shared identity digests", async () => {
+  const firstIdentity = managedIdentity();
+  const secondIdentity = managedIdentity({
+    managedPathDigest: "sha256:" + "3".repeat(64),
+  });
+  const digest = "sha256:" + "c".repeat(64);
+  const agents = [firstIdentity, secondIdentity].map((identity) => ({
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: {
+      compatibility_evidence_digest: digest,
+      managed_runtime_identity: identity,
+    },
+  }));
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents,
+  }, {
+    env: {},
+    requireCompatibility: true,
+    requireCompatibilityBinding: true,
+    requireManagedRuntimeIdentity: true,
+  });
+  const shared = {
+    executable: firstIdentity.executable,
+    managed_path_digest: firstIdentity.managed_path_digest,
+    integration: firstIdentity.integration,
+  };
+  const observedShared = {
+    executable: secondIdentity.executable,
+    managed_path_digest: secondIdentity.managed_path_digest,
+    integration: secondIdentity.integration,
+  };
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed" &&
+      error.details?.expected === digestCanonical(shared) &&
+      error.details?.observed === digestCanonical(observedShared),
+  );
+});
+
 test("binding enforcement qualifies mixed harnesses independently", async () => {
   const runtimeFacts = runtime();
   const codexCompatibility = await collectProductionCompatibility({

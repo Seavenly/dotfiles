@@ -12,6 +12,9 @@ import {
 import { digestCanonical } from "./canonical-json.mjs";
 import { execute } from "./process.mjs";
 import {
+  MANAGED_RUNTIME_OBSERVATION_FIELDS,
+} from "./managed-runtime-identity.mjs";
+import {
   createStagedInputReceipt,
   stagedInputTextToken,
 } from "./staged-input-receipt.mjs";
@@ -1361,19 +1364,7 @@ async function currentManagedIntegration(harness, client) {
 }
 
 function assertManagedRuntimeIdentity(expected, observed) {
-  const fields = [
-    "schema",
-    "harness",
-    "managed_agent",
-    "pane_id",
-    "executable",
-    "managed_path_digest",
-    "integration",
-    "native_session",
-    "process",
-    "model",
-    "effort",
-  ].filter((field) =>
+  const fields = MANAGED_RUNTIME_OBSERVATION_FIELDS.filter((field) =>
     Object.hasOwn(expected, field) &&
     expected[field] !== null &&
     expected[field] !== undefined

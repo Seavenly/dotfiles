@@ -1,4 +1,9 @@
 import { digestCanonical } from "./canonical-json.mjs";
+import {
+  MANAGED_RUNTIME_EXECUTABLE_FIELDS,
+  MANAGED_RUNTIME_QUALIFICATION_FIELDS,
+  MANAGED_RUNTIME_SETTLED_FIELDS,
+} from "./managed-runtime-identity.mjs";
 import { execute } from "./process.mjs";
 
 export const COMPATIBILITY_SCHEMA = "drovr.compatibility/v1";
@@ -458,7 +463,7 @@ function managedPaneIdentityFacts(identity, { harness, requireSettled }) {
       reason: "unqualified",
     });
   }
-  for (const field of ["pane_id", "integration", "managed_path_digest", "caller_path_digest"]) {
+  for (const field of MANAGED_RUNTIME_QUALIFICATION_FIELDS) {
     if (!nonEmptyString(identity[field])) {
       mismatches.push({
         field: `managed_pane_identity.${field}`,
@@ -497,7 +502,7 @@ function managedPaneIdentityFacts(identity, { harness, requireSettled }) {
       reason: "missing",
     });
   } else {
-    for (const field of ["observed_path", "canonical_path", "version"]) {
+    for (const field of MANAGED_RUNTIME_EXECUTABLE_FIELDS) {
       if (!nonEmptyString(executable[field])) {
         mismatches.push({
           field: `managed_pane_identity.executable.${field}`,
@@ -560,7 +565,7 @@ function managedPaneIdentityFacts(identity, { harness, requireSettled }) {
         reason: "missing",
       });
     }
-    for (const field of ["model", "effort"]) {
+    for (const field of MANAGED_RUNTIME_SETTLED_FIELDS) {
       if (!nonEmptyString(identity[field])) {
         mismatches.push({
           field: `managed_pane_identity.${field}`,
