@@ -464,6 +464,61 @@ esac
   assert.deepEqual(agentIds, Array(5).fill("agent-codex-1"));
 });
 
+test("a failed Codex launch discovers and closes its generated group", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-codex-cleanup-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  const groupKeyPath = join(scratch, "group-key");
+  const closedPath = join(scratch, "closed");
+  await mkdir(fakeBin);
+  await mkdir(join(scratch, "caller"));
+  await executable(
+    join(fakeBin, "drovr"),
+    `groupKeyPath=${JSON.stringify(groupKeyPath)}
+closedPath=${JSON.stringify(closedPath)}
+trace_sequence=$(wc -l < "$DROVR_TRACE_JOURNAL" 2>/dev/null || echo 0)
+trace_sequence=$((trace_sequence + 1))
+printf '{"sequence":%s,"at_ms":0,"kind":"agent_observation","operation":"agent.list","payload":{"request":{"resource":"agent","action":"list","target":null},"envelope":{"schema":"herdr.command/v1","result":{"agents":[]}}}}\\n' "$trace_sequence" >> "$DROVR_TRACE_JOURNAL"
+case "\${1:-} \${2:-}" in
+  "doctor ") printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"codex":{"model":"gpt-5.6-luna","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:cleanup"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"codex","status":"pass","detail":"codex-cli 0.145.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"codex-launch-capabilities","status":"pass","detail":"supported"},{"id":"codex-transcripts","status":"pass","detail":"available"},{"id":"codex-transcript-structure","status":"pass","detail":"supported"},{"id":"codex-integration","status":"pass","detail":"current (v6)"},{"id":"codex-native-session","status":"pass","detail":"supported"}]}}' ;;
+  "group list")
+    if [[ -f "$groupKeyPath" && ! -f "$closedPath" ]]; then
+      key=$(cat "$groupKeyPath")
+      printf '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[{"id":"group-failed-1","key":"%s"}]}}\\n' "$key"
+    else
+      printf '%s\\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}'
+    fi ;;
+  "delegate --group")
+    printf '%s' "$3" > "$groupKeyPath"
+    printf '%s\\n' '{"schema":"drovr.command/v1","command":"delegate","ok":false,"error":{"outcome":"adapter_failure","message":"Codex native session was not exposed"}}'
+    exit 4 ;;
+  "group close")
+    touch "$closedPath"
+    printf '%s\\n' '{"schema":"drovr.command/v1","command":"group close","ok":true,"result":{"status":"closed","group":{"id":"group-failed-1"}}}' ;;
+  *) exit 5 ;;
+esac
+`,
+  );
+
+  const report = await runQualification({
+    scenarioIds: ["codex_live_prompt_sources_and_reuse"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: join(scratch, "caller"),
+    env: { ...process.env },
+  });
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+
+  assert.equal(report.status, "fail");
+  assert.equal(evidence.result.disposition, "fail");
+  assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
+  assert.deepEqual(
+    evidence.cleanup_receipt.resource_dispositions.find(({ kind }) => kind === "group"),
+    { kind: "group", identity: "group-failed-1", disposition: "closed" },
+  );
+});
+
 test("live lifecycle settles exact native work before same-agent reuse", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-cancel-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));

@@ -1923,6 +1923,13 @@ async function runCodexPromptScenario({
     "delegate",
     { timeoutMs: 95_000 },
   );
+  let group = delegate.execution.envelope?.result?.group;
+  if (!group?.id) {
+    const discovery = await invoke(["group", "list"], "group list");
+    group = discovery.execution.envelope?.result?.groups?.find(
+      (candidate) => candidate.key === groupKey,
+    );
+  }
   const agentId = delegate.execution.envelope?.result?.agent?.id;
   const initialAgent = typeof agentId === "string"
     ? await invoke(["agent", "get", agentId], "agent get")
@@ -1950,7 +1957,7 @@ async function runCodexPromptScenario({
     typeof managedNativeSession === "string" &&
     finalAgent?.execution.envelope?.result?.agent?.native_session ===
       managedNativeSession;
-  const groupId = delegate.execution.envelope?.result?.group?.id;
+  const groupId = group?.id;
   deadline.completeScenario();
   let cleanup;
   if (typeof groupId === "string") {
