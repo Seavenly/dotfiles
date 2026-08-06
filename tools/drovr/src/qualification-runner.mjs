@@ -268,6 +268,7 @@ async function runScenarioPrerequisites({
   const qualificationRunId = randomUUID();
   let qualificationWorkspaceLock = null;
   let qualificationWorkspaceFingerprintBefore = null;
+  let qualificationWorkspaceAvailable = false;
   let trustPreflight = liveScenario
     ? trustPreflightNotRun({
         harnesses: liveHarnesses,
@@ -281,6 +282,7 @@ async function runScenarioPrerequisites({
     if (qualificationWorkspace && !qualificationWorkspaceSetupFailure) {
       try {
         await mkdir(qualificationWorkspace, { recursive: true, mode: 0o700 });
+        qualificationWorkspaceAvailable = true;
         qualificationWorkspace = await realpath(qualificationWorkspace);
         qualificationWorkspaceFingerprintBefore =
           await safeWorkspaceFingerprint(qualificationWorkspace);
@@ -440,7 +442,7 @@ async function runScenarioPrerequisites({
       const ownedResources = [
         { kind: "state_root", identity: stateHome },
         { kind: "runtime_root", identity: runtimeDirectory },
-        ...(qualificationWorkspace
+        ...(qualificationWorkspace && qualificationWorkspaceAvailable
           ? [qualificationWorkspaceResource(qualificationWorkspace, stableQualificationWorkspace)]
           : []),
         ...(qualificationWorkspaceLock?.acquired
@@ -540,7 +542,8 @@ async function runScenarioPrerequisites({
               : null,
           native_trust_configuration_preservation:
             await observeNativeTrustConfiguration(trustPreflight),
-          unresolved_obligations: [],
+          unresolved_obligations:
+            qualificationWorkspaceLockObligations(qualificationWorkspaceLock),
           completed_at: completedAt,
         },
         started_at: startedAt,
@@ -618,6 +621,7 @@ async function runScenarioPrerequisites({
       deadline,
       qualificationWorkspace,
       qualificationWorkspaceFingerprintBefore,
+      qualificationWorkspaceAvailable,
       stableQualificationWorkspace,
       qualificationWorkspaceLock,
       trustPreflight,
@@ -705,7 +709,17 @@ async function classifyExistingQualificationWorkspaceLock(path) {
     return {
       reason: "qualification_workspace_lock_unverifiable",
       message:
-        `The dedicated qualification workspace lock ${path} belongs to host ${owner.hostname}; its owner cannot be classified from this host. Verify that no qualification run owns it, remove exactly that lock directory, and retry.`,
+      `The dedicated qualification workspace lock ${path} belongs to host ${owner.hostname}; its owner cannot be classified from this host. Verify that no qualification run owns it, remove exactly that lock directory, and retry.`,
+    };
+  }
+  if (
+    Number.isFinite(owner.boot_uptime_ms) &&
+    owner.boot_uptime_ms > Math.round(uptime() * 1_000)
+  ) {
+    return {
+      reason: "qualification_workspace_lock_stale",
+      message:
+        `The dedicated qualification workspace lock ${path} is stale; its recorded boot uptime is newer than this host's current boot. Verify no qualification run is active, remove exactly that lock directory, and retry.`,
     };
   }
   try {
@@ -713,7 +727,7 @@ async function classifyExistingQualificationWorkspaceLock(path) {
     return {
       reason: "qualification_workspace_busy",
       message:
-        `The dedicated qualification workspace lock ${path} is held by live process ${owner.pid}; no native work was started. Wait for that run to finish and retry.`,
+        `The dedicated qualification workspace lock ${path} is held by live process ${owner.pid}; no native work was started. Wait for that run to finish and retry. If no run is active, verify that and remove exactly that lock directory before retrying.`,
     };
   } catch (error) {
     if (error?.code === "ESRCH") {
@@ -727,7 +741,7 @@ async function classifyExistingQualificationWorkspaceLock(path) {
       return {
         reason: "qualification_workspace_busy",
         message:
-          `The dedicated qualification workspace lock ${path} is held by process ${owner.pid}; no native work was started. Wait for that run to finish and retry.`,
+          `The dedicated qualification workspace lock ${path} is held by process ${owner.pid}; no native work was started. Wait for that run to finish and retry. If no run is active, verify that and remove exactly that lock directory before retrying.`,
       };
     }
     return {
@@ -750,6 +764,18 @@ async function releaseQualificationWorkspaceLock(lock) {
 
 function qualificationWorkspaceLockDisposition(lock) {
   return lock?.released === true ? "absent" : "retained";
+}
+
+function qualificationWorkspaceLockObligations(lock) {
+  if (!lock?.acquired || lock.released === true) return [];
+  return [
+    {
+      code: "qualification_workspace_lock_retained",
+      lock_path: lock.path,
+      action:
+        `Verify that no qualification run is active, remove exactly ${lock.path}, and retry.`,
+    },
+  ];
 }
 
 function qualificationWorkspaceResource(workspace, stable) {
@@ -892,6 +918,10 @@ async function verifyNativeTrustConfigurationAfterRun({
     },
   ];
   evidence.cleanup_receipt.native_trust_configuration_preservation = preservation;
+  evidence.cleanup_receipt.unresolved_obligations = [
+    ...(evidence.cleanup_receipt.unresolved_obligations ?? []),
+    ...qualificationWorkspaceLockObligations(qualificationWorkspaceLock),
+  ];
   if (preservation.status !== "unchanged") {
     evidence.result = {
       disposition: "fail",
@@ -1921,6 +1951,7 @@ async function recordScenarioFailure({
   deadline,
   qualificationWorkspace,
   qualificationWorkspaceFingerprintBefore,
+  qualificationWorkspaceAvailable,
   stableQualificationWorkspace,
   qualificationWorkspaceLock,
   trustPreflight,
@@ -1972,13 +2003,13 @@ async function recordScenarioFailure({
     await observeNativeTrustConfiguration(trustPreflight);
   const failureDisposition =
     scenario.execution.kind === "real_herdr_harness" &&
-    trustPreflight?.status !== "trusted"
+    trustPreflight?.status === "blocked"
       ? "blocked"
       : "fail";
   const ownedResources = [
     { kind: "state_root", identity: stateHome },
     { kind: "runtime_root", identity: runtimeDirectory },
-    ...(qualificationWorkspace
+    ...(qualificationWorkspace && qualificationWorkspaceAvailable
       ? [qualificationWorkspaceResource(qualificationWorkspace, stableQualificationWorkspace)]
       : []),
     ...(qualificationWorkspaceLock?.acquired
@@ -2053,20 +2084,10 @@ async function recordScenarioFailure({
     ],
     result: {
       disposition: failureDisposition,
-      reason:
-        failureDisposition === "blocked"
-          ? {
-              code:
-                trustPreflight?.reason?.code ??
-                "qualification_trust_unavailable",
-              message:
-                trustPreflight?.reason?.message ??
-                "The exact native trust posture was not proven before native work could begin.",
-            }
-          : {
-              code: "internal_error",
-              message: error instanceof Error ? error.message : String(error),
-            },
+      reason: {
+        code: "internal_error",
+        message: error instanceof Error ? error.message : String(error),
+      },
     },
     execution_policy: PUBLIC_QUALIFICATION_POLICY,
     cleanup_receipt: {
@@ -2099,15 +2120,18 @@ async function recordScenarioFailure({
           : null,
       native_trust_configuration_preservation:
         nativeTrustConfigurationPreservation,
-      unresolved_obligations: cleanupComplete
-        ? []
-        : [
-            {
-              code: "failure_path_cleanup_incomplete",
-              retained_state_root: stateHome,
-              group_ids: ownedGroups.map(({ id }) => id),
-            },
-          ],
+      unresolved_obligations: [
+        ...qualificationWorkspaceLockObligations(qualificationWorkspaceLock),
+        ...(cleanupComplete
+          ? []
+          : [
+              {
+                code: "failure_path_cleanup_incomplete",
+                retained_state_root: stateHome,
+                group_ids: ownedGroups.map(({ id }) => id),
+              },
+            ]),
+      ],
       completed_at: finishedAt,
     },
     started_at: startedAt,
@@ -3426,19 +3450,33 @@ export function validateQualificationEvidence(
   ) {
     throw new Error("qualification evidence has an unverified trusted preflight");
   }
-  if (
+  const liveFailureWithoutTrustedPreflightCodes = [
+    "internal_error",
+    "operator_interrupted",
+    "scenario_deadline_exceeded",
+    "process_timeout",
+    "cleanup_deadline_exceeded",
+  ];
+  const liveEvidenceWithoutTrustedPreflight =
     evidence.execution_kind === "real_herdr_harness" &&
-    ["pass", "fail"].includes(evidence.result?.disposition) &&
-    trustPreflight.status !== "trusted" &&
-    ![
-      "operator_interrupted",
-      "scenario_deadline_exceeded",
-      "process_timeout",
-      "cleanup_deadline_exceeded",
-    ].includes(evidence.result?.reason?.code)
+    trustPreflight.status !== "trusted";
+  if (
+    liveEvidenceWithoutTrustedPreflight &&
+    evidence.result?.disposition === "pass"
   ) {
     throw new Error(
-      "live qualification pass or fail evidence requires a trusted preflight",
+      "live qualification pass evidence requires a trusted preflight",
+    );
+  }
+  if (
+    liveEvidenceWithoutTrustedPreflight &&
+    evidence.result?.disposition === "fail" &&
+    !liveFailureWithoutTrustedPreflightCodes.includes(
+      evidence.result?.reason?.code,
+    )
+  ) {
+    throw new Error(
+      "live qualification failure evidence has an invalid non-trusted reason",
     );
   }
   if (

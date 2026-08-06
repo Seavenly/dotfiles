@@ -13,7 +13,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { hostname, tmpdir, uptime } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -379,7 +379,8 @@ test("stale dedicated workspace locks produce a typed block without takeover", a
   const evidenceDirectory = join(scratch, "evidence");
   const workspace = join(scratch, "dedicated-workspace");
   const lock = join(workspace, ".drovr-qualification-lock");
-  await Promise.all([mkdir(fakeBin), mkdir(workspace), mkdir(lock)]);
+  await Promise.all([mkdir(fakeBin), mkdir(workspace)]);
+  await mkdir(lock);
   let stalePid = 999_999;
   while (true) {
     try {
@@ -435,6 +436,89 @@ exit 5
     (await stat(join(lock, "owner.json"))).isFile(),
     true,
   );
+
+  await rm(join(lock, "owner.json"));
+  const missingOwnerReport = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory: join(scratch, "evidence-missing-owner"),
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
+    trustPreflight: async () => {
+      preflightCalls += 1;
+      throw new Error("missing owner must block before trust preflight");
+    },
+  });
+  assert.equal(preflightCalls, 0);
+  const missingOwnerEvidence = JSON.parse(
+    await readFile(missingOwnerReport.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(
+    missingOwnerEvidence.trust_preflight.reason.code,
+    "qualification_workspace_lock_unverifiable",
+  );
+
+  await writeFile(
+    join(lock, "owner.json"),
+    JSON.stringify({
+      schema: "drovr.qualification-lock-owner/v1",
+      pid: process.pid,
+      hostname: "foreign-qualification-host",
+      run_id: "foreign-host-test",
+      started_at: "2026-01-01T00:00:00.000Z",
+      boot_uptime_ms: 1,
+    }),
+  );
+  const foreignHostReport = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory: join(scratch, "evidence-foreign-host"),
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
+    trustPreflight: async () => {
+      preflightCalls += 1;
+      throw new Error("foreign host must block before trust preflight");
+    },
+  });
+  assert.equal(preflightCalls, 0);
+  const foreignHostEvidence = JSON.parse(
+    await readFile(foreignHostReport.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(
+    foreignHostEvidence.trust_preflight.reason.code,
+    "qualification_workspace_lock_unverifiable",
+  );
+
+  await writeFile(
+    join(lock, "owner.json"),
+    JSON.stringify({
+      schema: "drovr.qualification-lock-owner/v1",
+      pid: process.pid,
+      hostname: hostname(),
+      run_id: "rebooted-stale-test",
+      started_at: "2026-01-01T00:00:00.000Z",
+      boot_uptime_ms: Math.round(uptime() * 1_000) + 60_000,
+    }),
+  );
+  const rebootReport = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory: join(scratch, "evidence-reboot"),
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
+    trustPreflight: async () => {
+      preflightCalls += 1;
+      throw new Error("rebooted stale lock must block before trust preflight");
+    },
+  });
+  assert.equal(preflightCalls, 0);
+  const rebootEvidence = JSON.parse(
+    await readFile(rebootReport.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(
+    rebootEvidence.trust_preflight.reason.code,
+    "qualification_workspace_lock_stale",
+  );
 });
 
 test("invalid or unavailable configured workspaces block before native trust preflight", async (t) => {
@@ -478,6 +562,12 @@ exit 5
     relative.evidence.trust_preflight.reason.code,
     "qualification_workspace_not_absolute",
   );
+  assert.equal(
+    relative.evidence.cleanup_receipt.owned_resources.some(
+      ({ kind }) => kind === "dedicated_qualification_workspace",
+    ),
+    false,
+  );
 
   const unavailable = join(scratch, "workspace-file");
   await writeFile(unavailable, "not a directory");
@@ -488,6 +578,76 @@ exit 5
     filePath.evidence.trust_preflight.reason.code,
     "qualification_workspace_unavailable",
   );
+  assert.equal(
+    filePath.evidence.cleanup_receipt.owned_resources.some(
+      ({ kind }) => kind === "dedicated_qualification_workspace",
+    ),
+    false,
+  );
+});
+
+test("a retained qualification lock records an explicit recovery obligation", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-retained-lock-"));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "drovr-qualification-retained-workspace-"));
+  const workspace = join(workspaceRoot, "dedicated-workspace");
+  await mkdir(workspace);
+  t.after(async () => {
+    await chmod(workspace, 0o700).catch(() => {});
+    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(scratch, { recursive: true, force: true });
+  });
+  const fakeDrovr = join(scratch, "drovr");
+  const evidenceDirectory = join(scratch, "evidence");
+  await executable(
+    fakeDrovr,
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:retained-lock"},{"id":"herdr","status":"pass","detail":"herdr 0.8.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+exit 5
+`,
+  );
+
+  const report = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory,
+    drovrCommand: fakeDrovr,
+    cwd: scratch,
+    env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
+    trustPreflight: async ({ harnesses, workspace: exactWorkspace }) => {
+      await chmod(exactWorkspace, 0o500);
+      return {
+        ...trustPreflightNotRun({
+          harnesses,
+          workspace: exactWorkspace,
+          reason: "test_workspace_blocked",
+        }),
+        status: "blocked",
+        reason: {
+          code: "test_workspace_blocked",
+          message: "test workspace blocked",
+        },
+      };
+    },
+  });
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+  const lockPath = join(workspace, ".drovr-qualification-lock");
+
+  assert.equal(report.status, "blocked");
+  assert.equal(
+    evidence.cleanup_receipt.resource_dispositions.find(
+      ({ kind }) => kind === "qualification_workspace_lock",
+    ).disposition,
+    "retained",
+  );
+  assert.deepEqual(evidence.cleanup_receipt.unresolved_obligations, [
+    {
+      code: "qualification_workspace_lock_retained",
+      lock_path: lockPath,
+      action: `Verify that no qualification run is active, remove exactly ${lockPath}, and retry.`,
+    },
+  ]);
+  assert.equal((await stat(lockPath)).isDirectory(), true);
 });
 
 test("concurrent runs fail closed instead of sharing a dedicated workspace", async (t) => {
@@ -671,6 +831,49 @@ exit 5
   assert.notEqual(evidence.result.reason.code, "scenario_assertion_failed");
 });
 
+test("internal live runner failures preserve their error and fail disposition", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-internal-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeDrovr = join(scratch, "drovr");
+  const evidenceDirectory = join(scratch, "evidence");
+  const caller = join(scratch, "caller");
+  await mkdir(caller);
+  await executable(
+    fakeDrovr,
+    `if [[ \${1:-} == group && \${2:-} == list ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}'
+  exit 0
+fi
+if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","checks":[]}}'
+  exit 0
+fi
+exit 5
+`,
+  );
+
+  let nowCalls = 0;
+  const report = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory,
+    drovrCommand: fakeDrovr,
+    cwd: caller,
+    env: { ...process.env },
+    now: () => {
+      nowCalls += 1;
+      if (nowCalls === 2) throw new Error("synthetic internal runner fault");
+      return new Date("2026-01-01T00:00:00.000Z");
+    },
+  });
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+
+  assert.equal(report.status, "fail");
+  assert.equal(evidence.result.disposition, "fail");
+  assert.equal(evidence.result.reason.code, "internal_error");
+  assert.equal(evidence.result.reason.message, "synthetic internal runner fault");
+  assert.equal(evidence.trust_preflight.status, "not_run");
+});
+
 test("deterministic scenarios replay their traces into qualification evidence", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-replay-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -714,7 +917,20 @@ exit 5
         ...evidence,
         execution_kind: "real_herdr_harness",
       }),
-    /live qualification pass or fail evidence requires a trusted preflight/u,
+    /live qualification pass evidence requires a trusted preflight/u,
+  );
+  assert.throws(
+    () =>
+      validateQualificationEvidence({
+        ...evidence,
+        execution_kind: "real_herdr_harness",
+        result: {
+          ...evidence.result,
+          disposition: "pass",
+          reason: { code: "operator_interrupted" },
+        },
+      }),
+    /live qualification pass evidence requires a trusted preflight/u,
   );
   assert.throws(
     () =>
@@ -727,7 +943,7 @@ exit 5
           reason: { code: "scenario_assertion_failed" },
         },
       }),
-    /live qualification pass or fail evidence requires a trusted preflight/u,
+    /live qualification failure evidence has an invalid non-trusted reason/u,
   );
   assert.equal(evidence.trace.schema, "drovr.harness-trace/v1");
   assert.equal(evidence.trace.scenario_id, "codex_startup_context_before_prompt");
@@ -795,6 +1011,10 @@ case "\${1:-} \${2:-}" in
     grep -Fq 'QUALIFY-CLAUDE-SOAK-MULTILINE-OK' "$prompt_file"
     if [[ "\${QUALIFICATION_MUTATE_TRUST:-}" == true ]]; then
       jq '(.projects | keys[0]) as $workspace | .projects[$workspace].hasTrustDialogAccepted = false' "$CLAUDE_CONFIG_DIR/.claude.json" > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
+    elif [[ "\${QUALIFICATION_MUTATE_TRUST:-}" == delete ]]; then
+      jq '(.projects | keys[0]) as $workspace | del(.projects[$workspace])' "$CLAUDE_CONFIG_DIR/.claude.json" > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
+    elif [[ "\${QUALIFICATION_MUTATE_TRUST:-}" == malformed ]]; then
+      printf '{' > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
     else
       jq '.numStartups = ((.numStartups // 0) + 1)' "$CLAUDE_CONFIG_DIR/.claude.json" > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
     fi
@@ -824,14 +1044,16 @@ esac
     join(fakeBin, "claude"),
     "printf '%s\\n' '2.1.199 (Claude Code)'",
   );
-  await writeFile(
-    join(claudeConfigDir, ".claude.json"),
-    JSON.stringify({
-      projects: {
-        [await realpath(workspace)]: { hasTrustDialogAccepted: true },
-      },
-    }),
-  );
+  const resetClaudeTrust = async () =>
+    writeFile(
+      join(claudeConfigDir, ".claude.json"),
+      JSON.stringify({
+        projects: {
+          [await realpath(workspace)]: { hasTrustDialogAccepted: true },
+        },
+      }),
+    );
+  await resetClaudeTrust();
 
   const runCli = async (targetEvidenceDirectory, extraEnv = {}) => {
     try {
@@ -954,6 +1176,38 @@ esac
   assert.equal(
     mutatedEvidence.cleanup_receipt.native_trust_configuration_preservation.harnesses.claude.after.trust_level,
     false,
+  );
+
+  await resetClaudeTrust();
+  const deletedRun = await runCli(join(scratch, "evidence-deleted-trust"), {
+    QUALIFICATION_MUTATE_TRUST: "delete",
+  });
+  assert.equal(deletedRun.failure?.code, 4);
+  const deletedEvidence = JSON.parse(
+    await readFile(deletedRun.report.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(deletedEvidence.result.disposition, "fail");
+  assert.equal(
+    deletedEvidence.cleanup_receipt.native_trust_configuration_preservation.harnesses.claude.after.entry,
+    "missing",
+  );
+
+  await resetClaudeTrust();
+  const malformedRun = await runCli(join(scratch, "evidence-malformed-trust"), {
+    QUALIFICATION_MUTATE_TRUST: "malformed",
+  });
+  assert.equal(malformedRun.failure?.code, 4);
+  const malformedEvidence = JSON.parse(
+    await readFile(malformedRun.report.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(malformedEvidence.result.disposition, "fail");
+  assert.equal(
+    malformedEvidence.cleanup_receipt.native_trust_configuration_preservation.harnesses.claude.after.status,
+    "ambiguous",
+  );
+  assert.equal(
+    malformedEvidence.cleanup_receipt.native_trust_configuration_preservation.harnesses.claude.after.entry,
+    "unreadable",
   );
 });
 
