@@ -1,13 +1,9 @@
 import { digestCanonical } from "./canonical-json.mjs";
 
 export function publicCompatibility(value) {
-  if (value === null || typeof value !== "object") return value;
-  // Pane, process, and path coordinates are private evidence; the digest below
-  // remains available for public correlation without exposing those coordinates.
-  const projected = structuredClone(value);
-  delete projected.managed_pane_identity;
-  delete projected.managed_runtime_identity;
-  return projected;
+  // Use the same recursive projection as public errors so nested compatibility
+  // evidence cannot expose pane, process, or path coordinates.
+  return publicErrorDetails(value);
 }
 
 export function publicErrorDetails(value, key = "") {

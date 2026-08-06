@@ -324,6 +324,72 @@ test("caller PATH drift does not change the managed runtime binding", async () =
   );
 });
 
+test("production resume tolerates caller PATH drift after managed identity capture", async () => {
+  const runtimeFacts = runtime();
+  const expectedIdentity = managedIdentity();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+    managedIdentity: expectedIdentity,
+    requireManagedIdentity: true,
+  });
+  const observedIdentity = {
+    ...structuredClone(expectedIdentity),
+    caller_path_digest: "sha256:" + "4".repeat(64),
+  };
+  let resumes = 0;
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: {},
+    run: runtimeFacts.run,
+    herdr: {
+      async observeManagedRuntime() {
+        return structuredClone(expectedIdentity);
+      },
+      async resumeCodexAgent() {
+        resumes += 1;
+      },
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-codex-1" },
+        };
+      },
+      async captureManagedRuntimeIdentity() {
+        return structuredClone(observedIdentity);
+      },
+    },
+    compatibility,
+    expectedCompatibilityEvidenceDigest: compatibility.evidence_digest,
+    expectedManagedRuntimeIdentity: expectedIdentity,
+    requireCompatibility: true,
+    delay: async () => {},
+    clock: () => 0,
+  });
+
+  const result = await harness.resumeAgent({
+    agent: {
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      native_session: "native-codex-1",
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+    },
+    launchRuntime: {},
+  });
+
+  assert.equal(resumes, 1);
+  assert.equal(
+    result.managed_runtime_identity.caller_path_digest,
+    "sha256:" + "4".repeat(64),
+  );
+});
+
 test("Claude binds the same managed executable identity contract", async () => {
   const result = await collectProductionCompatibility({
     harness: "claude",
@@ -641,6 +707,65 @@ test("binding enforcement rejects conflicting same-harness active-agent bindings
       error.details?.observed === "sha256:" + "2".repeat(64),
   );
   assert.equal(nativeCalls, 0);
+});
+
+test("binding enforcement permits distinct same-harness panes with shared executable identity", async () => {
+  const runtimeFacts = runtime();
+  const firstIdentity = managedIdentity();
+  const secondIdentity = {
+    ...structuredClone(firstIdentity),
+    managed_agent: "managed-agent-2",
+    pane_id: "pane-2",
+    native_session: "native-codex-2",
+    caller_path_digest: "sha256:" + "9".repeat(64),
+    process: {
+      ...firstIdentity.process,
+      pid: 43,
+      cwd: "/workspace-2",
+    },
+  };
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+    managedIdentity: firstIdentity,
+    requireManagedIdentity: true,
+  });
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: compatibility.evidence_digest,
+          managed_runtime_identity: firstIdentity,
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: compatibility.evidence_digest,
+          managed_runtime_identity: secondIdentity,
+        },
+      },
+    ],
+  }, {
+    env: {},
+    run: runtimeFacts.run,
+    herdr: {
+      async observeManagedRuntime() {
+        return structuredClone(firstIdentity);
+      },
+      async ensureSession() {},
+    },
+    compatibility,
+    requireCompatibility: true,
+  });
+
+  await harness.ensureRuntime();
 });
 
 test("binding enforcement qualifies mixed harnesses independently", async () => {

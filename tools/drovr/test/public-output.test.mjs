@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { digestCanonical } from "../src/canonical-json.mjs";
-import { publicErrorDetails } from "../src/public-output.mjs";
+import {
+  publicCompatibility,
+  publicErrorDetails,
+} from "../src/public-output.mjs";
 
 test("public compatibility details redact exact managed identity mismatch values", () => {
   const expected = {
@@ -58,5 +61,41 @@ test("public compatibility details redact exact managed identity mismatch values
   assert.doesNotMatch(
     JSON.stringify(details),
     /pane-private|native-private|native-replaced|private-worktree/u,
+  );
+});
+
+test("public compatibility recursively redacts nested managed identity evidence", () => {
+  const expected = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    pane_id: "pane-private",
+    process: { pid: 42, cwd: "/private/worktree" },
+  };
+  const observed = {
+    ...expected,
+    process: { pid: 43, cwd: "/private/other-worktree" },
+  };
+  const projected = publicCompatibility({
+    facts: { harness: "codex" },
+    nested: {
+      managed_pane_identity: expected,
+      mismatch: {
+        field: "managed_pane_identity.process",
+        expected,
+        observed,
+        reason: "changed",
+      },
+    },
+  });
+
+  assert.equal(projected.nested.managed_pane_identity, undefined);
+  assert.deepEqual(projected.nested.mismatch, {
+    field: "managed_pane_identity.process",
+    expected_digest: digestCanonical(expected),
+    observed_digest: digestCanonical(observed),
+    reason: "changed",
+  });
+  assert.doesNotMatch(
+    JSON.stringify(projected),
+    /pane-private|private-worktree|other-worktree/u,
   );
 });

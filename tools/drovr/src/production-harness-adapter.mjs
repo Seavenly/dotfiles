@@ -31,6 +31,7 @@ import {
 } from "./codex-transcript.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HerdrClient } from "./herdr.mjs";
+import { MANAGED_RUNTIME_BINDING_FIELDS } from "./managed-runtime-identity.mjs";
 import { identityEvidence } from "./semantic-evidence.mjs";
 import {
   bindStagedInputToken,
@@ -1484,13 +1485,7 @@ function assertRecoveryExecutableBinding(
   observed,
   { includeRuntime = false } = {},
 ) {
-  const fields = [
-    "harness",
-    "pane_id",
-    "integration",
-    "managed_path_digest",
-    "executable",
-  ];
+  const fields = [...MANAGED_RUNTIME_BINDING_FIELDS];
   if (includeRuntime) {
     for (const field of [
       "managed_agent",

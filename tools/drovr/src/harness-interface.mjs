@@ -1,5 +1,9 @@
 import { createProductionSemanticHarness } from "./production-harness-adapter.mjs";
 import { digestCanonical } from "./canonical-json.mjs";
+import {
+  MANAGED_RUNTIME_SHARED_FIELDS,
+  projectManagedRuntimeIdentity,
+} from "./managed-runtime-identity.mjs";
 
 export {
   SEMANTIC_HARNESS_EVIDENCE,
@@ -171,7 +175,14 @@ function compatibilityBindingFor(agents) {
     }
     if (
       existing?.runtimeIdentity &&
-      digestCanonical(existing.runtimeIdentity) !== digestCanonical(runtimeIdentity)
+      runtimeIdentity &&
+      digestCanonical(existing.sharedRuntimeIdentity) !==
+        digestCanonical(
+          projectManagedRuntimeIdentity(
+            runtimeIdentity,
+            MANAGED_RUNTIME_SHARED_FIELDS,
+          ),
+        )
     ) {
       return {
         failure: {
@@ -181,7 +192,16 @@ function compatibilityBindingFor(agents) {
         },
       };
     }
-    byHarness.set(agentHarness, { digest, runtimeIdentity });
+    if (!existing) {
+      byHarness.set(agentHarness, {
+        digest,
+        runtimeIdentity,
+        sharedRuntimeIdentity: projectManagedRuntimeIdentity(
+          runtimeIdentity,
+          MANAGED_RUNTIME_SHARED_FIELDS,
+        ),
+      });
+    }
   }
   const bindings = [...byHarness.entries()]
     .sort(([left], [right]) => left.localeCompare(right))

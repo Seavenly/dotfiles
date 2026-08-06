@@ -321,6 +321,67 @@ test("managed runtime capture blocks a foreground process with the wrong executa
   );
 });
 
+test("managed runtime capture blocks a foreground process without a cwd", async () => {
+  const executablePath = process.execPath;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            process_info: {
+              foreground_processes: [{
+                pid: 42,
+                name: "codex",
+                argv0: executablePath,
+                argv: [executablePath],
+                cmdline: executablePath,
+                cwd: null,
+              }],
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.captureManagedRuntimeIdentity({
+      agentName: "managed-agent",
+      paneId: "pane-1",
+      harness: "codex",
+      executable: {
+        schema: "drovr.managed-pane-runtime-identity/v1",
+        harness: "codex",
+        pane_id: "pane-1",
+        executable: {
+          observed_path: executablePath,
+          canonical_path: executablePath,
+          version: "codex-cli 0.145.0",
+          file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+        },
+        managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+      },
+      model: "gpt-5.6-sol",
+      effort: "high",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
+  );
+});
+
 test("managed runtime observation blocks a changed managed PATH", async () => {
   const executablePath = process.execPath;
   const client = new HerdrClient({
