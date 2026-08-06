@@ -140,22 +140,39 @@ child workspace.
 
 The runner does not write either caller-owned configuration, start native work
 before the preflight passes, submit `Enter`, send raw keys, or retry around a
-trust prompt. Every live run receives a unique disposable workspace, so
-concurrent runs cannot adopt or mutate one another's trust state. Evidence
-records `trust_preflight.configuration.created: false` and retains only
-configuration paths, digests, trust facts, and the exact workspace binding -
-never configuration contents.
+trust prompt. Set `DROVR_QUALIFICATION_WORKSPACE` to one dedicated absolute
+workspace before arranging a live pass. The runner canonicalizes that path and
+takes an exclusive run lock, so concurrent runs cannot adopt or mutate one
+another's trust state. The dedicated workspace is retained between runs; its
+Drovr state and runtime directories remain isolated per run. If the variable
+is omitted, the runner uses a disposable workspace and the exact pre-existing
+trust entry cannot be arranged in advance, so the run fails closed as
+untrusted.
+
+For example, choose and create a dedicated path, then use that exact canonical
+path in both native trust controls and the runner environment:
+
+```sh
+export DROVR_QUALIFICATION_WORKSPACE="$HOME/.local/state/drovr/qualification/workspace"
+mkdir -p "$DROVR_QUALIFICATION_WORKSPACE"
+```
+
+After adding the exact Codex and Claude entries above, run the qualification
+with the same `DROVR_QUALIFICATION_WORKSPACE` value. Evidence records
+`trust_preflight.configuration.created: false`, the dedicated workspace lock
+and cleanup posture, and only configuration paths, digests, trust facts, and
+the exact workspace binding - never configuration contents. A post-run
+read-only digest check records whether native trust configuration was
+preserved.
 
 A trusted exact entry allows the live scenario to start. A missing, false,
-changed, malformed, or otherwise ambiguous observation returns exit status `3`
-with `qualification_trust_unavailable`, before any managed task or agent
-command. The block includes the exact path, native version and integration
-facts, and the operator action `pretrust_exact_workspace`. If a live pass is
-required, deliberately establish trust for the exact dedicated qualification
-workspace with the native tool's documented trust control before starting the
-run. Do not accept an unrelated prompt with a key; when exact trust cannot be
-arranged in advance, retain the typed block as the supported fail-closed
-result.
+changed, malformed, otherwise ambiguous, or concurrently claimed observation
+returns exit status `3` with `qualification_trust_unavailable`, before any
+managed task or agent command. The block includes the exact path, native
+version and integration facts, and the operator action
+`pretrust_exact_workspace`. Do not accept an unrelated prompt with a key; when
+exact trust cannot be arranged in advance, retain the typed block as the
+supported fail-closed result.
 
 The promotion soak's staged-input cycle records the transition sequence before
 staging, after staging, after the double-Escape clear, after qualified stable

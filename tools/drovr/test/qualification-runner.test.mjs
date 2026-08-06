@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import {
   chmod,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { digestCanonical } from "../src/canonical-json.mjs";
 import {
   interruptQualification,
   compareUnrelatedGroups,
@@ -28,55 +33,88 @@ import {
   workspaceFingerprint,
 } from "../src/qualification-runner.mjs";
 import { loadQualificationCatalog } from "../src/qualification-catalog.mjs";
+import {
+  readNativeTrustSource,
+  trustPreflightBinding,
+  trustPreflightNotRun,
+} from "../src/qualification-trust.mjs";
 
 const execFileAsync = promisify(execFile);
 const runner = fileURLToPath(
   new URL("../scripts/run-qualification.mjs", import.meta.url),
 );
+const testTrustRoot = await mkdtemp(join(tmpdir(), "drovr-qualification-test-trust-"));
+const testTrustFiles = new Set();
+process.on("exit", () => {
+  for (const path of testTrustFiles) rmSync(path, { force: true });
+  rmSync(testTrustRoot, { recursive: true, force: true });
+});
 
 async function executable(path, source) {
   await writeFile(path, `#!/usr/bin/env bash\nset -euo pipefail\n${source}`);
   await chmod(path, 0o755);
 }
 
-function trustedPreflight({ harnesses, workspace }) {
+async function trustedPreflight({ harnesses, workspace }) {
+  const exactPath = await realpath(workspace);
+  const metadata = await stat(exactPath);
   const exactWorkspace = {
-    path: resolve(workspace),
-    identity: "sha256:test-qualification-workspace",
+    path: exactPath,
+    identity: digestCanonical({
+      path: exactPath,
+      device: metadata.dev,
+      inode: metadata.ino,
+      mode: metadata.mode,
+    }),
   };
-  return {
+  const observations = {};
+  for (const harness of harnesses) {
+    const sourcePath = join(
+      testTrustRoot,
+      `${randomUUID()}-${harness}.${harness === "codex" ? "toml" : "json"}`,
+    );
+    testTrustFiles.add(sourcePath);
+    await writeFile(
+      sourcePath,
+      harness === "codex"
+        ? `[projects."${exactPath}"]\ntrust_level = "trusted"\n`
+        : JSON.stringify({
+            projects: { [exactPath]: { hasTrustDialogAccepted: true } },
+          }),
+    );
+    const source = await readNativeTrustSource({
+      harness,
+      path: sourcePath,
+      workspacePath: exactPath,
+    });
+    observations[harness] = {
+      harness,
+      status: "trusted",
+      workspace: exactWorkspace,
+      executable: { path: `/test/${harness}`, version: "test" },
+      integration: { id: `herdr-${harness}/v7`, detail: "current (v7)" },
+      source,
+      origin: "pre_existing",
+      reason: null,
+      action: null,
+    };
+  }
+  const result = {
     schema: "drovr.qualification-trust/v1",
     status: "trusted",
     workspace: exactWorkspace,
-    harnesses: Object.fromEntries(
-      harnesses.map((harness) => [
-        harness,
-        {
-          harness,
-          status: "trusted",
-          workspace: exactWorkspace,
-          executable: { path: `/test/${harness}`, version: "test" },
-          integration: { id: `herdr-${harness}/v7`, detail: "current (v7)" },
-          source: {
-            status: "present",
-            path: `/test/${harness}-trust`,
-            digest: "sha256:test",
-          },
-          origin: "pre_existing",
-          reason: null,
-          action: null,
-        },
-      ]),
-    ),
+    harnesses: observations,
     configuration: {
       created: false,
-      origin: "test",
+      origin: "pre_existing",
       cleanup: "not_created",
     },
     native_work_started: false,
-    binding: "sha256:test-qualification-trust",
+    binding: null,
     reason: null,
   };
+  result.binding = trustPreflightBinding(result, harnesses);
+  return result;
 }
 
 test("a missing live prerequisite produces retained typed block evidence", async (t) => {
@@ -247,6 +285,206 @@ exit 5
   assert.equal(await readFile(invocationLog, "utf8"), "doctor\n");
 });
 
+test("a configured qualification workspace is canonicalized and retained under an exclusive lock", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-stable-workspace-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  const workspace = join(scratch, "dedicated-workspace");
+  const invocationLog = join(scratch, "invocations.log");
+  await Promise.all([mkdir(fakeBin), mkdir(workspace)]);
+  await executable(
+    join(fakeBin, "drovr"),
+    `printf '%s\n' "$*" >> ${JSON.stringify(invocationLog)}
+if [[ \${1:-} == doctor ]]; then
+  printf '%s\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:stable"},{"id":"herdr","status":"pass","detail":"herdr 0.8.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+exit 5
+`,
+  );
+
+  let observedWorkspace;
+  const report = await runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      DROVR_QUALIFICATION_WORKSPACE: workspace,
+    },
+    trustPreflight: async ({ harnesses, workspace: exactWorkspace }) => {
+      observedWorkspace = exactWorkspace;
+      return {
+        ...trustPreflightNotRun({
+          harnesses,
+          workspace: exactWorkspace,
+          reason: "test_workspace_blocked",
+        }),
+        status: "blocked",
+        reason: {
+          code: "test_workspace_blocked",
+          message: "test workspace blocked",
+        },
+      };
+    },
+  });
+
+  assert.equal(report.status, "blocked");
+  assert.equal(observedWorkspace, await realpath(workspace));
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+  assert.equal(evidence.environment.qualification_workspace, observedWorkspace);
+  assert.deepEqual(
+    evidence.cleanup_receipt.resource_dispositions.find(
+      ({ kind }) => kind === "dedicated_qualification_workspace",
+    ),
+    {
+      kind: "dedicated_qualification_workspace",
+      identity: observedWorkspace,
+      disposition: "retained",
+    },
+  );
+  assert.equal(await readFile(invocationLog, "utf8"), "doctor\n");
+});
+
+test("concurrent runs fail closed instead of sharing a dedicated workspace", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-workspace-race-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const workspace = join(scratch, "dedicated-workspace");
+  await Promise.all([mkdir(fakeBin), mkdir(workspace)]);
+  await executable(
+    join(fakeBin, "drovr"),
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:race"},{"id":"herdr","status":"pass","detail":"herdr 0.8.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+exit 5
+`,
+  );
+  let preflightCalls = 0;
+  const trustPreflight = async ({ harnesses, workspace: exactWorkspace }) => {
+    preflightCalls += 1;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    return {
+      ...trustPreflightNotRun({
+        harnesses,
+        workspace: exactWorkspace,
+        reason: "test_workspace_blocked",
+      }),
+      status: "blocked",
+      reason: { code: "test_workspace_blocked", message: "test workspace blocked" },
+    };
+  };
+  const run = (suffix) => runQualification({
+    scenarioIds: ["claude_multiline_paste_conversion"],
+    evidenceDirectory: join(scratch, `evidence-${suffix}`),
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: scratch,
+    env: {
+      ...process.env,
+      DROVR_QUALIFICATION_WORKSPACE: workspace,
+    },
+    trustPreflight,
+  });
+
+  const [first, second] = await Promise.all([run("first"), run("second")]);
+  const evidence = await Promise.all(
+    [first, second].map(({ scenarios }) =>
+      readFile(scenarios[0].evidence, "utf8").then(JSON.parse),
+    ),
+  );
+  assert.equal(preflightCalls, 1);
+  assert.equal(
+    evidence.filter(
+      ({ trust_preflight: trust }) =>
+        trust.reason.code === "qualification_workspace_busy",
+    ).length,
+    1,
+  );
+  assert.ok(evidence.every(({ result }) => result.disposition === "blocked"));
+});
+
+test("the CLI preserves the fail exit code after a trusted preflight", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-cli-fail-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  const caller = join(scratch, "caller");
+  const workspace = join(scratch, "dedicated-workspace");
+  const claudeConfigDir = join(scratch, "claude");
+  await Promise.all([
+    mkdir(fakeBin),
+    mkdir(caller),
+    mkdir(workspace),
+    mkdir(claudeConfigDir),
+  ]);
+  await executable(
+    join(fakeBin, "claude"),
+    "printf '%s\\n' '2.1.199 (Claude Code)'",
+  );
+  await writeFile(
+    join(claudeConfigDir, ".claude.json"),
+    JSON.stringify({
+      projects: {
+        [await realpath(workspace)]: { hasTrustDialogAccepted: true },
+      },
+    }),
+  );
+  await executable(
+    join(fakeBin, "drovr"),
+    `if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:cli-fail"},{"id":"herdr","status":"pass","detail":"herdr 0.7.5"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+if [[ \${1:-} == group && \${2:-} == list ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"group list","ok":true,"result":{"status":"completed","groups":[]}}'
+  exit 0
+fi
+if [[ \${1:-} == delegate ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"delegate","ok":false,"error":{"outcome":"adapter_failure","message":"Claude workspace trust prompt blocked startup"}}'
+  exit 4
+fi
+exit 5
+`,
+  );
+
+  let failure;
+  try {
+    await execFileAsync(
+      process.execPath,
+      [
+        runner,
+        "--scenario",
+        "claude_soak_multiline_reuse",
+        "--evidence-dir",
+        evidenceDirectory,
+      ],
+      {
+        encoding: "utf8",
+        cwd: caller,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          CLAUDE_CONFIG_DIR: claudeConfigDir,
+          DROVR_QUALIFICATION_WORKSPACE: workspace,
+        },
+      },
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(failure?.code, 4);
+  const report = JSON.parse(failure.stdout);
+  assert.equal(report.status, "fail");
+  const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
+  assert.equal(evidence.result.reason.code, "adapter_failure");
+  assert.equal(evidence.trust_preflight.status, "trusted");
+});
+
 test("an initial live launch failure is not misreported as a reuse failure", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-launch-failure-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -367,8 +605,12 @@ test("a reusable live prompt-file scenario accepts identity from the final agent
   const fakeBin = join(scratch, "bin");
   const evidenceDirectory = join(scratch, "evidence");
   const invocationLog = join(scratch, "invocations.jsonl");
+  const workspace = join(scratch, "dedicated-workspace");
+  const claudeConfigDir = join(scratch, "claude");
   await mkdir(fakeBin);
   await mkdir(join(scratch, "caller"));
+  await mkdir(workspace);
+  await mkdir(claudeConfigDir);
   await executable(
     join(fakeBin, "drovr"),
     `argv_json=$(printf '%s\\n' "$@" | jq -Rsc 'split("\\n")[:-1]')
@@ -410,14 +652,42 @@ esac
 `,
   );
 
-  const report = await runQualification({
-    scenarioIds: ["claude_soak_multiline_reuse"],
-    evidenceDirectory,
-    drovrCommand: join(fakeBin, "drovr"),
-    cwd: join(scratch, "caller"),
-    env: { ...process.env },
-    trustPreflight: trustedPreflight,
-  });
+  await executable(
+    join(fakeBin, "claude"),
+    "printf '%s\\n' '2.1.199 (Claude Code)'",
+  );
+  await writeFile(
+    join(claudeConfigDir, ".claude.json"),
+    JSON.stringify({
+      projects: {
+        [await realpath(workspace)]: { hasTrustDialogAccepted: true },
+      },
+    }),
+  );
+
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    [
+      runner,
+      "--scenario",
+      "claude_soak_multiline_reuse",
+      "--evidence-dir",
+      evidenceDirectory,
+      "--drovr-command",
+      join(fakeBin, "drovr"),
+    ],
+    {
+      encoding: "utf8",
+      cwd: join(scratch, "caller"),
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        CLAUDE_CONFIG_DIR: claudeConfigDir,
+        DROVR_QUALIFICATION_WORKSPACE: workspace,
+      },
+    },
+  );
+  const report = JSON.parse(stdout);
   assert.equal(report.status, "pass");
   assert.equal(report.scenarios[0].result, "pass");
   const evidence = JSON.parse(
@@ -433,6 +703,16 @@ esac
   assert.equal(evidence.limits.measured.turns, 2);
   assert.equal(evidence.limits.measured.retries, 0);
   assert.equal(evidence.invocations.length, 8);
+  assert.equal(
+    evidence.cleanup_receipt.native_trust_configuration_preservation.status,
+    "unchanged",
+  );
+  assert.equal(
+    evidence.assertions.find(
+      ({ id }) => id === "native_trust_configuration_preservation",
+    ).disposition,
+    "pass",
+  );
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
   const catalog = await loadQualificationCatalog();
   const scenario = catalog.scenarios.find(({ id }) => id === "claude_soak_multiline_reuse");

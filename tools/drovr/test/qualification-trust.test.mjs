@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,6 +15,9 @@ import test from "node:test";
 import {
   classifyTrustObservation,
   preflightQualificationTrust,
+  readNativeTrustSource,
+  trustPreflightBinding,
+  trustPreflightReady,
 } from "../src/qualification-trust.mjs";
 
 const workspace = "/tmp/drovr-qualification/workspace";
@@ -75,6 +86,22 @@ test("trust observation classification fails closed for trusted, untrusted, chan
     ).status,
     "changed",
   );
+  assert.equal(
+    classifyTrustObservation(
+      bindingFacts({
+        harness: "claude",
+        executable: { path: "/opt/claude/bin/claude" },
+        expectedVersion: "2.1.199 (Claude Code)",
+        observedVersion: "2.1.199 (Claude Code)",
+        integration: {
+          id: "herdr-claude/v7",
+          detail: "current (v7)",
+        },
+        source: { ...bindingFacts().source, trust_level: false },
+      }),
+    ).status,
+    "untrusted",
+  );
 });
 
 test("trust preflight binds both native trust records to exact executable, integration, and workspace facts", async (t) => {
@@ -83,13 +110,14 @@ test("trust preflight binds both native trust records to exact executable, integ
   const bin = join(scratch, "bin");
   const codexHome = join(scratch, "codex");
   const claudeConfigDir = join(scratch, "claude");
-  const targetWorkspace = join(scratch, "workspace");
+  const workspacePath = join(scratch, "workspace");
   await Promise.all([
     mkdir(bin),
     mkdir(codexHome),
     mkdir(claudeConfigDir),
-    mkdir(targetWorkspace),
+    mkdir(workspacePath),
   ]);
+  const targetWorkspace = await realpath(workspacePath);
   await writeFile(
     join(codexHome, "config.toml"),
     `[projects."${targetWorkspace}"]\ntrust_level = "trusted"\n`,
@@ -162,5 +190,106 @@ test("trust preflight binds both native trust records to exact executable, integ
   assert.deepEqual(
     JSON.parse(await readFile(join(claudeConfigDir, ".claude.json"))),
     { projects: { [targetWorkspace]: { hasTrustDialogAccepted: true } } },
+  );
+});
+
+test("Codex trust parsing ends project scope at unrelated tables", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-trust-codex-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const workspacePath = join(scratch, "workspace");
+  await mkdir(workspacePath);
+  const targetWorkspace = await realpath(workspacePath);
+  const sourcePath = join(scratch, "config.toml");
+  await writeFile(
+    sourcePath,
+    `[projects."${targetWorkspace}"]\n\n[sandbox_workspace_write]\ntrust_level = "trusted"\n`,
+  );
+
+  const source = await readNativeTrustSource({
+    harness: "codex",
+    path: sourcePath,
+    workspacePath: targetWorkspace,
+  });
+  assert.equal(source.status, "ambiguous");
+  assert.equal(source.entry, "unreadable");
+  assert.doesNotMatch(source.error, /trusted/u);
+});
+
+test("Claude malformed trust configuration does not leak parser input", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-trust-claude-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const targetWorkspace = join(scratch, "workspace");
+  const sourcePath = join(scratch, ".claude.json");
+  await mkdir(targetWorkspace);
+  await writeFile(sourcePath, "sk-ant-oat01-SUPERSECRET-TOKEN-VALUE {\"projects\":{}}");
+
+  const source = await readNativeTrustSource({
+    harness: "claude",
+    path: sourcePath,
+    workspacePath: targetWorkspace,
+  });
+  assert.equal(source.status, "ambiguous");
+  assert.equal(source.entry, "unreadable");
+  assert.doesNotMatch(source.error, /SUPERSECRET|sk-ant/u);
+});
+
+test("trust preflight readiness rejects fabricated or drifted bindings", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-trust-binding-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const bin = join(scratch, "bin");
+  const codexHome = join(scratch, "codex");
+  const targetWorkspace = join(scratch, "workspace");
+  await Promise.all([mkdir(bin), mkdir(codexHome), mkdir(targetWorkspace)]);
+  await writeFile(
+    join(codexHome, "config.toml"),
+    `[projects."${targetWorkspace}"]\ntrust_level = "trusted"\n`,
+  );
+  await writeFile(join(bin, "codex"), "#!/usr/bin/env bash\nprintf '%s\\n' 'codex-cli 0.142.5'\n");
+  await chmod(join(bin, "codex"), 0o755);
+  const result = await preflightQualificationTrust({
+    harnesses: ["codex"],
+    workspace: targetWorkspace,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      CODEX_HOME: codexHome,
+    },
+    versions: {
+      codex: "codex-cli 0.142.5",
+      integration: { codex: "current (v7)" },
+    },
+  });
+  assert.equal(trustPreflightReady(result, ["codex"]), true);
+  assert.equal(result.binding, trustPreflightBinding(result, ["codex"]));
+  assert.equal(
+    trustPreflightReady({ ...result, binding: "sha256:test" }, ["codex"]),
+    false,
+  );
+  assert.equal(
+    trustPreflightReady(
+      {
+        ...result,
+        harnesses: {
+          codex: {
+            ...result.harnesses.codex,
+            source: { ...result.harnesses.codex.source, digest: "sha256:test" },
+          },
+        },
+        binding: trustPreflightBinding(
+          {
+            ...result,
+            harnesses: {
+              codex: {
+                ...result.harnesses.codex,
+                source: { ...result.harnesses.codex.source, digest: "sha256:test" },
+              },
+            },
+          },
+          ["codex"],
+        ),
+      },
+      ["codex"],
+    ),
+    false,
   );
 });

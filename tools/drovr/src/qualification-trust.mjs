@@ -8,7 +8,7 @@ import {
   stat,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { digestCanonical } from "./canonical-json.mjs";
@@ -82,17 +82,69 @@ export function trustPreflightNotRun({
   };
 }
 
+export function trustPreflightBlocked({
+  harnesses = [],
+  workspace,
+  reason = "trust_preflight_blocked",
+  message = "Trust preflight was blocked before native work could begin.",
+} = {}) {
+  const result = trustPreflightNotRun({ harnesses, workspace, reason });
+  return {
+    ...result,
+    status: "blocked",
+    harnesses: Object.fromEntries(
+      Object.entries(result.harnesses).map(([harness, observation]) => [
+        harness,
+        {
+          ...observation,
+          reason: { code: reason, message },
+          action: { ...observation.action, message },
+        },
+      ]),
+    ),
+    reason: { code: reason, message },
+  };
+}
+
+export function trustPreflightBinding(
+  result,
+  harnesses = Object.keys(result?.harnesses ?? {}),
+) {
+  const selected = [...new Set(harnesses)];
+  return digestCanonical({
+    workspace: result?.workspace ?? null,
+    harnesses: Object.fromEntries(
+      selected.map((harness) => [harness, result?.harnesses?.[harness] ?? null]),
+    ),
+  });
+}
+
 export function trustPreflightReady(result, harnesses = []) {
   const selected = [...new Set(harnesses)];
+  const observed = Object.keys(result?.harnesses ?? {});
+  let bindingMatches = false;
+  try {
+    bindingMatches =
+      typeof result?.binding === "string" &&
+      /^sha256:[0-9a-f]{64}$/u.test(result.binding) &&
+      result.binding === trustPreflightBinding(result, selected);
+  } catch {
+    bindingMatches = false;
+  }
   return (
     result?.schema === QUALIFICATION_TRUST_SCHEMA &&
     result.status === "trusted" &&
     result.native_work_started === false &&
     result.configuration?.created === false &&
+    result.configuration?.origin === "pre_existing" &&
+    result.configuration?.cleanup === "not_created" &&
     typeof result.workspace?.path === "string" &&
+    isAbsolute(result.workspace.path) &&
     typeof result.workspace?.identity === "string" &&
-    typeof result.binding === "string" &&
+    bindingMatches &&
     selected.length > 0 &&
+    observed.length === selected.length &&
+    observed.every((harness) => selected.includes(harness)) &&
     selected.every((harness) => {
       const observation = result.harnesses?.[harness];
       return (
@@ -105,8 +157,10 @@ export function trustPreflightReady(result, harnesses = []) {
         typeof observation.integration?.detail === "string" &&
         observation.source?.status === "present" &&
         typeof observation.source.path === "string" &&
-        typeof observation.source.digest === "string" &&
-        ["pre_existing", "created_for_run"].includes(observation.origin)
+        isAbsolute(observation.source.path) &&
+        /^sha256:[0-9a-f]{64}$/u.test(observation.source.digest ?? "") &&
+        observation.source.workspace_path === result.workspace.path &&
+        observation.origin === "pre_existing"
       );
     })
   );
@@ -290,7 +344,7 @@ export async function preflightQualificationTrust({
         workspace_path: workspaceObservation.path,
         entry: "unreadable",
         trust_level: null,
-        error: errorMessage(error),
+        error: "The native trust configuration could not be read safely.",
       };
     }
 
@@ -333,7 +387,7 @@ export async function preflightQualificationTrust({
     harnesses: observations,
     configuration: {
       created: false,
-      origin: "pre_existing_or_missing",
+      origin: trusted ? "pre_existing" : "pre_existing_or_missing",
       cleanup: "not_created",
     },
     native_work_started: false,
@@ -345,12 +399,7 @@ export async function preflightQualificationTrust({
           message: "Trust preflight did not produce a trusted observation for every selected harness.",
         },
   };
-  result.binding = digestCanonical({
-    workspace: result.workspace,
-    harnesses: Object.fromEntries(
-      selected.map((harness) => [harness, observations[harness]]),
-    ),
-  });
+  result.binding = trustPreflightBinding(result, selected);
   return result;
 }
 
@@ -405,15 +454,26 @@ export async function readNativeTrustSource({ harness, path, workspacePath }) {
       trust_level: null,
     };
   }
-  const parsed = harness === "codex"
-    ? parseCodexTrust(snapshot.content, workspacePath)
-    : harness === "claude"
-      ? parseClaudeTrust(snapshot.content, workspacePath)
-      : (() => {
-          throw new Error(`unsupported trust harness ${harness}`);
-        })();
   const { content: _content, ...safeSnapshot } = snapshot;
-  return { ...safeSnapshot, ...parsed };
+  try {
+    const parsed = harness === "codex"
+      ? parseCodexTrust(snapshot.content, workspacePath)
+      : harness === "claude"
+        ? parseClaudeTrust(snapshot.content, workspacePath)
+        : (() => {
+            throw new Error(`unsupported trust harness ${harness}`);
+          })();
+    return { ...safeSnapshot, ...parsed };
+  } catch {
+    return {
+      ...safeSnapshot,
+      status: "ambiguous",
+      workspace_path: workspacePath,
+      entry: "unreadable",
+      trust_level: null,
+      error: `The ${harness} trust configuration is malformed or ambiguous.`,
+    };
+  }
 }
 
 function nativeTrustConfigPath(harness, env) {
@@ -470,7 +530,7 @@ async function readStableFile(path) {
       path: normalizedPath,
       digest: null,
       content: null,
-      error: errorMessage(error),
+      error: "The native trust configuration could not be read safely.",
     };
   }
   const beforeToken = fileMetadataToken(before);
@@ -511,6 +571,10 @@ function parseCodexTrust(content, workspacePath) {
       entries.set(header, current);
       continue;
     }
+    if (isTomlTableHeader(line)) {
+      current = undefined;
+      continue;
+    }
     if (!current || !line.includes("=")) continue;
     const assignment = /^(trust_level)\s*=\s*(.+)$/u.exec(line);
     if (!assignment) continue;
@@ -535,7 +599,12 @@ function parseCodexTrust(content, workspacePath) {
 }
 
 function parseClaudeTrust(content, workspacePath) {
-  const document = JSON.parse(content);
+  let document;
+  try {
+    document = JSON.parse(content);
+  } catch {
+    throw new Error("Claude trust configuration is not valid JSON");
+  }
   if (
     document === null ||
     typeof document !== "object" ||
@@ -589,6 +658,10 @@ function projectHeader(line) {
   const literal = /^\[projects\.'((?:''|[^'])*)'\]$/u.exec(line);
   if (literal) return literal[1].replaceAll("''", "'");
   return null;
+}
+
+function isTomlTableHeader(line) {
+  return /^\[\[?.*\]\]?$|^\[.*$/u.test(line);
 }
 
 function parseTomlScalar(value) {

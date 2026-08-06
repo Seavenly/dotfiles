@@ -718,9 +718,8 @@ function validateCycleEvidence(evidence, definition, catalog, catalogDigest) {
   }
   if (
     evidence.trust_preflight?.schema !== "drovr.qualification-trust/v1" ||
-    !["not_applicable", "not_run", "trusted", "blocked"].includes(
-      evidence.trust_preflight.status,
-    ) ||
+    (definition.scenario.execution.kind === "real_herdr_harness" &&
+      evidence.trust_preflight.status !== "trusted") ||
     evidence.trust_preflight.native_work_started !== false ||
     evidence.trust_preflight.configuration?.created !== false
   ) {

@@ -33,7 +33,7 @@
         "assertions": "Positive, negative, uncertain, recovery, invariant, and prohibited-mutation assertions with pass or fail disposition.",
         "result": "pass, fail, blocked, or skipped with a typed reason and retained evidence references.",
         "execution_policy": "Exact public-command and no-repair policy used for the scenario.",
-        "cleanup_receipt": "One embedded drovr.qualification-cleanup-receipt/v1 document.",
+        "cleanup_receipt": "One embedded drovr.qualification-cleanup-receipt/v1 document, including native trust preservation evidence for live runs.",
         "started_at": "RFC 3339 UTC timestamp.",
         "finished_at": "RFC 3339 UTC timestamp."
       }
@@ -44,10 +44,11 @@
       "fields": {
         "schema": "Exact literal drovr.qualification-cleanup-receipt/v1.",
         "scenario_id": "Exact catalog scenario ID.",
-        "owned_resources": "Exact created group, task, agent, turn, Herdr session, state-root, and temporary-path identities.",
+        "owned_resources": "Exact created group, task, agent, turn, Herdr session, isolated state/runtime roots, temporary or dedicated qualification workspace identities, and any exclusive workspace lock.",
         "resource_dispositions": "Per-resource retained, retired, closed, absent, or cleanup-blocked disposition with public-command evidence.",
         "prohibited_mutations_observed": "Fail-closed assertions for the scenario's prohibited_mutations. unchanged is Boolean only when every clause was observed through the public interface; otherwise it is not_observed with the available evidence basis. Unknown prompt text may change only for the one exact snapshot explicitly authorized by --clear-unknown.",
         "caller_owned_workspace": "Canonical path identity plus before and after Git status and content fingerprint evidence.",
+        "native_trust_configuration_preservation": "Live-only read-only before and after native trust configuration status, path, digest, exact workspace entry, and trust value; never configuration contents.",
         "unresolved_obligations": "Typed non-empty details when cleanup is blocked; otherwise an empty array.",
         "completed_at": "RFC 3339 UTC timestamp after final cleanup observation."
       }
