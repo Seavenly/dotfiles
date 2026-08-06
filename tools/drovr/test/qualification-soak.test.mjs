@@ -270,6 +270,38 @@ test("a retained qualification lock is a valid explicit soak holder", () => {
   assert.equal(cycle.cleanup.status, "retained");
 });
 
+test("soak evaluation accepts a retained lock without a cleanup failure", () => {
+  const cycles = passingCycles();
+  cycles[0] = cycle("codex", 1, [
+    "multiline_or_long_input",
+    "steering_or_follow_up",
+    "cancellation_or_timeout",
+    "cleanup",
+  ], {
+    cleanup: {
+      status: "retained",
+      unresolved_obligations: [
+        {
+          code: "qualification_workspace_lock_retained",
+          lock_path: "/tmp/qualification-workspace/.drovr-qualification-lock",
+          action: "Verify no run is active, remove the lock, and retry.",
+        },
+      ],
+    },
+  });
+
+  const decision = evaluateSoak({ plan: PLAN, binding: BINDING, cycles });
+
+  assert.equal(decision.decision, "promote");
+  assert.equal(
+    decision.failures.some(
+      ({ code, cycle: cycleNumber }) =>
+        code === "cleanup_not_settled" && cycleNumber === 1,
+    ),
+    false,
+  );
+});
+
 test("staged-input anti-replay gaps and binding drift fail closed", () => {
   const cycles = passingCycles();
   cycles[0] = cycle("codex", 1, [

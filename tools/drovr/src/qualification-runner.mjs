@@ -58,7 +58,6 @@ const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const COMMAND_EXIT_GRACE_MS = 5_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
-const QUALIFICATION_BOOT_CLOCK_TOLERANCE_MS = 5 * 60 * 1_000;
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -714,19 +713,9 @@ async function classifyExistingQualificationWorkspaceLock(path) {
     };
   }
   const currentUptimeMs = Math.round(uptime() * 1_000);
-  const recordedBootUptimeMs = owner.boot_uptime_ms;
-  const recordedStartedAtMs = Date.parse(owner.started_at);
-  const recordedBootWallClockMs = recordedStartedAtMs - recordedBootUptimeMs;
-  const currentBootWallClockMs = Date.now() - currentUptimeMs;
-  const bootClockDriftMs = Math.abs(
-    recordedBootWallClockMs - currentBootWallClockMs,
-  );
   if (
-    Number.isFinite(recordedBootUptimeMs) &&
-    (recordedBootUptimeMs > currentUptimeMs ||
-      (Number.isFinite(recordedStartedAtMs) &&
-        Number.isFinite(currentBootWallClockMs) &&
-        bootClockDriftMs > QUALIFICATION_BOOT_CLOCK_TOLERANCE_MS))
+    Number.isFinite(owner.boot_uptime_ms) &&
+    owner.boot_uptime_ms > currentUptimeMs
   ) {
     return {
       reason: "qualification_workspace_lock_stale",

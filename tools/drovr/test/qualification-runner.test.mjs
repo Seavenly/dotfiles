@@ -495,9 +495,9 @@ exit 5
       schema: "drovr.qualification-lock-owner/v1",
       pid: process.pid,
       hostname: hostname(),
-      run_id: "old-boot-test",
+      run_id: "clock-step-test",
       started_at: new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString(),
-      boot_uptime_ms: 1,
+      boot_uptime_ms: Math.round(uptime() * 1_000),
     }),
   );
   const oldBootReport = await runQualification({
@@ -508,7 +508,7 @@ exit 5
     env: { ...process.env, DROVR_QUALIFICATION_WORKSPACE: workspace },
     trustPreflight: async () => {
       preflightCalls += 1;
-      throw new Error("old boot lock must block before trust preflight");
+      throw new Error("clock-step lock must block before trust preflight");
     },
   });
   assert.equal(preflightCalls, 0);
@@ -517,7 +517,7 @@ exit 5
   );
   assert.equal(
     oldBootEvidence.trust_preflight.reason.code,
-    "qualification_workspace_lock_stale",
+    "qualification_workspace_busy",
   );
 
   await writeFile(
