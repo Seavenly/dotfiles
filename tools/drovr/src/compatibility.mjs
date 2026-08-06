@@ -625,8 +625,14 @@ function sameFacts(left, right) {
 
 function sameManagedIdentity(actual, expected) {
   if (!isRecord(expected)) return sameFacts(actual, expected);
+  // The caller PATH is retained as provenance, but it is not managed-pane
+  // identity and may change between operations without changing the pane.
   return Object.entries(expected)
-    .filter(([, value]) => value !== null && value !== undefined)
+    .filter(([field, value]) =>
+      field !== "caller_path_digest" &&
+      value !== null &&
+      value !== undefined,
+    )
     .every(([field, value]) => sameFacts(actual?.[field], value));
 }
 

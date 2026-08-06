@@ -306,13 +306,17 @@ async function managedRuntimeChecks({ env, run }) {
   }
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const groupById = new Map(groups.map((group) => [group.id, group]));
+  const warnings = [];
   const failures = [];
   for (const agent of activeAgents) {
     const task = taskById.get(agent.task_id);
     const groupForAgent = groupById.get(task?.group_id);
     const expectedIdentity = agent.launch_binding?.managed_runtime_identity;
     if (!expectedIdentity) {
-      failures.push(`${agent.id}: managed identity is missing`);
+      warnings.push(
+        `${agent.id}: managed identity is missing from a legacy launch; ` +
+        `retire it with 'drovr agent retire ${agent.id}' and relaunch`,
+      );
       continue;
     }
     if (!groupForAgent?.herdr?.session) {
@@ -346,9 +350,13 @@ async function managedRuntimeChecks({ env, run }) {
   }
   return [{
     id: "managed-runtime-identity",
-    status: failures.length === 0 ? "pass" : "fail",
-    detail: failures.length === 0
+    status: failures.length > 0
+      ? "fail"
+      : warnings.length > 0
+        ? "warn"
+        : "pass",
+    detail: failures.length === 0 && warnings.length === 0
       ? `verified ${activeAgents.length} managed Herdr pane${activeAgents.length === 1 ? "" : "s"}`
-      : failures.join("; "),
+      : [...failures, ...warnings].join("; "),
   }];
 }

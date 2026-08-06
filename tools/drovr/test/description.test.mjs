@@ -263,6 +263,19 @@ test("description binds exact compatibility facts when qualification is required
     managedDescription.managed_runtime_binding.evidence_digest,
     digestCanonical(managedRuntimeIdentity),
   );
+  assert.equal(managedDescription.compatibility.managed_pane_identity, undefined);
+  assert.equal(
+    managedDescription.compatibility.managed_pane_evidence_digest,
+    digestCanonical(managedRuntimeIdentity),
+  );
+  assert.equal(
+    managedDescription.comparison_keys.compatibility,
+    digestCanonical(managedDescription.compatibility),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(managedDescription),
+    /\/opt\/codex\/bin\/codex|pane-1|native-1|\/workspace/u,
+  );
   assert.equal(
     managedDescription.watermark.content_sha256,
     description.watermark.content_sha256,

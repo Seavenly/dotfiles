@@ -1207,7 +1207,7 @@ async function nativeProcessIdentity(processInfo, harness, executable, client) {
     : [];
   const argv0 = candidate.argv0 ?? argv[0];
   const cmdline = candidate.cmdline ?? argv.join(" ");
-  const cwd = candidate.cwd ?? processInfo.foreground_cwd;
+  const cwd = candidate.cwd;
   if (
     !Number.isSafeInteger(candidate.pid) ||
     !candidate.name ||
@@ -1368,7 +1368,6 @@ function assertManagedRuntimeIdentity(expected, observed) {
     "pane_id",
     "executable",
     "managed_path_digest",
-    "caller_path_digest",
     "integration",
     "native_session",
     "process",

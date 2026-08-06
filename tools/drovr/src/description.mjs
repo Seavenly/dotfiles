@@ -13,6 +13,7 @@ import {
 } from "./compatibility.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
+import { publicCompatibility } from "./public-output.mjs";
 
 export const DROVR_ADVERTISED_FEATURES = deepFreeze([
   feature("exact_launch_description", "supported", [
@@ -140,6 +141,7 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     request.launch.harness ?? resolved.harness,
     dependencies,
   );
+  const exposedCompatibility = publicCompatibility(compatibility);
   const launch = launchDescription(configuration, resolved);
   const effectiveAuthority = deepFreeze({
     schema: SCHEMAS.effective_authority,
@@ -158,7 +160,7 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
   const watermark = configurationWatermark(
     configuration,
     featureAdvertisement,
-    compatibility,
+    exposedCompatibility,
   );
   const callerMetadata = canonicalizeJson(request.caller_metadata);
   const comparisonKeys = {
@@ -166,11 +168,11 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     effective_authority: digestCanonical(effectiveAuthority),
     credential_reference: digestCanonical(credentialReference),
     configuration_catalog: watermark.content_sha256,
-    ...(compatibility
-      ? { compatibility: digestCanonical(compatibility) }
+    ...(exposedCompatibility
+      ? { compatibility: digestCanonical(exposedCompatibility) }
       : {}),
   };
-  const schemas = compatibility
+  const schemas = exposedCompatibility
     ? { ...SCHEMAS, compatibility: "drovr.compatibility/v1" }
     : SCHEMAS;
   const identity = {
@@ -185,7 +187,9 @@ export async function describeDelegatedAgent(request, dependencies = {}) {
     caller_metadata: callerMetadata,
     managed_runtime_binding: managedRuntimeBinding(compatibility),
     comparison_keys: comparisonKeys,
-    ...(compatibility ? { compatibility } : {}),
+    ...(exposedCompatibility
+      ? { compatibility: exposedCompatibility }
+      : {}),
   };
 
   return deepFreeze({

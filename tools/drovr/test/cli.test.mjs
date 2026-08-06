@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { stateDirectory, writeRecord } from "../src/registry.mjs";
+
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -339,6 +341,74 @@ test("doctor reports a compatible configured Codex runtime", async (t) => {
   assert.match(
     report.result.checks.find(({ id }) => id === "codex-compatibility").detail,
     /exact managed-pane identity is checked/u,
+  );
+});
+
+test("doctor warns about legacy agents without failing the public command", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-doctor-legacy-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const codexHome = join(scratch, "codex");
+  const claudeHome = join(scratch, "claude");
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    CODEX_HOME: codexHome,
+    CLAUDE_CONFIG_DIR: claudeHome,
+    XDG_STATE_HOME: join(scratch, "state"),
+    DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+    DOTFILES_ROOT: root,
+  };
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(join(codexHome, "sessions"), { recursive: true });
+  await mkdir(join(claudeHome, "projects"), { recursive: true });
+  await executable(
+    join(fakeBin, "herdr"),
+    'if [[ ${1:-} == --version ]]; then echo "herdr 0.7.5"; else printf "claude: current (v7)\\ncodex: current (v6)\\n"; fi\n',
+  );
+  await executable(
+    join(fakeBin, "codex"),
+    'if [[ "$*" == *--help* ]]; then echo "--model --sandbox --ask-for-approval --search"; else echo "codex-cli 0.145.0"; fi\n',
+  );
+  await executable(join(fakeBin, "claude"), 'echo "2.1.0 (Claude Code)"\n');
+
+  await writeRecord(stateDirectory(env), "groups", {
+    id: "group-legacy",
+    herdr: { session: "legacy-session" },
+  });
+  await writeRecord(stateDirectory(env), "tasks", {
+    id: "task-legacy",
+    group_id: "group-legacy",
+  });
+  await writeRecord(stateDirectory(env), "agents", {
+    id: "agent-legacy",
+    task_id: "task-legacy",
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: {
+      compatibility_evidence_digest: `sha256:${"1".repeat(64)}`,
+    },
+  });
+
+  const { stdout } = await execFileAsync(drovr, ["doctor"], {
+    encoding: "utf8",
+    env,
+  });
+  const report = JSON.parse(stdout);
+  const managedRuntimeCheck = report.result.checks.find(
+    ({ id }) => id === "managed-runtime-identity",
+  );
+
+  assert.equal(report.ok, true);
+  assert.equal(report.result.status, "ready");
+  assert.equal(managedRuntimeCheck.status, "warn");
+  assert.match(
+    managedRuntimeCheck.detail,
+    /agent-legacy: managed identity is missing from a legacy launch/u,
+  );
+  assert.match(
+    managedRuntimeCheck.detail,
+    /drovr agent retire agent-legacy/u,
   );
 });
 

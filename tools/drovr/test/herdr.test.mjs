@@ -403,7 +403,55 @@ test("managed runtime observation blocks a changed managed PATH", async () => {
   );
 });
 
-test("managed runtime capture reads PATH from the exact process when Herdr omits it", async () => {
+test("managed runtime observation ignores caller PATH drift", async () => {
+  const expectedIdentity = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness: "codex",
+    managed_agent: "managed-agent",
+    pane_id: "pane-1",
+    executable: {
+      observed_path: "/opt/codex/bin/codex",
+      canonical_path: "/opt/codex/bin/codex",
+      version: "codex-cli 0.145.0",
+      file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+    },
+    managed_path_digest: `sha256:${"1".repeat(64)}`,
+    caller_path_digest: `sha256:${"2".repeat(64)}`,
+    integration: "herdr-codex/v6",
+    native_session: "native-1",
+    process: {
+      pid: 42,
+      name: "codex",
+      argv0: "/opt/codex/bin/codex",
+      argv: ["/opt/codex/bin/codex"],
+      cmdline: "/opt/codex/bin/codex",
+      cwd: "/workspace",
+    },
+    model: "gpt-5.6-sol",
+    effort: "high",
+  };
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/caller/changed" },
+  });
+  client.captureManagedRuntimeIdentity = async () => ({
+    ...structuredClone(expectedIdentity),
+    caller_path_digest: `sha256:${"3".repeat(64)}`,
+  });
+
+  const observed = await client.observeManagedRuntime({
+    agentName: "managed-agent",
+    harness: "codex",
+    expectedIdentity,
+  });
+
+  assert.equal(
+    observed.caller_path_digest,
+    `sha256:${"3".repeat(64)}`,
+  );
+});
+
+test("managed runtime capture uses exact-process ps and lsof fallbacks when Herdr omits PATH", async () => {
   const executablePath = process.execPath;
   const fileIdentity = await executableFileIdentity(executablePath);
   const client = new HerdrClient({

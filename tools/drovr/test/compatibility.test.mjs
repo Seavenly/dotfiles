@@ -276,7 +276,6 @@ test("managed-pane executable, integration, path, file, and process binding chan
     managedIdentity({ canonicalPath: "/opt/codex/bin/replaced" }),
     managedIdentity({ integration: "herdr-codex/v7" }),
     managedIdentity({ managedPathDigest: "sha256:" + "3".repeat(64) }),
-    managedIdentity({ callerPathDigest: "sha256:" + "4".repeat(64) }),
     managedIdentity({ fileIdentity: { device: 1, inode: 9, size: 3, mtime_ms: 4 } }),
     managedIdentity({ nativeSession: "native-codex-replaced" }),
   ]) {
@@ -293,6 +292,36 @@ test("managed-pane executable, integration, path, file, and process binding chan
     assert.equal(changed.reason, "changed");
     assert.match(changed.mismatches[0].field, /^managed_pane_identity(?:\.|$)/u);
   }
+});
+
+test("caller PATH drift does not change the managed runtime binding", async () => {
+  const baseline = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity(),
+    requireManagedIdentity: true,
+  });
+  const changed = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity({
+      callerPathDigest: "sha256:" + "4".repeat(64),
+    }),
+    expectedManagedIdentity: baseline.managed_pane_identity,
+    requireManagedIdentity: true,
+  });
+
+  assert.equal(changed.status, "qualified");
+  assert.equal(
+    changed.managed_pane_identity.caller_path_digest,
+    "sha256:" + "4".repeat(64),
+  );
+  assert.equal(
+    changed.managed_pane_identity.managed_path_digest,
+    baseline.managed_pane_identity.managed_path_digest,
+  );
 });
 
 test("Claude binds the same managed executable identity contract", async () => {

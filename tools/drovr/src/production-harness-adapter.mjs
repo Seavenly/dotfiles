@@ -1489,7 +1489,6 @@ function assertRecoveryExecutableBinding(
     "pane_id",
     "integration",
     "managed_path_digest",
-    "caller_path_digest",
     "executable",
   ];
   if (includeRuntime) {
