@@ -32,6 +32,13 @@ import {
   QUALIFICATION_EVIDENCE_REQUIRED_FIELDS,
 } from "./qualification-contracts.mjs";
 import { CLEANUP_LIMIT_MS } from "./qualification-process.mjs";
+import {
+  QUALIFICATION_TRUST_SCHEMA,
+  preflightQualificationTrust,
+  trustPreflightNotApplicable,
+  trustPreflightNotRun,
+  trustPreflightReady,
+} from "./qualification-trust.mjs";
 import { runTraceFixture } from "./qualification-replay.mjs";
 import { loadTraceFixture } from "./qualification-traces.mjs";
 import {
@@ -148,6 +155,7 @@ export async function runQualification({
   cwd = process.cwd(),
   env = process.env,
   now = () => new Date(),
+  trustPreflight: trustPreflightRunner = preflightQualificationTrust,
 } = {}) {
   interruptionRequested = false;
   const catalog = await loadQualificationCatalog();
@@ -166,6 +174,7 @@ export async function runQualification({
         cwd,
         env,
         now,
+        trustPreflightRunner,
       }),
     );
   }
@@ -213,6 +222,7 @@ async function runScenarioPrerequisites({
   cwd,
   env,
   now,
+  trustPreflightRunner,
 }) {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-run-"));
   const stateHome = join(scratch, "state");
@@ -226,39 +236,263 @@ async function runScenarioPrerequisites({
   const deadline = createDeadline(
     scenario.execution.limits?.max_elapsed ?? "30s",
   );
+  const liveScenario = scenario.execution.kind === "real_herdr_harness";
+  const qualificationWorkspace = liveScenario
+    ? join(scratch, "workspace")
+    : null;
+  const liveHarnesses = liveScenario
+    ? scenario.execution.harnesses ?? [scenarioHarness(scenario)]
+    : [];
+  let trustPreflight = liveScenario
+    ? trustPreflightNotRun({
+        harnesses: liveHarnesses,
+        workspace: qualificationWorkspace,
+        reason: "qualification_preflight_not_started",
+      })
+    : trustPreflightNotApplicable();
+  let trustBlocked = false;
   try {
-  await mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
-  const scenarioEnvironment = {
-    ...env,
-    DOTFILES_ROOT: REPOSITORY_ROOT,
-    XDG_STATE_HOME: stateHome,
-    XDG_RUNTIME_DIR: runtimeDirectory,
-    DROVR_TRACE_JOURNAL: traceJournalPath,
-    DROVR_TRACE_STARTED_AT: String(traceStartedAt),
-  };
-  const invocationStartedAt = now().toISOString();
-  const execution = await executeDrovr(drovrCommand, ["doctor"], {
-    cwd,
-    env: scenarioEnvironment,
-    timeout: deadline.commandTimeout(30_000),
-  });
-  const doctorEnvelopeError = validateDrovrEnvelope("doctor", execution.envelope);
-  if (doctorEnvelopeError) {
-    execution.envelope = invalidEnvelope("doctor", doctorEnvelopeError);
-    execution.exitCode ||= 5;
-  }
-  const invocationFinishedAt = now().toISOString();
-  const versions = versionsFromDoctor(execution.envelope);
-  const blocked =
-    scenario.execution.kind === "real_herdr_harness" &&
-    !scenarioPrerequisitesReady(scenario, execution.envelope);
-  const executor = scenarioExecutors.get(scenario.id);
-  const effectiveExecutor =
-    executor ??
-    (scenario.execution.kind === "deterministic_trace_replay"
-      ? runDeterministicReplayScenario
-      : null);
-  if (!blocked && effectiveExecutor) {
+    await mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
+    if (qualificationWorkspace) {
+      await mkdir(qualificationWorkspace, { recursive: true, mode: 0o700 });
+    }
+    const scenarioEnvironment = {
+      ...env,
+      DOTFILES_ROOT: REPOSITORY_ROOT,
+      XDG_STATE_HOME: stateHome,
+      XDG_RUNTIME_DIR: runtimeDirectory,
+      DROVR_TRACE_JOURNAL: traceJournalPath,
+      DROVR_TRACE_STARTED_AT: String(traceStartedAt),
+    };
+    const invocationStartedAt = now().toISOString();
+    const execution = await executeDrovr(drovrCommand, ["doctor"], {
+      cwd,
+      env: scenarioEnvironment,
+      timeout: deadline.commandTimeout(30_000),
+    });
+    const doctorEnvelopeError = validateDrovrEnvelope("doctor", execution.envelope);
+    if (doctorEnvelopeError) {
+      execution.envelope = invalidEnvelope("doctor", doctorEnvelopeError);
+      execution.exitCode ||= 5;
+    }
+    const invocationFinishedAt = now().toISOString();
+    const versions = versionsFromDoctor(execution.envelope);
+    const doctorBlocked =
+      liveScenario &&
+      !scenarioPrerequisitesReady(scenario, execution.envelope);
+    if (liveScenario) {
+      if (doctorBlocked) {
+        trustPreflight = trustPreflightNotRun({
+          harnesses: liveHarnesses,
+          workspace: qualificationWorkspace,
+        });
+      } else {
+        try {
+          trustPreflight = await trustPreflightRunner({
+            harnesses: liveHarnesses,
+            workspace: qualificationWorkspace,
+            env: scenarioEnvironment,
+            versions,
+            scenario,
+          });
+        } catch (error) {
+          trustPreflight = {
+            ...trustPreflightNotRun({
+              harnesses: liveHarnesses,
+              workspace: qualificationWorkspace,
+              reason: "trust_preflight_error",
+            }),
+            status: "blocked",
+            reason: {
+              code: "trust_preflight_error",
+              message: error instanceof Error ? error.message : String(error),
+            },
+          };
+        }
+        trustBlocked = !trustPreflightReady(trustPreflight, liveHarnesses);
+      }
+      const blocked = doctorBlocked || trustBlocked;
+      const executor = scenarioExecutors.get(scenario.id);
+      const effectiveExecutor =
+        executor ??
+        (scenario.execution.kind === "deterministic_trace_replay"
+          ? runDeterministicReplayScenario
+          : null);
+      if (!blocked && effectiveExecutor) {
+        const result = await effectiveExecutor({
+          catalog,
+          scenario,
+          evidenceDirectory,
+          drovrCommand,
+          cwd,
+          scenarioEnvironment,
+          scratch,
+          stateHome,
+          runtimeDirectory,
+          now,
+          startedAt,
+          doctorExecution: execution,
+          doctorStartedAt: invocationStartedAt,
+          doctorFinishedAt: invocationFinishedAt,
+          versions,
+          deadline,
+          traceJournalPath,
+          workspace: qualificationWorkspace,
+          trustPreflight,
+        });
+        return await attachCapturedTrace({
+          result,
+          traceJournalPath,
+          scenario,
+          catalog,
+        });
+      }
+      const runnerFailure = executionFailure([
+        invocationRecord(
+          ["drovr", "doctor"],
+          execution,
+          invocationStartedAt,
+          invocationFinishedAt,
+        ),
+      ]);
+      const disposition = runnerFailure ? "fail" : blocked ? "blocked" : "skipped";
+      const reason = runnerFailure
+        ? runnerFailure
+        : trustBlocked
+        ? {
+            code: "qualification_trust_unavailable",
+            message:
+              trustPreflight.reason?.message ??
+              "The exact native trust posture for the qualification workspace was not proven.",
+          }
+        : blocked
+        ? {
+            code: "prerequisite_unavailable",
+            message: "Drovr doctor reported an incompatible or missing prerequisite.",
+          }
+        : {
+            code: "deterministic_replay_deferred",
+            message: "The selected scenario has no executor yet.",
+          };
+      deadline.completeScenario();
+      const completedAt = now().toISOString();
+      const ownedResources = [
+        { kind: "state_root", identity: stateHome },
+        { kind: "runtime_root", identity: runtimeDirectory },
+        ...(qualificationWorkspace
+          ? [{ kind: "temporary_workspace", identity: qualificationWorkspace }]
+          : []),
+      ];
+      const evidence = {
+        schema: "drovr.qualification-evidence/v1",
+        catalog_version: catalog.version,
+        catalog_digest: digestCanonical(catalog),
+        scenario_id: scenario.id,
+        execution_kind: scenario.execution.kind,
+        versions,
+        environment: {
+          os: platform(),
+          architecture: arch(),
+          isolated_state_root: stateHome,
+          isolated_runtime_root: runtimeDirectory,
+          cwd: resolve(cwd),
+          qualification_workspace: qualificationWorkspace,
+          managed_session_identity: null,
+        },
+        limits: {
+          declared: scenario.execution.limits ?? {
+            max_turns: 0,
+            max_retries: 0,
+            max_elapsed: "0s",
+          },
+          measured: { turns: 0, retries: 0, elapsed_ms: deadline.scenarioElapsedMs() },
+          cleanup: deadline.cleanupMeasurement(),
+        },
+        live_run_justification:
+          scenario.execution.kind === "real_herdr_harness"
+            ? scenario.execution.rationale
+            : null,
+        configuration_deviation_justification: null,
+        trust_preflight: trustPreflight,
+        invocations: [
+          invocationRecord(
+            ["drovr", "doctor"],
+            execution,
+            invocationStartedAt,
+            invocationFinishedAt,
+          ),
+        ],
+        observations: [
+          {
+            type: "drovr_doctor",
+            envelope: execution.envelope,
+          },
+          ...(liveScenario
+            ? [{ type: "trust_preflight", result: trustPreflight }]
+            : []),
+        ],
+        assertions: [
+          ...prerequisiteAssertions(execution.envelope),
+          ...(liveScenario
+            ? [{
+                kind: "prerequisite",
+                id: "qualification_trust_preflight",
+                disposition: trustBlocked ? "fail" : "pass",
+                detail:
+                  trustPreflight.reason?.message ??
+                  "The exact native trust posture was observed before managed work began.",
+              }]
+            : []),
+        ],
+        result: { disposition, reason },
+        execution_policy: PUBLIC_QUALIFICATION_POLICY,
+        cleanup_receipt: {
+          schema: "drovr.qualification-cleanup-receipt/v1",
+          scenario_id: scenario.id,
+          owned_resources: ownedResources,
+          resource_dispositions: ownedResources.map((resource) => ({
+            ...resource,
+            disposition: resourceDisposition(resource.kind, true),
+          })),
+          prohibited_mutations_observed: prohibitedMutationObservations(
+            scenario.prohibited_mutations,
+            { basis: ["no live mutation was attempted by this deferred replay scenario"] },
+          ),
+          caller_owned_workspace: {
+            path: resolve(cwd),
+            before: "not_observed_before_prerequisite_block",
+            after: "not_mutated",
+          },
+          unresolved_obligations: [],
+          completed_at: completedAt,
+        },
+        started_at: startedAt,
+        finished_at: completedAt,
+      };
+      await rm(scratch, { recursive: true, force: true });
+      const evidencePath = join(
+        evidenceDirectory,
+        `${scenario.id}-${startedAt.replaceAll(":", "-")}.json`,
+      );
+      validateQualificationEvidence(
+        evidence,
+        catalog.contracts.qualification_evidence.required_fields,
+      );
+      await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      await removeTraceArtifacts(traceJournalPath);
+      return { id: scenario.id, result: disposition, evidence: evidencePath };
+    }
+    const executor = scenarioExecutors.get(scenario.id);
+    const effectiveExecutor =
+      executor ??
+      (scenario.execution.kind === "deterministic_trace_replay"
+        ? runDeterministicReplayScenario
+        : null);
+    if (!effectiveExecutor) {
+      throw new Error(`selected scenario has no executor: ${scenario.id}`);
+    }
     const result = await effectiveExecutor({
       catalog,
       scenario,
@@ -277,6 +511,8 @@ async function runScenarioPrerequisites({
       versions,
       deadline,
       traceJournalPath,
+      workspace: qualificationWorkspace,
+      trustPreflight,
     });
     return await attachCapturedTrace({
       result,
@@ -284,116 +520,6 @@ async function runScenarioPrerequisites({
       scenario,
       catalog,
     });
-  }
-  const runnerFailure = executionFailure([
-    invocationRecord(
-      ["drovr", "doctor"],
-      execution,
-      invocationStartedAt,
-      invocationFinishedAt,
-    ),
-  ]);
-  const disposition = runnerFailure ? "fail" : blocked ? "blocked" : "skipped";
-  const reason = runnerFailure
-    ? runnerFailure
-    : blocked
-    ? {
-        code: "prerequisite_unavailable",
-        message: "Drovr doctor reported an incompatible or missing prerequisite.",
-      }
-    : {
-        code: "deterministic_replay_deferred",
-        message: "The selected scenario has no executor yet.",
-      };
-  deadline.completeScenario();
-  const completedAt = now().toISOString();
-  const ownedResources = [
-    { kind: "state_root", identity: stateHome },
-    { kind: "runtime_root", identity: runtimeDirectory },
-  ];
-  const evidence = {
-    schema: "drovr.qualification-evidence/v1",
-    catalog_version: catalog.version,
-    catalog_digest: digestCanonical(catalog),
-    scenario_id: scenario.id,
-    execution_kind: scenario.execution.kind,
-    versions,
-    environment: {
-      os: platform(),
-      architecture: arch(),
-      isolated_state_root: stateHome,
-      isolated_runtime_root: runtimeDirectory,
-      cwd: resolve(cwd),
-      managed_session_identity: null,
-    },
-    limits: {
-      declared: scenario.execution.limits ?? {
-        max_turns: 0,
-        max_retries: 0,
-        max_elapsed: "0s",
-      },
-      measured: { turns: 0, retries: 0, elapsed_ms: deadline.scenarioElapsedMs() },
-      cleanup: deadline.cleanupMeasurement(),
-    },
-    live_run_justification:
-      scenario.execution.kind === "real_herdr_harness"
-        ? scenario.execution.rationale
-        : null,
-    configuration_deviation_justification: null,
-    invocations: [
-      invocationRecord(
-        ["drovr", "doctor"],
-        execution,
-        invocationStartedAt,
-        invocationFinishedAt,
-      ),
-    ],
-    observations: [
-      {
-        type: "drovr_doctor",
-        envelope: execution.envelope,
-      },
-    ],
-    assertions: prerequisiteAssertions(execution.envelope),
-    result: { disposition, reason },
-    execution_policy: PUBLIC_QUALIFICATION_POLICY,
-    cleanup_receipt: {
-      schema: "drovr.qualification-cleanup-receipt/v1",
-      scenario_id: scenario.id,
-      owned_resources: ownedResources,
-      resource_dispositions: ownedResources.map((resource) => ({
-        ...resource,
-        disposition: resourceDisposition(resource.kind, true),
-      })),
-      prohibited_mutations_observed: prohibitedMutationObservations(
-        scenario.prohibited_mutations,
-        { basis: ["no live mutation was attempted by this deferred replay scenario"] },
-      ),
-      caller_owned_workspace: {
-        path: resolve(cwd),
-        before: "not_observed_before_prerequisite_block",
-        after: "not_mutated",
-      },
-      unresolved_obligations: [],
-      completed_at: completedAt,
-    },
-    started_at: startedAt,
-    finished_at: completedAt,
-  };
-  await rm(scratch, { recursive: true, force: true });
-  const evidencePath = join(
-    evidenceDirectory,
-    `${scenario.id}-${startedAt.replaceAll(":", "-")}.json`,
-  );
-  validateQualificationEvidence(
-    evidence,
-    catalog.contracts.qualification_evidence.required_fields,
-  );
-  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  await removeTraceArtifacts(traceJournalPath);
-  return { id: scenario.id, result: disposition, evidence: evidencePath };
   } catch (error) {
     const failureResult = await recordScenarioFailure({
       catalog,
@@ -415,6 +541,8 @@ async function runScenarioPrerequisites({
       now,
       startedAt,
       deadline,
+      qualificationWorkspace,
+      trustPreflight,
       error,
     });
     return await attachCapturedTrace({
@@ -505,6 +633,7 @@ async function runDeterministicReplayScenario({
     },
     live_run_justification: null,
     configuration_deviation_justification: null,
+    trust_preflight: trustPreflightNotApplicable(),
     invocations: invocationRecords,
     observations: [
       {
@@ -834,9 +963,9 @@ async function runUnknownStagedInputScenario({
   doctorFinishedAt,
   versions,
   deadline,
+  workspace,
+  trustPreflight,
 }) {
-  const workspace = join(scratch, "workspace");
-  await mkdir(workspace);
   const beforeWorkspace = await workspaceFingerprint(cwd);
   const suffix = randomUUID();
   const groupKey = `qualification-${scenario.id}-${suffix}`;
@@ -1234,6 +1363,7 @@ async function runUnknownStagedInputScenario({
     },
     live_run_justification: scenario.execution.rationale,
     configuration_deviation_justification: null,
+    trust_preflight: trustPreflight,
     invocations: records,
     observations: records.map(({ envelope }) => envelope),
     assertions: [
@@ -1356,6 +1486,8 @@ async function recordScenarioFailure({
   now,
   startedAt,
   deadline,
+  qualificationWorkspace,
+  trustPreflight,
   error,
 }) {
   const records = [];
@@ -1400,6 +1532,9 @@ async function recordScenarioFailure({
   const ownedResources = [
     { kind: "state_root", identity: stateHome },
     { kind: "runtime_root", identity: runtimeDirectory },
+    ...(qualificationWorkspace
+      ? [{ kind: "temporary_workspace", identity: qualificationWorkspace }]
+      : []),
     ...ownedGroups.map(({ id }) => ({ kind: "group", identity: id })),
   ];
   const evidence = {
@@ -1423,6 +1558,7 @@ async function recordScenarioFailure({
       isolated_state_root: stateHome,
       isolated_runtime_root: runtimeDirectory,
       cwd: resolve(cwd),
+      qualification_workspace: qualificationWorkspace,
       managed_session_identity: null,
     },
     limits: {
@@ -1443,14 +1579,27 @@ async function recordScenarioFailure({
         ? scenario.execution.rationale
         : null,
     configuration_deviation_justification: null,
+    trust_preflight: trustPreflight,
     invocations: records,
-    observations: records.map(({ envelope }) => envelope),
+    observations: [
+      ...records.map(({ envelope }) => envelope),
+      ...(scenario.execution.kind === "real_herdr_harness"
+        ? [{ type: "trust_preflight", result: trustPreflight }]
+        : []),
+    ],
     assertions: [
       {
         kind: "cleanup",
         id: "failure_path_cleanup",
         disposition: cleanupComplete ? "pass" : "fail",
       },
+      ...(scenario.execution.kind === "real_herdr_harness"
+        ? [{
+            kind: "prerequisite",
+            id: "qualification_trust_preflight",
+            disposition: trustPreflight?.status === "trusted" ? "pass" : "fail",
+          }]
+        : []),
     ],
     result: {
       disposition: "fail",
@@ -1519,9 +1668,9 @@ async function runCodexLifecycleScenario({
   doctorFinishedAt,
   versions,
   deadline,
+  workspace,
+  trustPreflight,
 }) {
-  const workspace = join(scratch, "workspace");
-  await mkdir(workspace);
   const beforeWorkspace = await workspaceFingerprint(cwd);
   const suffix = randomUUID();
   const groupKey = `qualification-${scenario.id}-${suffix}`;
@@ -1786,6 +1935,7 @@ async function runCodexLifecycleScenario({
     },
     live_run_justification: scenario.execution.rationale,
     configuration_deviation_justification: null,
+    trust_preflight: trustPreflight,
     invocations: records,
     observations: records.map(({ envelope }) => envelope),
     assertions: [
@@ -1868,10 +2018,10 @@ async function runCodexPromptScenario({
   doctorFinishedAt,
   versions,
   deadline,
+  workspace,
+  trustPreflight,
 }) {
-  const workspace = join(scratch, "workspace");
   const secondPromptPath = join(scratch, "prompt-file-2.txt");
-  await mkdir(workspace);
   await writeFile(secondPromptPath, "Reply exactly: QUALIFY-CODEX-FILE-2-OK\n");
   const promptSourceBefore = await fileFingerprint(secondPromptPath);
   const beforeWorkspace = await workspaceFingerprint(cwd);
@@ -2064,6 +2214,7 @@ async function runCodexPromptScenario({
     },
     live_run_justification: scenario.execution.rationale,
     configuration_deviation_justification: null,
+    trust_preflight: trustPreflight,
     invocations: records,
     observations: records.map(({ envelope }) => envelope),
     assertions: [
@@ -2146,10 +2297,10 @@ async function runPromptFileScenario({
   doctorFinishedAt,
   versions,
   deadline,
+  workspace,
+  trustPreflight,
 }) {
-  const workspace = join(scratch, "workspace");
   const promptPath = join(scratch, "prompt.txt");
-  await mkdir(workspace);
   const specification = promptFileSpecifications.get(scenario.id);
   if (!specification) throw new Error(`missing prompt-file specification: ${scenario.id}`);
   const isOwnedRecovery = specification.ownedRecovery === true;
@@ -2477,6 +2628,7 @@ async function runPromptFileScenario({
         ? scenario.execution.rationale
         : "Issue 65 requires a real Codex/Herdr baseline before issue 66 captures deterministic replay traces.",
     configuration_deviation_justification: null,
+    trust_preflight: trustPreflight,
     invocations: invocationRecords,
     observations: invocationRecords.map(({ envelope }) => envelope),
     assertions: [
@@ -2763,6 +2915,16 @@ function validateQualificationEvidence(
     required.some((field) => !Object.hasOwn(evidence, field))
   ) {
     throw new Error("qualification evidence does not satisfy its versioned contract");
+  }
+  if (
+    evidence.trust_preflight?.schema !== QUALIFICATION_TRUST_SCHEMA ||
+    !["not_applicable", "not_run", "trusted", "blocked"].includes(
+      evidence.trust_preflight.status,
+    ) ||
+    evidence.trust_preflight.native_work_started !== false ||
+    evidence.trust_preflight.configuration?.created !== false
+  ) {
+    throw new Error("qualification evidence has an invalid trust preflight record");
   }
   if (
     !evidence.execution_policy ||

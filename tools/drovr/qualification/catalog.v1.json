@@ -15,7 +15,7 @@
   "contracts": {
     "qualification_evidence": {
       "schema": "drovr.qualification-evidence/v1",
-      "required_fields": ["schema", "catalog_version", "catalog_digest", "scenario_id", "execution_kind", "versions", "environment", "limits", "live_run_justification", "configuration_deviation_justification", "invocations", "observations", "assertions", "result", "execution_policy", "cleanup_receipt", "started_at", "finished_at"],
+      "required_fields": ["schema", "catalog_version", "catalog_digest", "scenario_id", "execution_kind", "versions", "trust_preflight", "environment", "limits", "live_run_justification", "configuration_deviation_justification", "invocations", "observations", "assertions", "result", "execution_policy", "cleanup_receipt", "started_at", "finished_at"],
       "fields": {
         "schema": "Exact literal drovr.qualification-evidence/v1.",
         "catalog_version": "Positive integer catalog version used by the run.",
@@ -23,6 +23,7 @@
         "scenario_id": "Exact scenario ID from this catalog.",
         "execution_kind": "deterministic_trace_replay or real_herdr_harness.",
         "versions": "Exact Drovr, Herdr, integration, harness executable, model, and reasoning-effort versions or not-applicable markers.",
+        "trust_preflight": "Exact, read-only native Codex or Claude trust observations bound to the qualification workspace, executable, integration, and configuration snapshot; deterministic replay records not_applicable.",
         "environment": "Sanitized OS, architecture, isolated state root, cwd identity, and managed session identity.",
         "limits": "Declared maximum turns, retries, and elapsed time with measured values.",
         "live_run_justification": "Why a live process was necessary, or null for deterministic replay.",

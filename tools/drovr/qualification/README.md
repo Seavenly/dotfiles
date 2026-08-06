@@ -120,6 +120,42 @@ guarantee therefore depends on Herdr advancing this counter for the clear
 transition. Until a live clear qualification confirms that behavior, it must
 not be treated as the sole reappearance guard.
 
+## Native trust preflight
+
+Before any live scenario can call `task open`, `agent start`, or `delegate`,
+the runner performs a read-only native trust preflight for the scenario's
+exact harness. It records the absolute qualification workspace and its
+filesystem identity, resolves the executable found on `PATH`, reads that
+executable's version with `--version`, and binds the result to the current
+Herdr integration reported by `drovr doctor`.
+
+Codex trust is observed only at the exact
+`[projects."/absolute/qualification/workspace"]` entry in
+`$CODEX_HOME/config.toml` with `trust_level = "trusted"`. Claude trust is
+observed only at the exact
+`projects["/absolute/qualification/workspace"].hasTrustDialogAccepted = true`
+entry in `$CLAUDE_CONFIG_DIR/.claude.json`. A trusted parent directory does not
+qualify a child workspace.
+
+The runner does not write either caller-owned configuration, start native work
+before the preflight passes, submit `Enter`, send raw keys, or retry around a
+trust prompt. Every live run receives a unique disposable workspace, so
+concurrent runs cannot adopt or mutate one another's trust state. Evidence
+records `trust_preflight.configuration.created: false` and retains only
+configuration paths, digests, trust facts, and the exact workspace binding -
+never configuration contents.
+
+A trusted exact entry allows the live scenario to start. A missing, false,
+changed, malformed, or otherwise ambiguous observation returns exit status `3`
+with `qualification_trust_unavailable`, before any managed task or agent
+command. The block includes the exact path, native version and integration
+facts, and the operator action `pretrust_exact_workspace`. If a live pass is
+required, deliberately establish trust for the exact dedicated qualification
+workspace with the native tool's documented trust control before starting the
+run. Do not accept an unrelated prompt with a key; when exact trust cannot be
+arranged in advance, retain the typed block as the supported fail-closed
+result.
+
 The promotion soak's staged-input cycle records the transition sequence before
 staging, after staging, after the double-Escape clear, after qualified stable
 absence, and after a separate public Drovr process observes the same agent

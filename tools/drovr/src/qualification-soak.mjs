@@ -716,6 +716,16 @@ function validateCycleEvidence(evidence, definition, catalog, catalogDigest) {
   if (evidence.scenario_id !== definition.scenarioId) {
     return "Cycle evidence scenario identity does not match the selected cycle.";
   }
+  if (
+    evidence.trust_preflight?.schema !== "drovr.qualification-trust/v1" ||
+    !["not_applicable", "not_run", "trusted", "blocked"].includes(
+      evidence.trust_preflight.status,
+    ) ||
+    evidence.trust_preflight.native_work_started !== false ||
+    evidence.trust_preflight.configuration?.created !== false
+  ) {
+    return "Cycle evidence has an invalid native trust preflight record.";
+  }
   if (!isRecord(evidence.versions) || !isRecord(evidence.limits?.measured)) {
     return "Cycle evidence is missing version or measurement records.";
   }
@@ -1215,6 +1225,7 @@ export function summarizeQualificationEvidence(
     retries: evidence?.limits?.measured?.retries ?? null,
     elapsed_ms: evidence?.limits?.measured?.elapsed_ms ?? null,
     versions: evidence?.versions ?? null,
+    trust_preflight: evidence?.trust_preflight ?? null,
     evidence_path: evidence?.evidence_path ?? null,
   };
   if (additionalCoverageReason !== undefined) {

@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -37,6 +37,42 @@ const runner = fileURLToPath(
 async function executable(path, source) {
   await writeFile(path, `#!/usr/bin/env bash\nset -euo pipefail\n${source}`);
   await chmod(path, 0o755);
+}
+
+function trustedPreflight({ harnesses, workspace }) {
+  const exactWorkspace = {
+    path: resolve(workspace),
+    identity: "sha256:test-qualification-workspace",
+  };
+  return {
+    schema: "drovr.qualification-trust/v1",
+    status: "trusted",
+    workspace: exactWorkspace,
+    harnesses: Object.fromEntries(
+      harnesses.map((harness) => [
+        harness,
+        {
+          harness,
+          status: "trusted",
+          workspace: exactWorkspace,
+          executable: { path: `/test/${harness}`, version: "test" },
+          integration: { id: `herdr-${harness}/vtest`, detail: "current (vtest)" },
+          source: { status: "present", path: `/test/${harness}-trust`, digest: "sha256:test" },
+          origin: "pre_existing",
+          reason: null,
+          action: null,
+        },
+      ]),
+    ),
+    configuration: {
+      created: false,
+      origin: "test",
+      cleanup: "not_created",
+    },
+    native_work_started: false,
+    binding: "sha256:test-qualification-trust",
+    reason: null,
+  };
 }
 
 test("a missing live prerequisite produces retained typed block evidence", async (t) => {
@@ -121,7 +157,8 @@ exit 5
     caller_workspace_mutation: false,
   });
   assert.equal(evidence.cleanup_receipt.unresolved_obligations.length, 0);
-  assert.equal(evidence.cleanup_receipt.owned_resources.length, 2);
+  assert.equal(evidence.cleanup_receipt.owned_resources.length, 3);
+  assert.equal(evidence.trust_preflight.status, "not_run");
 
   const [invocation] = (await readFile(invocationLog, "utf8"))
     .trim()
@@ -131,6 +168,79 @@ exit 5
   assert.match(invocation.state_home, /\/state$/u);
   assert.match(invocation.runtime_dir, /\/runtime$/u);
   assert.notEqual(invocation.state_home, process.env.XDG_STATE_HOME);
+});
+
+test("an untrusted live workspace blocks before any managed task or agent command", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-qualification-trust-block-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const evidenceDirectory = join(scratch, "evidence");
+  const invocationLog = join(scratch, "invocations.log");
+  const codexHome = join(scratch, "codex");
+  const claudeConfigDir = join(scratch, "claude");
+  await Promise.all([
+    mkdir(fakeBin),
+    mkdir(join(scratch, "caller")),
+    mkdir(codexHome),
+    mkdir(claudeConfigDir),
+  ]);
+  await executable(
+    join(fakeBin, "claude"),
+    "printf '%s\\n' '2.1.199 (Claude Code)'",
+  );
+  await executable(
+    join(fakeBin, "drovr"),
+    `printf '%s\\n' "$*" >> ${JSON.stringify(invocationLog)}
+if [[ \${1:-} == doctor ]]; then
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"doctor","ok":true,"result":{"status":"ready","qualification":{"claude":{"model":"haiku","effort":"low"}},"checks":[{"id":"drovr","status":"pass","detail":"drovr source sha256:trust-block"},{"id":"herdr","status":"pass","detail":"herdr 0.8.0"},{"id":"claude","status":"pass","detail":"2.1.199 (Claude Code)"},{"id":"claude-transcripts","status":"pass","detail":"available"},{"id":"claude-integration","status":"pass","detail":"current (v7)"}]}}'
+  exit 0
+fi
+printf '%s\\n' '{"schema":"drovr.command/v1","command":"unexpected","ok":false,"error":{"outcome":"unexpected_call","message":"managed work must not start after trust block"}}'
+exit 5
+`,
+  );
+
+  let failure;
+  try {
+    await execFileAsync(
+      process.execPath,
+      [
+        runner,
+        "--scenario",
+        "claude_multiline_paste_conversion",
+        "--evidence-dir",
+        evidenceDirectory,
+      ],
+      {
+        encoding: "utf8",
+        cwd: join(scratch, "caller"),
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          CODEX_HOME: codexHome,
+          CLAUDE_CONFIG_DIR: claudeConfigDir,
+        },
+      },
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(failure?.code, 3);
+  const report = JSON.parse(failure.stdout);
+  assert.equal(report.status, "blocked");
+  assert.equal(report.scenarios[0].result, "blocked");
+  const evidence = JSON.parse(
+    await readFile(report.scenarios[0].evidence, "utf8"),
+  );
+  assert.equal(evidence.result.reason.code, "qualification_trust_unavailable");
+  assert.equal(evidence.trust_preflight.status, "blocked");
+  assert.equal(evidence.trust_preflight.harnesses.claude.status, "untrusted");
+  assert.deepEqual(
+    evidence.invocations.map(({ argv }) => argv),
+    [["drovr", "doctor"]],
+  );
+  assert.equal(await readFile(invocationLog, "utf8"), "doctor\n");
 });
 
 test("an initial live launch failure is not misreported as a reuse failure", async (t) => {
@@ -165,6 +275,7 @@ exit 5
     drovrCommand: join(fakeBin, "drovr"),
     cwd: caller,
     env: { ...process.env },
+    trustPreflight: trustedPreflight,
   });
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
 
@@ -295,23 +406,14 @@ esac
 `,
   );
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    [
-      runner,
-      "--scenario",
-      "claude_soak_multiline_reuse",
-      "--evidence-dir",
-      evidenceDirectory,
-    ],
-    {
-      encoding: "utf8",
-      cwd: join(scratch, "caller"),
-      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
-    },
-  );
-
-  const report = JSON.parse(stdout);
+  const report = await runQualification({
+    scenarioIds: ["claude_soak_multiline_reuse"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: join(scratch, "caller"),
+    env: { ...process.env },
+    trustPreflight: trustedPreflight,
+  });
   assert.equal(report.status, "pass");
   assert.equal(report.scenarios[0].result, "pass");
   const evidence = JSON.parse(
@@ -419,23 +521,14 @@ esac
 `,
   );
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    [
-      runner,
-      "--scenario",
-      "codex_live_prompt_sources_and_reuse",
-      "--evidence-dir",
-      evidenceDirectory,
-    ],
-    {
-      encoding: "utf8",
-      cwd: join(scratch, "caller"),
-      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
-    },
-  );
-
-  const report = JSON.parse(stdout);
+  const report = await runQualification({
+    scenarioIds: ["codex_live_prompt_sources_and_reuse"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: join(scratch, "caller"),
+    env: { ...process.env },
+    trustPreflight: trustedPreflight,
+  });
   assert.equal(report.status, "pass");
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
   assert.equal(evidence.execution_kind, "real_herdr_harness");
@@ -507,6 +600,7 @@ esac
     drovrCommand: join(fakeBin, "drovr"),
     cwd: join(scratch, "caller"),
     env: { ...process.env },
+    trustPreflight: trustedPreflight,
   });
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
 
@@ -560,12 +654,14 @@ esac
 `,
   );
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    [runner, "--scenario", "codex_live_lifecycle_recovery", "--evidence-dir", evidenceDirectory],
-    { encoding: "utf8", cwd: join(scratch, "caller"), env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
-  );
-  const report = JSON.parse(stdout);
+  const report = await runQualification({
+    scenarioIds: ["codex_live_lifecycle_recovery"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: join(scratch, "caller"),
+    env: { ...process.env },
+    trustPreflight: trustedPreflight,
+  });
   assert.equal(report.status, "pass");
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
   assert.equal(evidence.limits.measured.turns, 4);
@@ -746,22 +842,14 @@ esac
 `,
   );
 
-  const { stdout } = await execFileAsync(
-    process.execPath,
-    [
-      runner,
-      "--scenario",
-      "claude_owned_staged_input_submit",
-      "--evidence-dir",
-      evidenceDirectory,
-    ],
-    {
-      encoding: "utf8",
-      cwd: join(scratch, "caller"),
-      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
-    },
-  );
-  const report = JSON.parse(stdout);
+  const report = await runQualification({
+    scenarioIds: ["claude_owned_staged_input_submit"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: join(scratch, "caller"),
+    env: { ...process.env },
+    trustPreflight: trustedPreflight,
+  });
   assert.equal(report.status, "pass");
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
   assert.equal(evidence.result.disposition, "pass");
@@ -1002,29 +1090,14 @@ esac
 `,
   );
 
-  let failure;
-  try {
-    await execFileAsync(
-      process.execPath,
-      [
-        runner,
-        "--scenario",
-        "codex_live_prompt_sources_and_reuse",
-        "--evidence-dir",
-        evidenceDirectory,
-      ],
-      {
-        cwd: caller,
-        encoding: "utf8",
-        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
-      },
-    );
-  } catch (error) {
-    failure = error;
-  }
-
-  assert.equal(failure?.code, 4);
-  const report = JSON.parse(failure.stdout);
+  const report = await runQualification({
+    scenarioIds: ["codex_live_prompt_sources_and_reuse"],
+    evidenceDirectory,
+    drovrCommand: join(fakeBin, "drovr"),
+    cwd: caller,
+    env: { ...process.env },
+    trustPreflight: trustedPreflight,
+  });
   assert.equal(report.status, "fail");
   const evidence = JSON.parse(
     await readFile(report.scenarios[0].evidence, "utf8"),

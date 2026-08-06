@@ -620,6 +620,31 @@ function fakeEvidence(definition, binding) {
       model: binding.models[definition.harness],
       reasoning_effort: binding.reasoning_effort[definition.harness],
     },
+    trust_preflight: {
+      schema: "drovr.qualification-trust/v1",
+      status: "trusted",
+      workspace: {
+        path: "/tmp/qualification-workspace",
+        identity: "sha256:qualification-workspace",
+      },
+      harnesses: {
+        [definition.harness]: {
+          status: "trusted",
+          workspace: {
+            path: "/tmp/qualification-workspace",
+            identity: "sha256:qualification-workspace",
+          },
+        },
+      },
+      configuration: {
+        created: false,
+        origin: "pre_existing",
+        cleanup: "not_created",
+      },
+      native_work_started: false,
+      binding: "sha256:qualification-trust",
+      reason: null,
+    },
     limits: { measured: { turns: 2, retries: 0, elapsed_ms: 10 } },
     invocations: [],
     live_run_justification: definition.harness === "claude"
