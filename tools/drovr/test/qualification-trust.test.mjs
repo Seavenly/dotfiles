@@ -155,6 +155,10 @@ test("trust preflight binds both native trust records to exact executable, integ
   assert.equal(result.native_work_started, false);
   assert.match(result.binding, /^sha256:[0-9a-f]{64}$/u);
 
+  assert.equal(
+    await readFile(join(codexHome, "config.toml"), "utf8"),
+    `[projects."${targetWorkspace}"]\ntrust_level = "trusted"\n`,
+  );
   assert.deepEqual(
     JSON.parse(await readFile(join(claudeConfigDir, ".claude.json"))),
     { projects: { [targetWorkspace]: { hasTrustDialogAccepted: true } } },
