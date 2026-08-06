@@ -318,34 +318,31 @@ async function runScenarioPrerequisites({
         (scenario.execution.kind === "deterministic_trace_replay"
           ? runDeterministicReplayScenario
           : null);
-      if (!blocked && effectiveExecutor) {
-        const result = await effectiveExecutor({
-          catalog,
-          scenario,
-          evidenceDirectory,
-          drovrCommand,
-          cwd,
-          scenarioEnvironment,
-          scratch,
-          stateHome,
-          runtimeDirectory,
-          now,
-          startedAt,
-          doctorExecution: execution,
-          doctorStartedAt: invocationStartedAt,
-          doctorFinishedAt: invocationFinishedAt,
-          versions,
-          deadline,
-          traceJournalPath,
-          workspace: qualificationWorkspace,
-          trustPreflight,
-        });
-        return await attachCapturedTrace({
-          result,
-          traceJournalPath,
-          scenario,
-          catalog,
-        });
+      const executorResult = await executeScenarioIfReady({
+        blocked,
+        effectiveExecutor,
+        catalog,
+        scenario,
+        evidenceDirectory,
+        drovrCommand,
+        cwd,
+        scenarioEnvironment,
+        scratch,
+        stateHome,
+        runtimeDirectory,
+        now,
+        startedAt,
+        doctorExecution: execution,
+        doctorStartedAt: invocationStartedAt,
+        doctorFinishedAt: invocationFinishedAt,
+        versions,
+        deadline,
+        traceJournalPath,
+        workspace: qualificationWorkspace,
+        trustPreflight,
+      });
+      if (executorResult) {
+        return executorResult;
       }
       const runnerFailure = executionFailure([
         invocationRecord(
@@ -490,10 +487,9 @@ async function runScenarioPrerequisites({
       (scenario.execution.kind === "deterministic_trace_replay"
         ? runDeterministicReplayScenario
         : null);
-    if (!effectiveExecutor) {
-      throw new Error(`selected scenario has no executor: ${scenario.id}`);
-    }
-    const result = await effectiveExecutor({
+    const executorResult = await executeScenarioIfReady({
+      blocked: false,
+      effectiveExecutor,
       catalog,
       scenario,
       evidenceDirectory,
@@ -514,12 +510,8 @@ async function runScenarioPrerequisites({
       workspace: qualificationWorkspace,
       trustPreflight,
     });
-    return await attachCapturedTrace({
-      result,
-      traceJournalPath,
-      scenario,
-      catalog,
-    });
+    if (executorResult) return executorResult;
+    throw new Error(`selected scenario has no executor: ${scenario.id}`);
   } catch (error) {
     const failureResult = await recordScenarioFailure({
       catalog,
@@ -552,6 +544,59 @@ async function runScenarioPrerequisites({
       catalog,
     });
   }
+}
+
+async function executeScenarioIfReady({
+  blocked,
+  effectiveExecutor,
+  catalog,
+  scenario,
+  evidenceDirectory,
+  drovrCommand,
+  cwd,
+  scenarioEnvironment,
+  scratch,
+  stateHome,
+  runtimeDirectory,
+  now,
+  startedAt,
+  doctorExecution,
+  doctorStartedAt,
+  doctorFinishedAt,
+  versions,
+  deadline,
+  traceJournalPath,
+  workspace,
+  trustPreflight,
+}) {
+  if (blocked || !effectiveExecutor) return null;
+  const result = await effectiveExecutor({
+    catalog,
+    scenario,
+    evidenceDirectory,
+    drovrCommand,
+    cwd,
+    scenarioEnvironment,
+    scratch,
+    stateHome,
+    runtimeDirectory,
+    now,
+    startedAt,
+    doctorExecution,
+    doctorStartedAt,
+    doctorFinishedAt,
+    versions,
+    deadline,
+    traceJournalPath,
+    workspace,
+    trustPreflight,
+  });
+  return attachCapturedTrace({
+    result,
+    traceJournalPath,
+    scenario,
+    catalog,
+  });
 }
 
 async function runDeterministicReplayScenario({

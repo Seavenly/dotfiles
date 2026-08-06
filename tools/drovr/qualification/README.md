@@ -134,8 +134,9 @@ Codex trust is observed only at the exact
 `$CODEX_HOME/config.toml` with `trust_level = "trusted"`. Claude trust is
 observed only at the exact
 `projects["/absolute/qualification/workspace"].hasTrustDialogAccepted = true`
-entry in `$CLAUDE_CONFIG_DIR/.claude.json`. A trusted parent directory does not
-qualify a child workspace.
+entry in `$CLAUDE_CONFIG_DIR/.claude.json` (or `$HOME/.claude.json` when
+`CLAUDE_CONFIG_DIR` is unset). A trusted parent directory does not qualify a
+child workspace.
 
 The runner does not write either caller-owned configuration, start native work
 before the preflight passes, submit `Enter`, send raw keys, or retry around a
