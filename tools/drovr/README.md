@@ -20,6 +20,17 @@ and runner evidence shapes with:
 npm --silent --prefix tools/drovr run qualification:validate
 ```
 
+## Test fixtures
+
+Public CLI compatibility tests share the production-shaped Herdr 0.8 fixture
+in [`test-support/production-herdr.mjs`](test-support/production-herdr.mjs).
+It mirrors the compatibility facts collected by `collectProductionCompatibility`
+and the managed executable/runtime identity checks performed by the Herdr
+production adapter, including canonical file identity, managed process/PATH,
+integration, native session, model, and effort. Update that fixture with the
+production compatibility boundary and keep its exact identity facts bound
+together; a contract change should fail at the public CLI boundary.
+
 Run one named black-box scenario or the unattended live set with isolated
 runtime state and retained evidence:
 

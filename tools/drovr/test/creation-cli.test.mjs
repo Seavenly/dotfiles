@@ -200,6 +200,7 @@ esac
       )
     ).stdout,
   );
+  assertResultStatus(unchangedGroup, "group get", "completed");
   assert.equal(unchangedGroup.result.group.label, "Identity program");
   let closeExecution;
   try {
@@ -579,5 +580,9 @@ esac
 
   assertResultStatus(blocked, "agent start", "compatibility_blocked");
   assert.match(blocked.result.message, /managed process identity/u);
-  assert.equal(blocked.result.agent, undefined);
+  assert.equal(blocked.result.details.reason, "missing");
+  assert.deepEqual(blocked.result.details.legal_actions, [
+    "refresh_compatibility",
+    "run_drovr_doctor",
+  ]);
 });

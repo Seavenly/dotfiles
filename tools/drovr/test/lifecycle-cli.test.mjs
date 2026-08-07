@@ -57,13 +57,11 @@ test("public CLI cancels, retires, and closes exact managed resources", async (t
     fakeHerdr,
     `#!/usr/bin/env bash
 set -euo pipefail
-state=${JSON.stringify(herdrState)}
 ${productionManagedRuntimeVariables({
       herdrState,
       cwd,
       codexPath,
     })}
-touch "$state/started"
 ${productionCompatibilityPrelude()}
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"persisted-session","running":true}]}\\n'
@@ -72,18 +70,18 @@ fi
 [[ \${1:-} == --session && \${2:-} == persisted-session ]]
 shift 2
 case "\${1:-} \${2:-}" in
-${productionManagedRuntimeCases({ paneId: "pane-agent-1" })}
+${productionManagedRuntimeCases({ paneId: "pane-agent-1", started: true })}
   "agent list")
-    if [[ -f "$state/closed-pane" ]]; then
+    if [[ -f "$fixtureState/closed-pane" ]]; then
       printf '{"result":{"agents":[]}}\\n'
       exit
     fi
-    if [[ -f "$state/interrupted" ]]; then status=idle; else status=working; fi
+    if [[ -f "$fixtureState/interrupted" ]]; then status=idle; else status=working; fi
     printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","agent_session":{"value":"%s"}}]}}\\n' "$status" "$fixtureNativeSession"
     ;;
   "agent send-keys")
     [[ \${3:-} == managed-agent && \${4:-} == ctrl+c ]]
-    touch "$state/interrupted"
+    touch "$fixtureState/interrupted"
     printf '{"result":{"status":"sent"}}\\n'
     ;;
   "agent wait")
@@ -91,12 +89,12 @@ ${productionManagedRuntimeCases({ paneId: "pane-agent-1" })}
     ;;
   "pane close")
     [[ \${3:-} == pane-agent-1 ]]
-    printf '%s\\n' "\${3}" > "$state/closed-pane"
+    printf '%s\\n' "\${3}" > "$fixtureState/closed-pane"
     ;;
   "pane get")
-    if [[ \${3:-} == pane-agent-1 && ! -f "$state/closed-pane" ]]; then
+    if [[ \${3:-} == pane-agent-1 && ! -f "$fixtureState/closed-pane" ]]; then
       printf '{"result":{"pane":{"pane_id":"pane-agent-1","tab_id":"tab-task-1"}}}\\n'
-    elif [[ \${3:-} == pane-idle && -f "$state/created-idle" && ! -f "$state/closed-workspace" ]]; then
+    elif [[ \${3:-} == pane-idle && -f "$fixtureState/created-idle" && ! -f "$fixtureState/closed-workspace" ]]; then
       printf '{"result":{"pane":{"pane_id":"pane-idle","tab_id":"tab-idle"}}}\\n'
     else
       printf '{"error":{"code":"pane_not_found"}}\\n' >&2
@@ -104,21 +102,21 @@ ${productionManagedRuntimeCases({ paneId: "pane-agent-1" })}
     fi
     ;;
   "tab create")
-    touch "$state/created-idle"
+    touch "$fixtureState/created-idle"
     printf '{"result":{"tab":{"tab_id":"tab-idle"},"root_pane":{"pane_id":"pane-idle"}}}\\n'
     ;;
   "tab close")
     [[ \${3:-} == tab-task-1 ]]
-    printf '%s\\n' "\${3}" > "$state/closed-tab"
+    printf '%s\\n' "\${3}" > "$fixtureState/closed-tab"
     ;;
   "tab get")
-    if [[ -f "$state/closed-workspace" ]]; then
+    if [[ -f "$fixtureState/closed-workspace" ]]; then
       printf '{"error":{"code":"tab_not_found"}}\\n' >&2
       exit 1
     fi
-    if [[ \${3:-} == tab-task-1 && ! -f "$state/closed-tab" ]]; then
+    if [[ \${3:-} == tab-task-1 && ! -f "$fixtureState/closed-tab" ]]; then
       printf '{"result":{"tab":{"tab_id":"tab-task-1","workspace_id":"workspace-1"}}}\\n'
-    elif [[ \${3:-} == tab-idle && -f "$state/created-idle" ]]; then
+    elif [[ \${3:-} == tab-idle && -f "$fixtureState/created-idle" ]]; then
       printf '{"result":{"tab":{"tab_id":"tab-idle","workspace_id":"workspace-1"}}}\\n'
     else
       printf '{"error":{"code":"tab_not_found"}}\\n' >&2
@@ -127,10 +125,10 @@ ${productionManagedRuntimeCases({ paneId: "pane-agent-1" })}
     ;;
   "workspace close")
     [[ \${3:-} == workspace-1 ]]
-    printf '%s\\n' "\${3}" > "$state/closed-workspace"
+    printf '%s\\n' "\${3}" > "$fixtureState/closed-workspace"
     ;;
   "workspace get")
-    if [[ -f "$state/closed-workspace" ]]; then
+    if [[ -f "$fixtureState/closed-workspace" ]]; then
       printf '{"error":{"code":"workspace_not_found"}}\\n' >&2
       exit 1
     fi
