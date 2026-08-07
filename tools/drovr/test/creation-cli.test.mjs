@@ -14,6 +14,15 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import {
+  assertResultStatus,
+  installProductionCliRuntime,
+  productionCompatibilityPrelude,
+  productionManagedRuntimeCases,
+  productionManagedRuntimeVariables,
+  PRODUCTION_HERDR_RUNTIME,
+} from "../test-support/production-herdr.mjs";
+
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -37,9 +46,11 @@ test("task open creates an explicit task idempotently through the public CLI", a
   await mkdir(fakeBin, { recursive: true });
   await mkdir(cwd);
   await mkdir(otherCwd);
+  await installProductionCliRuntime(fakeBin);
   await executable(
     join(fakeBin, "herdr"),
-    `printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+    `${productionCompatibilityPrelude()}
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"delegates","running":true}]}\n'
   exit
@@ -126,10 +137,8 @@ esac
     (await execFileAsync(drovr, argv, { encoding: "utf8", env })).stdout,
   );
 
-  assert.equal(first.schema, "drovr.command/v1");
-  assert.equal(first.command, "task open");
-  assert.equal(first.ok, true);
-  assert.equal(first.result.status, "completed");
+  assertResultStatus(first, "task open", "completed");
+  assertResultStatus(repeated, "task open", "completed");
   assert.deepEqual(first.result.group, {
     id: first.result.group.id,
     key: "work/EPIC-123",
@@ -156,6 +165,7 @@ esac
       })
     ).stdout,
   );
+  assertResultStatus(relabeled, "task open", "completed");
   assert.equal(relabeled.result.group.id, first.result.group.id);
   assert.equal(relabeled.result.group.label, "Identity program");
   assert.equal(relabeled.result.task.id, first.result.task.id);
@@ -253,9 +263,11 @@ test("task open derives a stable standalone group from a non-Git cwd", async (t)
   const cwd = join(scratch, "plain-directory");
   await mkdir(fakeBin, { recursive: true });
   await mkdir(cwd);
+  await installProductionCliRuntime(fakeBin);
   await executable(
     join(fakeBin, "herdr"),
-    `if [[ \${1:-} == session && \${2:-} == list ]]; then
+    `${productionCompatibilityPrelude()}
+if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"delegates","running":true}]}\n'
   exit
 fi
@@ -288,6 +300,8 @@ esac
     (await execFileAsync(drovr, argv, { encoding: "utf8", env })).stdout,
   );
 
+  assertResultStatus(first, "task open", "completed");
+  assertResultStatus(repeated, "task open", "completed");
   assert.equal(first.result.group.inferred, true);
   assert.match(
     first.result.group.key,
@@ -309,10 +323,15 @@ test("agent start resolves and reuses an immutable launch through the public CLI
   await mkdir(fakeBin, { recursive: true });
   await mkdir(cwd);
   await mkdir(herdrState);
-  await executable(join(fakeBin, "codex"), "exit 0\n");
+  const { codexPath } = await installProductionCliRuntime(fakeBin);
   await executable(
     join(fakeBin, "herdr"),
     `herdrState=${JSON.stringify(herdrState)}
+${productionManagedRuntimeVariables({
+      herdrState,
+      cwd,
+      codexPath,
+    })}${productionCompatibilityPrelude()}
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"delegates","running":true}]}\n'
   exit
@@ -320,6 +339,7 @@ fi
 [[ \${1:-} == --session && \${2:-} == delegates ]] || exit 1
 shift 2
 case "\${1:-} \${2:-}" in
+${productionManagedRuntimeCases()}
   "workspace create")
     printf '{"result":{"workspace":{"workspace_id":"workspace-1"},"root_pane":{"pane_id":"pane-1"}}}\n'
     ;;
@@ -332,9 +352,6 @@ case "\${1:-} \${2:-}" in
     ;;
   "pane close") touch ${JSON.stringify(paneClosed)} ;;
   "tab rename"|"pane rename") ;;
-  "pane process-info")
-    printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\n'
-    ;;
   "agent start")
     printf '%s\n' "$*" > "$herdrState/start-args"
     touch "$herdrState/started"
@@ -343,7 +360,7 @@ case "\${1:-} \${2:-}" in
   "agent list")
     if [[ -f "$herdrState/started" ]]; then
       name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
-      printf '{"result":{"agents":[{"name":"%s","pane_id":"pane-1","agent_status":"idle","agent_session":{"value":"native-1"}}]}}\n' "$name"
+      printf '{"result":{"agents":[{"name":"%s","pane_id":"pane-1","agent_status":"idle","agent_session":{"value":"%s"}}]}}\n' "$name" "$fixtureNativeSession"
     else
       printf '{"result":{"agents":[]}}\n'
     fi
@@ -367,6 +384,7 @@ esac
       )
     ).stdout,
   );
+  assertResultStatus(opened, "task open", "completed");
   const argv = [
     "agent",
     "start",
@@ -378,9 +396,9 @@ esac
     "--role",
     "reviewer",
     "--model",
-    "gpt-5.6-luna",
+    PRODUCTION_HERDR_RUNTIME.model,
     "--effort",
-    "low",
+    PRODUCTION_HERDR_RUNTIME.effort,
   ];
 
   let firstExecution;
@@ -399,25 +417,32 @@ esac
     (await execFileAsync(drovr, argv, { encoding: "utf8", env })).stdout,
   );
 
-  assert.equal(first.schema, "drovr.command/v1");
-  assert.equal(first.command, "agent start");
-  assert.equal(first.result.status, "completed");
-  assert.deepEqual(first.result.agent, {
-    id: first.result.agent.id,
+  assertResultStatus(first, "agent start", "completed");
+  assertResultStatus(repeated, "agent start", "completed");
+  const {
+    managed_runtime_evidence_digest: managedRuntimeEvidenceDigest,
+    ...publicAgent
+  } = first.result.agent;
+  assert.match(
+    managedRuntimeEvidenceDigest,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.deepEqual(publicAgent, {
+    id: publicAgent.id,
     task_id: opened.result.task.id,
     key: "critic",
     label: "Implementation review",
     harness: "codex",
     role: "reviewer",
-    model: "gpt-5.6-luna",
-    effort: "low",
+    model: PRODUCTION_HERDR_RUNTIME.model,
+    effort: PRODUCTION_HERDR_RUNTIME.effort,
     capability: "read-only",
     native: {
       sandbox: "read-only",
       approval: "never",
       search: false,
     },
-    native_session: "native-1",
+    native_session: PRODUCTION_HERDR_RUNTIME.nativeSession,
   });
   assert.equal(repeated.result.agent.id, first.result.agent.id);
   const relabeled = JSON.parse(
@@ -429,6 +454,7 @@ esac
       )
     ).stdout,
   );
+  assertResultStatus(relabeled, "agent start", "completed");
   assert.equal(relabeled.result.agent.id, first.result.agent.id);
   assert.equal(relabeled.result.agent.label, "Release review");
   const conflicting = JSON.parse(
@@ -460,4 +486,98 @@ esac
   assert.match(startArgs, /--model gpt-5\.6-luna/u);
   assert.match(startArgs, /model_reasoning_effort="low"/u);
   assert.match(startArgs, /--sandbox read-only/u);
+});
+
+test("agent start returns a typed compatibility block for ambiguous managed identity", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-agent-identity-blocked-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const stateHome = join(scratch, "state");
+  const cwd = join(scratch, "work");
+  const herdrState = join(scratch, "herdr-state");
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(cwd);
+  await mkdir(herdrState);
+  const { codexPath } = await installProductionCliRuntime(fakeBin);
+  await executable(
+    join(fakeBin, "herdr"),
+    `herdrState=${JSON.stringify(herdrState)}
+${productionManagedRuntimeVariables({
+      herdrState,
+      cwd,
+      codexPath,
+    })}${productionCompatibilityPrelude()}
+if [[ \${1:-} == session && \${2:-} == list ]]; then
+  printf '%s\\n' '{"sessions":[{"name":"delegates","running":true}]}'
+  exit
+fi
+[[ \${1:-} == --session && \${2:-} == delegates ]] || exit 1
+shift 2
+case "\${1:-} \${2:-}" in
+${productionManagedRuntimeCases({ ambiguous: true })}
+  "workspace create")
+    printf '%s\\n' '{"result":{"workspace":{"workspace_id":"workspace-1"},"root_pane":{"pane_id":"pane-1"}}}'
+    ;;
+  "pane get")
+    printf '%s\\n' '{"result":{"pane":{"pane_id":"pane-1","tab_id":"tab-1"}}}'
+    ;;
+  "tab rename"|"pane rename") ;;
+  "agent start")
+    printf '%s\\n' "$*" > "$herdrState/start-args"
+    touch "$herdrState/started"
+    printf '%s\\n' '{"result":{"agent":{"name":"managed"}}}'
+    ;;
+  "agent list")
+    if [[ -f "$herdrState/started" ]]; then
+      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+      printf '{"result":{"agents":[{"name":"%s","pane_id":"pane-1","agent_status":"idle","agent_session":{"value":"%s"}}]}}\\n' "$name" "$fixtureNativeSession"
+    else
+      printf '%s\\n' '{"result":{"agents":[]}}'
+    fi
+    ;;
+  *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
+esac
+`,
+  );
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    XDG_STATE_HOME: stateHome,
+    DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+  };
+
+  const opened = JSON.parse(
+    (
+      await execFileAsync(
+        drovr,
+        ["task", "open", "--group", "release", "--key", "task", "--cwd", cwd],
+        { encoding: "utf8", env },
+      )
+    ).stdout,
+  );
+  assertResultStatus(opened, "task open", "completed");
+
+  const blocked = JSON.parse(
+    (
+      await execFileAsync(
+        drovr,
+        [
+          "agent",
+          "start",
+          opened.result.task.id,
+          "--key",
+          "ambiguous",
+          "--model",
+          PRODUCTION_HERDR_RUNTIME.model,
+          "--effort",
+          PRODUCTION_HERDR_RUNTIME.effort,
+        ],
+        { encoding: "utf8", env },
+      )
+    ).stdout,
+  );
+
+  assertResultStatus(blocked, "agent start", "compatibility_blocked");
+  assert.match(blocked.result.message, /managed process identity/u);
+  assert.equal(blocked.result.agent, undefined);
 });

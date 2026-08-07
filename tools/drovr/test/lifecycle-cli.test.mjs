@@ -16,6 +16,16 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { stateDirectory, writeRecord } from "../src/registry.mjs";
+import {
+  assertResultStatus,
+  installProductionCliRuntime,
+  productionCompatibilityPrelude,
+  productionCompatibilityEvidenceDigest,
+  productionManagedRuntimeCases,
+  productionManagedRuntimeIdentity,
+  productionManagedRuntimeVariables,
+  PRODUCTION_HERDR_RUNTIME,
+} from "../test-support/production-herdr.mjs";
 
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
@@ -31,12 +41,30 @@ test("public CLI cancels, retires, and closes exact managed resources", async (t
   await mkdir(herdrState, { recursive: true });
   await mkdir(cwd, { recursive: true });
   await writeFile(callerFile, "keep\n");
+  const { codexPath } = await installProductionCliRuntime(fakeBin);
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    XDG_STATE_HOME: join(scratch, "state"),
+  };
+  const managedRuntimeIdentity = await productionManagedRuntimeIdentity({
+    codexPath,
+    cwd,
+    path: env.PATH,
+  });
   const fakeHerdr = join(fakeBin, "herdr");
   await writeFile(
     fakeHerdr,
     `#!/usr/bin/env bash
 set -euo pipefail
 state=${JSON.stringify(herdrState)}
+${productionManagedRuntimeVariables({
+      herdrState,
+      cwd,
+      codexPath,
+    })}
+touch "$state/started"
+${productionCompatibilityPrelude()}
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   printf '{"sessions":[{"name":"persisted-session","running":true}]}\\n'
   exit
@@ -44,13 +72,14 @@ fi
 [[ \${1:-} == --session && \${2:-} == persisted-session ]]
 shift 2
 case "\${1:-} \${2:-}" in
+${productionManagedRuntimeCases({ paneId: "pane-agent-1" })}
   "agent list")
     if [[ -f "$state/closed-pane" ]]; then
       printf '{"result":{"agents":[]}}\\n'
       exit
     fi
     if [[ -f "$state/interrupted" ]]; then status=idle; else status=working; fi
-    printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","agent_session":{"value":"native-1"}}]}}\\n' "$status"
+    printf '{"result":{"agents":[{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"%s","agent_session":{"value":"%s"}}]}}\\n' "$status" "$fixtureNativeSession"
     ;;
   "agent send-keys")
     [[ \${3:-} == managed-agent && \${4:-} == ctrl+c ]]
@@ -58,7 +87,7 @@ case "\${1:-} \${2:-}" in
     printf '{"result":{"status":"sent"}}\\n'
     ;;
   "agent wait")
-    printf '{"result":{"agent":{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"idle","agent_session":{"value":"native-1"}}}}\\n'
+    printf '{"result":{"agent":{"name":"managed-agent","pane_id":"pane-agent-1","agent_status":"idle","agent_session":{"value":"%s"}}}}\\n' "$fixtureNativeSession"
     ;;
   "pane close")
     [[ \${3:-} == pane-agent-1 ]]
@@ -112,11 +141,6 @@ esac
 `,
   );
   await chmod(fakeHerdr, 0o755);
-  const env = {
-    ...process.env,
-    PATH: `${fakeBin}:${process.env.PATH}`,
-    XDG_STATE_HOME: join(scratch, "state"),
-  };
   const registryDirectory = stateDirectory(env);
   await writeRecord(registryDirectory, "groups", {
     schema: "drovr.group/v1",
@@ -143,9 +167,18 @@ esac
     key: "agent",
     label: "Agent",
     status: "active",
-    launch: { harness: "codex" },
+    launch: {
+      harness: "codex",
+      model: PRODUCTION_HERDR_RUNTIME.model,
+      effort: PRODUCTION_HERDR_RUNTIME.effort,
+    },
+    launch_binding: {
+      schema: "drovr.agent-launch-binding/v1",
+      compatibility_evidence_digest: productionCompatibilityEvidenceDigest(),
+      managed_runtime_identity: managedRuntimeIdentity,
+    },
     herdr: { name: "managed-agent", pane_id: "pane-agent-1" },
-    native_session: "native-1",
+    native_session: PRODUCTION_HERDR_RUNTIME.nativeSession,
   });
   await writeRecord(registryDirectory, "turns", {
     schema: "drovr.turn/v1",
@@ -159,21 +192,18 @@ esac
   const cancelled = JSON.parse(
     (await execFileAsync(drovr, ["turn", "cancel", "turn-1"], { env })).stdout,
   );
-  assert.equal(cancelled.command, "turn cancel");
-  assert.equal(cancelled.result.status, "cancelled");
+  assertResultStatus(cancelled, "turn cancel", "cancelled");
 
   const retired = JSON.parse(
     (await execFileAsync(drovr, ["agent", "retire", "agent-1"], { env })).stdout,
   );
-  assert.equal(retired.command, "agent retire");
-  assert.equal(retired.result.status, "retired");
+  assertResultStatus(retired, "agent retire", "retired");
   assert.equal((await readFile(join(herdrState, "closed-pane"), "utf8")).trim(), "pane-agent-1");
 
   const closed = JSON.parse(
     (await execFileAsync(drovr, ["task", "close", "task-1"], { env })).stdout,
   );
-  assert.equal(closed.command, "task close");
-  assert.equal(closed.result.status, "closed");
+  assertResultStatus(closed, "task close", "closed");
   assert.equal((await readFile(join(herdrState, "closed-tab"), "utf8")).trim(), "tab-task-1");
   const groupClosed = JSON.parse(
     (
@@ -184,8 +214,7 @@ esac
       )
     ).stdout,
   );
-  assert.equal(groupClosed.command, "group close");
-  assert.equal(groupClosed.result.status, "closed");
+  assertResultStatus(groupClosed, "group close", "closed");
   assert.equal(groupClosed.result.group.id, "group-1");
   assert.equal(
     (await readFile(join(herdrState, "closed-workspace"), "utf8")).trim(),
