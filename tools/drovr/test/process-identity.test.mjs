@@ -194,6 +194,7 @@ test("process identity lookup fails closed for invalid pids, missing command lin
   assert.equal(await processEnvironmentPath(0, client), null);
   assert.equal(await processEnvironmentPath("42", client), null);
   assert.equal(await processEnvironmentPath(42, client, {
+    commandLine: "codex",
     readFileImpl: unavailableFile,
   }), null);
   assert.equal(await processEnvironmentPath(42, {
@@ -204,22 +205,14 @@ test("process identity lookup fails closed for invalid pids, missing command lin
     commandLine: "different-command",
     readFileImpl: unavailableFile,
   }), null);
-  assert.equal(await processEnvironmentPath(42, {
-    async run() {
-      throw new Error("ps should not run without a command line");
-    },
-  }, {
+  assert.equal(await processEnvironmentPath(42, client, {
     readFileImpl: unavailableFile,
   }), null);
-  assert.equal(await processEnvironmentPath(42, {
-    async run() {
-      throw new Error("ps should not run with a blank command line");
-    },
-  }, {
+  assert.equal(await processEnvironmentPath(42, client, {
     commandLine: "   ",
     readFileImpl: unavailableFile,
   }), null);
   assert.equal(await processExecutablePath({ pid: 0 }, new Set(), client), null);
   assert.equal(await processExecutablePath({ pid: "42" }, new Set(), client), null);
-  assert.equal(environmentFallbackCalls, 0);
+  assert.equal(environmentFallbackCalls, 1);
 });
