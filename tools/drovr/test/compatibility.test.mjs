@@ -232,6 +232,124 @@ test("production startup blocks when the post-launch identity differs from prefl
   assert.deepEqual(events, ["probe", "start", "capture"]);
 });
 
+test("fresh managed startup remains preflight-bound until native work begins", async () => {
+  const runtimeFacts = runtime();
+  const preflightIdentity = {
+    ...managedIdentity({ nativeSession: null }),
+    process: null,
+    model: null,
+    effort: null,
+  };
+  const startedIdentity = {
+    ...structuredClone(preflightIdentity),
+    process: {
+      pid: 42,
+      name: "codex",
+      argv0: "/opt/codex/bin/codex",
+      argv: ["/opt/codex/bin/codex"],
+      cmdline: "/opt/codex/bin/codex",
+      cwd: "/workspace",
+    },
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: { PATH: "/caller/bin:/usr/bin" },
+    run: runtimeFacts.run,
+    requireCompatibility: true,
+    delay: async () => {},
+    clock: () => 0,
+    herdr: {
+      async probeManagedExecutable() {
+        return structuredClone(preflightIdentity);
+      },
+      async startCodexAgent() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+        };
+      },
+      async captureManagedRuntimeIdentity({ model, effort }) {
+        return {
+          ...structuredClone(startedIdentity),
+          model,
+          effort,
+        };
+      },
+    },
+  });
+
+  const started = await harness.startAgent({
+    agent: {
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+    },
+  });
+
+  assert.equal(started.compatibility.status, "qualified");
+  assert.equal(started.managed_runtime_identity.native_session, null);
+  assert.equal(started.managed_runtime_identity.process.pid, 42);
+});
+
+test("fresh managed observation accepts an idle pane before native session registration", async () => {
+  const runtimeFacts = runtime();
+  const preflightIdentity = {
+    ...managedIdentity({ nativeSession: null }),
+    process: {
+      pid: 42,
+      name: "codex",
+      argv0: "/opt/codex/bin/codex",
+      argv: ["/opt/codex/bin/codex"],
+      cmdline: "/opt/codex/bin/codex",
+      cwd: "/workspace",
+    },
+    model: "gpt-5.6-sol",
+    effort: "high",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: { PATH: "/caller/bin:/usr/bin" },
+    run: runtimeFacts.run,
+    requireCompatibility: true,
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+        };
+      },
+      async probeManagedExecutable() {
+        throw new Error("preflight probing must not interrupt a running agent");
+      },
+      async captureManagedRuntimeIdentity() {
+        return structuredClone(preflightIdentity);
+      },
+    },
+  });
+
+  const observed = await harness.observeAgent({
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    launch_binding: {
+      managed_runtime_identity: structuredClone(preflightIdentity),
+    },
+    launch: {
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+    },
+  });
+
+  assert.equal(observed.evidence, "present");
+  assert.equal(observed.identity.native_session, null);
+  assert.equal(observed.compatibility.status, "qualified");
+});
+
 test("production compatibility blocks when the managed executable identity is unproven", async () => {
   const result = await collectProductionCompatibility({
     harness: "codex",

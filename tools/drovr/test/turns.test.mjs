@@ -497,6 +497,51 @@ test("cancel explicitly interrupts, confirms settlement, and leaves the agent re
   assert.equal(started.turn.inputs[0].text, "later explicit work");
 });
 
+test("cancel waits through Herdr's stale settled snapshot before interrupting", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.herdr = { state_change_seq_before_delivery: 7 };
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let observations = 0;
+  let interrupted = false;
+  const result = await cancelTurn(fixture.turn.id, {}, {
+    env: fixture.env,
+    delay: async () => {},
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        observations += 1;
+        if (interrupted) {
+          return {
+            agent_status: "idle",
+            state_change_seq: 9,
+            agent_session: { value: "codex-session-1" },
+          };
+        }
+        if (observations === 1) {
+          return {
+            agent_status: "done",
+            state_change_seq: 7,
+            agent_session: { value: "codex-session-1" },
+          };
+        }
+        return {
+          agent_status: "working",
+          state_change_seq: 8,
+          agent_session: { value: "codex-session-1" },
+        };
+      },
+      async interruptAgent() {
+        interrupted = true;
+      },
+    },
+  });
+
+  assert.equal(result.turn.status, "cancelled");
+  assert.equal(interrupted, true);
+  assert.ok(observations >= 4);
+});
+
 test("cancel does not interrupt a turn already owned by force cleanup", async (t) => {
   const fixture = await turnFixture(t);
   const [turn] = await readRecords(fixture.registryDirectory, "turns");
@@ -729,6 +774,82 @@ test("turn send rejects a pane remapped after recovery validation", async (t) =>
   assert.match(result.turn.error, /different Codex native session/u);
   assert.equal(turn.inputs.length, 1);
   assert.equal(prompts, 0);
+});
+
+test("turn send binds a native session that appears after work begins", async (t) => {
+  const fixture = await turnFixture(t);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", agent);
+  let prompts = 0;
+  const result = await sendToTurn(
+    fixture.turn.id,
+    { prompt: "follow-up after native registration" },
+    {
+      env: fixture.env,
+      herdr: {
+        async ensureSession() {},
+        async agentRecord() {
+          return {
+            agent_status: "working",
+            agent_session: { value: "codex-session-1" },
+          };
+        },
+        async prompt() {
+          prompts += 1;
+        },
+      },
+    },
+  );
+  const [persisted] = await readRecords(fixture.registryDirectory, "agents");
+
+  assert.equal(result.turn.status, "working");
+  assert.equal(result.turn.inputs.length, 2);
+  assert.equal(persisted.native_session, "codex-session-1");
+  assert.equal(prompts, 1);
+});
+
+test("turn send waits through Herdr's stale settled snapshot before steering", async (t) => {
+  const fixture = await turnFixture(t);
+  const [turn] = await readRecords(fixture.registryDirectory, "turns");
+  turn.herdr = { state_change_seq_before_delivery: 7 };
+  await writeRecord(fixture.registryDirectory, "turns", turn);
+  let observations = 0;
+  let prompts = 0;
+  const result = await sendToTurn(
+    fixture.turn.id,
+    { prompt: "steer after native activation" },
+    {
+      env: fixture.env,
+      delay: async () => {},
+      herdr: {
+        async ensureSession() {},
+        async agentRecord() {
+          observations += 1;
+          if (observations < 3) {
+            return {
+              agent_status: "done",
+              state_change_seq: 7,
+              agent_session: { value: "codex-session-1" },
+            };
+          }
+          return {
+            agent_status: "working",
+            state_change_seq: 8,
+            agent_session: { value: "codex-session-1" },
+          };
+        },
+        async prompt() {
+          prompts += 1;
+        },
+      },
+    },
+  );
+
+  assert.equal(result.turn.status, "working");
+  assert.equal(result.turn.inputs.length, 2);
+  assert.equal(prompts, 1);
+  assert.ok(observations >= 4);
 });
 
 test("wait rejects a settled caller pane without the durable native session", async (t) => {

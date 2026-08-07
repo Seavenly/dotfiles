@@ -897,7 +897,9 @@ esac
       join(herdrState, "prompt-args"),
       "utf8",
     );
-    assert.doesNotMatch(steeringPromptArgs, /--wait/u);
+    assert.match(steeringPromptArgs, /--wait/u);
+    assert.match(steeringPromptArgs, /--until working/u);
+    assert.match(steeringPromptArgs, /--timeout 5000/u);
   }
 
   const { stdout: waitedOutput } = await execFileAsync(

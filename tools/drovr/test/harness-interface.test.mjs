@@ -279,6 +279,7 @@ test("production unknown-input staging settles on a mismatch or disappearing age
           : { token: "foreign", display_text: "different text" };
       },
       async sendPaneText() {},
+      delay: async () => {},
     },
   });
   const mismatch = await mismatchHarness.stageUnknownInput({
@@ -339,6 +340,48 @@ test("production unknown-input staging settles on a mismatch or disappearing age
   });
   assert.equal(disappearing.outcome, "recovery_blocked");
   assert.equal(disappearing.evidence, "absent");
+});
+
+test("production unknown-input staging tolerates a transient partial snapshot", async () => {
+  let snapshotCalls = 0;
+  const agent = {
+    id: "agent-1",
+    herdr: { name: "managed-agent", pane_id: "pane-1" },
+    native_session: "native-1",
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "claude",
+    delay: async () => {},
+    herdr: {
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          state_change_seq: 1,
+          agent_session: { value: "native-1" },
+        };
+      },
+      async inspectStagedInput() {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) return null;
+        if (snapshotCalls === 2) {
+          return { token: "partial", display_text: "authorized" };
+        }
+        return { token: "exact", display_text: "authorized text" };
+      },
+      async sendPaneText() {},
+    },
+  });
+
+  const result = await harness.stageUnknownInput({
+    agent,
+    text: "authorized text",
+  });
+
+  assert.equal(result.outcome, "staged_input");
+  assert.equal(result.snapshot.display_text, "authorized text");
+  assert.equal(snapshotCalls, 3);
 });
 
 test("production unknown-input staging refuses missing transition evidence before writing", async () => {

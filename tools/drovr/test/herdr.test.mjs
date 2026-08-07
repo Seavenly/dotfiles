@@ -86,6 +86,108 @@ test("managed executable probing reads identity from the Herdr pane shell", asyn
   assert.equal(calls.some((args) => args.includes("pane") && args.includes("read")), true);
 });
 
+test("managed executable probing accepts Herdr pane-rendered line records", async () => {
+  const executablePath = process.execPath;
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    delay: async () => {},
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              shell_pid: 10,
+              foreground_processes: [{ pid: 10, name: "zsh" }],
+            },
+          },
+        });
+      }
+      if (args.includes("run")) return JSON.stringify({ result: {} });
+      if (args.includes("integration")) return "codex: current (v6)\n";
+      if (args.includes("read")) {
+        const command = calls.find((candidate) => candidate.includes("run"))?.at(-1);
+        const marker = command.match(/DROVR_RUNTIME_ID_[0-9a-f]+/u)[0];
+        return [
+          marker,
+          executablePath,
+          "codex-cli 0.145.0",
+          "/managed/bin:/usr/bin",
+          "",
+        ].join("\n");
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  const identity = await client.probeManagedExecutable({
+    paneId: "pane-1",
+    harness: "codex",
+  });
+
+  assert.equal(identity.executable.canonical_path, executablePath);
+  assert.equal(identity.executable.version, "codex-cli 0.145.0");
+  assert.equal(identity.managed_path_digest, digestCanonical("/managed/bin:/usr/bin"));
+  assert.match(
+    calls.find((candidate) => candidate.includes("run"))?.at(-1),
+    /printf '%s\\n'/u,
+  );
+});
+
+test("managed executable probing requests enough pane history for a long PATH", async () => {
+  const executablePath = process.execPath;
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    delay: async () => {},
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              shell_pid: 10,
+              foreground_processes: [{ pid: 10, name: "zsh" }],
+            },
+          },
+        });
+      }
+      if (args.includes("run")) return JSON.stringify({ result: {} });
+      if (args.includes("integration")) return "codex: current (v6)\n";
+      if (args.includes("read")) {
+        const requestedLines = args[args.indexOf("--lines") + 1];
+        if (requestedLines !== "256") return "/tail-of-a-long-path\n";
+        const command = calls.find((candidate) => candidate.includes("run"))?.at(-1);
+        const marker = command.match(/DROVR_RUNTIME_ID_[0-9a-f]+/u)[0];
+        return [
+          marker,
+          executablePath,
+          "codex-cli 0.145.0",
+          "/managed/bin:/usr/bin",
+          "",
+        ].join("\n");
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  const identity = await client.probeManagedExecutable({
+    paneId: "pane-1",
+    harness: "codex",
+  });
+
+  assert.equal(identity.executable.canonical_path, executablePath);
+  const readArgs = calls.find((candidate) => candidate.includes("read"));
+  assert.equal(readArgs[readArgs.indexOf("--lines") + 1], "256");
+});
+
 test("managed runtime capture binds native session and foreground process identity", async () => {
   const executablePath = process.execPath;
   const fileIdentity = await executableFileIdentity(executablePath);
@@ -882,6 +984,77 @@ test("Claude prompt delivery refuses to append over staged prompt text", async (
     },
   );
   assert.equal(promptCalls, 0);
+});
+
+test("Codex steering asks Herdr to return after the active turn accepts input", async () => {
+  let promptArgs;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      if (args.includes("prompt")) promptArgs = args;
+      return JSON.stringify({ result: { status: "working" } });
+    },
+  });
+
+  await client.prompt("managed-agent", "Steer the active turn", {
+    harness: "codex",
+    observedBeforeDelivery: {
+      agent_status: "working",
+      agent_session: { value: "native-1" },
+      pane_id: "pane-1",
+    },
+    nativeSession: "native-1",
+    paneId: "pane-1",
+  });
+
+  assert.deepEqual(promptArgs.slice(-5), [
+    "--wait",
+    "--until",
+    "working",
+    "--timeout",
+    "5000",
+  ]);
+});
+
+test("Codex steering accepts Herdr's post-submission wait timeout only with exact working identity", async () => {
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("prompt")) {
+        const error = new Error("Herdr prompt wait failed");
+        error.stderr = JSON.stringify({
+          error: { code: "timeout", message: "timed out waiting for agent status" },
+        });
+        throw error;
+      }
+      return JSON.stringify({
+        result: {
+          agents: [{
+            name: "managed-agent",
+            agent_status: "working",
+            agent_session: { value: "native-1" },
+            pane_id: "pane-1",
+          }],
+        },
+      });
+    },
+  });
+
+  const result = await client.prompt("managed-agent", "Steer the active turn", {
+    harness: "codex",
+    observedBeforeDelivery: {
+      agent_status: "working",
+      agent_session: { value: "native-1" },
+      pane_id: "pane-1",
+    },
+    nativeSession: "native-1",
+    paneId: "pane-1",
+  });
+
+  assert.equal(JSON.parse(result).result.accepted, "pending");
+  assert.equal(calls.filter((args) => args.includes("list")).length, 1);
 });
 
 test("Claude staged input recovery submits only the exact inspected prompt", async () => {

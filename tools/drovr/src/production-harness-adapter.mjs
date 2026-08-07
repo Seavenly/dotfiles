@@ -168,6 +168,7 @@ export function createProductionSemanticHarness({
           harness: targetHarness,
           model: expectedRuntimeIdentity.model,
           effort: expectedRuntimeIdentity.effort,
+          requireNativeSession: managedRuntimeIsSettled(expectedRuntimeIdentity),
         });
       } catch (error) {
         const managedAgent = await client.agentRecord?.(
@@ -231,7 +232,9 @@ export function createProductionSemanticHarness({
         ...(managedIdentityIsRecoveryPreflight
           ? {}
           : { expectedManagedIdentity: expectedRuntimeIdentity }),
-        requireManagedIdentity: !managedIdentityIsRecoveryPreflight,
+        requireManagedIdentity:
+          !managedIdentityIsRecoveryPreflight &&
+          managedRuntimeIsSettled(managedIdentity),
       });
       if (managedIdentityIsRecoveryPreflight) {
         runtimeIdentityForQualification = undefined;
@@ -252,7 +255,9 @@ export function createProductionSemanticHarness({
       harness: targetHarness,
       adapter: PRODUCTION_ADAPTER_ID,
       expectedManagedIdentity: runtimeIdentityForQualification,
-      requireManagedIdentity: Boolean(runtimeIdentityForQualification),
+      requireManagedIdentity: managedRuntimeIsSettled(
+        candidate?.managed_pane_identity,
+      ),
     });
     try {
       assertQualifiedCompatibility(candidate);
@@ -347,21 +352,32 @@ export function createProductionSemanticHarness({
 
   async function observeUnboundManagedRuntime(agent) {
     const baseline = await ensureCompatibility();
-    const preflight = await qualifyManagedExecutableForLaunch({
-      paneId: agent.herdr.pane_id,
-      agentName: agent.herdr.name,
-      specification: agent.launch,
-      expectedFacts: baseline?.facts,
-      expectedIdentity: agent.launch_binding?.managed_runtime_identity,
-    });
-    const identity = await client.captureManagedRuntimeIdentity({
-      agentName: agent.herdr.name,
-      paneId: agent.herdr.pane_id,
-      harness,
-      executable: preflight.managedExecutable,
-      model: agent.launch.model,
-      effort: agent.launch.effort,
-    });
+    const boundIdentity = agent.launch_binding?.managed_runtime_identity;
+    const preflight = boundIdentity
+      ? {
+          managedExecutable: {
+            ...structuredClone(boundIdentity),
+            managed_agent: agent.herdr.name,
+            model: agent.launch.model,
+            effort: agent.launch.effort,
+          },
+          compatibility: baseline,
+        }
+      : await qualifyManagedExecutableForLaunch({
+          paneId: agent.herdr.pane_id,
+          agentName: agent.herdr.name,
+          specification: agent.launch,
+          expectedFacts: baseline?.facts,
+        });
+      const identity = await client.captureManagedRuntimeIdentity({
+        agentName: agent.herdr.name,
+        paneId: agent.herdr.pane_id,
+        harness,
+        executable: preflight.managedExecutable,
+        model: agent.launch.model,
+        effort: agent.launch.effort,
+        requireNativeSession: false,
+      });
     assertRecoveryExecutableBinding(
       preflight.managedExecutable,
       identity,
@@ -373,16 +389,68 @@ export function createProductionSemanticHarness({
       run,
       expected: preflight.compatibility.facts,
       managedIdentity: identity,
-      requireManagedIdentity: true,
+      requireManagedIdentity: managedRuntimeIsSettled(identity),
     });
     const qualified = qualifyCompatibility(compatibility, {
       expected: preflight.compatibility.facts,
       harness,
       adapter: PRODUCTION_ADAPTER_ID,
-      requireManagedIdentity: true,
+      requireManagedIdentity: managedRuntimeIsSettled(identity),
     });
     assertQualifiedCompatibility(qualified);
     return { compatibility: qualified, identity };
+  }
+
+  async function qualifySettledManagedRuntime(agent, observation) {
+    if (
+      !compatibilityRequired ||
+      !observation?.identity?.native_session
+    ) {
+      return observation;
+    }
+    const expectedIdentity = agent.launch_binding?.managed_runtime_identity ??
+      expectedManagedRuntimeIdentity;
+    if (!expectedIdentity) {
+      throw compatibilityBindingError({
+        expected: null,
+        observed: observation.identity,
+        reason: "missing",
+      });
+    }
+    const baseline = await ensureCompatibility();
+    const identity = await client.captureManagedRuntimeIdentity({
+      agentName: agent.herdr.name,
+      paneId: agent.herdr.pane_id,
+      harness,
+      executable: expectedIdentity,
+      model: agent.launch.model,
+      effort: agent.launch.effort,
+      requireNativeSession: true,
+    });
+    assertRecoveryExecutableBinding(expectedIdentity, identity, {
+      includeRuntime: true,
+    });
+    const compatibility = await collectProductionCompatibility({
+      harness,
+      env,
+      run,
+      expected: baseline.facts,
+      managedIdentity: identity,
+      requireManagedIdentity: true,
+    });
+    const qualified = qualifyCompatibility(compatibility, {
+      expected: baseline.facts,
+      expectedManagedIdentity: expectedIdentity,
+      harness,
+      adapter: PRODUCTION_ADAPTER_ID,
+      requireManagedIdentity: true,
+    });
+    assertQualifiedCompatibility(qualified);
+    return {
+      ...observation,
+      compatibility: qualified,
+      managed_runtime_identity: identity,
+    };
   }
 
   const adapter = {
@@ -587,6 +655,7 @@ export function createProductionSemanticHarness({
           executable: managedExecutable,
           model: agent.launch.model,
           effort: agent.launch.effort,
+          requireNativeSession: false,
         });
         assertRecoveryExecutableBinding(managedExecutable, runtimeIdentity, {
           includeRuntime: true,
@@ -597,13 +666,13 @@ export function createProductionSemanticHarness({
           run,
           expected: preflightCompatibility.facts,
           managedIdentity: runtimeIdentity,
-          requireManagedIdentity: true,
+          requireManagedIdentity: managedRuntimeIsSettled(runtimeIdentity),
         });
         const qualifiedAfterLaunch = qualifyCompatibility(compatibilityAfterLaunch, {
           expected: preflightCompatibility.facts,
           harness,
           adapter: PRODUCTION_ADAPTER_ID,
-          requireManagedIdentity: true,
+          requireManagedIdentity: managedRuntimeIsSettled(runtimeIdentity),
         });
         assertQualifiedCompatibility(qualifiedAfterLaunch);
         return {
@@ -821,7 +890,30 @@ export function createProductionSemanticHarness({
           };
         }
         const previous = last;
-        const observed = agentObservation(agent, raw);
+        let observed = agentObservation(agent, raw);
+        if (
+          observed.evidence === "present" &&
+          observed.identity.native_session &&
+          ["blocked", "idle", "done"].includes(observed.state)
+        ) {
+          try {
+            observed = await qualifySettledManagedRuntime(agent, observed);
+          } catch (error) {
+            return turnEvidence(
+              "uncertain",
+              {
+                ...observed,
+                evidence: "uncertain",
+                error: {
+                  message: error.message,
+                  outcome: error.outcome,
+                  details: error.details,
+                },
+              },
+              { error: error.message },
+            );
+          }
+        }
         last = observed;
         if (observed.evidence === "absent") {
           return turnEvidence("agent_lost", observed, {
@@ -864,21 +956,48 @@ export function createProductionSemanticHarness({
               observation: waited,
             };
           }
-          last = waited;
-          if (waited.evidence !== "present") {
+          let settledWait = waited;
+          if (
+            settledWait.evidence === "present" &&
+            settledWait.identity?.native_session &&
+            ["blocked", "idle", "done"].includes(settledWait.state)
+          ) {
+            try {
+              settledWait = await qualifySettledManagedRuntime(
+                agent,
+                settledWait,
+              );
+            } catch (error) {
+              return turnEvidence(
+                "uncertain",
+                {
+                  ...settledWait,
+                  evidence: "uncertain",
+                  error: {
+                    message: error.message,
+                    outcome: error.outcome,
+                    details: error.details,
+                  },
+                },
+                { error: error.message },
+              );
+            }
+          }
+          last = settledWait;
+          if (settledWait.evidence !== "present") {
             return turnEvidence(
-              waited.outcome === "agent_lost" ? "agent_lost" : "uncertain",
-              waited,
+              settledWait.outcome === "agent_lost" ? "agent_lost" : "uncertain",
+              settledWait,
               {
                 error:
-                  waited.outcome === "agent_lost"
+                  settledWait.outcome === "agent_lost"
                     ? "managed agent was lost while waiting for native settlement"
-                    : nativeIdentityError(harness, waited),
+                    : nativeIdentityError(harness, settledWait),
               },
             );
           }
-          if (waited.state === "working") continue;
-          if (waited.state === "blocked") {
+          if (settledWait.state === "working") continue;
+          if (settledWait.state === "blocked") {
             const excerpt = await client.agentExcerpt(agent.herdr.name, {
               nativeSession: agent.native_session,
             });
@@ -1274,6 +1393,7 @@ export function createProductionSemanticHarness({
           ? { nativeSession: before.identity.native_session }
           : {}),
       });
+      let lastMismatchedSnapshot;
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const after = await this.inspectStagedInput({ agent });
         if (after.outcome === "recovery_blocked") {
@@ -1305,12 +1425,9 @@ export function createProductionSemanticHarness({
           };
         }
         if (after.snapshot.display_text !== text) {
-          return {
-            ...after,
-            outcome: "recovery_blocked",
-            evidence: "changed",
-            reason: "staged input differs from the authorized text",
-          };
+          lastMismatchedSnapshot = after;
+          await (delay ?? defaultDelay)(25);
+          continue;
         }
         if (
           after.outcome === "staged_input" &&
@@ -1323,6 +1440,14 @@ export function createProductionSemanticHarness({
           };
         }
         await (delay ?? defaultDelay)(25);
+      }
+      if (lastMismatchedSnapshot) {
+        return {
+          ...lastMismatchedSnapshot,
+          outcome: "recovery_blocked",
+          evidence: "changed",
+          reason: "staged input differs from the authorized text",
+        };
       }
       throw new DrovrError(
         "Herdr did not expose the exact staged unknown input",

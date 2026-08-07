@@ -212,6 +212,30 @@ test("soak decision promotes only a fully bound 10/3 consecutive run", () => {
   assert.deepEqual(decision.residual_limitations, []);
 });
 
+test("soak accepts exact snapshot disappearance when Herdr keeps the counter flat", () => {
+  const cycles = passingCycles();
+  for (const cycle of cycles.slice(10)) {
+    cycle.state_sequence = {
+      before_staging: 7,
+      after_staging: 7,
+      after_clear: 7,
+      post_clear: 7,
+      after_process_reentry: 7,
+      clear_transition_proof: "exact_snapshot_disappearance",
+      anti_replay_gap: false,
+    };
+  }
+
+  const decision = evaluateSoak({
+    plan: PLAN,
+    binding: BINDING,
+    cycles,
+  });
+
+  assert.equal(decision.decision, "promote");
+  assert.deepEqual(decision.residual_limitations, []);
+});
+
 test("a failed cycle resets the consecutive count and remains in the decision evidence", () => {
   const cycles = passingCycles();
   cycles[4] = cycle("codex", 5, ["cleanup"], {

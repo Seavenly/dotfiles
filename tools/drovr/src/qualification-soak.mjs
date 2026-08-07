@@ -1023,12 +1023,12 @@ export function evaluateSoak({ plan, binding, cycles = [], verification } = {}) 
     const recordAntiReplayGap = () => {
       addFailure(
         "anti_replay_gap",
-        "Herdr state_change_seq did not advance monotonically across the clear transition.",
+        "Herdr did not prove a fresh staged-input clear transition through state_change_seq or exact snapshot disappearance.",
       );
       residualLimitations.push({
         code: "anti_replay_gap",
         cycle: cycleNumber,
-        message: "The live staged-input transition counter did not prove a fresh clear transition.",
+        message: "The live staged-input evidence did not prove a fresh clear transition.",
       });
       valid = false;
     };

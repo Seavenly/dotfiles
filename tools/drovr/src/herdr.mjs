@@ -438,7 +438,7 @@ export class HerdrClient {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const output = await this.paneRead(paneId, {
         source: "recent-unwrapped",
-        lines: 80,
+        lines: 256,
       });
       const fields = managedExecutableProbeFields(output, marker);
       if (fields) {
@@ -467,6 +467,7 @@ export class HerdrClient {
     executable,
     model,
     effort,
+    requireNativeSession = true,
   }) {
     assertSupportedHarness(harness);
     const observed = await this.agentRecord(agentName);
@@ -482,8 +483,8 @@ export class HerdrClient {
         "changed",
       );
     }
-    const nativeSession = observed.agent_session?.value;
-    if (!nativeSession) {
+    const nativeSession = observed.agent_session?.value ?? null;
+    if (requireNativeSession && !nativeSession) {
       throw managedIdentityError(
         "Herdr did not report a native session identity",
         "missing",
@@ -557,6 +558,7 @@ export class HerdrClient {
     harness,
     model,
     effort,
+    requireNativeSession = true,
   }) {
     if (!expectedIdentity?.pane_id || !expectedIdentity.executable) {
       throw managedIdentityError(
@@ -571,6 +573,7 @@ export class HerdrClient {
       executable: expectedIdentity,
       model: model ?? expectedIdentity.model,
       effort: effort ?? expectedIdentity.effort,
+      requireNativeSession,
     });
     assertManagedRuntimeIdentity(expectedIdentity, observed);
     return observed;
@@ -762,12 +765,55 @@ export class HerdrClient {
         { code: 4, outcome: "adapter_failure" },
       );
     }
-    const result = await this.sessionCommand([
+    const promptArgs = [
       "agent",
       "prompt",
       name,
       prompt,
-    ]);
+    ];
+    if (harness !== "claude" && observedBeforeDelivery?.agent_status === "working") {
+      // Herdr 0.8 otherwise waits for the active Codex turn to settle before
+      // returning from agent prompt, which makes steering arrive too late.
+      promptArgs.push("--wait", "--until", "working", "--timeout", "5000");
+    }
+    let result;
+    try {
+      result = await this.sessionCommand(promptArgs);
+    } catch (error) {
+      if (
+        harness !== "claude" &&
+        observedBeforeDelivery?.agent_status === "working" &&
+        isTimeout(error)
+      ) {
+        // Herdr submits the Codex prompt before waiting for the requested
+        // state transition. An already-working agent has no new transition
+        // to report, so the bounded wait can time out after accepting input.
+        // Re-observe the exact native target before treating that timeout as
+        // a pending delivery; turn correlation remains responsible for
+        // proving the input reached the native transcript.
+        const observedAfterDelivery = await this.agentRecord(name);
+        if (typeof options.nativeSession === "string") {
+          assertNativeSession(name, observedAfterDelivery, options.nativeSession);
+        }
+        if (
+          options.paneId !== undefined &&
+          options.paneId !== null &&
+          observedAfterDelivery?.pane_id !== options.paneId
+        ) {
+          throw new DrovrError(`Herdr managed pane changed for ${name}`, {
+            code: 0,
+            outcome: "recovery_blocked",
+          });
+        }
+        if (observedAfterDelivery?.agent_status === "working") {
+          return JSON.stringify({
+            id: "cli:agent:prompt",
+            result: { status: "working", accepted: "pending" },
+          });
+        }
+      }
+      throw error;
+    }
     if (!guardsClaudeStagedSubmission) return result;
 
     // Herdr 0.8 owns Claude's paste conversion and submission timing. Wait
@@ -1028,9 +1074,10 @@ function assertSupportedHarness(harness) {
 function managedExecutableProbeCommand(marker, harness) {
   // The harness value is restricted by assertSupportedHarness. The command is
   // emitted into the managed pane so command lookup, version, and PATH all
-  // come from the shell Herdr will use for the native agent.
+  // come from the shell Herdr will use for the native agent. Emit one field
+  // per line because Herdr renders tab characters as spaces in pane output.
   return [
-    `printf '%s\\t%s\\t%s\\t%s\\n' '${marker}'`,
+    `printf '%s\\n' '${marker}'`,
     `"$(command -v ${harness} 2>/dev/null || true)"`,
     `"$(${harness} --version 2>/dev/null | sed -n '1p')"`,
     `"$PATH"`,
@@ -1038,11 +1085,31 @@ function managedExecutableProbeCommand(marker, harness) {
 }
 
 function managedExecutableProbeFields(output, marker) {
-  const line = String(output ?? "")
-    .split(/\r?\n/u)
-    .find((candidate) => candidate.startsWith(`${marker}\t`));
-  if (!line) return null;
-  const [observedPath, version, ...pathParts] = line
+  const lines = String(output ?? "").split(/\r?\n/u);
+  const markerIndex = lines.findIndex(
+    (candidate) => candidate.trim() === marker,
+  );
+  if (markerIndex >= 0) {
+    const [observedPath, version, managedPath] = lines.slice(
+      markerIndex + 1,
+      markerIndex + 4,
+    );
+    if (observedPath && version && managedPath) {
+      return {
+        observedPath: observedPath.trim(),
+        version: version.trim(),
+        managedPath,
+      };
+    }
+  }
+
+  // Accept records from older Herdr versions that preserved the original tab
+  // separators. The line-oriented format above is the production format.
+  const legacyLine = lines.find((candidate) =>
+    candidate.startsWith(`${marker}\t`),
+  );
+  if (!legacyLine) return null;
+  const [observedPath, version, ...pathParts] = legacyLine
     .slice(marker.length + 1)
     .split("\t");
   const managedPath = pathParts.join("\t");

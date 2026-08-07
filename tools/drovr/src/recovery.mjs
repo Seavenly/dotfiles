@@ -50,6 +50,50 @@ export async function reconcileOrRecoverAgent(
   if (duplicateOwner) {
     return blocked(initial, "duplicate_native_session");
   }
+  if (
+    !initial.agent.native_session &&
+    observed.evidence === "present" &&
+    typeof observed.identity?.native_session === "string" &&
+    observed.identity.native_session.length > 0
+  ) {
+    await withResourceLock(
+      registryDirectory,
+      `agent:${agentId}`,
+      async () => {
+        const current = await recoveryContext(registryDirectory, agentId);
+        if (
+          current.agent.native_session &&
+          current.agent.native_session !== observed.identity.native_session
+        ) {
+          initial.agent = current.agent;
+          return;
+        }
+        let changed = false;
+        if (!current.agent.native_session) {
+          current.agent.native_session = observed.identity.native_session;
+          changed = true;
+        }
+        if (observed.compatibility?.managed_pane_identity) {
+          current.agent.launch_binding = bindAgentLaunchRuntime(
+            current.agent.launch_binding,
+            observed.compatibility,
+          );
+          changed = true;
+        }
+        if (changed) {
+          await writeRecord(registryDirectory, "agents", current.agent);
+        }
+        initial.agent = current.agent;
+      },
+    );
+  }
+  if (
+    initial.agent.native_session &&
+    observed.identity?.native_session &&
+    initial.agent.native_session !== observed.identity.native_session
+  ) {
+    return blocked(initial, "native_session_mismatch");
+  }
   if (!initial.agent.native_session) {
     return blocked(initial, "missing_native_session");
   }

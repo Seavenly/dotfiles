@@ -1076,6 +1076,9 @@ test("a reusable live prompt-file scenario accepts identity from the private run
   const traceManagedIdentity = JSON.stringify(
     redactValue(JSON.parse(managedIdentity)),
   );
+  const preflightTraceManagedIdentity = JSON.stringify(
+    redactValue({ ...JSON.parse(managedIdentity), native_session: null }),
+  );
   await mkdir(fakeBin);
   await mkdir(join(scratch, "caller"));
   await mkdir(workspace);
@@ -1111,7 +1114,8 @@ case "\${1:-} \${2:-}" in
     fi
     mv "$CLAUDE_CONFIG_DIR/.claude.json.tmp" "$CLAUDE_CONFIG_DIR/.claude.json"
     printf '%s\\n' '{"sequence":1,"at_ms":0,"kind":"command_result","operation":"agent.prompt","payload":{"request":{"resource":"agent","action":"prompt","target":"qualification-agent","input":{"sentinel":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK"}},"envelope":{"schema":"herdr.command/v1","result":{"status":"accepted"}}}}' >> "$DROVR_TRACE_JOURNAL"
-    printf '%s\\n' '{"sequence":2,"at_ms":0,"kind":"agent_observation","operation":"agent.runtime-identity","payload":{"request":{"resource":"agent","action":"runtime-identity","target":"qualification-agent"},"managed_runtime_identity":${traceManagedIdentity}}}' >> "$DROVR_TRACE_JOURNAL"
+    printf '%s\\n' '{"sequence":2,"at_ms":0,"kind":"agent_observation","operation":"agent.runtime-identity","payload":{"request":{"resource":"agent","action":"runtime-identity","target":"qualification-agent"},"managed_runtime_identity":${preflightTraceManagedIdentity}}}' >> "$DROVR_TRACE_JOURNAL"
+    printf '%s\\n' '{"sequence":3,"at_ms":0,"kind":"agent_observation","operation":"agent.runtime-identity","payload":{"request":{"resource":"agent","action":"runtime-identity","target":"qualification-agent"},"managed_runtime_identity":${traceManagedIdentity}}}' >> "$DROVR_TRACE_JOURNAL"
     printf '%s\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"completed","group":{"id":"group-live-1","key":"qualification-group"},"task":{"id":"task-live-1","key":"qualification-task","cwd":"/tmp/work"},"agent":{"id":"agent-live-1","key":"qualification-agent","harness":"claude","model":"haiku","effort":"low","capability":"read-only","managed_runtime_evidence_digest":"${managedIdentityDigest}"},"turn":{"id":"turn-live-1","status":"completed","input_count":1,"inputs":[{"sequence":1}],"result":{"text":"QUALIFY-CLAUDE-SOAK-MULTILINE-OK","messages":[]}},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["ask"]}}'
     ;;
   "ask agent-live-1")
@@ -1473,14 +1477,16 @@ case "\${1:-} \${2:-}" in
   "agent start") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent start","ok":true,"result":{"status":"completed","task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","key":"agent","harness":"codex","model":"gpt-5.6-luna","effort":"low","capability":"read-only","native_session":"codex-session-cancel","managed_runtime_identity":${managedRuntimeIdentity({ harness: "codex", managedAgent: "agent", nativeSession: "codex-session-cancel", model: "gpt-5.6-luna", effort: "low" })}}}}' ;;
   "agent get") printf '%s\n' '{"schema":"drovr.command/v1","command":"agent get","ok":true,"result":{"status":"completed","agent":{"id":"agent-cancel-1","native_session":"codex-session-cancel"}}}' ;;
   "turn start")
-    if [[ "$*" == *"QUALIFY-CODEX-LIFECYCLE-HOLD-OK"* ]]; then turn_id=turn-steer-1
+    if [[ "$*" == *"QUALIFY-CODEX-LIFECYCLE-WARMUP-OK"* ]]; then turn_id=turn-warmup-0
+    elif [[ "$*" == *"QUALIFY-CODEX-LIFECYCLE-HOLD-OK"* ]]; then turn_id=turn-steer-1
     elif [[ "$*" == *"QUALIFY-CODEX-TIMEOUT"* ]]; then turn_id=turn-timeout-2
     else turn_id=turn-cancel-3; fi
     printf '{"schema":"drovr.command/v1","command":"turn start","ok":true,"result":{"status":"working","group":{"id":"group-cancel-1"},"task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1","harness":"codex","model":"gpt-5.6-luna","effort":"low"},"turn":{"id":"%s","status":"working","input_count":1},"authority_watermark":{"schema":"drovr.turn-authority-watermark/v1"},"legal_next_actions":["cancel"]}}\n' "$turn_id"
     ;;
   "turn send") printf '%s\n' '{"schema":"drovr.command/v1","command":"turn send","ok":true,"result":{"status":"sent","group":{"id":"group-cancel-1"},"task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1"},"turn":{"id":"turn-steer-1","status":"working","input_count":2}}}' ;;
   "turn wait")
-    if [[ "\${3:-}" == turn-steer-1 ]]; then status=completed; text=QUALIFY-CODEX-STEERING-OK; count=2
+    if [[ "\${3:-}" == turn-warmup-0 ]]; then status=completed; text=QUALIFY-CODEX-LIFECYCLE-WARMUP-OK; count=1
+    elif [[ "\${3:-}" == turn-steer-1 ]]; then status=completed; text=QUALIFY-CODEX-STEERING-OK; count=2
     elif [[ "$*" == *"--timeout 1ms"* ]]; then status=still_running; text=""; count=1
     else status=completed; text=QUALIFY-CODEX-TIMEOUT-OK; count=1; fi
     printf '{"schema":"drovr.command/v1","command":"turn wait","ok":true,"result":{"status":"%s","group":{"id":"group-cancel-1"},"task":{"id":"task-cancel-1"},"agent":{"id":"agent-cancel-1"},"turn":{"id":"%s","status":"%s","input_count":%s,"result":{"text":"%s"}}}}\n' "$status" "\${3:-}" "$status" "$count" "$text"
@@ -1503,7 +1509,7 @@ esac
   });
   assert.equal(report.status, "pass");
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
-  assert.equal(evidence.limits.measured.turns, 4);
+  assert.equal(evidence.limits.measured.turns, 5);
   assert.equal(
     evidence.assertions.find(({ id }) => id === "exact_cancellation_settlement").disposition,
     "pass",
@@ -1513,12 +1519,15 @@ esac
     "pass",
   );
   const invocationLogText = await readFile(invocationLog, "utf8");
-  assert.match(invocationLogText, /sleeps for 8 seconds/u);
+  assert.match(invocationLogText, /sleeps for 30 seconds/u);
   assert.deepEqual(invocationLogText.trim().split("\n").map((line) => line.split(" ").slice(0, 2).join(" ")), [
     "doctor",
     "group list",
     "task open",
     "agent start",
+    "turn start",
+    "turn wait",
+    "agent get",
     "turn start",
     "turn send",
     "turn wait",

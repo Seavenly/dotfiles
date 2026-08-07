@@ -29,6 +29,7 @@ import {
   normalizeInputText,
   settleTurnRecord,
   terminalProofClassification,
+  turnAwaitsPostDeliverySettlement,
 } from "./turn-record.mjs";
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { reconcileOrRecoverAgent } from "./recovery.mjs";
@@ -461,6 +462,11 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       return currentBlockForTurn(registryDirectory, latestTurn);
     },
   });
+  await persistObservedAgentIdentity({
+    registryDirectory,
+    turnId,
+    observation: evidence.observation,
+  });
   if (evidence.outcome === "still_running") {
     return { ...context, wait_status: "still_running" };
   }
@@ -535,6 +541,44 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       await writeRecord(registryDirectory, "blocks", block);
     }
     return current;
+  });
+}
+
+async function persistObservedAgentIdentity({
+  registryDirectory,
+  turnId,
+  observation,
+}) {
+  if (observation?.evidence !== "present") return;
+  const nativeSession = observation?.identity?.native_session;
+  const runtimeIdentity = observation?.managed_runtime_identity;
+  if (!nativeSession && !runtimeIdentity) return;
+  await withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
+    const current = await turnContext(registryDirectory, turnId);
+    let changed = false;
+    if (nativeSession) {
+      if (
+        current.agent.native_session &&
+        current.agent.native_session !== nativeSession
+      ) {
+        throw new DrovrError(
+          `Herdr reported a different native session for agent ${current.agent.id}`,
+          { code: 0, outcome: "compatibility_blocked" },
+        );
+      }
+      if (!current.agent.native_session) {
+        current.agent.native_session = nativeSession;
+        changed = true;
+      }
+    }
+    if (runtimeIdentity) {
+      current.agent.launch_binding = bindAgentLaunchRuntime(
+        current.agent.launch_binding,
+        observation.compatibility,
+      );
+      changed = true;
+    }
+    if (changed) await writeRecord(registryDirectory, "agents", current.agent);
   });
 }
 
@@ -767,7 +811,27 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       ) {
         return { ...context, command_status: "task_busy" };
       }
-      const observed = await harness.observeAgent(context.agent);
+      let observed = await harness.observeAgent(context.agent);
+      if (
+        observed.evidence === "present" &&
+        ["idle", "done"].includes(observed.state) &&
+        turnAwaitsPostDeliverySettlement(
+          context.turn,
+          observed.transition_token,
+        )
+      ) {
+        // Herdr can report the pre-delivery settled state for a short window
+        // after a native turn has been submitted. Give that transition a
+        // bounded opportunity to become working before treating the logical
+        // turn as already closed. This is what makes immediate steering safe
+        // after `turn start` without weakening identity checks.
+        observed = await waitForNativeTurnActivation({
+          harness,
+          agent: context.agent,
+          observed,
+          delay: dependencies.delay,
+        });
+      }
       if (observed.evidence !== "present") {
         settleTurnRecord(context.turn, {
           status: "uncertain",
@@ -804,6 +868,32 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
   if (!outcome.reconcile_status) return outcome;
   const reconciled = await waitForTurn(turnId, {}, dependencies);
   return { ...reconciled, command_status: outcome.reconcile_status };
+}
+
+const NATIVE_TURN_ACTIVATION_ATTEMPTS = 200;
+const NATIVE_TURN_ACTIVATION_POLL_MS = 25;
+
+async function waitForNativeTurnActivation({
+  harness,
+  agent,
+  observed,
+  delay,
+}) {
+  const pause = delay ?? ((milliseconds) => new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  }));
+  let current = observed;
+  for (let attempt = 0; attempt < NATIVE_TURN_ACTIVATION_ATTEMPTS; attempt += 1) {
+    await pause(NATIVE_TURN_ACTIVATION_POLL_MS);
+    current = await harness.observeAgent(agent);
+    if (
+      current.evidence !== "present" ||
+      !["idle", "done"].includes(current.state)
+    ) {
+      return current;
+    }
+  }
+  return current;
 }
 
 export async function reconcileTurn(
@@ -1002,12 +1092,35 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   }
   const harness = harnessFor(initial, env, dependencies);
   await harness.ensureRuntime();
-  const availability = await reconcileOrRecoverAgent(initial.agent.id, {
+  let availability = await reconcileOrRecoverAgent(initial.agent.id, {
     ...dependencies,
     env,
     harness,
     now,
   });
+  if (
+    availability.status === "reconciled" &&
+    availability.observed?.evidence === "present" &&
+    ["idle", "done"].includes(availability.observed.state) &&
+    turnAwaitsPostDeliverySettlement(
+      initial.turn,
+      availability.observed.transition_token,
+    )
+  ) {
+    // Cancellation can race the native activation of a just-started turn in
+    // the same way as steering. Do not mistake Herdr's stale pre-delivery
+    // settled snapshot for a completed turn, or the interrupt gesture will
+    // never be sent.
+    availability = {
+      ...availability,
+      observed: await waitForNativeTurnActivation({
+        harness,
+        agent: initial.agent,
+        observed: availability.observed,
+        delay: dependencies.delay,
+      }),
+    };
+  }
   if (!["reconciled", "recovered"].includes(availability.status)) {
     return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
       const context = await turnContext(registryDirectory, turnId);

@@ -1475,7 +1475,10 @@ async function runUnknownStagedInputScenario({
   const suffix = randomUUID();
   const groupKey = `qualification-${scenario.id}-${suffix}`;
   const launch = qualificationLaunch(doctorExecution.envelope, "claude");
-  const unknownText = `QUALIFY-UNKNOWN-STAGED-${suffix}`;
+  // Keep the native unknown prompt below the narrowest supported pane width.
+  // Herdr's visible-text source wraps long single-line input, and those visual
+  // wraps are intentionally indistinguishable from user-authored newlines.
+  const unknownText = `QUALIFY-UNKNOWN-${suffix.slice(0, 8)}`;
   const unknownPromptPath = join(scratch, "unknown-staged-input.txt");
   await writeFile(unknownPromptPath, unknownText);
   const records = [
@@ -1589,7 +1592,11 @@ async function runUnknownStagedInputScenario({
           staged.token,
         ],
         "agent staged-input",
-        { timeoutMs: 15_000 },
+        // Herdr 0.8 may take roughly 18 seconds to confirm Claude's two-key
+        // clear gesture, followed by Drovr's 30-second stable-absence proof.
+        // Keep the command bounded, but above both native confirmation and
+        // stability latency so a successful clear is not misclassified.
+        { timeoutMs: 65_000 },
       );
       const stabilityMs = parseDuration(
         scenario.execution.limits.stability_interval,
@@ -1733,7 +1740,6 @@ async function runUnknownStagedInputScenario({
       afterProcessReentry ?? finalAgent,
     ),
   };
-  const antiReplayGap = stateSequenceAntiReplayGap(stateSequence);
   const sameAgentReuse =
     reuse?.execution.envelope?.result?.status === "completed" &&
     reuse.execution.envelope.result.agent?.id === agentId &&
@@ -1773,6 +1779,19 @@ async function runUnknownStagedInputScenario({
     clearInvocations.every(({ argv }) =>
       argv[argv.indexOf("--clear-unknown") + 1] === staged?.token,
     );
+  const clearTransitionProof =
+    stateSequence.after_clear > stateSequence.after_staging
+      ? "state_change_seq"
+      : exactUnknownStaged &&
+          stableClear &&
+          clearedOnlyExactSnapshot &&
+          !unknownTextSubmitted
+        ? "exact_snapshot_disappearance"
+        : null;
+  const antiReplayGap = stateSequenceAntiReplayGap({
+    ...stateSequence,
+    clear_transition_proof: clearTransitionProof,
+  });
   const observedAgentIds = records
     .map(({ envelope }) => envelope.result?.agent?.id)
     .filter((id) => typeof id === "string");
@@ -1875,7 +1894,7 @@ async function runUnknownStagedInputScenario({
       { kind: "positive", id: "exact_unknown_snapshot_inspected", disposition: exactUnknownStaged ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
       { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
-      { kind: "invariant", id: "state_change_seq_transition", disposition: antiReplayGap === false ? "pass" : "fail" },
+      { kind: "invariant", id: "staged_input_transition_proof", disposition: antiReplayGap === false ? "pass" : "fail" },
       { kind: "positive", id: "clear_absent_for_stability_interval", disposition: stableClear ? "pass" : "fail" },
       { kind: "recovery", id: "same_agent_reuse_after_clear", disposition: sameAgentReuse ? "pass" : "fail" },
       { kind: "invariant", id: "non_submission_of_unknown_text", disposition: unknownTextSubmitted ? "fail" : "pass" },
@@ -1900,7 +1919,7 @@ async function runUnknownStagedInputScenario({
             : passed
             ? "Unknown staged input stayed absent for the full interval and the same agent was reused."
             : antiReplayGap === true
-            ? "Herdr did not advance state_change_seq across the clear transition; the cycle remains unqualified."
+            ? "Herdr did not prove a fresh staged-input clear transition through state_change_seq or exact snapshot disappearance."
             : "Staging, stable clearing, no-submission, reuse, or cleanup evidence was incomplete."),
         ...(clearContradiction
           ? {
@@ -1959,6 +1978,7 @@ async function runUnknownStagedInputScenario({
     },
     state_sequence: {
       ...stateSequence,
+      clear_transition_proof: clearTransitionProof,
       anti_replay_gap: antiReplayGap,
       post_clear_reappeared: Boolean(clearContradiction),
       process_reentry: "a separate public Drovr process observed the same Herdr session; the Herdr/native process was intentionally not restarted because this qualification does not permit manual termination or resume",
@@ -2272,6 +2292,10 @@ async function runCodexLifecycleScenario({
     );
   }
   const agentId = agentStart?.execution.envelope?.result?.agent?.id;
+  let warmupTurn;
+  let warmupSettled;
+  let warmupAgent;
+  let warmupCompleted;
   let steeringTurn;
   let timeoutTurn;
   let cancellationTurn;
@@ -2282,12 +2306,31 @@ async function runCodexLifecycleScenario({
   let steeringSettled;
   let timeoutSettled;
   if (typeof agentId === "string") {
+    warmupTurn = await invoke(
+      ["turn", "start", agentId, "Reply exactly: QUALIFY-CODEX-LIFECYCLE-WARMUP-OK"],
+      "turn start",
+      { timeoutMs: 15_000 },
+    );
+    const warmupTurnId = warmupTurn.execution.envelope?.result?.turn?.id;
+    if (typeof warmupTurnId === "string") {
+      warmupSettled = await invoke(
+        ["turn", "wait", warmupTurnId, "--timeout", "60s"],
+        "turn wait",
+        { timeoutMs: 65_000 },
+      );
+      warmupAgent = await invoke(["agent", "get", agentId], "agent get");
+    }
+    warmupCompleted =
+      warmupSettled?.execution.envelope?.result?.status === "completed" &&
+      warmupSettled.execution.envelope.result.agent?.id === agentId &&
+      warmupSettled.execution.envelope.result.turn?.result?.text?.trim() ===
+        "QUALIFY-CODEX-LIFECYCLE-WARMUP-OK";
     steeringTurn = await invoke(
       [
         "turn",
         "start",
         agentId,
-        "Run a shell command that sleeps for 8 seconds. Do not send a final answer until it completes. Then reply exactly: QUALIFY-CODEX-LIFECYCLE-HOLD-OK",
+        "Run a shell command that sleeps for 30 seconds. Do not send a final answer until it completes. Then reply exactly: QUALIFY-CODEX-LIFECYCLE-HOLD-OK",
       ],
       "turn start",
       { timeoutMs: 30_000 },
@@ -2304,7 +2347,11 @@ async function runCodexLifecycleScenario({
           "Reply exactly: QUALIFY-CODEX-STEERING-OK",
         ],
         "turn send",
-        { timeoutMs: 15_000 },
+        // Herdr 0.8 may spend several seconds returning from an already
+        // working Codex prompt handoff. Let the adapter's bounded native
+        // wait and transcript checks finish before the qualification runner
+        // classifies the delivery as a process timeout.
+        { timeoutMs: 65_000 },
       );
       steeringSettled = await invoke(
         ["turn", "wait", steeringTurnId, "--timeout", "60s"],
@@ -2331,7 +2378,12 @@ async function runCodexLifecycleScenario({
       );
     }
     cancellationTurn = await invoke(
-      ["turn", "start", agentId, "Keep working until interrupted."],
+      [
+        "turn",
+        "start",
+        agentId,
+        "Run a shell command that sleeps for 60 seconds. Do not send a final answer until it completes.",
+      ],
       "turn start",
       { timeoutMs: 15_000 },
     );
@@ -2341,7 +2393,10 @@ async function runCodexLifecycleScenario({
       cancellation = await invoke(
         ["turn", "cancel", cancellationTurnId],
         "turn cancel",
-        { timeoutMs: 15_000 },
+        // Drovr's cancellation path allows up to 120 seconds for native
+        // settlement; a 15-second qualification bound can kill it while the
+        // exact managed Codex is still safely winding down.
+        { timeoutMs: 125_000 },
       );
       reuse = await invoke(
         [
@@ -2360,9 +2415,13 @@ async function runCodexLifecycleScenario({
     ? await invoke(["agent", "get", agentId], "agent get")
     : null;
   const managedNativeSession =
-    agentStart?.execution.envelope?.result?.agent?.native_session ?? null;
+    warmupAgent?.execution.envelope?.result?.agent?.native_session ??
+    finalAgent?.execution.envelope?.result?.agent?.native_session ??
+    null;
   const exactNativeSession =
     typeof managedNativeSession === "string" &&
+    warmupAgent?.execution.envelope?.result?.agent?.native_session ===
+      managedNativeSession &&
     finalAgent?.execution.envelope?.result?.agent?.native_session ===
       managedNativeSession;
   deadline.completeScenario();
@@ -2412,7 +2471,8 @@ async function runCodexLifecycleScenario({
     groupKey,
   );
   const unrelatedResourcesUnchanged = unrelatedResources.unchanged;
-  const lifecyclePassed = cancelled && reused && steered && timedOutAndSettled;
+  const lifecyclePassed =
+    warmupCompleted && cancelled && reused && steered && timedOutAndSettled;
   const observedModel = agentStart?.execution.envelope?.result?.agent?.model;
   const observedEffort = agentStart?.execution.envelope?.result?.agent?.effort;
   const exactLaunchConfiguration =
@@ -2431,6 +2491,7 @@ async function runCodexLifecycleScenario({
     unrelatedResourcesUnchanged;
   const finishedAt = now().toISOString();
   const turnIds = [
+    warmupTurn?.execution.envelope?.result?.turn?.id,
     steeringTurn?.execution.envelope?.result?.turn?.id,
     timeoutTurn?.execution.envelope?.result?.turn?.id,
     cancellationTurn?.execution.envelope?.result?.turn?.id,
@@ -2479,6 +2540,7 @@ async function runCodexLifecycleScenario({
     invocations: records,
     observations: records.map(({ envelope }) => envelope),
     assertions: [
+      { kind: "positive", id: "initial_native_session_registration", disposition: warmupCompleted ? "pass" : "fail" },
       { kind: "positive", id: "steering_on_exact_native_session", disposition: steered ? "pass" : "fail" },
       { kind: "invariant", id: "exact_native_session_identity", disposition: exactNativeSession ? "pass" : "fail" },
       { kind: "invariant", id: "exact_launch_configuration", disposition: exactLaunchConfiguration ? "pass" : "fail" },
@@ -3818,31 +3880,39 @@ function liveCompatibility(versions, harness, managedIdentity) {
 }
 
 function managedRuntimeIdentityFromEvidence(value) {
+  const candidates = [];
+  collectManagedRuntimeIdentities(value, candidates);
+  return (
+    candidates.find((identity) =>
+      typeof identity.native_session === "string" &&
+      identity.native_session.length > 0,
+    ) ?? candidates[0] ?? null
+  );
+}
+
+function collectManagedRuntimeIdentities(value, candidates) {
   if (Array.isArray(value)) {
     for (const child of value) {
-      const found = managedRuntimeIdentityFromEvidence(child);
-      if (found) return found;
+      collectManagedRuntimeIdentities(child, candidates);
     }
-    return null;
+    return;
   }
-  if (!value || typeof value !== "object") return null;
+  if (!value || typeof value !== "object") return;
   if (
     value.managed_runtime_identity?.schema ===
     "drovr.managed-pane-runtime-identity/v1"
   ) {
-    return value.managed_runtime_identity;
+    candidates.push(value.managed_runtime_identity);
   }
   if (
     value.managed_pane_identity?.schema ===
     "drovr.managed-pane-runtime-identity/v1"
   ) {
-    return value.managed_pane_identity;
+    candidates.push(value.managed_pane_identity);
   }
   for (const child of Object.values(value)) {
-    const found = managedRuntimeIdentityFromEvidence(child);
-    if (found) return found;
+    collectManagedRuntimeIdentities(child, candidates);
   }
-  return null;
 }
 
 function scenarioHarness(scenario) {

@@ -23,8 +23,11 @@ export function stateSequenceAntiReplayGap(
   const monotonic = values.every(
     (value, index) => index === 0 || value >= values[index - 1],
   );
+  const exactSnapshotTransition =
+    sequence.clear_transition_proof === "exact_snapshot_disappearance" &&
+    sequence.after_clear === sequence.after_staging;
   return monotonic &&
-    sequence.after_clear > sequence.after_staging &&
+    (sequence.after_clear > sequence.after_staging || exactSnapshotTransition) &&
     sequence.post_clear === sequence.after_process_reentry
     ? false
     : true;
