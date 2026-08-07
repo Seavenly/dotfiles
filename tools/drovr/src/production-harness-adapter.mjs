@@ -38,6 +38,7 @@ import {
   stagedInputTextToken,
 } from "./staged-input-receipt.mjs";
 import { turnAwaitsPostDeliverySettlement } from "./turn-record.mjs";
+import { observationErrorReason } from "./observation-reason.mjs";
 
 const AGENT_OBSERVATION_SCHEMA = "drovr.semantic-agent-observation/v1";
 const TURN_EVIDENCE_SCHEMA = "drovr.semantic-turn-evidence/v1";
@@ -486,7 +487,12 @@ export function createProductionSemanticHarness({
           evidence: running ? "present" : "absent",
         };
       } catch (error) {
-        return { outcome: "uncertain", evidence: "uncertain", error };
+        return {
+          outcome: "uncertain",
+          evidence: "uncertain",
+          reason: observationErrorReason(error),
+          error,
+        };
       }
     },
 
@@ -1663,6 +1669,7 @@ function agentObservation(agent, observed, error) {
       expected_identity: expected,
       identity: null,
       state: "unknown",
+      reason: observationErrorReason(error),
       error,
     };
   }

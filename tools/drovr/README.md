@@ -295,11 +295,21 @@ group-owned idle tab, satisfying Herdr's final-tab constraint without changing
 group lifetime. Stale agents converge only when their exact process and pane
 are absent and native-session ownership is unambiguous. All cleanup preserves
 durable history and never deletes caller-owned cwd or transcript files.
-Mutating commands may recover a confirmed-down native session only when every
-persisted safety check succeeds. A missing managed pane is recreated through a
-new managed workspace/task tab or an exact registered sibling pane; a surviving
-tab without that ownership evidence remains blocked;
-`status` and `agent get` report observed loss without launching anything.
+`agent retire` observes the configured session without creating or restarting
+it. It retires a lost record only after the session, managed agent absence, and
+the exact bound pane absence are observed twice, with the registered task
+topology checked for any surviving agent. Protocol mismatch, session loss,
+identity drift, pane remapping, or a surviving or ambiguous pane returns typed
+uncertainty and leaves the record active. A successful retirement stores a
+durable cleanup receipt, and a repeated retirement returns that receipt without
+touching Herdr. `status` and `agent get` report observed loss without launching
+anything.
+
+If the shared Herdr client and server are incompatible, repair compatibility in
+a uniquely named disposable Herdr session. Point a temporary Drovr
+configuration at that session, run `herdr session attach NAME`, and validate
+the public lifecycle operation there. Stopping or restarting the shared session
+is never an implicit retirement step.
 
 Claude role instructions are materialized from the immutable launch
 specification into a private `0600` file beneath Drovr state and passed through

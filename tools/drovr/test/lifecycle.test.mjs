@@ -36,9 +36,16 @@ test("agent retirement closes only its managed pane and preserves durable histor
     env: fixture.env,
     now: () => "2026-07-23T11:00:00.000Z",
     herdr: {
+      async sessionRunning() {
+        return true;
+      },
       async ensureSession() {},
       async agentRecord() {
-        return { agent_status: "idle", agent_session: { value: "native-1" } };
+        return {
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
       },
       async closePane(paneId) {
         closed.push(paneId);
@@ -62,6 +69,244 @@ test("agent retirement closes only its managed pane and preserves durable histor
   await access(fixture.callerFile);
   await access(fixture.transcript);
 });
+
+test("agent retirement proves exact absence, stores a receipt, and is repeatable", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const calls = [];
+  const herdr = {
+    async sessionRunning() {
+      calls.push("sessionRunning");
+      return true;
+    },
+    async ensureSession() {
+      throw new Error("retirement must not ensure the runtime");
+    },
+    async agentRecord() {
+      calls.push("agentRecord");
+      return null;
+    },
+    async paneRecord(paneId) {
+      calls.push(["paneRecord", paneId]);
+      return null;
+    },
+    async closePane() {
+      throw new Error("exact absence must not close a pane");
+    },
+  };
+
+  const first = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    now: () => "2026-07-23T11:00:00.000Z",
+    herdr,
+  });
+  const callsAfterFirst = structuredClone(calls);
+  const repeated = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr,
+  });
+
+  assert.equal(first.status, "retired");
+  assert.equal(first.reason, "exact_absence");
+  assert.equal(first.cleanup_receipt.schema, "drovr.agent-retirement-receipt/v1");
+  assert.equal(first.cleanup_receipt.proof, "exact_absence");
+  assert.equal(first.cleanup_receipt.observation.evidence, "absent");
+  assert.equal(first.cleanup_receipt.observation.runtime.evidence, "present");
+  assert.equal(first.cleanup_receipt.pane.before, null);
+  assert.deepEqual(repeated.cleanup_receipt, first.cleanup_receipt);
+  assert.deepEqual(calls, callsAfterFirst);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.deepEqual(agent.cleanup_receipt, first.cleanup_receipt);
+  assert.equal(agent.status, "retired");
+});
+
+test("agent retirement refuses a surviving pane after managed-agent loss", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let closeCalls = 0;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecord() {
+        return null;
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane() {
+        closeCalls += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "surviving_pane");
+  assert.deepEqual(result.legal_next_actions, ["inspect_exact_managed_pane"]);
+  assert.equal(closeCalls, 0);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+  assert.equal(Object.hasOwn(agent, "cleanup_receipt"), false);
+});
+
+test("agent retirement refuses an exact agent in a remapped task tab", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let closeCalls = 0;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "unrelated-tab" };
+      },
+      async closePane() {
+        closeCalls += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "pane_remapped");
+  assert.equal(closeCalls, 0);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+  assert.equal(Object.hasOwn(agent, "cleanup_receipt"), false);
+});
+
+test("agent retirement refuses protocol mismatch without mutating lifecycle state", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let agentObserved = false;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecord() {
+        agentObserved = true;
+        const error = new Error(
+          "protocol_mismatch: client protocol 19 is newer than server protocol 17",
+        );
+        throw error;
+      },
+      async paneRecord() {
+        throw new Error("pane observation must not follow protocol mismatch");
+      },
+      async closePane() {
+        throw new Error("protocol mismatch must not close a pane");
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "protocol_mismatch");
+  assert.equal(agentObserved, true);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+  assert.equal(Object.hasOwn(agent, "cleanup_receipt"), false);
+});
+
+test("agent retirement reports an unavailable session without creating it", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let ensured = false;
+  let agentObserved = false;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return false;
+      },
+      async ensureSession() {
+        ensured = true;
+      },
+      async agentRecord() {
+        agentObserved = true;
+        return null;
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "session_missing");
+  assert.equal(ensured, false);
+  assert.equal(agentObserved, false);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+});
+
+test("agent retirement reports an unavailable pane observation without mutation", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let closeCalls = 0;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecord() {
+        return null;
+      },
+      async paneRecord() {
+        throw new Error("pane observation timed out");
+      },
+      async closePane() {
+        closeCalls += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "pane_observation_uncertain");
+  assert.equal(closeCalls, 0);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+});
+
+test(
+  "agent retirement refuses native identity drift without mutating lifecycle state",
+  async (t) => {
+    const fixture = await lifecycleFixture(t);
+    let closeCalls = 0;
+    const result = await retireAgent(fixture.agent.id, {
+      env: fixture.env,
+      herdr: {
+        async sessionRunning() {
+          return true;
+        },
+        async agentRecord() {
+          return {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_status: "idle",
+            agent_session: { value: "native-different" },
+          };
+        },
+        async paneRecord() {
+          return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+        },
+        async closePane() {
+          closeCalls += 1;
+        },
+      },
+    });
+
+    assert.equal(result.status, "uncertain");
+    assert.equal(result.reason, "identity_drift");
+    assert.equal(closeCalls, 0);
+    const [agent] = await readRecords(fixture.registryDirectory, "agents");
+    assert.equal(agent.status, "active");
+  },
+);
 
 test("task cleanup closes a persisted startup pane without native identity", async (t) => {
   const fixture = await lifecycleFixture(t);
@@ -169,13 +414,16 @@ test("task cleanup finalizes an identity-less agent with no native resources", a
   assert.equal(agent.status, "retired");
 });
 
-test("agent retirement targets the restored pane bound to its native session", async (t) => {
+test("agent retirement refuses a remapped pane before mutation", async (t) => {
   const fixture = await lifecycleFixture(t);
   const closed = [];
   let paneClosed = false;
   const result = await retireAgent(fixture.agent.id, {
     env: fixture.env,
     herdr: {
+      async sessionRunning() {
+        return true;
+      },
       async ensureSession() {},
       async agentRecord() {
         return {
@@ -196,12 +444,14 @@ test("agent retirement targets the restored pane bound to its native session", a
     },
   });
 
-  assert.equal(result.status, "retired");
-  assert.deepEqual(closed, ["restored-pane"]);
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "pane_remapped");
+  assert.deepEqual(closed, []);
   const [task] = await readRecords(fixture.registryDirectory, "tasks");
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
-  assert.equal(task.herdr.tab_id, "restored-tab");
-  assert.equal(agent.herdr.pane_id, "restored-pane");
+  assert.equal(task.herdr.tab_id, "tab-task-1");
+  assert.equal(agent.herdr.pane_id, "pane-agent-1");
+  assert.equal(agent.status, "active");
 });
 
 test("non-force task cleanup refuses busy agents before mutating resources", async (t) => {

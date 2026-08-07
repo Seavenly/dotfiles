@@ -33,6 +33,9 @@ test("delegate persists managed-agent ownership before startup readiness can fai
   let readinessFailed = false;
   let paneClosed = false;
   const herdr = {
+    async sessionRunning() {
+      return true;
+    },
     async ensureSession() {},
     async createWorkspace() {
       return { workspaceId: "workspace-1", paneId: "pane-1", tabId: "tab-1" };

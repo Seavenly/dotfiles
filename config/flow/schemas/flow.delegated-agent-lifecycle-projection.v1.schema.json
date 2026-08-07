@@ -58,6 +58,30 @@
         "code": { "type": "string", "minLength": 1 }
       }
     },
+    "reason": { "type": "string", "minLength": 1 },
+    "cleanup_receipt": {
+      "type": "object",
+      "required": [
+        "schema",
+        "agent_id",
+        "recorded_at",
+        "proof",
+        "observation",
+        "pane",
+        "interrupted_turns"
+      ],
+      "properties": {
+        "schema": { "const": "drovr.agent-retirement-receipt/v1" },
+        "agent_id": { "type": "string", "minLength": 1 },
+        "recorded_at": { "type": "string", "minLength": 1 },
+        "proof": {
+          "enum": ["exact_absence", "exact_identity_and_pane_close"]
+        },
+        "observation": { "type": "object" },
+        "pane": { "type": "object" },
+        "interrupted_turns": { "type": "array" }
+      }
+    },
     "legal_next_actions": {
       "type": "array",
       "uniqueItems": true,

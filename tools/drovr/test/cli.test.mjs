@@ -364,7 +364,7 @@ test("doctor warns about legacy agents without failing the public command", asyn
   await mkdir(join(claudeHome, "projects"), { recursive: true });
   await executable(
     join(fakeBin, "herdr"),
-    'if [[ ${1:-} == --version ]]; then echo "herdr 0.7.5"; else printf "claude: current (v7)\\ncodex: current (v6)\\n"; fi\n',
+    'if [[ ${1:-} == --version ]]; then echo "herdr 0.7.5"; elif [[ ${1:-} == session && ${2:-} == list ]]; then printf \'{"sessions":[{"name":"legacy-session","running":true}]}\\n\'; elif [[ ${1:-} == --session && ${2:-} == legacy-session && ${3:-} == agent && ${4:-} == list ]]; then printf \'{"result":{"agents":[]}}\\n\'; elif [[ ${1:-} == --session && ${2:-} == legacy-session && ${3:-} == pane && ${4:-} == get ]]; then printf \'{"error":{"code":"pane_not_found"}}\\n\' >&2; exit 1; else printf "claude: current (v7)\\ncodex: current (v6)\\n"; fi\n',
   );
   await executable(
     join(fakeBin, "codex"),
@@ -385,6 +385,7 @@ test("doctor warns about legacy agents without failing the public command", asyn
     task_id: "task-legacy",
     status: "active",
     launch: { harness: "codex" },
+    herdr: { name: "legacy-agent", pane_id: "legacy-pane" },
     launch_binding: {
       compatibility_evidence_digest: `sha256:${"1".repeat(64)}`,
     },
@@ -404,12 +405,18 @@ test("doctor warns about legacy agents without failing the public command", asyn
   assert.equal(managedRuntimeCheck.status, "warn");
   assert.match(
     managedRuntimeCheck.detail,
-    /agent-legacy: managed identity is missing from a legacy launch/u,
+    /agent-legacy: safely retireable absence/u,
   );
   assert.match(
     managedRuntimeCheck.detail,
     /drovr agent retire agent-legacy/u,
   );
+  assert.deepEqual(managedRuntimeCheck.retirement, [{
+    agent_id: "agent-legacy",
+    status: "retireable_absence",
+    reason: "exact_absence",
+    legal_next_actions: ["drovr agent retire agent-legacy"],
+  }]);
 });
 
 test("delegate returns the correlated final Codex message", async (t) => {

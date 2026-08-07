@@ -402,7 +402,12 @@ function lifecycleRetirementProjection(context) {
         }
       : null,
     turn: null,
-    legal_next_actions: retired ? [] : ["reconcile_exact_agent_retirement"],
+    ...(context.agent?.cleanup_receipt
+      ? { cleanup_receipt: context.agent.cleanup_receipt }
+      : {}),
+    ...(context.reason ? { reason: context.reason } : {}),
+    legal_next_actions: context.legal_next_actions ??
+      (retired ? [] : ["reconcile_exact_agent_retirement"]),
   });
 }
 

@@ -72,6 +72,9 @@ export function summarizeAgent(agent) {
     created_at: agent.created_at,
     ...(agent.observation ? { observation: agent.observation } : {}),
     ...(agent.retired_at ? { retired_at: agent.retired_at } : {}),
+    ...(agent.cleanup_receipt
+      ? { cleanup_receipt: agent.cleanup_receipt }
+      : {}),
   };
 }
 
