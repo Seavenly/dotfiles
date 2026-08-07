@@ -304,6 +304,15 @@ uncertainty and leaves the record active. A successful retirement stores a
 durable cleanup receipt, and a repeated retirement returns that receipt without
 touching Herdr. `status` and `agent get` report observed loss without launching
 anything.
+Records retired by an older task or group cleanup remain idempotently retired;
+Drovr reports that the legacy receipt is unavailable rather than fabricating
+one.
+
+Retirement results use stable `legal_next_actions` tokens. `doctor` renders
+`retire_agent` as the exact `drovr agent retire AGENT_ID` command and renders
+uncertainty tokens as read-only inspection, identity reconciliation, or
+disposable-session repair procedures. No uncertainty action authorizes a pane
+close or a force retirement.
 
 If the shared Herdr client and server are incompatible, repair compatibility in
 a uniquely named disposable Herdr session. Point a temporary Drovr

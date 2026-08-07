@@ -65,6 +65,8 @@ test("agent retirement closes only its managed pane and preserves durable histor
   const [turn] = await readRecords(fixture.registryDirectory, "turns");
   assert.equal(agent.status, "retired");
   assert.equal(agent.retired_at, "2026-07-23T11:00:00.000Z");
+  assert.equal(agent.cleanup_receipt.schema, "drovr.agent-retirement-receipt/v1");
+  assert.equal(agent.cleanup_receipt.proof, "exact_identity_and_pane_close");
   assert.equal(turn.status, "completed");
   await access(fixture.callerFile);
   await access(fixture.transcript);
@@ -116,6 +118,75 @@ test("agent retirement proves exact absence, stores a receipt, and is repeatable
   assert.deepEqual(calls, callsAfterFirst);
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.deepEqual(agent.cleanup_receipt, first.cleanup_receipt);
+  assert.equal(agent.status, "retired");
+});
+
+test("agent retirement remains idempotent after task cleanup without a receipt", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  fixture.agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", fixture.agent);
+
+  const closed = await closeTask(fixture.task.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return null;
+      },
+      async paneRecord() {
+        return null;
+      },
+      async tabRecord() {
+        return null;
+      },
+      async closeTab() {},
+    },
+  });
+  assert.equal(closed.status, "closed");
+
+  const repeated = await retireAgent(fixture.agent.id, { env: fixture.env });
+  assert.equal(repeated.status, "retired");
+  assert.equal(repeated.reason, "legacy_retirement_without_receipt");
+  assert.equal(Object.hasOwn(repeated, "cleanup_receipt"), false);
+});
+
+test("agent retirement does not start a shared session before live-pane closure", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let closeCalls = 0;
+  let paneClosed = false;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async ensureSession() {
+        throw new Error("live-pane retirement must not start a shared session");
+      },
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return paneClosed
+          ? null
+          : { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane() {
+        closeCalls += 1;
+        paneClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "retired");
+  assert.equal(result.cleanup_receipt.proof, "exact_identity_and_pane_close");
+  assert.equal(closeCalls, 1);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.equal(agent.status, "retired");
 });
 
@@ -194,9 +265,10 @@ test("agent retirement refuses protocol mismatch without mutating lifecycle stat
       },
       async agentRecord() {
         agentObserved = true;
-        const error = new Error(
-          "protocol_mismatch: client protocol 19 is newer than server protocol 17",
-        );
+        const error = new Error("Herdr agent list failed");
+        error.adapterFailure = {
+          stderr: '{"error":{"code":"protocol_mismatch"}}',
+        };
         throw error;
       },
       async paneRecord() {
@@ -412,6 +484,10 @@ test("task cleanup finalizes an identity-less agent with no native resources", a
   assert.equal(mutations, 0);
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.equal(agent.status, "retired");
+
+  const repeated = await retireAgent(fixture.agent.id, { env: fixture.env });
+  assert.equal(repeated.status, "retired");
+  assert.equal(repeated.reason, "legacy_retirement_without_receipt");
 });
 
 test("agent retirement refuses a remapped pane before mutation", async (t) => {

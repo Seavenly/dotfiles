@@ -747,6 +747,34 @@ test("real production bindings fail closed when managed runtime identity is abse
   );
 });
 
+test("qualified runtime checks can skip creating an absent session", async () => {
+  const { run } = runtime();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run,
+    env: {},
+  });
+  let ensureCalls = 0;
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: {},
+    run,
+    herdr: {
+      async ensureSession() {
+        ensureCalls += 1;
+      },
+    },
+    compatibility,
+    requireCompatibility: true,
+  });
+
+  const qualified = await harness.ensureRuntime({ ensureSession: false });
+  assert.equal(qualified.outcome, "qualified");
+  assert.equal(ensureCalls, 0);
+  await harness.ensureRuntime();
+  assert.equal(ensureCalls, 1);
+});
+
 test("a command-runner injection cannot bypass the compatibility binding gate", async () => {
   const runtimeFacts = runtime();
   const compatibility = await collectProductionCompatibility({

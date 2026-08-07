@@ -415,7 +415,7 @@ test("doctor warns about legacy agents without failing the public command", asyn
     agent_id: "agent-legacy",
     status: "retireable_absence",
     reason: "exact_absence",
-    legal_next_actions: ["drovr agent retire agent-legacy"],
+    legal_next_actions: ["retire_agent"],
   }]);
 });
 

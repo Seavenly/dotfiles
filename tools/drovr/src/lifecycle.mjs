@@ -93,15 +93,15 @@ async function classifyManagedAgent({ agent, harness, observation }) {
   return { observed, pane, paneId, observation };
 }
 
-function retirementLegalActions(agentId, reason) {
-  if (reason === "exact_absence") return [`drovr agent retire ${agentId}`];
-  if (reason === "retirement_receipt_missing") {
-    return ["reconcile_retirement_receipt"];
+function retirementLegalActions(reason) {
+  if (reason === "exact_absence" || reason === "agent_present") {
+    return ["retire_agent"];
   }
   if (
     [
       "session_missing",
       "protocol_mismatch",
+      "compatibility_blocked",
       "session_observation_uncertain",
       "agent_observation_uncertain",
       "pane_observation_uncertain",
@@ -133,9 +133,6 @@ function retirementLegalActions(agentId, reason) {
   if (reason === "pane_binding_missing") {
     return ["reconcile_managed_agent_identity"];
   }
-  if (reason === "agent_present") {
-    return [`drovr agent retire ${agentId}`];
-  }
   return ["reconcile_exact_agent_retirement"];
 }
 
@@ -145,7 +142,7 @@ function retirementFailure(agent, reason, retirementEvidence) {
       agent,
       status: "uncertain",
       reason,
-      legal_next_actions: retirementLegalActions(agent.id, reason),
+      legal_next_actions: retirementLegalActions(reason),
       ...(retirementEvidence
         ? { retirement_evidence: retirementEvidence }
         : {}),
@@ -181,8 +178,6 @@ function retirementEvidence({ runtime, observation, paneId, pane }) {
           pane: {
             pane_id: paneId,
             evidence: pane ? "present" : "absent",
-            ...(pane?.tabId ? { tab_id: pane.tabId } : {}),
-            ...(pane?.workspaceId ? { workspace_id: pane.workspaceId } : {}),
           },
         }
       : {}),
@@ -208,6 +203,19 @@ function identityDriftReason(observation) {
   return observation.reason === "native_session_missing"
     ? "identity_observation_uncertain"
     : "agent_observation_uncertain";
+}
+
+function previouslyRetiredAgent(context) {
+  return {
+    ...context,
+    status: "retired",
+    ...(context.agent.cleanup_receipt
+      ? { cleanup_receipt: context.agent.cleanup_receipt }
+      : {
+          reason: "legacy_retirement_without_receipt",
+          legal_next_actions: [],
+        }),
+  };
 }
 
 async function classifyRetirementAgent({
@@ -279,7 +287,7 @@ async function classifyRetirementAgent({
     return {
       status: "retireable_absence",
       reason: "exact_absence",
-      legal_next_actions: retirementLegalActions(agent.id, "exact_absence"),
+      legal_next_actions: retirementLegalActions("exact_absence"),
       observed: null,
       pane: null,
       paneId,
@@ -329,7 +337,7 @@ async function classifyRetirementAgent({
   return {
     status: "agent_present",
     reason: "agent_present",
-    legal_next_actions: retirementLegalActions(agent.id, "agent_present"),
+    legal_next_actions: retirementLegalActions("agent_present"),
     observed: observation,
     pane,
     paneId,
@@ -852,15 +860,7 @@ export async function inspectAgentRetirement(agentId, dependencies = {}) {
         cleanup_receipt: context.agent.cleanup_receipt,
       };
     }
-    return {
-      ...context,
-      status: "uncertain",
-      reason: "retirement_receipt_missing",
-      legal_next_actions: retirementLegalActions(
-        agentId,
-        "retirement_receipt_missing",
-      ),
-    };
+    return previouslyRetiredAgent(context);
   }
   const harness = retirementClient(context, env, dependencies);
   const preflight = await retirementPreflight(context, harness);
@@ -888,15 +888,7 @@ export async function retireAgent(agentId, dependencies = {}) {
             cleanup_receipt: context.agent.cleanup_receipt,
           };
         }
-        return {
-          ...context,
-          status: "uncertain",
-          reason: "retirement_receipt_missing",
-          legal_next_actions: retirementLegalActions(
-            agentId,
-            "retirement_receipt_missing",
-          ),
-        };
+        return previouslyRetiredAgent(context);
       }
       const harness = retirementClient(context, env, dependencies);
       let classification = await retirementPreflight(context, harness);
@@ -904,9 +896,11 @@ export async function retireAgent(agentId, dependencies = {}) {
         return { ...context, ...classification.failure };
       }
 
-      // Re-observe immediately before any registry mutation. A pane or agent
-      // that was exact during the first read is not authority to close or
-      // retire a later remapped, ambiguous, or reappeared resource.
+      // Keep the initial observation fail-closed so a transient uncertainty
+      // cannot be erased by a later successful read. Re-observe immediately
+      // before any registry mutation so a pane or agent that was exact during
+      // the first read is not authority to close a later remapped or
+      // ambiguous resource.
       classification = await retirementPreflight(context, harness);
       if (classification.failure) {
         return { ...context, ...classification.failure };
@@ -923,8 +917,24 @@ export async function retireAgent(agentId, dependencies = {}) {
       let proof = "exact_absence";
       if (observed) {
         proof = "exact_identity_and_pane_close";
+        const closeHarness = client(context, env, dependencies);
         try {
-          await harness.topology.closePane(paneId);
+          // A present-pane close remains a qualified mutation. The
+          // read-only retirement harness is intentionally unqualified so it
+          // can observe legacy loss, but it must not widen the close path.
+          await closeHarness.ensureRuntime({ ensureSession: false });
+        } catch (error) {
+          return {
+            ...context,
+            ...retirementFailure(
+              context.agent,
+              observationErrorReason(error, "compatibility_blocked"),
+              retirementEvidenceResult,
+            ).failure,
+          };
+        }
+        try {
+          await closeHarness.topology.closePane(paneId);
         } catch (error) {
           return {
             ...context,
@@ -937,7 +947,7 @@ export async function retireAgent(agentId, dependencies = {}) {
         }
         let remainingPane;
         try {
-          remainingPane = await harness.topology.observePane(paneId);
+          remainingPane = await closeHarness.topology.observePane(paneId);
         } catch (error) {
           return {
             ...context,

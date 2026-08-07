@@ -468,11 +468,11 @@ export function createProductionSemanticHarness({
       compatibility: compatibilityRequired ? "required" : "optional",
     },
 
-    async ensureRuntime() {
+    async ensureRuntime({ ensureSession = true } = {}) {
       const runtimeCompatibility = await ensureCompatibility();
-      await client.ensureSession?.();
+      if (ensureSession) await client.ensureSession?.();
       return {
-        outcome: "ensured",
+        outcome: ensureSession ? "ensured" : "qualified",
         ...(runtimeCompatibility
           ? { compatibility: runtimeCompatibility }
           : {}),
