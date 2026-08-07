@@ -78,6 +78,13 @@ export async function processEnvironmentPath(
     const environmentOutput = normalizedCommandLine
       ? outputLine.slice(normalizedCommandLine.length)
       : outputLine;
+    if (
+      normalizedCommandLine &&
+      environmentOutput &&
+      !/^\s+[A-Za-z_][A-Za-z0-9_]*=/u.test(environmentOutput)
+    ) {
+      return null;
+    }
     const matches = [
       ...environmentOutput.matchAll(
         /(?:^|\s)PATH=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|\s*$)/gu,

@@ -124,9 +124,8 @@ test("managed runtime capture binds native session and foreground process identi
               foreground_processes: [{
                 pid: 2147483647,
                 name: "codex",
-                argv0: executablePath,
-                argv: [executablePath, "--sandbox", "read-only"],
-                cmdline: `${executablePath} --sandbox read-only`,
+                argv: ["codex", "--sandbox", "read-only"],
+                cmdline: "codex --sandbox read-only",
                 cwd: "/workspace",
               }],
             },
@@ -134,7 +133,7 @@ test("managed runtime capture binds native session and foreground process identi
         });
       }
       if (file === "ps" && args[0] === "eww") {
-        return `${executablePath} --sandbox read-only PATH=/managed/bin:/usr/bin HOME=/workspace\n`;
+        return "codex --sandbox read-only PATH=/managed/bin:/usr/bin HOME=/workspace\n";
       }
       if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {
@@ -170,7 +169,8 @@ test("managed runtime capture binds native session and foreground process identi
 
   assert.equal(identity.native_session, "native-1");
   assert.equal(identity.process.pid, 2147483647);
-  assert.equal(identity.process.argv0, executablePath);
+  assert.equal(identity.process.argv0, "codex");
+  assert.deepEqual(identity.process.argv, ["codex", "--sandbox", "read-only"]);
   assert.equal(identity.integration, "herdr-codex/v6");
   assert.equal(identity.model, "gpt-5.6-sol");
   assert.equal(identity.effort, "high");

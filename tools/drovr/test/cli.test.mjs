@@ -525,7 +525,7 @@ case "\${1:-} \${2:-}" in
     ;;
   "pane process-info")
     if [[ -f "$herdrState/agent" ]]; then
-      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"codex","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$(command -v codex)" "$(command -v codex)" "$(command -v codex)" "$taskCwd"
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"codex","argv":["codex","--sandbox","read-only"],"cmdline":"codex --sandbox read-only","cwd":"%s"}]}}}\n' "$taskCwd"
     elif [[ ! -f "$herdrState/pane-discovered" ]]; then
       touch "$herdrState/pane-discovered"
       printf '{"error":{"code":"pane_not_found","message":"pane not found"}}\\n' >&2
@@ -694,7 +694,7 @@ esac
   );
   await executable(
     join(fakeBin, "ps"),
-    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "$(command -v codex) --sandbox read-only PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "codex"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox read-only\\n" "$(command -v codex)"\nelse\n  exit 1\nfi\n',
+    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "codex --sandbox read-only PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "codex"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox read-only\\n" "$(command -v codex)"\nelse\n  exit 1\nfi\n',
   );
 
   let execution;

@@ -28,6 +28,7 @@ test("process environment lookup parses PATH from a multi-assignment ps eww line
   for (const { output, commandLine } of [
     {
       output: "codex --sandbox read-only HOME=/home/test PWD=/workspace PATH=/managed/bin:/usr/bin\n",
+      commandLine: "codex --sandbox read-only",
     },
     {
       output: "env PATH=/caller/bin codex PATH=/managed/bin:/usr/bin\n",
@@ -55,6 +56,22 @@ test("process environment lookup parses PATH from a multi-assignment ps eww line
       options: { env: { PATH: "/caller/bin" } },
     }]);
   }
+});
+
+test("process environment lookup rejects PATH-looking argv text without an environment PATH", async () => {
+  const commandLine = "/opt/codex/bin/codex";
+  const path = await processEnvironmentPath(42, {
+    async run() {
+      return `${commandLine} -c developer_instructions=\"use PATH=/caller/bin\" HOME=/home/test\n`;
+    },
+  }, {
+    commandLine,
+    readFileImpl: async () => {
+      throw new Error("/proc unavailable");
+    },
+  });
+
+  assert.equal(path, null);
 });
 
 test("process executable lookup accepts the proc executable identity", async () => {
