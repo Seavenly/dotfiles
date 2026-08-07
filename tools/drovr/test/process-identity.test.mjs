@@ -179,7 +179,7 @@ test("process executable lookup rejects unexpected fallback paths", async () => 
   assert.equal(calls.length, 3);
 });
 
-test("process identity lookup fails closed for invalid pids and missing PATH", async () => {
+test("process identity lookup fails closed for invalid pids, missing command lines, and PATH", async () => {
   let environmentFallbackCalls = 0;
   const client = {
     async run() {
@@ -204,7 +204,22 @@ test("process identity lookup fails closed for invalid pids and missing PATH", a
     commandLine: "different-command",
     readFileImpl: unavailableFile,
   }), null);
+  assert.equal(await processEnvironmentPath(42, {
+    async run() {
+      throw new Error("ps should not run without a command line");
+    },
+  }, {
+    readFileImpl: unavailableFile,
+  }), null);
+  assert.equal(await processEnvironmentPath(42, {
+    async run() {
+      throw new Error("ps should not run with a blank command line");
+    },
+  }, {
+    commandLine: "   ",
+    readFileImpl: unavailableFile,
+  }), null);
   assert.equal(await processExecutablePath({ pid: 0 }, new Set(), client), null);
   assert.equal(await processExecutablePath({ pid: "42" }, new Set(), client), null);
-  assert.equal(environmentFallbackCalls, 1);
+  assert.equal(environmentFallbackCalls, 0);
 });

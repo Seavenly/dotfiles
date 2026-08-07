@@ -1157,7 +1157,7 @@ case "\${1:-} \${2:-}" in
   "tab rename"|"pane rename") ;;
   "pane process-info")
     if [[ -f "$herdrState/agent" ]]; then
-      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"claude","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\\n' "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "$taskCwd"
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"claude","argv":["claude","--sandbox"],"cmdline":"claude --sandbox","cwd":"%s"}]}}}\\n' "$taskCwd"
     else
       printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
     fi
@@ -1281,7 +1281,7 @@ esac
   );
   await executable(
     join(fakeBin, "ps"),
-    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "$(command -v claude) PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
+    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "claude --sandbox PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
   );
 
   let delegatedExecution;

@@ -96,7 +96,7 @@ fi
 shift 2
 case "\${1:-} \${2:-}" in
   "pane process-info")
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"bash","argv0":"/bin/bash","argv":["/bin/bash"],"cmdline":"/bin/bash","cwd":"%s"},{"pid":2147483647,"name":"claude","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$state" "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "${cwd}"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"bash","argv0":"/bin/bash","argv":["/bin/bash"],"cmdline":"/bin/bash","cwd":"%s"},{"pid":2147483647,"name":"claude","argv":["claude","--sandbox"],"cmdline":"claude --sandbox","cwd":"%s"}]}}}\n' "$state" "${cwd}"
     ;;
   "pane run")
     marker=$(printf '%s\\n' "\${4:-}" | sed -n 's/.*\\(DROVR_RUNTIME_ID_[0-9a-f]*\\).*/\\1/p')
@@ -183,7 +183,7 @@ printf 'p2147483647\\nn%s\\n' "$(command -v claude)"
   const fakePs = join(fakeBin, "ps");
   await writeFile(
     fakePs,
-    '#!/usr/bin/env bash\nif [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "$(command -v claude) PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
+    '#!/usr/bin/env bash\nif [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "claude --sandbox PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
   );
   await chmod(fakePs, 0o755);
   const env = {

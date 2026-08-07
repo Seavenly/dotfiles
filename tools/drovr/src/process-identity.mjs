@@ -60,6 +60,9 @@ export async function processEnvironmentPath(
   } catch {
     // macOS and restricted Linux environments do not expose /proc.
   }
+  const normalizedCommandLine =
+    typeof commandLine === "string" ? commandLine.trim() : "";
+  if (!normalizedCommandLine) return null;
   try {
     const output = await client.run(
       "ps",
@@ -67,19 +70,11 @@ export async function processEnvironmentPath(
       { env: client.env },
     );
     const outputLine = String(output);
-    const normalizedCommandLine =
-      typeof commandLine === "string" ? commandLine.trim() : "";
-    if (
-      normalizedCommandLine &&
-      !outputLine.startsWith(normalizedCommandLine)
-    ) {
+    if (!outputLine.startsWith(normalizedCommandLine)) {
       return null;
     }
-    const environmentOutput = normalizedCommandLine
-      ? outputLine.slice(normalizedCommandLine.length)
-      : outputLine;
+    const environmentOutput = outputLine.slice(normalizedCommandLine.length);
     if (
-      normalizedCommandLine &&
       environmentOutput &&
       !/^\s+[A-Za-z_][A-Za-z0-9_]*=/u.test(environmentOutput)
     ) {
