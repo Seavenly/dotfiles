@@ -344,6 +344,21 @@ also carries normalized effective authority, declared capacity, an ambient
 credential-reference identity with no secret material, opaque caller ownership
 metadata, deterministic comparison keys, and the complete flow-required
 feature advertisement. The configuration-catalog watermark binds those facts.
+When compatibility is requested without an already-observed managed pane, the
+description reports `managed_runtime_binding.status = deferred`; caller-level
+prerequisites are not a managed-pane qualification. Agent launch binds the
+exact pane, executable, PATH, native session, and foreground process before
+native startup, and later operations revalidate that binding. The binding probe
+runs a marker-based, read-only command in the pane shell, so its marker,
+resolved executable path, version, and managed PATH remain visible in pane
+scrollback while the private identity stays out of public output.
+Active agents created before managed runtime identity was introduced are treated
+as legacy unbound launches: `doctor` reports a warning with the retire-and-
+relaunch remedy, while launch, turn, recovery, and reuse continue to fail closed
+until a new exact binding is established.
+On hosts without `/proc`, executable identity falls back to `ps` and `lsof`,
+while the exact process PATH falls back to `ps eww`; an unavailable or
+ambiguous platform observation fails closed.
 Declared capacity includes a 30-second Herdr observation bound, which applies
 to both session discovery and session-scoped read-only observations.
 Every feature entry carries an exact `supported` or `unavailable` availability

@@ -112,9 +112,14 @@ test("task and agent queries filter by stable owner identity", async (t) => {
       effort: "low",
       capability: "workspace-write",
       native_session: "native-active",
+      managed_runtime_evidence_digest: `sha256:${"d".repeat(64)}`,
       created_at: "2026-07-23T10:02:00.000Z",
     },
   ]);
+  assert.equal(
+    Object.hasOwn(agents.result.agents[0], "managed_runtime_identity"),
+    false,
+  );
   const agent = await runDrovr(fixture.env, [
     "agent",
     "get",
@@ -122,6 +127,10 @@ test("task and agent queries filter by stable owner identity", async (t) => {
   ]);
   assert.equal(agent.result.agent.id, "agent-active");
   assert.equal(agent.result.agent.task_id, "task-active");
+  assert.equal(
+    Object.hasOwn(agent.result.agent, "managed_runtime_identity"),
+    false,
+  );
 });
 
 test("agent get reports observed loss without recovering or mutating Herdr", async (t) => {
@@ -327,6 +336,18 @@ async function queryFixture(t) {
       model: "gpt-5.6-luna",
       effort: "low",
       capability: "workspace-write",
+    },
+    launch_binding: {
+      schema: "drovr.agent-launch-binding/v1",
+      comparison_key: `sha256:${"a".repeat(64)}`,
+      configuration_watermark: `sha256:${"b".repeat(64)}`,
+      compatibility_evidence_digest: `sha256:${"c".repeat(64)}`,
+      managed_runtime_identity: {
+        pane_id: "pane-active",
+        process: { pid: 42 },
+        executable: { canonical_path: "/managed/codex" },
+      },
+      managed_runtime_evidence_digest: `sha256:${"d".repeat(64)}`,
     },
     herdr: { name: "managed-active", pane_id: "pane-active" },
     native_session: "native-active",

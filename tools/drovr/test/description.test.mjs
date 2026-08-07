@@ -51,6 +51,7 @@ test("description resolves an exact watermarked launch without creating delegate
     credential_reference: "drovr.credential-reference/v1",
     feature_advertisement: "drovr.feature-advertisement/v1",
     caller_metadata: "opaque-json/v1",
+    managed_runtime_binding: "drovr.managed-runtime-binding/v1",
   });
   assert.match(description.watermark.content_sha256, /^sha256:[0-9a-f]{64}$/u);
   assert.equal(description.watermark.authority, "drovr.configuration-catalog");
@@ -123,6 +124,12 @@ test("description resolves an exact watermarked launch without creating delegate
     secret_material_included: false,
   });
   assert.deepEqual(description.caller_metadata, callerMetadata);
+  assert.deepEqual(description.managed_runtime_binding, {
+    schema: "drovr.managed-runtime-binding/v1",
+    status: "deferred",
+    exact_identity_required: true,
+    binding_phase: "agent_launch",
+  });
   assert.deepEqual(
     description.feature_advertisement.features.map(({ id }) => id),
     DROVR_ADVERTISED_FEATURE_IDS,
@@ -196,6 +203,8 @@ test("description binds exact compatibility facts when qualification is required
   );
 
   assert.equal(description.compatibility.status, "qualified");
+  assert.equal(description.managed_runtime_binding.status, "deferred");
+  assert.equal(description.managed_runtime_binding.exact_identity_required, true);
   assert.equal(description.compatibility.facts.integration, "herdr-codex/v6");
   assert.equal(
     description.comparison_keys.compatibility,
@@ -203,6 +212,74 @@ test("description binds exact compatibility facts when qualification is required
   );
   assert.equal(description.schemas.compatibility, "drovr.compatibility/v1");
   assert.match(description.watermark.content_sha256, /^sha256:[0-9a-f]{64}$/u);
+
+  const managedRuntimeIdentity = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness: "codex",
+    managed_agent: "managed-agent",
+    pane_id: "pane-1",
+    executable: {
+      observed_path: "/opt/codex/bin/codex",
+      canonical_path: "/opt/codex/bin/codex",
+      version: "codex-cli 0.145.0",
+      file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+    },
+    managed_path_digest: "sha256:" + "1".repeat(64),
+    caller_path_digest: "sha256:" + "2".repeat(64),
+    integration: "herdr-codex/v6",
+    native_session: "native-1",
+    process: {
+      pid: 42,
+      name: "codex",
+      argv0: "/opt/codex/bin/codex",
+      argv: ["/opt/codex/bin/codex"],
+      cmdline: "/opt/codex/bin/codex",
+      cwd: "/workspace",
+    },
+    model: "gpt-5.6-sol",
+    effort: "high",
+  };
+  const managedDescription = await describeDelegatedAgent(
+    {
+      schema: "drovr.delegated-agent-description-request/v1",
+      launch: { harness: "codex", capability: "read-only" },
+      caller_metadata: { run_id: "compatibility" },
+    },
+    {
+      env: {
+        ...process.env,
+        DROVR_CONFIG_DIR: join(repositoryRoot, "config", "drovr"),
+        XDG_STATE_HOME: join(scratch, "managed-state"),
+      },
+      compatibility: {
+        ...description.compatibility,
+        managed_pane_identity: managedRuntimeIdentity,
+        managed_pane_evidence_digest: digestCanonical(managedRuntimeIdentity),
+      },
+    },
+  );
+  assert.equal(managedDescription.managed_runtime_binding.status, "bound");
+  assert.equal(
+    managedDescription.managed_runtime_binding.evidence_digest,
+    digestCanonical(managedRuntimeIdentity),
+  );
+  assert.equal(managedDescription.compatibility.managed_pane_identity, undefined);
+  assert.equal(
+    managedDescription.compatibility.managed_pane_evidence_digest,
+    digestCanonical(managedRuntimeIdentity),
+  );
+  assert.equal(
+    managedDescription.comparison_keys.compatibility,
+    digestCanonical(managedDescription.compatibility),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(managedDescription),
+    /\/opt\/codex\/bin\/codex|pane-1|native-1|\/workspace/u,
+  );
+  assert.equal(
+    managedDescription.watermark.content_sha256,
+    description.watermark.content_sha256,
+  );
 });
 
 test("description returns a typed compatibility block for an unqualified runtime", async () => {

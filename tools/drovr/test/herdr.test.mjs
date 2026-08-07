@@ -1,9 +1,22 @@
 import assert from "node:assert/strict";
+import { stat } from "node:fs/promises";
 import test from "node:test";
 
+import { digestCanonical } from "../src/canonical-json.mjs";
 import { HerdrClient } from "../src/herdr.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "../src/limits.mjs";
 import { stagedInputTextToken } from "../src/staged-input-receipt.mjs";
+import { TraceRecorder } from "../src/trace.mjs";
+
+async function executableFileIdentity(path) {
+  const metadata = await stat(path);
+  return {
+    device: Number(metadata.dev),
+    inode: Number(metadata.ino),
+    size: Number(metadata.size),
+    mtime_ms: metadata.mtimeMs,
+  };
+}
 
 test("Herdr observations use the advertised command bound", async () => {
   const observedTimeouts = [];
@@ -25,6 +38,565 @@ test("Herdr observations use the advertised command bound", async () => {
     HERDR_OBSERVATION_TIMEOUT_MS,
     HERDR_OBSERVATION_TIMEOUT_MS,
   ]);
+});
+
+test("managed executable probing reads identity from the Herdr pane shell", async () => {
+  const executablePath = process.execPath;
+  const calls = [];
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    delay: async () => {},
+    async run(_file, args) {
+      calls.push(args);
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              shell_pid: 10,
+              foreground_processes: [{ pid: 10, name: "zsh" }],
+            },
+          },
+        });
+      }
+      if (args.includes("run")) return JSON.stringify({ result: {} });
+      if (args.includes("integration")) return "codex: current (v6)\n";
+      if (args.includes("read")) {
+        const command = calls.find((candidate) => candidate.includes("run"))?.at(-1);
+        const marker = command.match(/DROVR_RUNTIME_ID_[0-9a-f]+/u)[0];
+        return `${marker}\t${executablePath}\tcodex-cli 0.145.0\t/managed/bin:/usr/bin\n`;
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  const identity = await client.probeManagedExecutable({
+    paneId: "pane-1",
+    harness: "codex",
+  });
+
+  assert.equal(identity.schema, "drovr.managed-pane-runtime-identity/v1");
+  assert.equal(identity.pane_id, "pane-1");
+  assert.equal(identity.executable.canonical_path, executablePath);
+  assert.equal(identity.executable.version, "codex-cli 0.145.0");
+  assert.equal(identity.native_session, null);
+  assert.equal(calls.some((args) => args.includes("pane") && args.includes("run")), true);
+  assert.equal(calls.some((args) => args.includes("pane") && args.includes("read")), true);
+});
+
+test("managed runtime capture binds native session and foreground process identity", async () => {
+  const executablePath = process.execPath;
+  const fileIdentity = await executableFileIdentity(executablePath);
+  const trace = new TraceRecorder({
+    scenarioId: "managed-runtime-identity",
+    provenance: {
+      drovr: "drovr 0.1.0",
+      herdr: "herdr 0.8.0",
+      claude: "2.1.199 (Claude Code)",
+      codex: "codex-cli 0.145.0",
+    },
+  });
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    trace,
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_status: "idle",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 2147483647,
+                name: "codex",
+                argv: ["codex", "--sandbox", "read-only"],
+                cmdline: "codex --sandbox read-only",
+                cwd: "/workspace",
+              }],
+            },
+          },
+        });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return "codex --sandbox read-only PATH=/managed/bin:/usr/bin HOME=/workspace\n";
+      }
+      if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
+      if (file === executablePath && args[0] === "--version") {
+        return "codex-cli 0.145.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v6)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+  const executable = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness: "codex",
+    pane_id: "pane-1",
+    executable: {
+      observed_path: executablePath,
+      canonical_path: executablePath,
+      version: "codex-cli 0.145.0",
+      file_identity: fileIdentity,
+    },
+    managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+  };
+
+  const identity = await client.captureManagedRuntimeIdentity({
+    agentName: "managed-agent",
+    paneId: "pane-1",
+    harness: "codex",
+    executable,
+    model: "gpt-5.6-sol",
+    effort: "high",
+  });
+
+  assert.equal(identity.native_session, "native-1");
+  assert.equal(identity.process.pid, 2147483647);
+  assert.equal(identity.process.argv0, "codex");
+  assert.deepEqual(identity.process.argv, ["codex", "--sandbox", "read-only"]);
+  assert.equal(identity.integration, "herdr-codex/v6");
+  assert.equal(identity.model, "gpt-5.6-sol");
+  assert.equal(identity.effort, "high");
+  const traceIdentity = trace.trace().events.find(
+    ({ operation }) => operation === "agent.runtime-identity",
+  ).payload.managed_runtime_identity;
+  assert.equal(traceIdentity.native_session, "native-1");
+  assert.match(
+    traceIdentity.executable.canonical_path,
+    /^<path:sha256:[0-9a-f]{64}>$/u,
+  );
+});
+
+test("managed runtime capture blocks a same-path executable replacement", async () => {
+  const executablePath = process.execPath;
+  const fileIdentity = await executableFileIdentity(executablePath);
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 2147483647,
+                name: "codex",
+                argv0: executablePath,
+                argv: [executablePath],
+                cmdline: executablePath,
+                cwd: "/workspace",
+              }],
+            },
+          },
+        });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return `${executablePath} PATH=/managed/bin:/usr/bin HOME=/workspace\n`;
+      }
+      if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
+      if (file === executablePath && args[0] === "--version") {
+        return "codex-cli 0.145.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v6)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.captureManagedRuntimeIdentity({
+      agentName: "managed-agent",
+      paneId: "pane-1",
+      harness: "codex",
+      executable: {
+        schema: "drovr.managed-pane-runtime-identity/v1",
+        harness: "codex",
+        pane_id: "pane-1",
+        executable: {
+          observed_path: executablePath,
+          canonical_path: executablePath,
+          version: "codex-cli 0.145.0",
+          file_identity: { ...fileIdentity, inode: fileIdentity.inode + 1 },
+        },
+        managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+      },
+      model: "gpt-5.6-sol",
+      effort: "high",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed",
+  );
+});
+
+test("managed runtime capture blocks a foreground process with the wrong executable", async () => {
+  const executablePath = process.execPath;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 2147483647,
+                name: "codex",
+                argv0: "/opt/other/codex",
+                argv: ["/opt/other/codex", "--sandbox", "read-only"],
+                cmdline: "/opt/other/codex --sandbox read-only",
+                cwd: "/workspace",
+              }],
+            },
+          },
+        });
+      }
+      if (file === "lsof") return "p2147483647\nn/opt/other/codex\n";
+      if (file === executablePath && args[0] === "--version") {
+        return "codex-cli 0.145.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v6)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.captureManagedRuntimeIdentity({
+      agentName: "managed-agent",
+      paneId: "pane-1",
+      harness: "codex",
+      executable: {
+        schema: "drovr.managed-pane-runtime-identity/v1",
+        harness: "codex",
+        pane_id: "pane-1",
+        executable: {
+          observed_path: executablePath,
+          canonical_path: executablePath,
+          version: "codex-cli 0.145.0",
+          file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+        },
+        managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+      },
+      model: "gpt-5.6-sol",
+      effort: "high",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
+  );
+});
+
+test("managed runtime capture blocks a foreground process without a cwd", async () => {
+  const executablePath = process.execPath;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(_file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 2147483647,
+                name: "codex",
+                argv0: executablePath,
+                argv: [executablePath],
+                cmdline: executablePath,
+                cwd: null,
+              }],
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.captureManagedRuntimeIdentity({
+      agentName: "managed-agent",
+      paneId: "pane-1",
+      harness: "codex",
+      executable: {
+        schema: "drovr.managed-pane-runtime-identity/v1",
+        harness: "codex",
+        pane_id: "pane-1",
+        executable: {
+          observed_path: executablePath,
+          canonical_path: executablePath,
+          version: "codex-cli 0.145.0",
+          file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+        },
+        managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+      },
+      model: "gpt-5.6-sol",
+      effort: "high",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
+  );
+});
+
+test("managed runtime observation blocks a changed managed PATH", async () => {
+  const executablePath = process.execPath;
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 2147483647,
+                name: "codex",
+                argv0: executablePath,
+                argv: [executablePath],
+                cmdline: executablePath,
+                cwd: "/workspace",
+              }],
+            },
+          },
+        });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return `${executablePath} PATH=/changed/bin:/usr/bin HOME=/workspace\n`;
+      }
+      if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
+      if (file === executablePath && args[0] === "--version") {
+        return "codex-cli 0.145.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v6)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.observeManagedRuntime({
+      agentName: "managed-agent",
+      harness: "codex",
+      expectedIdentity: {
+        schema: "drovr.managed-pane-runtime-identity/v1",
+        harness: "codex",
+        managed_agent: "managed-agent",
+        pane_id: "pane-1",
+        executable: {
+          observed_path: executablePath,
+          canonical_path: executablePath,
+          version: "codex-cli 0.145.0",
+          file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+        },
+        managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+        native_session: "native-1",
+        process: {
+          pid: 2147483647,
+          name: "codex",
+          argv0: executablePath,
+          argv: [executablePath],
+          cmdline: executablePath,
+          cwd: "/workspace",
+        },
+        caller_path_digest: digestCanonical(String(process.env.PATH ?? "")),
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+      model: "gpt-5.6-sol",
+      effort: "high",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed",
+  );
+});
+
+test("managed runtime observation ignores caller PATH drift", async () => {
+  const expectedIdentity = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness: "codex",
+    managed_agent: "managed-agent",
+    pane_id: "pane-1",
+    executable: {
+      observed_path: "/opt/codex/bin/codex",
+      canonical_path: "/opt/codex/bin/codex",
+      version: "codex-cli 0.145.0",
+      file_identity: { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+    },
+    managed_path_digest: `sha256:${"1".repeat(64)}`,
+    caller_path_digest: `sha256:${"2".repeat(64)}`,
+    integration: "herdr-codex/v6",
+    native_session: "native-1",
+    process: {
+      pid: 2147483647,
+      name: "codex",
+      argv0: "/opt/codex/bin/codex",
+      argv: ["/opt/codex/bin/codex"],
+      cmdline: "/opt/codex/bin/codex",
+      cwd: "/workspace",
+    },
+    model: "gpt-5.6-sol",
+    effort: "high",
+  };
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/caller/changed" },
+  });
+  client.captureManagedRuntimeIdentity = async () => ({
+    ...structuredClone(expectedIdentity),
+    caller_path_digest: `sha256:${"3".repeat(64)}`,
+  });
+
+  const observed = await client.observeManagedRuntime({
+    agentName: "managed-agent",
+    harness: "codex",
+    expectedIdentity,
+  });
+
+  assert.equal(
+    observed.caller_path_digest,
+    `sha256:${"3".repeat(64)}`,
+  );
+});
+
+test("managed runtime capture uses exact-process ps and lsof fallbacks when Herdr omits PATH", async () => {
+  const executablePath = process.execPath;
+  const fileIdentity = await executableFileIdentity(executablePath);
+  const client = new HerdrClient({
+    session: "delegates",
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 4294967294,
+                name: "codex",
+                argv0: "codex",
+                argv: ["codex"],
+                cmdline: "codex",
+                cwd: "/workspace",
+              }],
+            },
+          },
+        });
+      }
+      if (file === "ps") {
+        return `codex PATH=/managed/bin:/usr/bin PWD=/workspace\n`;
+      }
+      if (file === "lsof") {
+        return `p4294967294\nn${executablePath}\n`;
+      }
+      if (file === executablePath && args[0] === "--version") {
+        return "codex-cli 0.145.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v6)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+
+  const identity = await client.captureManagedRuntimeIdentity({
+    agentName: "managed-agent",
+    paneId: "pane-1",
+    harness: "codex",
+    executable: {
+      schema: "drovr.managed-pane-runtime-identity/v1",
+      harness: "codex",
+      pane_id: "pane-1",
+      executable: {
+        observed_path: executablePath,
+        canonical_path: executablePath,
+        version: "codex-cli 0.145.0",
+        file_identity: fileIdentity,
+      },
+      managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+    },
+    model: "gpt-5.6-sol",
+    effort: "high",
+  });
+
+  assert.equal(identity.managed_path_digest, digestCanonical("/managed/bin:/usr/bin"));
 });
 
 test("Herdr mutations do not inherit the observation bound", async () => {
@@ -967,7 +1539,9 @@ test("native recovery resumes the registered Codex and Claude sessions", async (
         if (args.includes("process-info")) {
           return JSON.stringify({
             result: {
+              type: "pane_process_info",
               process_info: {
+                pane_id: "pane-1",
                 shell_pid: 10,
                 foreground_processes: [{ pid: 10, name: "zsh" }],
               },

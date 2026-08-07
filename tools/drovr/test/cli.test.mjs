@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { stateDirectory, writeRecord } from "../src/registry.mjs";
+
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -105,6 +107,7 @@ test("public describe command returns an exact launch without initializing state
   assert.equal(report.ok, true);
   assert.equal(report.result.schema, "drovr.delegated-agent-description/v1");
   assert.equal(report.result.launch.harness, "codex");
+  assert.equal(report.result.managed_runtime_binding.status, "deferred");
   assert.deepEqual(report.result.caller_metadata, { run_id: "run:example" });
   await assert.rejects(stat(join(stateHome, "drovr")), { code: "ENOENT" });
 });
@@ -294,6 +297,7 @@ test("doctor reports a compatible configured Codex runtime", async (t) => {
       PATH: `${fakeBin}:${process.env.PATH}`,
       CODEX_HOME: codexHome,
       CLAUDE_CONFIG_DIR: claudeHome,
+      XDG_STATE_HOME: join(scratch, "state"),
       DROVR_CONFIG_DIR: join(root, "config", "drovr"),
       DOTFILES_ROOT: root,
     },
@@ -329,6 +333,82 @@ test("doctor reports a compatible configured Codex runtime", async (t) => {
   assert.equal(
     report.result.checks.find(({ id }) => id === "codex-native-session").status,
     "pass",
+  );
+  assert.equal(
+    report.result.checks.find(({ id }) => id === "codex-compatibility").status,
+    "warn",
+  );
+  assert.match(
+    report.result.checks.find(({ id }) => id === "codex-compatibility").detail,
+    /exact managed-pane identity is checked/u,
+  );
+});
+
+test("doctor warns about legacy agents without failing the public command", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-doctor-legacy-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  const codexHome = join(scratch, "codex");
+  const claudeHome = join(scratch, "claude");
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    CODEX_HOME: codexHome,
+    CLAUDE_CONFIG_DIR: claudeHome,
+    XDG_STATE_HOME: join(scratch, "state"),
+    DROVR_CONFIG_DIR: join(root, "config", "drovr"),
+    DOTFILES_ROOT: root,
+  };
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(join(codexHome, "sessions"), { recursive: true });
+  await mkdir(join(claudeHome, "projects"), { recursive: true });
+  await executable(
+    join(fakeBin, "herdr"),
+    'if [[ ${1:-} == --version ]]; then echo "herdr 0.7.5"; else printf "claude: current (v7)\\ncodex: current (v6)\\n"; fi\n',
+  );
+  await executable(
+    join(fakeBin, "codex"),
+    'if [[ "$*" == *--help* ]]; then echo "--model --sandbox --ask-for-approval --search"; else echo "codex-cli 0.145.0"; fi\n',
+  );
+  await executable(join(fakeBin, "claude"), 'echo "2.1.0 (Claude Code)"\n');
+
+  await writeRecord(stateDirectory(env), "groups", {
+    id: "group-legacy",
+    herdr: { session: "legacy-session" },
+  });
+  await writeRecord(stateDirectory(env), "tasks", {
+    id: "task-legacy",
+    group_id: "group-legacy",
+  });
+  await writeRecord(stateDirectory(env), "agents", {
+    id: "agent-legacy",
+    task_id: "task-legacy",
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: {
+      compatibility_evidence_digest: `sha256:${"1".repeat(64)}`,
+    },
+  });
+
+  const { stdout } = await execFileAsync(drovr, ["doctor"], {
+    encoding: "utf8",
+    env,
+  });
+  const report = JSON.parse(stdout);
+  const managedRuntimeCheck = report.result.checks.find(
+    ({ id }) => id === "managed-runtime-identity",
+  );
+
+  assert.equal(report.ok, true);
+  assert.equal(report.result.status, "ready");
+  assert.equal(managedRuntimeCheck.status, "warn");
+  assert.match(
+    managedRuntimeCheck.detail,
+    /agent-legacy: managed identity is missing from a legacy launch/u,
+  );
+  assert.match(
+    managedRuntimeCheck.detail,
+    /drovr agent retire agent-legacy/u,
   );
 });
 
@@ -405,10 +485,22 @@ test("delegate returns the correlated final Codex message", async (t) => {
       .join("\n")}\n`,
   );
   await executable(
+    join(fakeBin, "codex"),
+    'if [[ ${1:-} == --version ]]; then echo "codex-cli 0.145.0"; else echo "--model --sandbox --ask-for-approval --search"; fi\n',
+  );
+  await executable(
     join(fakeBin, "herdr"),
     `herdrState=${JSON.stringify(herdrState)}
 transcript=${JSON.stringify(transcript)}
 taskCwd=${JSON.stringify(canonicalCwd)}
+if [[ \${1:-} == --version ]]; then
+  printf 'herdr 0.7.5\\n'
+  exit
+fi
+if [[ \${1:-} == integration && \${2:-} == status ]]; then
+  printf 'codex: current (v6)\\nclaude: current (v7)\\n'
+  exit
+fi
 if [[ \${1:-} == session && \${2:-} == list ]]; then
   if [[ -f "$herdrState/running" ]]; then running=true; else running=false; fi
   printf '{"sessions":[{"name":"delegates","running":%s}]}\\n' "$running"
@@ -432,17 +524,27 @@ case "\${1:-} \${2:-}" in
     printf '{"result":{"workspace":{"workspace_id":"workspace-1"},"root_pane":{"pane_id":"pane-1"}}}\\n'
     ;;
   "pane process-info")
-    if [[ ! -f "$herdrState/pane-discovered" ]]; then
+    if [[ -f "$herdrState/agent" ]]; then
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"codex","argv":["codex","--sandbox","read-only"],"cmdline":"codex --sandbox read-only","cwd":"%s"}]}}}\n' "$taskCwd"
+    elif [[ ! -f "$herdrState/pane-discovered" ]]; then
       touch "$herdrState/pane-discovered"
       printf '{"error":{"code":"pane_not_found","message":"pane not found"}}\\n' >&2
       exit 1
     elif [[ -f "$herdrState/shell-polled" ]]; then
       touch "$herdrState/shell-ready"
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
     else
       touch "$herdrState/shell-polled"
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":11,"name":"startup"}]}}}\\n'
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":11,"name":"startup"}]}}}\\n'
     fi
+    ;;
+  "pane run")
+    marker=$(printf '%s\\n' "\${4:-}" | sed -n 's/.*\\(DROVR_RUNTIME_ID_[0-9a-f]*\\).*/\\1/p')
+    printf '%s\\t%s\\t%s\\t%s\\n' "$marker" "$(command -v codex)" "codex-cli 0.145.0" "$PATH" > "$herdrState/probe"
+    printf '{"result":{"status":"accepted"}}\\n'
+    ;;
+  "pane read")
+    cat "$herdrState/probe"
     ;;
   "pane get")
     printf '{"result":{"pane":{"pane_id":"pane-1","tab_id":"tab-1"}}}\\n'
@@ -503,12 +605,12 @@ case "\${1:-} \${2:-}" in
       else
         status=idle
       fi
-      if [[ -f "$herdrState/prompted" ]]; then
+      if [[ -f "$herdrState/startup-settled" || -f "$herdrState/prompted" ]]; then
         session=',"agent_session":{"value":"codex-session-1"}'
       else
         session=''
       fi
-      printf '{"result":{"agents":[{"name":"%s","agent_status":"%s","state_change_seq":%s%s}]}}\\n' "$name" "$status" "$stateChangeSeq" "$session"
+      printf '{"result":{"agents":[{"name":"%s","pane_id":"pane-1","agent_status":"%s","state_change_seq":%s%s}]}}\\n' "$name" "$status" "$stateChangeSeq" "$session"
     else
       printf '{"result":{"agents":[]}}\\n'
     fi
@@ -553,6 +655,9 @@ case "\${1:-} \${2:-}" in
   "agent wait")
     if [[ ! -f "$herdrState/startup-settled" && ! -f "$herdrState/prompted" ]]; then
       touch "$herdrState/startup-settled"
+      if [[ ! -f "$transcript" ]]; then
+        jq -nc --arg cwd "$taskCwd" '{timestamp:(now | todate),type:"session_meta",payload:{id:"codex-session-1",cwd:$cwd}}' >> "$transcript"
+      fi
       printf '{"result":{"status":"idle"}}\\n'
       exit
     fi
@@ -582,6 +687,14 @@ case "\${1:-} \${2:-}" in
   *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
 esac
 `,
+  );
+  await executable(
+    join(fakeBin, "lsof"),
+    'printf "p2147483647\\nn%s\\n" "$(command -v codex)"\n',
+  );
+  await executable(
+    join(fakeBin, "ps"),
+    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "codex --sandbox read-only PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "codex"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox read-only\\n" "$(command -v codex)"\nelse\n  exit 1\nfi\n',
   );
 
   let execution;
@@ -977,6 +1090,10 @@ touch ${JSON.stringify(join(herdrState, "claude-validated"))}
 printf '%s\n' '--model --effort --permission-mode manual dontAsk acceptEdits auto bypassPermissions --allowedTools --append-system-prompt --allow-dangerously-skip-permissions'
 `,
   );
+  await executable(
+    join(fakeBin, "codex"),
+    'if [[ ${1:-} == --version ]]; then echo "codex-cli 0.145.0"; else echo "--model --sandbox --ask-for-approval --search"; fi\n',
+  );
   const transcriptDirectory = join(claudeHome, "projects", "-test-work");
   await mkdir(transcriptDirectory, { recursive: true });
   const transcript = join(transcriptDirectory, `${nativeSession}.jsonl`);
@@ -1039,7 +1156,19 @@ case "\${1:-} \${2:-}" in
     ;;
   "tab rename"|"pane rename") ;;
   "pane process-info")
-    printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
+    if [[ -f "$herdrState/agent" ]]; then
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"claude","argv":["claude","--sandbox"],"cmdline":"claude --sandbox","cwd":"%s"}]}}}\\n' "$taskCwd"
+    else
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
+    fi
+    ;;
+  "pane run")
+    marker=$(printf '%s\\n' "\${4:-}" | sed -n 's/.*\\(DROVR_RUNTIME_ID_[0-9a-f]*\\).*/\\1/p')
+    printf '%s\\t%s\\t%s\\t%s\\n' "$marker" "$(command -v claude)" "2.1.199 (Claude Code)" "$PATH" > "$herdrState/probe"
+    printf '{"result":{"status":"accepted"}}\\n'
+    ;;
+  "pane read")
+    cat "$herdrState/probe"
     ;;
   "agent start")
     printf '%s\\n' "$*" > "$herdrState/start-args"
@@ -1066,7 +1195,7 @@ case "\${1:-} \${2:-}" in
       else
         status=idle
       fi
-      printf '{"result":{"agents":[{"name":"%s","agent":"claude","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"%s"}}]}}\\n' "$name" "$status" "$stateChangeSeq" "$nativeSession"
+      printf '{"result":{"agents":[{"name":"%s","agent":"claude","pane_id":"pane-1","agent_status":"%s","state_change_seq":%s,"agent_session":{"value":"%s"}}]}}\\n' "$name" "$status" "$stateChangeSeq" "$nativeSession"
     else
       printf '{"result":{"agents":[]}}\\n'
     fi
@@ -1145,6 +1274,14 @@ case "\${1:-} \${2:-}" in
   *) printf 'unsupported fake herdr call: %s\\n' "$*" >&2; exit 1 ;;
 esac
 `,
+  );
+  await executable(
+    join(fakeBin, "lsof"),
+    'printf "p2147483647\\nn%s\\n" "$(command -v claude)"\n',
+  );
+  await executable(
+    join(fakeBin, "ps"),
+    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "claude --sandbox PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
   );
 
   let delegatedExecution;

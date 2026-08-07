@@ -1,10 +1,23 @@
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { realpath, stat } from "node:fs/promises";
 
 import { claudeAgentArguments } from "./claude.mjs";
 import { codexAgentArguments } from "./codex.mjs";
 import { DrovrError } from "./errors.mjs";
 import { HERDR_OBSERVATION_TIMEOUT_MS } from "./limits.mjs";
+import {
+  MANAGED_PANE_IDENTITY_SCHEMA,
+} from "./compatibility.mjs";
+import { digestCanonical } from "./canonical-json.mjs";
 import { execute } from "./process.mjs";
+import {
+  MANAGED_RUNTIME_OBSERVATION_FIELDS,
+} from "./managed-runtime-identity.mjs";
+import {
+  processEnvironmentPath,
+  processExecutablePath,
+} from "./process-identity.mjs";
 import {
   createStagedInputReceipt,
   stagedInputTextToken,
@@ -81,7 +94,7 @@ export class HerdrClient {
 
   async recordCommand(operation, output, args = []) {
     if (!this.trace) return;
-    if (operation.startsWith("agent.read.")) {
+    if (operation.startsWith("agent.read.") || operation === "pane.read") {
       await this.recordTrace({
         kind: "pane_snapshot",
         operation,
@@ -395,6 +408,172 @@ export class HerdrClient {
       ]),
       "pane process-info",
     ).result?.process_info;
+  }
+
+  async paneRead(
+    paneId,
+    { source = "recent-unwrapped", lines = 40, format = "text" } = {},
+  ) {
+    const args = [
+      "pane",
+      "read",
+      paneId,
+      "--source",
+      source,
+      "--lines",
+      String(lines),
+      "--format",
+      format,
+    ];
+    return this.observationCommand(args);
+  }
+
+  async probeManagedExecutable({ paneId, harness }) {
+    assertSupportedHarness(harness);
+    await this.waitForShell(paneId);
+    const marker = `DROVR_RUNTIME_ID_${randomUUID().replaceAll("-", "")}`;
+    const command = managedExecutableProbeCommand(marker, harness);
+    await this.sessionCommand(["pane", "run", paneId, command]);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const output = await this.paneRead(paneId, {
+        source: "recent-unwrapped",
+        lines: 80,
+      });
+      const fields = managedExecutableProbeFields(output, marker);
+      if (fields) {
+        const identity = await managedExecutableIdentity({
+          harness,
+          paneId,
+          observedPath: fields.observedPath,
+          version: fields.version,
+          managedPath: fields.managedPath,
+        });
+        identity.integration = await currentManagedIntegration(harness, this);
+        return identity;
+      }
+      await this.delay(25);
+    }
+    throw managedIdentityError(
+      `Herdr did not expose the ${harness} managed executable identity`,
+      "missing",
+    );
+  }
+
+  async captureManagedRuntimeIdentity({
+    agentName,
+    paneId,
+    harness,
+    executable,
+    model,
+    effort,
+  }) {
+    assertSupportedHarness(harness);
+    const observed = await this.agentRecord(agentName);
+    if (!observed) {
+      throw managedIdentityError(
+        "Herdr did not report the managed agent runtime identity",
+        "missing",
+      );
+    }
+    if (observed.pane_id !== paneId) {
+      throw managedIdentityError(
+        "Herdr managed pane identity changed",
+        "changed",
+      );
+    }
+    const nativeSession = observed.agent_session?.value;
+    if (!nativeSession) {
+      throw managedIdentityError(
+        "Herdr did not report a native session identity",
+        "missing",
+      );
+    }
+    const processInfo = await this.paneProcessInfo(paneId);
+    const process = await nativeProcessIdentity(
+      processInfo,
+      harness,
+      executable,
+      this,
+    );
+    if (!process) {
+      throw managedIdentityError(
+        `Herdr did not expose the ${harness} managed process identity`,
+        "missing",
+      );
+    }
+    const managedPath = await managedPanePath(processInfo, process, this);
+    if (!managedPath) {
+      throw managedIdentityError(
+        "Herdr did not expose the managed PATH",
+        "missing",
+      );
+    }
+    const managedPathDigest = digestCanonical(managedPath);
+    if (
+      executable.managed_path_digest &&
+      executable.managed_path_digest !== managedPathDigest
+    ) {
+      throw managedIdentityError(
+        "managed PATH changed",
+        "changed",
+      );
+    }
+    const currentExecutable = await currentExecutableIdentity(executable, this);
+    const integration = await currentManagedIntegration(harness, this);
+    const identity = {
+      ...structuredClone(executable),
+      schema: MANAGED_PANE_IDENTITY_SCHEMA,
+      harness,
+      managed_agent: agentName,
+      pane_id: paneId,
+      executable: currentExecutable,
+      managed_path_digest: managedPathDigest,
+      integration,
+      native_session: nativeSession,
+      process,
+      caller_path_digest: digestCanonical(String(this.env.PATH ?? "")),
+      model: model ?? null,
+      effort: effort ?? null,
+    };
+    await this.recordTrace({
+      kind: "agent_observation",
+      operation: "agent.runtime-identity",
+      payload: {
+        request: {
+          resource: "agent",
+          action: "runtime-identity",
+          target: agentName,
+        },
+        managed_runtime_identity: identity,
+      },
+    });
+    return identity;
+  }
+
+  async observeManagedRuntime({
+    agentName,
+    expectedIdentity,
+    harness,
+    model,
+    effort,
+  }) {
+    if (!expectedIdentity?.pane_id || !expectedIdentity.executable) {
+      throw managedIdentityError(
+        "managed runtime identity is missing",
+        "missing",
+      );
+    }
+    const observed = await this.captureManagedRuntimeIdentity({
+      agentName,
+      paneId: expectedIdentity.pane_id,
+      harness,
+      executable: expectedIdentity,
+      model: model ?? expectedIdentity.model,
+      effort: effort ?? expectedIdentity.effort,
+    });
+    assertManagedRuntimeIdentity(expectedIdentity, observed);
+    return observed;
   }
 
   async paneRecord(paneId) {
@@ -836,6 +1015,335 @@ function withoutCallerHerdrContext(env) {
     delete sanitized[name];
   }
   return sanitized;
+}
+
+function assertSupportedHarness(harness) {
+  if (harness === "codex" || harness === "claude") return;
+  throw new DrovrError(`unsupported native harness: ${harness}`, {
+    code: 2,
+    outcome: "invalid_arguments",
+  });
+}
+
+function managedExecutableProbeCommand(marker, harness) {
+  // The harness value is restricted by assertSupportedHarness. The command is
+  // emitted into the managed pane so command lookup, version, and PATH all
+  // come from the shell Herdr will use for the native agent.
+  return [
+    `printf '%s\\t%s\\t%s\\t%s\\n' '${marker}'`,
+    `"$(command -v ${harness} 2>/dev/null || true)"`,
+    `"$(${harness} --version 2>/dev/null | sed -n '1p')"`,
+    `"$PATH"`,
+  ].join(" ");
+}
+
+function managedExecutableProbeFields(output, marker) {
+  const line = String(output ?? "")
+    .split(/\r?\n/u)
+    .find((candidate) => candidate.startsWith(`${marker}\t`));
+  if (!line) return null;
+  const [observedPath, version, ...pathParts] = line
+    .slice(marker.length + 1)
+    .split("\t");
+  const managedPath = pathParts.join("\t");
+  if (!observedPath || !version || !managedPath || managedPath.includes("\t")) {
+    return null;
+  }
+  return {
+    observedPath: observedPath.trim(),
+    version: version.trim(),
+    managedPath,
+  };
+}
+
+async function managedExecutableIdentity({
+  harness,
+  paneId,
+  observedPath,
+  version,
+  managedPath,
+}) {
+  if (!observedPath.startsWith("/")) {
+    throw managedIdentityError(
+      `managed ${harness} executable path is not absolute: ${observedPath}`,
+      "unqualified",
+    );
+  }
+  let canonicalPath;
+  let fileIdentity;
+  try {
+    canonicalPath = await realpath(observedPath);
+    fileIdentity = await executableFileIdentity(canonicalPath);
+  } catch (error) {
+    throw managedIdentityError(
+      `managed ${harness} executable identity could not be resolved: ${error.message}`,
+      "missing",
+    );
+  }
+  return {
+    schema: MANAGED_PANE_IDENTITY_SCHEMA,
+    harness,
+    managed_agent: null,
+    pane_id: paneId,
+    executable: {
+      observed_path: observedPath,
+      canonical_path: canonicalPath,
+      version,
+      file_identity: fileIdentity,
+    },
+    managed_path_digest: digestCanonical(managedPath),
+    native_session: null,
+    process: null,
+    model: null,
+    effort: null,
+  };
+}
+
+async function currentExecutableIdentity(identity, client) {
+  let observedCanonicalPath;
+  try {
+    observedCanonicalPath = await realpath(identity.executable.observed_path);
+  } catch (error) {
+    throw managedIdentityError(
+      `managed executable path ${identity.executable.observed_path} is no longer resolvable: ${error.message}`,
+      "changed",
+    );
+  }
+  if (observedCanonicalPath !== identity.executable.canonical_path) {
+    throw managedIdentityError(
+      `managed executable symlink changed for ${identity.executable.observed_path}`,
+      "changed",
+    );
+  }
+  const canonicalPath = identity.executable.canonical_path;
+  let fileIdentity;
+  try {
+    fileIdentity = await executableFileIdentity(canonicalPath);
+  } catch (error) {
+    throw managedIdentityError(
+      `managed executable ${canonicalPath} is no longer available: ${error.message}`,
+      "changed",
+    );
+  }
+  let version;
+  try {
+    const output = await client.run(canonicalPath, ["--version"], {
+      env: client.env,
+    });
+    version = String(output).trim().split(/\r?\n/u)[0];
+  } catch (error) {
+    throw managedIdentityError(
+      `managed executable ${canonicalPath} could not report its version: ${error.message}`,
+      "changed",
+    );
+  }
+  if (!version) {
+    throw managedIdentityError(
+      `managed executable ${canonicalPath} returned no version`,
+      "changed",
+    );
+  }
+  if (
+    !identity.executable.file_identity ||
+    digestCanonical(fileIdentity) !==
+      digestCanonical(identity.executable.file_identity)
+  ) {
+    throw managedIdentityError(
+      `managed executable ${canonicalPath} file identity changed`,
+      "changed",
+    );
+  }
+  if (version !== identity.executable.version) {
+    throw managedIdentityError(
+      `managed executable ${canonicalPath} version changed`,
+      "changed",
+    );
+  }
+  return {
+    ...structuredClone(identity.executable),
+    canonical_path: canonicalPath,
+    version,
+    file_identity: fileIdentity,
+  };
+}
+
+async function executableFileIdentity(path) {
+  const metadata = await stat(path);
+  const device = Number(metadata.dev);
+  const inode = Number(metadata.ino);
+  const size = Number(metadata.size);
+  if (
+    !Number.isSafeInteger(device) ||
+    !Number.isSafeInteger(inode) ||
+    !Number.isSafeInteger(size) ||
+    !Number.isFinite(metadata.mtimeMs)
+  ) {
+    throw new Error(`file metadata for ${path} is not lossless JSON`);
+  }
+  return {
+    device,
+    inode,
+    size,
+    mtime_ms: metadata.mtimeMs,
+  };
+}
+
+async function nativeProcessIdentity(processInfo, harness, executable, client) {
+  const candidates = Array.isArray(processInfo?.foreground_processes)
+    ? processInfo.foreground_processes
+    : Array.isArray(processInfo?.foregroundProcesses)
+      ? processInfo.foregroundProcesses
+      : [];
+  const matches = candidates.filter((candidate) => {
+    const argv = Array.isArray(candidate?.argv)
+      ? candidate.argv.map((value) => String(value))
+      : [];
+    const argv0 = candidate?.argv0 ?? argv[0];
+    const values = [
+      candidate?.name,
+      argv0,
+    ]
+      .filter(Boolean)
+      .map((value) => executableName(value));
+    return values.some((value) => value === harness);
+  });
+  if (matches.length !== 1) return null;
+  const candidate = matches[0];
+  const argv = Array.isArray(candidate.argv)
+    ? candidate.argv.map((value) => String(value))
+    : [];
+  const argv0 = candidate.argv0 ?? argv[0];
+  const cmdline = candidate.cmdline ?? argv.join(" ");
+  const cwd = candidate.cwd;
+  if (
+    !Number.isSafeInteger(candidate.pid) ||
+    !candidate.name ||
+    !argv0 ||
+    argv.length === 0 ||
+    !cmdline ||
+    !cwd
+  ) {
+    return null;
+  }
+  const executablePaths = new Set([
+    executable?.executable?.observed_path,
+    executable?.executable?.canonical_path,
+  ].filter(Boolean));
+  const processPath = await processExecutablePath(
+    candidate,
+    executablePaths,
+    client,
+  );
+  if (!processPath || !executablePaths.has(processPath)) return null;
+  return {
+    pid: candidate.pid,
+    name: String(candidate.name),
+    argv0: String(argv0),
+    argv,
+    cmdline: String(cmdline),
+    cwd: String(cwd),
+  };
+}
+
+function executableName(value) {
+  return String(value)
+    .split(/[\\/]/u)
+    .at(-1)
+    .replace(/\.exe$/iu, "")
+    .toLowerCase();
+}
+
+async function managedPanePath(processInfo, process, client) {
+  const foregroundProcesses = Array.isArray(processInfo?.foreground_processes)
+    ? processInfo.foreground_processes
+    : Array.isArray(processInfo?.foregroundProcesses)
+      ? processInfo.foregroundProcesses
+      : [];
+  const processRecord = foregroundProcesses.find(
+    (candidate) => candidate?.pid === process?.pid,
+  );
+  const candidates = [
+    processRecord?.environment?.PATH,
+    processRecord?.environment?.path,
+    processRecord?.env?.PATH,
+    processRecord?.env?.path,
+    process?.environment?.PATH,
+    process?.environment?.path,
+    process?.env?.PATH,
+    process?.env?.path,
+  ];
+  const direct = candidates.find(
+    (value) => typeof value === "string" && value.length > 0,
+  );
+  if (direct) return direct;
+  return processEnvironmentPath(process.pid, client, {
+    commandLine: process.cmdline,
+  });
+}
+
+async function currentManagedIntegration(harness, client) {
+  let output;
+  try {
+    output = await client.run("herdr", ["integration", "status"], {
+      env: client.env,
+    });
+  } catch (error) {
+    throw managedIdentityError(
+      `Herdr integration status could not be observed: ${error.message}`,
+      "missing",
+    );
+  }
+  const match = String(output).match(
+    new RegExp(`^${harness}: current \\(v(\\d+)\\)`, "mu"),
+  );
+  if (!match) {
+    throw managedIdentityError(
+      `${harness} Herdr integration is not current`,
+      "missing",
+    );
+  }
+  return `herdr-${harness}/v${match[1]}`;
+}
+
+function assertManagedRuntimeIdentity(expected, observed) {
+  const fields = MANAGED_RUNTIME_OBSERVATION_FIELDS.filter((field) =>
+    Object.hasOwn(expected, field) &&
+    expected[field] !== null &&
+    expected[field] !== undefined
+  );
+  const mismatches = fields
+    .filter((field) => !sameIdentityValue(expected[field], observed?.[field]))
+    .map((field) => ({
+      field: `managed_pane_identity.${field}`,
+      expected: expected[field],
+      observed: observed?.[field],
+      reason: "changed",
+    }));
+  if (mismatches.length === 0) return;
+  const error = managedIdentityError(
+    "managed runtime identity differs from its launch binding",
+    "changed",
+  );
+  error.details.expected = expected;
+  error.details.observed = observed;
+  error.details.mismatches = mismatches;
+  throw error;
+}
+
+function sameIdentityValue(left, right) {
+  if (left === undefined || right === undefined) return left === right;
+  return digestCanonical(left) === digestCanonical(right);
+}
+
+function managedIdentityError(message, reason) {
+  return new DrovrError(message, {
+    code: 0,
+    outcome: "compatibility_blocked",
+    details: {
+      reason,
+      legal_actions: ["refresh_compatibility", "run_drovr_doctor"],
+    },
+  });
 }
 
 function promptSubmissionObserved(observed) {

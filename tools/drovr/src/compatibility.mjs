@@ -1,9 +1,16 @@
 import { digestCanonical } from "./canonical-json.mjs";
+import {
+  MANAGED_RUNTIME_EXECUTABLE_FIELDS,
+  MANAGED_RUNTIME_QUALIFICATION_FIELDS,
+  MANAGED_RUNTIME_SETTLED_FIELDS,
+} from "./managed-runtime-identity.mjs";
 import { execute } from "./process.mjs";
 
 export const COMPATIBILITY_SCHEMA = "drovr.compatibility/v1";
 export const PRODUCTION_ADAPTER_ID = "drovr.production-herdr/v1";
 export const REPLAY_ADAPTER_ID = "drovr.trace-replay/v1";
+export const MANAGED_PANE_IDENTITY_SCHEMA =
+  "drovr.managed-pane-runtime-identity/v1";
 
 export const COMPATIBILITY_FEATURES = Object.freeze([
   "drovr.semantic-harness/v1",
@@ -11,6 +18,7 @@ export const COMPATIBILITY_FEATURES = Object.freeze([
   "drovr.staged-input-stability/v1",
   "drovr.transcript-correlation/v1",
   "drovr.caller-context-isolation/v1",
+  "drovr.managed-pane-executable-identity/v1",
 ]);
 
 // Herdr does not yet expose every native gesture through a typed semantic
@@ -39,9 +47,16 @@ const REQUIRED_FACTS = Object.freeze([
 
 export function qualifyCompatibility(
   observed,
-  { expected, harness = "codex", adapter = REPLAY_ADAPTER_ID } = {},
+  {
+    expected,
+    expectedManagedIdentity,
+    harness = "codex",
+    adapter = REPLAY_ADAPTER_ID,
+    requireManagedIdentity = false,
+  } = {},
 ) {
   const facts = observed?.facts;
+  const managedPaneIdentity = observed?.managed_pane_identity;
   if (observed?.schema !== undefined && observed.schema !== COMPATIBILITY_SCHEMA) {
     return blockedCompatibility({
       reason: "unqualified",
@@ -76,13 +91,71 @@ export function qualifyCompatibility(
     });
   }
 
+  const managedIdentityMismatches = managedPaneIdentityFacts(
+    managedPaneIdentity,
+    { harness, requireSettled: requireManagedIdentity },
+  );
+  if (requireManagedIdentity && !managedPaneIdentity) {
+    return blockedCompatibility({
+      reason: "missing",
+      facts,
+      managedPaneIdentity,
+      missing: [{ fact: "managed_pane_identity", reason: "missing" }],
+    });
+  }
+  if (managedIdentityMismatches.length > 0) {
+    return blockedCompatibility({
+      reason: "unqualified",
+      facts,
+      managedPaneIdentity,
+      mismatches: managedIdentityMismatches,
+      detail: "managed pane identity is not exact",
+    });
+  }
+
+  const callerMismatches = callerManagedIdentityMismatches(
+    facts,
+    managedPaneIdentity,
+    { harness },
+  );
+  if (callerMismatches.length > 0) {
+    return blockedCompatibility({
+      reason: callerMismatches.some(
+        ({ reason }) => reason === "caller_shell_mismatch",
+      )
+        ? "caller_shell_mismatch"
+        : "changed",
+      facts,
+      managedPaneIdentity,
+      mismatches: callerMismatches,
+      detail: "managed pane executable differs from the caller shell executable",
+    });
+  }
+
   const expectedFacts = expected?.facts ?? expected;
   if (expectedFacts && !sameFacts(facts, expectedFacts)) {
     return blockedCompatibility({
       reason: "changed",
       facts,
+      managedPaneIdentity,
       expected: expectedFacts,
       mismatches: factMismatches(facts, expectedFacts),
+    });
+  }
+  if (
+    expectedManagedIdentity &&
+    !sameManagedIdentity(managedPaneIdentity, expectedManagedIdentity)
+  ) {
+    return blockedCompatibility({
+      reason: "changed",
+      facts,
+      managedPaneIdentity,
+      expected: expectedFacts,
+      mismatches: [{
+        field: "managed_pane_identity",
+        expected: expectedManagedIdentity,
+        observed: managedPaneIdentity ?? null,
+      }],
     });
   }
 
@@ -103,6 +176,12 @@ export function qualifyCompatibility(
     reason: null,
     facts: deepFreeze(structuredClone(facts)),
     evidence_digest: digestCanonical(facts),
+    ...(managedPaneIdentity
+      ? {
+          managed_pane_identity: deepFreeze(structuredClone(managedPaneIdentity)),
+          managed_pane_evidence_digest: digestCanonical(managedPaneIdentity),
+        }
+      : {}),
     legal_actions: [],
     upstream_gaps: UPSTREAM_GAPS,
   });
@@ -124,6 +203,9 @@ export async function collectProductionCompatibility({
   env = process.env,
   run = execute,
   expected,
+  expectedManagedIdentity,
+  managedIdentity,
+  requireManagedIdentity = false,
 } = {}) {
   const commandResults = await Promise.all([
     captureVersion("herdr", ["--version"], run, env),
@@ -134,6 +216,13 @@ export async function collectProductionCompatibility({
   ]);
   const [herdrVersion, harnessVersion, integrations] = commandResults;
   const integration = parseIntegration(integrations.value, harness);
+  const normalizedManagedIdentity = managedIdentity
+    ? {
+        ...structuredClone(managedIdentity),
+        caller_path_digest: managedIdentity.caller_path_digest ??
+          digestCanonical(String(env.PATH ?? "")),
+      }
+    : undefined;
   const facts = {
     drovr: "drovr.semantic-harness/v1",
     herdr: herdrVersion.value,
@@ -158,12 +247,24 @@ export async function collectProductionCompatibility({
     return blockedCompatibility({
       reason: "missing",
       facts: partialFacts(facts),
+      managedPaneIdentity: normalizedManagedIdentity,
       missing: failures,
     });
   }
   return qualifyCompatibility(
-    { facts },
-    { expected, harness, adapter: PRODUCTION_ADAPTER_ID },
+    {
+      facts,
+      ...(normalizedManagedIdentity
+        ? { managed_pane_identity: normalizedManagedIdentity }
+        : {}),
+    },
+    {
+      expected,
+      expectedManagedIdentity,
+      harness,
+      adapter: PRODUCTION_ADAPTER_ID,
+      requireManagedIdentity,
+    },
   );
 }
 
@@ -182,6 +283,7 @@ export function assertQualifiedCompatibility(compatibility) {
 function blockedCompatibility({
   reason,
   facts = null,
+  managedPaneIdentity,
   expected,
   missing = [],
   mismatches = [],
@@ -192,6 +294,12 @@ function blockedCompatibility({
     status: "blocked",
     reason,
     facts: facts ? deepFreeze(structuredClone(facts)) : null,
+    ...(managedPaneIdentity
+      ? {
+          managed_pane_identity: deepFreeze(structuredClone(managedPaneIdentity)),
+          managed_pane_evidence_digest: digestCanonical(managedPaneIdentity),
+        }
+      : {}),
     ...(expected ? { expected: deepFreeze(structuredClone(expected)) } : {}),
     ...(missing.length > 0 ? { missing: deepFreeze(structuredClone(missing)) } : {}),
     ...(mismatches.length > 0
@@ -210,6 +318,9 @@ function legalActions(reason) {
   }
   if (reason === "unqualified") {
     return ["qualify_compatibility", "run_drovr_doctor"];
+  }
+  if (reason === "caller_shell_mismatch") {
+    return ["refresh_compatibility", "run_drovr_doctor"];
   }
   return ["refresh_compatibility", "run_drovr_doctor"];
 }
@@ -326,8 +437,208 @@ function malformedFacts(facts, { harness, adapter }) {
   return mismatches;
 }
 
+function managedPaneIdentityFacts(identity, { harness, requireSettled }) {
+  if (identity === undefined) return [];
+  if (!isRecord(identity)) {
+    return [{
+      field: "managed_pane_identity",
+      reason: "unqualified",
+      observed: identity,
+    }];
+  }
+  const mismatches = [];
+  if (identity.schema !== MANAGED_PANE_IDENTITY_SCHEMA) {
+    mismatches.push({
+      field: "managed_pane_identity.schema",
+      expected: MANAGED_PANE_IDENTITY_SCHEMA,
+      observed: identity.schema,
+      reason: "unqualified",
+    });
+  }
+  if (identity.harness !== harness) {
+    mismatches.push({
+      field: "managed_pane_identity.harness",
+      expected: harness,
+      observed: identity.harness,
+      reason: "unqualified",
+    });
+  }
+  for (const field of MANAGED_RUNTIME_QUALIFICATION_FIELDS) {
+    if (!nonEmptyString(identity[field])) {
+      mismatches.push({
+        field: `managed_pane_identity.${field}`,
+        reason: "missing",
+      });
+    }
+  }
+  if (!/^herdr-(?:claude|codex)\/v\d+$/u.test(identity.integration ?? "")) {
+    mismatches.push({
+      field: "managed_pane_identity.integration",
+      expected: "herdr-<harness>/v<integer>",
+      observed: identity.integration,
+      reason: "unqualified",
+    });
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(identity.managed_path_digest ?? "")) {
+    mismatches.push({
+      field: "managed_pane_identity.managed_path_digest",
+      expected: "sha256:<hex>",
+      observed: identity.managed_path_digest,
+      reason: "unqualified",
+    });
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(identity.caller_path_digest ?? "")) {
+    mismatches.push({
+      field: "managed_pane_identity.caller_path_digest",
+      expected: "sha256:<hex>",
+      observed: identity.caller_path_digest,
+      reason: "unqualified",
+    });
+  }
+  const executable = identity.executable;
+  if (!isRecord(executable)) {
+    mismatches.push({
+      field: "managed_pane_identity.executable",
+      reason: "missing",
+    });
+  } else {
+    for (const field of MANAGED_RUNTIME_EXECUTABLE_FIELDS) {
+      if (!nonEmptyString(executable[field])) {
+        mismatches.push({
+          field: `managed_pane_identity.executable.${field}`,
+          reason: "missing",
+        });
+      }
+    }
+    if (!absoluteOrStablePath(executable.observed_path)) {
+      mismatches.push({
+        field: "managed_pane_identity.executable.observed_path",
+        expected: "absolute path or stable path identity",
+        observed: executable.observed_path,
+        reason: "unqualified",
+      });
+    }
+    if (!absoluteOrStablePath(executable.canonical_path)) {
+      mismatches.push({
+        field: "managed_pane_identity.executable.canonical_path",
+        expected: "absolute path or stable path identity",
+        observed: executable.canonical_path,
+        reason: "unqualified",
+      });
+    }
+    const fileIdentity = executable.file_identity;
+    if (!isRecord(fileIdentity) ||
+        !Number.isSafeInteger(fileIdentity.device) ||
+        !Number.isSafeInteger(fileIdentity.inode) ||
+        !Number.isSafeInteger(fileIdentity.size) ||
+        !Number.isFinite(fileIdentity.mtime_ms)) {
+      mismatches.push({
+        field: "managed_pane_identity.executable.file_identity",
+        reason: "missing",
+      });
+    }
+  }
+  if (requireSettled) {
+    if (!nonEmptyString(identity.managed_agent)) {
+      mismatches.push({
+        field: "managed_pane_identity.managed_agent",
+        reason: "missing",
+      });
+    }
+    if (!nonEmptyString(identity.native_session)) {
+      mismatches.push({
+        field: "managed_pane_identity.native_session",
+        reason: "missing",
+      });
+    }
+    const process = identity.process;
+    if (!isRecord(process) ||
+        !Number.isSafeInteger(process.pid) ||
+        !nonEmptyString(process.name) ||
+        !nonEmptyString(process.argv0) ||
+        !Array.isArray(process.argv) ||
+        process.argv.some((value) => !nonEmptyString(value)) ||
+        !nonEmptyString(process.cmdline) ||
+        !nonEmptyString(process.cwd)) {
+      mismatches.push({
+        field: "managed_pane_identity.process",
+        reason: "missing",
+      });
+    }
+    for (const field of MANAGED_RUNTIME_SETTLED_FIELDS) {
+      if (!nonEmptyString(identity[field])) {
+        mismatches.push({
+          field: `managed_pane_identity.${field}`,
+          reason: "missing",
+        });
+      }
+    }
+  }
+  return mismatches;
+}
+
+function callerManagedIdentityMismatches(facts, identity, { harness }) {
+  if (!identity) return [];
+  const mismatches = [];
+  if (
+    typeof facts?.harness === "string" &&
+    identity.executable?.version &&
+    identity.executable.version !== facts.harness
+  ) {
+    mismatches.push({
+      field: "managed_pane_identity.executable.version",
+      expected: facts.harness,
+      observed: identity.executable.version,
+      reason: "caller_shell_mismatch",
+    });
+  }
+  if (
+    typeof facts?.integration === "string" &&
+    identity.integration &&
+    identity.integration !== facts.integration
+  ) {
+    mismatches.push({
+      field: "managed_pane_identity.integration",
+      expected: facts.integration,
+      observed: identity.integration,
+      reason: "changed",
+    });
+  }
+  const expectedPrefix = `herdr-${harness}/v`;
+  if (identity.integration && !identity.integration.startsWith(expectedPrefix)) {
+    mismatches.push({
+      field: "managed_pane_identity.integration",
+      expected: `${expectedPrefix}*`,
+      observed: identity.integration,
+      reason: "unqualified",
+    });
+  }
+  return mismatches;
+}
+
+function absoluteOrStablePath(value) {
+  return (
+    typeof value === "string" &&
+    (value.startsWith("/") ||
+      /^<path:sha256:[0-9a-f]{64}>$/u.test(value))
+  );
+}
+
 function sameFacts(left, right) {
   return digestCanonical(left) === digestCanonical(right);
+}
+
+function sameManagedIdentity(actual, expected) {
+  if (!isRecord(expected)) return sameFacts(actual, expected);
+  // The caller PATH is retained as provenance, but it is not managed-pane
+  // identity and may change between operations without changing the pane.
+  return Object.entries(expected)
+    .filter(([field, value]) =>
+      field !== "caller_path_digest" &&
+      value !== null &&
+      value !== undefined,
+    )
+    .every(([field, value]) => sameFacts(actual?.[field], value));
 }
 
 async function captureVersion(command, args, run, env, { firstLine = true } = {}) {

@@ -1,4 +1,9 @@
 import { createProductionSemanticHarness } from "./production-harness-adapter.mjs";
+import { digestCanonical } from "./canonical-json.mjs";
+import {
+  MANAGED_RUNTIME_SHARED_FIELDS,
+  projectManagedRuntimeIdentity,
+} from "./managed-runtime-identity.mjs";
 
 export {
   SEMANTIC_HARNESS_EVIDENCE,
@@ -56,11 +61,13 @@ export const SEMANTIC_HARNESS_TOPOLOGY_OPERATIONS = Object.freeze([
 ]);
 
 export function createSemanticHarness(options = {}) {
+  const requireCompatibility = options.requireCompatibility ?? (
+    !options.herdr && !options.run
+  );
   const candidate = options.adapter ?? createProductionSemanticHarness({
     ...options,
-    requireCompatibility: options.requireCompatibility ?? (
-      !options.herdr && !options.run
-    ),
+    requireCompatibility,
+    requireManagedRuntimeIdentity: options.requireManagedRuntimeIdentity ?? false,
   });
   assertSemanticHarness(candidate);
 
@@ -88,7 +95,6 @@ export function semanticHarnessFor(context, dependencies = {}) {
   const existing = dependencies.harness ?? dependencies.semanticHarness;
   if (existing) return createSemanticHarness({ adapter: existing });
   const agents = managedAgents(context);
-  const compatibilityBinding = compatibilityBindingFor(agents);
   // An injected Herdr client is the low-level test seam used by lifecycle
   // fixtures. Production and run-only paths retain the binding gate even when
   // they provide a command runner, because that runner does not replace the
@@ -97,6 +103,15 @@ export function semanticHarnessFor(context, dependencies = {}) {
     agents.length > 0 &&
     (!dependencies.herdr || dependencies.requireCompatibility === true)
   );
+  const requireManagedRuntimeIdentity =
+    dependencies.requireManagedRuntimeIdentity ?? (
+      (!dependencies.herdr && !dependencies.run) &&
+      (agents.length > 0 || dependencies.requireCompatibility === true)
+    );
+  const compatibilityBinding = compatibilityBindingFor(agents, {
+    requireManagedRuntimeIdentity:
+      requireCompatibilityBinding && requireManagedRuntimeIdentity,
+  });
   const primaryAgent = agents[0] ?? context.agent;
   return createSemanticHarness({
     ...dependencies,
@@ -109,6 +124,12 @@ export function semanticHarnessFor(context, dependencies = {}) {
           ...(compatibilityBinding.bindings
             ? { expectedCompatibilityBindings: compatibilityBinding.bindings }
             : {}),
+          ...(compatibilityBinding.managedRuntimeIdentity
+            ? {
+                expectedManagedRuntimeIdentity:
+                  compatibilityBinding.managedRuntimeIdentity,
+              }
+            : {}),
           ...(compatibilityBinding.failure
             ? { compatibilityBindingFailure: compatibilityBinding.failure }
             : {}),
@@ -118,6 +139,7 @@ export function semanticHarnessFor(context, dependencies = {}) {
     requireCompatibility: dependencies.requireCompatibility ?? (
       !dependencies.herdr && !dependencies.run
     ),
+    requireManagedRuntimeIdentity,
   });
 }
 
@@ -130,7 +152,10 @@ function managedAgents(context) {
   return candidates.filter((agent) => agent?.status !== "retired");
 }
 
-function compatibilityBindingFor(agents) {
+function compatibilityBindingFor(
+  agents,
+  { requireManagedRuntimeIdentity = false } = {},
+) {
   if (agents.length === 0) return {};
   const byHarness = new Map();
   for (const agent of agents) {
@@ -145,27 +170,71 @@ function compatibilityBindingFor(agents) {
       };
     }
     const agentHarness = agent.launch?.harness ?? "codex";
-    const existing = byHarness.get(agentHarness);
-    if (existing && existing !== digest) {
+    const runtimeIdentity = agent.launch_binding?.managed_runtime_identity;
+    if (requireManagedRuntimeIdentity && !runtimeIdentity) {
       return {
         failure: {
-          expected: existing,
+          expected: null,
+          observed: null,
+          reason: "missing",
+        },
+      };
+    }
+    const sharedRuntimeIdentity = projectManagedRuntimeIdentity(
+      runtimeIdentity,
+      MANAGED_RUNTIME_SHARED_FIELDS,
+    );
+    const existing = byHarness.get(agentHarness);
+    if (existing && existing.digest !== digest) {
+      return {
+        failure: {
+          expected: existing.digest,
           observed: digest,
           reason: "changed",
         },
       };
     }
-    byHarness.set(agentHarness, digest);
+    if (
+      existing?.runtimeIdentity &&
+      runtimeIdentity &&
+      digestCanonical(existing.sharedRuntimeIdentity) !==
+        digestCanonical(sharedRuntimeIdentity)
+    ) {
+      return {
+        failure: {
+          expected: digestCanonical(existing.sharedRuntimeIdentity),
+          observed: digestCanonical(sharedRuntimeIdentity),
+          reason: "changed",
+        },
+      };
+    }
+    if (!existing) {
+      byHarness.set(agentHarness, {
+        digest,
+        runtimeIdentity,
+        sharedRuntimeIdentity,
+      });
+    }
   }
   const bindings = [...byHarness.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([agentHarness, digest]) => ({
+    .map(([agentHarness, { digest, runtimeIdentity }]) => ({
       harness: agentHarness,
       evidence_digest: digest,
+      ...(runtimeIdentity
+        ? { managed_runtime_identity: structuredClone(runtimeIdentity) }
+        : {}),
     }));
   return bindings.length === 1
-    ? { digest: bindings[0].evidence_digest }
-    : { bindings };
+    ? {
+        digest: bindings[0].evidence_digest,
+        ...(bindings[0].managed_runtime_identity
+          ? { managedRuntimeIdentity: bindings[0].managed_runtime_identity }
+          : {}),
+      }
+    : {
+        bindings,
+      };
 }
 
 export function assertSemanticHarness(candidate) {

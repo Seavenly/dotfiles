@@ -4,6 +4,7 @@ import { diagnose } from "./doctor.mjs";
 import { delegate } from "./delegate.mjs";
 import { describeDelegatedAgent } from "./description.mjs";
 import { DrovrError } from "./errors.mjs";
+import { publicErrorDetails, publicErrorMessage } from "./public-output.mjs";
 import { readFile } from "node:fs/promises";
 import { attach } from "./attach.mjs";
 import {
@@ -908,8 +909,10 @@ try {
         ok: true,
         result: {
           status: error.outcome,
-          message: error.message,
-          ...(error.details ? { details: error.details } : {}),
+          message: publicErrorMessage(error),
+          ...(error.details
+            ? { details: publicErrorDetails(error.details) }
+            : {}),
         },
       }
     : {
@@ -918,8 +921,10 @@ try {
         ok: false,
         error: {
           outcome: known ? error.outcome : "internal_error",
-          message: error.message,
-          ...(known && error.details ? { details: error.details } : {}),
+          message: publicErrorMessage(error),
+          ...(known && error.details
+            ? { details: publicErrorDetails(error.details) }
+            : {}),
         },
       };
   process.stdout.write(`${JSON.stringify(report)}\n`);

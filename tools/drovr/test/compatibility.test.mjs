@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { digestCanonical } from "../src/canonical-json.mjs";
 import {
   COMPATIBILITY_FEATURES,
   collectProductionCompatibility,
@@ -31,6 +32,48 @@ function runtime({ integration = "codex: current (v6)" } = {}) {
   return { calls, run };
 }
 
+function managedIdentity({
+  harness = "codex",
+  version = harness === "claude"
+    ? "2.1.199 (Claude Code)"
+    : "codex-cli 0.145.0",
+  integration = harness === "claude" ? "herdr-claude/v7" : "herdr-codex/v6",
+  canonicalPath = harness === "claude"
+    ? "/opt/claude/bin/claude"
+    : "/opt/codex/bin/codex",
+  managedPathDigest = "sha256:" + "1".repeat(64),
+  callerPathDigest = "sha256:" + "2".repeat(64),
+  fileIdentity = { device: 1, inode: 2, size: 3, mtime_ms: 4 },
+  nativeSession = "native-codex-1",
+} = {}) {
+  return {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness,
+    managed_agent: "managed-agent",
+    pane_id: "pane-1",
+    executable: {
+      observed_path: canonicalPath,
+      canonical_path: canonicalPath,
+      version,
+      file_identity: fileIdentity,
+    },
+    managed_path_digest: managedPathDigest,
+    caller_path_digest: callerPathDigest,
+    integration,
+    native_session: nativeSession,
+    process: {
+      pid: 42,
+      name: harness,
+      argv0: canonicalPath,
+      argv: [canonicalPath, "--sandbox", "read-only"],
+      cmdline: `${canonicalPath} --sandbox read-only`,
+      cwd: "/workspace",
+    },
+    model: harness === "claude" ? "haiku" : "gpt-5.6-sol",
+    effort: harness === "claude" ? "low" : "high",
+  };
+}
+
 test("production compatibility records exact executable, integration, and adapter facts", async () => {
   const { run } = runtime();
   const result = await collectProductionCompatibility({
@@ -51,6 +94,315 @@ test("production compatibility records exact executable, integration, and adapte
   assert.match(result.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
   assert.deepEqual(result.legal_actions, []);
   assert.equal(result.upstream_gaps[0].status, "upstream_gap");
+});
+
+test("production compatibility binds the managed pane identity and native session", async () => {
+  const { run } = runtime();
+  const result = await collectProductionCompatibility({
+    harness: "codex",
+    run,
+    env: {},
+    managedIdentity: managedIdentity(),
+    requireManagedIdentity: true,
+  });
+
+  assert.equal(result.status, "qualified");
+  assert.equal(result.managed_pane_identity.executable.canonical_path, "/opt/codex/bin/codex");
+  assert.equal(result.managed_pane_identity.native_session, "native-codex-1");
+  assert.match(result.managed_pane_evidence_digest, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(result.evidence_digest, digestCanonical(result.facts));
+});
+
+test("production launch validation binds the managed executable before native startup", async () => {
+  const runtimeFacts = runtime();
+  let probes = 0;
+  const preflightIdentity = {
+    ...managedIdentity({ nativeSession: null }),
+    process: null,
+    model: null,
+    effort: null,
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: { PATH: "/caller/bin:/usr/bin" },
+    run: runtimeFacts.run,
+    requireCompatibility: true,
+    herdr: {
+      async probeManagedExecutable() {
+        probes += 1;
+        return preflightIdentity;
+      },
+    },
+  });
+
+  const validation = await harness.validateLaunch({
+    specification: {
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      native: {
+        sandbox: "read-only",
+        approval: "never",
+        search: false,
+      },
+    },
+    paneId: "pane-1",
+    agentName: "managed-agent",
+  });
+
+  assert.equal(probes, 1);
+  assert.equal(validation.compatibility.status, "qualified");
+  assert.equal(
+    validation.compatibility.managed_pane_identity.native_session,
+    null,
+  );
+  assert.equal(
+    validation.compatibility.managed_pane_identity.executable.canonical_path,
+    "/opt/codex/bin/codex",
+  );
+});
+
+test("production startup blocks when the post-launch identity differs from preflight", async () => {
+  const runtimeFacts = runtime();
+  const events = [];
+  const preflightIdentity = {
+    ...managedIdentity({ nativeSession: null }),
+    process: null,
+    model: null,
+    effort: null,
+  };
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: { PATH: "/caller/bin:/usr/bin" },
+    run: runtimeFacts.run,
+    requireCompatibility: true,
+    delay: async () => {},
+    clock: () => 0,
+    herdr: {
+      async probeManagedExecutable() {
+        events.push("probe");
+        return structuredClone(preflightIdentity);
+      },
+      async startCodexAgent() {
+        events.push("start");
+      },
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async captureManagedRuntimeIdentity({ executable }) {
+        events.push("capture");
+        return {
+          ...structuredClone(executable),
+          integration: "herdr-codex/v7",
+          native_session: "native-1",
+          process: {
+            pid: 42,
+            name: "codex",
+            argv0: "/opt/codex/bin/codex",
+            argv: ["/opt/codex/bin/codex"],
+            cmdline: "/opt/codex/bin/codex",
+            cwd: "/workspace",
+          },
+        };
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => harness.startAgent({
+      agent: {
+        herdr: { name: "managed-agent", pane_id: "pane-1" },
+        launch: {
+          harness: "codex",
+          model: "gpt-5.6-sol",
+          effort: "high",
+        },
+      },
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.mismatches?.some(
+        ({ field }) => field === "managed_pane_identity.integration",
+      ),
+  );
+  assert.deepEqual(events, ["probe", "start", "capture"]);
+});
+
+test("production compatibility blocks when the managed executable identity is unproven", async () => {
+  const result = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    requireManagedIdentity: true,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "missing");
+  assert.deepEqual(result.missing, [
+    { fact: "managed_pane_identity", reason: "missing" },
+  ]);
+});
+
+test("managed-pane version drift from the caller shell is a typed compatibility block", async () => {
+  const result = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity({ version: "codex-cli 0.146.1" }),
+    requireManagedIdentity: true,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, "caller_shell_mismatch");
+  assert.equal(
+    result.mismatches[0].field,
+    "managed_pane_identity.executable.version",
+  );
+});
+
+test("managed-pane executable, integration, path, file, and process binding changes are detected", async () => {
+  const baseline = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity(),
+    requireManagedIdentity: true,
+  });
+  for (const changedIdentity of [
+    managedIdentity({ canonicalPath: "/opt/codex/bin/replaced" }),
+    managedIdentity({ integration: "herdr-codex/v7" }),
+    managedIdentity({ managedPathDigest: "sha256:" + "3".repeat(64) }),
+    managedIdentity({ fileIdentity: { device: 1, inode: 9, size: 3, mtime_ms: 4 } }),
+    managedIdentity({ nativeSession: "native-codex-replaced" }),
+  ]) {
+    const changed = await collectProductionCompatibility({
+      harness: "codex",
+      run: runtime().run,
+      env: {},
+      managedIdentity: changedIdentity,
+      expectedManagedIdentity: baseline.managed_pane_identity,
+      requireManagedIdentity: true,
+    });
+
+    assert.equal(changed.status, "blocked");
+    assert.equal(changed.reason, "changed");
+    assert.match(changed.mismatches[0].field, /^managed_pane_identity(?:\.|$)/u);
+  }
+});
+
+test("caller PATH drift does not change the managed runtime binding", async () => {
+  const baseline = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity(),
+    requireManagedIdentity: true,
+  });
+  const changed = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity({
+      callerPathDigest: "sha256:" + "4".repeat(64),
+    }),
+    expectedManagedIdentity: baseline.managed_pane_identity,
+    requireManagedIdentity: true,
+  });
+
+  assert.equal(changed.status, "qualified");
+  assert.equal(
+    changed.managed_pane_identity.caller_path_digest,
+    "sha256:" + "4".repeat(64),
+  );
+  assert.equal(
+    changed.managed_pane_identity.managed_path_digest,
+    baseline.managed_pane_identity.managed_path_digest,
+  );
+});
+
+test("production resume tolerates caller PATH drift after managed identity capture", async () => {
+  const runtimeFacts = runtime();
+  const expectedIdentity = managedIdentity();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+    managedIdentity: expectedIdentity,
+    requireManagedIdentity: true,
+  });
+  const observedIdentity = {
+    ...structuredClone(expectedIdentity),
+    caller_path_digest: "sha256:" + "4".repeat(64),
+  };
+  let resumes = 0;
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: {},
+    run: runtimeFacts.run,
+    herdr: {
+      async observeManagedRuntime() {
+        return structuredClone(expectedIdentity);
+      },
+      async resumeCodexAgent() {
+        resumes += 1;
+      },
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-codex-1" },
+        };
+      },
+      async captureManagedRuntimeIdentity() {
+        return structuredClone(observedIdentity);
+      },
+    },
+    compatibility,
+    expectedCompatibilityEvidenceDigest: compatibility.evidence_digest,
+    expectedManagedRuntimeIdentity: expectedIdentity,
+    requireCompatibility: true,
+    delay: async () => {},
+    clock: () => 0,
+  });
+
+  const result = await harness.resumeAgent({
+    agent: {
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      native_session: "native-codex-1",
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+    },
+    launchRuntime: {},
+  });
+
+  assert.equal(resumes, 1);
+  assert.equal(
+    result.managed_runtime_identity.caller_path_digest,
+    "sha256:" + "4".repeat(64),
+  );
+});
+
+test("Claude binds the same managed executable identity contract", async () => {
+  const result = await collectProductionCompatibility({
+    harness: "claude",
+    run: runtime().run,
+    env: {},
+    managedIdentity: managedIdentity({ harness: "claude" }),
+    requireManagedIdentity: true,
+  });
+
+  assert.equal(result.status, "qualified");
+  assert.equal(result.facts.harness, "2.1.199 (Claude Code)");
+  assert.equal(result.managed_pane_identity.integration, "herdr-claude/v7");
+  assert.equal(result.managed_pane_identity.process.name, "claude");
 });
 
 test("an unavailable or changed compatibility fact blocks production validation before native launch", async () => {
@@ -199,6 +551,84 @@ test("semantic production mutations require the registered compatibility digest"
   assert.equal(nativePrompts, 0);
 });
 
+test("semantic production mutations revalidate the bound managed process before delivery", async () => {
+  const runtimeFacts = runtime();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+  });
+  const boundIdentity = managedIdentity();
+  const changedIdentity = {
+    ...boundIdentity,
+    process: { ...boundIdentity.process, pid: 43 },
+  };
+  let prompts = 0;
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    agent: {
+      launch: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+      launch_binding: {
+        compatibility_evidence_digest: compatibility.evidence_digest,
+        managed_runtime_identity: boundIdentity,
+      },
+    },
+  }, {
+    env: {},
+    run: runtimeFacts.run,
+    herdr: {
+      async observeManagedRuntime() {
+        return changedIdentity;
+      },
+      async agentRecord() {
+        throw new Error("agent observation must not follow runtime drift");
+      },
+      async prompt() {
+        prompts += 1;
+      },
+    },
+    compatibility,
+    requireCompatibility: true,
+  });
+
+  await assert.rejects(
+    () => harness.deliverTurn({
+      agent: {
+        herdr: { name: "managed-agent", pane_id: "pane-1" },
+        native_session: "native-codex-1",
+      },
+      prompt: "must not be delivered after process replacement",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed",
+  );
+  assert.equal(prompts, 0);
+});
+
+test("real production bindings fail closed when managed runtime identity is absent", async () => {
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    agent: {
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: "sha256:" + "1".repeat(64),
+      },
+    },
+  }, {
+    run: async () => {
+      throw new Error("caller compatibility must not replace managed identity");
+    },
+    requireCompatibility: true,
+    requireManagedRuntimeIdentity: true,
+  });
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
+  );
+});
+
 test("a command-runner injection cannot bypass the compatibility binding gate", async () => {
   const runtimeFacts = runtime();
   const compatibility = await collectProductionCompatibility({
@@ -277,6 +707,187 @@ test("binding enforcement rejects conflicting same-harness active-agent bindings
       error.details?.observed === "sha256:" + "2".repeat(64),
   );
   assert.equal(nativeCalls, 0);
+});
+
+test("binding enforcement permits distinct same-harness panes with shared executable identity", async () => {
+  const runtimeFacts = runtime();
+  const firstIdentity = managedIdentity();
+  const secondIdentity = {
+    ...structuredClone(firstIdentity),
+    managed_agent: "managed-agent-2",
+    pane_id: "pane-2",
+    native_session: "native-codex-2",
+    caller_path_digest: "sha256:" + "9".repeat(64),
+    process: {
+      ...firstIdentity.process,
+      pid: 43,
+      cwd: "/workspace-2",
+    },
+  };
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+    managedIdentity: firstIdentity,
+    requireManagedIdentity: true,
+  });
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: compatibility.evidence_digest,
+          managed_runtime_identity: firstIdentity,
+        },
+      },
+      {
+        status: "active",
+        launch: { harness: "codex" },
+        launch_binding: {
+          compatibility_evidence_digest: compatibility.evidence_digest,
+          managed_runtime_identity: secondIdentity,
+        },
+      },
+    ],
+  }, {
+    env: {},
+    run: runtimeFacts.run,
+    herdr: {
+      async observeManagedRuntime() {
+        return structuredClone(firstIdentity);
+      },
+      async ensureSession() {},
+    },
+    compatibility,
+    requireCompatibility: true,
+  });
+
+  await harness.ensureRuntime();
+});
+
+test("binding enforcement rejects a missing same-harness identity regardless of order", async () => {
+  const boundIdentity = {
+    schema: "drovr.managed-pane-runtime-identity/v1",
+    harness: "codex",
+    managed_agent: "managed-agent",
+    pane_id: "pane-1",
+    executable: { canonical_path: "/opt/codex/bin/codex" },
+    managed_path_digest: "sha256:" + "1".repeat(64),
+    integration: "herdr-codex/v6",
+  };
+  const binding = {
+    compatibility_evidence_digest: "sha256:" + "c".repeat(64),
+  };
+  const boundAgent = {
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: {
+      ...binding,
+      managed_runtime_identity: boundIdentity,
+    },
+  };
+  const legacyAgent = {
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: { ...binding },
+  };
+
+  for (const agents of [
+    [boundAgent, legacyAgent],
+    [legacyAgent, boundAgent],
+  ]) {
+    let revalidations = 0;
+    const harness = semanticHarnessFor({
+      group: { herdr: { session: "delegates" } },
+      task: { id: "task-1" },
+      agents,
+    }, {
+      env: {},
+      herdr: {
+        async observeManagedRuntime() {
+          revalidations += 1;
+          throw new Error("binding gate should reject before revalidation");
+        },
+      },
+      requireCompatibility: true,
+      requireCompatibilityBinding: true,
+      requireManagedRuntimeIdentity: true,
+    });
+
+    await assert.rejects(
+      () => harness.ensureRuntime(),
+      (error) => error.outcome === "compatibility_blocked" &&
+        error.details?.reason === "missing",
+    );
+    assert.equal(revalidations, 0);
+  }
+});
+
+test("binding enforcement derives managed identity requirements by default", async () => {
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents: [{
+      status: "active",
+      launch: { harness: "codex" },
+      launch_binding: {
+        compatibility_evidence_digest: "sha256:" + "c".repeat(64),
+      },
+    }],
+  }, { env: {} });
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
+  );
+});
+
+test("binding conflicts report projected shared identity digests", async () => {
+  const firstIdentity = managedIdentity();
+  const secondIdentity = managedIdentity({
+    managedPathDigest: "sha256:" + "3".repeat(64),
+  });
+  const digest = "sha256:" + "c".repeat(64);
+  const agents = [firstIdentity, secondIdentity].map((identity) => ({
+    status: "active",
+    launch: { harness: "codex" },
+    launch_binding: {
+      compatibility_evidence_digest: digest,
+      managed_runtime_identity: identity,
+    },
+  }));
+  const harness = semanticHarnessFor({
+    group: { herdr: { session: "delegates" } },
+    task: { id: "task-1" },
+    agents,
+  }, {
+    env: {},
+    requireCompatibility: true,
+    requireCompatibilityBinding: true,
+    requireManagedRuntimeIdentity: true,
+  });
+  const shared = {
+    executable: firstIdentity.executable,
+    managed_path_digest: firstIdentity.managed_path_digest,
+    integration: firstIdentity.integration,
+  };
+  const observedShared = {
+    executable: secondIdentity.executable,
+    managed_path_digest: secondIdentity.managed_path_digest,
+    integration: secondIdentity.integration,
+  };
+
+  await assert.rejects(
+    () => harness.ensureRuntime(),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "changed" &&
+      error.details?.expected === digestCanonical(shared) &&
+      error.details?.observed === digestCanonical(observedShared),
+  );
 });
 
 test("binding enforcement qualifies mixed harnesses independently", async () => {
