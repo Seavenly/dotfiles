@@ -1276,7 +1276,9 @@ async function managedPanePath(processInfo, process, client) {
     (value) => typeof value === "string" && value.length > 0,
   );
   if (direct) return direct;
-  return processEnvironmentPath(process.pid, client);
+  return processEnvironmentPath(process.pid, client, {
+    commandLine: process.cmdline,
+  });
 }
 
 async function currentManagedIntegration(harness, client) {

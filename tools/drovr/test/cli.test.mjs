@@ -525,17 +525,17 @@ case "\${1:-} \${2:-}" in
     ;;
   "pane process-info")
     if [[ -f "$herdrState/agent" ]]; then
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":42,"name":"codex","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$(command -v codex)" "$(command -v codex)" "$(command -v codex)" "$taskCwd"
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"codex","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\n' "$(command -v codex)" "$(command -v codex)" "$(command -v codex)" "$taskCwd"
     elif [[ ! -f "$herdrState/pane-discovered" ]]; then
       touch "$herdrState/pane-discovered"
       printf '{"error":{"code":"pane_not_found","message":"pane not found"}}\\n' >&2
       exit 1
     elif [[ -f "$herdrState/shell-polled" ]]; then
       touch "$herdrState/shell-ready"
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
     else
       touch "$herdrState/shell-polled"
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":11,"name":"startup"}]}}}\\n'
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":11,"name":"startup"}]}}}\\n'
     fi
     ;;
   "pane run")
@@ -690,11 +690,11 @@ esac
   );
   await executable(
     join(fakeBin, "lsof"),
-    'printf "p42\\nn%s\\n" "$(command -v codex)"\n',
+    'printf "p2147483647\\nn%s\\n" "$(command -v codex)"\n',
   );
   await executable(
     join(fakeBin, "ps"),
-    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "codex --sandbox read-only PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "codex"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox read-only\\n" "$(command -v codex)"\nelse\n  exit 1\nfi\n',
+    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "$(command -v codex) --sandbox read-only PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "codex"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox read-only\\n" "$(command -v codex)"\nelse\n  exit 1\nfi\n',
   );
 
   let execution;
@@ -1157,9 +1157,9 @@ case "\${1:-} \${2:-}" in
   "tab rename"|"pane rename") ;;
   "pane process-info")
     if [[ -f "$herdrState/agent" ]]; then
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":42,"name":"claude","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\\n' "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "$taskCwd"
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":2147483647,"name":"claude","argv0":"%s","argv":["%s"],"cmdline":"%s","cwd":"%s"}]}}}\\n' "$(command -v claude)" "$(command -v claude)" "$(command -v claude)" "$taskCwd"
     else
-      printf '{"result":{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
+      printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"pane-1","shell_pid":10,"foreground_processes":[{"pid":10,"name":"zsh"}]}}}\\n'
     fi
     ;;
   "pane run")
@@ -1277,11 +1277,11 @@ esac
   );
   await executable(
     join(fakeBin, "lsof"),
-    'printf "p42\\nn%s\\n" "$(command -v claude)"\n',
+    'printf "p2147483647\\nn%s\\n" "$(command -v claude)"\n',
   );
   await executable(
     join(fakeBin, "ps"),
-    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "claude --sandbox PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
+    'if [[ " $* " == *" eww "* ]]; then\n  printf "%s\\n" "$(command -v claude) PATH=$PATH HOME=/tmp PWD=/workspace"\nelif [[ " $* " == *" comm="* ]]; then\n  printf "%s\\n" "claude"\nelif [[ " $* " == *" command="* ]]; then\n  printf "%s --sandbox\\n" "$(command -v claude)"\nelse\n  exit 1\nfi\n',
   );
 
   let delegatedExecution;

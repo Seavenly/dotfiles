@@ -47,7 +47,7 @@ export async function processExecutablePath(
 export async function processEnvironmentPath(
   pid,
   client,
-  { readFileImpl = readFile } = {},
+  { commandLine, readFileImpl = readFile } = {},
 ) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
@@ -66,9 +66,21 @@ export async function processEnvironmentPath(
       ["eww", "-p", String(pid), "-o", "command="],
       { env: client.env },
     );
+    const outputLine = String(output);
+    const normalizedCommandLine =
+      typeof commandLine === "string" ? commandLine.trim() : "";
+    if (
+      normalizedCommandLine &&
+      !outputLine.startsWith(normalizedCommandLine)
+    ) {
+      return null;
+    }
+    const environmentOutput = normalizedCommandLine
+      ? outputLine.slice(normalizedCommandLine.length)
+      : outputLine;
     const matches = [
-      ...String(output).matchAll(
-        /(?:^|\s)PATH=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|$)/gu,
+      ...environmentOutput.matchAll(
+        /(?:^|\s)PATH=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|\s*$)/gu,
       ),
     ];
     const path = matches.at(-1)?.[1]?.trim();

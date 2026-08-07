@@ -52,7 +52,9 @@ test("managed executable probing reads identity from the Herdr pane shell", asyn
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               shell_pid: 10,
               foreground_processes: [{ pid: 10, name: "zsh" }],
             },
@@ -116,9 +118,11 @@ test("managed runtime capture binds native session and foreground process identi
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               foreground_processes: [{
-                pid: 42,
+                pid: 2147483647,
                 name: "codex",
                 argv0: executablePath,
                 argv: [executablePath, "--sandbox", "read-only"],
@@ -130,9 +134,9 @@ test("managed runtime capture binds native session and foreground process identi
         });
       }
       if (file === "ps" && args[0] === "eww") {
-        return "codex --sandbox PATH=/managed/bin:/usr/bin HOME=/workspace\n";
+        return `${executablePath} --sandbox read-only PATH=/managed/bin:/usr/bin HOME=/workspace\n`;
       }
-      if (file === "lsof") return `p42\nn${executablePath}\n`;
+      if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {
         return "codex-cli 0.145.0\n";
       }
@@ -165,7 +169,7 @@ test("managed runtime capture binds native session and foreground process identi
   });
 
   assert.equal(identity.native_session, "native-1");
-  assert.equal(identity.process.pid, 42);
+  assert.equal(identity.process.pid, 2147483647);
   assert.equal(identity.process.argv0, executablePath);
   assert.equal(identity.integration, "herdr-codex/v6");
   assert.equal(identity.model, "gpt-5.6-sol");
@@ -201,9 +205,11 @@ test("managed runtime capture blocks a same-path executable replacement", async 
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               foreground_processes: [{
-                pid: 42,
+                pid: 2147483647,
                 name: "codex",
                 argv0: executablePath,
                 argv: [executablePath],
@@ -215,9 +221,9 @@ test("managed runtime capture blocks a same-path executable replacement", async 
         });
       }
       if (file === "ps" && args[0] === "eww") {
-        return "codex --sandbox PATH=/managed/bin:/usr/bin HOME=/workspace\n";
+        return `${executablePath} PATH=/managed/bin:/usr/bin HOME=/workspace\n`;
       }
-      if (file === "lsof") return `p42\nn${executablePath}\n`;
+      if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {
         return "codex-cli 0.145.0\n";
       }
@@ -272,9 +278,11 @@ test("managed runtime capture blocks a foreground process with the wrong executa
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               foreground_processes: [{
-                pid: 42,
+                pid: 2147483647,
                 name: "codex",
                 argv0: "/opt/other/codex",
                 argv: ["/opt/other/codex", "--sandbox", "read-only"],
@@ -285,7 +293,7 @@ test("managed runtime capture blocks a foreground process with the wrong executa
           },
         });
       }
-      if (file === "lsof") return "p42\nn/opt/other/codex\n";
+      if (file === "lsof") return "p2147483647\nn/opt/other/codex\n";
       if (file === executablePath && args[0] === "--version") {
         return "codex-cli 0.145.0\n";
       }
@@ -340,9 +348,11 @@ test("managed runtime capture blocks a foreground process without a cwd", async 
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               foreground_processes: [{
-                pid: 42,
+                pid: 2147483647,
                 name: "codex",
                 argv0: executablePath,
                 argv: [executablePath],
@@ -401,9 +411,11 @@ test("managed runtime observation blocks a changed managed PATH", async () => {
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               foreground_processes: [{
-                pid: 42,
+                pid: 2147483647,
                 name: "codex",
                 argv0: executablePath,
                 argv: [executablePath],
@@ -415,9 +427,9 @@ test("managed runtime observation blocks a changed managed PATH", async () => {
         });
       }
       if (file === "ps" && args[0] === "eww") {
-        return "codex --sandbox PATH=/changed/bin:/usr/bin HOME=/workspace\n";
+        return `${executablePath} PATH=/changed/bin:/usr/bin HOME=/workspace\n`;
       }
-      if (file === "lsof") return `p42\nn${executablePath}\n`;
+      if (file === "lsof") return `p2147483647\nn${executablePath}\n`;
       if (file === executablePath && args[0] === "--version") {
         return "codex-cli 0.145.0\n";
       }
@@ -446,7 +458,7 @@ test("managed runtime observation blocks a changed managed PATH", async () => {
         managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
         native_session: "native-1",
         process: {
-          pid: 42,
+          pid: 2147483647,
           name: "codex",
           argv0: executablePath,
           argv: [executablePath],
@@ -482,7 +494,7 @@ test("managed runtime observation ignores caller PATH drift", async () => {
     integration: "herdr-codex/v6",
     native_session: "native-1",
     process: {
-      pid: 42,
+      pid: 2147483647,
       name: "codex",
       argv0: "/opt/codex/bin/codex",
       argv: ["/opt/codex/bin/codex"],
@@ -533,7 +545,9 @@ test("managed runtime capture uses exact-process ps and lsof fallbacks when Herd
       if (args.includes("process-info")) {
         return JSON.stringify({
           result: {
+            type: "pane_process_info",
             process_info: {
+              pane_id: "pane-1",
               foreground_processes: [{
                 pid: 4294967294,
                 name: "codex",
@@ -547,7 +561,7 @@ test("managed runtime capture uses exact-process ps and lsof fallbacks when Herd
         });
       }
       if (file === "ps") {
-        return `codex --managed PATH=/managed/bin:/usr/bin PWD=/workspace\n`;
+        return `codex PATH=/managed/bin:/usr/bin PWD=/workspace\n`;
       }
       if (file === "lsof") {
         return `p4294967294\nn${executablePath}\n`;
@@ -1525,7 +1539,9 @@ test("native recovery resumes the registered Codex and Claude sessions", async (
         if (args.includes("process-info")) {
           return JSON.stringify({
             result: {
+              type: "pane_process_info",
               process_info: {
+                pane_id: "pane-1",
                 shell_pid: 10,
                 foreground_processes: [{ pid: 10, name: "zsh" }],
               },
