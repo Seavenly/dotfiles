@@ -15,6 +15,8 @@ case "${1:-}" in
 esac
 dotfiles_context_init "$root" || true
 failures=0
+# shellcheck source=internal/commands/check-run
+source "$root/internal/commands/check-run"
 
 bash_files=("$root/dotfiles")
 while IFS= read -r file; do
@@ -37,17 +39,6 @@ if [[ ${DOTFILES_CHECK_MISE_EXEC:-0} != 1 ]] \
     MISE_TRUSTED_CONFIG_PATHS="$root" \
     mise exec --locked -C "$root" -E "$check_exec_env" -- "$root/dotfiles" check
 fi
-
-run() {
-  printf 'check: %-24s' "$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    echo "ok"
-  else
-    echo "FAILED"
-    failures=$((failures + 1))
-  fi
-}
 
 run "bash syntax" bash -n "${bash_files[@]}"
 run "zsh syntax" zsh -n "$root/config/zsh/zshrc" "$root/config/zsh/aliases.zsh" "$root/config/sketchybar/sketchybarrc" "$root/config/sketchybar/plugins/aerospace.sh" "$root/config/sketchybar/plugins/battery.sh" "$root/config/sketchybar/plugins/rec.sh" "$root/config/sketchybar/plugins/spotify.sh" "$root/config/sketchybar/plugins/weather.sh"
