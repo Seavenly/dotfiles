@@ -1,6 +1,8 @@
 import { DrovrError } from "./errors.mjs";
 import { resolveBlockRecord } from "./block-record.mjs";
 import { semanticHarnessFor } from "./harness-interface.mjs";
+import { createAgentRetirementReceipt } from "./agent-retirement-receipt.mjs";
+import { observationErrorReason } from "./observation-reason.mjs";
 import {
   readRecords,
   stateDirectory,
@@ -23,6 +25,19 @@ function client(context, env, dependencies) {
     // Teardown is the recovery path for stale launches. It still qualifies
     // the current runtime, but must be able to retire resources after the
     // persisted launch digest has become stale.
+    requireCompatibilityBinding: false,
+  });
+}
+
+function retirementClient(context, env, dependencies) {
+  // Legacy records have no launch compatibility binding. Read-only Herdr
+  // observations still probe the target session protocol, while every
+  // mismatch remains typed uncertainty. Compatibility repair is performed on
+  // a disposable session and never by ensuring or restarting a shared one.
+  return semanticHarnessFor(context, {
+    ...dependencies,
+    env,
+    requireCompatibility: false,
     requireCompatibilityBinding: false,
   });
 }
@@ -76,6 +91,321 @@ async function classifyManagedAgent({ agent, harness, observation }) {
     return { failure: { agent, status: "agent_lost" } };
   }
   return { observed, pane, paneId, observation };
+}
+
+function retirementLegalActions(reason) {
+  if (reason === "exact_absence" || reason === "agent_present") {
+    return ["retire_agent"];
+  }
+  if (
+    [
+      "session_missing",
+      "protocol_mismatch",
+      "compatibility_blocked",
+      "session_observation_uncertain",
+      "agent_observation_uncertain",
+      "pane_observation_uncertain",
+    ].includes(reason)
+  ) {
+    return ["repair_herdr_compatibility_on_disposable_session"];
+  }
+  if (reason === "pane_remapped") {
+    return ["reconcile_restored_task_pane"];
+  }
+  if (
+    [
+      "identity_drift",
+      "duplicate_native_session",
+      "identity_observation_uncertain",
+    ].includes(reason)
+  ) {
+    return ["reconcile_managed_agent_identity"];
+  }
+  if (
+    [
+      "surviving_pane",
+      "ambiguous_pane",
+      "surviving_agent_without_bound_pane",
+      "pane_close_uncertain",
+      "pane_close_unconfirmed",
+    ].includes(reason)
+  ) {
+    return ["inspect_exact_managed_pane"];
+  }
+  if (reason === "pane_binding_missing") {
+    return ["reconcile_managed_agent_identity"];
+  }
+  return ["reconcile_exact_agent_retirement"];
+}
+
+function retirementFailure(agent, reason, retirementEvidence) {
+  return {
+    failure: {
+      agent,
+      status: "uncertain",
+      reason,
+      legal_next_actions: retirementLegalActions(reason),
+      ...(retirementEvidence
+        ? { retirement_evidence: retirementEvidence }
+        : {}),
+    },
+  };
+}
+
+function retirementTopologyBinding({ task, group, pane }) {
+  const taskTabId = task.herdr?.tab_id;
+  const workspaceId = group.herdr?.workspace_id;
+  if (!taskTabId || !workspaceId || !pane?.tabId || !pane?.workspaceId) {
+    return "unbound";
+  }
+  return taskTabId === pane.tabId && workspaceId === pane.workspaceId
+    ? "matched"
+    : "unbound";
+}
+
+function retirementEvidence({ runtime, observation, paneId, pane }) {
+  return {
+    ...(runtime
+      ? {
+          runtime: {
+            evidence: runtime.evidence ?? "uncertain",
+            ...(runtime.reason ? { reason: runtime.reason } : {}),
+          },
+        }
+      : {}),
+    ...(observation
+      ? {
+          agent: {
+            evidence: observation.evidence ?? "uncertain",
+            ...(observation.expected_identity
+              ? { expected_identity: observation.expected_identity }
+              : {}),
+            ...(observation.identity
+              ? { observed_identity: observation.identity }
+              : {}),
+          },
+        }
+      : {}),
+    ...(paneId
+      ? {
+          pane: {
+            pane_id: paneId,
+            evidence: pane ? "present" : "absent",
+          },
+        }
+      : {}),
+  };
+}
+
+function identityDriftReason(observation) {
+  if (observation.reason === "duplicate_native_session") {
+    return "duplicate_native_session";
+  }
+  if (
+    [
+      "protocol_mismatch",
+      "session_missing",
+      "session_observation_uncertain",
+      "pane_observation_uncertain",
+    ].includes(observation.reason)
+  ) {
+    return observation.reason;
+  }
+  if (observation.pane_changed) return "pane_remapped";
+  if (observation.evidence === "changed") return "identity_drift";
+  return observation.reason === "native_session_missing"
+    ? "identity_observation_uncertain"
+    : "agent_observation_uncertain";
+}
+
+function previouslyRetiredAgent(context) {
+  return {
+    ...context,
+    status: "retired",
+    legal_next_actions: [],
+    ...(context.agent.cleanup_receipt
+      ? { cleanup_receipt: context.agent.cleanup_receipt }
+      : {
+          reason: "legacy_retirement_without_receipt",
+        }),
+  };
+}
+
+async function classifyRetirementAgent({
+  agent,
+  task,
+  group,
+  harness,
+  observation,
+  runtime,
+}) {
+  if (
+    !observation ||
+    !["present", "absent", "changed", "uncertain"].includes(
+      observation.evidence,
+    )
+  ) {
+    return retirementFailure(
+      agent,
+      "agent_observation_uncertain",
+      retirementEvidence({ runtime, observation }),
+    );
+  }
+  if (["changed", "uncertain"].includes(observation.evidence)) {
+    return retirementFailure(
+      agent,
+      identityDriftReason(observation),
+      retirementEvidence({ runtime, observation }),
+    );
+  }
+
+  const paneId = agent.herdr?.pane_id;
+  if (!paneId) {
+    return retirementFailure(
+      agent,
+      "pane_binding_missing",
+      retirementEvidence({ runtime, observation }),
+    );
+  }
+  if (
+    observation.pane_changed ||
+    (observation.identity?.pane && observation.identity.pane !== paneId)
+  ) {
+    return retirementFailure(
+      agent,
+      "pane_remapped",
+      retirementEvidence({ runtime, observation, paneId }),
+    );
+  }
+
+  let pane;
+  try {
+    pane = await harness.topology.observePane(paneId);
+  } catch (error) {
+    return retirementFailure(
+      agent,
+      observationErrorReason(error, "pane_observation_uncertain"),
+      retirementEvidence({ runtime, observation, paneId }),
+    );
+  }
+
+  if (observation.evidence === "absent") {
+    if (pane) {
+      return retirementFailure(
+        agent,
+        pane.tabId ? "surviving_pane" : "ambiguous_pane",
+        retirementEvidence({ runtime, observation, paneId, pane }),
+      );
+    }
+    return {
+      status: "retireable_absence",
+      reason: "exact_absence",
+      legal_next_actions: retirementLegalActions("exact_absence"),
+      observed: null,
+      pane: null,
+      paneId,
+      observation,
+      retirement_evidence: retirementEvidence({
+        runtime,
+        observation,
+        paneId,
+        pane,
+      }),
+    };
+  }
+
+  if (!observation.identity?.pane) {
+    return retirementFailure(
+      agent,
+      "identity_observation_uncertain",
+      retirementEvidence({ runtime, observation, paneId, pane }),
+    );
+  }
+  if (!pane) {
+    return retirementFailure(
+      agent,
+      "surviving_agent_without_bound_pane",
+      retirementEvidence({ runtime, observation, paneId }),
+    );
+  }
+  if (!pane.tabId) {
+    return retirementFailure(
+      agent,
+      "ambiguous_pane",
+      retirementEvidence({ runtime, observation, paneId, pane }),
+    );
+  }
+  if (
+    (task.herdr?.tab_id && pane.tabId !== task.herdr.tab_id) ||
+    (group.herdr?.workspace_id &&
+      pane.workspaceId &&
+      pane.workspaceId !== group.herdr.workspace_id)
+  ) {
+    return retirementFailure(
+      agent,
+      "pane_remapped",
+      retirementEvidence({ runtime, observation, paneId, pane }),
+    );
+  }
+  return {
+    status: "agent_present",
+    reason: "agent_present",
+    legal_next_actions: retirementLegalActions("agent_present"),
+    observed: observation,
+    pane,
+    paneId,
+    observation,
+    retirement_evidence: retirementEvidence({
+      runtime,
+      observation,
+      paneId,
+      pane,
+    }),
+  };
+}
+
+async function retirementPreflight(context, harness) {
+  let runtime;
+  try {
+    runtime = await harness.observeRuntime();
+  } catch (error) {
+    runtime = {
+      evidence: "uncertain",
+      reason: observationErrorReason(
+        error,
+        "session_observation_uncertain",
+      ),
+    };
+  }
+  if (!runtime || runtime.evidence !== "present") {
+    const reason = runtime?.evidence === "absent"
+      ? "session_missing"
+      : runtime?.reason ?? "session_observation_uncertain";
+    return retirementFailure(
+      context.agent,
+      reason,
+      retirementEvidence({ runtime }),
+    );
+  }
+
+  let observations;
+  try {
+    observations = await harness.observeAgents([context.agent]);
+  } catch (error) {
+    return retirementFailure(
+      context.agent,
+      observationErrorReason(error, "agent_observation_uncertain"),
+      retirementEvidence({ runtime }),
+    );
+  }
+  return classifyRetirementAgent({
+    agent: context.agent,
+    task: context.task,
+    group: context.group,
+    harness,
+    observation: Array.isArray(observations) ? observations[0] : null,
+    runtime,
+  });
 }
 
 async function groupLifecycleContext(registryDirectory, groupId) {
@@ -531,6 +861,21 @@ export async function closeGroup(groupId, dependencies = {}) {
   );
 }
 
+export async function inspectAgentRetirement(agentId, dependencies = {}) {
+  const env = dependencies.env ?? process.env;
+  const registryDirectory = stateDirectory(env);
+  const context = await lifecycleContext(registryDirectory, "agent", agentId);
+  if (context.agent.status !== "active") {
+    return previouslyRetiredAgent(context);
+  }
+  const harness = retirementClient(context, env, dependencies);
+  const preflight = await retirementPreflight(context, harness);
+  return {
+    ...context,
+    ...(preflight.failure ?? preflight),
+  };
+}
+
 export async function retireAgent(agentId, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
@@ -542,37 +887,88 @@ export async function retireAgent(agentId, dependencies = {}) {
     async () => {
       const context = await lifecycleContext(registryDirectory, "agent", agentId);
       if (context.agent.status !== "active") {
-        return { ...context, status: "retired" };
+        return previouslyRetiredAgent(context);
       }
-      const harness = client(context, env, dependencies);
-      await harness.ensureRuntime();
-      const [observation] = await harness.observeAgents([context.agent]);
-      const classification = await classifyManagedAgent({
-        agent: context.agent,
-        harness,
-        observation,
-      });
+      const harness = retirementClient(context, env, dependencies);
+      let classification = await retirementPreflight(context, harness);
       if (classification.failure) {
-        return { ...context, status: classification.failure.status };
+        return { ...context, ...classification.failure };
       }
-      const { observed, pane, paneId } = classification;
+
+      // Keep the initial observation fail-closed so a transient uncertainty
+      // cannot be erased by a later successful read. Re-observe immediately
+      // before any registry mutation so a pane or agent that was exact during
+      // the first read is not authority to close a later remapped or
+      // ambiguous resource.
+      classification = await retirementPreflight(context, harness);
+      if (classification.failure) {
+        return { ...context, ...classification.failure };
+      }
+
+      const {
+        observed,
+        pane,
+        paneId,
+        observation,
+        retirement_evidence: retirementEvidenceResult,
+      } = classification;
       const turns = await readRecords(registryDirectory, "turns");
+      let proof = "exact_absence";
       if (observed) {
-        if (pane?.tabId && pane.tabId !== context.task.herdr.tab_id) {
-          context.task.herdr.tab_id = pane.tabId;
-          await writeRecord(registryDirectory, "tasks", context.task);
+        proof = "exact_identity_and_pane_close";
+        const closeHarness = client(context, env, dependencies);
+        try {
+          // A present-pane close remains a qualified mutation. The
+          // read-only retirement harness is intentionally unqualified so it
+          // can observe legacy loss, but it must not widen the close path.
+          await closeHarness.ensureRuntime({ ensureSession: false });
+        } catch (error) {
+          return {
+            ...context,
+            ...retirementFailure(
+              context.agent,
+              observationErrorReason(error, "compatibility_blocked"),
+              retirementEvidenceResult,
+            ).failure,
+          };
         }
-        context.agent.herdr.pane_id = paneId;
-        await harness.topology.closePane(paneId);
-        if (await harness.topology.observePane(paneId)) {
-          return { ...context, status: "uncertain" };
+        try {
+          await closeHarness.topology.closePane(paneId);
+        } catch (error) {
+          return {
+            ...context,
+            ...retirementFailure(
+              context.agent,
+              observationErrorReason(error, "pane_close_uncertain"),
+              retirementEvidenceResult,
+            ).failure,
+          };
         }
-      } else if (pane) {
-        await harness.topology.closePane(paneId);
-        if (await harness.topology.observePane(paneId)) {
-          return { ...context, status: "uncertain" };
+        let remainingPane;
+        try {
+          remainingPane = await closeHarness.topology.observePane(paneId);
+        } catch (error) {
+          return {
+            ...context,
+            ...retirementFailure(
+              context.agent,
+              observationErrorReason(error, "pane_observation_uncertain"),
+              retirementEvidenceResult,
+            ).failure,
+          };
+        }
+        if (remainingPane) {
+          return {
+            ...context,
+            ...retirementFailure(
+              context.agent,
+              "pane_close_unconfirmed",
+              retirementEvidenceResult,
+            ).failure,
+          };
         }
       }
+      const interruptedTurns = [];
       for (const turn of turns.filter(
         (candidate) =>
           candidate.agent_id === context.agent.id &&
@@ -580,11 +976,36 @@ export async function retireAgent(agentId, dependencies = {}) {
       )) {
         settleTurnRecord(turn, { status: "interrupted", settledAt: now() });
         await writeRecord(registryDirectory, "turns", turn);
+        interruptedTurns.push(turn);
       }
+      const retiredAt = now();
+      const cleanupReceipt = createAgentRetirementReceipt({
+        agent: context.agent,
+        observation,
+        paneId,
+        paneBefore: pane,
+        topologyBinding: retirementTopologyBinding({
+          task: context.task,
+          group: context.group,
+          pane,
+        }),
+        runtimeEvidence: retirementEvidenceResult?.runtime,
+        proof,
+        interruptedTurns,
+        recordedAt: retiredAt,
+      });
       context.agent.status = "retired";
-      context.agent.retired_at = now();
+      context.agent.retired_at = retiredAt;
+      context.agent.cleanup_receipt = cleanupReceipt;
       await writeRecord(registryDirectory, "agents", context.agent);
-      return { ...context, status: "retired" };
+      return {
+        ...context,
+        status: "retired",
+        reason: classification.reason,
+        legal_next_actions: [],
+        retirement_evidence: retirementEvidenceResult,
+        cleanup_receipt: cleanupReceipt,
+      };
     },
   );
 }
@@ -740,6 +1161,19 @@ export function lifecycleCommandResult(command, context) {
               key: context.agent.key,
               label: context.agent.label,
             },
+          }
+        : {}),
+      ...(context.reason ? { reason: context.reason } : {}),
+      ...(context.legal_next_actions
+        ? { legal_next_actions: context.legal_next_actions }
+        : {}),
+      ...(context.retirement_evidence
+        ? { retirement_evidence: context.retirement_evidence }
+        : {}),
+      ...((context.cleanup_receipt ?? context.agent?.cleanup_receipt)
+        ? {
+            cleanup_receipt:
+              context.cleanup_receipt ?? context.agent.cleanup_receipt,
           }
         : {}),
       ...(context.turn_outcomes

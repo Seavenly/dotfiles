@@ -13,6 +13,7 @@ import { HerdrClient } from "./herdr.mjs";
 import { execute } from "./process.mjs";
 import { readRecords, stateDirectory } from "./registry.mjs";
 import { redactValue } from "./trace.mjs";
+import { inspectAgentRetirement } from "./lifecycle.mjs";
 
 const DROVR_ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const REPOSITORY_ROOT = dirname(dirname(DROVR_ROOT));
@@ -308,15 +309,69 @@ async function managedRuntimeChecks({ env, run }) {
   const groupById = new Map(groups.map((group) => [group.id, group]));
   const warnings = [];
   const failures = [];
+  const retirementReports = [];
   for (const agent of activeAgents) {
     const task = taskById.get(agent.task_id);
     const groupForAgent = groupById.get(task?.group_id);
     const expectedIdentity = agent.launch_binding?.managed_runtime_identity;
     if (!expectedIdentity) {
-      warnings.push(
-        `${agent.id}: managed identity is missing from a legacy launch; ` +
-        `retire it with 'drovr agent retire ${agent.id}' and relaunch`,
-      );
+      try {
+        const retirement = await inspectAgentRetirement(agent.id, { env, run });
+        const report = {
+          agent_id: agent.id,
+          status: retirement.status,
+          ...(retirement.reason ? { reason: retirement.reason } : {}),
+          legal_next_actions: retirement.legal_next_actions ?? [],
+        };
+        retirementReports.push(report);
+        if (retirement.status === "retireable_absence") {
+          warnings.push(
+            `${agent.id}: safely retireable absence; legal next action: ` +
+              retirementActionText(["retire_agent"], agent.id, agent.task_id),
+          );
+        } else if (retirement.status === "agent_present") {
+          warnings.push(
+            `${agent.id}: managed agent and pane are still present; ` +
+              `legal next action: ${retirementActionText(
+                ["retire_agent"],
+                agent.id,
+                agent.task_id,
+              )}`,
+          );
+        } else {
+          warnings.push(
+            `${agent.id}: unresolved retirement uncertainty ` +
+              `(${retirement.reason ?? "unknown"}); legal next action: ` +
+              `${retirementActionText(
+                retirement.legal_next_actions,
+                agent.id,
+                agent.task_id,
+              )}; ` +
+              "shared Herdr sessions remain untouched",
+          );
+        }
+      } catch (error) {
+        if (error?.outcome === "corrupt_registry") {
+          failures.push(`${agent.id}: ${redactValue(error.message)}`);
+          continue;
+        }
+        retirementReports.push({
+          agent_id: agent.id,
+          status: "uncertain",
+          reason: "retirement_observation_failed",
+          legal_next_actions: ["repair_herdr_compatibility_on_disposable_session"],
+        });
+        warnings.push(
+          `${agent.id}: unresolved retirement uncertainty ` +
+            `(retirement_observation_failed); legal next action: ` +
+            `${retirementActionText(
+              ["repair_herdr_compatibility_on_disposable_session"],
+              agent.id,
+              agent.task_id,
+            )}; ` +
+            `observation failed: ${redactValue(error.message)}`,
+        );
+      }
       continue;
     }
     if (!groupForAgent?.herdr?.session) {
@@ -358,5 +413,30 @@ async function managedRuntimeChecks({ env, run }) {
     detail: failures.length === 0 && warnings.length === 0
       ? `verified ${activeAgents.length} managed Herdr pane${activeAgents.length === 1 ? "" : "s"}`
       : [...failures, ...warnings].join("; "),
+    ...(retirementReports.length > 0
+      ? { retirement: retirementReports }
+      : {}),
   }];
+}
+
+function retirementActionText(actions, agentId, taskId) {
+  const action = actions?.[0];
+  switch (action) {
+    case "retire_agent":
+      return `drovr agent retire ${agentId}`;
+    case "repair_herdr_compatibility_on_disposable_session":
+      return "repair Herdr compatibility on a disposable session";
+    case "reconcile_managed_agent_identity":
+      return `inspect with 'drovr agent get ${agentId}' and reconcile the managed agent identity before retrying retirement`;
+    case "reconcile_restored_task_pane":
+      return taskId
+        ? `inspect with 'drovr agent get ${agentId}' and, if the pane was restored into a new task tab, run 'drovr task close ${taskId}' to reconcile it before retrying retirement`
+        : `inspect with 'drovr agent get ${agentId}' and reconcile the restored task pane before retrying retirement`;
+    case "inspect_exact_managed_pane":
+      return `inspect with 'drovr agent get ${agentId}' and verify the exact managed pane before retrying retirement`;
+    case "reconcile_exact_agent_retirement":
+      return `inspect with 'drovr agent get ${agentId}' and reconcile the exact agent before retrying retirement`;
+    default:
+      return action ?? "reconcile exact agent retirement";
+  }
 }

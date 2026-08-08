@@ -21,7 +21,7 @@ export async function observeAgents(
         status: runtime.evidence === "absent" ? "agent_lost" : "uncertain",
         reason: runtime.evidence === "absent"
           ? "session_missing"
-          : "session_observation_uncertain",
+          : runtime.reason ?? "session_observation_uncertain",
       });
     }
     return { running, observations };
@@ -40,7 +40,7 @@ export async function observeAgents(
         status: "agent_lost",
         reason: !agent.native_session || observed.evidence === "changed"
           ? "native_session_mismatch"
-          : "session_observation_uncertain",
+          : observed.reason ?? "session_observation_uncertain",
       });
     } else {
       observations.set(agent.id, {

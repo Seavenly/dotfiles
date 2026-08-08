@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { stateDirectory, writeRecord } from "../src/registry.mjs";
+import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
 import {
   assertResultStatus,
   installProductionCliRuntime,
@@ -29,6 +29,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
+const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 test("public CLI cancels, retires, and closes exact managed resources", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-lifecycle-cli-"));
@@ -196,6 +197,14 @@ esac
     (await execFileAsync(drovr, ["agent", "retire", "agent-1"], { env })).stdout,
   );
   assertResultStatus(retired, "agent retire", "retired");
+  assert.equal(
+    retired.result.cleanup_receipt.schema,
+    "drovr.agent-retirement-receipt/v1",
+  );
+  assert.equal(
+    retired.result.cleanup_receipt.proof,
+    "exact_identity_and_pane_close",
+  );
   assert.equal((await readFile(join(herdrState, "closed-pane"), "utf8")).trim(), "pane-agent-1");
 
   const closed = JSON.parse(
@@ -219,4 +228,82 @@ esac
     "workspace-1",
   );
   await access(callerFile);
+});
+
+test("public CLI retires an exactly absent agent and returns the durable receipt", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-lost-retirement-cli-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, "bin");
+  await mkdir(fakeBin, { recursive: true });
+  const fakeHerdr = join(fakeBin, "herdr");
+  await writeFile(
+    fakeHerdr,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ \${1:-} == session && \${2:-} == list ]]; then
+  printf '{"sessions":[{"name":"disposable-retirement","running":true}]}\\n'
+  exit
+fi
+if [[ \${1:-} == --session && \${2:-} == disposable-retirement && \${3:-} == agent && \${4:-} == list ]]; then
+  printf '{"result":{"agents":[]}}\\n'
+  exit
+fi
+if [[ \${1:-} == --session && \${2:-} == disposable-retirement && \${3:-} == pane && \${4:-} == get ]]; then
+  printf '{"error":{"code":"pane_not_found"}}\\n' >&2
+  exit 1
+fi
+printf 'unexpected mutation: %s\\n' "$*" >&2
+exit 1
+`,
+  );
+  await chmod(fakeHerdr, 0o755);
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    XDG_STATE_HOME: join(scratch, "state"),
+    DOTFILES_ROOT: repositoryRoot,
+  };
+  const registryDirectory = stateDirectory(env);
+  await writeRecord(registryDirectory, "groups", {
+    schema: "drovr.group/v1",
+    id: "group-lost",
+    key: "lost",
+    label: "Lost",
+    status: "active",
+    herdr: { session: "disposable-retirement", workspace_id: "workspace-1" },
+  });
+  await writeRecord(registryDirectory, "tasks", {
+    schema: "drovr.task/v1",
+    id: "task-lost",
+    group_id: "group-lost",
+    key: "lost",
+    label: "Lost",
+    cwd: scratch,
+    status: "active",
+    herdr: { tab_id: "tab-1", root_pane_id: "pane-lost" },
+  });
+  await writeRecord(registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-lost",
+    task_id: "task-lost",
+    key: "lost",
+    label: "Lost",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-lost", pane_id: "pane-lost" },
+    native_session: "native-lost",
+  });
+
+  const first = JSON.parse(
+    (await execFileAsync(drovr, ["agent", "retire", "agent-lost"], { env })).stdout,
+  );
+  const repeated = JSON.parse(
+    (await execFileAsync(drovr, ["agent", "retire", "agent-lost"], { env })).stdout,
+  );
+
+  assert.equal(first.result.status, "retired");
+  assert.equal(first.result.cleanup_receipt.proof, "exact_absence");
+  assert.deepEqual(repeated.result.cleanup_receipt, first.result.cleanup_receipt);
+  const [agent] = await readRecords(registryDirectory, "agents");
+  assert.deepEqual(agent.cleanup_receipt, first.result.cleanup_receipt);
 });

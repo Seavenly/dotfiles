@@ -353,9 +353,10 @@ runs a marker-based, read-only command in the pane shell, so its marker,
 resolved executable path, version, and managed PATH remain visible in pane
 scrollback while the private identity stays out of public output.
 Active agents created before managed runtime identity was introduced are treated
-as legacy unbound launches: `doctor` reports a warning with the retire-and-
-relaunch remedy, while launch, turn, recovery, and reuse continue to fail closed
-until a new exact binding is established.
+as legacy unbound launches. `doctor` performs a read-only retirement preflight
+and distinguishes an exact absent agent and pane from unresolved uncertainty;
+launch, turn, recovery, and reuse continue to fail closed until a new exact
+binding is established.
 On hosts without `/proc`, executable identity falls back to `ps` and `lsof`,
 while the exact process PATH falls back to `ps eww`; an unavailable or
 ambiguous platform observation fails closed.
@@ -569,11 +570,45 @@ reconciled terminal status instead of waiting for a future native transition.
 If identity-safe recovery is blocked before interruption, cancellation records
 the logical turn as `uncertain` and retains the typed recovery outcome.
 
-`agent retire` terminates the harness process and closes its managed pane. Work
-delivery and identity-sensitive recovery require the persisted compatibility
-binding, but `agent retire`, task/group close, and `attach` qualify the current
-runtime without requiring that old binding to match. This keeps
-`retire_stale_launch` a performable recovery action after a runtime upgrade.
+`agent retire` first performs a bounded, read-only observation of the configured
+Herdr session, managed agent identity, and exact registered pane. It never calls
+the mutating runtime-ensure operation. An active agent and its exact pane may be
+closed only after the same identity and registered task topology are re-observed
+immediately before the close; an absent agent and pane are re-observed before
+the registry is retired.
+A lost agent may be retired only when the configured session is observable, the
+managed agent is exactly absent, and its bound pane is exactly absent. Missing
+observations, protocol mismatch, session loss, pane remapping, identity drift,
+or any surviving or ambiguous pane return typed `uncertain` evidence and leave
+the lifecycle record active. Successful retirement stores a durable
+`drovr.agent-retirement-receipt/v1` cleanup receipt; repeating the command
+returns that same receipt without touching Herdr. A present-pane receipt records
+`pane.before.topology_binding` as `"matched"` only when both registered task
+tab and workspace identities were observed and equal; otherwise it records
+`"unbound"`. It never persists raw tab or workspace identifiers.
+Records retired by an older task or group cleanup remain idempotently retired;
+when no receipt was recorded, Drovr reports the legacy receipt gap without
+fabricating cleanup evidence.
+
+Retirement results use stable `legal_next_actions` tokens. `doctor` renders
+those tokens as the exact public retirement command when retirement is legal,
+or as a read-only inspection, identity reconciliation, or disposable-session
+repair procedure when uncertainty remains. The
+`reconcile_restored_task_pane` token names `drovr task close TASK_ID` as the
+task-level reconciliation path when a pane was restored into a new task tab.
+No uncertainty action authorizes a pane close or force retirement.
+`task close`, `group close`, and `attach`
+continue to qualify the current runtime without requiring a stale persisted
+launch binding. A present-pane `agent retire` branch also qualifies the current
+runtime immediately before closing the pane; the exact-absence branch never
+ensures or restarts the session.
+
+When the shared Herdr client and server are incompatible, the legal repair path
+is a uniquely named disposable Herdr session. Configure Drovr to that session,
+start it with `herdr session attach NAME`, and establish compatibility there.
+If a lost-agent fixture is needed, stop and delete only that disposable session,
+start a fresh session with the same name, and run the public retirement command.
+Never stop or restart the shared managed session as part of retirement.
 
 ### Steering
 

@@ -347,6 +347,53 @@ test("DelegatedAgentPort proves caller-key absence and fails conflicts closed", 
   ]);
 });
 
+test("DelegatedAgentPort projects the durable retirement receipt", async () => {
+  const context = lifecycleContext();
+  const cleanupReceipt = {
+    schema: "drovr.agent-retirement-receipt/v1",
+    agent_id: "agent:1",
+    recorded_at: "2026-08-01T00:00:00Z",
+    proof: "exact_absence",
+    observation: {
+      evidence: "absent",
+      runtime: { evidence: "present" },
+    },
+    pane: {
+      pane_id: "pane:1",
+      before: null,
+      after: { evidence: "absent" },
+    },
+    interrupted_turns: [],
+  };
+  const port = createDrovrDelegatedAgentPort({
+    async retireDrovr() {
+      return {
+        ...context,
+        status: "retired",
+        reason: "exact_absence",
+        legal_next_actions: [],
+        agent: {
+          ...context.agent,
+          status: "retired",
+          cleanup_receipt: cleanupReceipt,
+        },
+      };
+    },
+  });
+
+  const projection = await port.retire({
+    schema: "flow.delegated-agent-retire-request/v1",
+    agent_id: "agent:1",
+    turn_id: "turn:1",
+    attempt_id: "run:1/card:review/attempt:1",
+  });
+
+  assert.equal(projection.status, "retired");
+  assert.equal(projection.reason, "exact_absence");
+  assert.deepEqual(projection.cleanup_receipt, cleanupReceipt);
+  assert.deepEqual(projection.legal_next_actions, []);
+});
+
 for (const outcome of ["launch_binding_missing", "launch_binding_stale"]) {
   test(`DelegatedAgentPort points ${outcome} at the exact agent retirement`, async () => {
     const port = createDrovrDelegatedAgentPort({

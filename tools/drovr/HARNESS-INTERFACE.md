@@ -36,7 +36,9 @@ sequence Herdr commands around them.
 
 `ensureRuntime` is a mutating setup acknowledgement; it does not claim that a
 runtime was independently observed. Callers that need runtime evidence use
-`observeRuntime`.
+`observeRuntime`. A teardown path that must qualify compatibility without
+creating a missing session may call `ensureRuntime({ ensureSession: false })`;
+that form performs qualification only.
 
 ## Operations
 
