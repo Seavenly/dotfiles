@@ -30,7 +30,7 @@ jobs:
           cache: false
           install: false
       - name: Install validators from the lock
-        run: mise install --locked actionlint gitleaks shellcheck lua uv
+        run: mise install --locked actionlint gitleaks shellcheck lua uv ripgrep
       - name: Validate sources
         run: ./dotfiles check
       - name: Validate isolated-home dotfile plan
