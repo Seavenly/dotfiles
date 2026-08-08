@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { readRecords, stateDirectory } from "../src/registry.mjs";
 import {
   assertResultStatus,
   installProductionCliRuntime,
@@ -327,8 +328,7 @@ test("agent start resolves and reuses an immutable launch through the public CLI
   const { codexPath } = await installProductionCliRuntime(fakeBin);
   await executable(
     join(fakeBin, "herdr"),
-    `herdrState=${JSON.stringify(herdrState)}
-${productionManagedRuntimeVariables({
+    `${productionManagedRuntimeVariables({
       herdrState,
       cwd,
       codexPath,
@@ -354,13 +354,13 @@ ${productionManagedRuntimeCases()}
   "pane close") touch ${JSON.stringify(paneClosed)} ;;
   "tab rename"|"pane rename") ;;
   "agent start")
-    printf '%s\n' "$*" > "$herdrState/start-args"
-    touch "$herdrState/started"
+    printf '%s\n' "$*" > "$fixtureState/start-args"
+    touch "$fixtureState/started"
     printf '{"result":{"agent":{"name":"managed"}}}\n'
     ;;
   "agent list")
-    if [[ -f "$herdrState/started" ]]; then
-      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+    if [[ -f "$fixtureState/started" ]]; then
+      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$fixtureState/start-args")
       printf '{"result":{"agents":[{"name":"%s","pane_id":"pane-1","agent_status":"idle","agent_session":{"value":"%s"}}]}}\n' "$name" "$fixtureNativeSession"
     else
       printf '{"result":{"agents":[]}}\n'
@@ -502,8 +502,7 @@ test("agent start returns a typed compatibility block for ambiguous managed iden
   const { codexPath } = await installProductionCliRuntime(fakeBin);
   await executable(
     join(fakeBin, "herdr"),
-    `herdrState=${JSON.stringify(herdrState)}
-${productionManagedRuntimeVariables({
+    `${productionManagedRuntimeVariables({
       herdrState,
       cwd,
       codexPath,
@@ -524,13 +523,13 @@ ${productionManagedRuntimeCases({ ambiguous: true })}
     ;;
   "tab rename"|"pane rename") ;;
   "agent start")
-    printf '%s\\n' "$*" > "$herdrState/start-args"
-    touch "$herdrState/started"
+    printf '%s\\n' "$*" > "$fixtureState/start-args"
+    touch "$fixtureState/started"
     printf '%s\\n' '{"result":{"agent":{"name":"managed"}}}'
     ;;
   "agent list")
-    if [[ -f "$herdrState/started" ]]; then
-      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$herdrState/start-args")
+    if [[ -f "$fixtureState/started" ]]; then
+      name=$(sed -n 's/^agent start \\([^ ]*\\).*/\\1/p' "$fixtureState/start-args")
       printf '{"result":{"agents":[{"name":"%s","pane_id":"pane-1","agent_status":"idle","agent_session":{"value":"%s"}}]}}\\n' "$name" "$fixtureNativeSession"
     else
       printf '%s\\n' '{"result":{"agents":[]}}'
@@ -585,4 +584,13 @@ esac
     "refresh_compatibility",
     "run_drovr_doctor",
   ]);
+  const [blockedAgent] = await readRecords(stateDirectory(env), "agents");
+  assert.ok(blockedAgent);
+  assert.equal(blockedAgent.status, "active");
+  assert.equal(blockedAgent.native_session, null);
+  const preflightIdentity =
+    blockedAgent.launch_binding?.managed_runtime_identity;
+  assert.ok(preflightIdentity);
+  assert.equal(preflightIdentity.native_session, null);
+  assert.equal(preflightIdentity.process, null);
 });

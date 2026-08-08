@@ -125,7 +125,10 @@ if [[ \${1:-} == -p && \${2:-} == ${PRODUCTION_HERDR_RUNTIME.managedPid} && \${3
     command=) printf '%s\\n' ${shellString(codexCommand)}; exit 0 ;;
   esac
 fi
-exec /bin/ps "$@"
+for candidate in /bin/ps /usr/bin/ps; do
+  [[ -x "$candidate" ]] && exec "$candidate" "$@"
+done
+exit 1
 `,
   );
   await chmod(psPath, 0o755);
@@ -166,6 +169,8 @@ fixtureNativeSession=${shellString(PRODUCTION_HERDR_RUNTIME.nativeSession)}
 `;
 }
 
+// Insert these case clauses after productionManagedRuntimeVariables so the
+// jsonEscape helper and fixture variables are available to every operation.
 export function productionManagedRuntimeCases({
   ambiguous = false,
   paneId = "pane-1",
