@@ -84,7 +84,7 @@ const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
 let interruptionRequested = false;
 const correctionReviewPrompt = (expected) =>
-  `This is the ordered correction and re-review qualification sentinel.\nReview the correction on the same request, then reply exactly:\n${expected}\n`;
+  `This is an explicit post-recovery qualification sentinel.\nNo external correction content is required.\nReply exactly:\n${expected}\n`;
 const scenarioExecutors = new Map([
   ["codex_live_prompt_sources_and_reuse", runCodexPromptScenario],
   ["codex_live_lifecycle_recovery", runCodexLifecycleScenario],

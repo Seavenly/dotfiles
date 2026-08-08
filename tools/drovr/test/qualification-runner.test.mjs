@@ -1262,6 +1262,13 @@ esac
   assert.equal(delegateArguments[delegateArguments.indexOf("--harness") + 1], "claude");
   assert.equal(delegateArguments[delegateArguments.indexOf("--model") + 1], "haiku");
   assert.equal(delegateArguments[delegateArguments.indexOf("--effort") + 1], "low");
+  const reusePrompt = invocations[4].argv.slice(4, -1).join("\n");
+  assert.equal(
+    reusePrompt,
+    "This is an explicit post-recovery qualification sentinel.\n" +
+      "No external correction content is required.\n" +
+      "Reply exactly:\nQUALIFY-CLAUDE-SOAK-REVIEW-OK",
+  );
 
   const mutatedEvidenceDirectory = join(scratch, "evidence-mutated-trust");
   const mutatedRun = await runCli(mutatedEvidenceDirectory, {
