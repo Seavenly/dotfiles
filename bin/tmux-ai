@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+name="${1:?usage: tmux-ai NAME [COMMAND]}"
+command="${2:-$name}"
+scratch="_assistant_${name}"
+option="@assistant-${name}-pane"
+
+tmux has-session -t "$scratch" 2>/dev/null || tmux new-session -d -s "$scratch" -n placeholder
+pane_id="$(tmux show-options -gv "$option" 2>/dev/null || true)"
+if [[ -n "$pane_id" ]] && ! tmux list-panes -a -F '#{pane_id}' | grep -qx "$pane_id"; then
+  pane_id=""
+fi
+if [[ -z "$pane_id" ]]; then
+  pane_id="$(tmux new-window -d -P -F '#{pane_id}' -t "${scratch}:" -n "$name" -c "#{pane_current_path}" "zsh -i -c '$command'")"
+  tmux set-option -g "$option" "$pane_id"
+fi
+
+current="$(tmux display-message -p '#{session_name}:#{window_index}')"
+owner="$(tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}' | awk -v id="$pane_id" '$1 == id {print $2}')"
+if [[ "$owner" == "$current" ]]; then
+  tmux break-pane -d -s "$pane_id" -t "${scratch}:"
+else
+  tmux join-pane -h -s "$pane_id"
+fi

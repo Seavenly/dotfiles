@@ -1,0 +1,34 @@
+onboarding = false
+
+[theme]
+name = "rose-pine"
+
+[keys]
+prefix = "ctrl+a"
+
+[[keys.command]]
+key = "prefix+ctrl+g"
+type = "pane"
+command = "lazygit"
+
+[[keys.command]]
+key = "prefix+ctrl+d"
+type = "shell"
+command = "project-switcher --backend herdr --project \"$(dotfiles-root)\""
+
+[[keys.command]]
+key = "prefix+ctrl+r"
+type = "popup"
+command = "review-inbox --backend herdr"
+width = "90%"
+height = "70%"
+
+[[keys.command]]
+key = "prefix+f"
+type = "popup"
+command = "project-switcher --backend herdr"
+width = "80%"
+height = "70%"
+
+[ui]
+agent_panel_sort = "priority"

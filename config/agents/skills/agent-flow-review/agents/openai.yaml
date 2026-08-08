@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Flow Review"
+  short_description: "Run a durable automated review of a pinned local candidate"
+  default_prompt: "Use $agent-flow-review to review this immutable local candidate without publishing feedback."

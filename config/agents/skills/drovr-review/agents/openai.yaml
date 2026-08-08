@@ -1,0 +1,5 @@
+interface:
+  display_name: "Drovr Review"
+  short_description: "Iterate on a Claude review through Drovr"
+policy:
+  allow_implicit_invocation: false

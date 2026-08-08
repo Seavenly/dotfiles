@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly HOMEBREW_INSTALL_COMMIT="16be749c00897e40ecbf09e21f7f258706961b7b"
+readonly HOMEBREW_INSTALL_SHA256="99287f194a8b3c9e6b0203a11a5fa54518be57209343e6bb954dec4635796d9d"
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+dry_run=0
+recorder=0
+recorder_only=0
+
+while (($#)); do
+  case "$1" in
+    --dry-run) dry_run=1 ;;
+    --recorder) recorder=1 ;;
+    --recorder-only) recorder=1; recorder_only=1 ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[[ "$(uname -s):$(uname -m)" == Darwin:arm64 ]] || {
+  echo "Homebrew casks are supported only on Apple Silicon macOS." >&2
+  exit 1
+}
+
+brewfiles=()
+((recorder_only)) || brewfiles+=("$root/Brewfile.macos")
+((recorder)) && brewfiles+=("$root/Brewfile.recorder")
+
+if ((dry_run)); then
+  if ! command -v brew >/dev/null 2>&1 && [[ ! -x /opt/homebrew/bin/brew ]]; then
+    echo "Would install Homebrew from checksum-pinned installer commit $HOMEBREW_INSTALL_COMMIT."
+  fi
+  for brewfile in "${brewfiles[@]}"; do
+    echo "Would install or upgrade casks from $brewfile:"
+    sed -n 's/^cask "\([^"]*\)"/  \1/p' "$brewfile"
+  done
+  exit 0
+fi
+
+if command -v brew >/dev/null 2>&1; then
+  brew_bin="$(command -v brew)"
+elif [[ -x /opt/homebrew/bin/brew ]]; then
+  brew_bin=/opt/homebrew/bin/brew
+else
+  command -v curl >/dev/null 2>&1 || { echo "curl is required to install Homebrew." >&2; exit 1; }
+  installer="$(mktemp "${TMPDIR:-/tmp}/homebrew-install.XXXXXX")"
+  trap 'rm -f "$installer"' EXIT
+  curl --fail --location --silent --show-error \
+    "https://raw.githubusercontent.com/Homebrew/install/$HOMEBREW_INSTALL_COMMIT/install.sh" \
+    --output "$installer"
+  actual_sha="$(shasum -a 256 "$installer" | awk '{print $1}')"
+  [[ "$actual_sha" == "$HOMEBREW_INSTALL_SHA256" ]] || {
+    echo "Homebrew installer checksum verification failed." >&2
+    exit 1
+  }
+  NONINTERACTIVE=1 /bin/bash "$installer"
+  brew_bin=/opt/homebrew/bin/brew
+  [[ -x "$brew_bin" ]] || { echo "Homebrew installation did not create $brew_bin." >&2; exit 1; }
+fi
+
+for brewfile in "${brewfiles[@]}"; do
+  # Bundle defaults to --adopt for unmanaged apps. Auto-updating casks can then
+  # adopt an older bundle whose newer helper artifacts do not exist (Obsidian's
+  # obsidian-cli is one example). Scope --force to these explicitly managed
+  # casks so Homebrew installs the downloaded bundle instead of adopting it.
+  "$brew_bin" bundle install --force --file "$brewfile"
+done

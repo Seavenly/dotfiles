@@ -1,0 +1,72 @@
+[settings]
+system_packages.managers = ["brew"]
+
+[bootstrap.brew.taps]
+"felixkratz/formulae" = "https://github.com/FelixKratz/homebrew-formulae.git"
+
+[bootstrap.packages]
+"brew:felixkratz/formulae/sketchybar" = "latest"
+"brew:eza" = "latest"
+
+[bootstrap.repos]
+"~/.local/share/sketchybar-app-font" = { url = "https://github.com/kvndrsslr/sketchybar-app-font.git", ref = "8899e75c5b08aa0ead9c347ff6139260720bc0b0" }
+
+[dotfiles]
+"~/.config/aerospace" = "config/aerospace"
+"~/.config/ghostty" = "config/ghostty"
+"~/.config/sketchybar" = "config/sketchybar"
+
+[bootstrap.macos.keyboard]
+key_repeat = 2
+initial_key_repeat = 15
+press_and_hold = false
+
+[bootstrap.macos.dock]
+autohide = true
+show_recents = false
+mru_spaces = false
+
+[bootstrap.macos.finder]
+show_all_files = true
+show_pathbar = true
+show_status_bar = true
+show_extensions_warning = false
+preferred_view_style = "list"
+
+[bootstrap.macos.trackpad]
+tap_to_click = true
+three_finger_drag = false
+
+[bootstrap.macos.defaults.NSGlobalDomain]
+AppleKeyboardUIMode = 3
+AppleShowAllExtensions = true
+NSAutomaticCapitalizationEnabled = false
+NSAutomaticDashSubstitutionEnabled = false
+NSAutomaticPeriodSubstitutionEnabled = false
+NSAutomaticQuoteSubstitutionEnabled = false
+_HIHideMenuBar = true
+
+[bootstrap.macos.defaults."com.apple.dock"]
+autohide-delay = 0.0
+autohide-time-modifier = 0.2
+expose-group-apps = true
+minimize-to-application = true
+mineffect = "scale"
+
+[bootstrap.macos.defaults."com.apple.finder"]
+FXDefaultSearchScope = "SCcf"
+_FXSortFoldersFirst = true
+
+[bootstrap.macos.defaults."com.apple.screencapture"]
+disable-shadow = false
+show-thumbnail = true
+type = "png"
+
+[bootstrap.macos.defaults."com.apple.AppleMultitouchTrackpad"]
+TrackpadRightClick = true
+
+[bootstrap.macos.defaults."com.apple.driver.AppleBluetoothMultitouch.trackpad"]
+TrackpadRightClick = true
+
+[bootstrap.hooks.post-defaults]
+run = "internal/bootstrap/macos-defaults"

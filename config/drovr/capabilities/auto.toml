@@ -1,0 +1,11 @@
+schema = "drovr.capability/v1"
+
+[codex]
+sandbox = "workspace-write"
+approval = "on-request"
+approvals_reviewer = "auto_review"
+search = true
+network_access = false
+
+[claude]
+permission_mode = "auto"

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.review-result.v1.schema.json",
+  "title": "agent-flow.review-result/v1",
+  "description": "Deterministically capped and identified review output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "stage",
+    "policy",
+    "source",
+    "posture",
+    "posture_rationale",
+    "cluster",
+    "findings",
+    "counts",
+    "supplements"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.review-result/v1" },
+    "run_id": { "$ref": "#/$defs/identifier" },
+    "stage": { "$ref": "#/$defs/stageKey" },
+    "policy": { "$ref": "#/$defs/policy" },
+    "source": { "$ref": "#/$defs/source" },
+    "posture": {
+      "enum": ["do_not_merge", "merge_after_fixes", "merge_ready_with_followups"]
+    },
+    "posture_rationale": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "cluster": { "type": ["string", "null"], "minLength": 1, "maxLength": 4000 },
+    "findings": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "counts": { "$ref": "#/$defs/counts" },
+    "supplements": {
+      "type": "array",
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/supplement" }
+    }
+  },
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "stageKey": { "type": "string", "pattern": "^[a-z][a-z0-9:-]{0,127}$" },
+    "tierCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critical", "important", "recommended", "nit"],
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "important": { "type": "integer", "minimum": 0 },
+        "recommended": { "type": "integer", "minimum": 0 },
+        "nit": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["urgency", "minimum_tier", "max_comments", "per_tier_caps"],
+      "properties": {
+        "urgency": { "enum": ["hotfix", "fast", "standard"] },
+        "minimum_tier": { "enum": ["critical", "important", "recommended", "nit"] },
+        "max_comments": { "type": "integer", "minimum": 0, "maximum": 500 },
+        "per_tier_caps": { "$ref": "#/$defs/tierCounts" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validation_path", "stage", "task_id", "attempt", "artifact_path", "sha256"],
+      "properties": {
+        "validation_path": { "$ref": "#/$defs/absolutePath" },
+        "stage": { "const": "critic" },
+        "task_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "artifact_path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "line", "side", "tier", "lens", "body"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^finding-[0-9a-f]{16}$" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "line": { "type": "integer", "minimum": 1 },
+        "side": { "enum": ["LEFT", "RIGHT"] },
+        "tier": { "enum": ["critical", "important", "recommended", "nit"] },
+        "lens": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 10000 }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "included", "by_tier", "dropped_by_urgency", "dropped_by_tier_cap", "dropped_by_total_cap"],
+      "properties": {
+        "input": { "type": "integer", "minimum": 0 },
+        "included": { "type": "integer", "minimum": 0 },
+        "by_tier": { "$ref": "#/$defs/tierCounts" },
+        "dropped_by_urgency": { "$ref": "#/$defs/tierCounts" },
+        "dropped_by_tier_cap": { "$ref": "#/$defs/tierCounts" },
+        "dropped_by_total_cap": { "$ref": "#/$defs/tierCounts" }
+      }
+    },
+    "supplement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "passed", "validation_path", "artifact_path", "sha256"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "lens:style",
+            "lens:observability",
+            "orientation",
+            "diagram"
+          ]
+        },
+        "passed": { "type": "boolean" },
+        "validation_path": { "$ref": "#/$defs/absolutePath" },
+        "artifact_path": { "$ref": "#/$defs/absolutePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

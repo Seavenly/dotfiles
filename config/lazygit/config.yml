@@ -1,0 +1,14 @@
+gui:
+  sidePanelWidth: 0.2
+os:
+  edit: 'source ~/.local/bin/nvim-remote-shell && nv --swap --remote {{filename}}'
+  editAtLine: 'source ~/.local/bin/nvim-remote-shell && nv --swap -c {{line}} --remote {{filename}}'
+  editAtLineAndWait: 'source ~/.local/bin/nvim-remote-shell && nv --swap -c {{line}} --remote-wait {{filename}}'
+  editInTerminal: true
+  openDirInEditor: 'source ~/.local/bin/nvim-remote-shell && nv --swap --remote {{dir}}'
+promptToReturnFromSubprocess: false # display confirmation when subprocess terminates
+git:
+  pagers:
+    - colorArg: always
+      #pager: delta --dark --paging=never --side-by-side --line-numbers-left-format="{nm:>4}│" --line-numbers-right-format="{np:>4}│"
+      pager: delta --dark --paging=never

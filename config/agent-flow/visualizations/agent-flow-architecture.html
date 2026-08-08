@@ -1,0 +1,865 @@
+<main id="agent-flow-architecture">
+  <style>
+    #agent-flow-architecture {
+      --af-line: color-mix(in srgb, var(--border) 82%, transparent);
+      --af-soft-1: color-mix(in srgb, var(--viz-series-1) 13%, transparent);
+      --af-soft-2: color-mix(in srgb, var(--viz-series-2) 13%, transparent);
+      --af-soft-3: color-mix(in srgb, var(--viz-series-3) 13%, transparent);
+      --af-soft-4: color-mix(in srgb, var(--viz-series-4) 13%, transparent);
+      --af-soft-5: color-mix(in srgb, var(--viz-series-5) 13%, transparent);
+      color: var(--foreground);
+      display: grid;
+      gap: 2.5rem;
+      padding: 1rem 0 3rem;
+    }
+
+    #agent-flow-architecture * {
+      box-sizing: border-box;
+    }
+
+    #agent-flow-architecture section {
+      display: grid;
+      gap: 1rem;
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-hero {
+      gap: 1.25rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-eyebrow {
+      color: var(--muted-foreground);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    #agent-flow-architecture .af-lead {
+      max-width: 64ch;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    #agent-flow-architecture .af-stat-grid .card {
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-section-heading {
+      display: grid;
+      gap: 0.25rem;
+    }
+
+    #agent-flow-architecture .af-section-heading p {
+      color: var(--muted-foreground);
+      max-width: 68ch;
+    }
+
+    #agent-flow-architecture .af-system-map {
+      display: grid;
+      gap: 0.65rem;
+      padding: 0.5rem 0;
+    }
+
+    #agent-flow-architecture .af-layer {
+      display: grid;
+      grid-template-columns: 8.5rem minmax(0, 1fr);
+      align-items: stretch;
+      gap: 0.75rem;
+    }
+
+    #agent-flow-architecture .af-layer-label {
+      display: flex;
+      align-items: center;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-layer-body {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+      gap: 0.5rem;
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-node {
+      display: grid;
+      gap: 0.25rem;
+      padding: 0.75rem;
+      border-left: 3px solid var(--border);
+      background: var(--muted);
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-node strong {
+      font-weight: 500;
+    }
+
+    #agent-flow-architecture .af-node span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-node[data-kind="human"] {
+      border-color: var(--viz-series-1);
+      background: var(--af-soft-1);
+    }
+
+    #agent-flow-architecture .af-node[data-kind="contract"] {
+      border-color: var(--viz-series-2);
+      background: var(--af-soft-2);
+    }
+
+    #agent-flow-architecture .af-node[data-kind="runtime"] {
+      border-color: var(--viz-series-3);
+      background: var(--af-soft-3);
+    }
+
+    #agent-flow-architecture .af-node[data-kind="evidence"] {
+      border-color: var(--viz-series-4);
+      background: var(--af-soft-4);
+    }
+
+    #agent-flow-architecture .af-node[data-kind="delivery"] {
+      border-color: var(--viz-series-5);
+      background: var(--af-soft-5);
+    }
+
+    #agent-flow-architecture .af-down {
+      display: grid;
+      grid-template-columns: 8.5rem minmax(0, 1fr);
+      gap: 0.75rem;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-down span:last-child {
+      padding-left: 1rem;
+    }
+
+    #agent-flow-architecture .af-authority {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    #agent-flow-architecture .af-authority th,
+    #agent-flow-architecture .af-authority td {
+      padding: 0.7rem 0.5rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-authority th {
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+
+    #agent-flow-architecture .af-lifecycle {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 0.25rem;
+      align-items: stretch;
+    }
+
+    #agent-flow-architecture .af-step {
+      display: grid;
+      align-content: start;
+      gap: 0.25rem;
+      padding: 0.65rem 0.45rem;
+      border-top: 3px solid var(--viz-series-2);
+      background: var(--af-soft-2);
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-step span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-skill-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    #agent-flow-architecture .af-skill-stage {
+      display: grid;
+      gap: 1rem;
+      padding-top: 0.5rem;
+    }
+
+    #agent-flow-architecture .af-skill-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+      gap: 1rem;
+      align-items: start;
+    }
+
+    #agent-flow-architecture .af-flow-line {
+      display: flex;
+      align-items: stretch;
+      gap: 0.35rem;
+      overflow: hidden;
+    }
+
+    #agent-flow-architecture .af-flow-node {
+      flex: 1 1 0;
+      display: grid;
+      place-content: center;
+      gap: 0.2rem;
+      min-width: 0;
+      min-height: 5.5rem;
+      padding: 0.55rem 0.35rem;
+      text-align: center;
+      background: var(--muted);
+      border-top: 3px solid var(--viz-series-3);
+    }
+
+    #agent-flow-architecture .af-flow-node span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-flow-arrow {
+      display: grid;
+      place-content: center;
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-skill-facts {
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    #agent-flow-architecture .af-fact {
+      display: grid;
+      grid-template-columns: 6.5rem minmax(0, 1fr);
+      gap: 0.65rem;
+      padding-bottom: 0.55rem;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-fact dt {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-fact dd {
+      margin: 0;
+    }
+
+    #agent-flow-architecture .af-command {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    #agent-flow-architecture .af-role-grid,
+    #agent-flow-architecture .af-contract-grid,
+    #agent-flow-architecture .af-risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem 1rem;
+    }
+
+    #agent-flow-architecture .af-role,
+    #agent-flow-architecture .af-contract,
+    #agent-flow-architecture .af-risk {
+      display: grid;
+      grid-template-columns: 2.25rem minmax(0, 1fr);
+      gap: 0.65rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-index {
+      display: grid;
+      place-content: center;
+      width: 2rem;
+      height: 2rem;
+      color: var(--foreground);
+      background: var(--muted);
+      border-radius: 50%;
+    }
+
+    #agent-flow-architecture .af-role p,
+    #agent-flow-architecture .af-contract p,
+    #agent-flow-architecture .af-risk p {
+      color: var(--muted-foreground);
+      margin-top: 0.2rem;
+    }
+
+    #agent-flow-architecture .af-evidence-chain {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.35rem;
+      align-items: stretch;
+    }
+
+    #agent-flow-architecture .af-evidence-link {
+      display: grid;
+      gap: 0.3rem;
+      padding: 0.65rem 0.45rem;
+      background: var(--af-soft-4);
+      border-bottom: 3px solid var(--viz-series-4);
+      min-width: 0;
+    }
+
+    #agent-flow-architecture .af-evidence-link span {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-journey {
+      display: grid;
+      gap: 0;
+      counter-reset: journey;
+    }
+
+    #agent-flow-architecture .af-journey li {
+      counter-increment: journey;
+      list-style: none;
+      display: grid;
+      grid-template-columns: 2.5rem minmax(0, 1fr);
+      gap: 0.75rem;
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--af-line);
+    }
+
+    #agent-flow-architecture .af-journey li::before {
+      content: counter(journey);
+      display: grid;
+      place-content: center;
+      width: 2rem;
+      height: 2rem;
+      color: var(--primary-foreground);
+      background: var(--primary);
+      border-radius: 50%;
+    }
+
+    #agent-flow-architecture details {
+      border-bottom: 1px solid var(--af-line);
+      padding: 0.55rem 0;
+    }
+
+    #agent-flow-architecture summary {
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    #agent-flow-architecture details p,
+    #agent-flow-architecture details ul {
+      color: var(--muted-foreground);
+    }
+
+    #agent-flow-architecture .af-status {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    #agent-flow-architecture .af-status-column {
+      border-top: 3px solid var(--viz-series-2);
+      padding-top: 0.75rem;
+    }
+
+    #agent-flow-architecture .af-status-column:last-child {
+      border-color: var(--viz-series-5);
+    }
+
+    #agent-flow-architecture .af-status-column ul {
+      padding-left: 1.25rem;
+    }
+
+    #agent-flow-architecture .af-footer {
+      color: var(--muted-foreground);
+      border-top: 1px solid var(--af-line);
+      padding-top: 1rem;
+    }
+
+    @media (max-width: 680px) {
+      #agent-flow-architecture .af-stat-grid,
+      #agent-flow-architecture .af-role-grid,
+      #agent-flow-architecture .af-contract-grid,
+      #agent-flow-architecture .af-risk-grid,
+      #agent-flow-architecture .af-status,
+      #agent-flow-architecture .af-skill-summary {
+        grid-template-columns: 1fr;
+      }
+
+      #agent-flow-architecture .af-layer,
+      #agent-flow-architecture .af-down {
+        grid-template-columns: 1fr;
+      }
+
+      #agent-flow-architecture .af-down span:first-child {
+        display: none;
+      }
+
+      #agent-flow-architecture .af-lifecycle {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      #agent-flow-architecture .af-flow-line,
+      #agent-flow-architecture .af-evidence-chain {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      #agent-flow-architecture .af-flow-arrow {
+        transform: rotate(90deg);
+      }
+
+      #agent-flow-architecture .af-authority {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+
+    @media print {
+      #agent-flow-architecture .af-skill-controls {
+        display: none;
+      }
+
+      #agent-flow-architecture details {
+        break-inside: avoid;
+      }
+    }
+  </style>
+
+  <header class="af-hero">
+    <div class="af-eyebrow text-small">Agent Flow system map</div>
+    <h1>Durable multi-agent execution without building a second scheduler</h1>
+    <p class="af-lead">
+      Agent Flow turns an approved software outcome into immutable contracts,
+      versioned execution graphs, Hermes Kanban cards, validated evidence, and
+      explicit review and delivery checkpoints. The system is local-first:
+      implementation can be automated, but publication and completion remain
+      deliberate.
+    </p>
+    <div class="af-stat-grid">
+      <div class="card viz-stat">
+        <div class="text-muted">Automation control plane</div>
+        <div class="viz-stat-value">Hermes Kanban</div>
+        <div class="text-muted">Cards, attempts, dependencies, retries, blocking, recovery</div>
+      </div>
+      <div class="card viz-stat">
+        <div class="text-muted">Durable authority</div>
+        <div class="viz-stat-value">Sealed manifests</div>
+        <div class="text-muted">Pinned inputs, graphs, profiles, limits, revisions, hashes</div>
+      </div>
+      <div class="card viz-stat">
+        <div class="text-muted">Delivery invariant</div>
+        <div class="viz-stat-value">Exact trees</div>
+        <div class="text-muted">Reviewed layers replay to the same final source tree</div>
+      </div>
+    </div>
+  </header>
+
+  <section aria-labelledby="system-map-heading">
+    <div class="af-section-heading">
+      <h2 id="system-map-heading">The architecture at a glance</h2>
+      <p>Each layer has one narrow authority. The seams are intentional: skills prepare, the CLI seals, Hermes executes, gates verify, and manifests preserve truth.</p>
+    </div>
+    <div class="af-system-map" role="img" aria-label="Agent Flow architecture from human intent through skills, Agent Flow contracts, Hermes execution, evidence, review, stacks, and delivery">
+      <div class="af-layer">
+        <div class="af-layer-label">Intent and approval</div>
+        <div class="af-layer-body">
+          <div class="af-node" data-kind="human"><strong>User or tracker issue</strong><span>Intent, acceptance, priority</span></div>
+          <div class="af-node" data-kind="human"><strong>Agent Flow skill</strong><span>Interview, brief, manifest, explicit approvals</span></div>
+        </div>
+      </div>
+      <div class="af-down"><span></span><span>↓ durable absolute paths</span></div>
+      <div class="af-layer">
+        <div class="af-layer-label">Repository module</div>
+        <div class="af-layer-body">
+          <div class="af-node" data-kind="contract"><strong><code>agent-flow</code> CLI</strong><span>Validation, sealing, worktrees, graph materialization</span></div>
+          <div class="af-node" data-kind="contract"><strong>Versioned graph</strong><span>Stages, dependencies, transitions, caps</span></div>
+          <div class="af-node" data-kind="contract"><strong>Run manifest</strong><span>Immutable inputs, digests, profiles, Git SHAs</span></div>
+        </div>
+      </div>
+      <div class="af-down"><span></span><span>↓ idempotent cards and dependencies</span></div>
+      <div class="af-layer">
+        <div class="af-layer-label">Runtime</div>
+        <div class="af-layer-body">
+          <div class="af-node" data-kind="runtime"><strong>Hermes Kanban</strong><span>Only scheduler and lifecycle database</span></div>
+          <div class="af-node" data-kind="runtime"><strong>Role profiles</strong><span>Analyst, builder, critic, artifact, gate, controller</span></div>
+          <div class="af-node" data-kind="runtime"><strong>Worker attempts</strong><span>Native retry, recovery, human blocking, audit history</span></div>
+        </div>
+      </div>
+      <div class="af-down"><span></span><span>↓ completed attempt metadata</span></div>
+      <div class="af-layer">
+        <div class="af-layer-label">Evidence boundary</div>
+        <div class="af-layer-body">
+          <div class="af-node" data-kind="evidence"><strong>Handoff validator</strong><span>Loads the terminal Hermes attempt and checks authority</span></div>
+          <div class="af-node" data-kind="evidence"><strong>Validated snapshots</strong><span>Immutable bytes beneath the run directory</span></div>
+          <div class="af-node" data-kind="evidence"><strong>Deterministic gates</strong><span>Commands, results, rendering, exact-tree checks</span></div>
+        </div>
+      </div>
+      <div class="af-down"><span></span><span>↓ review manifests, receipts, stack generations</span></div>
+      <div class="af-layer">
+        <div class="af-layer-label">Review and delivery</div>
+        <div class="af-layer-body">
+          <div class="af-node" data-kind="delivery"><strong>Local review lifecycle</strong><span>Immutable head, comments, approval, integration receipt</span></div>
+          <div class="af-node" data-kind="delivery"><strong>Review stack</strong><span>Approved layers, safe suffix restacks, no force-push</span></div>
+          <div class="af-node" data-kind="delivery"><strong>Completion PR</strong><span>One final delivery branch and external completion point</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="authority-heading">
+    <div class="af-section-heading">
+      <h2 id="authority-heading">Who owns what</h2>
+      <p>The system stays maintainable because no component is allowed to absorb a neighboring component's authority.</p>
+    </div>
+    <table class="af-authority">
+      <thead><tr><th>Component</th><th>Owns</th><th>Must not own</th></tr></thead>
+      <tbody>
+        <tr><td>Agent Flow skill</td><td>Preparation, questioning, durable inputs, human approval</td><td>Scheduling, polling, hidden lifecycle changes</td></tr>
+        <tr><td><code>agent-flow</code></td><td>Contracts, worktrees, topology, deterministic operations, status</td><td>A state database or general workflow engine</td></tr>
+        <tr><td>Versioned graph</td><td>Allowed stages, dependencies, caps, controller transitions</td><td>Live card or attempt state</td></tr>
+        <tr><td>Hermes Kanban</td><td>Dispatch, attempts, retries, dependencies, blocking, history</td><td>External acceptance or delivery policy</td></tr>
+        <tr><td>Review manifest</td><td>Review identity, lifecycle generation, immutable SHAs, evidence</td><td>A tuicr session or scheduler</td></tr>
+        <tr><td><code>tuicr-reviews</code></td><td>Rebuildable discovery projection</td><td>Approval truth or comment interpretation</td></tr>
+        <tr><td>Stacks and delivery</td><td>Reviewed layers, Git topology, exact trees, completion PR</td><td>Product implementation or premature issue completion</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section aria-labelledby="lifecycle-heading">
+    <div class="af-section-heading">
+      <h2 id="lifecycle-heading">What happens when a flow launches</h2>
+      <p>A launch is preparation plus materialization. It never becomes a polling loop.</p>
+    </div>
+    <div class="af-lifecycle" role="list" aria-label="Agent Flow launch lifecycle">
+      <div class="af-step" role="listitem"><strong>1. Prepare</strong><span>Skill creates approved durable inputs.</span></div>
+      <div class="af-step" role="listitem"><strong>2. Doctor</strong><span>Profiles and runtime posture are fingerprinted.</span></div>
+      <div class="af-step" role="listitem"><strong>3. Seal</strong><span>Run manifest copies inputs and records digests.</span></div>
+      <div class="af-step" role="listitem"><strong>4. Validate</strong><span>Topology, paths, roots, caps, and revisions are checked.</span></div>
+      <div class="af-step" role="listitem"><strong>5. Materialize</strong><span>Root starts blocked; all cards and links are created.</span></div>
+      <div class="af-step" role="listitem"><strong>6. Execute</strong><span>Hermes dispatches attempts and native retries.</span></div>
+      <div class="af-step" role="listitem"><strong>7. Finalize</strong><span>Validated evidence produces durable outputs and status.</span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="skills-heading">
+    <div class="af-section-heading">
+      <h2 id="skills-heading">Walk through each Agent Flow skill</h2>
+      <p>Select a skill to see its execution shape, authority boundaries, outputs, and handoff to the next part of the system.</p>
+    </div>
+    <div class="af-skill-controls" role="group" aria-label="Select an Agent Flow skill">
+      <button class="btn" type="button" data-skill="feature" aria-pressed="true">Feature</button>
+      <button class="btn" type="button" data-skill="review" aria-pressed="false">Review</button>
+      <button class="btn" type="button" data-skill="spike" aria-pressed="false">Spike</button>
+      <button class="btn" type="button" data-skill="epic" aria-pressed="false">Epic</button>
+      <button class="btn" type="button" data-skill="stacks" aria-pressed="false">Stacks</button>
+    </div>
+    <div class="af-skill-stage" aria-live="polite">
+      <div class="af-section-heading">
+        <h3 id="skill-title"></h3>
+        <p id="skill-purpose"></p>
+      </div>
+      <div class="af-flow-line" id="skill-flow" role="img"></div>
+      <div class="af-skill-summary">
+        <dl class="af-skill-facts">
+          <div class="af-fact"><dt>Starts with</dt><dd id="skill-input"></dd></div>
+          <div class="af-fact"><dt>Parallelism</dt><dd id="skill-parallel"></dd></div>
+          <div class="af-fact"><dt>Produces</dt><dd id="skill-output"></dd></div>
+          <div class="af-fact"><dt>Stops before</dt><dd id="skill-stop"></dd></div>
+        </dl>
+        <div class="card">
+          <div class="text-muted">Primary command path</div>
+          <pre class="af-command"><code id="skill-command"></code></pre>
+          <div class="text-muted">Key guarantee</div>
+          <p id="skill-guarantee"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="roles-heading">
+    <div class="af-section-heading">
+      <h2 id="roles-heading">The six runtime roles</h2>
+      <p>Profiles define stable capabilities and constraints. Cards pin the exact skill and workspace for one stage.</p>
+    </div>
+    <div class="af-role-grid">
+      <div class="af-role"><span class="af-index">A</span><div><strong>Analyst</strong><p>Read-only research, orientation, evidence, and plans from pinned inputs.</p></div></div>
+      <div class="af-role"><span class="af-index">B</span><div><strong>Builder</strong><p>Serialized product changes inside the one launcher-owned worktree.</p></div></div>
+      <div class="af-role"><span class="af-index">C</span><div><strong>Critic</strong><p>Independent, read-only adversarial review using a distinct provider lane.</p></div></div>
+      <div class="af-role"><span class="af-index">R</span><div><strong>Artifact</strong><p>Reports, diagrams, and synthesis at declared artifact paths only.</p></div></div>
+      <div class="af-role"><span class="af-index">G</span><div><strong>Gate</strong><p>Exact deterministic commands, outputs, and pass/fail evidence without reinterpretation.</p></div></div>
+      <div class="af-role"><span class="af-index">F</span><div><strong>Flow controller</strong><p>Declared Kanban transitions only; a narrow pinned terminal command bridges Hermes v0.18.2.</p></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="evidence-heading">
+    <div class="af-section-heading">
+      <h2 id="evidence-heading">Why worker output is not trusted directly</h2>
+      <p>The critical security and correctness boundary is the completed-attempt evidence chain.</p>
+    </div>
+    <div class="af-evidence-chain" role="img" aria-label="Worker handoff evidence chain from Hermes attempt through validation snapshot to consumer">
+      <div class="af-evidence-link"><strong>Worker completes</strong><span>Structured handoff plus artifact claims</span></div>
+      <div class="af-evidence-link"><strong>Hermes records</strong><span>Terminal attempt identity and ordinal</span></div>
+      <div class="af-evidence-link"><strong>Validator checks</strong><span>Run, task, stage, roots, schema, hashes</span></div>
+      <div class="af-evidence-link"><strong>Snapshot freezes</strong><span>Verified bytes under <code>validated/</code></span></div>
+      <div class="af-evidence-link"><strong>Consumer reads</strong><span>Only validator-owned evidence</span></div>
+    </div>
+    <div class="af-contract-grid">
+      <div class="af-contract"><span class="af-index">1</span><div><strong><code>agent-flow.run/v1</code></strong><p>The immutable identity and content set for the complete run.</p></div></div>
+      <div class="af-contract"><span class="af-index">2</span><div><strong><code>agent-flow.graph/v1</code></strong><p>The complete executable topology and declared dynamic transitions.</p></div></div>
+      <div class="af-contract"><span class="af-index">3</span><div><strong><code>agent-flow.task-authority/v1</code></strong><p>Binds a concrete Hermes card to sealed run and gate authority.</p></div></div>
+      <div class="af-contract"><span class="af-index">4</span><div><strong><code>agent-flow.validation/v1</code></strong><p>Durable proof that the authoritative attempt and its bytes were checked.</p></div></div>
+      <div class="af-contract"><span class="af-index">5</span><div><strong><code>agent-flow.local-review/v1</code></strong><p>Immutable candidate identity plus audited review lifecycle.</p></div></div>
+      <div class="af-contract"><span class="af-index">6</span><div><strong>Receipts and state</strong><p>Migration, integration, stack generation, and delivery evidence for recovery.</p></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="failure-heading">
+    <div class="af-section-heading">
+      <h2 id="failure-heading">How the system fails safely</h2>
+      <p>Resilience is mostly durable visibility and bounded recovery, not invisible self-healing.</p>
+    </div>
+    <div class="af-risk-grid">
+      <div class="af-risk"><span class="af-index">↻</span><div><strong>Worker or gateway restart</strong><p>Hermes retains cards, dependencies, attempts, and retry history. Resume uses the same run and IDs.</p></div></div>
+      <div class="af-risk"><span class="af-index">!</span><div><strong>Semantic failure</strong><p>The attempt completes with <code>passed: false</code>; a controller may create only a capped declared revision.</p></div></div>
+      <div class="af-risk"><span class="af-index">×</span><div><strong>Malformed handoff</strong><p>The validation card records why it failed and blocks every downstream consumer.</p></div></div>
+      <div class="af-risk"><span class="af-index">#</span><div><strong>Changed sealed input</strong><p>Resume derives the full compatibility delta and requires an exact append-only migration receipt.</p></div></div>
+      <div class="af-risk"><span class="af-index">⏸</span><div><strong>Human decision needed</strong><p>The same controller blocks with <code>needs_input</code>, naming the artifact and exact question.</p></div></div>
+      <div class="af-risk"><span class="af-index">∆</span><div><strong>Branch or target drift</strong><p>Approval becomes stale; verification, review, stack generation, and approval are repeated explicitly.</p></div></div>
+      <div class="af-risk"><span class="af-index">■</span><div><strong>Cancellation race</strong><p>Tenant-scoped sweeps reclaim and archive cards, while status reports any exact survivors.</p></div></div>
+      <div class="af-risk"><span class="af-index">≠</span><div><strong>Partial Git delivery</strong><p>Durable receipts reconcile completed mutations without repeating or pretending the operation finished.</p></div></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="journey-heading">
+    <div class="af-section-heading">
+      <h2 id="journey-heading">A complete outcome, end to end</h2>
+      <p>This is the longest path through the system: a multi-feature epic delivered through a reviewed stack.</p>
+    </div>
+    <ol class="af-journey">
+      <li><div><strong>The epic skill seals intent.</strong><p>A feature dependency DAG, source branch, target SHA, limits, and tracker root become durable inputs.</p></div></li>
+      <li><div><strong>Hermes admits bounded ready waves.</strong><p>Independent features may execute concurrently, but every feature owns a separate worktree.</p></div></li>
+      <li><div><strong>Each feature runs serialized TDD slices.</strong><p>Tester, builder, deterministic gate, and controller chains repeat within one worktree until verification passes or a cap blocks.</p></div></li>
+      <li><div><strong>Completeness and independent critique close gaps.</strong><p>Only declared capped fix slices may re-enter implementation. <code>RE_PLAN</code> requires a human.</p></div></li>
+      <li><div><strong>A local review manifest freezes the candidate.</strong><p>The exact base and head SHAs, validation evidence, artifacts, and lifecycle generation become review truth.</p></div></li>
+      <li><div><strong>Reviewed features integrate into <code>epic/source</code>.</strong><p>Integration is serialized and receipt-backed. Any changed head invalidates review.</p></div></li>
+      <li><div><strong>Target drift is checked before stack planning.</strong><p>A moved target creates an explicit source-refresh graph, new verification, and a new stack generation.</p></div></li>
+      <li><div><strong>The stacks skill proposes exact review layers.</strong><p>Every hunk belongs to one layer; no branch or PR mutation happens before approval of the fixed plan.</p></div></li>
+      <li><div><strong>Each layer is reviewed and safe restacks preserve the prefix.</strong><p>Changes apply to the earliest owning layer. Only the unmerged suffix receives new generation refs.</p></div></li>
+      <li><div><strong>Delivery replays reviewed layers.</strong><p><code>epic/delivery</code> must reproduce the exact source tree and pass full verification.</p></div></li>
+      <li><div><strong>One completion PR delivers the outcome.</strong><p>Only its verified merge can complete the external tracker issue.</p></div></li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="details-heading">
+    <div class="af-section-heading">
+      <h2 id="details-heading">Important design choices</h2>
+      <p>These choices keep the system deep enough to be useful without turning it into a generic orchestration platform.</p>
+    </div>
+    <details>
+      <summary>Why Hermes is the only control plane</summary>
+      <p>Duplicating card state, retries, blocking, and recovery inside <code>agent-flow</code> would create two lifecycle authorities. The CLI prepares and audits; Hermes owns runtime state.</p>
+    </details>
+    <details>
+      <summary>Why controller terminal access exists</summary>
+      <p>Hermes v0.18.2 has no per-command plugin capability for repository transition helpers. Controllers receive terminal access contractually limited to the exact sealed <code>agent-flow</code> command on their card. This is narrow but not a filesystem sandbox.</p>
+    </details>
+    <details>
+      <summary>Why worktrees are serialized</summary>
+      <p>One feature has one worktree. Dependencies ensure only one tester, builder, retry, or fix slice writes at a time. Epic concurrency happens across independent feature worktrees, never within one feature worktree.</p>
+    </details>
+    <details>
+      <summary>Why approval is bound to a SHA</summary>
+      <p>A branch name can move. Review approval therefore names exactly one head SHA. Any head change, even a clean source merge, requires fresh verification and review.</p>
+    </details>
+    <details>
+      <summary>Why stacks use deterministic replay</summary>
+      <p>Replay makes each reviewed layer delta explicit, supports safe suffix restacking, preserves a reviewed prefix, and proves the final delivery tree equals the source tree without depending on commit identity.</p>
+    </details>
+    <details>
+      <summary>Why Claude legacy flows still coexist</summary>
+      <p>The local implementation and tests are complete, but live model-backed runs, real forge behavior, fresh UI inspection, and operational rollback evidence remain. The new <code>agent-flow-*</code> skill namespace allows both systems to coexist without naming collisions.</p>
+    </details>
+  </section>
+
+  <section aria-labelledby="status-heading">
+    <div class="af-section-heading">
+      <h2 id="status-heading">Current implementation posture</h2>
+      <p>The repository implementation is complete through delivery; rollout confidence is intentionally tracked separately.</p>
+    </div>
+    <div class="af-status">
+      <div class="af-status-column">
+        <h3>Implemented and locally verified</h3>
+        <ul>
+          <li>Profiles, doctoring, immutable run bundles, graph validation</li>
+          <li>Review, feature, spike, epic, stacks, and delivery operations</li>
+          <li>Handoff validation, deterministic gates, receipts, recovery</li>
+          <li>Local review lifecycle and tuicr projection</li>
+          <li>Exact hunk ownership, safe suffix restacks, exact-tree delivery</li>
+        </ul>
+      </div>
+      <div class="af-status-column">
+        <h3>Rollout evidence still needed</h3>
+        <ul>
+          <li>Final model-backed sacrificial runs for every Hermes flow</li>
+          <li>Non-production remote stack and delivery prototype</li>
+          <li>Fresh dashboard and picker inspection on the final revision</li>
+          <li>Live backup and non-destructive prune rehearsal</li>
+          <li>Separate decision before retiring Claude's established flows</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="af-footer text-small">
+    Based on the Agent Flow README, versioned flow graphs, profile contracts,
+    implementation evidence, coexistence review, and ADRs 0004-0006. Updated
+    for the <code>agent-flow-feature</code>, <code>agent-flow-review</code>,
+    <code>agent-flow-spike</code>, <code>agent-flow-epic</code>, and
+    <code>agent-flow-stacks</code> skill namespace.
+  </footer>
+
+  <script>
+    (() => {
+      const root = document.getElementById("agent-flow-architecture");
+      const skills = {
+        feature: {
+          title: "agent-flow-feature",
+          purpose: "Implements one approved feature as a verified local review candidate in a single serialized worktree.",
+          nodes: [
+            ["Plan", "approved slices or planner"],
+            ["Slices", "tester → builder → gate"],
+            ["Coverage", "completeness critic"],
+            ["Critique", "independent review"],
+            ["Finalize", "clean head + review manifest"]
+          ],
+          input: "A feature manifest with acceptance criteria, verification commands, optional approved slices, and bounded retry/fix caps.",
+          parallel: "No concurrent writers inside the feature. All implementation cards share one worktree and are dependency-serialized.",
+          output: "A clean committed branch, verification evidence, review summary, journal, and registered local-review manifest.",
+          stop: "Push, PR creation, external issue completion, worktree deletion, or bypassing a failed gate.",
+          command: "agent-flow launch feature --manifest <absolute-feature.json>\nagent-flow status --run <run-id> --json",
+          guarantee: "Every acceptance gap and blocking critique is either fixed through a capped declared slice or remains visibly blocked or deferred."
+        },
+        review: {
+          title: "agent-flow-review",
+          purpose: "Runs a durable automated review over an immutable local base-to-head SHA range.",
+          nodes: [
+            ["Lenses", "parallel required reviews"],
+            ["Critic", "dedupe and posture"],
+            ["Side work", "orientation + diagram"],
+            ["Finalize", "floors, caps, stable IDs"],
+            ["Artifacts", "JSON + Markdown + HTML + draft"]
+          ],
+          input: "A local-review manifest with canonical repository/worktree paths, pinned SHAs, urgency, and explicit comment caps.",
+          parallel: "Required lenses run together. Fast and standard also run optional lenses, orientation, and a diagram.",
+          output: "Validated findings, deterministic rendering, absolute artifact paths, and an unsubmitted GitHub-compatible draft.",
+          stop: "Posting feedback, opening or modifying a PR, starting tuicr implicitly, or treating automated findings as human approval.",
+          command: "agent-flow doctor profiles\nagent-flow launch review --manifest <absolute-review.json>\nagent-flow status --run <run-id> --json",
+          guarantee: "Finalization reads only validator-owned evidence and applies urgency floors, per-tier caps, then the total cap deterministically."
+        },
+        spike: {
+          title: "agent-flow-spike",
+          purpose: "Answers a bounded technical question while preserving evidence, uncertainty, rejected options, and optional disposable code.",
+          nodes: [
+            ["Choose mode", "quick or deep"],
+            ["Research", "one pass or parallel angles"],
+            ["Gap critic", "deep mode only"],
+            ["Prototype", "optional single worktree"],
+            ["Synthesis", "evidence + residual gaps"]
+          ],
+          input: "A spike manifest naming the question, mode, research angles, revision cap, and optional experiment path.",
+          parallel: "Deep research angles may run together. Prototype implementation is serialized in one dedicated worktree.",
+          output: "A durable report distinguishing evidence, inference, rejected choices, residual gaps, and any stuck prototype slice.",
+          stop: "Production promotion, product ref mutation for research-only spikes, push, or PR creation.",
+          command: "agent-flow launch spike --manifest <absolute-spike.json>\nagent-flow status --run <run-id> --json",
+          guarantee: "Cap exhaustion preserves useful prior evidence and becomes a visible residual gap rather than erasing the investigation."
+        },
+        epic: {
+          title: "agent-flow-epic",
+          purpose: "Coordinates dependency-ready feature flows into a verified immutable epic/source branch.",
+          nodes: [
+            ["Epic plan", "feature DAG + caps"],
+            ["Ready wave", "bounded concurrent features"],
+            ["Reviews", "automated + optional human"],
+            ["Integrate", "serialized receipts"],
+            ["Checkpoint", "target drift + stack readiness"]
+          ],
+          input: "An epic manifest with a feature dependency DAG, source and target revisions, external root, and concurrency limits.",
+          parallel: "Independent feature worktrees may run concurrently. Integration into epic/source is always one feature at a time.",
+          output: "Every feature integrated into epic/source, verification evidence, aggregate progress, and sealed source/target identities for stacking.",
+          stop: "Stack branch creation, pushing, opening PRs, or declaring the tracker issue complete.",
+          command: "agent-flow launch epic --manifest <absolute-epic.json>\nagent-flow epic wave --run <run-id>\nagent-flow epic checkpoint --run <run-id>",
+          guarantee: "Readiness is reconstructed from child run authority, Hermes lifecycle, Git, and receipts; target drift creates a fresh explicit generation."
+        },
+        stacks: {
+          title: "agent-flow-stacks",
+          purpose: "Turns a verified source diff into approved immutable review layers and safely maintains their active generation.",
+          nodes: [
+            ["Analyze", "assign every hunk"],
+            ["Approve", "fixed plan digest"],
+            ["Build", "true linear branches"],
+            ["Review", "canonical manifests"],
+            ["Restack", "new suffix generation"]
+          ],
+          input: "A fixed source commit, fixed target SHA, forge coordinate, proposed hunk ownership, layer messages, and verification commands.",
+          parallel: "This is an interactive deterministic CLI flow, not a Hermes graph. Branch construction and mutations are intentionally ordered.",
+          output: "A stack plan, built layer refs, exact-tree proof, canonical layer reviews, active generation, and rollback receipts.",
+          stop: "Completion PR creation or merge. Delivery is a separate deterministic Agent Flow boundary.",
+          command: "agent-flow stacks analyze --repo <repo> --source <sha> --target <sha>\nagent-flow stacks approve --plan <plan.json> --actor <actor>\nagent-flow stacks build --plan <plan.json>",
+          guarantee: "Every hunk belongs to exactly one layer; reviewed prefixes are never force-pushed, and only an approved changed suffix receives new refs."
+        }
+      };
+
+      const title = root.querySelector("#skill-title");
+      const purpose = root.querySelector("#skill-purpose");
+      const flow = root.querySelector("#skill-flow");
+      const input = root.querySelector("#skill-input");
+      const parallel = root.querySelector("#skill-parallel");
+      const output = root.querySelector("#skill-output");
+      const stop = root.querySelector("#skill-stop");
+      const command = root.querySelector("#skill-command");
+      const guarantee = root.querySelector("#skill-guarantee");
+      const buttons = [...root.querySelectorAll("[data-skill]")];
+
+      function renderSkill(key) {
+        const skill = skills[key];
+        title.textContent = skill.title;
+        purpose.textContent = skill.purpose;
+        input.textContent = skill.input;
+        parallel.textContent = skill.parallel;
+        output.textContent = skill.output;
+        stop.textContent = skill.stop;
+        command.textContent = skill.command;
+        guarantee.textContent = skill.guarantee;
+        flow.setAttribute("aria-label", `${skill.title} flow: ${skill.nodes.map(node => node[0]).join(" then ")}`);
+        flow.replaceChildren();
+        skill.nodes.forEach((node, index) => {
+          if (index > 0) {
+            const arrow = document.createElement("div");
+            arrow.className = "af-flow-arrow";
+            arrow.setAttribute("aria-hidden", "true");
+            arrow.textContent = "→";
+            flow.appendChild(arrow);
+          }
+          const item = document.createElement("div");
+          item.className = "af-flow-node";
+          const strong = document.createElement("strong");
+          strong.textContent = node[0];
+          const span = document.createElement("span");
+          span.textContent = node[1];
+          item.append(strong, span);
+          flow.appendChild(item);
+        });
+        buttons.forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.skill === key));
+        });
+      }
+
+      buttons.forEach(button => {
+        button.addEventListener("click", () => renderSkill(button.dataset.skill));
+      });
+
+      renderSkill("feature");
+    })();
+  </script>
+</main>

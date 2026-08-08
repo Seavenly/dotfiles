@@ -1,0 +1,8 @@
+{
+  "name": "agent-teams-kit-scripts",
+  "private": true,
+  "description": "Local scripts and renderers for agent-team workflows. Not published.",
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "11.15.0"
+  }
+}

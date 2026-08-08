@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "$HOME/.local/bin/tmux-ai" agents "claude agents --permission-mode auto"

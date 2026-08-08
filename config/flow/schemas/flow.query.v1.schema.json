@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.query.v1.schema.json",
+  "title": "flow.query/v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "legacy_compatibility_inventory" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query", "launch", "caller_metadata"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "delegated_agent_description" },
+        "launch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "harness": { "enum": ["claude", "codex"] },
+            "role": { "type": "string", "minLength": 1 },
+            "model": { "type": "string", "minLength": 1 },
+            "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+            "capability": {
+              "enum": [
+                "read-only",
+                "on-approve",
+                "workspace-write",
+                "auto",
+                "unrestricted"
+              ]
+            }
+          }
+        },
+        "caller_metadata": {}
+      }
+    }
+  ]
+}

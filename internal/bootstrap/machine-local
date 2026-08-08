@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+# shellcheck source=internal/shell/paths.sh
+source "$root/internal/shell/paths.sh"
+dotfiles_context_init "$root" || true
+
+mkdir -p "$DOTFILES_CONFIG_DIR" "${XDG_CACHE_HOME:-$HOME/.cache}/antidote" \
+  "${XDG_CACHE_HOME:-$HOME/.cache}/zsh" "$HOME/.local/bin"
+
+paths_file="$DOTFILES_CONFIG_DIR/paths.env"
+if [[ ! -e "$paths_file" ]]; then
+  printf 'NOTES_DIR=%q\nPROJECTS_DIR=%q\n' "$HOME/notes" "$HOME/dev" > "$paths_file"
+  chmod 0600 "$paths_file"
+fi
+if ! grep -q '^PROJECTS_DIR=' "$paths_file"; then
+  printf 'PROJECTS_DIR=%q\n' "$HOME/dev" >> "$paths_file"
+fi
+dotfiles_load_paths
+mkdir -p "$NOTES_DIR/raw/meetings"
+
+aliases_file="$DOTFILES_CONFIG_DIR/aliases.local.zsh"
+private_file="$DOTFILES_CONFIG_DIR/private.zsh"
+[[ -e "$aliases_file" ]] || install -m 0600 /dev/null "$aliases_file"
+[[ -e "$private_file" ]] || install -m 0600 /dev/null "$private_file"
+chmod 0600 "$paths_file" "$aliases_file" "$private_file"
+
+git_local="$DOTFILES_CONFIG_DIR/git.local"
+[[ -e "$git_local" ]] || install -m 0600 /dev/null "$git_local"
+chmod 0600 "$git_local"
+if ! git config --file "$git_local" user.name >/dev/null \
+  || ! git config --file "$git_local" user.email >/dev/null; then
+  if [[ ${DOTFILES_YES:-0} != 1 && -t 0 ]]; then
+    read -r -p "Git author name (leave blank to configure later): " git_name
+    if [[ -n "$git_name" ]]; then
+      read -r -p "Git author email: " git_email
+      [[ -n "$git_email" ]] && git config --file "$git_local" user.name "$git_name"
+      [[ -n "$git_email" ]] && git config --file "$git_local" user.email "$git_email"
+    fi
+  else
+    echo "Git identity is not configured. Add it to $git_local when ready."
+  fi
+fi
+
+git -C "$root" config core.hooksPath .githooks
+mise trust "$HOME/.config/mise/config.toml" >/dev/null

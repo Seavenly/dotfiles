@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# PROTOTYPE: prove that Herdr lifecycle control plus harness-owned transcripts
+# can implement one complete orchestration turn for Codex and Claude Code.
+
+prototype_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+session_name="${HERDR_PROTOTYPE_SESSION:-herdr-orchestration-prototype}"
+codex_name="codex-prototype"
+claude_name="claude-prototype"
+prompt="${1:-Reply with one short sentence confirming that Herdr delivered this prompt.}"
+working_directory="${HERDR_PROTOTYPE_CWD:-$PWD}"
+timeout_ms="${HERDR_PROTOTYPE_TIMEOUT_MS:-300000}"
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+claude_home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/herdr-agent-turn.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+
+state() {
+  printf '[herdr prototype] %s\n' "$*" >&2
+}
+
+herdr_session() {
+  herdr --session "$session_name" "$@"
+}
+
+session_running() {
+  herdr session list --json \
+    | jq -e --arg name "$session_name" \
+      '.sessions[]? | select(.name == $name and .running == true)' \
+      >/dev/null
+}
+
+start_session() {
+  if session_running; then
+    state "session=$session_name state=running"
+    return
+  fi
+
+  state "session=$session_name state=starting"
+  # Herdr 0.7.5 has no explicit detached `session create` command. Its normal
+  # launcher creates the detached server before initializing the TUI client.
+  # With no terminal the client exits nonzero, but the server remains alive.
+  herdr --session "$session_name" \
+    </dev/null >"$scratch/session-launch.log" 2>&1 || true
+
+  attempts=0
+  until session_running; do
+    attempts=$((attempts + 1))
+    if (( attempts >= 100 )); then
+      command cat "$scratch/session-launch.log" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  state "session=$session_name state=running"
+}
+
+agent_record() {
+  local name="$1"
+  herdr_session agent list \
+    | jq -c --arg name "$name" '.result.agents[]? | select(.name == $name)'
+}
+
+create_agents_if_missing() {
+  local codex_record claude_record workspace pane_one pane_two
+  codex_record="$(agent_record "$codex_name")"
+  claude_record="$(agent_record "$claude_name")"
+
+  if [[ -n "$codex_record" && -n "$claude_record" ]]; then
+    state "agents=codex,claude state=reusing"
+    return
+  fi
+
+  if [[ -n "$codex_record" || -n "$claude_record" ]]; then
+    state "state=error detail=partial-prototype-agent-set"
+    return 1
+  fi
+
+  state "agents=codex,claude state=creating-workspace"
+  workspace="$(
+    herdr_session workspace create \
+      --cwd "$working_directory" \
+      --label "$session_name" \
+      --no-focus
+  )"
+  pane_one="$(jq -r '.result.root_pane.pane_id' <<<"$workspace")"
+  pane_two="$(
+    herdr_session pane split \
+      --pane "$pane_one" \
+      --direction right \
+      --cwd "$working_directory" \
+      --no-focus \
+      | jq -r '.result.pane.pane_id'
+  )"
+
+  state "agent=codex state=starting pane=$pane_one"
+  herdr_session agent start "$codex_name" \
+    --kind codex \
+    --pane "$pane_one" \
+    --timeout 120000 \
+    >"$scratch/codex-start.json"
+
+  state "agent=claude state=starting pane=$pane_two"
+  herdr_session agent start "$claude_name" \
+    --kind claude \
+    --pane "$pane_two" \
+    --timeout 120000 \
+    >"$scratch/claude-start.json"
+  state "agents=codex,claude state=idle"
+}
+
+submit_prompts() {
+  state "agent=codex state=submitting"
+  herdr_session agent prompt "$codex_name" "$prompt" \
+    --wait \
+    --timeout "$timeout_ms" \
+    >"$scratch/codex-prompt.json" &
+  codex_pid=$!
+
+  state "agent=claude state=submitting"
+  herdr_session agent prompt "$claude_name" "$prompt" \
+    --wait \
+    --timeout "$timeout_ms" \
+    >"$scratch/claude-prompt.json" &
+  claude_pid=$!
+
+  wait "$codex_pid"
+  state "agent=codex state=settled"
+  wait "$claude_pid"
+  state "agent=claude state=settled"
+}
+
+locate_transcript() {
+  local root="$1"
+  local session_id="$2"
+  local transcript attempts
+
+  attempts=0
+  while (( attempts < 50 )); do
+    transcript="$(rg --files -g "*${session_id}.jsonl" "$root" 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$transcript" ]]; then
+      printf '%s\n' "$transcript"
+      return
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+extract_results() {
+  local codex_record claude_record codex_session claude_session
+  local codex_status claude_status
+  local codex_transcript claude_transcript
+
+  codex_record="$(agent_record "$codex_name")"
+  claude_record="$(agent_record "$claude_name")"
+  codex_session="$(jq -r '.agent_session.value' <<<"$codex_record")"
+  claude_session="$(jq -r '.agent_session.value' <<<"$claude_record")"
+  codex_status="$(jq -r '.agent_status' <<<"$codex_record")"
+  claude_status="$(jq -r '.agent_status' <<<"$claude_record")"
+
+  codex_transcript="$(locate_transcript "$codex_home/sessions" "$codex_session")"
+  claude_transcript="$(locate_transcript "$claude_home/projects" "$claude_session")"
+
+  jq -s --arg agent codex -f "$prototype_dir/last-message.jq" \
+    "$codex_transcript" >"$scratch/codex-response.json"
+  jq -s --arg agent claude -f "$prototype_dir/last-message.jq" \
+    "$claude_transcript" >"$scratch/claude-response.json"
+
+  state "state=complete source=harness-transcripts"
+  jq -n \
+    --arg session "$session_name" \
+    --arg prompt "$prompt" \
+    --arg codex_session "$codex_session" \
+    --arg claude_session "$claude_session" \
+    --arg codex_status "$codex_status" \
+    --arg claude_status "$claude_status" \
+    --slurpfile codex_response "$scratch/codex-response.json" \
+    --slurpfile claude_response "$scratch/claude-response.json" \
+    '{
+      session: $session,
+      prompt: $prompt,
+      agents: {
+        codex: {
+          session_id: $codex_session,
+          status: $codex_status,
+          response: $codex_response[0]
+        },
+        claude: {
+          session_id: $claude_session,
+          status: $claude_status,
+          response: $claude_response[0]
+        }
+      }
+    }'
+}
+
+command -v herdr >/dev/null
+command -v jq >/dev/null
+command -v rg >/dev/null
+start_session
+create_agents_if_missing
+submit_prompts
+extract_results

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Implement Ticket"
+  short_description: "Implement one issue in an isolated worktree"
+policy:
+  allow_implicit_invocation: false

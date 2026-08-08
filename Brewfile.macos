@@ -1,0 +1,4 @@
+cask "ghostty"
+cask "obsidian"
+cask "font-commit-mono-nerd-font"
+cask "font-sf-pro"

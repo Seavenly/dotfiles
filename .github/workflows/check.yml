@@ -1,0 +1,52 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sources:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            env_name: linux
+          - os: ubuntu-24.04-arm
+            env_name: linux
+          - os: macos-26
+            env_name: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+        with:
+          version: 2026.7.5
+          cache: false
+          install: false
+      - name: Install Linux shell dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y zsh
+      - name: Install validators from the lock
+        run: mise install --locked actionlint gitleaks shellcheck lua uv ripgrep fzf node
+      - name: Install JavaScript test dependencies
+        run: |
+          mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix config/agent-flow
+          mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix config/flow
+          mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix tools/flow
+      - name: Validate sources
+        env:
+          DROVR_CONFIG_DIR: ${{ github.workspace }}/config/drovr
+        run: mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- ./dotfiles check
+      - name: Validate isolated-home dotfile plan
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          export HOME="$RUNNER_TEMP/dotfiles-home"
+          mkdir -p "$HOME"
+          mise -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" bootstrap dotfiles apply --dry-run

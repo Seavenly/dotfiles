@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
+routing_file="$config_dir/hermes-routing.yaml"
+
+mkdir -p "$config_dir"
+if [[ ! -e "$routing_file" ]]; then
+  install -m 0600 "$root/config/agent-flow/hermes-routing.example.yaml" "$routing_file"
+fi
+chmod 0600 "$routing_file"
+
+node "$root/config/agent-flow/src/render-profiles.mjs"

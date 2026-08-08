@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly MISE_VERSION="2026.7.5"
+ROOT="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+readonly ROOT
+readonly MISE_BIN="$HOME/.local/bin/mise"
+# shellcheck source=internal/shell/context.sh
+source "$ROOT/internal/shell/context.sh"
+
+dry_run=0
+assume_yes=0
+force=0
+recorder=0
+
+usage() {
+  cat <<'EOF'
+Usage: dotfiles install [--dry-run] [--yes] [--force] [--recorder]
+
+  --dry-run   Show the convergence plan without changing the machine
+  --yes       Accept safe mise bootstrap prompts (recorder remains off)
+  --force     Replace conflicting managed dotfile targets
+  --recorder  Install the optional macOS recording stack
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --dry-run) dry_run=1 ;;
+    --yes|-y) assume_yes=1 ;;
+    --force) force=1 ;;
+    --recorder) recorder=1 ;;
+    --help|-h) usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+  echo "Refusing to bootstrap as root. Run this as the target user." >&2
+  exit 1
+fi
+
+dotfiles_context_init "$ROOT" || true
+dotfiles_require_supported_host
+os="$DOTFILES_OS"
+env_name="$DOTFILES_ENV"
+asset="mise-v${MISE_VERSION}-${DOTFILES_MISE_ASSET_PLATFORM}"
+case "$DOTFILES_MISE_ASSET_PLATFORM" in
+  macos-arm64)
+    expected_sha="a456c65907e8334619d77fa152bdcf9023fddc0daa03d47fbe86d032dbf565b0"
+    ;;
+  linux-x64)
+    expected_sha="5f7ab76afdf0780d12edeaa67e908094e9ccf7924cfe203e415c1cfb87bbf778"
+    ;;
+  linux-arm64)
+    expected_sha="41fcf744050bfa27f9871e2151ac6f44b5ce2741424b3d5282b92becc71e6bc4"
+    ;;
+esac
+
+current_version=""
+if [[ -x "$MISE_BIN" ]]; then
+  current_version="$($MISE_BIN --version 2>/dev/null | awk '{print $1}')"
+elif command -v mise >/dev/null 2>&1; then
+  current_version="$(mise --version 2>/dev/null | awk '{print $1}')"
+fi
+
+if [[ "$current_version" != "$MISE_VERSION" ]]; then
+  if ((dry_run)); then
+    printf 'Would install mise %s at %s (verified SHA-256).\n' "$MISE_VERSION" "$MISE_BIN"
+    mise_cmd="${MISE_BIN}"
+  else
+    command -v curl >/dev/null 2>&1 || { echo "curl is required to install mise." >&2; exit 1; }
+    tmp="$(mktemp "${TMPDIR:-/tmp}/mise.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    curl --fail --location --silent --show-error \
+      "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/${asset}" \
+      --output "$tmp"
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+    else
+      actual_sha="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+    fi
+    [[ "$actual_sha" == "$expected_sha" ]] || { echo "mise checksum verification failed." >&2; exit 1; }
+    mkdir -p "$(dirname "$MISE_BIN")"
+    install -m 0755 "$tmp" "$MISE_BIN"
+    mise_cmd="$MISE_BIN"
+  fi
+else
+  mise_cmd="${MISE_BIN}"
+  [[ -x "$mise_cmd" ]] || mise_cmd="$(command -v mise)"
+fi
+
+export MISE_TRUSTED_CONFIG_PATHS="$ROOT"
+export DOTFILES_ROOT="$ROOT"
+export DOTFILES_YES="$assume_yes"
+export DOTFILES_RECORDER="$recorder"
+export DOTFILES_FORCE="$force"
+
+if [[ "$os" == Darwin ]]; then
+  case "$dry_run:$recorder" in
+    1:1) "$ROOT/internal/bootstrap/macos-casks" --dry-run --recorder ;;
+    1:0) "$ROOT/internal/bootstrap/macos-casks" --dry-run ;;
+    0:1) "$ROOT/internal/bootstrap/macos-casks" --recorder ;;
+    0:0) "$ROOT/internal/bootstrap/macos-casks" ;;
+  esac
+fi
+
+args=(bootstrap -C "$ROOT" -E "$env_name" --locked)
+legacy_preview=0
+((dry_run)) && args+=(--dry-run)
+((dry_run)) || args+=(--raw)
+((assume_yes)) && args+=(--yes)
+((force)) && args+=(--force-dotfiles)
+
+# Dry runs promise not to execute migration hooks. Let mise preview through the
+# two exact Dotbot links that the real pre-dotfiles hook will safely convert.
+if ((dry_run && !force)); then
+  for legacy_pair in "$HOME/.config/mise:$ROOT/mise" "$HOME/.config/lazygit:$ROOT/lazygit"; do
+    legacy_path="${legacy_pair%%:*}"
+    legacy_target="${legacy_pair#*:}"
+    if [[ -L "$legacy_path" && "$(readlink "$legacy_path")" == "$legacy_target" ]]; then
+      legacy_preview=1
+    fi
+  done
+  if ((legacy_preview)); then
+    echo "Dry-run: previewing the known Dotbot directory-link migrations."
+    args+=(--force-dotfiles)
+  fi
+fi
+
+if ((dry_run)) && [[ ! -x "$mise_cmd" ]]; then
+  echo "Install mise first, or rerun without --dry-run, to inspect the full native bootstrap plan."
+  exit 0
+fi
+
+"$mise_cmd" "${args[@]}"
+
+((dry_run)) && "$ROOT/internal/migrate" --dry-run
+
+if ((recorder)); then
+  if [[ "$os" != Darwin ]]; then
+    echo "The recorder is supported only on macOS." >&2
+    exit 1
+  fi
+  recorder_args=(bootstrap -C "$ROOT" -E recorder --locked --only "packages,dotfiles,task")
+  ((dry_run)) && recorder_args+=(--dry-run)
+  ((dry_run)) || recorder_args+=(--raw)
+  ((assume_yes)) && recorder_args+=(--yes)
+  ((force || legacy_preview)) && recorder_args+=(--force-dotfiles)
+  "$mise_cmd" "${recorder_args[@]}"
+fi

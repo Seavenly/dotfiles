@@ -1,0 +1,11 @@
+{
+  "name": "dotfiles-drovr",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "qualification:run": "node scripts/run-qualification.mjs",
+    "qualification:soak": "node scripts/run-soak.mjs",
+    "qualification:validate": "node scripts/validate-qualification-catalog.mjs"
+  }
+}

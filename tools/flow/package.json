@@ -1,0 +1,12 @@
+{
+  "name": "dotfiles-flow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "status": "node src/transition-status.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  }
+}

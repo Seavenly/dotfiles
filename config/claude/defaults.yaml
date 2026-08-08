@@ -1,0 +1,50 @@
+# Default cap and gate values for agent-teams flows.
+# The flow command merges these with brief-level overrides and CLI flags at
+# draft time, before launching the workflow. The workflow reads the merged
+# values from its `args`.
+#
+# Override at the brief level by setting `config:` fields in brief.md.
+
+feature_flow:
+  max_slice_retries: 3        # how many times implementer can retry per slice
+  max_critic_revisions: 3     # how many critic-driven revision cycles allowed
+  max_critic_fix_files: 8     # larger critic repairs trigger research + RE_PLAN
+  plan_gate: false            # if true, the command runs the plan workflow first
+                              # and waits for user approval before implementing
+                              # (the --gated two-launch split)
+
+review_flow:
+  urgency: standard           # hotfix | fast | standard
+                              #   hotfix   — merging ASAP; report criticals only
+                              #              (CVE-class break / severe security). Skip
+                              #              important/recommended/nit entirely.
+                              #              Reviewers do shallow research; critic
+                              #              defaults posture to merge_ready_with_followups
+                              #              unless a real critical exists.
+                              #   fast     — needs review within ~1-2 hours; report
+                              #              criticals + importants. Skip recommended/nit.
+                              #   standard — normal review cycle (~1 day); all four tiers.
+  max_comments: 20            # global cap; criticals/important always included
+  per_tier_caps:              # optional fine-grained override
+    critical: null            # null = never cap criticals
+    important: null           # null = never cap important
+    recommended: 10           # ignored when urgency = hotfix or fast
+    nit: 3                    # ignored when urgency = hotfix or fast
+  reviewer_lenses:            # one reviewer subagent spawned per lens
+    - security
+    - correctness
+    - style
+    - tests
+    - observability           # span/log practices; wide root span, debugging
+                              # dimensions on the root span (see OBSERVABILITY.md).
+                              # Findings are mostly recommended/important, so this
+                              # lens contributes in fast/standard, not hotfix.
+
+spike_flow:
+  depth: deep                 # quick | deep
+  prototype: false            # if true, the command creates a writable worktree
+  researcher_angles: 3        # number of parallel researcher subagents when depth=deep
+
+epic_flow:
+  concurrency: 2              # max simultaneous story runs (parallel worktrees)
+  story_retries: 1            # fresh feature-flow retries per story before agent-blocked
