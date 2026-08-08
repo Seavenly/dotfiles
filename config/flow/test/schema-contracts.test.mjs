@@ -15,6 +15,39 @@ import {
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
+test("Flow description schema accepts the current Drovr description shape", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schema = JSON.parse(await readFile(
+    join(
+      root,
+      "schemas",
+      "flow.delegated-agent-description-projection.v1.schema.json",
+    ),
+    "utf8",
+  ));
+  const validate = ajv.compile({
+    $schema: schema.$schema,
+    ...schema.$defs.description,
+    $defs: schema.$defs,
+  });
+  const description = await describeDelegatedAgent(
+    {
+      schema: "drovr.delegated-agent-description-request/v1",
+      launch: { harness: "codex", capability: "read-only" },
+      caller_metadata: { run_id: "run:description-schema", card_id: "review" },
+    },
+    {
+      env: {
+        ...process.env,
+        DROVR_CONFIG_DIR: join(root, "../drovr"),
+      },
+      requireCompatibility: false,
+    },
+  );
+
+  assert.equal(validate(description), true, JSON.stringify(validate.errors));
+});
+
 test("published Flow projections satisfy their JSON schemas", async (t) => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const querySchema = JSON.parse(await readFile(

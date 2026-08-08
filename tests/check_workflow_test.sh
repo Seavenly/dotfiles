@@ -11,6 +11,7 @@ install_step="$(awk '
 ' "$root/.github/workflows/check.yml")"
 assert_contains "$install_step" 'ripgrep'
 assert_contains "$install_step" 'fzf'
+assert_contains "$install_step" 'node'
 linux_packages_step="$(awk '
   /name: Install Linux shell dependencies/ { capture = 1; next }
   capture && /run:/ { print; exit }

@@ -11,6 +11,28 @@ mkdir -p "$tmp/state/agent-flow/runs/cli-run"
 printf '%s\n' '{"schema":"agent-flow.run/v1","identity":{"run_id":"cli-run","flow":"review","external_root":null}}' \
   > "$tmp/state/agent-flow/runs/cli-run/run.json"
 
+fake_bin="$tmp/bin"
+mkdir -p "$fake_bin"
+cat > "$fake_bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version) printf '%s\n' 'herdr 0.7.5' ;;
+  integration)
+    [[ ${2:-} == status ]]
+    printf '%s\n' 'codex: current (v6)' 'claude: current (v7)'
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+cat > "$fake_bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} == --version ]]
+printf '%s\n' 'codex-cli 0.145.0'
+EOF
+chmod +x "$fake_bin/herdr" "$fake_bin/codex"
+
 output="$(HOME="$tmp" XDG_STATE_HOME="$tmp/state" DOTFILES_ROOT="$root" \
   "$root/bin/flow" query legacy-inventory --json)"
 assert_contains "$output" '"schema":"flow.legacy-compatibility-inventory/v1"'
@@ -18,7 +40,7 @@ assert_contains "$output" '"id":"hermes-agent-flow:cli-run"'
 assert_contains "$output" '"content_sha256"'
 echo "ok - flow exposes the read-only legacy compatibility inventory"
 
-delegation_output="$(HOME="$tmp" XDG_STATE_HOME="$tmp/state" DOTFILES_ROOT="$root" \
+delegation_output="$(HOME="$tmp" XDG_STATE_HOME="$tmp/state" PATH="$fake_bin:$PATH" DOTFILES_ROOT="$root" \
   DROVR_CONFIG_DIR="$root/config/drovr" "$root/bin/flow" query delegated-agent \
   --harness codex --capability read-only \
   --caller-metadata '{"run_id":"run:test","card_id":"review"}' --json)"

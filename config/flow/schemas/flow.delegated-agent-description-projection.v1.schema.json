@@ -119,6 +119,7 @@
         "credential_reference",
         "feature_advertisement",
         "caller_metadata",
+        "managed_runtime_binding",
         "comparison_keys",
         "legal_actions"
       ],
@@ -146,6 +147,7 @@
             "credential_reference": { "const": "drovr.credential-reference/v1" },
             "feature_advertisement": { "const": "drovr.feature-advertisement/v1" },
             "caller_metadata": { "const": "opaque-json/v1" },
+            "managed_runtime_binding": { "const": "drovr.managed-runtime-binding/v1" },
             "compatibility": { "const": "drovr.compatibility/v1" }
           }
         },
@@ -251,6 +253,25 @@
             "schema": { "const": "drovr.credential-reference/v1" },
             "identity": { "enum": ["ambient/claude", "ambient/codex"] },
             "secret_material_included": { "const": false }
+          }
+        },
+        "managed_runtime_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "status",
+            "exact_identity_required",
+            "binding_phase"
+          ],
+          "properties": {
+            "schema": { "const": "drovr.managed-runtime-binding/v1" },
+            "status": {
+              "enum": ["deferred", "preflight_bound", "bound"]
+            },
+            "exact_identity_required": { "const": true },
+            "binding_phase": { "const": "agent_launch" },
+            "evidence_digest": { "$ref": "#/$defs/digest" }
           }
         },
         "feature_advertisement": {

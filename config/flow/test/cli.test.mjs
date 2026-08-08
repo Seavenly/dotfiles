@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -43,6 +43,21 @@ test("flow CLI exposes the watermarked legacy inventory query", async (t) => {
 test("flow CLI describes an exact Drovr launch through FlowRuntime query", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-cli-delegation-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
+  const bin = join(scratch, "bin");
+  await mkdir(bin);
+  const herdr = join(bin, "herdr");
+  await writeFile(herdr, [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    'if [[ "$1" == "--version" ]]; then printf \'herdr 0.8.0\\n\';',
+    'elif [[ "$1" == "integration" && "$2" == "status" ]]; then printf \'codex: current (v1)\\n\';',
+    "fi",
+    ""
+  ].join("\n"));
+  await chmod(herdr, 0o755);
+  const codex = join(bin, "codex");
+  await writeFile(codex, "#!/usr/bin/env bash\nprintf 'codex-cli 0.147.0\\n'\n");
+  await chmod(codex, 0o755);
   let stdout = "";
   let stderr = "";
   const status = await runCli(
@@ -63,6 +78,7 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
       runtime: createFlowRuntime({
         env: {
           ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
           HOME: scratch,
           XDG_STATE_HOME: join(scratch, "state"),
           DROVR_CONFIG_DIR: join(import.meta.dirname, "../../drovr"),
