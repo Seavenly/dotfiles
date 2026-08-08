@@ -34,8 +34,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y zsh
       - name: Install validators from the lock
         run: mise install --locked actionlint gitleaks shellcheck lua uv ripgrep fzf node
+      - name: Install JavaScript test dependencies
+        run: |
+          mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix config/agent-flow
+          mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix config/flow
+          mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix tools/flow
       - name: Validate sources
-        run: ./dotfiles check
+        run: mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- ./dotfiles check
       - name: Validate isolated-home dotfile plan
         env:
           MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}

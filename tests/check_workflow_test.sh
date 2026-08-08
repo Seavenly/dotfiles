@@ -17,4 +17,10 @@ linux_packages_step="$(awk '
   capture && /run:/ { print; exit }
 ' "$root/.github/workflows/check.yml")"
 assert_contains "$linux_packages_step" 'zsh'
+validate_step="$(awk '
+  /name: Validate sources/ { capture = 1; next }
+  capture && /run:/ { print; exit }
+' "$root/.github/workflows/check.yml")"
+assert_contains "$validate_step" 'mise exec --locked'
+assert_contains "$validate_step" './dotfiles check'
 echo "ok - CI installs ripgrep before source validation"
