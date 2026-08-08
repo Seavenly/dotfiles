@@ -7,6 +7,7 @@ import {
   collectProductionCompatibility,
   qualifyCompatibility,
 } from "../src/compatibility.mjs";
+import { DrovrError } from "../src/errors.mjs";
 import { semanticHarnessFor } from "../src/harness-interface.mjs";
 import { createProductionSemanticHarness } from "../src/production-harness-adapter.mjs";
 
@@ -296,6 +297,71 @@ test("fresh managed startup remains preflight-bound until native work begins", a
   assert.equal(started.managed_runtime_identity.process.pid, 42);
 });
 
+test("production startup re-observes a transiently unavailable runtime identity", async () => {
+  const runtimeFacts = runtime();
+  const preflightIdentity = {
+    ...managedIdentity({ nativeSession: null }),
+    process: null,
+    model: null,
+    effort: null,
+  };
+  const settledIdentity = managedIdentity();
+  let now = 0;
+  let captures = 0;
+  const delays = [];
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: { PATH: "/caller/bin:/usr/bin" },
+    run: runtimeFacts.run,
+    requireCompatibility: true,
+    delay: async (milliseconds) => {
+      delays.push(milliseconds);
+      now += milliseconds;
+    },
+    clock: () => now,
+    herdr: {
+      async probeManagedExecutable() {
+        return structuredClone(preflightIdentity);
+      },
+      async startCodexAgent() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-codex-1" },
+        };
+      },
+      async captureManagedRuntimeIdentity() {
+        captures += 1;
+        if (captures === 1) {
+          throw new DrovrError("managed runtime identity is not ready", {
+            code: 0,
+            outcome: "compatibility_blocked",
+            details: { reason: "missing" },
+          });
+        }
+        return structuredClone(settledIdentity);
+      },
+    },
+  });
+
+  const started = await harness.startAgent({
+    agent: {
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+    },
+  });
+
+  assert.equal(captures, 2);
+  assert.ok(delays.length > 1);
+  assert.deepEqual(started.managed_runtime_identity, settledIdentity);
+});
+
 test("fresh managed observation accepts an idle pane before native session registration", async () => {
   const runtimeFacts = runtime();
   const preflightIdentity = {
@@ -506,6 +572,77 @@ test("production resume tolerates caller PATH drift after managed identity captu
     result.managed_runtime_identity.caller_path_digest,
     "sha256:" + "4".repeat(64),
   );
+});
+
+test("production resume re-observes a transiently unavailable runtime identity", async () => {
+  const runtimeFacts = runtime();
+  const expectedIdentity = managedIdentity();
+  const compatibility = await collectProductionCompatibility({
+    harness: "codex",
+    run: runtimeFacts.run,
+    env: {},
+    managedIdentity: expectedIdentity,
+    requireManagedIdentity: true,
+  });
+  let now = 0;
+  let captures = 0;
+  const delays = [];
+  const harness = createProductionSemanticHarness({
+    harness: "codex",
+    env: {},
+    run: runtimeFacts.run,
+    herdr: {
+      async observeManagedRuntime() {
+        return structuredClone(expectedIdentity);
+      },
+      async resumeCodexAgent() {},
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-1",
+          agent_status: "idle",
+          agent_session: { value: "native-codex-1" },
+        };
+      },
+      async captureManagedRuntimeIdentity() {
+        captures += 1;
+        if (captures === 1) {
+          throw new DrovrError("managed runtime identity is not ready", {
+            code: 0,
+            outcome: "compatibility_blocked",
+            details: { reason: "missing" },
+          });
+        }
+        return structuredClone(expectedIdentity);
+      },
+    },
+    compatibility,
+    expectedCompatibilityEvidenceDigest: compatibility.evidence_digest,
+    expectedManagedRuntimeIdentity: expectedIdentity,
+    requireCompatibility: true,
+    delay: async (milliseconds) => {
+      delays.push(milliseconds);
+      now += milliseconds;
+    },
+    clock: () => now,
+  });
+
+  const result = await harness.resumeAgent({
+    agent: {
+      herdr: { name: "managed-agent", pane_id: "pane-1" },
+      native_session: "native-codex-1",
+      launch: {
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+    },
+    launchRuntime: {},
+  });
+
+  assert.equal(captures, 2);
+  assert.ok(delays.length > 1);
+  assert.deepEqual(result.managed_runtime_identity, expectedIdentity);
 });
 
 test("Claude binds the same managed executable identity contract", async () => {

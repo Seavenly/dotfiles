@@ -885,8 +885,8 @@ if [[ \${1:-} == group && \${2:-} == list ]]; then
   exit 0
 fi
 if [[ \${1:-} == delegate ]]; then
-  printf '%s\\n' '{"schema":"drovr.command/v1","command":"delegate","ok":false,"error":{"outcome":"adapter_failure","message":"Claude workspace trust prompt blocked startup"}}'
-  exit 4
+  printf '%s\\n' '{"schema":"drovr.command/v1","command":"delegate","ok":true,"result":{"status":"compatibility_blocked","message":"Herdr did not expose the claude managed executable identity"}}'
+  exit 0
 fi
 exit 5
 `,
@@ -903,10 +903,10 @@ exit 5
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
 
   assert.equal(report.status, "fail");
-  assert.equal(evidence.result.reason.code, "adapter_failure");
+  assert.equal(evidence.result.reason.code, "compatibility_blocked");
   assert.equal(
     evidence.result.reason.message,
-    "Claude workspace trust prompt blocked startup",
+    "Herdr did not expose the claude managed executable identity",
   );
   assert.notEqual(evidence.result.reason.code, "scenario_assertion_failed");
 });
@@ -1571,6 +1571,33 @@ test("complete Drovr envelope validation rejects contradictory and partial shape
       result: { status: "completed", groups: [] },
     }),
     null,
+  );
+});
+
+test("typed compatibility blocks are complete delegate outcomes without entity IDs", () => {
+  assert.equal(
+    validateDrovrEnvelope("delegate", {
+      schema: "drovr.command/v1",
+      command: "delegate",
+      ok: true,
+      result: {
+        status: "compatibility_blocked",
+        message: "Herdr did not expose the codex managed executable identity",
+      },
+    }),
+    null,
+  );
+});
+
+test("ordinary successful delegate results still require every entity ID", () => {
+  assert.match(
+    validateDrovrEnvelope("delegate", {
+      schema: "drovr.command/v1",
+      command: "delegate",
+      ok: true,
+      result: { status: "completed", message: "done" },
+    }),
+    /result\.group\.id must be a string/u,
   );
 });
 

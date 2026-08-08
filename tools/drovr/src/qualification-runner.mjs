@@ -59,6 +59,26 @@ const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const COMMAND_EXIT_GRACE_MS = 5_000;
 const OBSERVATION_COMMAND_LIMIT_MS = 5_000;
 const SETUP_COMMAND_LIMIT_MS = 10_000;
+// The CLI encodes these documented code-0 DrovrError outcomes as ok:true
+// result objects. They may be emitted before the command has durable entity
+// IDs, so their typed message is the complete outcome evidence.
+const TYPED_NON_SUCCESS_STATUSES = new Set([
+  "uncertain",
+  "task_busy",
+  "task_closed",
+  "turn_closed",
+  "configuration_conflict",
+  "caller_key_conflict",
+  "launch_binding_conflict",
+  "launch_binding_missing",
+  "launch_binding_stale",
+  "compatibility_blocked",
+  "agent_lost",
+  "recovery_blocked",
+  "session_missing",
+  "unsupported_configuration",
+  "unsupported_transcript",
+]);
 const activeChildren = new Set();
 const terminatingChildren = new Map();
 const interruptionWaiters = new Set();
@@ -3684,6 +3704,13 @@ export function validateDrovrEnvelope(expectedCommand, envelope) {
     ["turn list", "turns"],
   ]).get(expectedCommand);
   if (listField) return requireArray(listField);
+  if (
+    TYPED_NON_SUCCESS_STATUSES.has(result.status) &&
+    typeof result.message === "string" &&
+    result.message.length > 0
+  ) {
+    return null;
+  }
   if (["delegate", "ask", "turn start", "turn send", "turn wait", "turn cancel", "turn get"].includes(expectedCommand)) {
     return requireId("group") ?? requireId("task") ?? requireId("agent") ?? requireId("turn");
   }
@@ -4158,6 +4185,10 @@ function executionFailure(records) {
     ["cleanup_deadline_exceeded", "The bounded cleanup interval was exhausted."],
   ]);
   for (const record of records) {
+    const result = record.envelope?.result;
+    if (TYPED_NON_SUCCESS_STATUSES.has(result?.status)) {
+      return { code: result.status, message: result.message };
+    }
     const outcome = record.envelope?.error?.outcome;
     if (outcomes.has(outcome)) {
       return { code: outcome, message: outcomes.get(outcome) };

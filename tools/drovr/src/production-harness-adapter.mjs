@@ -45,6 +45,8 @@ const TURN_EVIDENCE_SCHEMA = "drovr.semantic-turn-evidence/v1";
 const STAGED_INPUT_EVIDENCE_SCHEMA = "drovr.semantic-staged-input/v1";
 const STARTUP_STABILITY_MS = 2_000;
 const STARTUP_STABILITY_ATTEMPTS = 60;
+const STARTUP_IDENTITY_REOBSERVATION_INTERVAL_MS = 50;
+const STARTUP_IDENTITY_REOBSERVATION_ATTEMPTS = 40;
 const MAX_STAGED_INPUT_STABILITY_MS = 120_000;
 
 export function createProductionSemanticHarness({
@@ -719,7 +721,8 @@ export function createProductionSemanticHarness({
       if (!managedExecutable) return settled;
       let runtimeIdentity;
       try {
-        runtimeIdentity = await client.captureManagedRuntimeIdentity({
+        runtimeIdentity = await captureManagedRuntimeIdentityAfterStartup({
+          client,
           agentName: agent.herdr.name,
           paneId: agent.herdr.pane_id,
           harness,
@@ -727,6 +730,8 @@ export function createProductionSemanticHarness({
           model: agent.launch.model,
           effort: agent.launch.effort,
           requireNativeSession: false,
+          delayFn: delay,
+          clock,
         });
         assertRecoveryExecutableBinding(managedExecutable, runtimeIdentity, {
           includeRuntime: true,
@@ -796,13 +801,16 @@ export function createProductionSemanticHarness({
           clock,
           120_000,
         );
-        const runtimeIdentity = await client.captureManagedRuntimeIdentity({
+        const runtimeIdentity = await captureManagedRuntimeIdentityAfterStartup({
+          client,
           agentName: agent.herdr.name,
           paneId: agent.herdr.pane_id,
           harness,
           executable: runtimeBinding,
           model: agent.launch.model,
           effort: agent.launch.effort,
+          delayFn: delay,
+          clock,
         });
         assertRecoveryExecutableBinding(runtimeBinding, runtimeIdentity, {
           includeRuntime: true,
@@ -2071,6 +2079,39 @@ function nativeIdentityError(harness, observation) {
 
 function harnessLabel(harness) {
   return harness === "claude" ? "Claude" : "Codex";
+}
+
+async function captureManagedRuntimeIdentityAfterStartup({
+  client,
+  delayFn,
+  clock,
+  ...request
+}) {
+  const pause = delayFn ?? defaultDelay;
+  const deadline = clock() +
+    STARTUP_IDENTITY_REOBSERVATION_INTERVAL_MS *
+      STARTUP_IDENTITY_REOBSERVATION_ATTEMPTS;
+  let lastMissing;
+  for (let attempt = 0; attempt < STARTUP_IDENTITY_REOBSERVATION_ATTEMPTS; attempt += 1) {
+    try {
+      return await client.captureManagedRuntimeIdentity(request);
+    } catch (error) {
+      if (
+        error?.outcome !== "compatibility_blocked" ||
+        error.details?.reason !== "missing"
+      ) {
+        throw error;
+      }
+      lastMissing = error;
+      const remaining = deadline - clock();
+      if (remaining <= 0 || attempt === STARTUP_IDENTITY_REOBSERVATION_ATTEMPTS - 1) {
+        throw error;
+      }
+      await pause(Math.min(STARTUP_IDENTITY_REOBSERVATION_INTERVAL_MS, remaining));
+      if (clock() >= deadline) throw lastMissing;
+    }
+  }
+  throw lastMissing;
 }
 
 async function waitUntilSettled(agent, client, delayFn, clock, timeoutMs) {
