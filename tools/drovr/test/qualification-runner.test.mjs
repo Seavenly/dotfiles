@@ -671,6 +671,7 @@ test("a retained qualification lock records an explicit recovery obligation", as
   const workspaceRoot = await mkdtemp(join(tmpdir(), "drovr-qualification-retained-workspace-"));
   const workspace = join(workspaceRoot, "dedicated-workspace");
   await mkdir(workspace);
+  const canonicalWorkspace = await realpath(workspace);
   t.after(async () => {
     await chmod(workspace, 0o700).catch(() => {});
     await rm(workspaceRoot, { recursive: true, force: true });
@@ -711,7 +712,7 @@ exit 5
     },
   });
   const evidence = JSON.parse(await readFile(report.scenarios[0].evidence, "utf8"));
-  const lockPath = join(workspace, ".drovr-qualification-lock");
+  const lockPath = join(canonicalWorkspace, ".drovr-qualification-lock");
 
   assert.equal(report.status, "blocked");
   assert.equal(

@@ -40,6 +40,8 @@ jobs:
           mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix config/flow
           mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix tools/flow
       - name: Validate sources
+        env:
+          DROVR_CONFIG_DIR: ${{ github.workspace }}/config/drovr
         run: mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- ./dotfiles check
       - name: Validate isolated-home dotfile plan
         env:

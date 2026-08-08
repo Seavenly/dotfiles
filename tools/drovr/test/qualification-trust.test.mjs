@@ -272,15 +272,16 @@ test("trust preflight readiness rejects fabricated or drifted bindings", async (
   const codexHome = join(scratch, "codex");
   const targetWorkspace = join(scratch, "workspace");
   await Promise.all([mkdir(bin), mkdir(codexHome), mkdir(targetWorkspace)]);
+  const canonicalWorkspace = await realpath(targetWorkspace);
   await writeFile(
     join(codexHome, "config.toml"),
-    `[projects."${targetWorkspace}"]\ntrust_level = "trusted"\n`,
+    `[projects."${canonicalWorkspace}"]\ntrust_level = "trusted"\n`,
   );
   await writeFile(join(bin, "codex"), "#!/usr/bin/env bash\nprintf '%s\\n' 'codex-cli 0.142.5'\n");
   await chmod(join(bin, "codex"), 0o755);
   const result = await preflightQualificationTrust({
     harnesses: ["codex"],
-    workspace: targetWorkspace,
+    workspace: canonicalWorkspace,
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
