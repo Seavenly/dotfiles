@@ -6,6 +6,7 @@ export function createAgentRetirementReceipt({
   observation,
   paneId,
   paneBefore,
+  topologyBinding = "unbound",
   runtimeEvidence,
   proof,
   interruptedTurns,
@@ -37,7 +38,7 @@ export function createAgentRetirementReceipt({
     pane: {
       pane_id: paneId,
       before: paneBefore
-        ? { evidence: "present", topology_binding: "matched" }
+        ? { evidence: "present", topology_binding: topologyBinding }
         : null,
       after: { evidence: "absent" },
     },

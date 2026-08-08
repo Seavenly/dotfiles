@@ -427,9 +427,11 @@ function retirementActionText(actions, agentId, taskId) {
     case "repair_herdr_compatibility_on_disposable_session":
       return "repair Herdr compatibility on a disposable session";
     case "reconcile_managed_agent_identity":
+      return `inspect with 'drovr agent get ${agentId}' and reconcile the managed agent identity before retrying retirement`;
+    case "reconcile_restored_task_pane":
       return taskId
-        ? `inspect with 'drovr agent get ${agentId}'; if the pane was restored into a new task tab, run 'drovr task close ${taskId}' to reconcile it before retrying retirement`
-        : `inspect with 'drovr agent get ${agentId}' and reconcile the managed agent identity before retrying retirement`;
+        ? `inspect with 'drovr agent get ${agentId}' and, if the pane was restored into a new task tab, run 'drovr task close ${taskId}' to reconcile it before retrying retirement`
+        : `inspect with 'drovr agent get ${agentId}' and reconcile the restored task pane before retrying retirement`;
     case "inspect_exact_managed_pane":
       return `inspect with 'drovr agent get ${agentId}' and verify the exact managed pane before retrying retirement`;
     case "reconcile_exact_agent_retirement":

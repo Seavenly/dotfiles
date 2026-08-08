@@ -109,9 +109,11 @@ function retirementLegalActions(reason) {
   ) {
     return ["repair_herdr_compatibility_on_disposable_session"];
   }
+  if (reason === "pane_remapped") {
+    return ["reconcile_restored_task_pane"];
+  }
   if (
     [
-      "pane_remapped",
       "identity_drift",
       "duplicate_native_session",
       "identity_observation_uncertain",
@@ -148,6 +150,17 @@ function retirementFailure(agent, reason, retirementEvidence) {
         : {}),
     },
   };
+}
+
+function retirementTopologyBinding({ task, group, pane }) {
+  const taskTabId = task.herdr?.tab_id;
+  const workspaceId = group.herdr?.workspace_id;
+  if (!taskTabId || !workspaceId || !pane?.tabId || !pane?.workspaceId) {
+    return "unbound";
+  }
+  return taskTabId === pane.tabId && workspaceId === pane.workspaceId
+    ? "matched"
+    : "unbound";
 }
 
 function retirementEvidence({ runtime, observation, paneId, pane }) {
@@ -971,6 +984,11 @@ export async function retireAgent(agentId, dependencies = {}) {
         observation,
         paneId,
         paneBefore: pane,
+        topologyBinding: retirementTopologyBinding({
+          task: context.task,
+          group: context.group,
+          pane,
+        }),
         runtimeEvidence: retirementEvidenceResult?.runtime,
         proof,
         interruptedTurns,

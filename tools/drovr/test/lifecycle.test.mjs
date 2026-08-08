@@ -54,7 +54,11 @@ test("agent retirement closes only its managed pane and preserves durable histor
       async paneRecord() {
         return paneClosed
           ? null
-          : { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+          : {
+              pane_id: "pane-agent-1",
+              tab_id: "tab-task-1",
+              workspace_id: "workspace-1",
+            };
       },
     },
   });
@@ -190,6 +194,7 @@ test("agent retirement does not start a shared session before live-pane closure"
 
   assert.equal(result.status, "retired");
   assert.equal(result.cleanup_receipt.proof, "exact_identity_and_pane_close");
+  assert.equal(result.cleanup_receipt.pane.before.topology_binding, "unbound");
   assert.equal(closeCalls, 1);
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.equal(agent.status, "retired");
@@ -297,6 +302,9 @@ test("agent retirement refuses an exact agent in a remapped task tab", async (t)
 
   assert.equal(result.status, "uncertain");
   assert.equal(result.reason, "pane_remapped");
+  assert.deepEqual(result.legal_next_actions, [
+    "reconcile_restored_task_pane",
+  ]);
   assert.equal(closeCalls, 0);
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.equal(agent.status, "active");
@@ -423,6 +431,9 @@ test(
 
     assert.equal(result.status, "uncertain");
     assert.equal(result.reason, "identity_drift");
+    assert.deepEqual(result.legal_next_actions, [
+      "reconcile_managed_agent_identity",
+    ]);
     assert.equal(closeCalls, 0);
     const [agent] = await readRecords(fixture.registryDirectory, "agents");
     assert.equal(agent.status, "active");
@@ -571,6 +582,9 @@ test("agent retirement refuses a remapped pane before mutation", async (t) => {
 
   assert.equal(result.status, "uncertain");
   assert.equal(result.reason, "pane_remapped");
+  assert.deepEqual(result.legal_next_actions, [
+    "reconcile_restored_task_pane",
+  ]);
   assert.deepEqual(closed, []);
   const [task] = await readRecords(fixture.registryDirectory, "tasks");
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
