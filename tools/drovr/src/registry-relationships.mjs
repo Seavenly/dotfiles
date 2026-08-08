@@ -17,7 +17,19 @@ export function agentRelationship(registry, agentId) {
   if (!task) missingOwner("agent", agent.id, "task", agent.task_id);
   const group = registry.groups.find(({ id }) => id === task.group_id);
   if (!group) missingOwner("task", task.id, "group", task.group_id);
-  return { group, task, agent };
+  const taskIds = new Set(
+    registry.tasks
+      .filter(({ group_id }) => group_id === group.id)
+      .map(({ id }) => id),
+  );
+  return {
+    group,
+    task,
+    agent,
+    groupAgents: registry.agents.filter((candidate) =>
+      taskIds.has(candidate.task_id),
+    ),
+  };
 }
 
 export function taskRelationship(registry, taskId) {

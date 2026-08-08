@@ -586,6 +586,20 @@ returns that same receipt without touching Herdr. A present-pane receipt records
 `pane.before.topology_binding` as `"matched"` only when both registered task
 tab and workspace identities were observed and equal; otherwise it records
 `"unbound"`. It never persists raw tab or workspace identifiers.
+During bulk observation, a name-less Herdr candidate is associated with a
+durable agent only when its native session exactly matches one active registered
+agent's durable native session, regardless of response order. Named candidates
+always take precedence over anonymous candidates; an anonymous candidate never
+replaces a named observation. Repeated named and anonymous projections of the
+same explicit native session and pane are one runtime observation, while the
+same native session on distinct panes remains ambiguous. Within one active
+record batch, a native session claimed by multiple records remains identity
+ambiguity. Otherwise the candidate is not treated as that agent; exact absence
+still requires the registered pane to be absent.
+Single-agent retirement preflights observe all active agents in the same Herdr
+group so duplicate native-session ownership cannot be missed. Injected targeted
+adapter observations retain the requested-agent selection when an older
+response omits the managed name.
 Records retired by an older task or group cleanup remain idempotently retired;
 when no receipt was recorded, Drovr reports the legacy receipt gap without
 fabricating cleanup evidence.

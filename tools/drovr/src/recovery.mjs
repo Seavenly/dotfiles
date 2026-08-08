@@ -405,6 +405,8 @@ async function recoveryContext(registryDirectory, agentId) {
   }
   return {
     ...context,
+    // Recovery is task-scoped even though agentRelationship exposes the
+    // group-wide set needed by lifecycle identity preflights.
     agents: registry.agents.filter(
       (agent) => agent.task_id === context.task.id && agent.status === "active",
     ),

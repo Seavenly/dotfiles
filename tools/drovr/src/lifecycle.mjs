@@ -388,9 +388,19 @@ async function retirementPreflight(context, harness) {
     );
   }
 
+  // agentRelationship supplies a group-wide registry snapshot here even
+  // though retirement holds only the target task lock. The observations are
+  // read-only and repeated immediately before mutation, so any identity
+  // conflict observed across sibling tasks remains fail-closed.
+  const activeAgents = context.groupAgents.filter(
+    ({ status }) => status === "active",
+  );
+  const targetIndex = activeAgents.findIndex(
+    ({ id }) => id === context.agent.id,
+  );
   let observations;
   try {
-    observations = await harness.observeAgents([context.agent]);
+    observations = await harness.observeAgents(activeAgents);
   } catch (error) {
     return retirementFailure(
       context.agent,
@@ -403,7 +413,9 @@ async function retirementPreflight(context, harness) {
     task: context.task,
     group: context.group,
     harness,
-    observation: Array.isArray(observations) ? observations[0] : null,
+    observation: Array.isArray(observations)
+      ? observations[targetIndex]
+      : null,
     runtime,
   });
 }

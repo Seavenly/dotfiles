@@ -543,31 +543,89 @@ export function createProductionSemanticHarness({
 
     async observeAgents(agents) {
       try {
-        const observed = client.agentRecords
+        const usesBulkObservation = typeof client.agentRecords === "function";
+        const observed = usesBulkObservation
           ? await client.agentRecords()
           : await Promise.all(
               agents.map((agent) => client.agentRecord(agent.herdr.name)),
             );
-        const byName = new Map(
-          observed
-            .filter((candidate) => candidate?.name)
-            .map((candidate) => [candidate.name, candidate]),
-        );
-        if (observed.length === agents.length) {
+        const byName = new Map();
+        const ambiguousNames = new Set();
+        for (const candidate of observed) {
+          if (!candidate?.name) continue;
+          const existing = byName.get(candidate.name);
+          if (!existing) {
+            byName.set(candidate.name, candidate);
+          } else if (!sameNativeProjection(existing, candidate)) {
+            ambiguousNames.add(candidate.name);
+          }
+        }
+        if (usesBulkObservation) {
+          // Older Herdr protocols may expose an agent kind without the
+          // managed name. Associate anonymous bulk observations only through
+          // an exact native session, independently of response ordering;
+          // positional association could bind an unrelated live agent to a
+          // lost one.
+          for (const candidate of observed) {
+            if (candidate?.name) continue;
+            const nativeSession = candidate?.agent_session?.value;
+            if (!nativeSession) continue;
+            const matches = agents.filter((candidateAgent) =>
+              candidateAgent.native_session === nativeSession &&
+              candidateAgent.herdr?.name
+            );
+            if (matches.length !== 1) continue;
+            const [agent] = matches;
+            if (!byName.has(agent.herdr.name)) {
+              byName.set(agent.herdr.name, candidate);
+            }
+          }
+        } else if (observed.length === agents.length) {
           for (const [index, candidate] of observed.entries()) {
-            if (candidate?.name || !agents[index]?.herdr?.name) continue;
+            if (
+              candidate?.name ||
+              !candidate ||
+              !agents[index]?.herdr?.name
+            ) continue;
+            // An injected targeted adapter has already selected this
+            // observation for the requested agent, even when an older
+            // response omits its name.
             byName.set(agents[index].herdr.name, candidate);
           }
         }
-        const records = agents.map((agent) =>
-          agentObservation(agent, byName.get(agent.herdr.name)),
-        );
+        const records = agents.map((agent) => {
+          const record = agentObservation(
+            agent,
+            byName.get(agent.herdr.name),
+          );
+          return ambiguousNames.has(agent.herdr.name)
+            ? {
+                ...record,
+                evidence: "changed",
+                reason: "duplicate_native_session",
+              }
+            : record;
+        });
+        const registeredOwners = new Map();
+        for (const agent of agents) {
+          const nativeSession = agent.native_session;
+          if (!nativeSession) continue;
+          const owners = registeredOwners.get(nativeSession) ?? [];
+          owners.push(agent);
+          registeredOwners.set(nativeSession, owners);
+        }
         const nativeOwners = new Map();
         for (const candidate of observed.filter(Boolean)) {
           const nativeSession = candidate.agent_session?.value;
           if (nativeSession) {
             const owners = nativeOwners.get(nativeSession) ?? [];
-            owners.push(candidate);
+            // Herdr can expose the same pane through both its managed-name
+            // and generic agent projections. Count that projection once, but
+            // keep distinct panes sharing a session ambiguous. Missing pane
+            // identity stays conservative and is never deduplicated.
+            if (!owners.some((owner) => sameNativeProjection(owner, candidate))) {
+              owners.push(candidate);
+            }
             nativeOwners.set(nativeSession, owners);
           }
         }
@@ -577,7 +635,14 @@ export function createProductionSemanticHarness({
           const owners = nativeSession
             ? nativeOwners.get(nativeSession) ?? []
             : [];
+          const claimants = nativeSession
+            ? registeredOwners.get(nativeSession) ?? []
+            : [];
+          const foreignClaimant = claimants.some(
+            (owner) => owner.id !== agents[index].id,
+          );
           if (
+            foreignClaimant ||
             owners.length > 1 ||
             (owners.length > 0 && record.evidence === "absent")
           ) {
@@ -1658,6 +1723,17 @@ function managedRuntimeIsSettled(identity) {
 function sameJsonValue(left, right) {
   if (left === undefined || right === undefined) return left === right;
   return digestCanonical(left) === digestCanonical(right);
+}
+
+function sameNativeProjection(left, right) {
+  return Boolean(
+    left?.pane_id &&
+    right?.pane_id &&
+    left.pane_id === right.pane_id &&
+    left.agent_session?.value &&
+    right.agent_session?.value &&
+    left.agent_session.value === right.agent_session.value
+  );
 }
 
 function agentObservation(agent, observed, error) {

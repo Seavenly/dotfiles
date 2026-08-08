@@ -130,6 +130,601 @@ test("agent retirement proves exact absence, stores a receipt, and is repeatable
   assert.equal(agent.status, "retired");
 });
 
+test("agent retirement ignores an unrelated anonymous Herdr agent", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const mutations = [];
+  const forbid = (operation) => async () => {
+    mutations.push(operation);
+    throw new Error(`unexpected retirement mutation: ${operation}`);
+  };
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      ensureSession: forbid("ensureSession"),
+      async agentRecords() {
+        return [{
+          agent: "claude",
+          pane_id: "unrelated-pane",
+          agent_session: { value: "unrelated-native" },
+          agent_status: "idle",
+        }];
+      },
+      async paneRecord() {
+        return null;
+      },
+      closePane: forbid("closePane"),
+      interruptAgent: forbid("interruptAgent"),
+    },
+  });
+
+  assert.equal(result.status, "retired");
+  assert.equal(result.reason, "exact_absence");
+  assert.equal(result.cleanup_receipt.proof, "exact_absence");
+  assert.deepEqual(mutations, []);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "retired");
+});
+
+test("agent retirement matches an anonymous bulk observation by native session", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const closed = [];
+  let paneClosed = false;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [
+          {
+            agent: "claude",
+            pane_id: "unrelated-pane",
+            agent_session: { value: "unrelated-native" },
+            agent_status: "idle",
+          },
+          {
+            agent: "claude",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+        ];
+      },
+      async paneRecord(paneId) {
+        return paneClosed
+          ? null
+          : { pane_id: paneId, tab_id: "tab-task-1", workspace_id: "workspace-1" };
+      },
+      async closePane(paneId) {
+        closed.push(paneId);
+        paneClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "retired");
+  assert.equal(result.reason, "agent_present");
+  assert.equal(result.cleanup_receipt.proof, "exact_identity_and_pane_close");
+  assert.deepEqual(closed, ["pane-agent-1"]);
+});
+
+test("agent retirement treats named and anonymous observations of one pane as one projection", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const closed = [];
+  let paneClosed = false;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+          {
+            agent: "claude",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+          {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+        ];
+      },
+      async paneRecord(paneId) {
+        return paneClosed
+          ? null
+          : { pane_id: paneId, tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        closed.push(paneId);
+        paneClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "retired");
+  assert.equal(result.reason, "agent_present");
+  assert.deepEqual(closed, ["pane-agent-1"]);
+});
+
+test("agent retirement keeps repeated named projections ambiguous without pane identity", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const mutations = [];
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+          {
+            name: "managed-agent",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+        ];
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        mutations.push(paneId);
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "duplicate_native_session");
+  assert.deepEqual(mutations, []);
+});
+
+test("agent retirement binds a non-first target through its native session", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-2",
+    task_id: fixture.task.id,
+    key: "second-agent",
+    label: "Second agent",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent-2", pane_id: "pane-agent-2" },
+    native_session: "native-2",
+  });
+  const closed = [];
+  let paneClosed = false;
+  const result = await retireAgent("agent-2", {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [{
+          agent: "claude",
+          pane_id: "pane-agent-2",
+          agent_session: { value: "native-2" },
+          agent_status: "idle",
+        }];
+      },
+      async paneRecord(paneId) {
+        return paneClosed
+          ? null
+          : { pane_id: paneId, tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        closed.push(paneId);
+        paneClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "retired");
+  assert.equal(result.reason, "agent_present");
+  assert.deepEqual(closed, ["pane-agent-2"]);
+  const agents = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agents.find(({ id }) => id === "agent-1").status, "active");
+  assert.equal(agents.find(({ id }) => id === "agent-2").status, "retired");
+});
+
+test("agent retirement remains order-independent when anonymous observations share a session", async (t) => {
+  for (const reverse of [false, true]) {
+    await t.test(reverse ? "reversed" : "original", async (nested) => {
+      const fixture = await lifecycleFixture(nested);
+      const candidates = [
+        {
+          agent: "claude",
+          pane_id: "pane-agent-1",
+          agent_session: { value: "native-1" },
+          agent_status: "idle",
+        },
+        {
+          agent: "claude",
+          pane_id: "pane-unrelated",
+          agent_session: { value: "native-1" },
+          agent_status: "idle",
+        },
+      ];
+      const mutations = [];
+      const result = await retireAgent(fixture.agent.id, {
+        env: fixture.env,
+        herdr: {
+          async sessionRunning() {
+            return true;
+          },
+          async agentRecords() {
+            return reverse ? [...candidates].reverse() : candidates;
+          },
+          async paneRecord() {
+            return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+          },
+          async closePane(paneId) {
+            mutations.push(paneId);
+          },
+          async interruptAgent() {
+            mutations.push("interruptAgent");
+          },
+        },
+      });
+
+      assert.equal(result.status, "uncertain");
+      assert.equal(result.reason, "duplicate_native_session");
+      assert.deepEqual(mutations, []);
+    });
+  }
+});
+
+test("agent retirement refuses an anonymous observation that conflicts with a named drifted record", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const mutations = [];
+  let paneClosed = false;
+  const forbid = (operation) => async () => {
+    mutations.push(operation);
+    throw new Error(`unexpected retirement mutation: ${operation}`);
+  };
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-restarted" },
+            agent_status: "idle",
+          },
+          {
+            agent: "claude",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+        ];
+      },
+      ensureSession: forbid("ensureSession"),
+      async paneRecord() {
+        return paneClosed
+          ? null
+          : { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        mutations.push(["closePane", paneId]);
+        paneClosed = true;
+      },
+      interruptAgent: forbid("interruptAgent"),
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "identity_drift");
+  assert.deepEqual(mutations, []);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+});
+
+test("agent retirement preserves identity-drift guidance when an anonymous record is remapped", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const mutations = [];
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-restarted" },
+            agent_status: "idle",
+          },
+          {
+            agent: "claude",
+            pane_id: "restored-pane",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+        ];
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        mutations.push(["closePane", paneId]);
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "identity_drift");
+  assert.deepEqual(result.legal_next_actions, [
+    "reconcile_managed_agent_identity",
+  ]);
+  assert.deepEqual(mutations, []);
+});
+
+test("agent retirement refuses a native session claimed by another registered agent", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const secondCwd = join(fixture.task.cwd, "second-task");
+  await mkdir(secondCwd);
+  await writeRecord(fixture.registryDirectory, "tasks", {
+    schema: "drovr.task/v1",
+    id: "task-2",
+    group_id: fixture.group.id,
+    key: "second-task",
+    label: "Second task",
+    cwd: secondCwd,
+    status: "active",
+    herdr: { tab_id: "tab-task-2", root_pane_id: "pane-agent-2" },
+  });
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-2",
+    task_id: "task-2",
+    key: "second-agent",
+    label: "Second agent",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent-2", pane_id: "pane-agent-2" },
+    native_session: "native-1",
+  });
+  const mutations = [];
+  let paneClosed = false;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [{
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_session: { value: "native-1" },
+          agent_status: "idle",
+        }];
+      },
+      async paneRecord() {
+        return paneClosed
+          ? null
+          : { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        mutations.push(["closePane", paneId]);
+        paneClosed = true;
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "duplicate_native_session");
+  assert.deepEqual(mutations, []);
+  const agents = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agents.every(({ status }) => status === "active"), true);
+});
+
+test("agent retirement refuses an unbound record observing a sibling native session", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  fixture.agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", fixture.agent);
+  const secondCwd = join(fixture.task.cwd, "second-task");
+  await mkdir(secondCwd);
+  await writeRecord(fixture.registryDirectory, "tasks", {
+    schema: "drovr.task/v1",
+    id: "task-2",
+    group_id: fixture.group.id,
+    key: "second-task",
+    label: "Second task",
+    cwd: secondCwd,
+    status: "active",
+    herdr: { tab_id: "tab-task-2", root_pane_id: "pane-agent-2" },
+  });
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-2",
+    task_id: "task-2",
+    key: "second-agent",
+    label: "Second agent",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent-2", pane_id: "pane-agent-2" },
+    native_session: "native-2",
+  });
+  const mutations = [];
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async agentRecords() {
+        return [{
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_session: { value: "native-2" },
+          agent_status: "idle",
+        }];
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane(paneId) {
+        mutations.push(paneId);
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "duplicate_native_session");
+  assert.deepEqual(mutations, []);
+});
+
+test("agent retirement treats repeated named projections as order-independent ambiguity", async (t) => {
+  for (const reverse of [false, true]) {
+    await t.test(reverse ? "reversed" : "original", async (nested) => {
+      const fixture = await lifecycleFixture(nested);
+      const candidates = [
+        {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_session: { value: "native-1" },
+          agent_status: "idle",
+        },
+        {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_session: { value: "native-restarted" },
+          agent_status: "idle",
+        },
+      ];
+      const mutations = [];
+      const result = await retireAgent(fixture.agent.id, {
+        env: fixture.env,
+        herdr: {
+          async sessionRunning() {
+            return true;
+          },
+          async agentRecords() {
+            return reverse ? [...candidates].reverse() : candidates;
+          },
+          async paneRecord() {
+            return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+          },
+          async closePane(paneId) {
+            mutations.push(paneId);
+          },
+        },
+      });
+
+      assert.equal(result.status, "uncertain");
+      assert.equal(result.reason, "duplicate_native_session");
+      assert.deepEqual(mutations, []);
+    });
+  }
+});
+
+test("agent retirement ignores an anonymous observation for an unbound legacy record", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  fixture.agent.native_session = null;
+  await writeRecord(fixture.registryDirectory, "agents", fixture.agent);
+  const mutations = [];
+  const forbid = (operation) => async () => {
+    mutations.push(operation);
+    throw new Error(`unexpected retirement mutation: ${operation}`);
+  };
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      ensureSession: forbid("ensureSession"),
+      async agentRecords() {
+        return [{
+          agent: "claude",
+          pane_id: "unrelated-pane",
+          agent_session: { value: "unrelated-native" },
+          agent_status: "idle",
+        }];
+      },
+      async paneRecord() {
+        return null;
+      },
+      closePane: forbid("closePane"),
+      interruptAgent: forbid("interruptAgent"),
+    },
+  });
+
+  assert.equal(result.status, "retired");
+  assert.equal(result.reason, "exact_absence");
+  assert.equal(result.cleanup_receipt.proof, "exact_absence");
+  assert.deepEqual(mutations, []);
+});
+
+test("targeted anonymous Herdr observations remain associated with the requested agent", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let closeCalls = 0;
+  const mutations = [];
+  const forbid = (operation) => async () => {
+    mutations.push(operation);
+    throw new Error(`unexpected retirement mutation: ${operation}`);
+  };
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      ensureSession: forbid("ensureSession"),
+      async agentRecord() {
+        return {
+          pane_id: "pane-agent-1",
+          agent_session: { value: "native-different" },
+          agent_status: "idle",
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane() {
+        closeCalls += 1;
+      },
+      interruptAgent: forbid("interruptAgent"),
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "identity_drift");
+  assert.equal(closeCalls, 0);
+  assert.deepEqual(mutations, []);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+});
+
 test("agent retirement remains idempotent after task cleanup without a receipt", async (t) => {
   const fixture = await lifecycleFixture(t);
   fixture.agent.native_session = null;
@@ -1066,6 +1661,100 @@ test("group cleanup refuses duplicate native-session ownership before mutation",
   assert.equal(group.status, "active");
   assert.equal(task.status, "active");
   assert.equal(agent.status, "active");
+});
+
+test("group cleanup refuses a named and anonymous identity conflict in a multi-agent batch", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  const secondCwd = join(fixture.task.cwd, "second-task");
+  await mkdir(secondCwd);
+  await writeRecord(fixture.registryDirectory, "tasks", {
+    schema: "drovr.task/v1",
+    id: "task-2",
+    group_id: fixture.group.id,
+    key: "second-task",
+    label: "Second task",
+    cwd: secondCwd,
+    status: "active",
+    herdr: { tab_id: "tab-task-2", root_pane_id: "pane-agent-2" },
+  });
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-2",
+    task_id: "task-2",
+    key: "second-agent",
+    label: "Second agent",
+    status: "active",
+    launch: { harness: "codex" },
+    herdr: { name: "managed-agent-2", pane_id: "pane-agent-2" },
+    native_session: "native-2",
+  });
+  await writeRecord(fixture.registryDirectory, "turns", {
+    schema: "drovr.turn/v1",
+    id: "turn-2",
+    agent_id: "agent-2",
+    task_id: "task-2",
+    status: "completed",
+    inputs: [{ sequence: 1, text: "done too" }],
+    result: { text: "kept too", messages: ["kept too"] },
+  });
+  const mutations = [];
+  const result = await closeGroup(fixture.group.id, {
+    env: fixture.env,
+    herdr: {
+      async ensureSession() {},
+      async agentRecords() {
+        return [
+          {
+            name: "managed-agent",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-restarted" },
+            agent_status: "idle",
+          },
+          {
+            agent: "claude",
+            pane_id: "pane-agent-1",
+            agent_session: { value: "native-1" },
+            agent_status: "idle",
+          },
+          {
+            name: "managed-agent-2",
+            pane_id: "pane-agent-2",
+            agent_session: { value: "native-2" },
+            agent_status: "idle",
+          },
+        ];
+      },
+      async paneRecord(paneId) {
+        return {
+          pane_id: paneId,
+          tab_id: paneId === "pane-agent-2"
+            ? "tab-task-2"
+            : "tab-task-1",
+        };
+      },
+      async tabRecord(tabId) {
+        return { tab_id: tabId, workspace_id: "workspace-1" };
+      },
+      async workspaceRecord() {
+        return { workspace_id: "workspace-1" };
+      },
+      async closeWorkspace() {
+        mutations.push("closeWorkspace");
+      },
+      async interruptAgent() {
+        mutations.push("interruptAgent");
+      },
+    },
+  });
+
+  assert.equal(result.status, "recovery_blocked");
+  assert.deepEqual(mutations, []);
+  const [group] = await readRecords(fixture.registryDirectory, "groups");
+  const tasks = await readRecords(fixture.registryDirectory, "tasks");
+  const agents = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(group.status, "active");
+  assert.equal(tasks.every(({ status }) => status === "active"), true);
+  assert.equal(agents.every(({ status }) => status === "active"), true);
 });
 
 test("closing the final task keeps its group active through an exact idle tab", async (t) => {
