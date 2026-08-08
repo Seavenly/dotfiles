@@ -110,7 +110,11 @@ function createReplaySemanticAdapter({
       stagedInput: harness === "claude",
     },
 
-    async ensureRuntime() {
+    async ensureRuntime({ ensureSession = true } = {}) {
+      // Replay has no native session to create. Accept the option so replay
+      // preserves the semantic contract of production qualification-only
+      // checks without pretending to mutate a runtime.
+      void ensureSession;
       assertQualifiedCompatibility(compatibility);
       return {
         outcome: "uncertain",

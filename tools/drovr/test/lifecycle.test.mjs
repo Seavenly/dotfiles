@@ -67,6 +67,10 @@ test("agent retirement closes only its managed pane and preserves durable histor
   assert.equal(agent.retired_at, "2026-07-23T11:00:00.000Z");
   assert.equal(agent.cleanup_receipt.schema, "drovr.agent-retirement-receipt/v1");
   assert.equal(agent.cleanup_receipt.proof, "exact_identity_and_pane_close");
+  assert.deepEqual(agent.cleanup_receipt.pane.before, {
+    evidence: "present",
+    topology_binding: "matched",
+  });
   assert.equal(turn.status, "completed");
   await access(fixture.callerFile);
   await access(fixture.transcript);
@@ -115,6 +119,7 @@ test("agent retirement proves exact absence, stores a receipt, and is repeatable
   assert.equal(first.cleanup_receipt.observation.runtime.evidence, "present");
   assert.equal(first.cleanup_receipt.pane.before, null);
   assert.deepEqual(repeated.cleanup_receipt, first.cleanup_receipt);
+  assert.deepEqual(repeated.legal_next_actions, []);
   assert.deepEqual(calls, callsAfterFirst);
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.deepEqual(agent.cleanup_receipt, first.cleanup_receipt);
@@ -188,6 +193,50 @@ test("agent retirement does not start a shared session before live-pane closure"
   assert.equal(closeCalls, 1);
   const [agent] = await readRecords(fixture.registryDirectory, "agents");
   assert.equal(agent.status, "retired");
+});
+
+test("agent retirement blocks an unqualified live-pane close before mutation", async (t) => {
+  const fixture = await lifecycleFixture(t);
+  let closeCalls = 0;
+  let ensureCalls = 0;
+  const result = await retireAgent(fixture.agent.id, {
+    env: fixture.env,
+    compatibility: {},
+    requireCompatibility: true,
+    herdr: {
+      async sessionRunning() {
+        return true;
+      },
+      async ensureSession() {
+        ensureCalls += 1;
+      },
+      async agentRecord() {
+        return {
+          name: "managed-agent",
+          pane_id: "pane-agent-1",
+          agent_status: "idle",
+          agent_session: { value: "native-1" },
+        };
+      },
+      async paneRecord() {
+        return { pane_id: "pane-agent-1", tab_id: "tab-task-1" };
+      },
+      async closePane() {
+        closeCalls += 1;
+      },
+    },
+  });
+
+  assert.equal(result.status, "uncertain");
+  assert.equal(result.reason, "compatibility_blocked");
+  assert.deepEqual(result.legal_next_actions, [
+    "repair_herdr_compatibility_on_disposable_session",
+  ]);
+  assert.equal(closeCalls, 0);
+  assert.equal(ensureCalls, 0);
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  assert.equal(agent.status, "active");
+  assert.equal(Object.hasOwn(agent, "cleanup_receipt"), false);
 });
 
 test("agent retirement refuses a surviving pane after managed-agent loss", async (t) => {

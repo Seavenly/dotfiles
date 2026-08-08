@@ -304,6 +304,15 @@ test("replay refuses unsupported launch validation and unobserved runtime claims
     session: "replay",
     reason: "replay did not provide runtime observation evidence",
   });
+  assert.deepEqual(
+    await replay.harness.ensureRuntime({ ensureSession: false }),
+    {
+      outcome: "uncertain",
+      evidence: "uncertain",
+      session: "replay",
+      reason: "replay does not establish a native runtime",
+    },
+  );
   assert.equal(replay.consumedEvents().length, 0);
 });
 

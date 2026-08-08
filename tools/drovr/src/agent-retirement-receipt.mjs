@@ -37,7 +37,7 @@ export function createAgentRetirementReceipt({
     pane: {
       pane_id: paneId,
       before: paneBefore
-        ? { evidence: "present" }
+        ? { evidence: "present", topology_binding: "matched" }
         : null,
       after: { evidence: "absent" },
     },

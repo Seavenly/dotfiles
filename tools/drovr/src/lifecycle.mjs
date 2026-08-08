@@ -209,11 +209,11 @@ function previouslyRetiredAgent(context) {
   return {
     ...context,
     status: "retired",
+    legal_next_actions: [],
     ...(context.agent.cleanup_receipt
       ? { cleanup_receipt: context.agent.cleanup_receipt }
       : {
           reason: "legacy_retirement_without_receipt",
-          legal_next_actions: [],
         }),
   };
 }
@@ -853,13 +853,6 @@ export async function inspectAgentRetirement(agentId, dependencies = {}) {
   const registryDirectory = stateDirectory(env);
   const context = await lifecycleContext(registryDirectory, "agent", agentId);
   if (context.agent.status !== "active") {
-    if (context.agent.cleanup_receipt) {
-      return {
-        ...context,
-        status: "retired",
-        cleanup_receipt: context.agent.cleanup_receipt,
-      };
-    }
     return previouslyRetiredAgent(context);
   }
   const harness = retirementClient(context, env, dependencies);
@@ -881,13 +874,6 @@ export async function retireAgent(agentId, dependencies = {}) {
     async () => {
       const context = await lifecycleContext(registryDirectory, "agent", agentId);
       if (context.agent.status !== "active") {
-        if (context.agent.cleanup_receipt) {
-          return {
-            ...context,
-            status: "retired",
-            cleanup_receipt: context.agent.cleanup_receipt,
-          };
-        }
         return previouslyRetiredAgent(context);
       }
       const harness = retirementClient(context, env, dependencies);

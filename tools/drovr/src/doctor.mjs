@@ -327,7 +327,7 @@ async function managedRuntimeChecks({ env, run }) {
         if (retirement.status === "retireable_absence") {
           warnings.push(
             `${agent.id}: safely retireable absence; legal next action: ` +
-              `drovr agent retire ${agent.id}`,
+              retirementActionText(["retire_agent"], agent.id, agent.task_id),
           );
         } else if (retirement.status === "agent_present") {
           warnings.push(
@@ -335,13 +335,18 @@ async function managedRuntimeChecks({ env, run }) {
               `legal next action: ${retirementActionText(
                 ["retire_agent"],
                 agent.id,
+                agent.task_id,
               )}`,
           );
         } else {
           warnings.push(
             `${agent.id}: unresolved retirement uncertainty ` +
               `(${retirement.reason ?? "unknown"}); legal next action: ` +
-              `${retirementActionText(retirement.legal_next_actions, agent.id)}; ` +
+              `${retirementActionText(
+                retirement.legal_next_actions,
+                agent.id,
+                agent.task_id,
+              )}; ` +
               "shared Herdr sessions remain untouched",
           );
         }
@@ -362,6 +367,7 @@ async function managedRuntimeChecks({ env, run }) {
             `${retirementActionText(
               ["repair_herdr_compatibility_on_disposable_session"],
               agent.id,
+              agent.task_id,
             )}; ` +
             `observation failed: ${redactValue(error.message)}`,
         );
@@ -413,7 +419,7 @@ async function managedRuntimeChecks({ env, run }) {
   }];
 }
 
-function retirementActionText(actions, agentId) {
+function retirementActionText(actions, agentId, taskId) {
   const action = actions?.[0];
   switch (action) {
     case "retire_agent":
@@ -421,7 +427,9 @@ function retirementActionText(actions, agentId) {
     case "repair_herdr_compatibility_on_disposable_session":
       return "repair Herdr compatibility on a disposable session";
     case "reconcile_managed_agent_identity":
-      return `inspect with 'drovr agent get ${agentId}' and reconcile the managed agent identity before retrying retirement`;
+      return taskId
+        ? `inspect with 'drovr agent get ${agentId}'; if the pane was restored into a new task tab, run 'drovr task close ${taskId}' to reconcile it before retrying retirement`
+        : `inspect with 'drovr agent get ${agentId}' and reconcile the managed agent identity before retrying retirement`;
     case "inspect_exact_managed_pane":
       return `inspect with 'drovr agent get ${agentId}' and verify the exact managed pane before retrying retirement`;
     case "reconcile_exact_agent_retirement":

@@ -311,8 +311,9 @@ one.
 Retirement results use stable `legal_next_actions` tokens. `doctor` renders
 `retire_agent` as the exact `drovr agent retire AGENT_ID` command and renders
 uncertainty tokens as read-only inspection, identity reconciliation, or
-disposable-session repair procedures. No uncertainty action authorizes a pane
-close or a force retirement.
+disposable-session repair procedures. For a pane restored into a new task tab,
+doctor names `drovr task close TASK_ID` as the task-level reconciliation path.
+No uncertainty action authorizes a pane close or a force retirement.
 
 If the shared Herdr client and server are incompatible, repair compatibility in
 a uniquely named disposable Herdr session. Point a temporary Drovr

@@ -582,7 +582,9 @@ observations, protocol mismatch, session loss, pane remapping, identity drift,
 or any surviving or ambiguous pane return typed `uncertain` evidence and leave
 the lifecycle record active. Successful retirement stores a durable
 `drovr.agent-retirement-receipt/v1` cleanup receipt; repeating the command
-returns that same receipt without touching Herdr.
+returns that same receipt without touching Herdr. A present-pane receipt records
+`pane.before.topology_binding = "matched"` as the binding proof without
+persisting raw tab or workspace identifiers.
 Records retired by an older task or group cleanup remain idempotently retired;
 when no receipt was recorded, Drovr reports the legacy receipt gap without
 fabricating cleanup evidence.
@@ -590,8 +592,10 @@ fabricating cleanup evidence.
 Retirement results use stable `legal_next_actions` tokens. `doctor` renders
 those tokens as the exact public retirement command when retirement is legal,
 or as a read-only inspection, identity reconciliation, or disposable-session
-repair procedure when uncertainty remains. No uncertainty action authorizes a
-pane close or force retirement. `task close`, `group close`, and `attach`
+repair procedure when uncertainty remains. For a pane restored into a new task
+tab, `doctor` names `drovr task close TASK_ID` as the task-level reconciliation
+path. No uncertainty action authorizes a pane close or force retirement.
+`task close`, `group close`, and `attach`
 continue to qualify the current runtime without requiring a stale persisted
 launch binding. A present-pane `agent retire` branch also qualifies the current
 runtime immediately before closing the pane; the exact-absence branch never
