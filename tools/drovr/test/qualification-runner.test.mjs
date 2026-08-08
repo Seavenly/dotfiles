@@ -747,9 +747,20 @@ exit 5
 `,
   );
   let preflightCalls = 0;
+  let releaseFirstPreflight;
+  let firstPreflightEntered;
+  const firstPreflightReady = new Promise((resolvePromise) => {
+    firstPreflightEntered = resolvePromise;
+  });
+  const firstPreflightHold = new Promise((resolvePromise) => {
+    releaseFirstPreflight = resolvePromise;
+  });
   const trustPreflight = async ({ harnesses, workspace: exactWorkspace }) => {
     preflightCalls += 1;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    if (preflightCalls === 1) {
+      firstPreflightEntered();
+      await firstPreflightHold;
+    }
     return {
       ...trustPreflightNotRun({
         harnesses,
@@ -772,7 +783,16 @@ exit 5
     trustPreflight,
   });
 
-  const [first, second] = await Promise.all([run("first"), run("second")]);
+  const firstRun = run("first");
+  await firstPreflightReady;
+  const secondRun = run("second");
+  const second = await secondRun;
+  try {
+    assert.equal(preflightCalls, 1);
+  } finally {
+    releaseFirstPreflight();
+  }
+  const first = await firstRun;
   const evidence = await Promise.all(
     [first, second].map(({ scenarios }) =>
       readFile(scenarios[0].evidence, "utf8").then(JSON.parse),
