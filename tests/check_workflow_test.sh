@@ -10,4 +10,10 @@ install_step="$(awk '
   capture && /run:/ { print; exit }
 ' "$root/.github/workflows/check.yml")"
 assert_contains "$install_step" 'ripgrep'
+assert_contains "$install_step" 'fzf'
+linux_packages_step="$(awk '
+  /name: Install Linux shell dependencies/ { capture = 1; next }
+  capture && /run:/ { print; exit }
+' "$root/.github/workflows/check.yml")"
+assert_contains "$linux_packages_step" 'zsh'
 echo "ok - CI installs ripgrep before source validation"

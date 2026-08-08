@@ -29,8 +29,11 @@ jobs:
           version: 2026.7.5
           cache: false
           install: false
+      - name: Install Linux shell dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y zsh
       - name: Install validators from the lock
-        run: mise install --locked actionlint gitleaks shellcheck lua uv ripgrep
+        run: mise install --locked actionlint gitleaks shellcheck lua uv ripgrep fzf
       - name: Validate sources
         run: ./dotfiles check
       - name: Validate isolated-home dotfile plan
