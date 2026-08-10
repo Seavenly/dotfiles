@@ -742,6 +742,7 @@ export function createDurableRunAuthority({
       const parent = this.query(parentRunId);
       if (parent?.schema !== "flow.run-projection/v1" ||
           parent.phase !== "active" ||
+          parent.admission !== "admitted" ||
           parent.current_revision.ordinal !== revisionOrdinal ||
           !parent.subruns.some(({ card_id: linkedCardId,
             card_identity: linkedIdentity,
@@ -3559,6 +3560,7 @@ function validRecordedSubrunAdmission(parentRun, childRun, lineage) {
     : childRun.lineage;
   const childRunId = deriveChildRunId(lineage);
   return ["active", "cancelled"].includes(parent.phase) &&
+    parent.admission !== "suspended_after_reboot" &&
     recordedLineage?.schema === "flow.child-run-lineage/v1" &&
     recordedLineage.parent_run_id === lineage.parent_run_id &&
     recordedLineage.card_id === lineage.card_id &&

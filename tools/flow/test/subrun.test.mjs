@@ -210,6 +210,115 @@ test("post-reboot parent admission rechecks its effect without admitting its chi
     "admitted");
 });
 
+test("suspended parent authority seams cannot launch or admit a child", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-subrun-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    afterChildLaunchCommit() {
+      throw new Error("simulated loss after child commit");
+    },
+  });
+  const firstRuntime = subrunRuntime(firstAuthority);
+  const childProposal = registeredOperationProposal({ checkpointBound: false });
+  childProposal.requested_authority.commands.push("cancel");
+  const childLaunchRequest = confirmedLaunchRequest(
+    firstRuntime.prepare(childProposal),
+  );
+  const parentPrepared = firstRuntime.prepare(parentProposal(childLaunchRequest));
+  const parentLaunch = firstRuntime.launch(confirmedLaunchRequest(parentPrepared));
+  firstRuntime.command(firstRuntime.query({ run_id: parentLaunch.run_id })
+    .legal_actions.find(({ type }) => type === "subrun_execute"));
+  await until(() => firstRuntime.query().runs.length === 2);
+  const pendingParent = firstRuntime.query({ run_id: parentLaunch.run_id });
+  const pendingLink = pendingParent.subruns[0];
+  const lineage = {
+    schema: "flow.child-run-lineage/v1",
+    parent_run_id: parentLaunch.run_id,
+    card_id: pendingLink.card_id,
+    card_identity: pendingLink.card_identity,
+    revision_ordinal: pendingLink.revision_ordinal,
+  };
+  assert.equal(pendingLink.status, "admission_pending");
+  firstAuthority.close();
+
+  let rebooted;
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared, unresolvedEffects }) {
+        const observation = preparedObservation(prepared);
+        return {
+          ...observation,
+          time_facts: observation.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-b" } : fact),
+          effect_rechecks: unresolvedEffects.map((effect) => {
+            const child = rebooted.query({ run_id: pendingLink.child_run_id });
+            return {
+              schema: "flow.reboot-effect-recheck/v1",
+              effect_id: effect.effect_id,
+              idempotency_key: effect.idempotency_key,
+              classification: effect.classification,
+              operation_contract: effect.operation_contract,
+              recovery: "reconcile",
+              observed_status: "reconciling",
+              observation: {
+                schema: "flow.effect-observation/v1",
+                effect_id: effect.effect_id,
+                idempotency_key: effect.idempotency_key,
+                presence: "present",
+                causation: {
+                  effect_id: effect.effect_id,
+                  idempotency_key: effect.idempotency_key,
+                },
+                provider_observation: {
+                  child_run_id: child.run_id,
+                  child_phase: child.phase,
+                  child_watermark: child.watermark,
+                  proof: "exact_child_projection",
+                },
+              },
+            };
+          }),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  rebooted = subrunRuntime(rebootedAuthority);
+  const suspended = rebooted.query({ run_id: parentLaunch.run_id });
+  const beforeRunIndex = rebooted.query();
+
+  const launchRejection = rebootedAuthority.launchChild({
+    ...lineage,
+    launch_request: childLaunchRequest,
+  });
+  const admissionRejection = rebootedAuthority.recordSubrunAdmission(lineage);
+
+  assert.equal(launchRejection.code, "subrun_not_actionable");
+  assert.equal(admissionRejection.code, "subrun_admission_unproven");
+  assert.deepEqual(rebooted.query(), beforeRunIndex);
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id }).watermark,
+    suspended.watermark);
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id })
+    .stream_generation, suspended.stream_generation);
+  assert.equal(rebooted.command(suspended.legal_actions[0]).accepted, true);
+
+  const recovered = rebootedAuthority.launchChild({
+    ...lineage,
+    launch_request: childLaunchRequest,
+  });
+  assert.equal(recovered.schema, "flow.launch-receipt/v1");
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id })
+    .subruns[0].status, "active");
+  assert.equal(rebooted.query({ run_id: pendingLink.child_run_id }).admission,
+    "suspended_after_reboot");
+});
+
 test("same-boot replay adopts the exact nonterminal child", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-subrun-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
