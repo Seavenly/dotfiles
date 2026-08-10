@@ -33,6 +33,14 @@ assert_contains "$(cat "$drovr_review/agents/openai.yaml")" \
   'allow_implicit_invocation: false'
 echo "ok - drovr review requires explicit invocation"
 
+assert_contains "$(cat "$drovr_review/SKILL.md")" \
+  'argument-hint: "[--harness claude|codex] [--model <model>]'
+assert_contains "$(cat "$drovr_review/SKILL.md")" \
+  '[--effort low|medium|high|xhigh]"'
+assert_contains "$(cat "$drovr_review/SKILL.md")" \
+  '--capability unrestricted'
+echo "ok - drovr review takes optional launch flags and a full-access reviewer"
+
 implement_ticket="$root/config/agents/skills/implement-ticket"
 assert_contains "$(cat "$implement_ticket/SKILL.md")" \
   'argument-hint: "<issue-url>"'
