@@ -16,6 +16,34 @@ import {
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 
+test("prepare rejects malformed reboot time and subject facts at the public seam", () => {
+  const runtime = createTestRuntime();
+  const malformedTime = dynamicCheckpointProposal();
+  malformedTime.explicit_facts.time_facts = [{
+    kind: "wall_clock",
+    value_ms: 1_700_000_000_000,
+    uncertainty_ms: 0,
+    clock_source_id: "wall:host-a",
+  }];
+  assert.throws(
+    () => runtime.prepare(malformedTime),
+    /reboot time and subject facts are invalid/,
+  );
+
+  const malformedSubject = dynamicCheckpointProposal();
+  malformedSubject.explicit_facts.subject_generations = [{
+    schema: "flow.subject-generation/v1",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:flow",
+    generation: 1,
+    fingerprint: "not-a-digest",
+  }];
+  assert.throws(
+    () => runtime.prepare(malformedSubject),
+    /reboot time and subject facts are invalid/,
+  );
+});
+
 test("a typed capability grant resolves an exact blocked plan without losing grant history", () => {
   const runtime = createTestRuntime();
   const prepared = runtime.prepare(capabilityBlockedCheckpointProposal());

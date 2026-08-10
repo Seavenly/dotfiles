@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 15);
+  assert.equal(catalog.catalog_version, 18);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -100,6 +100,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.plan-revision-template/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
+    "flow.operation/tracker-progress/v1",
     "flow.operation/tracker-progress-github/v1",
     "flow.run-ownership/v1",
     "flow.tracker-binding/v1",
@@ -167,7 +168,9 @@ test("the public catalog exposes the settled interface and forbids legacy import
   });
   assert.deepEqual(catalog.flow_runtime.tracker_progress, {
     authority: "RunAuthority",
-    operation: "flow.operation/tracker-progress-github/v1",
+    operation: "flow.operation/tracker-progress/v1",
+    compatibility_operations: ["flow.operation/tracker-progress-github/v1"],
+    providers: ["github", "jira"],
     ownership: "flow.run-ownership/v1",
     binding: "flow.tracker-binding/v1",
     update: "flow.tracker-progress-update/v1",
@@ -223,6 +226,42 @@ test("the public catalog exposes the settled interface and forbids legacy import
     cancellation: "reconciled_request",
     late_unclaimed_output: "quarantined",
   });
+  assert.deepEqual(catalog.flow_runtime.reboot_admission, {
+    authority: "RunAuthority",
+    command: "reboot_admission",
+    revalidation: "flow.reboot-revalidation/v1",
+    effect_rechecks: "flow.reboot-effect-recheck/v1",
+    time_facts: [
+      "wall_clock",
+      "suspend_excluding_monotonic",
+      "boot",
+      "clock_source",
+    ],
+    subject_generations: "flow.subject-generation/v1",
+    stable_facts: [
+      "catalog_fingerprint",
+      "route_snapshot",
+      "capability_envelopes",
+      "operation_contracts",
+      "validator_contracts",
+      "resource_claims",
+      "limits",
+      "elapsed_seconds",
+      "subject_generations",
+    ],
+    unresolved_effect_policy: "exact_typed_recheck_required",
+    one_shot_recovery: "exact_present_adoption_only",
+    child_admission: "independent_run_authority",
+    uncertainty_policy: "straddle_accepted_elapsed_limit_blocks",
+  });
+  for (const contract of [
+    "flow.reboot-revalidation/v1",
+    "flow.reboot-effect-recheck/v1",
+    "flow.time-fact/v1",
+    "flow.subject-generation/v1",
+  ]) {
+    assert.equal(catalog.contracts.includes(contract), true, contract);
+  }
   assert.ok(catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
     "subrun_execute",
   ));

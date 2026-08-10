@@ -21,6 +21,7 @@ import {
 } from "../test-support/registered-operation.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
 import { createSubrunRegistration } from "../src/subrun-effects.mjs";
+import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { delegateCardProposal } from "../test-support/delegate-card.mjs";
 import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
@@ -100,6 +101,222 @@ test("a parent admits and claims one independently authoritative child run", asy
   assert.equal(parentComplete.subruns[0].child_watermark,
     childComplete.watermark);
   assert.deepEqual(parentComplete.legal_actions, []);
+});
+
+test("post-reboot parent admission rechecks its effect without admitting its child", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-subrun-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = subrunRuntime(firstAuthority);
+  const childProposal = registeredOperationProposal({ checkpointBound: false });
+  childProposal.requested_authority.commands.push("cancel");
+  const childPrepared = firstRuntime.prepare(childProposal);
+  const parentPrepared = firstRuntime.prepare(parentProposal(
+    confirmedLaunchRequest(childPrepared),
+  ));
+  const parentLaunch = firstRuntime.launch(confirmedLaunchRequest(parentPrepared));
+  firstRuntime.command(firstRuntime.query({ run_id: parentLaunch.run_id })
+    .legal_actions.find(({ type }) => type === "subrun_execute"));
+  await until(() => firstRuntime.query().runs.length === 2);
+  const childRunId = firstRuntime.query({ run_id: parentLaunch.run_id })
+    .subruns[0].child_run_id;
+  firstAuthority.close();
+
+  let rebooted;
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared, unresolvedEffects }) {
+        const observation = preparedObservation(prepared);
+        return {
+          ...observation,
+          time_facts: observation.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-b" } : fact),
+          effect_rechecks: unresolvedEffects.map((effect) => {
+            const child = rebooted.query({ run_id: childRunId });
+            return {
+              schema: "flow.reboot-effect-recheck/v1",
+              effect_id: effect.effect_id,
+              idempotency_key: effect.idempotency_key,
+              classification: effect.classification,
+              operation_contract: effect.operation_contract,
+              recovery: "reconcile",
+              observed_status: "reconciling",
+              observation: {
+                schema: "flow.effect-observation/v1",
+                effect_id: effect.effect_id,
+                idempotency_key: effect.idempotency_key,
+                presence: "present",
+                causation: {
+                  effect_id: effect.effect_id,
+                  idempotency_key: effect.idempotency_key,
+                },
+                provider_observation: {
+                  child_run_id: child.run_id,
+                  child_phase: child.phase,
+                  child_watermark: child.watermark,
+                  proof: "exact_child_projection",
+                },
+              },
+            };
+          }),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  rebooted = subrunRuntime(rebootedAuthority);
+  const parentSuspended = rebooted.query({ run_id: parentLaunch.run_id });
+  const childSuspended = rebooted.query({ run_id: childRunId });
+
+  assert.equal(parentSuspended.admission, "suspended_after_reboot");
+  assert.equal(childSuspended.admission, "suspended_after_reboot");
+  assert.deepEqual(parentSuspended.legal_actions.map(({ type }) => type), [
+    "reboot_admission",
+  ]);
+  assert.deepEqual(childSuspended.legal_actions.map(({ type }) => type), [
+    "reboot_admission",
+  ]);
+  assert.equal(parentSuspended.watermark,
+    parentSuspended.views.operator.authority_watermark);
+  assert.equal(childSuspended.watermark,
+    childSuspended.views.operator.authority_watermark);
+  assert.deepEqual(parentSuspended.views.operator.legal_actions,
+    parentSuspended.legal_actions);
+  assert.deepEqual(parentSuspended.reboot_revalidation,
+    parentSuspended.legal_actions[0].revalidation);
+  assert.deepEqual(parentSuspended.views.operator.reboot_revalidation,
+    parentSuspended.reboot_revalidation);
+
+  assert.equal(rebooted.command(parentSuspended.legal_actions[0]).accepted, true);
+  const parentAdmitted = rebooted.query({ run_id: parentLaunch.run_id });
+  assert.equal(parentAdmitted.admission, "admitted");
+  assert.equal(parentAdmitted.phase, "active");
+  const childStillSuspended = rebooted.query({ run_id: childRunId });
+  assert.equal(childStillSuspended.admission, "suspended_after_reboot");
+  assert.deepEqual(childStillSuspended.legal_actions.map(({ type }) => type), [
+    "reboot_admission",
+  ]);
+  assert.equal(rebooted.command(childStillSuspended.legal_actions[0]).accepted, true);
+  const childAdmitted = rebooted.query({ run_id: childRunId });
+  assert.equal(childAdmitted.admission, "admitted");
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id }).admission,
+    "admitted");
+});
+
+test("suspended parent authority seams cannot launch or admit a child", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-subrun-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    afterChildLaunchCommit() {
+      throw new Error("simulated loss after child commit");
+    },
+  });
+  const firstRuntime = subrunRuntime(firstAuthority);
+  const childProposal = registeredOperationProposal({ checkpointBound: false });
+  childProposal.requested_authority.commands.push("cancel");
+  const childLaunchRequest = confirmedLaunchRequest(
+    firstRuntime.prepare(childProposal),
+  );
+  const parentPrepared = firstRuntime.prepare(parentProposal(childLaunchRequest));
+  const parentLaunch = firstRuntime.launch(confirmedLaunchRequest(parentPrepared));
+  firstRuntime.command(firstRuntime.query({ run_id: parentLaunch.run_id })
+    .legal_actions.find(({ type }) => type === "subrun_execute"));
+  await until(() => firstRuntime.query().runs.length === 2);
+  const pendingParent = firstRuntime.query({ run_id: parentLaunch.run_id });
+  const pendingLink = pendingParent.subruns[0];
+  const lineage = {
+    schema: "flow.child-run-lineage/v1",
+    parent_run_id: parentLaunch.run_id,
+    card_id: pendingLink.card_id,
+    card_identity: pendingLink.card_identity,
+    revision_ordinal: pendingLink.revision_ordinal,
+  };
+  assert.equal(pendingLink.status, "admission_pending");
+  firstAuthority.close();
+
+  let rebooted;
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    declaredCapacity: 2,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared, unresolvedEffects }) {
+        const observation = preparedObservation(prepared);
+        return {
+          ...observation,
+          time_facts: observation.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-b" } : fact),
+          effect_rechecks: unresolvedEffects.map((effect) => {
+            const child = rebooted.query({ run_id: pendingLink.child_run_id });
+            return {
+              schema: "flow.reboot-effect-recheck/v1",
+              effect_id: effect.effect_id,
+              idempotency_key: effect.idempotency_key,
+              classification: effect.classification,
+              operation_contract: effect.operation_contract,
+              recovery: "reconcile",
+              observed_status: "reconciling",
+              observation: {
+                schema: "flow.effect-observation/v1",
+                effect_id: effect.effect_id,
+                idempotency_key: effect.idempotency_key,
+                presence: "present",
+                causation: {
+                  effect_id: effect.effect_id,
+                  idempotency_key: effect.idempotency_key,
+                },
+                provider_observation: {
+                  child_run_id: child.run_id,
+                  child_phase: child.phase,
+                  child_watermark: child.watermark,
+                  proof: "exact_child_projection",
+                },
+              },
+            };
+          }),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  rebooted = subrunRuntime(rebootedAuthority);
+  const suspended = rebooted.query({ run_id: parentLaunch.run_id });
+  const beforeRunIndex = rebooted.query();
+
+  const launchRejection = rebootedAuthority.launchChild({
+    ...lineage,
+    launch_request: childLaunchRequest,
+  });
+  const admissionRejection = rebootedAuthority.recordSubrunAdmission(lineage);
+
+  assert.equal(launchRejection.code, "subrun_not_actionable");
+  assert.equal(admissionRejection.code, "subrun_admission_unproven");
+  assert.deepEqual(rebooted.query(), beforeRunIndex);
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id }).watermark,
+    suspended.watermark);
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id })
+    .stream_generation, suspended.stream_generation);
+  assert.equal(rebooted.command(suspended.legal_actions[0]).accepted, true);
+
+  const recovered = rebootedAuthority.launchChild({
+    ...lineage,
+    launch_request: childLaunchRequest,
+  });
+  assert.equal(recovered.schema, "flow.launch-receipt/v1");
+  assert.equal(rebooted.query({ run_id: parentLaunch.run_id })
+    .subruns[0].status, "active");
+  assert.equal(rebooted.query({ run_id: pendingLink.child_run_id }).admission,
+    "suspended_after_reboot");
 });
 
 test("same-boot replay adopts the exact nonterminal child", async (t) => {

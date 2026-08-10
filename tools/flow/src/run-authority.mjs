@@ -742,6 +742,7 @@ export function createDurableRunAuthority({
       const parent = this.query(parentRunId);
       if (parent?.schema !== "flow.run-projection/v1" ||
           parent.phase !== "active" ||
+          parent.admission !== "admitted" ||
           parent.current_revision.ordinal !== revisionOrdinal ||
           !parent.subruns.some(({ card_id: linkedCardId,
             card_identity: linkedIdentity,
@@ -1450,6 +1451,7 @@ export function createDurableRunAuthority({
             "effect intent was not durably recorded by RunAuthority",
           );
         }
+        assertEffectRunAdmitted(stream, bootId);
         if (settleCancelled &&
             !["delegate", "delegate_cancellation"].includes(intent.effect_kind)) {
           throw new AuthorityFenceError(
@@ -1515,14 +1517,21 @@ export function createDurableRunAuthority({
           payload.type === "effect_invocation_started" &&
           payload.effect_id === intent.effect_id);
         let effectiveIntent = intent;
-        if (intent.authority_boot_id !== bootId) {
+        const crossedBootBoundary = intent.authority_boot_id !== bootId;
+        const effectPolicy = effectClassPolicy(intent.classification);
+        const crossBootRecoveryAllowed = reconciliation === null
+          ? effectPolicy?.can_repeat_across_epoch === true
+          : ["adopt_present", "invoke_absent", "settle_absent"].includes(
+              reconciliation,
+            );
+        if (crossedBootBoundary && !crossBootRecoveryAllowed) {
           throw new AuthorityFenceError(
             "stale_authority_epoch",
-            "effects cannot be adopted across a host reboot",
+            "effects require exact reconciliation across a host reboot",
           );
         }
-        if (intent.authority_epoch !== authorityEpoch) {
-          if (!effectClassPolicy(intent.classification)?.can_repeat_across_epoch &&
+        if (crossedBootBoundary || intent.authority_epoch !== authorityEpoch) {
+          if (!effectPolicy?.can_repeat_across_epoch &&
               reconciliation === null) {
             throw new AuthorityFenceError(
               "effect_reconciliation_required",
@@ -1536,7 +1545,7 @@ export function createDurableRunAuthority({
           });
         }
         if (previouslyInvoked &&
-            !effectClassPolicy(intent.classification)?.can_repeat_across_epoch &&
+            !effectPolicy?.can_repeat_across_epoch &&
             reconciliation === null) {
           throw new AuthorityFenceError(
             "effect_reconciliation_required",
@@ -1784,6 +1793,7 @@ export function createDurableRunAuthority({
             "effect observation is not bound to a recorded intent",
           );
         }
+        assertEffectRunAdmitted(stream, bootId);
         if (stream.records.some(({ payload }) =>
           payload.type === "effect_receipt_recorded" &&
           payload.effect_id === intent.effect_id)) {
@@ -2803,8 +2813,8 @@ function bindEffectIntent(intent, {
       run_ownership: runOwnership,
     }),
     resource_claims: resourceClaims,
-    time_facts: [],
-    subject_generations: [],
+    time_facts: facts.time_facts,
+    subject_generations: facts.subject_generations,
   });
 }
 
@@ -3142,9 +3152,9 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
   const admission = readStream(database, "host:admission")?.fold;
   if (!admission) throw new Error("authority admission stream is missing");
   const suspendedAfterReboot = stream.fold.phase === "active" &&
-    stream.lastBootId !== admission.boot_id;
+    !hasCurrentBootAdmission(stream, admission.boot_id);
   const revalidation = suspendedAfterReboot
-    ? rebootRevalidation(stream, rebootObservationAdapter)
+    ? rebootRevalidation(stream, rebootObservationAdapter, admission.boot_id)
     : null;
   const watermark = digest({
     schema: "flow.fenced-run-watermark/v1",
@@ -3152,9 +3162,6 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
     stream_generation: stream.generation,
     authority_epoch: admission.authority_epoch,
     authority_boot_id: admission.boot_id,
-    ...(revalidation === null ? {} : {
-      reboot_revalidation_digest: digest(revalidation),
-    }),
   });
   const legalActions = suspendedAfterReboot
     ? [{
@@ -3199,6 +3206,24 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
   });
 }
 
+function assertEffectRunAdmitted(stream, currentBootId) {
+  if (stream.fold.phase === "active" &&
+      !hasCurrentBootAdmission(stream, currentBootId)) {
+    throw new AuthorityFenceError(
+      "run_requires_reboot_admission",
+      "effect authority requires explicit admission after reboot",
+    );
+  }
+}
+
+function hasCurrentBootAdmission(stream, currentBootId) {
+  const crossedBootBoundary = stream.records.some(({ boot_id: recordBootId }) =>
+    recordBootId !== currentBootId);
+  return !crossedBootBoundary || stream.records.some(({ boot_id: recordBootId,
+    payload }) => recordBootId === currentBootId &&
+    payload.type === "run_admitted_after_reboot");
+}
+
 function projectFencedRun(database, stream, fenceRun) {
   return projectRun({
     authorityEventStreamDigest: stream.authorityEventStreamDigest,
@@ -3207,20 +3232,65 @@ function projectFencedRun(database, stream, fenceRun) {
   });
 }
 
-function rebootRevalidation(stream, adapter) {
+function rebootRevalidation(stream, adapter, currentBootId) {
   const prepared = stream.records[0].payload.prepared;
+  const currentFacts = {
+    resource_claims: stream.fold.resource_claims,
+    limits: stream.fold.limits,
+    elapsed_seconds: stream.fold.elapsed_seconds,
+  };
   const receipts = new Set(stream.records
     .filter(({ payload }) => payload.type === "effect_receipt_recorded")
     .map(({ payload }) => payload.effect_id));
-  const unresolvedEffects = stream.records
-    .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
-    .map(({ payload }) => payload.intent)
-    .filter(({ effect_id: effectId }) => !receipts.has(effectId));
+  const reconstruction = reconstructRebootEffects(stream);
   return buildRebootRevalidation({
     adapter,
+    currentBootId,
+    currentFacts,
     prepared,
-    unresolvedEffects,
+    unresolvedEffects: reconstruction.effects.filter((intent) =>
+      intent !== null && typeof intent === "object" &&
+      !receipts.has(intent.effect_id)),
+    unresolvedEffectsValid: reconstruction.valid,
   });
+}
+
+function reconstructRebootEffects(stream) {
+  const effects = new Map();
+  let valid = true;
+  for (const { payload } of stream.records) {
+    if (!EFFECT_INTENT_EVENT_TYPES.has(payload.type)) continue;
+    const intent = payload.intent;
+    const existing = effects.get(intent?.effect_id);
+    if (existing && !sameEffectIntentIdentity(existing.intent, intent)) {
+      valid = false;
+    }
+    if (!existing || payload.type === "effect_intent_adopted" ||
+        existing.type !== "effect_intent_adopted") {
+      effects.set(intent?.effect_id, { type: payload.type, intent });
+    }
+  }
+  return { effects: [...effects.values()].map(({ intent }) => intent), valid };
+}
+
+function sameEffectIntentIdentity(left, right) {
+  try {
+    return digest(effectIntentIdentity(left)) === digest(effectIntentIdentity(right));
+  } catch {
+    return false;
+  }
+}
+
+function effectIntentIdentity(intent) {
+  if (intent === null || typeof intent !== "object" || Array.isArray(intent)) {
+    return null;
+  }
+  const {
+    authority_epoch: _authorityEpoch,
+    authority_boot_id: _authorityBootId,
+    ...identity
+  } = intent;
+  return identity;
 }
 
 function durableUnknownRunRejection(operation, runId, database, commandType) {
@@ -3490,6 +3560,7 @@ function validRecordedSubrunAdmission(parentRun, childRun, lineage) {
     : childRun.lineage;
   const childRunId = deriveChildRunId(lineage);
   return ["active", "cancelled"].includes(parent.phase) &&
+    parent.admission !== "suspended_after_reboot" &&
     recordedLineage?.schema === "flow.child-run-lineage/v1" &&
     recordedLineage.parent_run_id === lineage.parent_run_id &&
     recordedLineage.card_id === lineage.card_id &&

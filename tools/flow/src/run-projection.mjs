@@ -2,7 +2,7 @@ import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
-import { TRACKER_PROGRESS_CONTRACT } from "./github-tracker-progress.mjs";
+import { isTrackerProgressContract } from "./tracker-progress.mjs";
 import { buildRunViews } from "./projection-builder.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
@@ -606,6 +606,9 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
       authority_boot_id: fold.authority_boot_id,
       stream_generation: fold.stream_generation,
     }),
+    ...(fold.reboot_revalidation === undefined ? {} : {
+      reboot_revalidation: fold.reboot_revalidation,
+    }),
     bundle_digest: fold.bundle_digest,
     plan_fingerprint: fold.plan_fingerprint,
     current_revision: fold.current_revision,
@@ -638,9 +641,9 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
 
 function trackerProgressActionIsCurrent({ activePlan, cards, operationId }) {
   const operation = activePlan.cards.find(({ id }) => id === operationId);
-  if (operation.executor.contract !== TRACKER_PROGRESS_CONTRACT) return true;
+  if (!isTrackerProgressContract(operation.executor.contract)) return true;
   return !activePlan.cards.some((candidate) =>
-    candidate.executor.contract === TRACKER_PROGRESS_CONTRACT &&
+    isTrackerProgressContract(candidate.executor.contract) &&
     candidate.inputs.sequence < operation.inputs.sequence &&
     !["completed", "superseded"].includes(
       cards.find(({ id }) => id === candidate.id)?.status,
@@ -658,7 +661,7 @@ function buildTrackerProgressProjection({
   runId,
 }) {
   const activeProgressCards = activePlan.cards
-    .filter(({ executor }) => executor.contract === TRACKER_PROGRESS_CONTRACT)
+    .filter(({ executor }) => isTrackerProgressContract(executor.contract))
     .filter((card) => cards.find(({ id }) => id === card.id)?.status !==
       "superseded")
     .sort((left, right) => left.inputs.sequence - right.inputs.sequence);

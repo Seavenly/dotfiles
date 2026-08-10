@@ -124,7 +124,9 @@ const OPERATION_EXECUTION = {
 };
 const TRACKER_PROGRESS = {
   authority: "RunAuthority",
-  operation: "flow.operation/tracker-progress-github/v1",
+  operation: "flow.operation/tracker-progress/v1",
+  compatibility_operations: ["flow.operation/tracker-progress-github/v1"],
+  providers: ["github", "jira"],
   ownership: "flow.run-ownership/v1",
   binding: "flow.tracker-binding/v1",
   update: "flow.tracker-progress-update/v1",
@@ -179,6 +181,34 @@ const SUBRUN_EXECUTION = {
   replay: "adopt_exact_child",
   cancellation: "reconciled_request",
   late_unclaimed_output: "quarantined",
+};
+const REBOOT_ADMISSION = {
+  authority: "RunAuthority",
+  command: "reboot_admission",
+  revalidation: "flow.reboot-revalidation/v1",
+  effect_rechecks: "flow.reboot-effect-recheck/v1",
+  time_facts: [
+    "wall_clock",
+    "suspend_excluding_monotonic",
+    "boot",
+    "clock_source",
+  ],
+  subject_generations: "flow.subject-generation/v1",
+  stable_facts: [
+    "catalog_fingerprint",
+    "route_snapshot",
+    "capability_envelopes",
+    "operation_contracts",
+    "validator_contracts",
+    "resource_claims",
+    "limits",
+    "elapsed_seconds",
+    "subject_generations",
+  ],
+  unresolved_effect_policy: "exact_typed_recheck_required",
+  one_shot_recovery: "exact_present_adoption_only",
+  child_admission: "independent_run_authority",
+  uncertainty_policy: "straddle_accepted_elapsed_limit_blocks",
 };
 const PROJECTION_BUILDER = {
   authority: "non_authoritative",
@@ -269,6 +299,7 @@ export async function loadContractCatalog({
     TRACKER_PROGRESS,
   ) || ![
     TRACKER_PROGRESS.operation,
+    ...TRACKER_PROGRESS.compatibility_operations,
     TRACKER_PROGRESS.ownership,
     TRACKER_PROGRESS.binding,
     TRACKER_PROGRESS.update,
@@ -308,6 +339,20 @@ export async function loadContractCatalog({
         SUBRUN_EXECUTION.execution_command,
       ) || !catalog.mechanism_adapters.includes("subrun")) {
     throw new Error("subrun execution contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.reboot_admission,
+    REBOOT_ADMISSION,
+  ) || ![
+    REBOOT_ADMISSION.revalidation,
+    REBOOT_ADMISSION.effect_rechecks,
+    REBOOT_ADMISSION.subject_generations,
+    "flow.time-fact/v1",
+  ].every((contract) => catalog.contracts.includes(contract)) ||
+      !catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
+        REBOOT_ADMISSION.command,
+      )) {
+    throw new Error("reboot admission contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.flow_runtime?.projection_builder,

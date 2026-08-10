@@ -15,6 +15,21 @@ import {
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
+test("reboot admission schemas compile in strict mode", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const names = [
+    "flow.time-fact.v1.schema.json",
+    "flow.subject-generation.v1.schema.json",
+    "flow.reboot-effect-recheck.v1.schema.json",
+    "flow.reboot-revalidation.v1.schema.json",
+  ];
+  const schemas = await Promise.all(names.map(async (name) =>
+    JSON.parse(await readFile(join(root, "schemas", name), "utf8"))));
+
+  for (const schema of schemas) ajv.addSchema(schema);
+  for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
+});
+
 test("Flow description schema accepts the current Drovr description shape", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const schema = JSON.parse(await readFile(
