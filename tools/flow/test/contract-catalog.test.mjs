@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 14);
+  assert.equal(catalog.catalog_version, 15);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -96,6 +96,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.plan-revision-template/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
+    "flow.operation/tracker-progress/v1",
     "flow.operation/tracker-progress-github/v1",
     "flow.run-ownership/v1",
     "flow.tracker-binding/v1",
@@ -147,7 +148,9 @@ test("the public catalog exposes the settled interface and forbids legacy import
   });
   assert.deepEqual(catalog.flow_runtime.tracker_progress, {
     authority: "RunAuthority",
-    operation: "flow.operation/tracker-progress-github/v1",
+    operation: "flow.operation/tracker-progress/v1",
+    compatibility_operations: ["flow.operation/tracker-progress-github/v1"],
+    providers: ["github", "jira"],
     ownership: "flow.run-ownership/v1",
     binding: "flow.tracker-binding/v1",
     update: "flow.tracker-progress-update/v1",

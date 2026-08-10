@@ -22,6 +22,8 @@ disabled, so this API does not authorize normal replacement launches.
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
   explicit preparation fact: revision admission checks a template's resulting
   cap against that bound value and does not observe ambient wall-clock time.
+  Catalog v15 adds Jira parity through the provider-neutral tracker progress
+  Adapter contract while preserving the authority-bound GitHub mechanism.
   Catalog v14 adds declared managed-agent reuse, exact-attempt independent
   fallback, caller-identified ordered steering, and recoverable delegate
   cancellation settlement. Catalog v13 adds disposable, exactly watermarked
@@ -443,21 +445,35 @@ launch policy still selects the legacy implementation.
 `PlanCompiler` and `LifecycleKernel` are pure Modules: their decisions depend
 only on their explicit arguments.
 
-## GitHub tracker progress
+## Tracker progress
 
-`createGitHubTrackerProgressOperation()` registers the reconcilable
-`flow.operation/tracker-progress-github/v1` mechanism. A confirmed dynamic
-plan may use it only with a confirmed `explicit_facts.tracker_binding` for a
+`createGitHubTrackerProgressOperation()` and
+`createJiraTrackerProgressOperation()` register the same reconcilable,
+versioned `flow.operation/tracker-progress/v1` Adapter contract. Provider
+identity is carried by the confirmed `flow.tracker-binding/v1` (`github` uses
+owner/repository/issue number and Jira uses project/issue number), while the
+FlowRuntime plan, ownership, effect, and reconciliation policy is shared. A
+runtime registers the returned
+`createTrackerProgressRegistrationBundle({ github: { driver }, jira: { driver } })`
+value as `registeredOperations`; the bundle installs both the
+provider-neutral Adapter and the cataloged
+`flow.operation/tracker-progress-github/v1` compatibility Adapter. Provider
+selection comes only from the confirmed tracker binding, existing v14 GitHub
+plans continue to dispatch and reconcile, and new plans use the provider-neutral
+contract. A
+confirmed dynamic plan may use it only with a confirmed tracker binding for a
 feature or epic. `RunAuthority` records whether launch created a top-level or
 child run, rejects tracker operations for authority-known children, and binds
 that ownership observation into every tracker intent. The Adapter never trusts
 caller-supplied top-level scope.
 
-The injected GitHub driver is a narrow provider port. `listComments` returns
+Each provider has a narrow injected comment driver. `listComments` returns
 `{ comments, complete: true }` only after exhausting every provider page;
 missing or false completeness fails closed. `createComment` and
 `updateComment` return the stored comment with a byte-exact body. An incomplete
-listing or altered write receipt cannot authorize or settle a mutation.
+listing or altered write receipt cannot authorize or settle a mutation. Jira's
+issue status, transitions, labels, and unrelated comments are provider state,
+not Flow lifecycle authority.
 
 Each update is bounded and writes one `flow.tracker-progress/v1` marker-bound
 comment. Later updates from the same run edit that comment in place. Duplicate
@@ -467,8 +483,9 @@ receipt recovery can adopt the exact provider mutation without reposting.
 Tracker-scoped mutation fencing serializes the observe-and-upsert boundary, so
 concurrent first writes cannot both create a comment under the sole runtime.
 Tracker progress operations must be graph leaves; their receipts cannot make
-another card ready. GitHub issue state and unrelated comment content are never
-read as lifecycle, scheduling, checkpoint, or acceptance authority.
+another card ready. GitHub issue state, Jira issue status, and unrelated
+comment content are never read as lifecycle, scheduling, checkpoint, or
+acceptance authority.
 
 Run `query` and `watch` expose the current
 `flow.tracker-progress-projection/v1`, including the exact run-authority

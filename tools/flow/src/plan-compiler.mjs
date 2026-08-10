@@ -13,9 +13,9 @@ import {
   registeredOperation,
 } from "./operation-effects.mjs";
 import {
-  TRACKER_PROGRESS_CONTRACT,
+  isTrackerProgressContract,
   validateTrackerProgressBinding,
-} from "./github-tracker-progress.mjs";
+} from "./tracker-progress.mjs";
 import {
   SUBRUN_CONTRACT,
   SUBRUN_RECEIPT_VALIDATOR,
@@ -898,7 +898,7 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
-  if (card.executor.contract === TRACKER_PROGRESS_CONTRACT) {
+  if (isTrackerProgressContract(card.executor.contract)) {
     try {
       validateTrackerProgressBinding(proposal);
     } catch (error) {

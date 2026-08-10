@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 14,
+  "catalog_version": 15,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -83,7 +83,14 @@
     },
     "tracker_progress": {
       "authority": "RunAuthority",
-      "operation": "flow.operation/tracker-progress-github/v1",
+      "operation": "flow.operation/tracker-progress/v1",
+      "compatibility_operations": [
+        "flow.operation/tracker-progress-github/v1"
+      ],
+      "providers": [
+        "github",
+        "jira"
+      ],
       "ownership": "flow.run-ownership/v1",
       "binding": "flow.tracker-binding/v1",
       "update": "flow.tracker-progress-update/v1",
@@ -327,6 +334,7 @@
     "flow.child-run-lineage/v1",
     "flow.subrun/create-and-observe/v1",
     "flow.validator/subrun-receipt/v1",
+    "flow.operation/tracker-progress/v1",
     "flow.operation/tracker-progress-github/v1",
     "flow.run-ownership/v1",
     "flow.tracker-binding/v1",

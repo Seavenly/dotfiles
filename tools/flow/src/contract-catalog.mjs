@@ -102,7 +102,9 @@ const OPERATION_EXECUTION = {
 };
 const TRACKER_PROGRESS = {
   authority: "RunAuthority",
-  operation: "flow.operation/tracker-progress-github/v1",
+  operation: "flow.operation/tracker-progress/v1",
+  compatibility_operations: ["flow.operation/tracker-progress-github/v1"],
+  providers: ["github", "jira"],
   ownership: "flow.run-ownership/v1",
   binding: "flow.tracker-binding/v1",
   update: "flow.tracker-progress-update/v1",
@@ -227,6 +229,7 @@ export async function loadContractCatalog({
     TRACKER_PROGRESS,
   ) || ![
     TRACKER_PROGRESS.operation,
+    ...TRACKER_PROGRESS.compatibility_operations,
     TRACKER_PROGRESS.ownership,
     TRACKER_PROGRESS.binding,
     TRACKER_PROGRESS.update,
