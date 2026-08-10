@@ -518,6 +518,8 @@ function trackerProgressProposal(cards) {
       operation_contracts: [TRACKER_PROGRESS_CONTRACT],
       validator_contracts: ["flow.validator/operation-receipt/v1"],
       block_observations: [],
+      time_facts: [],
+      subject_generations: [],
       tracker_binding: {
         schema: "flow.tracker-binding/v1",
         flow: "feature",

@@ -33,6 +33,9 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
   const common = {
     run_id: fold.run_id,
     authority_watermark: fold.watermark,
+    ...(fold.reboot_revalidation === undefined ? {} : {
+      reboot_revalidation: fold.reboot_revalidation,
+    }),
   };
   const admission = fold.admission ??
     (fold.phase === "active" ? "admitted" : "released");

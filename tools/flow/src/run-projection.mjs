@@ -606,6 +606,9 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
       authority_boot_id: fold.authority_boot_id,
       stream_generation: fold.stream_generation,
     }),
+    ...(fold.reboot_revalidation === undefined ? {} : {
+      reboot_revalidation: fold.reboot_revalidation,
+    }),
     bundle_digest: fold.bundle_digest,
     plan_fingerprint: fold.plan_fingerprint,
     current_revision: fold.current_revision,

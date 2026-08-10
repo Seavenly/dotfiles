@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.subject-generation.v1.schema.json",
+  "title": "flow.subject-generation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract", "subject_id", "generation", "fingerprint"],
+  "properties": {
+    "schema": { "const": "flow.subject-generation/v1" },
+    "contract": { "type": "string", "minLength": 1 },
+    "subject_id": { "type": "string", "minLength": 1 },
+    "generation": { "type": "integer", "minimum": 0 },
+    "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

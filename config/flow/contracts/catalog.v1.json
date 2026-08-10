@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 14,
+  "catalog_version": 16,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -137,6 +137,34 @@
       "replay": "adopt_exact_child",
       "cancellation": "reconciled_request",
       "late_unclaimed_output": "quarantined"
+    },
+    "reboot_admission": {
+      "authority": "RunAuthority",
+      "command": "reboot_admission",
+      "revalidation": "flow.reboot-revalidation/v1",
+      "effect_rechecks": "flow.reboot-effect-recheck/v1",
+      "time_facts": [
+        "wall_clock",
+        "suspend_excluding_monotonic",
+        "boot",
+        "clock_source"
+      ],
+      "subject_generations": "flow.subject-generation/v1",
+      "stable_facts": [
+        "catalog_fingerprint",
+        "route_snapshot",
+        "capability_envelopes",
+        "operation_contracts",
+        "validator_contracts",
+        "resource_claims",
+        "limits",
+        "elapsed_seconds",
+        "subject_generations"
+      ],
+      "unresolved_effect_policy": "exact_typed_recheck_required",
+      "one_shot_recovery": "exact_present_adoption_only",
+      "child_admission": "independent_run_authority",
+      "uncertainty_policy": "straddle_accepted_elapsed_limit_blocks"
     },
     "projection_builder": {
       "authority": "non_authoritative",
@@ -327,6 +355,10 @@
     "flow.child-run-lineage/v1",
     "flow.subrun/create-and-observe/v1",
     "flow.validator/subrun-receipt/v1",
+    "flow.reboot-revalidation/v1",
+    "flow.reboot-effect-recheck/v1",
+    "flow.time-fact/v1",
+    "flow.subject-generation/v1",
     "flow.operation/tracker-progress-github/v1",
     "flow.run-ownership/v1",
     "flow.tracker-binding/v1",

@@ -15,6 +15,10 @@ disabled, so this API does not authorize normal replacement launches.
   Optional `flow.plan-revision-template/v1` values are part of that confirmed
   identity. Each template is bound to a typed card block and declares its
   complete card, edge, supersession, capability, resource, and limit changes.
+  `explicit_facts.time_facts` carries the typed wall-clock,
+  suspend-excluding-monotonic, boot, and clock-source readings, while
+  `explicit_facts.subject_generations` carries exact generation fingerprints;
+  both arrays are canonicalized into the prepared bundle.
   A block is admitted only from digest-bound
   `flow.card-block-observation/v1` evidence naming the registered Adapter and
   validator contracts. Revision templates declare their own application cap,
@@ -24,7 +28,18 @@ disabled, so this API does not authorize normal replacement launches.
   cap against that bound value and does not observe ambient wall-clock time.
   Catalog v14 adds declared managed-agent reuse, exact-attempt independent
   fallback, caller-identified ordered steering, and recoverable delegate
-  cancellation settlement. Catalog v13 adds disposable, exactly watermarked
+  cancellation settlement. Catalog v15 adds typed reboot admission with exact
+  contract, route, resource, subject-generation, and unresolved-effect
+  revalidation plus uncertainty-safe elapsed limits. Catalog v16 binds the
+  current revision resource and limit facts and permits exact positive
+  one-shot adoption while retaining fail-closed absence and uncertainty.
+  Each unresolved effect must have a typed
+  `flow.reboot-effect-recheck/v1` record with exact identity, current
+  non-indeterminate evidence, and the recovery classification declared by its
+  effect policy. Exact present or absent evidence is allowed for safe
+  non-one-shot classes; one-shot uncertain effects require exact present
+  evidence and never retry on absence. Catalog
+  v13 adds disposable, exactly watermarked
   Kanban, graph, timeline, trust, and operator projections rebuilt from
   `RunAuthority`, plus independently authoritative child-run creation,
   deterministic lineage, exact adoption, reconciled parent cancellation, and
@@ -221,8 +236,9 @@ disabled, so this API does not authorize normal replacement launches.
   `flow.operator-projection/v1`. These immutable views expose the exact run
   watermark and the operator-facing lifecycle, admission, revision, readiness,
   route, capability, checkpoint, attempt, effect, resource, handoff, and legal
-  action facts relevant to each form. They are derived on every query or watch
-  observation, are never persisted as lifecycle authority, and may be deleted
+  action facts relevant to each form. During reboot admission they also expose
+  the exact `flow.reboot-revalidation/v1` record. They are derived on every
+  query or watch observation, are never persisted as lifecycle authority, and may be deleted
   and rebuilt without losing or inventing run state.
   Timeline entry kinds are `lifecycle`, `checkpoint`, `readiness`,
   `capability`, `revision`, `effect`, `attempt`, `handoff`, and the
@@ -403,26 +419,37 @@ provider diagnostics are retained while causation is cleared.
 Same-boot process replacement increments the epoch, replays every active run,
 and automatically dispatches each exact outstanding recovery action before
 considering new work on that run. Read-only and caller-idempotent effects repeat
-their committed identity. Reconcilable and one-shot effects observe first;
+their committed identity. After reboot admission, those two classes may repeat
+that same identity in the current epoch and boot. Reconcilable and one-shot
+effects observe first;
 only affirmative exact absence permits a declared reconcilable invocation,
 while uncertain absence remains reconciling. A boot identity change instead
 projects `suspended_after_reboot`; the sole lifecycle action is the exact typed
-`reboot_admission` command. That action binds the catalog, routes, capability
-envelopes, operation and validator contracts, resource claims, time facts,
-subject generations, unresolved effects, stream generation, boot, and epoch.
+  `reboot_admission` command. That action binds the catalog, routes, capability
+  envelopes, operation and validator contracts, current revision resource and
+  limit facts, time facts, subject generations, unresolved effects, stream
+  generation, boot, and epoch.
+Fresh Adapter observations are not part of the authority watermark; a changed
+observation refreshes the bound action and rejects an older action by its exact
+revalidation while preserving the stream watermark.
 An active run whose authority cannot be projected or whose registered operation
 cannot be dispatched retains its pending recovery without blocking independent
 runs; a later compatible Interface may resume that exact run.
 The mechanism Adapter refreshes those observations at admission. Its
-revalidation record keeps prepared facts under `expected`, current facts under
-`observed`, and records `observed: null` when no exact current observation is
-available; any drift rejects the command. The checkpoint and operation tracer has no
-applicable time facts or subject generations, so its exact prepared binding for
-both categories is the empty list. Durable construction fails reboot admission
-closed until that
+revalidation record keeps authoritative current facts under `expected`, current
+Adapter facts under `observed`, and records `observed: null` when no exact
+current observation is available; any drift rejects the command. Wall-clock, suspend-excluding
+monotonic, boot, and clock-source identity enter policy only as typed
+`flow.time-fact/v1` values. Stable contracts, routes, resources, and exact
+`flow.subject-generation/v1` values compare exactly. When an elapsed limit is
+declared, lower and upper elapsed bounds are evaluated deterministically;
+uncertainty that could cross the accepted limit blocks admission rather than
+guessing. Durable construction fails reboot admission closed until that
 current-observation Adapter is configured. An unresolved effect from a prior
 boot remains deliberately fenced, keeps its capacity reservation, and requires
-explicit admission before cancellation or reconciliation. The shipped
+an exact typed current recheck or settlement before admission;
+indeterminate or unrechecked effects remain blocked. Parent and child run
+records expose and accept only their own reboot action. The shipped
 `LifecycleKernel` emits effect intents only for registered operation cards.
 Each run is admitted independently. Run
 watermarks bind the run stream generation and current authority epoch, while host
@@ -557,11 +584,16 @@ that rule with attempted Drovr-authored cards and terminal events.
 The managed sources under `config/flow/` are:
 
 - `contracts/catalog.v1.json` - public contract names, the five
-  `FlowRuntime` operations, authority ownership, and the initial no-import
-  decision. Any future import registration must name both an adapter contract
-  and validation-receipt contract. Its receipt must bind the exact imported
+  `FlowRuntime` operations, authority ownership, and the reboot-admission
+  typed-fact and uncertainty policy. Any future import registration must name
+  both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
   bytes by digest, pass every required validation, and select only the catalog's
   positive `artifact_bytes` subject.
+- `schemas/flow.time-fact.v1.schema.json`,
+  `schemas/flow.subject-generation.v1.schema.json`,
+  `schemas/flow.reboot-effect-recheck.v1.schema.json`, and
+  `schemas/flow.reboot-revalidation.v1.schema.json` - typed reboot facts,
+  unresolved-effect evidence, and the exact revalidation record.
 - `schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json` - the
   public lifecycle result shape, including authority and discovery watermarks,
   delegation identity, turn evidence, and legal next actions.

@@ -16,10 +16,16 @@ import {
   capabilityBlockedCheckpointProposal,
   confirmedLaunchRequest,
   dynamicCheckpointProposal,
+  revisionBlockedCheckpointProposal,
   repeatedRevisionCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  operationReceipt,
+  registeredOperationProposal,
+  TEST_OPERATION_CONTRACT,
+} from "../test-support/registered-operation.mjs";
 
 test("a launched run and its authority projection survive process replacement", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
@@ -261,8 +267,11 @@ test("reboot admission rejects any drift from the complete revalidation", async 
     "operation_contracts",
     "validator_contracts",
     "resource_claims",
+    "limits",
+    "elapsed_seconds",
     "time_facts",
     "subject_generations",
+    "effect_rechecks",
   ]) {
     const changed = structuredClone(action);
     changed.revalidation.observed[field] = field.endsWith("fingerprint")
@@ -318,6 +327,7 @@ test("reboot admission uses current Adapter observations", async (t) => {
           resource_claims: facts.resource_claims,
           time_facts: [],
           subject_generations: [],
+          effect_rechecks: [],
         };
       },
     },
@@ -364,6 +374,526 @@ test("reboot admission fails closed without a current-observation Adapter", asyn
     "reboot_revalidation_failed",
   );
 });
+
+test("reboot admission rechecks typed time facts and subject generations", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = dynamicCheckpointProposal();
+  proposal.explicit_facts.time_facts = [
+    {
+      schema: "flow.time-fact/v1",
+      kind: "wall_clock",
+      value_ms: 1_700_000_000_000,
+      uncertainty_ms: 0,
+      clock_source_id: "wall:host-a",
+    },
+    {
+      schema: "flow.time-fact/v1",
+      kind: "suspend_excluding_monotonic",
+      value_ns: "42000000000",
+      uncertainty_ns: "0",
+      clock_source_id: "mono:host-a",
+    },
+    {
+      schema: "flow.time-fact/v1",
+      kind: "boot",
+      boot_id: "boot-a",
+    },
+    {
+      schema: "flow.time-fact/v1",
+      kind: "clock_source",
+      identity: "clockset:host-a:v1",
+    },
+  ];
+  proposal.explicit_facts.subject_generations = [{
+    schema: "flow.subject-generation/v1",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:flow",
+    generation: 7,
+    fingerprint: `sha256:${"a".repeat(64)}`,
+  }];
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared }) {
+        const observed = preparedObservation(prepared);
+        return {
+          ...observed,
+          time_facts: prepared.explicit_facts.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-b" } : fact),
+          subject_generations: prepared.explicit_facts.subject_generations,
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({ runAuthority: rebootedAuthority });
+  const action = rebooted.query({ run_id: launch.run_id }).legal_actions[0];
+
+  assert.deepEqual(
+    action.revalidation.expected.time_facts,
+    prepared.explicit_facts.time_facts,
+  );
+  assert.deepEqual(
+    action.revalidation.expected.subject_generations,
+    prepared.explicit_facts.subject_generations,
+  );
+  assert.equal(rebooted.command(action).accepted, true);
+});
+
+test("reboot admission rejects an exhausted elapsed limit without typed time facts", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = dynamicCheckpointProposal();
+  proposal.explicit_facts.time_facts = [];
+  proposal.explicit_facts.elapsed_seconds = 10;
+  proposal.explicit_facts.limits.max_elapsed_seconds = 10;
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: preparedRebootObservation(),
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({ runAuthority: rebootedAuthority });
+  const suspended = rebooted.query({ run_id: launch.run_id });
+
+  assert.equal(suspended.reboot_revalidation.valid, false);
+  assert.equal(
+    rebooted.command(suspended.legal_actions[0]).code,
+    "reboot_revalidation_failed",
+  );
+});
+
+test("reboot admission rechecks current facts after a nonterminal plan revision", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = revisionBlockedCheckpointProposal();
+  proposal.explicit_facts.elapsed_seconds = 10;
+  proposal.explicit_facts.time_facts = rebootTimeFacts({
+    wallValueMs: 1_700_000_000_000,
+    wallUncertaintyMs: 0,
+    monotonicValueNs: "1000000000",
+    monotonicUncertaintyNs: "0",
+    bootId: "boot-a",
+  });
+  proposal.revision_templates[0].changes.limit_changes.max_elapsed_seconds = 120;
+
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  let projection = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(firstRuntime.command(projection.legal_actions.find(
+    ({ type }) => type === "capability_grant",
+  )).accepted, true);
+  projection = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(firstRuntime.command(projection.legal_actions.find(
+    ({ type, checkpoint_id: checkpointId, decision }) =>
+      type === "checkpoint_decision" && checkpointId === "confirm-scope" &&
+      decision === "approve",
+  )).accepted, true);
+  projection = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(firstRuntime.command(projection.legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "accept",
+  )).accepted, true);
+  const revised = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(revised.current_revision.ordinal, 1);
+  assert.deepEqual(revised.resource_claims, [{ kind: "artifact", id: "revised-plan" }]);
+  assert.equal(revised.limits.max_elapsed_seconds, 120);
+  firstAuthority.close();
+
+  let useCurrentFacts = false;
+  let observedCurrentFacts;
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared: observedPrepared, currentFacts }) {
+        observedCurrentFacts = structuredClone(currentFacts);
+        const observation = preparedObservation(observedPrepared);
+        return {
+          ...observation,
+          resource_claims: useCurrentFacts
+            ? currentFacts.resource_claims
+            : observation.resource_claims,
+          limits: useCurrentFacts ? currentFacts.limits : observation.limits,
+          elapsed_seconds: useCurrentFacts
+            ? currentFacts.elapsed_seconds
+            : observation.elapsed_seconds,
+          time_facts: rebootTimeFacts({
+            wallValueMs: 1_700_000_005_000,
+            wallUncertaintyMs: 0,
+            monotonicValueNs: "1000",
+            monotonicUncertaintyNs: "1",
+            bootId: "boot-b",
+          }),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({ runAuthority: rebootedAuthority });
+  const stale = rebooted.query({ run_id: launch.run_id });
+
+  assert.deepEqual(observedCurrentFacts, {
+    resource_claims: revised.resource_claims,
+    limits: revised.limits,
+    elapsed_seconds: prepared.explicit_facts.elapsed_seconds,
+  });
+  assert.deepEqual(stale.reboot_revalidation.expected.resource_claims,
+    revised.resource_claims);
+  assert.deepEqual(stale.reboot_revalidation.expected.limits, revised.limits);
+  assert.equal(stale.reboot_revalidation.expected.elapsed_seconds,
+    prepared.explicit_facts.elapsed_seconds);
+  assert.equal(stale.reboot_revalidation.valid, false);
+  assert.equal(
+    rebooted.command(stale.legal_actions[0]).code,
+    "reboot_revalidation_failed",
+  );
+
+  useCurrentFacts = true;
+  const current = rebooted.query({ run_id: launch.run_id });
+  assert.equal(current.reboot_revalidation.valid, true);
+  assert.equal(rebooted.command(current.legal_actions[0]).accepted, true);
+});
+
+test("reboot admission blocks an elapsed limit when time uncertainty straddles it and recovers", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = dynamicCheckpointProposal();
+  proposal.explicit_facts.elapsed_seconds = 0;
+  proposal.explicit_facts.limits.max_elapsed_seconds = 10;
+  proposal.explicit_facts.time_facts = rebootTimeFacts({
+    wallValueMs: 1_700_000_000_000,
+    wallUncertaintyMs: 0,
+    monotonicValueNs: "1000000000",
+    monotonicUncertaintyNs: "0",
+    bootId: "boot-a",
+  });
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstAuthority.close();
+
+  let wallUncertaintyMs = 1_000;
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared: observedPrepared }) {
+        return {
+          ...preparedObservation(observedPrepared),
+          time_facts: rebootTimeFacts({
+            wallValueMs: 1_700_000_009_500,
+            wallUncertaintyMs,
+            monotonicValueNs: "1000",
+            monotonicUncertaintyNs: "1",
+            bootId: "boot-b",
+          }),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({ runAuthority: rebootedAuthority });
+  const uncertain = rebooted.query({ run_id: launch.run_id });
+
+  assert.equal(uncertain.admission, "suspended_after_reboot");
+  assert.equal(uncertain.legal_actions[0].revalidation.valid, false);
+  assert.equal(
+    rebooted.command(uncertain.legal_actions[0]).code,
+    "reboot_revalidation_failed",
+  );
+
+  wallUncertaintyMs = 0;
+  const recovered = rebooted.query({ run_id: launch.run_id });
+  assert.equal(recovered.legal_actions[0].revalidation.valid, true);
+  assert.equal(rebooted.command(recovered.legal_actions[0]).accepted, true);
+  assert.equal(rebooted.query({ run_id: launch.run_id }).admission, "admitted");
+});
+
+test("reboot observation refresh keeps the authority watermark stable", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = dynamicCheckpointProposal();
+  proposal.explicit_facts.elapsed_seconds = 0;
+  proposal.explicit_facts.limits.max_elapsed_seconds = 10;
+  proposal.explicit_facts.time_facts = rebootTimeFacts({
+    wallValueMs: 1_700_000_000_000,
+    wallUncertaintyMs: 0,
+    monotonicValueNs: "1000000000",
+    monotonicUncertaintyNs: "0",
+    bootId: "boot-a",
+  });
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstAuthority.close();
+
+  let wallValueMs = 1_700_000_005_000;
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared: observedPrepared }) {
+        return {
+          ...preparedObservation(observedPrepared),
+          time_facts: rebootTimeFacts({
+            wallValueMs,
+            wallUncertaintyMs: 0,
+            monotonicValueNs: "1000",
+            monotonicUncertaintyNs: "1",
+            bootId: "boot-b",
+          }),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({ runAuthority: rebootedAuthority });
+  const first = rebooted.query({ run_id: launch.run_id });
+
+  wallValueMs += 1_000;
+  const refreshed = rebooted.query({ run_id: launch.run_id });
+
+  assert.equal(refreshed.watermark, first.watermark);
+  assert.notDeepEqual(
+    refreshed.legal_actions[0].revalidation,
+    first.legal_actions[0].revalidation,
+  );
+  assert.equal(
+    rebooted.command(first.legal_actions[0]).code,
+    "stale_reboot_admission",
+  );
+  assert.equal(rebooted.command(refreshed.legal_actions[0]).accepted, true);
+});
+
+test("reboot admission accepts exact absent evidence before FlowRuntime recovery", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let firstInvocationStarted = false;
+  let invocationMode = "lost";
+  let recoveredInvocationCount = 0;
+  const lifecycle = (fold, command) =>
+    ["recovery", "reboot_admission"].includes(command.type)
+    ? decideLifecycle(fold, command)
+    : effectLifecycle(fold, command, "reconcilable");
+  const registration = {
+    classification: "reconcilable",
+    observe(intent) {
+      return {
+        schema: "flow.effect-observation/v1",
+        effect_id: intent.effect_id,
+        idempotency_key: intent.idempotency_key,
+        presence: "absent",
+        causation: null,
+        provider_observation: {
+          found: false,
+          proof: "exact_absence",
+        },
+      };
+    },
+    invoke(intent) {
+      if (invocationMode === "lost") {
+        firstInvocationStarted = true;
+        return new Promise(() => {});
+      }
+      recoveredInvocationCount += 1;
+      return operationReceipt(intent);
+    },
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: lifecycle,
+  });
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredOperations: { "flow.operation/test/v1": registration },
+  });
+  const launch = launchDistinctRun(firstRuntime, "5");
+  assert.equal(firstRuntime.command(
+    firstRuntime.query({ run_id: launch.run_id }).legal_actions[0],
+  ).accepted, true);
+  await until(() => firstInvocationStarted);
+  firstAuthority.close();
+  invocationMode = "recover";
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    lifecycleKernel: lifecycle,
+    rebootObservationAdapter: {
+      observe({ prepared, unresolvedEffects }) {
+        return {
+          ...withRebootBoot(preparedObservation(prepared), "boot-b"),
+          effect_rechecks: unresolvedEffects.map((effect) => ({
+            schema: "flow.reboot-effect-recheck/v1",
+            effect_id: effect.effect_id,
+            idempotency_key: effect.idempotency_key,
+            classification: effect.classification,
+            operation_contract: effect.operation_contract,
+            recovery: "reconcile",
+            observed_status: "reconciling",
+            observation: {
+              schema: "flow.effect-observation/v1",
+              effect_id: effect.effect_id,
+              idempotency_key: effect.idempotency_key,
+              presence: "absent",
+              causation: null,
+              provider_observation: {
+                found: false,
+                proof: "exact_absence",
+              },
+            },
+          })),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({
+    runAuthority: rebootedAuthority,
+    registeredOperations: { "flow.operation/test/v1": registration },
+  });
+  const suspended = rebooted.query({ run_id: launch.run_id });
+  assert.equal(suspended.reboot_revalidation.valid, true);
+  assert.equal(rebooted.command(suspended.legal_actions[0]).accepted, true);
+
+  const admitted = rebooted.query({ run_id: launch.run_id });
+  const recovery = admitted.legal_actions.find(({ type }) => type === "recovery");
+  assert.equal(recovery.recovery, "reconcile");
+  assert.equal(rebooted.command(recovery).accepted, true);
+  await until(() => rebooted.query({ run_id: launch.run_id }).phase === "succeeded");
+  const completed = rebooted.query({ run_id: launch.run_id });
+  assert.equal(completed.effects[0].idempotency_key,
+    admitted.effects[0].idempotency_key);
+  assert.equal(recoveredInvocationCount, 1);
+});
+
+test("reboot admission adopts exact one-shot presence without reinvocation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let invocationCount = 0;
+  let originalIntent;
+  const presentObservation = (intent) => ({
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "present",
+    causation: {
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+    },
+    provider_observation: { provider_id: "accepted-once" },
+  });
+  const registration = {
+    classification: "one_shot_uncertain",
+    observe: presentObservation,
+    invoke(intent) {
+      invocationCount += 1;
+      originalIntent = intent;
+      throw new Error("receipt lost after one-shot effect");
+    },
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration },
+  });
+  const prepared = firstRuntime.prepare(registeredOperationProposal({
+    classification: "one_shot_uncertain",
+  }));
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(firstRuntime.command(
+    firstRuntime.query({ run_id: launch.run_id }).legal_actions.find(
+      ({ decision }) => decision === "approve",
+    ),
+  ).accepted, true);
+  await until(() => invocationCount === 1);
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared: observedPrepared, unresolvedEffects }) {
+        return {
+          ...withRebootBoot(preparedObservation(observedPrepared), "boot-b"),
+          effect_rechecks: unresolvedEffects.map((effect) => ({
+            schema: "flow.reboot-effect-recheck/v1",
+            effect_id: effect.effect_id,
+            idempotency_key: effect.idempotency_key,
+            classification: effect.classification,
+            operation_contract: effect.operation_contract,
+            recovery: "reconcile",
+            observed_status: "uncertain",
+            observation: presentObservation(effect),
+          })),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({
+    runAuthority: rebootedAuthority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration },
+  });
+  const suspended = rebooted.query({ run_id: launch.run_id });
+  assert.equal(suspended.reboot_revalidation.valid, true);
+  assert.equal(rebooted.command(suspended.legal_actions[0]).accepted, true);
+
+  const admitted = rebooted.query({ run_id: launch.run_id });
+  const recovery = admitted.legal_actions.find(({ type }) => type === "recovery");
+  assert.equal(recovery.recovery, "reconcile");
+  assert.equal(rebooted.command(recovery).accepted, true);
+  await until(() => rebooted.query({ run_id: launch.run_id }).phase === "succeeded");
+  const completed = rebooted.query({ run_id: launch.run_id });
+  assert.equal(invocationCount, 1);
+  assert.equal(completed.effects[0].effect_id, originalIntent.effect_id);
+  assert.equal(completed.effects[0].receipt.provider_receipt.provider_id,
+    "accepted-once");
+});
+
+for (const classification of ["read_only", "caller_idempotent"]) {
+  test(`cross-boot ${classification} repeat-exact recovery survives a second reboot`,
+    async (t) => {
+      await runCrossBootRepeatExactRecovery(t, classification);
+    });
+}
 
 test("a competing runtime inspects but cannot mutate regardless of lock age", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
@@ -1027,13 +1557,77 @@ test("one-shot effects cannot use absence to authorize reinvocation", async (t) 
   );
 });
 
+test("effect authority seams require explicit admission after reboot", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: (fold, command) => effectLifecycle(
+      fold,
+      command,
+      "reconcilable",
+    ),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const launch = launchDistinctRun(firstRuntime, "0");
+  const [intent] = firstRuntime.command(
+    firstRuntime.query({ run_id: launch.run_id }).legal_actions[0],
+  ).effect_intents;
+  await firstAuthority.recordEffectObservation(intent, {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "present",
+    causation: {
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+    },
+    provider_observation: { provider_id: "existing" },
+  });
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+  });
+  t.after(() => rebootedAuthority.close());
+  await assert.rejects(
+    () => rebootedAuthority.recordEffectObservation(intent, {
+      schema: "flow.effect-observation/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      presence: "absent",
+      causation: null,
+      provider_observation: { found: false },
+    }),
+    (error) => error.code === "run_requires_reboot_admission",
+  );
+  await assert.rejects(
+    () => rebootedAuthority.invokeEffect(intent, {
+      reconciliation: "adopt_present",
+    }),
+    (error) => error.code === "run_requires_reboot_admission",
+  );
+  assert.equal(
+    createFlowRuntime({ runAuthority: rebootedAuthority }).query({
+      run_id: launch.run_id,
+    }).admission,
+    "suspended_after_reboot",
+  );
+});
+
 test("an unresolved effect keeps reboot admission suspended", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const firstAuthority = createDurableRunAuthority({
     authorityDirectory,
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
-    lifecycleKernel: effectLifecycle,
+    lifecycleKernel: (fold, command) => effectLifecycle(
+      fold,
+      command,
+      "reconcilable",
+    ),
   });
   const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
   const launch = launchDistinctRun(firstRuntime, "0");
@@ -1045,8 +1639,17 @@ test("an unresolved effect keeps reboot admission suspended", async (t) => {
   const rebootedAuthority = createDurableRunAuthority({
     authorityDirectory,
     hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
-    lifecycleKernel: effectLifecycle,
-    rebootObservationAdapter: preparedRebootObservation(),
+    lifecycleKernel: (fold, command) => effectLifecycle(
+      fold,
+      command,
+      "reconcilable",
+    ),
+    rebootObservationAdapter: {
+      observe({ prepared, unresolvedEffects }) {
+        unresolvedEffects.length = 0;
+        return preparedObservation(prepared);
+      },
+    },
   });
   t.after(() => rebootedAuthority.close());
   const rebooted = createFlowRuntime({ runAuthority: rebootedAuthority });
@@ -1063,7 +1666,7 @@ test("an unresolved effect keeps reboot admission suspended", async (t) => {
     () => rebootedAuthority.invokeEffect(receipt.effect_intents[0], {
       invoke() { adapterCalled = true; },
     }),
-    (error) => error.code === "stale_authority_epoch",
+    (error) => error.code === "run_requires_reboot_admission",
   );
   assert.equal(adapterCalled, false);
 });
@@ -1313,6 +1916,146 @@ function prepareDistinctRun(runtime, fingerprintDigit) {
   return runtime.prepare(proposal);
 }
 
+async function runCrossBootRepeatExactRecovery(t, classification) {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let mode = "lost";
+  let invocationCount = 0;
+  const idempotencyKeys = [];
+  const invocationBootIds = [];
+  const registration = {
+    classification,
+    invoke(intent) {
+      invocationCount += 1;
+      idempotencyKeys.push(intent.idempotency_key);
+      invocationBootIds.push(intent.authority_boot_id);
+      if (mode === "lost") return new Promise(() => {});
+      return operationReceipt(intent);
+    },
+  };
+  const proposal = registeredOperationProposal({ classification });
+  proposal.explicit_facts.time_facts = rebootTimeFacts({
+    wallValueMs: 1_700_000_000_000,
+    wallUncertaintyMs: 0,
+    monotonicValueNs: "1000000000",
+    monotonicUncertaintyNs: "0",
+    bootId: "boot-a",
+  });
+  proposal.explicit_facts.limits.max_elapsed_seconds = 60;
+
+  const rebootObservationAdapter = (bootId) => ({
+    observe({ prepared, unresolvedEffects }) {
+      const observation = withRebootBoot(
+        preparedObservation(prepared),
+        bootId,
+      );
+      return {
+        ...observation,
+        effect_rechecks: unresolvedEffects.map((effect) => ({
+          schema: "flow.reboot-effect-recheck/v1",
+          effect_id: effect.effect_id,
+          idempotency_key: effect.idempotency_key,
+          classification: effect.classification,
+          operation_contract: effect.operation_contract,
+          recovery: "repeat_exact",
+          observed_status: "unresolved",
+          observation: {
+            schema: "flow.effect-observation/v1",
+            effect_id: effect.effect_id,
+            idempotency_key: effect.idempotency_key,
+            presence: "absent",
+            causation: null,
+            provider_observation: {
+              found: false,
+              proof: "exact_absence",
+            },
+          },
+        })),
+      };
+    },
+  });
+
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration },
+  });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  const firstReceipt = firstRuntime.command(
+    firstRuntime.query({ run_id: launch.run_id }).legal_actions.find(
+      ({ decision }) => decision === "approve",
+    ),
+  );
+  assert.equal(firstReceipt.accepted, true);
+  const originalIntent = firstReceipt.effect_intents[0];
+  await until(() => invocationCount === 1);
+  firstAuthority.close();
+
+  const secondAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: rebootObservationAdapter("boot-b"),
+  });
+  const secondRuntime = createFlowRuntime({
+    runAuthority: secondAuthority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration },
+  });
+  const secondSuspended = secondRuntime.query({ run_id: launch.run_id });
+  assert.equal(secondSuspended.reboot_revalidation.valid, true);
+  assert.equal(secondSuspended.reboot_revalidation.unresolved_effects.length, 1);
+  assert.equal(secondRuntime.command(
+    secondSuspended.legal_actions[0],
+  ).accepted, true);
+  const secondAdmitted = secondRuntime.query({ run_id: launch.run_id });
+  const secondRecovery = secondAdmitted.legal_actions.find(
+    ({ type }) => type === "recovery",
+  );
+  assert.equal(secondRecovery.recovery, "repeat_exact");
+  assert.equal(secondRuntime.command(secondRecovery).accepted, true);
+  await until(() => invocationCount === 2);
+  secondAuthority.close();
+  mode = "complete";
+
+  const thirdAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-c", "process-c"),
+    rebootObservationAdapter: rebootObservationAdapter("boot-c"),
+  });
+  t.after(() => thirdAuthority.close());
+  const thirdRuntime = createFlowRuntime({
+    runAuthority: thirdAuthority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration },
+  });
+  const thirdSuspended = thirdRuntime.query({ run_id: launch.run_id });
+  assert.equal(thirdSuspended.reboot_revalidation.valid, true);
+  assert.equal(thirdSuspended.reboot_revalidation.unresolved_effects.length, 1);
+  assert.equal(thirdRuntime.command(
+    thirdSuspended.legal_actions[0],
+  ).accepted, true);
+  const thirdAdmitted = thirdRuntime.query({ run_id: launch.run_id });
+  const thirdRecovery = thirdAdmitted.legal_actions.find(
+    ({ type }) => type === "recovery",
+  );
+  assert.equal(thirdRecovery.recovery, "repeat_exact");
+  assert.equal(thirdRuntime.command(thirdRecovery).accepted, true);
+  await until(() => thirdRuntime.query({ run_id: launch.run_id }).phase === "succeeded");
+
+  const completed = thirdRuntime.query({ run_id: launch.run_id });
+  assert.equal(invocationCount, 3);
+  assert.deepEqual(idempotencyKeys, [
+    originalIntent.idempotency_key,
+    originalIntent.idempotency_key,
+    originalIntent.idempotency_key,
+  ]);
+  assert.deepEqual(invocationBootIds, ["boot-a", "boot-b", "boot-c"]);
+  assert.equal(completed.effects[0].idempotency_key,
+    originalIntent.idempotency_key);
+}
+
 function withTimeout(promise, milliseconds, message) {
   let timeout;
   return Promise.race([
@@ -1321,6 +2064,14 @@ function withTimeout(promise, milliseconds, message) {
       timeout = setTimeout(() => reject(new Error(message)), milliseconds);
     }),
   ]).finally(() => clearTimeout(timeout));
+}
+
+async function until(condition) {
+  const deadline = Date.now() + 2_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error("condition was not met");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }
 
 function effectLifecycle(fold, command, classification = "caller_idempotent") {
@@ -1365,6 +2116,52 @@ function multiEffectLifecycle(_fold, command) {
 
 function preparedRebootObservation() {
   return Object.freeze({
-    observe: ({ prepared }) => preparedObservation(prepared),
+    observe: ({ prepared }) => withRebootBoot(
+      preparedObservation(prepared),
+      "boot-b",
+    ),
   });
+}
+
+function withRebootBoot(observation, bootId) {
+  return {
+    ...observation,
+    time_facts: observation.time_facts.map((fact) =>
+      fact.kind === "boot" ? { ...fact, boot_id: bootId } : fact),
+  };
+}
+
+function rebootTimeFacts({
+  bootId,
+  monotonicUncertaintyNs,
+  monotonicValueNs,
+  wallUncertaintyMs,
+  wallValueMs,
+}) {
+  return [
+    {
+      schema: "flow.time-fact/v1",
+      kind: "wall_clock",
+      value_ms: wallValueMs,
+      uncertainty_ms: wallUncertaintyMs,
+      clock_source_id: "wall:host-a",
+    },
+    {
+      schema: "flow.time-fact/v1",
+      kind: "suspend_excluding_monotonic",
+      value_ns: monotonicValueNs,
+      uncertainty_ns: monotonicUncertaintyNs,
+      clock_source_id: "mono:host-a",
+    },
+    {
+      schema: "flow.time-fact/v1",
+      kind: "boot",
+      boot_id: bootId,
+    },
+    {
+      schema: "flow.time-fact/v1",
+      kind: "clock_source",
+      identity: "clockset:host-a:v1",
+    },
+  ];
 }
