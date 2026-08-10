@@ -165,14 +165,18 @@ for (const provider of TRACKER_PROVIDERS) {
     await until(() => fixture.driver.updateCount === 1);
     await until(() => {
       const projection = fixture.runtime.query({ run_id: launch.run_id });
-      const receipt = projection.effects[1]?.receipt;
+      const receipt = projection.effects.find(
+        ({ card_id: cardId }) => cardId === "publish-finish",
+      )?.receipt;
       return receipt !== null && receipt !== undefined ||
         projection.tracker_progress.status === "unresolved";
     });
 
     const projection = fixture.runtime.query({ run_id: launch.run_id });
     assert.equal(fixture.driver.updateCount, 1);
-    assert.equal(projection.effects[1].receipt, null);
+    assert.equal(projection.effects.find(
+      ({ card_id: cardId }) => cardId === "publish-finish",
+    ).receipt, null);
     assert.equal(projection.tracker_progress.status, "unresolved");
   });
 }
@@ -198,7 +202,9 @@ for (const provider of TRACKER_PROVIDERS) {
       .tracker_progress.status === "unresolved");
 
     const projection = fixture.runtime.query({ run_id: launch.run_id });
-    assert.equal(projection.effects[1].receipt, null);
+    assert.equal(projection.effects.find(
+      ({ card_id: cardId }) => cardId === "publish-finish",
+    ).receipt, null);
     assert.equal(projection.tracker_progress.status, "unresolved");
   });
 }
@@ -993,6 +999,8 @@ function trackerProgressProposal(
       operation_contracts: [contract],
       validator_contracts: ["flow.validator/operation-receipt/v1"],
       block_observations: [],
+      time_facts: [],
+      subject_generations: [],
       tracker_binding: {
         schema: "flow.tracker-binding/v1",
         flow: "feature",

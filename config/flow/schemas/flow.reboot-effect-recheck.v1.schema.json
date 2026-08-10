@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.reboot-effect-recheck.v1.schema.json",
+  "title": "flow.reboot-effect-recheck/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "effect_id",
+    "idempotency_key",
+    "classification",
+    "operation_contract",
+    "recovery",
+    "observed_status",
+    "observation"
+  ],
+  "properties": {
+    "schema": { "const": "flow.reboot-effect-recheck/v1" },
+    "effect_id": { "type": "string", "minLength": 1 },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "classification": {
+      "enum": [
+        "read_only",
+        "caller_idempotent",
+        "reconcilable",
+        "one_shot_uncertain"
+      ]
+    },
+    "operation_contract": { "type": "string", "minLength": 1 },
+    "recovery": { "enum": ["repeat_exact", "reconcile"] },
+    "observed_status": {
+      "enum": ["unresolved", "reconciling", "uncertain"]
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "effect_id",
+        "idempotency_key",
+        "presence",
+        "causation",
+        "provider_observation"
+      ],
+      "properties": {
+        "schema": { "const": "flow.effect-observation/v1" },
+        "effect_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "presence": { "enum": ["present", "absent"] },
+        "causation": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/causation" }
+          ]
+        },
+        "provider_observation": {
+          "type": "object",
+          "minProperties": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["presence"],
+            "properties": { "presence": { "const": "present" } }
+          },
+          "then": {
+            "properties": {
+              "causation": { "$ref": "#/$defs/causation" }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["presence"],
+            "properties": { "presence": { "const": "absent" } }
+          },
+          "then": {
+            "properties": { "causation": { "type": "null" } }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["classification"],
+        "properties": {
+          "classification": { "const": "one_shot_uncertain" }
+        }
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "type": "object",
+            "properties": {
+              "presence": { "const": "present" }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "causation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effect_id", "idempotency_key"],
+      "properties": {
+        "effect_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

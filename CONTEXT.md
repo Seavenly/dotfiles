@@ -135,6 +135,25 @@ capabilities, resources, and limits while superseding only blocked pending work
 and its pending dependent closure. It never rewrites accepted upstream history.
 _Avoid_: In-place plan edit, restart
 
+**Reboot admission**:
+The exact public command that rechecks one suspended run against its current
+authoritative contracts, routes, capabilities, revision facts, typed time and
+subject facts, and unresolved-effect evidence before restoring admission. It
+admits only that run; child runs require their own admission.
+_Avoid_: Automatic resume, process restart
+
+**Time fact**:
+An exact typed observation of wall-clock time, suspend-excluding monotonic time,
+boot identity, or clock-source identity. Time facts carry their uncertainty and
+enter lifecycle policy only through deterministic lower and upper bounds.
+_Avoid_: Ambient clock read, elapsed-time guess
+
+**Subject generation**:
+The exact durable generation and fingerprint of a resource or authority subject
+that a prepared run binds and reboot admission rechecks. A changed or uncertain
+generation blocks admission until the current subject matches the bound fact.
+_Avoid_: Latest version, ambient resource state
+
 **Run authority**:
 The sole fenced authority that accepts a flow plan and owns readiness,
 admission, attempts, checkpoints, blocks, revisions, cancellation, and flow-run

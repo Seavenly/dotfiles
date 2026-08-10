@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.reboot-revalidation.v1.schema.json",
+  "title": "flow.reboot-revalidation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "valid", "expected", "observed", "unresolved_effects"],
+  "properties": {
+    "schema": { "const": "flow.reboot-revalidation/v1" },
+    "valid": { "type": "boolean" },
+    "expected": { "$ref": "#/$defs/observation" },
+    "observed": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/observation" }
+      ]
+    },
+    "unresolved_effects": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  },
+  "$defs": {
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_cards",
+        "max_revisions",
+        "max_cards_per_revision",
+        "max_capabilities",
+        "max_resources",
+        "max_elapsed_seconds"
+      ],
+      "properties": {
+        "max_cards": { "type": "integer", "minimum": 1 },
+        "max_revisions": { "type": "integer", "minimum": 0 },
+        "max_cards_per_revision": { "type": "integer", "minimum": 0 },
+        "max_capabilities": { "type": "integer", "minimum": 0 },
+        "max_resources": { "type": "integer", "minimum": 0 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_fingerprint",
+        "route_snapshot",
+        "capability_envelopes",
+        "operation_contracts",
+        "validator_contracts",
+        "resource_claims",
+        "limits",
+        "elapsed_seconds",
+        "time_facts",
+        "subject_generations",
+        "effect_rechecks"
+      ],
+      "properties": {
+        "catalog_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "route_snapshot": { "type": "object" },
+        "capability_envelopes": { "type": "array" },
+        "operation_contracts": { "type": "array" },
+        "validator_contracts": { "type": "array" },
+        "resource_claims": { "type": "array" },
+        "limits": { "$ref": "#/$defs/limits" },
+        "elapsed_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "time_facts": {
+          "type": "array",
+          "items": { "$ref": "flow.time-fact.v1.schema.json" }
+        },
+        "subject_generations": {
+          "type": "array",
+          "items": { "$ref": "flow.subject-generation.v1.schema.json" }
+        },
+        "effect_rechecks": {
+          "type": "array",
+          "items": { "$ref": "flow.reboot-effect-recheck.v1.schema.json" }
+        }
+      }
+    }
+  }
+}

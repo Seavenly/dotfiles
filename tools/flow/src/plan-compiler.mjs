@@ -20,6 +20,11 @@ import {
   SUBRUN_CONTRACT,
   SUBRUN_RECEIPT_VALIDATOR,
 } from "./subrun-effects.mjs";
+import {
+  canonicalizeSubjectGenerations,
+  canonicalizeTimeFacts,
+  validateRebootFacts,
+} from "./reboot-facts.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
@@ -40,6 +45,8 @@ const FACT_ARRAY_FIELDS = [
   "validator_contracts",
   "resource_claims",
   "block_observations",
+  "time_facts",
+  "subject_generations",
 ];
 const LIMIT_FIELDS = [
   "max_cards",
@@ -150,6 +157,12 @@ export function validateDynamicPlan(proposal, {
     invalidPlan(
       "incomplete_identity_facts",
       "dynamic plan identity facts are incomplete",
+    );
+  }
+  if (!validateRebootFacts(facts.time_facts, facts.subject_generations)) {
+    invalidPlan(
+      "invalid_reboot_facts",
+      "reboot time and subject facts are invalid",
     );
   }
   if (proposal.graph?.schema !== "flow.run-plan/v1" ||
@@ -1022,6 +1035,10 @@ export function canonicalizeExplicitFacts(facts) {
         const rightId = `${right.card_id}\0${right.block.id}`;
         return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
       }),
+    time_facts: canonicalizeTimeFacts(facts.time_facts),
+    subject_generations: canonicalizeSubjectGenerations(
+      facts.subject_generations,
+    ),
   };
 }
 

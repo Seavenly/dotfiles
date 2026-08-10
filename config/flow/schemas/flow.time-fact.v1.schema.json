@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.time-fact.v1.schema.json",
+  "title": "flow.time-fact/v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "value_ms", "uncertainty_ms", "clock_source_id"],
+      "properties": {
+        "schema": { "const": "flow.time-fact/v1" },
+        "kind": { "const": "wall_clock" },
+        "value_ms": { "type": "integer" },
+        "uncertainty_ms": { "type": "integer", "minimum": 0 },
+        "clock_source_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "value_ns", "uncertainty_ns", "clock_source_id"],
+      "properties": {
+        "schema": { "const": "flow.time-fact/v1" },
+        "kind": { "const": "suspend_excluding_monotonic" },
+        "value_ns": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "uncertainty_ns": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+        "clock_source_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "boot_id"],
+      "properties": {
+        "schema": { "const": "flow.time-fact/v1" },
+        "kind": { "const": "boot" },
+        "boot_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "identity"],
+      "properties": {
+        "schema": { "const": "flow.time-fact/v1" },
+        "kind": { "const": "clock_source" },
+        "identity": { "type": "string", "minLength": 1 }
+      }
+    }
+  ]
+}
