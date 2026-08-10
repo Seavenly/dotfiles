@@ -83,6 +83,127 @@ test("Herdr observations use the advertised command bound", async () => {
   ]);
 });
 
+// A launcher that starts the session server and then stays attached as a
+// client, which is what `herdr --session <name>` actually does.
+function attachedLauncher({ failWith } = {}) {
+  const launcher = {
+    handlers: new Map(),
+    unrefCalls: 0,
+    killCalls: 0,
+    once(event, handler) {
+      this.handlers.set(event, handler);
+      if (failWith && event === "error") handler(failWith);
+      return this;
+    },
+    unref() {
+      this.unrefCalls += 1;
+    },
+    kill() {
+      this.killCalls += 1;
+    },
+  };
+  return launcher;
+}
+
+test("session launch waits for the session, not for the launcher to exit", async () => {
+  // The launcher never closes. Waiting on it would hang, so readiness has to
+  // come from the session itself.
+  const launcher = attachedLauncher();
+  let sessionListings = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    spawnProcess: () => launcher,
+    async run(_file, args) {
+      if (args.includes("session")) {
+        sessionListings += 1;
+        // Cold start: the server needs a few polls before it answers.
+        return JSON.stringify({
+          sessions: [{ name: "delegates", running: sessionListings >= 3 }],
+        });
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  await client.ensureSession();
+
+  assert.equal(sessionListings, 3);
+  assert.equal(launcher.unrefCalls, 1);
+  // The server outlives its launcher, so the redundant client is released.
+  assert.equal(launcher.killCalls, 1);
+  assert.equal(launcher.handlers.has("close"), false);
+});
+
+test("session launch skips the launcher when the session already runs", async () => {
+  let spawnCalls = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    spawnProcess: () => {
+      spawnCalls += 1;
+      return attachedLauncher();
+    },
+    async run(_file, args) {
+      if (args.includes("session")) {
+        return JSON.stringify({ sessions: [{ name: "delegates", running: true }] });
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  await client.ensureSession();
+
+  assert.equal(spawnCalls, 0);
+});
+
+test("session launch reports a launcher that could not start", async () => {
+  const launcher = attachedLauncher({ failWith: new Error("herdr not found") });
+  let sessionListings = 0;
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    spawnProcess: () => launcher,
+    async run(_file, args) {
+      if (args.includes("session")) {
+        sessionListings += 1;
+        return JSON.stringify({ sessions: [] });
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.ensureSession(),
+    (error) => error.outcome === "adapter_failure" &&
+      /could not be launched: herdr not found/u.test(error.message),
+  );
+  // A launch failure fails fast instead of burning the whole readiness budget.
+  assert.equal(sessionListings, 1);
+});
+
+test("session launch reports a session that never becomes ready", async () => {
+  const launcher = attachedLauncher();
+  const client = new HerdrClient({
+    session: "delegates",
+    delay: async () => {},
+    spawnProcess: () => launcher,
+    async run(_file, args) {
+      if (args.includes("session")) {
+        return JSON.stringify({ sessions: [{ name: "delegates", running: false }] });
+      }
+      throw new Error(`unexpected Herdr call: ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.ensureSession(),
+    (error) => error.outcome === "adapter_failure" &&
+      /session delegates did not start/u.test(error.message),
+  );
+  assert.equal(launcher.killCalls, 1);
+});
+
 test("managed executable probing reads identity from the Herdr pane shell", async () => {
   const executablePath = process.execPath;
   const calls = [];

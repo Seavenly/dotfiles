@@ -52,9 +52,11 @@ export class HerdrClient {
     delay = (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
     trace,
+    spawnProcess = spawn,
   } = {}) {
     this.session = session;
     this.run = run;
+    this.spawnProcess = spawnProcess;
     this.env = withoutCallerHerdrContext(env);
     this.trace = trace ??
       (this.env.DROVR_TRACE_JOURNAL
@@ -168,22 +170,43 @@ export class HerdrClient {
   async ensureSession() {
     if (await this.sessionRunning()) return;
 
-    await new Promise((resolve) => {
-      const child = spawn("herdr", ["--session", this.session], {
-        env: this.env,
-        stdio: "ignore",
-      });
-      child.once("error", resolve);
-      child.once("close", resolve);
+    // `herdr --session <name>` starts the session server and then stays alive as
+    // an attached client, so waiting for the launcher to exit would block
+    // forever on a process that already did its job. Session readiness is the
+    // only thing worth waiting for, so poll for the server the launcher starts
+    // and never depend on the launcher's own lifecycle.
+    let launchError;
+    const launcher = this.spawnProcess("herdr", ["--session", this.session], {
+      env: this.env,
+      stdio: "ignore",
     });
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (await this.sessionRunning()) return;
-      await this.delay(25);
+    launcher.once("error", (error) => {
+      launchError = error;
+    });
+    // Keep the launcher from holding this process open once the session is up.
+    launcher.unref?.();
+    try {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (launchError) break;
+        if (await this.sessionRunning()) return;
+        await this.delay(25);
+      }
+    } finally {
+      // The session server outlives its launching client, so release the
+      // redundant client rather than leaving it attached for the process
+      // lifetime. A launcher that already exited ignores this.
+      try {
+        launcher.kill?.();
+      } catch {
+        // The launcher is already gone.
+      }
     }
-    throw new DrovrError(`Herdr session ${this.session} did not start`, {
-      code: 4,
-      outcome: "adapter_failure",
-    });
+    throw new DrovrError(
+      launchError
+        ? `Herdr session ${this.session} could not be launched: ${launchError.message}`
+        : `Herdr session ${this.session} did not start`,
+      { code: 4, outcome: "adapter_failure" },
+    );
   }
 
   async sessionRunning() {
