@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 14);
+  assert.equal(catalog.catalog_version, 15);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -80,6 +80,10 @@ test("the public catalog exposes the settled interface and forbids legacy import
   });
   for (const contract of [
     "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+    "flow.predefined-definition/v1",
+    "flow.predefined-flow-confirmation/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
@@ -122,6 +126,22 @@ test("the public catalog exposes the settled interface and forbids legacy import
     catalog.flow_runtime.operation_contracts.prepare.block_observations,
     "flow.card-block-observation/v1",
   );
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.prepare.input, [
+    "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+  ]);
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.prepare.predefined, {
+    selection: "flow.predefined-flow-selection/v1",
+    definition: "flow.predefined-definition/v1",
+    confirmation: "flow.predefined-flow-confirmation/v1",
+    decision: "flow.predefined-flow-confirmation-decision/v1",
+    preparation: "non_authoritative_registered_definition_snapshot",
+    launch_binding: "exact_bundle_and_confirmation_digest",
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.launch.confirmation, [
+    "flow.dynamic-plan-confirmation-decision/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
+  ]);
   assert.ok(catalog.mechanism_adapters.includes("card_block_observation"));
   assert.deepEqual(catalog.flow_runtime.operation_execution, {
     authority: "RunAuthority",
@@ -341,6 +361,61 @@ test("the public catalog exposes the settled interface and forbids legacy import
     () => authorizeLegacyImport(catalog, { adapter: "implicit" }),
     /no legacy import adapter is registered/,
   );
+});
+
+test("the public catalog requires both prepare input contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-prepare-input-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.operation_contracts.prepare.input = [
+    "flow.dynamic-plan-proposal/v1",
+  ];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /prepare inputs are incomplete/,
+  );
+
+  catalog.flow_runtime.operation_contracts.prepare.input = [
+    "flow.predefined-flow-selection/v1",
+  ];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /prepare inputs are incomplete/,
+  );
+});
+
+test("the public catalog requires both launch confirmation contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-launch-confirmation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+
+  for (const confirmation of [
+    ["flow.dynamic-plan-confirmation-decision/v1"],
+    ["flow.predefined-flow-confirmation-decision/v1"],
+  ]) {
+    catalog.flow_runtime.operation_contracts.launch.confirmation = confirmation;
+    await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+    await assert.rejects(
+      loadContractCatalog({
+        catalogPath: incompleteCatalogPath,
+        featureContractPath,
+      }),
+      /launch confirmation contracts are incomplete/,
+    );
+  }
 });
 
 test("the public catalog rejects a weakened Drovr feature baseline", async (t) => {

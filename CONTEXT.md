@@ -107,6 +107,20 @@ The complete operator-visible view bound to a prepared dynamic plan, followed
 by an explicit accept or decline decision bound to that exact view and bundle.
 _Avoid_: Boolean flag, implicit approval
 
+**Predefined flow definition**:
+A registered, versioned flow contract whose trusted compiler derives one exact
+plan from explicit selection inputs and identity-bearing facts. The definition
+supplies the promised outcomes, negative outcomes, and trust posture that
+accompany its plan.
+_Avoid_: Caller-supplied graph, flow alias
+
+**Predefined flow confirmation**:
+The operator-visible view for one selected predefined flow definition, covering
+its inputs, outcomes, authority, routes, limits, trust posture, and revision
+templates before one explicit accept or decline decision. It is distinct from
+dynamic plan confirmation and does not require repeating the complete graph.
+_Avoid_: Implicit approval, graph ceremony
+
 **Checkpoint decision**:
 A typed approve or decline command for one currently actionable checkpoint,
 bound to the exact authority watermark from which it was offered.

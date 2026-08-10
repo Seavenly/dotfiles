@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 14,
+  "catalog_version": 15,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -155,17 +155,31 @@
     "operation_contracts": {
       "prepare": {
         "authority": "non_authoritative",
-        "input": "flow.dynamic-plan-proposal/v1",
+        "input": [
+          "flow.dynamic-plan-proposal/v1",
+          "flow.predefined-flow-selection/v1"
+        ],
         "result": "flow.prepared-run/v1",
         "identity": "content_addressed",
         "revision_templates": "flow.plan-revision-template/v1",
-        "block_observations": "flow.card-block-observation/v1"
+        "block_observations": "flow.card-block-observation/v1",
+        "predefined": {
+          "selection": "flow.predefined-flow-selection/v1",
+          "definition": "flow.predefined-definition/v1",
+          "confirmation": "flow.predefined-flow-confirmation/v1",
+          "decision": "flow.predefined-flow-confirmation-decision/v1",
+          "preparation": "non_authoritative_registered_definition_snapshot",
+          "launch_binding": "exact_bundle_and_confirmation_digest"
+        }
       },
       "launch": {
         "authority": "RunAuthority",
         "idempotency": "host_idempotent",
         "input": "exact_confirmed_prepared_bundle",
-        "confirmation": "flow.dynamic-plan-confirmation-decision/v1",
+        "confirmation": [
+          "flow.dynamic-plan-confirmation-decision/v1",
+          "flow.predefined-flow-confirmation-decision/v1"
+        ],
         "closed_facts": "flow.closed-fact-observation/v1",
         "result": "flow.launch-receipt/v1",
         "rejection": "flow.rejection/v1"
@@ -304,6 +318,10 @@
     "flow.runtime/v1",
     "flow.query/v1",
     "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+    "flow.predefined-definition/v1",
+    "flow.predefined-flow-confirmation/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",

@@ -19,6 +19,22 @@ const FLOW_RUNTIME_OPERATIONS = [
   "query",
   "watch",
 ];
+const PREPARE_INPUTS = [
+  "flow.dynamic-plan-proposal/v1",
+  "flow.predefined-flow-selection/v1",
+];
+const LAUNCH_CONFIRMATION_CONTRACTS = [
+  "flow.dynamic-plan-confirmation-decision/v1",
+  "flow.predefined-flow-confirmation-decision/v1",
+];
+const PREDEFINED_FLOW = {
+  selection: "flow.predefined-flow-selection/v1",
+  definition: "flow.predefined-definition/v1",
+  confirmation: "flow.predefined-flow-confirmation/v1",
+  decision: "flow.predefined-flow-confirmation-decision/v1",
+  preparation: "non_authoritative_registered_definition_snapshot",
+  launch_binding: "exact_bundle_and_confirmation_digest",
+};
 const REJECTION_FIELDS = [
   "schema",
   "operation",
@@ -206,6 +222,27 @@ export async function loadContractCatalog({
   }
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");
+  }
+  if (!isExactSequence(
+    catalog.flow_runtime?.operation_contracts?.prepare?.input,
+    PREPARE_INPUTS,
+  ) || !PREPARE_INPUTS.every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("prepare inputs are incomplete");
+  }
+  if (!isExactSequence(
+    catalog.flow_runtime?.operation_contracts?.launch?.confirmation,
+    LAUNCH_CONFIRMATION_CONTRACTS,
+  ) || !LAUNCH_CONFIRMATION_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("launch confirmation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.operation_contracts?.prepare?.predefined,
+    PREDEFINED_FLOW,
+  ) || !Object.values(PREDEFINED_FLOW)
+    .filter((value) => value.includes("/v1"))
+    .every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("predefined flow preparation contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");

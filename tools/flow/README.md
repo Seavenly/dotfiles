@@ -4,7 +4,7 @@ This directory contains the public transition contracts and the dark,
 harness-neutral `flow` replacement. The replacement launch policy remains
 disabled, so this API does not authorize normal replacement launches.
 
-## Dynamic checkpoint runtime
+## FlowRuntime
 
 `src/flow-runtime.mjs` exports `createFlowRuntime()`. The returned
 `flow.runtime/v1` Interface exposes exactly five operations:
@@ -61,7 +61,8 @@ disabled, so this API does not authorize normal replacement launches.
   validates exact caller-supplied block observations before they can become
   authoritative.
 - `launch({ prepared, confirmation, closed_facts })` accepts an explicit
-  `flow.dynamic-plan-confirmation-decision/v1` and a separately supplied
+  `flow.dynamic-plan-confirmation-decision/v1` or
+  `flow.predefined-flow-confirmation-decision/v1`, plus a separately supplied
   `flow.closed-fact-observation/v1`. It verifies both are bound to the prepared
   bundle, then atomically creates or adopts the content-derived run. Declining
   confirmation returns a typed rejection and creates no run. Repeating an
@@ -232,6 +233,36 @@ disabled, so this API does not authorize normal replacement launches.
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
   then completes.
+
+### Predefined flow selection
+
+`createFlowRuntime({ predefinedDefinitions })` snapshots a registry of trusted,
+versioned definitions at construction. Each registry key must equal the
+definition's exact versioned `id` (for example `example/v1`), and each
+registration has exactly these fields: `schema` set to
+`flow.predefined-definition/v1`, non-empty `contract`, one pure `compile`
+function, `promised_outcomes` and `negative_outcomes` arrays, and a
+`trust_posture` record. The compiler receives the selected `inputs` and
+`explicit_facts` and returns one dynamic plan proposal. Callers select a
+registered definition with `prepare({ schema: "flow.predefined-flow-selection/v1",
+definition, inputs, explicit_facts })`. The selection carries no graph,
+executor contract, route, authority, or confirmation metadata; those values
+come from the registered definition and its explicit selection inputs.
+
+Preparation remains non-authoritative. It returns a deeply immutable,
+content-addressed `flow.prepared-run/v1` with `kind: "predefined"`, the exact
+derived graph, selected definition, explicit facts, revision templates, and a
+single `flow.predefined-flow-confirmation/v1` view. That view covers inputs,
+promised and negative outcomes, requested authority and mutations, routes,
+capabilities, limits, trust posture, and revision templates. The confirmation
+view deliberately does not repeat the complete graph.
+
+Launch accepts the exact `flow.predefined-flow-confirmation-decision/v1` bound
+to the prepared bundle and confirmation digests, together with the exact
+closed-fact observation. Launch validates the prepared identity directly and
+does not invoke a definition compiler, consult mutable registration, or
+refresh facts. Dynamic proposals retain their separate complete-graph
+confirmation contract.
 
 Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `reason` identify the rejected request; `command_type`, `run_id`, and
@@ -483,7 +514,8 @@ node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/delegate-card.test.mjs \
   tools/flow/test/registered-operation.test.mjs \
   tools/flow/test/cancellation.test.mjs \
-  tools/flow/test/purity-contracts.test.mjs
+  tools/flow/test/purity-contracts.test.mjs \
+  tools/flow/test/predefined-flow.test.mjs
 ```
 
 ## Delegated-agent preparation

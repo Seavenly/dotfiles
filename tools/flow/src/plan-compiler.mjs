@@ -6,6 +6,7 @@ import {
 import {
   createDynamicPlanConfirmation,
   createPreparedBundle,
+  createPredefinedFlowConfirmation,
 } from "./prepared-contracts.mjs";
 import {
   effectClassPolicy,
@@ -49,6 +50,9 @@ const LIMIT_FIELDS = [
   "max_resources",
   "max_elapsed_seconds",
 ];
+const PREDEFINED_SELECTION_SCHEMA = "flow.predefined-flow-selection/v1";
+const PREDEFINED_DEFINITION_SCHEMA = "flow.predefined-definition/v1";
+const PREDEFINED_DEFINITION_ID = /^[A-Za-z0-9._-]+\/v[0-9]+$/;
 
 export function applyRevisionGraphChanges(graph, changes) {
   const cards = [...graph.cards, ...changes.add_cards]
@@ -119,7 +123,270 @@ export function compileDynamicPlan(proposal, options = {}) {
 
 export const PlanCompiler = Object.freeze({
   compile: compileDynamicPlan,
+  compileDynamic: compileDynamicPlan,
+  compilePredefined: compilePredefinedFlowSelection,
 });
+
+export class PredefinedFlowValidationError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = "PredefinedFlowValidationError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Snapshot the trusted definition registry when a runtime is constructed.
+ * Selection input never carries a graph, executor contract, or confirmation
+ * metadata. Those values come only from this registration and its compiler.
+ */
+export function snapshotPredefinedDefinitions(definitions = {}) {
+  if (definitions === null ||
+      !(definitions instanceof Map) &&
+      (typeof definitions !== "object" || Array.isArray(definitions))) {
+    throw new TypeError("predefinedDefinitions must be an object or Map");
+  }
+  const entries = definitions instanceof Map
+    ? [...definitions.entries()]
+    : Object.entries(definitions);
+  const snapshot = new Map();
+  for (const [key, definition] of entries) {
+    const registration = normalizePredefinedDefinition(definition, key);
+    if (snapshot.has(registration.identity.id)) {
+      throw new TypeError(
+        `predefined definition is registered more than once: ${registration.identity.id}`,
+      );
+    }
+    snapshot.set(registration.identity.id, registration);
+  }
+  return snapshot;
+}
+
+export function isPredefinedFlowSelection(value) {
+  return value?.schema === PREDEFINED_SELECTION_SCHEMA;
+}
+
+export function compilePredefinedFlowSelection(
+  selection,
+  registration,
+  { registeredOperations = null } = {},
+) {
+  const normalizedSelection = canonicalizePredefinedSelection(selection);
+  if (!registration) {
+    invalidPredefined(
+      "unknown_predefined_definition",
+      `predefined definition is not registered: ${normalizedSelection.definition}`,
+    );
+  }
+
+  const context = {
+    schema: PREDEFINED_SELECTION_SCHEMA,
+    definition: registration.identity,
+    inputs: normalizedSelection.inputs,
+    explicit_facts: normalizedSelection.explicit_facts,
+  };
+  const generated = runPredefinedCompiler(registration, context);
+  const proposal = normalizePredefinedProposal(generated, normalizedSelection);
+  validateDynamicPlan(proposal, { registeredOperations });
+
+  const graph = canonicalizeDynamicGraph(proposal.graph);
+  const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
+  const revisionTemplates = canonicalizeRevisionTemplates(
+    proposal.revision_templates ?? [],
+  );
+  const planFingerprint = digest(graph);
+  const confirmationFacts = predefinedConfirmationFacts(
+    registration,
+    graph,
+  );
+  const bundle = createPreparedBundle({
+    kind: "predefined",
+    definition: registration.identity,
+    selection: normalizedSelection,
+    graph,
+    planFingerprint,
+    requestedAuthority: proposal.requested_authority,
+    explicitFacts,
+    revisionTemplates,
+    promisedOutcomes: confirmationFacts.promised_outcomes,
+    negativeOutcomes: confirmationFacts.negative_outcomes,
+    routes: confirmationFacts.routes,
+    trustPosture: confirmationFacts.trust_posture,
+  });
+  const bundleDigest = digest(bundle);
+  const confirmation = createPredefinedFlowConfirmation({
+    bundleDigest,
+    definition: registration.identity,
+    inputs: normalizedSelection.inputs,
+    promisedOutcomes: confirmationFacts.promised_outcomes,
+    negativeOutcomes: confirmationFacts.negative_outcomes,
+    requestedAuthority: proposal.requested_authority,
+    limits: explicitFacts.limits,
+    routes: confirmationFacts.routes,
+    trustPosture: confirmationFacts.trust_posture,
+    revisionTemplates,
+  });
+  const confirmationDigest = digest(confirmation);
+
+  return freezeCanonical({
+    schema: "flow.prepared-run/v1",
+    kind: "predefined",
+    bundle_digest: bundleDigest,
+    plan_fingerprint: planFingerprint,
+    confirmation_digest: confirmationDigest,
+    definition: registration.identity,
+    selection: normalizedSelection,
+    graph,
+    requested_authority: proposal.requested_authority,
+    explicit_facts: explicitFacts,
+    revision_templates: revisionTemplates,
+    promised_outcomes: confirmationFacts.promised_outcomes,
+    negative_outcomes: confirmationFacts.negative_outcomes,
+    routes: confirmationFacts.routes,
+    trust_posture: confirmationFacts.trust_posture,
+    confirmation,
+  });
+}
+
+export function canonicalizePredefinedSelection(selection) {
+  if (!isPlainRecord(selection) ||
+      Object.keys(selection).sort().join(",") !==
+        "definition,explicit_facts,inputs,schema" ||
+      selection.schema !== PREDEFINED_SELECTION_SCHEMA ||
+      typeof selection.definition !== "string" ||
+      !selection.definition ||
+      !isPlainRecord(selection.inputs) ||
+      !isPlainRecord(selection.explicit_facts)) {
+    invalidPredefined(
+      "invalid_predefined_selection",
+      "predefined flow selection must name a registered definition, inputs, and explicit facts",
+    );
+  }
+  return freezeCanonical({
+    schema: PREDEFINED_SELECTION_SCHEMA,
+    definition: selection.definition,
+    inputs: selection.inputs,
+    explicit_facts: selection.explicit_facts,
+  });
+}
+
+function normalizePredefinedDefinition(definition, key) {
+  if (!isPlainRecord(definition)) {
+    throw new TypeError(`predefined definition registration is invalid: ${key}`);
+  }
+  const fields = [
+    "compile",
+    "contract",
+    "id",
+    "negative_outcomes",
+    "promised_outcomes",
+    "schema",
+    "trust_posture",
+  ];
+  const keys = Reflect.ownKeys(definition);
+  if (keys.length !== fields.length ||
+      keys.some((key) => typeof key !== "string" || !fields.includes(key))) {
+    throw new TypeError(`predefined definition registration is incomplete: ${key}`);
+  }
+  if (definition.schema !== PREDEFINED_DEFINITION_SCHEMA) {
+    throw new TypeError(`predefined definition contract is invalid: ${key}`);
+  }
+  if (typeof definition.id !== "string" ||
+      !PREDEFINED_DEFINITION_ID.test(definition.id) ||
+      key !== definition.id) {
+    throw new TypeError(`predefined definition identity is invalid: ${key}`);
+  }
+  if (typeof definition.contract !== "string" ||
+      definition.contract.trim() === "" ||
+      typeof definition.compile !== "function" ||
+      !Array.isArray(definition.promised_outcomes) ||
+      !Array.isArray(definition.negative_outcomes) ||
+      !isPlainRecord(definition.trust_posture)) {
+    throw new TypeError(`predefined definition registration is incomplete: ${key}`);
+  }
+  const identity = freezeCanonical({
+    schema: PREDEFINED_DEFINITION_SCHEMA,
+    id: definition.id,
+    contract: definition.contract,
+  });
+  return {
+    identity,
+    compile: definition.compile,
+    promised_outcomes: freezeCanonical(definition.promised_outcomes),
+    negative_outcomes: freezeCanonical(definition.negative_outcomes),
+    trust_posture: freezeCanonical(definition.trust_posture),
+  };
+}
+
+function runPredefinedCompiler(registration, context) {
+  let generated;
+  try {
+    generated = registration.compile(context);
+  } catch (error) {
+    if (error instanceof PredefinedFlowValidationError) throw error;
+    throw error;
+  }
+  if (generated === undefined || generated === null) {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      `predefined definition did not produce a plan: ${registration.identity.id}`,
+    );
+  }
+  return generated;
+}
+
+function normalizePredefinedProposal(generated, selection) {
+  if (!isPlainRecord(generated) ||
+      generated.schema !== "flow.dynamic-plan-proposal/v1" ||
+      generated.graph === undefined ||
+      !isPlainRecord(generated.requested_authority)) {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      "predefined definition must produce a dynamic plan proposal",
+    );
+  }
+  const proposal = generated;
+  const explicitFacts = proposal.explicit_facts ?? selection.explicit_facts;
+  if (digest(explicitFacts) !== digest(selection.explicit_facts)) {
+    invalidPredefined(
+      "definition_changed_explicit_facts",
+      "predefined definition cannot replace the selected explicit facts",
+    );
+  }
+  const normalized = {
+    schema: "flow.dynamic-plan-proposal/v1",
+    graph: proposal.graph,
+    requested_authority: proposal.requested_authority,
+    explicit_facts: selection.explicit_facts,
+    revision_templates: proposal.revision_templates ?? [],
+  };
+  return normalized;
+}
+
+function predefinedConfirmationFacts(
+  registration,
+  graph,
+) {
+  return {
+    promised_outcomes: registration.promised_outcomes,
+    negative_outcomes: registration.negative_outcomes,
+    routes: graph.cards.filter(({ route }) => route !== null)
+      .map(({ id, route }) => ({ card_id: id, route })),
+    trust_posture: registration.trust_posture,
+  };
+}
+
+function invalidPredefined(reason, message) {
+  throw new PredefinedFlowValidationError(reason, message);
+}
+
+function isPlainRecord(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
 
 export function validateDynamicPlan(proposal, {
   registeredOperations = null,
