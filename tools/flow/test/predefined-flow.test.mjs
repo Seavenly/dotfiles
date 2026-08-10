@@ -10,7 +10,11 @@ import {
   createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
-import { dynamicCheckpointProposal } from "../test-support/dynamic-checkpoint.mjs";
+import {
+  confirmedLaunchRequest,
+  dynamicCheckpointProposal,
+  revisionBlockedCheckpointProposal,
+} from "../test-support/dynamic-checkpoint.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
 import {
   operationReceipt,
@@ -125,6 +129,26 @@ test("declined predefined confirmation and invalid decisions create no run", () 
   });
   assert.equal(malformed.code, "invalid_confirmation");
   assert.equal(malformed.reason, "confirmation_binding_mismatch");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("dynamic launch rejects a predefined confirmation decision", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const request = confirmedLaunchRequest(prepared);
+
+  const rejection = runtime.launch({
+    ...request,
+    confirmation: {
+      ...request.confirmation,
+      schema: "flow.predefined-flow-confirmation-decision/v1",
+    },
+  });
+
+  assert.equal(rejection.code, "invalid_confirmation");
+  assert.equal(rejection.reason, "confirmation_binding_mismatch");
   assert.deepEqual(runtime.query().runs, []);
 });
 
@@ -294,6 +318,83 @@ test("same-boot recovery rebuilds a predefined run without recompiling its defin
   assert.equal(compileCount, 1);
 });
 
+test("same-boot recovery repeats an unresolved predefined caller-idempotent effect", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-predefined-effect-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const attemptedKeys = [];
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-predefined-effect", "process-a"),
+  });
+  t.after(() => firstAuthority.close());
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke(intent) {
+          attemptedKeys.push(intent.idempotency_key);
+          throw new Error("receipt lost after provider mutation");
+        },
+      },
+    },
+    predefinedDefinitions: {
+      "operation/v1": {
+        ...exampleDefinition(),
+        id: "operation/v1",
+        contract: "flow.definition/operation/v1",
+        compile({ explicit_facts }) {
+          const proposal = registeredOperationProposal();
+          proposal.explicit_facts = explicit_facts;
+          return proposal;
+        },
+      },
+    },
+  });
+  const prepared = firstRuntime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "operation/v1",
+    inputs: {},
+    explicit_facts: registeredOperationProposal().explicit_facts,
+  });
+  const launch = firstRuntime.launch(confirmedPredefinedLaunchRequest(prepared));
+  const waiting = firstRuntime.query({ run_id: launch.run_id });
+  firstRuntime.command(waiting.legal_actions.find(
+    ({ decision }) => decision === "approve",
+  ));
+  await untilProjection(firstRuntime, launch.run_id, "active");
+  await untilCondition(() => attemptedKeys.length === 1);
+  const unresolved = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(unresolved.effects[0].status, "unresolved");
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-predefined-effect", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = createFlowRuntime({
+    runAuthority: recoveredAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke(intent) {
+          attemptedKeys.push(intent.idempotency_key);
+          return operationReceipt(intent, { adopted: true });
+        },
+      },
+    },
+  });
+  const recovered = await untilProjection(
+    recoveredRuntime,
+    launch.run_id,
+    "succeeded",
+  );
+  assert.deepEqual(attemptedKeys, [attemptedKeys[0], attemptedKeys[0]]);
+  assert.equal(recovered.effects[0].effect_id, unresolved.effects[0].effect_id);
+  assert.equal(recovered.effects[0].attempt_id, unresolved.effects[0].attempt_id);
+});
+
 test("predefined confirmation covers outcomes, authority, routes, trust, limits, and revisions", () => {
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
@@ -317,6 +418,37 @@ test("predefined confirmation covers outcomes, authority, routes, trust, limits,
   assert.deepEqual(confirmation.limits, prepared.explicit_facts.limits);
   assert.deepEqual(confirmation.trust_posture, prepared.trust_posture);
   assert.deepEqual(confirmation.revision_templates, prepared.revision_templates);
+});
+
+test("predefined confirmation includes routes added by revision templates", () => {
+  const definition = {
+    ...exampleDefinition(),
+    compile({ explicit_facts }) {
+      const proposal = revisionBlockedCheckpointProposal();
+      proposal.explicit_facts = explicit_facts;
+      return proposal;
+    },
+  };
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const proposal = revisionBlockedCheckpointProposal();
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: {},
+    explicit_facts: proposal.explicit_facts,
+  });
+
+  assert.deepEqual(prepared.routes.map(({ card_id }) => card_id), [
+    "confirm-plan",
+    "confirm-revised-plan",
+  ]);
+  assert.equal(
+    runtime.launch(confirmedPredefinedLaunchRequest(prepared)).created,
+    true,
+  );
 });
 
 test("predefined bundles are deeply immutable and byte-identical for equivalent inputs", () => {
@@ -343,6 +475,38 @@ test("predefined bundles are deeply immutable and byte-identical for equivalent 
   assert.throws(() => {
     first.selection.inputs.prompt = "changed";
   }, TypeError);
+});
+
+test("predefined explicit facts normalize unordered identity arrays once", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    predefinedDefinitions: { "example/v1": exampleDefinition() },
+  });
+  const firstFacts = dynamicCheckpointProposal().explicit_facts;
+  firstFacts.capability_envelopes = [
+    "zeta:observe",
+    "scope:approve",
+    "alpha:observe",
+  ];
+  const equivalentFacts = structuredClone(firstFacts);
+  equivalentFacts.capability_envelopes = [
+    "alpha:observe",
+    "zeta:observe",
+    "scope:approve",
+  ];
+  const selection = (explicitFacts) => ({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Confirm the example" },
+    explicit_facts: explicitFacts,
+  });
+
+  const first = runtime.prepare(selection(firstFacts));
+  const launch = runtime.launch(confirmedPredefinedLaunchRequest(first));
+  const equivalent = runtime.prepare(selection(equivalentFacts));
+
+  assert.equal(launch.schema, "flow.launch-receipt/v1");
+  assert.deepEqual(equivalent, first);
 });
 
 test("selection cannot supply or replace a predefined graph or contract", () => {
@@ -470,6 +634,21 @@ test("launch binds the prepared predefined bundle without recompiling or refresh
   assert.equal(routeRejection.code, "invalid_prepared_bundle");
   assert.equal(routeRejection.reason, "routes_mismatch");
 
+  for (const [field, replacement] of [
+    ["promised_outcomes", ["forged outcome"]],
+    ["negative_outcomes", ["forged boundary"]],
+    ["trust_posture", { authority: "forged" }],
+  ]) {
+    const metadataTampered = structuredClone(prepared);
+    metadataTampered[field] = replacement;
+    const rejection = runtime.launch({
+      ...launchRequest,
+      prepared: metadataTampered,
+    });
+    assert.equal(rejection.code, "invalid_prepared_bundle");
+    assert.equal(rejection.reason, "bundle_digest_mismatch");
+  }
+
   const wrongDecisionBinding = runtime.launch({
     ...launchRequest,
     confirmation: {
@@ -502,6 +681,49 @@ test("launch returns a typed rejection for nonplain predefined selection inputs"
   assert.deepEqual(runtime.query().runs, []);
 });
 
+test("predefined compiler faults are reported as definition validation errors", () => {
+  const definition = exampleDefinition();
+  const internal = new Error("implementation detail");
+  definition.compile = () => {
+    throw internal;
+  };
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  assert.throws(
+    () => prepareExample(runtime),
+    (error) => error.name === "PredefinedFlowValidationError" &&
+      error.reason === "invalid_predefined_definition" &&
+      !error.message.includes("implementation detail") &&
+      error.cause === internal,
+  );
+});
+
+test("predefined selections reject iterable identity facts before normalization", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    predefinedDefinitions: { "example/v1": exampleDefinition() },
+  });
+  for (const [field, value] of [
+    ["capability_envelopes", "scope:approve"],
+    ["block_observations", new Set()],
+  ]) {
+    const facts = dynamicCheckpointProposal().explicit_facts;
+    facts[field] = value;
+    assert.throws(
+      () => runtime.prepare({
+        schema: "flow.predefined-flow-selection/v1",
+        definition: "example/v1",
+        inputs: {},
+        explicit_facts: facts,
+      }),
+      (error) => error.name === "PredefinedFlowValidationError" &&
+        error.reason === "invalid_predefined_selection",
+    );
+  }
+});
+
 test("predefined query and watch expose the exact authority watermark and legal actions", async () => {
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
@@ -532,6 +754,24 @@ test("predefined query and watch expose the exact authority watermark and legal 
     assert.deepEqual(view.legal_actions, []);
   }
   await watcher.return();
+});
+
+test("declining a predefined checkpoint reaches a terminal negative outcome", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    predefinedDefinitions: { "example/v1": exampleDefinition() },
+  });
+  const prepared = prepareExample(runtime);
+  const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+  const waiting = runtime.query({ run_id: launch.run_id });
+  const decline = waiting.legal_actions.find(
+    ({ decision }) => decision === "decline",
+  );
+
+  assert.equal(runtime.command(decline).accepted, true);
+  const declined = runtime.query({ run_id: launch.run_id });
+  assert.equal(declined.phase, "declined");
+  assert.deepEqual(declined.legal_actions, []);
 });
 
 function exampleDefinition() {
@@ -587,4 +827,12 @@ async function untilProjection(runtime, runId, phase) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   throw new Error(`timed out waiting for ${phase}`);
+}
+
+async function untilCondition(condition) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error("timed out waiting for condition");
 }

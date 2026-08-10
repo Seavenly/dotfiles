@@ -3,7 +3,6 @@ import {
   applyRevisionGraphChanges,
   compileDynamicPlan,
   compilePredefinedFlowSelection,
-  canonicalizePredefinedSelection,
   isPredefinedFlowSelection,
   snapshotPredefinedDefinitions,
 } from "./plan-compiler.mjs";
@@ -66,10 +65,9 @@ export function createFlowRuntime({
   runtime = Object.freeze({
     prepare(proposal) {
       if (isPredefinedFlowSelection(proposal)) {
-        const selection = canonicalizePredefinedSelection(proposal);
         return compilePredefinedFlowSelection(
-          selection,
-          predefinedRegistry.get(selection.definition),
+          proposal,
+          predefinedRegistry.get(proposal.definition),
           { registeredOperations: operationRegistry },
         );
       }

@@ -11,6 +11,7 @@ import {
   canonicalizeRevisionTemplates,
   canonicalizePredefinedSelection,
   DynamicPlanValidationError,
+  predefinedRoutes,
   validateDynamicPlan,
 } from "./plan-compiler.mjs";
 import {
@@ -242,9 +243,10 @@ function assertPredefinedEnvelope(prepared) {
 }
 
 function assertPredefinedRoutes(prepared) {
-  const expectedRoutes = prepared.graph.cards
-    .filter(({ route }) => route !== null)
-    .map(({ id, route }) => ({ card_id: id, route }));
+  const expectedRoutes = predefinedRoutes(
+    prepared.graph,
+    prepared.revision_templates,
+  );
   if (!isDeepStrictEqual(prepared.routes, expectedRoutes)) {
     invalidLaunch(
       "routes_mismatch",

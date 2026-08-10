@@ -255,7 +255,8 @@ derived graph, selected definition, explicit facts, revision templates, and a
 single `flow.predefined-flow-confirmation/v1` view. That view covers inputs,
 promised and negative outcomes, requested authority and mutations, routes,
 capabilities, limits, trust posture, and revision templates. The confirmation
-view deliberately does not repeat the complete graph.
+routes cover routed cards in both the base graph and revision templates. The
+confirmation view deliberately does not repeat the complete graph.
 
 Launch accepts the exact `flow.predefined-flow-confirmation-decision/v1` bound
 to the prepared bundle and confirmation digests, together with the exact

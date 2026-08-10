@@ -128,8 +128,8 @@ export const PlanCompiler = Object.freeze({
 });
 
 export class PredefinedFlowValidationError extends Error {
-  constructor(reason, message) {
-    super(message);
+  constructor(reason, message, options) {
+    super(message, options);
     this.name = "PredefinedFlowValidationError";
     this.reason = reason;
   }
@@ -198,6 +198,7 @@ export function compilePredefinedFlowSelection(
   const confirmationFacts = predefinedConfirmationFacts(
     registration,
     graph,
+    revisionTemplates,
   );
   const bundle = createPreparedBundle({
     kind: "predefined",
@@ -256,17 +257,26 @@ export function canonicalizePredefinedSelection(selection) {
       typeof selection.definition !== "string" ||
       !selection.definition ||
       !isPlainRecord(selection.inputs) ||
-      !isPlainRecord(selection.explicit_facts)) {
+      !hasCompleteIdentityFacts(selection.explicit_facts)) {
     invalidPredefined(
       "invalid_predefined_selection",
       "predefined flow selection must name a registered definition, inputs, and explicit facts",
+    );
+  }
+  let explicitFacts;
+  try {
+    explicitFacts = canonicalizeExplicitFacts(selection.explicit_facts);
+  } catch {
+    invalidPredefined(
+      "invalid_predefined_selection",
+      "predefined flow selection explicit facts are invalid",
     );
   }
   return freezeCanonical({
     schema: PREDEFINED_SELECTION_SCHEMA,
     definition: selection.definition,
     inputs: selection.inputs,
-    explicit_facts: selection.explicit_facts,
+    explicit_facts: explicitFacts,
   });
 }
 
@@ -324,7 +334,11 @@ function runPredefinedCompiler(registration, context) {
     generated = registration.compile(context);
   } catch (error) {
     if (error instanceof PredefinedFlowValidationError) throw error;
-    throw error;
+    invalidPredefined(
+      "invalid_predefined_definition",
+      `predefined definition compiler failed: ${registration.identity.id}`,
+      { cause: error },
+    );
   }
   if (generated === undefined || generated === null) {
     invalidPredefined(
@@ -346,8 +360,23 @@ function normalizePredefinedProposal(generated, selection) {
     );
   }
   const proposal = generated;
-  const explicitFacts = proposal.explicit_facts ?? selection.explicit_facts;
-  if (digest(explicitFacts) !== digest(selection.explicit_facts)) {
+  const generatedFacts = proposal.explicit_facts ?? selection.explicit_facts;
+  if (!hasCompleteIdentityFacts(generatedFacts)) {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      "predefined definition returned invalid explicit facts",
+    );
+  }
+  let explicitFacts;
+  try {
+    explicitFacts = canonicalizeExplicitFacts(generatedFacts);
+  } catch {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      "predefined definition returned invalid explicit facts",
+    );
+  }
+  if (!sameCanonicalValue(explicitFacts, selection.explicit_facts)) {
     invalidPredefined(
       "definition_changed_explicit_facts",
       "predefined definition cannot replace the selected explicit facts",
@@ -366,18 +395,28 @@ function normalizePredefinedProposal(generated, selection) {
 function predefinedConfirmationFacts(
   registration,
   graph,
+  revisionTemplates,
 ) {
   return {
     promised_outcomes: registration.promised_outcomes,
     negative_outcomes: registration.negative_outcomes,
-    routes: graph.cards.filter(({ route }) => route !== null)
-      .map(({ id, route }) => ({ card_id: id, route })),
+    routes: predefinedRoutes(graph, revisionTemplates),
     trust_posture: registration.trust_posture,
   };
 }
 
-function invalidPredefined(reason, message) {
-  throw new PredefinedFlowValidationError(reason, message);
+export function predefinedRoutes(graph, revisionTemplates) {
+  return freezeCanonical([
+    ...graph.cards,
+    ...revisionTemplates.flatMap(({ changes }) => changes.add_cards),
+  ].filter(({ route }) => route !== null)
+    .map(({ id, route }) => ({ card_id: id, route }))
+    .sort((left, right) => left.card_id < right.card_id ? -1 :
+      left.card_id > right.card_id ? 1 : 0));
+}
+
+function invalidPredefined(reason, message, options) {
+  throw new PredefinedFlowValidationError(reason, message, options);
 }
 
 function isPlainRecord(value) {
@@ -404,16 +443,7 @@ export function validateDynamicPlan(proposal, {
     );
   }
   const facts = proposal.explicit_facts;
-  if (!isRecord(facts) || !isDigest(facts.catalog_fingerprint) ||
-      !isRecord(facts.route_snapshot) ||
-      !isDigest(facts.route_snapshot.watermark) ||
-      !Array.isArray(facts.route_snapshot.bindings) ||
-      !FACT_ARRAY_FIELDS.every((field) => Array.isArray(facts[field])) ||
-      !isRecord(facts.limits) ||
-      !LIMIT_FIELDS.every((field) =>
-        Number.isInteger(facts.limits[field]) && facts.limits[field] >= 0) ||
-      facts.limits.max_cards < 1 ||
-      !Number.isInteger(facts.elapsed_seconds) || facts.elapsed_seconds < 0) {
+  if (!hasCompleteIdentityFacts(facts)) {
     invalidPlan(
       "incomplete_identity_facts",
       "dynamic plan identity facts are incomplete",
@@ -529,6 +559,19 @@ export function validateDynamicPlan(proposal, {
     validateRevisionTemplates(proposal, registeredOperations);
     validateDeclaredRecoveryCapacity(proposal);
   }
+}
+
+function hasCompleteIdentityFacts(facts) {
+  return isRecord(facts) && isDigest(facts.catalog_fingerprint) &&
+    isRecord(facts.route_snapshot) &&
+    isDigest(facts.route_snapshot.watermark) &&
+    Array.isArray(facts.route_snapshot.bindings) &&
+    FACT_ARRAY_FIELDS.every((field) => Array.isArray(facts[field])) &&
+    isRecord(facts.limits) &&
+    LIMIT_FIELDS.every((field) =>
+      Number.isInteger(facts.limits[field]) && facts.limits[field] >= 0) &&
+    facts.limits.max_cards >= 1 &&
+    Number.isInteger(facts.elapsed_seconds) && facts.elapsed_seconds >= 0;
 }
 
 function validateSubrunCard(card, proposal, registeredOperations) {

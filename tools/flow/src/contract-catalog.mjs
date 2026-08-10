@@ -35,6 +35,12 @@ const PREDEFINED_FLOW = {
   preparation: "non_authoritative_registered_definition_snapshot",
   launch_binding: "exact_bundle_and_confirmation_digest",
 };
+const PREDEFINED_FLOW_CONTRACTS = [
+  PREDEFINED_FLOW.selection,
+  PREDEFINED_FLOW.definition,
+  PREDEFINED_FLOW.confirmation,
+  PREDEFINED_FLOW.decision,
+];
 const REJECTION_FIELDS = [
   "schema",
   "operation",
@@ -239,9 +245,8 @@ export async function loadContractCatalog({
   if (!isDeepStrictEqual(
     catalog.flow_runtime?.operation_contracts?.prepare?.predefined,
     PREDEFINED_FLOW,
-  ) || !Object.values(PREDEFINED_FLOW)
-    .filter((value) => value.includes("/v1"))
-    .every((contract) => catalog.contracts.includes(contract))) {
+  ) || !PREDEFINED_FLOW_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
     throw new Error("predefined flow preparation contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
