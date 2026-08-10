@@ -30,30 +30,19 @@ const PROVIDERS = Object.freeze({
 export function createTrackerProgressOperation({
   provider,
   driver,
-  contract = TRACKER_PROGRESS_CONTRACT,
 } = {}) {
   const profile = providerProfile(provider);
-  if (!trackerOperationContractAllowed(contract, profile.adapter)) {
-    throw new TypeError(
-      "tracker progress compatibility contracts are GitHub-only",
-    );
-  }
   const port = normalizeDriver(driver, profile.name);
-  const acceptedContracts = contract === TRACKER_PROGRESS_CONTRACT &&
-    profile.adapter === "github"
+  const acceptedContracts = profile.adapter === "github"
     ? [TRACKER_PROGRESS_CONTRACT,
       GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT]
-    : [contract];
+    : [TRACKER_PROGRESS_CONTRACT];
   return createProviderOperation({
     profile,
     port,
-    contract,
+    contract: TRACKER_PROGRESS_CONTRACT,
     acceptedContracts,
   });
-}
-
-export function createTrackerProgressCompositeOperation(entries = {}) {
-  return createCompositeOperation(createProviderEntries(entries));
 }
 
 export function createTrackerProgressRegistrationBundle(entries = {}) {
@@ -266,11 +255,12 @@ export function validateTrackerProgressBinding(proposal) {
   }
 }
 
-export function validateTrackerProgressCard(card, proposal, provider = null) {
+export function validateTrackerProgressCard(card, proposal, provider) {
+  const profile = providerProfile(provider);
   validateTrackerProgressBinding(proposal);
   const binding = proposal.explicit_facts.tracker_binding;
   const trackerProvider = binding.tracker.system;
-  if (provider !== null && trackerProvider !== provider) {
+  if (trackerProvider !== profile.adapter) {
     throw new TypeError("tracker progress requires its confirmed provider route");
   }
   if (!validProgress(card?.inputs)) {

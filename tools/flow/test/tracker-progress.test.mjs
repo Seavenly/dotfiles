@@ -9,8 +9,10 @@ import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
   createGitHubTrackerProgressOperation,
   GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT,
-  TRACKER_PROGRESS_CONTRACT,
+  TRACKER_PROGRESS_CONTRACT as GITHUB_EXPORTED_TRACKER_PROGRESS_CONTRACT,
   TRACKER_PROGRESS_MARKER,
+  validateTrackerProgressBinding as validateGitHubTrackerProgressBinding,
+  validateTrackerProgressCard as validateGitHubTrackerProgressCard,
 } from "../src/github-tracker-progress.mjs";
 import {
   createJiraTrackerProgressOperation,
@@ -21,11 +23,76 @@ import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import {
   createTrackerProgressRegistrationBundle,
+  TRACKER_PROGRESS_CONTRACT,
 } from "../src/tracker-progress.mjs";
 import { confirmedLaunchRequest } from "../test-support/dynamic-checkpoint.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
 
 const TRACKER_PROVIDERS = ["github", "jira"];
+
+test("the GitHub module preserves its v14 contract export", () => {
+  assert.equal(
+    GITHUB_EXPORTED_TRACKER_PROGRESS_CONTRACT,
+    GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT,
+  );
+  assert.notEqual(
+    GITHUB_EXPORTED_TRACKER_PROGRESS_CONTRACT,
+    TRACKER_PROGRESS_CONTRACT,
+  );
+});
+
+test("the v14 GitHub registration idiom still validates compatibility plans", () => {
+  const runtime = createFlowRuntime({
+    registeredOperations: {
+      [GITHUB_EXPORTED_TRACKER_PROGRESS_CONTRACT]:
+        createGitHubTrackerProgressOperation({
+          driver: new FakeTrackerDriver(),
+        }),
+    },
+  });
+  const proposal = trackerProgressProposal([
+    progressCard(
+      "publish",
+      1,
+      "Compatibility progress",
+      0,
+      1,
+      [],
+      "github",
+      GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT,
+    ),
+  ], "github", GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT);
+
+  assert.doesNotThrow(() => runtime.prepare(proposal));
+});
+
+test("the v14 GitHub validators retain their provider-bound behavior", () => {
+  const githubProposal = trackerProgressProposal([
+    progressCard("publish", 1, "GitHub progress", 0, 1),
+  ]);
+  const jiraProposal = trackerProgressProposal([
+    progressCard("publish", 1, "Jira progress", 0, 1, [], "jira"),
+  ], "jira");
+
+  assert.doesNotThrow(() =>
+    validateGitHubTrackerProgressBinding(githubProposal));
+  assert.throws(
+    () => validateGitHubTrackerProgressBinding(jiraProposal),
+    /confirmed GitHub tracker binding/,
+  );
+  assert.doesNotThrow(() =>
+    validateGitHubTrackerProgressCard(
+      githubProposal.graph.cards[0],
+      githubProposal,
+    ));
+  assert.throws(
+    () => validateGitHubTrackerProgressCard(
+      jiraProposal.graph.cards[0],
+      jiraProposal,
+    ),
+    /confirmed provider route/,
+  );
+});
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} registers the versioned tracker progress Adapter contract`, () => {
@@ -37,7 +104,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} creates and updates one authority-bound progress comment`, async (t) => {
-    const fixture = await trackerRuntime(t);
+    const fixture = await trackerRuntime(t, provider);
     const prepared = fixture.runtime.prepare(trackerProgressProposal([
       progressCard("publish-start", 1, "Implementation started", 0, 2),
       progressCard("publish-finish", 2, "Implementation verified", 2, 2),
@@ -80,7 +147,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} rejects an update receipt for the wrong comment ID`, async (t) => {
-    const fixture = await trackerRuntime(t, {
+    const fixture = await trackerRuntime(t, provider, {
       alterUpdateReceiptId: true,
     });
     const prepared = fixture.runtime.prepare(trackerProgressProposal([
@@ -105,6 +172,32 @@ for (const provider of TRACKER_PROVIDERS) {
 
     const projection = fixture.runtime.query({ run_id: launch.run_id });
     assert.equal(fixture.driver.updateCount, 1);
+    assert.equal(projection.effects[1].receipt, null);
+    assert.equal(projection.tracker_progress.status, "unresolved");
+  });
+}
+
+for (const provider of TRACKER_PROVIDERS) {
+  test(`${provider} rejects an update receipt with a normalized body`, async (t) => {
+    const fixture = await trackerRuntime(t, provider);
+    const prepared = fixture.runtime.prepare(trackerProgressProposal([
+      progressCard("publish-start", 1, "Implementation started", 0, 2),
+      progressCard("publish-finish", 2, "Implementation verified", 2, 2),
+    ], provider));
+    const launch = fixture.runtime.launch(confirmedLaunchRequest(prepared));
+
+    fixture.runtime.command(fixture.runtime.query({ run_id: launch.run_id })
+      .tracker_progress.legal_next_actions[0]);
+    await until(() => fixture.runtime.query({ run_id: launch.run_id })
+      .tracker_progress.sequence === 2);
+    fixture.driver.alterWriteReceipt = true;
+    fixture.runtime.command(fixture.runtime.query({ run_id: launch.run_id })
+      .tracker_progress.legal_next_actions[0]);
+    await until(() => fixture.driver.updateCount === 1);
+    await until(() => fixture.runtime.query({ run_id: launch.run_id })
+      .tracker_progress.status === "unresolved");
+
+    const projection = fixture.runtime.query({ run_id: launch.run_id });
     assert.equal(projection.effects[1].receipt, null);
     assert.equal(projection.tracker_progress.status, "unresolved");
   });
@@ -162,6 +255,84 @@ test("standard tracker registration includes the neutral and v14 contracts", () 
     TRACKER_PROGRESS_CONTRACT);
   assert.equal(bundle[GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT].contract,
     GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT);
+});
+
+for (const [provider, crossedRoute] of [
+  ["github", "jira"],
+  ["jira", "github"],
+]) {
+  test(`${provider} preparation rejects a ${crossedRoute} provider route`, () => {
+    const proposal = trackerProgressProposal([
+      progressCard("publish", 1, "Bounded progress", 0, 1, [], provider),
+    ], provider);
+    proposal.graph.cards[0].route.adapter = crossedRoute;
+
+    assert.throws(
+      () => createTrackerCompilerRuntime().prepare(proposal),
+      /confirmed provider route/,
+    );
+  });
+}
+
+test("Jira preparation rejects the GitHub v14 compatibility contract", () => {
+  const proposal = trackerProgressProposal([
+    progressCard(
+      "publish",
+      1,
+      "Bounded progress",
+      0,
+      1,
+      [],
+      "jira",
+      GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT,
+    ),
+  ], "jira", GITHUB_TRACKER_PROGRESS_COMPATIBILITY_CONTRACT);
+
+  assert.throws(
+    () => createTrackerCompilerRuntime().prepare(proposal),
+    /confirmed provider route/,
+  );
+});
+
+test("a single-provider Adapter rejects an intent for another provider", async () => {
+  const operation = createJiraTrackerProgressOperation({
+    driver: new FakeTrackerDriver(),
+  });
+
+  await assert.rejects(
+    operation.invoke({
+      classification: "reconcilable",
+      effect_id: "effect:provider-mismatch",
+      idempotency_key: "tracker:provider-mismatch",
+      operation_contract: TRACKER_PROGRESS_CONTRACT,
+      operation_input: {
+        schema: "flow.tracker-progress-update/v1",
+        sequence: 1,
+        phase: "active",
+        summary: "Bounded progress",
+        completed: 0,
+        total: 1,
+      },
+      run_id: "run:provider-mismatch",
+      run_ownership: {
+        schema: "flow.run-ownership/v1",
+        scope: "top_level",
+        parent_run_id: null,
+      },
+      source_authority_watermark: "sha256:provider-mismatch",
+      tracker_binding: {
+        schema: "flow.tracker-binding/v1",
+        flow: "feature",
+        tracker: {
+          system: "github",
+          owner: "Seavenly",
+          repository: "dotfiles",
+          issue_number: 35,
+        },
+      },
+    }),
+    /exact top-level run authority/,
+  );
 });
 
 test("standard tracker registration coexists with v14 GitHub recovery", async (t) => {
@@ -261,7 +432,7 @@ test("standard tracker registration coexists with v14 GitHub recovery", async (t
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} child runs and tracker-gated graphs are rejected before mutation`, async (t) => {
-    const fixture = await trackerRuntime(t, {
+    const fixture = await trackerRuntime(t, provider, {
       runOwnership: {
         schema: "flow.run-ownership/v1",
         scope: "child",
@@ -294,7 +465,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} child runs reject tracker cards declared only by a revision`, async (t) => {
-    const fixture = await trackerRuntime(t, {
+    const fixture = await trackerRuntime(t, provider, {
       runOwnership: {
         schema: "flow.run-ownership/v1",
         scope: "child",
@@ -326,7 +497,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} mutation fencing prevents concurrent first-write duplicates`, async (t) => {
-    const fixture = await trackerRuntime(t, { listDelayMs: 20 });
+    const fixture = await trackerRuntime(t, provider, { listDelayMs: 20 });
     const prepared = ["First owner", "Second owner"].map((summary) =>
       fixture.runtime.prepare(trackerProgressProposal([
         progressCard("publish", 1, summary, 0, 1),
@@ -351,7 +522,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} status cannot admit, grant, decide, or advance a run`, async (t) => {
-    const fixture = await trackerRuntime(t);
+    const fixture = await trackerRuntime(t, provider);
     const prepared = fixture.runtime.prepare(trackerProgressProposal([
       progressCard("publish", 1, "Authority remains local", 0, 1),
     ], provider));
@@ -382,11 +553,12 @@ for (const provider of TRACKER_PROVIDERS) {
     const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-tracker-"));
     t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
     const driver = new FakeTrackerDriver({ loseFirstReceipt: true });
+    const drivers = trackerDrivers(provider, driver);
     const firstAuthority = createDurableRunAuthority({
       authorityDirectory,
       hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
     });
-    const firstRuntime = createTrackerRuntime(firstAuthority, driver);
+    const firstRuntime = createTrackerRuntime(firstAuthority, drivers);
     const prepared = firstRuntime.prepare(trackerProgressProposal([
       progressCard("publish", 1, "Ready for review", 1, 1),
     ], provider));
@@ -401,7 +573,7 @@ for (const provider of TRACKER_PROVIDERS) {
       hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
     });
     t.after(() => recoveredAuthority.close());
-    const recoveredRuntime = createTrackerRuntime(recoveredAuthority, driver);
+    const recoveredRuntime = createTrackerRuntime(recoveredAuthority, drivers);
     await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
       "succeeded");
 
@@ -420,7 +592,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} foreign marker ownership fails closed without tracker mutation`, async (t) => {
-    const fixture = await trackerRuntime(t, {
+    const fixture = await trackerRuntime(t, provider, {
       comments: [{
         id: "foreign",
         body: `${TRACKER_PROGRESS_MARKER} owner=run:${"f".repeat(64)} -->\nForeign`,
@@ -455,7 +627,7 @@ for (const provider of TRACKER_PROVIDERS) {
       id,
       body: `${TRACKER_PROGRESS_MARKER} owner=run:${"f".repeat(64)} -->\n${id}`,
     }));
-    const fixture = await trackerRuntime(t, { comments });
+    const fixture = await trackerRuntime(t, provider, { comments });
     const prepared = fixture.runtime.prepare(trackerProgressProposal([
       progressCard("publish", 1, "Owned progress", 0, 1),
     ], provider));
@@ -475,7 +647,9 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} altered write receipts cannot settle tracker progress`, async (t) => {
-    const fixture = await trackerRuntime(t, { alterWriteReceipt: true });
+    const fixture = await trackerRuntime(t, provider, {
+      alterWriteReceipt: true,
+    });
     const prepared = fixture.runtime.prepare(trackerProgressProposal([
       progressCard("publish", 1, "Exact progress", 0, 1),
     ], provider));
@@ -493,7 +667,9 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} incomplete comment listings cannot authorize creation`, async (t) => {
-    const fixture = await trackerRuntime(t, { completeListing: false });
+    const fixture = await trackerRuntime(t, provider, {
+      completeListing: false,
+    });
     const prepared = fixture.runtime.prepare(trackerProgressProposal([
       progressCard("publish", 1, "Bounded progress", 0, 1),
     ], provider));
@@ -512,7 +688,7 @@ for (const provider of TRACKER_PROVIDERS) {
 
 for (const provider of TRACKER_PROVIDERS) {
   test(`${provider} tracker projection follows revision-added cards and ignores superseded cards`, async (t) => {
-    const fixture = await trackerRuntime(t);
+    const fixture = await trackerRuntime(t, provider);
     const proposal = revisionTrackerProgressProposal(provider);
     const prepared = fixture.runtime.prepare(proposal);
     const launch = fixture.runtime.launch(confirmedLaunchRequest(prepared));
@@ -538,14 +714,14 @@ for (const provider of TRACKER_PROVIDERS) {
     const duplicate = revisionTrackerProgressProposal(provider);
     duplicate.revision_templates[0].changes.add_cards[0].inputs.sequence = 1;
     assert.throws(
-      () => createTrackerCompilerRuntime(provider).prepare(duplicate),
+      () => createTrackerCompilerRuntime().prepare(duplicate),
       /tracker progress update sequences must be unique/,
     );
 
     const regressing = revisionTrackerProgressProposal(provider);
     regressing.graph.cards[0].inputs.sequence = 3;
     assert.throws(
-      () => createTrackerCompilerRuntime(provider).prepare(regressing),
+      () => createTrackerCompilerRuntime().prepare(regressing),
       /revision progress sequence must advance the base plan/,
     );
 
@@ -557,7 +733,7 @@ for (const provider of TRACKER_PROVIDERS) {
     secondTemplate.changes.add_cards[0].inputs.sequence = 3;
     ambiguous.revision_templates.push(secondTemplate);
     assert.throws(
-      () => createTrackerCompilerRuntime(provider).prepare(ambiguous),
+      () => createTrackerCompilerRuntime().prepare(ambiguous),
       /one unambiguous revision path/,
     );
   });
@@ -569,7 +745,7 @@ for (const provider of TRACKER_PROVIDERS) {
     proposal.graph.cards[0].inputs.sequence = 3;
     const prepared = compileDynamicPlan(proposal);
 
-    const rejection = createTrackerCompilerRuntime(provider).launch(
+    const rejection = createTrackerCompilerRuntime().launch(
       confirmedLaunchRequest(prepared),
     );
     assert.equal(rejection.code, "invalid_operation_input");
@@ -630,7 +806,7 @@ for (const provider of TRACKER_PROVIDERS) {
     }];
     const prepared = compileDynamicPlan(proposal);
 
-    const rejection = createTrackerCompilerRuntime(provider).launch(
+    const rejection = createTrackerCompilerRuntime().launch(
       confirmedLaunchRequest(prepared),
     );
     assert.equal(rejection.code, "invalid_operation_input");
@@ -660,7 +836,7 @@ test("invalid Jira project and issue identities are rejected", () => {
   ], "jira");
   invalidProject.explicit_facts.tracker_binding.tracker.project = "..";
   assert.throws(
-    () => createTrackerCompilerRuntime("jira").prepare(invalidProject),
+    () => createTrackerCompilerRuntime().prepare(invalidProject),
     /confirmed feature or epic tracker binding/,
   );
 
@@ -669,7 +845,7 @@ test("invalid Jira project and issue identities are rejected", () => {
   ], "jira");
   invalidIssue.explicit_facts.tracker_binding.tracker.issue_number = 0;
   assert.throws(
-    () => createTrackerCompilerRuntime("jira").prepare(invalidIssue),
+    () => createTrackerCompilerRuntime().prepare(invalidIssue),
     /confirmed feature or epic tracker binding/,
   );
 
@@ -679,7 +855,7 @@ test("invalid Jira project and issue identities are rejected", () => {
   delete alternateShape.explicit_facts.tracker_binding.tracker.issue_number;
   alternateShape.explicit_facts.tracker_binding.tracker.issue_key = "FLOW-35";
   assert.throws(
-    () => createTrackerCompilerRuntime("jira").prepare(alternateShape),
+    () => createTrackerCompilerRuntime().prepare(alternateShape),
     /confirmed feature or epic tracker binding/,
   );
 });
@@ -904,7 +1080,7 @@ function checkpointCard(id, dependencies) {
   };
 }
 
-async function trackerRuntime(t, options = {}) {
+async function trackerRuntime(t, provider, options = {}) {
   const { runOwnership, ...driverOptions } = options;
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-tracker-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -919,33 +1095,41 @@ async function trackerRuntime(t, options = {}) {
   });
   t.after(() => authority.close());
   const driver = new FakeTrackerDriver(driverOptions);
+  const drivers = trackerDrivers(provider, driver);
   return {
     authority,
     authorityDirectory,
     driver,
-    runtime: createTrackerRuntime(authority, driver),
+    drivers,
+    runtime: createTrackerRuntime(authority, drivers),
   };
 }
 
 function createTrackerRuntime(
   authority,
-  driver,
+  drivers,
 ) {
   return createFlowRuntime({
     runAuthority: authority,
     registeredOperations: createTrackerProgressRegistrationBundle({
-      github: { driver },
-      jira: { driver },
+      github: { driver: drivers.github },
+      jira: { driver: drivers.jira },
     }),
   });
 }
 
+function trackerDrivers(provider, selectedDriver) {
+  return {
+    github: provider === "github" ? selectedDriver : new FakeTrackerDriver(),
+    jira: provider === "jira" ? selectedDriver : new FakeTrackerDriver(),
+  };
+}
+
 function createTrackerCompilerRuntime() {
-  const driver = new FakeTrackerDriver();
   return createFlowRuntime({
     registeredOperations: createTrackerProgressRegistrationBundle({
-      github: { driver },
-      jira: { driver },
+      github: { driver: new FakeTrackerDriver() },
+      jira: { driver: new FakeTrackerDriver() },
     }),
   });
 }
@@ -1040,6 +1224,7 @@ class FakeTrackerDriver {
     comment.body = body;
     return structuredClone({
       ...comment,
+      ...(this.alterWriteReceipt ? { body: `${comment.body}\n` } : {}),
       ...(this.alterUpdateReceiptId ? { id: "other-comment" } : {}),
     });
   }
