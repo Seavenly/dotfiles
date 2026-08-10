@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stack Split"
+  short_description: "Split a finished branch into a gh-stack"
+  default_prompt: "Use $stack-split to decompose the current branch into a gh-stack of review layers."
+policy:
+  allow_implicit_invocation: false

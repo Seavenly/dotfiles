@@ -103,6 +103,7 @@ expected_skills=(
   prototype
   setup-matt-pocock-skills
   split
+  stack-split
   tdd
   to-spec
   to-tickets
@@ -135,6 +136,7 @@ expected_repository() {
   case "$1" in
     split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
     agent-flow-stacks) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
+    stack-split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
     i-have-adhd) printf '%s\n' 'https://github.com/ayghri/i-have-adhd.git' ;;
     tuicr) printf '%s\n' 'https://github.com/agavra/tuicr.git' ;;
     *) printf '%s\n' 'https://github.com/mattpocock/skills.git' ;;
