@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { stat } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { digestCanonical } from "../src/canonical-json.mjs";
@@ -16,6 +26,39 @@ async function executableFileIdentity(path) {
     size: Number(metadata.size),
     mtime_ms: metadata.mtimeMs,
   };
+}
+
+// Build the install shape codex-cli 0.147.0 publishes: PATH resolves to a Node
+// launcher inside an npm package, and the launcher execs a native binary
+// vendored in that same package's dependency tree.
+async function installNodeLauncherHarness(scratch) {
+  // Resolve the scratch root up front: on macOS the temp directory is itself a
+  // symlink, and the identity check requires observed and canonical paths to
+  // agree.
+  const root = await realpath(scratch);
+  const packageRoot = join(root, "lib", "node_modules", "@openai", "codex");
+  const launcherPath = join(packageRoot, "bin", "codex.js");
+  const nativePath = join(
+    packageRoot,
+    "node_modules",
+    "@openai",
+    "codex-darwin-arm64",
+    "vendor",
+    "aarch64-apple-darwin",
+    "bin",
+    "codex",
+  );
+  await mkdir(join(packageRoot, "bin"), { recursive: true });
+  await mkdir(join(nativePath, ".."), { recursive: true });
+  await writeFile(
+    join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: "@openai/codex", version: "0.147.0" })}\n`,
+  );
+  await writeFile(launcherPath, "#!/usr/bin/env node\n");
+  await writeFile(nativePath, "#!/bin/sh\nexit 0\n");
+  await chmod(launcherPath, 0o755);
+  await chmod(nativePath, 0o755);
+  return { launcherPath, nativePath, packageRoot };
 }
 
 test("Herdr observations use the advertised command bound", async () => {
@@ -283,6 +326,185 @@ test("managed runtime capture binds native session and foreground process identi
   assert.match(
     traceIdentity.executable.canonical_path,
     /^<path:sha256:[0-9a-f]{64}>$/u,
+  );
+});
+
+test("managed runtime capture binds the native child of a Node launcher harness", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-node-launcher-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const { launcherPath, nativePath } = await installNodeLauncherHarness(scratch);
+  const fileIdentity = await executableFileIdentity(launcherPath);
+  const nativePid = 2147483647;
+  const launcherPid = 2147483646;
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_status: "idle",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        // Both pane processes share the foreground process group, and only the
+        // native child carries the harness name.
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_process_group_id: launcherPid,
+              foreground_processes: [
+                {
+                  pid: nativePid,
+                  name: "codex",
+                  argv0: "codex",
+                  argv: [nativePath, "--sandbox", "read-only"],
+                  cmdline: `${nativePath} --sandbox read-only`,
+                  cwd: "/workspace",
+                },
+                {
+                  pid: launcherPid,
+                  name: "node",
+                  argv0: "node",
+                  argv: ["node", launcherPath, "--sandbox", "read-only"],
+                  cmdline: `node ${launcherPath} --sandbox read-only`,
+                  cwd: "/workspace",
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (file === "ps" && args[0] === "eww") {
+        return `${nativePath} --sandbox read-only PATH=/managed/bin:/usr/bin\n`;
+      }
+      if (file === "ps" && args.includes(String(nativePid))) {
+        return `${nativePath}\n`;
+      }
+      if (file === launcherPath && args[0] === "--version") {
+        return "codex-cli 0.147.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v7)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+
+  const identity = await client.captureManagedRuntimeIdentity({
+    agentName: "managed-agent",
+    paneId: "pane-1",
+    harness: "codex",
+    executable: {
+      schema: "drovr.managed-pane-runtime-identity/v1",
+      harness: "codex",
+      pane_id: "pane-1",
+      executable: {
+        observed_path: launcherPath,
+        canonical_path: launcherPath,
+        version: "codex-cli 0.147.0",
+        file_identity: fileIdentity,
+      },
+      managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+    },
+    model: "gpt-5.6-sol",
+    effort: "high",
+  });
+
+  // The launcher stays the identity anchor; the bound process is the native
+  // child that actually runs the harness.
+  assert.equal(identity.process.pid, nativePid);
+  assert.equal(identity.process.name, "codex");
+  assert.equal(identity.executable.canonical_path, launcherPath);
+  assert.equal(identity.native_session, "native-1");
+});
+
+test("managed runtime capture blocks a native process outside the launcher package", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-node-launcher-foreign-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const { launcherPath } = await installNodeLauncherHarness(scratch);
+  const foreignRoot = join(await realpath(scratch), "foreign");
+  const foreignPath = join(foreignRoot, "codex");
+  await mkdir(foreignRoot, { recursive: true });
+  await writeFile(foreignPath, "#!/bin/sh\nexit 0\n");
+  await chmod(foreignPath, 0o755);
+  const fileIdentity = await executableFileIdentity(launcherPath);
+  const client = new HerdrClient({
+    session: "delegates",
+    env: { PATH: "/managed/bin:/usr/bin" },
+    async run(file, args) {
+      if (args.includes("list")) {
+        return JSON.stringify({
+          result: {
+            agents: [{
+              name: "managed-agent",
+              pane_id: "pane-1",
+              agent_status: "idle",
+              agent_session: { value: "native-1" },
+            }],
+          },
+        });
+      }
+      if (args.includes("process-info")) {
+        return JSON.stringify({
+          result: {
+            type: "pane_process_info",
+            process_info: {
+              pane_id: "pane-1",
+              foreground_processes: [{
+                pid: 2147483647,
+                name: "codex",
+                argv0: "codex",
+                argv: [foreignPath, "--sandbox", "read-only"],
+                cmdline: `${foreignPath} --sandbox read-only`,
+                cwd: "/workspace",
+              }],
+            },
+          },
+        });
+      }
+      if (file === "ps") return `${foreignPath}\n`;
+      if (file === "lsof") return `p2147483647\nn${foreignPath}\n`;
+      if (file === launcherPath && args[0] === "--version") {
+        return "codex-cli 0.147.0\n";
+      }
+      if (file === "herdr" && args[0] === "integration") {
+        return "codex: current (v7)\n";
+      }
+      throw new Error(`unexpected Herdr call: ${file} ${args.join(" ")}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.captureManagedRuntimeIdentity({
+      agentName: "managed-agent",
+      paneId: "pane-1",
+      harness: "codex",
+      executable: {
+        schema: "drovr.managed-pane-runtime-identity/v1",
+        harness: "codex",
+        pane_id: "pane-1",
+        executable: {
+          observed_path: launcherPath,
+          canonical_path: launcherPath,
+          version: "codex-cli 0.147.0",
+          file_identity: fileIdentity,
+        },
+        managed_path_digest: digestCanonical("/managed/bin:/usr/bin"),
+      },
+      model: "gpt-5.6-sol",
+      effort: "high",
+    }),
+    (error) => error.outcome === "compatibility_blocked" &&
+      error.details?.reason === "missing",
   );
 });
 

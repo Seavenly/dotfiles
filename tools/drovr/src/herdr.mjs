@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 
 import { claudeAgentArguments } from "./claude.mjs";
 import { codexAgentArguments } from "./codex.mjs";
@@ -1298,10 +1299,13 @@ async function nativeProcessIdentity(processInfo, harness, executable, client) {
   ].filter(Boolean));
   const processPath = await processExecutablePath(
     candidate,
-    executablePaths,
+    await managedExecutableAcceptor(
+      executablePaths,
+      executable?.executable?.canonical_path,
+    ),
     client,
   );
-  if (!processPath || !executablePaths.has(processPath)) return null;
+  if (!processPath) return null;
   return {
     pid: candidate.pid,
     name: String(candidate.name),
@@ -1310,6 +1314,47 @@ async function nativeProcessIdentity(processInfo, harness, executable, client) {
     cmdline: String(cmdline),
     cwd: String(cwd),
   };
+}
+
+// The trusted executable is whatever the harness name resolves to on the
+// managed PATH, but a harness can publish a Node launcher there instead of its
+// own binary: codex-cli 0.147.0 puts @openai/codex/bin/codex.js on PATH and
+// execs the platform package's native binary from inside the same install, so
+// the pane holds a node parent and a native child. The launcher stays the
+// identity anchor, so a running binary that is not the anchor itself is accepted
+// only when it ships inside the anchor's own package. Writing there already
+// means being able to replace the launcher, so this grants no trust the anchor
+// did not already carry.
+async function managedExecutableAcceptor(executablePaths, canonicalPath) {
+  const packageRoot = canonicalPath && isNodeLauncherPath(canonicalPath)
+    ? await nodePackageRoot(canonicalPath)
+    : null;
+  return (path) =>
+    executablePaths.has(path) ||
+    Boolean(packageRoot && path.startsWith(`${packageRoot}${sep}`));
+}
+
+function isNodeLauncherPath(path) {
+  return /\.[cm]?js$/iu.test(path);
+}
+
+// Walk up from the launcher to the package that publishes it. The search stays
+// shallow because a published launcher sits at the package root or one level
+// below it; a deeper match would widen the accepted tree past the install.
+async function nodePackageRoot(launcherPath) {
+  let directory = dirname(launcherPath);
+  for (let depth = 0; depth < 3; depth += 1) {
+    try {
+      await stat(join(directory, "package.json"));
+      return await realpath(directory);
+    } catch {
+      // Keep walking toward the package root.
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+  return null;
 }
 
 function executableName(value) {

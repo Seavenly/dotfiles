@@ -1,17 +1,26 @@
 import { readFile, realpath } from "node:fs/promises";
 
+// Resolve the executable a PID is running, stopping at the first platform
+// lookup that yields a path the caller accepts. `isAccepted` carries the trust
+// policy: this module knows how to observe an executable path, not which paths
+// a harness is allowed to be running, so a caller can accept a path this module
+// has no opinion about - such as the native binary a Node launcher execs.
 export async function processExecutablePath(
   candidate,
-  expectedPaths,
+  isAccepted,
   client,
   { realpathImpl = realpath } = {},
 ) {
   if (!Number.isSafeInteger(candidate.pid) || candidate.pid <= 0) return null;
+  let procPath;
   try {
-    const path = await realpathImpl(`/proc/${candidate.pid}/exe`);
-    return expectedPaths.has(path) ? path : null;
+    procPath = await realpathImpl(`/proc/${candidate.pid}/exe`);
   } catch {
     // macOS and restricted Linux environments do not expose /proc.
+  }
+  // /proc/<pid>/exe is authoritative, so a rejection there needs no fallback.
+  if (procPath !== undefined) {
+    return (await isAccepted(procPath)) ? procPath : null;
   }
   if (!client?.run) {
     return null;
@@ -21,6 +30,7 @@ export async function processExecutablePath(
     ["ps", ["-p", String(candidate.pid), "-o", "command="]],
     ["lsof", ["-p", String(candidate.pid), "-a", "-d", "txt", "-Fn"]],
   ]) {
+    let resolved;
     try {
       const output = String(await client.run(args[0], args[1], { env: client.env }));
       const candidatePath = args[0] === "lsof"
@@ -30,16 +40,16 @@ export async function processExecutablePath(
             ?.slice(1)
         : output.trim().split(/\s+/u)[0];
       if (!candidatePath?.startsWith("/")) continue;
-      let resolved;
       try {
         resolved = await realpathImpl(candidatePath);
       } catch {
         resolved = candidatePath;
       }
-      if (expectedPaths.has(resolved)) return resolved;
     } catch {
       // Try the next platform-specific process lookup shape.
+      continue;
     }
+    if (await isAccepted(resolved)) return resolved;
   }
   return null;
 }

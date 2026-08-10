@@ -77,7 +77,7 @@ test("process environment lookup rejects PATH-looking argv text without an envir
 test("process executable lookup accepts the proc executable identity", async () => {
   const expectedPath = "/opt/codex/bin/codex";
   let fallbackCalls = 0;
-  const path = await processExecutablePath({ pid: 42 }, new Set([expectedPath]), {
+  const path = await processExecutablePath({ pid: 42 }, (path) => path === expectedPath, {
     async run() {
       fallbackCalls += 1;
       return "";
@@ -96,7 +96,7 @@ test("process executable lookup accepts the proc executable identity", async () 
 test("process executable lookup falls back to ps comm", async () => {
   const expectedPath = "/opt/codex/bin/codex";
   const calls = [];
-  const path = await processExecutablePath({ pid: 42 }, new Set([expectedPath]), {
+  const path = await processExecutablePath({ pid: 42 }, (path) => path === expectedPath, {
     env: { PATH: "/caller/bin" },
     async run(file, args) {
       calls.push([file, args]);
@@ -116,7 +116,7 @@ test("process executable lookup falls back to ps comm", async () => {
 test("process executable lookup falls back to lsof after non-path ps results", async () => {
   const expectedPath = "/opt/codex/bin/codex";
   const calls = [];
-  const path = await processExecutablePath({ pid: 42 }, new Set([expectedPath]), {
+  const path = await processExecutablePath({ pid: 42 }, (path) => path === expectedPath, {
     env: { PATH: "/caller/bin" },
     async run(file, args) {
       calls.push([file, args]);
@@ -140,9 +140,7 @@ test("process executable lookup falls back to lsof after non-path ps results", a
 
 test("process executable lookup rejects a proc mismatch without fallback", async () => {
   let fallbackCalls = 0;
-  const path = await processExecutablePath({ pid: 42 }, new Set([
-    "/opt/codex/bin/codex",
-  ]), {
+  const path = await processExecutablePath({ pid: 42 }, (path) => path === "/opt/codex/bin/codex", {
     async run() {
       fallbackCalls += 1;
       return "/opt/codex/bin/codex\n";
@@ -160,9 +158,7 @@ test("process executable lookup rejects a proc mismatch without fallback", async
 
 test("process executable lookup rejects unexpected fallback paths", async () => {
   const calls = [];
-  const path = await processExecutablePath({ pid: 42 }, new Set([
-    "/opt/codex/bin/codex",
-  ]), {
+  const path = await processExecutablePath({ pid: 42 }, (path) => path === "/opt/codex/bin/codex", {
     async run(file, args) {
       calls.push([file, args]);
       if (file === "lsof") return "p42\nn/opt/other/codex\n";
@@ -212,7 +208,7 @@ test("process identity lookup fails closed for invalid pids, missing command lin
     commandLine: "   ",
     readFileImpl: unavailableFile,
   }), null);
-  assert.equal(await processExecutablePath({ pid: 0 }, new Set(), client), null);
-  assert.equal(await processExecutablePath({ pid: "42" }, new Set(), client), null);
+  assert.equal(await processExecutablePath({ pid: 0 }, () => true, client), null);
+  assert.equal(await processExecutablePath({ pid: "42" }, () => true, client), null);
   assert.equal(environmentFallbackCalls, 1);
 });
