@@ -27,6 +27,13 @@ import {
   SUBRUN_CONTRACT,
 } from "./subrun-effects.mjs";
 import { isBackupRestoreCommand } from "./backup-restore.mjs";
+import { getReviewAuthority } from "./work-authority.mjs";
+import {
+  createInMemoryReviewAuthority,
+  createReviewOperationRegistration,
+  reviewCandidateAuthorityIssue,
+  REVIEW_DELEGATE_OUTPUT_VALIDATOR,
+} from "./review-flow.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
 
@@ -38,6 +45,7 @@ export function createFlowRuntime({
   delegatedAgentPort = null,
   delegateOutputValidators = {},
   predefinedDefinitions = {},
+  reviewAuthority = null,
 } = {}) {
   if (registeredOperations === null ||
       !(registeredOperations instanceof Map) &&
@@ -50,10 +58,39 @@ export function createFlowRuntime({
     getRuntime: () => runtime,
     runAuthority,
   });
-  const operationRegistry = snapshotRegisteredOperations(registeredOperations);
-  const delegateValidators = snapshotDelegateOutputValidators(
-    delegateOutputValidators,
+  const ownedReviewAuthority = reviewAuthority ?? attachedReviewAuthority(runAuthority) ??
+    createInMemoryReviewAuthority();
+  const operationInputs = registeredOperations instanceof Map
+    ? new Map(registeredOperations)
+    : { ...registeredOperations };
+  // ReviewAuthority owns this built-in operation. A caller-supplied entry is
+  // deliberately replaced by the trusted registration so an injected
+  // operation cannot bypass candidate, evidence, or completion authority.
+  setRegisteredOperation(
+    operationInputs,
+    "flow.operation/review-record/v1",
+    createReviewOperationRegistration({
+      reviewAuthority: ownedReviewAuthority,
+    }),
   );
+  const operationRegistry = snapshotRegisteredOperations(operationInputs);
+  const validatorInputs = delegateOutputValidators instanceof Map
+    ? new Map(delegateOutputValidators)
+    : { ...delegateOutputValidators };
+  if (!registeredOperationPresent(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR)) {
+    setRegisteredOperation(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR, {
+      validate(output) {
+        try {
+          const value = typeof output === "string" ? JSON.parse(output) : output;
+          return value?.schema === "flow.review-result/v1" &&
+            Array.isArray(value.findings);
+        } catch {
+          return false;
+        }
+      },
+    });
+  }
+  const delegateValidators = snapshotDelegateOutputValidators(validatorInputs);
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
   const predefinedRegistry = snapshotPredefinedDefinitions(predefinedDefinitions);
@@ -78,6 +115,28 @@ export function createFlowRuntime({
     launch(request) {
       const validation = validateLaunchRequest(request);
       if (validation.accepted) {
+        const reviewTarget = executionCards(validation.prepared)
+          .map((card) => card.inputs?.target)
+          .find((target) => target?.schema === "flow.review-local-candidate/v1");
+        if (reviewTarget) {
+          const issue = reviewCandidateAuthorityIssue(
+            reviewTarget,
+            ownedReviewAuthority,
+          );
+          if (issue) {
+            const host = runAuthority.query();
+            return createRejection({
+              operation: "launch",
+              code: issue.code,
+              reason: issue.reason,
+              bundleDigest: validation.prepared.bundle_digest,
+              authorityWatermark: issue.projection?.watermark ?? host.watermark,
+              authorityWatermarkDomain: issue.projection?.schema ===
+                "work.review-candidate-projection/v1" ? "review" : "host",
+              legalActions: issue.projection?.legal_actions ?? [],
+            });
+          }
+        }
         const operationCards = executionCards(validation.prepared);
         const incompatible = operationCards.map((card) => ({
           card,
@@ -233,6 +292,13 @@ export function createFlowRuntime({
     },
 
     query(request = {}) {
+      const reviewSubject = reviewRequestSubject(request);
+      if (reviewSubject !== null) {
+        return ownedReviewAuthority.query({
+          contract: "work.review/v1",
+          subject_id: reviewSubject,
+        });
+      }
       if (request?.schema === "flow.query/v1") {
         return dispatchRegisteredQuery(request, registeredQueries, runAuthority);
       }
@@ -240,6 +306,15 @@ export function createFlowRuntime({
     },
 
     watch(request = {}) {
+      const reviewSubject = reviewRequestSubject(request);
+      if (reviewSubject !== null) {
+        return typeof ownedReviewAuthority.watch === "function"
+          ? ownedReviewAuthority.watch({ subject_id: reviewSubject })
+          : oneShotReviewObservation(ownedReviewAuthority.query({
+              contract: "work.review/v1",
+              subject_id: reviewSubject,
+            }));
+      }
       if (request?.host === true) {
         return typeof runAuthority.watchHost === "function"
           ? runAuthority.watchHost()
@@ -256,6 +331,49 @@ export function createFlowRuntime({
     subrunRegistration,
   );
   return runtime;
+}
+
+function registeredOperationPresent(registry, contract) {
+  return registry instanceof Map
+    ? registry.has(contract) && registry.get(contract) != null
+    : Object.hasOwn(registry ?? {}, contract) && registry[contract] != null;
+}
+
+function attachedReviewAuthority(runAuthority) {
+  try {
+    return getReviewAuthority({ runAuthority });
+  } catch {
+    return null;
+  }
+}
+
+function setRegisteredOperation(registry, contract, registration) {
+  if (registry instanceof Map) registry.set(contract, registration);
+  else registry[contract] = registration;
+}
+
+function reviewRequestSubject(request) {
+  if (request?.review_id || request?.contract === "work.review/v1") {
+    return request.review_id ?? request.subject_id;
+  }
+  if ((request?.schema === "flow.query/v1" || request?.schema === "flow.watch/v1") &&
+      ["review", "review/v1"].includes(request.query)) {
+    return request.review_id ?? request.subject_id;
+  }
+  return null;
+}
+
+function oneShotReviewObservation(value) {
+  let emitted = false;
+  return {
+    async next() {
+      if (emitted) return { value: undefined, done: true };
+      emitted = true;
+      return { value, done: false };
+    },
+    async return() { emitted = true; return { value: undefined, done: true }; },
+    [Symbol.asyncIterator]() { return this; },
+  };
 }
 
 function executionCards(prepared) {

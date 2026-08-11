@@ -423,6 +423,12 @@ _Avoid_: Registry entry, tuicr session
 A rebuildable, derived view of a review manifest for discovery and display.
 _Avoid_: Review state, approval record
 
+**Automated review record**:
+The append-only ReviewAuthority result of one automated review, bound separately
+to the candidate seal watermark and review lifecycle generation; it records
+automated completion only and never grants human approval or integration power.
+_Avoid_: Approval record, merge decision
+
 **Integration receipt**:
 Durable evidence binding a reviewed head to the exact target ref, resulting
 commit, and resulting tree after Git integration.

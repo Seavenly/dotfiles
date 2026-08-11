@@ -77,6 +77,10 @@ import {
   workspaceEffectAuthorityIssue,
 } from "./work-authority.mjs";
 import {
+  reviewRecordCandidateAuthorityIssue,
+  reviewRecordSourceAuthorityIssue,
+} from "./review-flow.mjs";
+import {
   executeHostRecoveryCommand,
   initialBackupProjection,
   initialRestoreBarrier,
@@ -1582,6 +1586,15 @@ export function createDurableRunAuthority({
           }
           command = freezeCanonical({ ...command, git_observation: observation });
         }
+        if (isReviewRecordCommand(command)) {
+          const sourceIssue = reviewSourceCommandIssue(database, command);
+          if (sourceIssue) {
+            return workRejection("command", sourceIssue.code, {
+              command,
+              current: sourceIssue.projection,
+            });
+          }
+        }
         const decision = evaluateWorkCommand(
           database,
           identity,
@@ -1590,6 +1603,22 @@ export function createDurableRunAuthority({
         if (decision.schema === "work.rejection/v1") return decision;
         if (decision.replayed) {
           return workCommandReceipt(command, currentProjection, false);
+        }
+        if (isReviewRecordCommand(command)) {
+          const candidateIssue = reviewCandidateCommandIssue(database, command);
+          if (candidateIssue) {
+            return workRejection("command", candidateIssue.code, {
+              command,
+              current: candidateIssue.projection,
+            });
+          }
+          const sourceIssue = reviewSourceCommandIssue(database, command);
+          if (sourceIssue) {
+            return workRejection("command", sourceIssue.code, {
+              command,
+              current: sourceIssue.projection,
+            });
+          }
         }
         let createdArtifactPath = null;
         if (decision.artifactBytes !== undefined) {
@@ -1627,6 +1656,31 @@ export function createDurableRunAuthority({
             database.exec("ROLLBACK");
             if (createdArtifactPath) unlinkSync(createdArtifactPath);
             return committed;
+          }
+          if (committed.replayed) {
+            database.exec("ROLLBACK");
+            if (createdArtifactPath) unlinkSync(createdArtifactPath);
+            return workCommandReceipt(command, currentProjection, false);
+          }
+          if (isReviewRecordCommand(command)) {
+            const candidateIssue = reviewCandidateCommandIssue(database, command);
+            if (candidateIssue) {
+              database.exec("ROLLBACK");
+              if (createdArtifactPath) unlinkSync(createdArtifactPath);
+              return workRejection("command", candidateIssue.code, {
+                command,
+                current: candidateIssue.projection,
+              });
+            }
+            const sourceIssue = reviewSourceCommandIssue(database, command);
+            if (sourceIssue) {
+              database.exec("ROLLBACK");
+              if (createdArtifactPath) unlinkSync(createdArtifactPath);
+              return workRejection("command", sourceIssue.code, {
+                command,
+                current: sourceIssue.projection,
+              });
+            }
           }
           assertDurableHostRestoreClear(
             database,
@@ -2415,9 +2469,15 @@ export function createDurableRunAuthority({
   const reviewAuthority = Object.freeze({
     schema: "work.review-authority/v1",
     command(command) {
-      if (command?.schema !== "work.review-candidate-seal-command/v1" ||
+      if (![
+        "work.review-candidate-seal-command/v1",
+        "work.review-record-command/v1",
+      ].includes(command?.schema) ||
           command.contract !== "work.review/v1") {
         return workRejection("command", "invalid_review_command", { command });
+      }
+      if (command.schema === "work.review-record-command/v1") {
+        return workCommand(command);
       }
       return workRejection(
         "command",
@@ -2433,6 +2493,12 @@ export function createDurableRunAuthority({
         });
       }
       return workQuery(request);
+    },
+    watch(request) {
+      return createOneShotWatcher(workQuery({
+        contract: "work.review/v1",
+        subject_id: request?.subject_id,
+      }));
     },
   });
   const handoffAuthority = Object.freeze({
@@ -2580,6 +2646,30 @@ function workCommandReceipt(command, projection, created) {
 function evaluateWorkCommand(database, identity, command) {
   const current = readStream(database, identity.streamId)?.fold ?? null;
   return decideWorkCommand(current, command);
+}
+
+function isReviewRecordCommand(command) {
+  return command?.schema === "work.review-record-command/v1" &&
+    command.type === "review_record" && command.contract === "work.review/v1";
+}
+
+function reviewCandidateCommandIssue(database, command) {
+  const candidateIdentity = workStreamIdentity(
+    "work.review/v1",
+    command.candidate?.candidate_id,
+  );
+  const candidateProjection = candidateIdentity
+    ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+    : null;
+  return reviewRecordCandidateAuthorityIssue(command, candidateProjection);
+}
+
+function reviewSourceCommandIssue(database, command) {
+  const stream = typeof command?.source_run_id === "string"
+    ? readStream(database, command.source_run_id)
+    : null;
+  const issue = reviewRecordSourceAuthorityIssue(command, stream?.fold ?? null);
+  return issue ? { ...issue, projection: stream?.fold ?? null } : null;
 }
 
 function prepareHandoffPublication(

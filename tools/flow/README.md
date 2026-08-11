@@ -363,6 +363,32 @@ registration; an unrelated run lifecycle event does not change it.
 `legal_actions` is always derived from the represented authority, or empty when
 no authority watermark is available.
 
+### Automated local review
+
+The registered `review/v1` definition reviews exactly one complete
+`work.review-candidate/v1` verified local candidate. The target binds the
+candidate fingerprint separately from the review lifecycle generation and
+from the owning candidate-seal authority watermark. Launch re-reads the
+sealed candidate projection and rejects missing, stale, or mismatched
+candidate identity before creating a run. Its selected security, correctness, tests,
+style, and observability lenses each use an isolated delegated route; one
+fresh critic depends on every enabled lens and receives their accepted
+authority evidence. A registered review operation appends one immutable
+`work.review/v1` record to ReviewAuthority with the candidate fingerprint and
+lifecycle generation bound independently. The ReviewAuthority-owned operation
+registration is reserved and cannot be replaced by caller code.
+
+ReviewAuthority projections and `FlowRuntime` review queries/watchers expose
+the exact review watermark, append-only evidence, stable findings, posture,
+cap reasons, and deterministic JSON, Markdown, and HTML artifacts. Artifacts
+carry candidate, lifecycle, candidate-seal, source-authority, and exact
+registered-operation provenance. ReviewAuthority re-reads the sealed candidate
+projection on every review-record command, so a self-consistent forged
+candidate or stale candidate-seal watermark cannot create a review event. Review
+completion is automated evidence only: approval, integration, merge, tracker
+completion, and remote review submission remain unauthorized and have no legal
+actions in the projection.
+
 ## Workspace, artifact, and resource handoff authority
 
 `src/work-authority.mjs` exports distinct `getWorkspaceAuthority()`,

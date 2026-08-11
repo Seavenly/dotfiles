@@ -11,6 +11,10 @@ import {
   createFeatureDefinition,
   FEATURE_OPERATION_CONTRACTS,
 } from "../src/feature-flow.mjs";
+import {
+  createReviewDefinition,
+  REVIEW_DELEGATE_OUTPUT_VALIDATOR,
+} from "../src/review-flow.mjs";
 import { createDurableRunAuthority, createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
 import {
@@ -658,6 +662,178 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.equal(completed.views.operator.legal_actions.some(({ type }) =>
     ["review", "integration", "push", "pull_request", "cleanup", "tracker"].includes(type)),
   false);
+
+  let receiptLoss = true;
+  let firstReviewRecordCommand = null;
+  const reviewAuthorityWithReceiptLoss = Object.freeze({
+    ...reviewAuthority,
+    command(command) {
+      if (command?.schema === "work.review-record-command/v1" &&
+          firstReviewRecordCommand === null) {
+        firstReviewRecordCommand = structuredClone(command);
+      }
+      const receipt = reviewAuthority.command(command);
+      if (receiptLoss && command?.schema === "work.review-record-command/v1" &&
+          receipt?.accepted === true && receipt?.created === true) {
+        receiptLoss = false;
+        throw new Error("simulated crash after durable review record append");
+      }
+      return receipt;
+    },
+  });
+  const descriptions = await Promise.all([
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6", "security"), {}),
+    supportedDescription(reviewDescriptionRequest("claude", "haiku", "correctness"), {}),
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-luna", "critic"), {}),
+  ]);
+  const [securityDescription, correctnessDescription, criticDescription] = descriptions;
+  const reviewInputs = {
+    schema: "flow.review-request/v1",
+    target: {
+      schema: "flow.review-local-candidate/v1",
+      candidate: review.candidate,
+      candidate_fingerprint: review.candidate_fingerprint,
+      candidate_authority_watermark: review.watermark,
+      lifecycle_generation: 4,
+    },
+    lenses: ["security", "correctness"],
+    delegation: {
+      schema: "flow.review-delegation-bindings/v1",
+      lenses: {
+        security: reviewBinding(
+          "agent:review-security",
+          securityDescription,
+        ),
+        correctness: reviewBinding(
+          "agent:review-correctness",
+          correctnessDescription,
+        ),
+      },
+      critic: reviewBinding("agent:review-critic", criticDescription),
+    },
+  };
+  const reviewFacts = structuredClone(dynamicCheckpointProposal().explicit_facts);
+  reviewFacts.operation_contracts.push("flow.operation/review-record/v1");
+  reviewFacts.validator_contracts.push(
+    REVIEW_DELEGATE_OUTPUT_VALIDATOR,
+    "flow.validator/operation-receipt/v1",
+  );
+  reviewFacts.limits.max_cards = 8;
+  reviewFacts.limits.max_resources = 2;
+  const reviewPrompts = [];
+  const reviewDelegatedAgentPort = {
+    contract: "flow.delegated-agent-port/v1",
+    describe() {},
+    discover() {
+      return absentDiscovery();
+    },
+    dispatch(request) {
+      reviewPrompts.push(request.prompt);
+      const lens = request.agent_id === "agent:review-critic"
+        ? "critic"
+        : request.agent_id.endsWith("security") ? "security" : "correctness";
+      const output = lens === "critic"
+        ? JSON.stringify({
+            schema: "flow.review-result/v1",
+            posture: "no_findings",
+            findings: [],
+            evidence: { critic: true },
+          })
+        : reviewResult(lens);
+      return completedTurnProjection({
+        agentId: request.agent_id,
+        callerKey: request.caller_key,
+        description: request.description,
+        output,
+        prompt: request.prompt,
+        turnId: `turn:${request.caller_key}`,
+      });
+    },
+    send() {},
+    observe() {},
+    cancel() {},
+    reconcile() {},
+    wait() {
+      throw new Error("wait is not needed for completed review dispatches");
+    },
+    retire({ agent_id: agentId, turn_id: turnId }) {
+      return reviewRetiredProjection(agentId, turnId);
+    },
+  };
+  const reviewRuntime = createFlowRuntime({
+    runAuthority,
+    reviewAuthority: reviewAuthorityWithReceiptLoss,
+    delegatedAgentPort: reviewDelegatedAgentPort,
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const preparedReview = reviewRuntime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs: reviewInputs,
+    explicit_facts: reviewFacts,
+  });
+  const reviewLaunch = reviewRuntime.launch(
+    confirmedPredefinedLaunchRequest(preparedReview),
+  );
+  assert.equal(reviewLaunch.created, true, JSON.stringify(reviewLaunch));
+  let recoverySeen = false;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const projection = reviewRuntime.query({ run_id: reviewLaunch.run_id });
+    if (["failed", "succeeded", "cancelled"].includes(projection.phase)) break;
+    const action = projection.legal_actions?.find(({ type }) => [
+      "checkpoint_decision",
+      "delegate_execute",
+      "operation_execute",
+      "recovery",
+    ].includes(type));
+    if (action) {
+      recoverySeen ||= action.type === "recovery";
+      reviewRuntime.command(action);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const completedReviewRun = reviewRuntime.query({ run_id: reviewLaunch.run_id });
+  assert.equal(completedReviewRun.phase, "succeeded");
+  assert.equal(receiptLoss, false);
+  assert.equal(recoverySeen, true);
+  assert.deepEqual(reviewPrompts.filter((prompt) =>
+    prompt.includes("Authority-settled finding lens results:")).length, 1);
+  assert.match(
+    reviewPrompts.find((prompt) => prompt.includes("Authority-settled")),
+    /review-lens-security/,
+  );
+  assert.match(
+    reviewPrompts.find((prompt) => prompt.includes("Authority-settled")),
+    /review-lens-correctness/,
+  );
+  const sourceRecordEffect = completedReviewRun.effects.find(({ card_id: cardId }) =>
+    cardId === "review-record");
+  assert.equal(sourceRecordEffect.status, "succeeded");
+  assert.ok(sourceRecordEffect.operation_input.authority_materialized_evidence);
+
+  const reviewId = `review:${review.candidate_fingerprint}:4`;
+  const reviewedCandidate = reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: reviewId,
+  });
+  assert.equal(reviewedCandidate.schema, "flow.review-projection/v1");
+  assert.equal(reviewedCandidate.append_only_event_count, 1);
+  assert.equal(reviewedCandidate.findings.length, 2);
+  assert.equal(reviewedCandidate.legal_actions.length, 0);
+  assert.equal(reviewedCandidate.integration_authorized, false);
+  assert.equal(reviewedCandidate.merge_authorized, false);
+  assert.equal(reviewedCandidate.tracker_completion_authorized, false);
+  assert.equal(reviewedCandidate.remote_submission_authorized, false);
+  const stableWatermark = reviewedCandidate.watermark;
+  assert.equal(firstReviewRecordCommand?.subject_id, reviewId);
+  const replayed = reviewAuthority.command(firstReviewRecordCommand);
+  assert.equal(replayed.accepted, true, JSON.stringify(replayed));
+  assert.equal(replayed.created, false);
+  assert.equal(replayed.authority_watermark, stableWatermark);
+  assert.equal(reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: reviewId,
+  }).watermark, stableWatermark);
 });
 
 test("feature/v1 seal rejects invalid verification and publication evidence", async (t) => {
@@ -805,6 +981,69 @@ test("feature/v1 seal rollback keeps all authorities unpromoted and exposes exac
     subject_id: completed.handoffs[0].handoff_id,
   }).status, "active");
 });
+
+function reviewDescriptionRequest(harness, model, owner) {
+  return {
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness,
+      role: "reviewer",
+      model,
+      effort: "high",
+      capability: "read-only",
+    },
+    caller_metadata: { owner },
+  };
+}
+
+function reviewBinding(agentId, description) {
+  return {
+    description,
+    route: {
+      agent_id: agentId,
+      configuration_watermark: description.watermark.content_sha256,
+      description_digest: description.description_digest,
+      launch_comparison_key: description.comparison_keys.launch,
+    },
+  };
+}
+
+function reviewResult(lens) {
+  return JSON.stringify({
+    schema: "flow.review-result/v1",
+    posture: "findings",
+    findings: [{
+      lens,
+      urgency: "high",
+      classification: "blocking",
+      summary: `${lens} finding`,
+      detail: `${lens} detail`,
+      location: { path: "src/feature.mjs", start_line: 1, end_line: 1 },
+    }],
+    evidence: { lens },
+  });
+}
+
+function reviewRetiredProjection(agentId, turnId) {
+  return {
+    schema: "flow.delegated-agent-lifecycle-projection/v1",
+    operation: "retire",
+    status: "retired",
+    watermark: {
+      schema: "drovr.agent-authority-watermark/v1",
+      authority: "drovr.registry",
+      agent_id: agentId,
+      record_sha256: digestValue(agentId),
+    },
+    delegation: {
+      agent_id: agentId,
+      task_id: `task:${agentId}`,
+      group_id: "group:review-flow",
+    },
+    turn: { id: turnId, status: "completed" },
+    legal_next_actions: [],
+  };
+}
 
 function featureDelegateBindingFromDescription(role, description) {
   const boundDescription = structuredClone(description);

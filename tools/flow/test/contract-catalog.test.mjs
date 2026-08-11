@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 20);
+  assert.equal(catalog.catalog_version, 22);
   assert.deepEqual(catalog.flow_runtime.host_recovery, {
     authority: "RunAuthority",
     command_contract: "flow.command/v1",
@@ -106,6 +106,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
   ]);
   assert.equal(catalog.projections.includes("backup"), true);
   assert.equal(catalog.projections.includes("restore"), true);
+  assert.equal(catalog.projections.includes("review"), true);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -404,6 +405,30 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "work.review-candidate/v1",
     "work.review-event/v1",
     "work.review-candidate-projection/v1",
+    "work.review-record-command/v1",
+    "flow.definition/review/v1",
+    "flow.operation/review-record/v1",
+    "flow.review-request/v1",
+    "flow.review-local-candidate/v1",
+    "flow.review-delegation-bindings/v1",
+    "flow.review-result/v1",
+    "flow.validator/review-result/v1",
+    "flow.review-record/v1",
+    "flow.review-finding/v1",
+    "flow.review-summary/v1",
+    "flow.review-automated-evidence/v1",
+    "flow.review-provenance/v1",
+    "flow.review-artifacts/v1",
+    "flow.review-artifact-json/v1",
+    "flow.review-artifact-markdown/v1",
+    "flow.review-artifact-html/v1",
+    "flow.review-receipt/v1",
+    "flow.review-authority-watermark/v1",
+    "flow.review-trust-posture/v1",
+    "flow.review-candidate-reference/v1",
+    "flow.authority-materialized-evidence/v1",
+    "flow.authority-materialized-delegate-evidence/v1",
+    "flow.review-projection/v1",
     "flow.feature-discriminating-evidence/v1",
     "work.feature-verification-receipt/v1",
     "work.feature-critique-receipt/v1",
@@ -428,8 +453,40 @@ test("the public catalog exposes the settled interface and forbids legacy import
     contract: "work.review/v1",
     candidate: "work.review-candidate/v1",
     projection: "work.review-candidate-projection/v1",
+    review_projection: "flow.review-projection/v1",
     event: "work.review-event/v1",
-    commands: ["work.review-candidate-seal-command/v1"],
+    commands: [
+      "work.review-candidate-seal-command/v1",
+      "work.review-record-command/v1",
+    ],
+    operation: "flow.operation/review-record/v1",
+    operation_registration_policy: "review_authority_owned_builtin_reserved",
+    request: "flow.review-request/v1",
+    target: "flow.review-local-candidate/v1",
+    delegation_bindings: "flow.review-delegation-bindings/v1",
+    definition: "flow.definition/review/v1",
+    result: "flow.review-result/v1",
+    result_validator: "flow.validator/review-result/v1",
+    record: "flow.review-record/v1",
+    finding: "flow.review-finding/v1",
+    summary: "flow.review-summary/v1",
+    automated_evidence: "flow.review-automated-evidence/v1",
+    provenance: "flow.review-provenance/v1",
+    artifacts: "flow.review-artifacts/v1",
+    artifact_formats: [
+      "flow.review-artifact-json/v1",
+      "flow.review-artifact-markdown/v1",
+      "flow.review-artifact-html/v1",
+    ],
+    receipt: "flow.review-receipt/v1",
+    watermark: "flow.review-authority-watermark/v1",
+    trust_posture: "flow.review-trust-posture/v1",
+    candidate_reference: "flow.review-candidate-reference/v1",
+    materialized_evidence: "flow.authority-materialized-evidence/v1",
+    materialized_delegate_evidence:
+      "flow.authority-materialized-delegate-evidence/v1",
+    completion_authority: "automated_not_approval",
+    candidate_authority_watermark: "candidate_seal_watermark",
     statuses: ["sealed", "superseded", "abandoned"],
     identity: "candidate_fingerprint",
     legal_actions: "closed_after_seal",
@@ -455,6 +512,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
       rejection: "flow.rejection/v1",
       request: "flow.query/v1",
     },
+    review: {
+      projection: "flow.review-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.watch.review, {
+    request: "flow.watch/v1",
+    projection: "flow.review-projection/v1",
+    watermark: "exact_review_authority",
   });
   assert.ok(catalog.contracts.includes("flow.query/v1"));
   assert.ok(catalog.contracts.includes("flow.legacy-compatibility-inventory/v1"));

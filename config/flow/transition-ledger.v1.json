@@ -21,7 +21,7 @@
     {
       "id": "public_contract_catalog",
       "path": "contracts/catalog.v1.json",
-      "sha256": "e8cbc197415fa30efd55fdbb7f3ea6b5826264fa28e6667d7a14c05ae12c6360",
+      "sha256": "41e107b7796b920f2d68cf6e57f9d67887dd9498459f9f6eb9ff995d60a8a06c",
       "status": "passed",
       "recorded_at": "2026-08-11T12:13:37Z"
     },
