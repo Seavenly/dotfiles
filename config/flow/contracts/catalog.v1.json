@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 18,
+  "catalog_version": 19,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -310,6 +310,8 @@
         "restore_receipt": "flow.restore-receipt/v1",
         "barrier": "flow.restore-barrier-projection/v1",
         "reconciliation": "flow.restore-reconciliation/v1",
+        "failure": "flow.restore-failure/v1",
+        "host_marker": "flow.host-reconciliation-marker/v1",
         "restore_admission_receipt": "flow.restore-admission-receipt/v1",
         "drovr_handoff_receipt": "flow.drovr-handoff-receipt/v1"
       },
@@ -442,6 +444,8 @@
     "flow.restore-receipt/v1",
     "flow.restore-barrier-projection/v1",
     "flow.restore-reconciliation/v1",
+    "flow.restore-failure/v1",
+    "flow.host-reconciliation-marker/v1",
     "flow.restore-admission-receipt/v1",
     "flow.drovr-handoff-receipt/v1",
     "flow.decision/v1",

@@ -34,6 +34,23 @@ import {
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
 
+function completeReplacementAuthority(overrides = {}) {
+  return {
+    database_streams: [],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+    filesystem_state: [],
+    ...overrides,
+  };
+}
+
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
+
 test("durable backup manifests remain byte-identical across authority reopen", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-backup-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -219,14 +236,14 @@ test("durable launch ownership reentry preserves host reconciliation rejection",
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-launch-reentry-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const observation = {
-    replacement_authority: { database_streams: [], filesystem_state: [] },
+    replacement_authority: completeReplacementAuthority(),
     artifacts: [], legacy_roots: [], external_pointers: [], drovr_obligations: [],
   };
   let runtime;
   let nested;
   const authority = createDurableRunAuthority({
     authorityDirectory,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     runOwnershipAdapter: {
       observe: () => {
         nested = runtime.command({ type: "restore", manifest: createBackupManifest(observation) });
@@ -583,6 +600,7 @@ test("durable restore records an exact intent before mutation and preserves it a
   const secondAuthority = createDurableRunAuthority({
     authorityDirectory,
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => observation,
     },
     hostIdentityAdapter: fixedHostIdentity("restore-intent-boot-b", "restore-intent-process-b"),
@@ -607,12 +625,12 @@ test("durable run query and watch expose host reconciliation while barrier is ac
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-run-view-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const observation = {
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       database_streams: [{
         id: "host:runs",
         suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }],
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
@@ -620,7 +638,7 @@ test("durable run query and watch expose host reconciliation while barrier is ac
   };
   const authority = createDurableRunAuthority({
     authorityDirectory,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-view-boot", "restore-view-process"),
   });
   t.after(() => authority.close());
@@ -640,6 +658,7 @@ test("durable run query and watch expose host reconciliation while barrier is ac
     assert.deepEqual(view.legal_actions, []);
     assert.deepEqual(view.host_reconciliation, marker);
   }
+  await watch.next();
   const watched = await watch.next();
   assert.deepEqual(watched.value.host_reconciliation, marker);
   await watch.return();
@@ -680,6 +699,7 @@ test("durable restore admission rejects changed Adapter evidence before clearing
   const authority = createDurableRunAuthority({
     authorityDirectory,
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => currentObservation,
     },
     hostIdentityAdapter: fixedHostIdentity("restore-fresh-boot", "restore-fresh-process"),
@@ -739,7 +759,7 @@ test("durable restore admission remains closed while an external effect is in fl
   };
   const authority = createDurableRunAuthority({
     authorityDirectory,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-effect-boot", "restore-effect-process"),
   });
   t.after(() => authority.close());
@@ -799,7 +819,7 @@ test("durable restore admission remains closed for a persisted unresolved run ef
   const firstAuthority = createDurableRunAuthority({
     authorityDirectory,
     lifecycleKernel: effectLifecycle,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-run-effect-boot", "process-a"),
   });
   const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
@@ -815,7 +835,7 @@ test("durable restore admission remains closed for a persisted unresolved run ef
   const authority = createDurableRunAuthority({
     authorityDirectory,
     lifecycleKernel: effectLifecycle,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-run-effect-boot", "process-b"),
   });
   t.after(() => authority.close());
@@ -860,7 +880,7 @@ test("durable effect receipt is fenced if restore activates after Adapter return
   const authority = createDurableRunAuthority({
     authorityDirectory,
     lifecycleKernel: effectLifecycle,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-effect-after-boot", "process-a"),
   });
   t.after(() => authority.close());
@@ -912,7 +932,7 @@ test("durable async effect settlement is fenced when restore activates while pen
   const authority = createDurableRunAuthority({
     authorityDirectory,
     lifecycleKernel: effectLifecycle,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-effect-pending-boot", "process-a"),
   });
   t.after(() => authority.close());
@@ -970,7 +990,7 @@ test("durable effect admission rereads the host barrier before invocation", asyn
   const authority = createDurableRunAuthority({
     authorityDirectory,
     lifecycleKernel: effectLifecycle,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     hostIdentityAdapter: fixedHostIdentity("restore-effect-race-boot", "restore-effect-race-process"),
   });
   t.after(() => authority.close());

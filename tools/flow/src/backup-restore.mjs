@@ -475,11 +475,9 @@ function replacementAuthorityIssue(value) {
       databaseStreamIssue(value.database_streams) !== null) {
     return `database_stream_${databaseStreamIssue(value.database_streams)}`;
   }
-  for (const field of ["filesystem_state", "filesystem"]) {
-    if (Object.hasOwn(value, field) &&
-        filesystemStateIssue(value[field]) !== null) {
-      return `${field}_${filesystemStateIssue(value[field])}`;
-    }
+  if (Object.hasOwn(value, "filesystem_state") &&
+      filesystemStateIssue(value.filesystem_state) !== null) {
+    return `filesystem_state_${filesystemStateIssue(value.filesystem_state)}`;
   }
   if (Object.hasOwn(value, "git_state") &&
       gitStateIssue(value.git_state) !== null) {
@@ -530,22 +528,13 @@ function artifactIssue(value) {
 
 function validateManifestStructure(manifest) {
   const authority = manifest.replacement_authority;
-  if (authority !== null && typeof authority === "object" &&
-      !Array.isArray(authority)) {
-    if (Object.hasOwn(authority, "database_streams") &&
-        databaseStreamIssue(authority.database_streams) !== null) {
-      throw invalidBackup("invalid_backup_manifest");
-    }
-    for (const field of ["filesystem_state", "filesystem"]) {
-      if (Object.hasOwn(authority, field) &&
-          filesystemStateIssue(authority[field]) !== null) {
-        throw invalidBackup("invalid_backup_manifest");
-      }
-    }
-    if (Object.hasOwn(authority, "git_state") &&
-        gitStateIssue(authority.git_state) !== null) {
-      throw invalidBackup("invalid_backup_manifest");
-    }
+  if (authority === null || typeof authority !== "object" ||
+      Array.isArray(authority) || Object.hasOwn(authority, "git") ||
+      Object.hasOwn(authority, "filesystem") ||
+      databaseStreamIssue(authority.database_streams) !== null ||
+      gitStateIssue(authority.git_state) !== null ||
+      filesystemStateIssue(authority.filesystem_state) !== null) {
+    throw invalidBackup("invalid_backup_manifest");
   }
   if (artifactIssue(manifest.artifacts) !== null ||
       !validManifestSettlementEntries(manifest.external_pointers, "effect_id") ||
@@ -1534,6 +1523,14 @@ export function executeHostRecoveryCommand({
       }
       return mutationReject(before);
     }
+    if (typeof recoveryAdapter.restore !== "function") {
+      return reject(
+        "restore",
+        "restore_writer_unavailable",
+        "restore writer is unavailable",
+        before,
+      );
+    }
     const entered = record({
       type: "restore_barrier_entered",
       manifest,
@@ -1977,7 +1974,6 @@ function normalizeReplacementAuthority(value) {
   for (const [field, identityKey] of [
     ["database_streams", "id"],
     ["filesystem_state", "path"],
-    ["filesystem", "path"],
   ]) {
     if (Object.hasOwn(value, field)) {
       normalized[field] = normalizeCollection(value[field], identityKey);

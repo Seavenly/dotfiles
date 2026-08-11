@@ -114,16 +114,15 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
   let childLaunchLineage = null;
 
   const hostProjection = () => {
-    const base = {
-      schema: "flow.run-index-projection/v1",
-      watermark: authorityWatermark(authorityEvents),
-      runs: [...runs.keys()].sort(),
-    };
-    if (hostRecoveryEvents.length === 0) return freezeCanonical(base);
     const watermark = authorityWatermark([
       ...authorityEvents,
       ...hostRecoveryEvents,
     ]);
+    const base = {
+      schema: "flow.run-index-projection/v1",
+      watermark,
+      runs: [...runs.keys()].sort(),
+    };
     const recovery = projectHostRecovery(hostRecovery, watermark);
     return freezeCanonical({ ...base, watermark, ...recovery });
   };
@@ -558,8 +557,6 @@ export function createDurableRunAuthority({
   const lockPath = join(authorityDirectory, "authority.lock.sqlite");
   const watchers = new Map();
   const effectsInFlight = new Set();
-  const pendingEffectAdapters = new Set();
-  const reentrantRestoreEffects = new Set();
   let lockDatabase = null;
   let authorityEpoch = null;
   let authoritySchemaCompatibility = null;
@@ -639,7 +636,7 @@ export function createDurableRunAuthority({
   function hostCommand(command = {}) {
     assertOpen();
     if (!isBackupRestoreCommand(command)) {
-      const host = this.query();
+      const host = authorityMethods.query();
       return hostCommandRejection(
         "command",
         "unsupported_host_command",
@@ -719,11 +716,6 @@ export function createDurableRunAuthority({
     });
   }
   function appendDurableHostRecoveryEvent(payload) {
-    if (payload?.type === "restore_barrier_entered") {
-      for (const effectId of pendingEffectAdapters) {
-        reentrantRestoreEffects.add(effectId);
-      }
-    }
     const database = openAuthorityDatabase(databasePath);
     try {
       assertMutationFence(lockDatabase, database, {
@@ -1996,14 +1988,7 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
-          pendingEffectAdapters.add(effectiveIntent.effect_id);
-          let providerResult;
-          try {
-            providerResult = adapter.invoke(effectiveIntent);
-            result = await providerResult;
-          } finally {
-            pendingEffectAdapters.delete(effectiveIntent.effect_id);
-          }
+          result = await adapter.invoke(effectiveIntent);
         }
         assertDurableHostRestoreClear(
           database,
@@ -2172,8 +2157,6 @@ export function createDurableRunAuthority({
       } finally {
         database.close();
         effectsInFlight.delete(dispatchKey);
-        pendingEffectAdapters.delete(intent?.effect_id);
-        reentrantRestoreEffects.delete(intent?.effect_id);
       }
     },
 
@@ -3923,12 +3906,10 @@ function fencedHostProjection(host, admission, fallbackCapacity, authoritySchema
     admission_watermark: admission?.watermark ?? EMPTY_WATERMARK,
     authority_schema_watermark: authoritySchema.watermark,
   });
-  const recovery = hasHostRecoveryState(admission)
-    ? projectHostRecovery({
-        backup: admission?.backup ?? initialBackupProjection(),
-        restore: admission?.restore ?? initialRestoreBarrier(),
-      }, watermark)
-    : null;
+  const recovery = projectHostRecovery({
+    backup: admission?.backup ?? initialBackupProjection(),
+    restore: admission?.restore ?? initialRestoreBarrier(),
+  }, watermark);
   return freezeCanonical({
     ...host,
     watermark,
@@ -3939,9 +3920,8 @@ function fencedHostProjection(host, admission, fallbackCapacity, authoritySchema
       declared_capacity: admission?.declared_capacity ?? fallbackCapacity,
     },
     authority_schema: authoritySchema,
-    legal_actions: admission?.restore?.active === true
-      ? recovery?.restore?.legal_actions ?? []
-      : authoritySchema.status === "transition_required"
+    ...recovery,
+    legal_actions: authoritySchema.status === "transition_required"
       ? [{
           schema: "flow.command/v1",
           type: "recovery",
@@ -3951,16 +3931,10 @@ function fencedHostProjection(host, admission, fallbackCapacity, authoritySchema
           transition_release: AUTHORITY_SCHEMA_RELEASE,
           expected_watermark: watermark,
         }]
-      : [],
-    ...(recovery ?? {}),
+      : admission?.restore?.active === true
+      ? recovery.restore.legal_actions
+      : recovery.legal_actions,
   });
-}
-
-function hasHostRecoveryState(admission) {
-  return admission?.restore?.state !== undefined &&
-    admission.restore.state !== "idle" ||
-    admission?.backup?.manifest_digest !== null &&
-    admission?.backup?.manifest_digest !== undefined;
 }
 
 function schemaTransitionRequiredRejection(

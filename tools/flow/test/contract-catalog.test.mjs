@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 18);
+  assert.equal(catalog.catalog_version, 19);
   assert.deepEqual(catalog.flow_runtime.host_recovery, {
     authority: "RunAuthority",
     command_contract: "flow.command/v1",
@@ -72,6 +72,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
       restore_receipt: "flow.restore-receipt/v1",
       barrier: "flow.restore-barrier-projection/v1",
       reconciliation: "flow.restore-reconciliation/v1",
+      failure: "flow.restore-failure/v1",
+      host_marker: "flow.host-reconciliation-marker/v1",
       restore_admission_receipt: "flow.restore-admission-receipt/v1",
       drovr_handoff_receipt: "flow.drovr-handoff-receipt/v1",
     },

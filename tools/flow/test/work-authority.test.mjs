@@ -32,6 +32,9 @@ import {
 import { withoutViewWatermarks } from "../test-support/projection-assertions.mjs";
 
 const CLEANUP_OPERATION_CONTRACT = "flow.operation/resource-cleanup/v1";
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
 
 test("a host restore barrier fences Work-domain mutation until admission", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-restore-"));
@@ -53,7 +56,7 @@ test("a host restore barrier fences Work-domain mutation until admission", async
   };
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     gitRetentionAdapter: deterministicGitRetentionAdapter(),
     gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
     hostIdentityAdapter: fixedHostIdentity("restore-boot", "restore-process"),
@@ -106,7 +109,7 @@ test("a reentrant workspace Git observation cannot cross a restore barrier", asy
   let restoreEntered = false;
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
     gitRetentionAdapter: deterministicGitRetentionAdapter(),
     gitWorkspaceObservationAdapter: {
       observe() {

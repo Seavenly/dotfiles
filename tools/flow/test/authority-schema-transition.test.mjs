@@ -11,6 +11,7 @@ import {
   readAuthoritySchemaCompatibility,
   transitionAuthoritySchema,
 } from "../src/authority-schema.mjs";
+import { createBackupManifest } from "../src/backup-restore.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
@@ -222,6 +223,57 @@ test("a version-one store transitions without changing existing run behavior", a
       true,
     );
   }
+});
+
+test("a version-one store with backup history projects its schema transition", async (t) => {
+  const authorityDirectory = await versionOneStoreWithBackup(t);
+  const owner = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "owner"),
+  });
+  t.after(() => owner.close());
+  const runtime = createFlowRuntime({ runAuthority: owner });
+  const before = runtime.query();
+
+  assert.equal(before.authority_schema.status, "transition_required");
+  assert.equal(before.backup.state, "completed");
+  assert.deepEqual(before.legal_actions.map(({ recovery }) => recovery), [
+    "authority_schema_transition",
+  ]);
+
+  const receipt = runtime.command(before.legal_actions[0]);
+
+  assert.equal(receipt.accepted, true);
+  assert.equal(runtime.query().authority_schema.status, "compatible");
+  assert.equal(runtime.query().backup.state, "completed");
+});
+
+test("schema transition outranks an active durable restore barrier", async (t) => {
+  const authorityDirectory = await versionOneStoreWithActiveRestore(t);
+  const owner = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      observeRestore: () => completeRecoveryObservation(),
+      restore: () => ({ provider_receipt_id: "restore/provider-1" }),
+    },
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "owner"),
+  });
+  t.after(() => owner.close());
+  const runtime = createFlowRuntime({ runAuthority: owner });
+  const before = runtime.query();
+
+  assert.equal(before.restore.active, true);
+  assert.equal(before.authority_schema.status, "transition_required");
+  assert.equal(
+    before.legal_actions[0].recovery,
+    "authority_schema_transition",
+  );
+
+  assert.equal(runtime.command(before.legal_actions[0]).accepted, true);
+  const after = runtime.query();
+  assert.equal(after.authority_schema.status, "compatible");
+  assert.equal(after.restore.active, true);
+  assert.equal(after.legal_actions[0].type, "restore_reconcile");
 });
 
 test("termination before the schema commit preserves the old valid authority", async (t) => {
@@ -459,6 +511,89 @@ async function versionOneStoreWithRun(t) {
   runtime.launch(confirmedLaunchRequest(prepared));
   authority.close();
 
+  downgradeCurrentStoreToVersionOne(authorityDirectory);
+  return authorityDirectory;
+}
+
+async function versionOneStoreWithBackup(t) {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      observeBackup: () => observation,
+      createBackup: ({ manifest }) => ({
+        manifest_digest: manifest.manifest_digest,
+      }),
+    },
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "seed"),
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, true);
+  authority.close();
+
+  downgradeCurrentStoreToVersionOne(authorityDirectory);
+  return authorityDirectory;
+}
+
+async function versionOneStoreWithActiveRestore(t) {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = completeRecoveryObservation();
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      observeRestore: () => observation,
+      restore: () => ({ provider_receipt_id: "restore/provider-1" }),
+    },
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "seed"),
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  assert.equal(runtime.command({
+    type: "restore",
+    manifest: createBackupManifest(observation),
+  }).accepted, true);
+  authority.close();
+
+  downgradeCurrentStoreToVersionOne(authorityDirectory);
+  return authorityDirectory;
+}
+
+function completeRecoveryObservation() {
+  return {
+    replacement_authority: {
+      database_streams: [],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+}
+
+function downgradeCurrentStoreToVersionOne(authorityDirectory) {
+
   const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
   database.exec(`
     DROP TRIGGER authority_schema_transitions_no_update;
@@ -474,7 +609,6 @@ async function versionOneStoreWithRun(t) {
     DROP TABLE authority_metadata_v2;
   `);
   database.close();
-  return authorityDirectory;
 }
 
 async function currentStore(t) {

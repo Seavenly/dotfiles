@@ -123,13 +123,16 @@ disabled, so this API does not authorize normal replacement launches.
   effects, and Drovr obligations. Missing, corrupt, mismatched, or
   receipt-less observations remain failed at the named component and never
   produce a receipt. Stream suffixes must be valid digest identities, and
+  replacement authority must include database streams, exact Git
+  commit/tree/clean state, and filesystem state before any backup write or
+  restore barrier entry. The legacy `git` and `filesystem` aliases are invalid.
   external-effect and Drovr obligations require receipts bound to their exact
   effect or turn identity. A Drovr turn may instead carry the strict named
   durable-holder handoff receipt. Only the exact watermarked `restore_admit` action
   clears the barrier. Use `watch({ host: true })` or
   `query({ schema: "flow.query/v1", query: "restore" })` for the disposable,
   authority-derived barrier projection.
-- Catalog v18 publishes this host-recovery vocabulary as the source contract:
+- Catalog v19 publishes this host-recovery vocabulary as the source contract:
   exactly the five host commands above, the `backup` and `restore` registered
   queries, the host watch and barrier projections, and the intent, receipt,
   provider-observation, and reconciliation schemas, including named Drovr

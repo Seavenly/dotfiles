@@ -17,6 +17,23 @@ import {
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 
+function completeReplacementAuthority(overrides = {}) {
+  return {
+    database_streams: [],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+    filesystem_state: [],
+    ...overrides,
+  };
+}
+
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
+
 test("prepare rejects malformed reboot time and subject facts at the public seam", () => {
   const runtime = createTestRuntime();
   const malformedTime = dynamicCheckpointProposal();
@@ -46,15 +63,17 @@ test("prepare rejects malformed reboot time and subject facts at the public seam
 });
 
 test("restore establishes a host-wide barrier before any host mutation", () => {
-  const authority = createInMemoryRunAuthority();
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: RESTORE_WRITER,
+  });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const prepared = runtime.prepare(dynamicCheckpointProposal());
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
   const pendingRunCommand = runtime.query({ run_id: launch.run_id }).legal_actions[0];
   const manifest = createBackupManifest({
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       watermark: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
@@ -82,12 +101,12 @@ test("restore establishes a host-wide barrier before any host mutation", () => {
 
 test("restore passes one manifest-bound intent to its Adapter and preserves the receipt", () => {
   const observation = {
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       database_streams: [{
         id: "host:runs",
         suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }],
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
@@ -96,6 +115,7 @@ test("restore passes one manifest-bound intent to its Adapter and preserves the 
   let request;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       restore(received) {
         request = received;
         return { provider_receipt_id: "restore/provider-1" };
@@ -135,7 +155,7 @@ test("active host restore replaces ordinary run and view actions with reconcilia
     drovr_obligations: [],
   };
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const prepared = runtime.prepare(dynamicCheckpointProposal());
@@ -154,6 +174,7 @@ test("active host restore replaces ordinary run and view actions with reconcilia
     assert.deepEqual(view.legal_actions, []);
     assert.deepEqual(view.host_reconciliation, marker);
   }
+  await watch.next();
   const watched = await watch.next();
   assert.deepEqual(watched.value.host_reconciliation, marker);
   await watch.return();
@@ -182,7 +203,7 @@ test("host recovery accepts only exact projected command and query vocabulary", 
     drovr_obligations: [],
   };
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest(observation);
@@ -216,20 +237,25 @@ test("host recovery accepts only exact projected command and query vocabulary", 
   }).code, "stale_authority_watermark");
 });
 
-test("restore reconciliation ignores caller-supplied observations and fails closed without an Adapter", () => {
+test("restore reconciliation ignores caller observations and requires an observation Adapter", () => {
   const observation = {
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       database_streams: [{
         id: "host:runs",
         suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }],
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
     drovr_obligations: [],
   };
-  const authority = createInMemoryRunAuthority();
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore: () => ({ provider_receipt_id: "restore/provider-1" }),
+    },
+  });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest(observation);
   assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
@@ -244,14 +270,33 @@ test("restore reconciliation ignores caller-supplied observations and fails clos
   assert.equal(runtime.query().restore.state, "reconciling");
 });
 
+test("restore rejects a missing writer before entering the host barrier", () => {
+  const manifest = createBackupManifest({
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "restore_writer_unavailable");
+  assert.equal(runtime.query().restore.state, "idle");
+  assert.equal(runtime.query().restore.active, false);
+});
+
 test("restore is not projected while backup intent remains unresolved", () => {
   const observation = {
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       database_streams: [{
         id: "host:runs",
         suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }],
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
@@ -259,6 +304,7 @@ test("restore is not projected while backup intent remains unresolved", () => {
   };
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeBackup: () => observation,
       createBackup: () => {
         throw new Error("backup receipt lost");
@@ -280,12 +326,12 @@ test("restore is not projected while backup intent remains unresolved", () => {
 
 test("backup reconciliation rejects a bare safe absence observation", () => {
   const observation = {
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       database_streams: [{
         id: "host:runs",
         suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }],
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
@@ -293,6 +339,7 @@ test("backup reconciliation rejects a bare safe absence observation", () => {
   };
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeBackup: () => observation,
       createBackup: () => {
         throw new Error("backup receipt lost");
@@ -312,12 +359,12 @@ test("backup reconciliation rejects a bare safe absence observation", () => {
 
 test("backup reconciliation recovers only from exact identity-bound absence", () => {
   const observation = {
-    replacement_authority: {
+    replacement_authority: completeReplacementAuthority({
       database_streams: [{
         id: "host:runs",
         suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       }],
-    },
+    }),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [],
@@ -326,6 +373,7 @@ test("backup reconciliation recovers only from exact identity-bound absence", ()
   let reconciliationObservation;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeBackup: () => observation,
       createBackup: () => {
         throw new Error("backup receipt lost");
@@ -379,15 +427,73 @@ test("backup reconciliation recovers only from exact identity-bound absence", ()
   );
 });
 
+test("backup fails closed before writing an incomplete authority manifest", () => {
+  let wrote = false;
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => ({
+          replacement_authority: {},
+          artifacts: [],
+          legacy_roots: [],
+          external_pointers: [],
+          drovr_obligations: [],
+        }),
+        createBackup: () => {
+          wrote = true;
+          return {};
+        },
+      },
+    }),
+  });
+
+  const rejected = runtime.command({ type: "backup_create" });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(wrote, false);
+  assert.equal(runtime.query().backup.state, "idle");
+});
+
+test("backup rejects legacy replacement authority aliases", () => {
+  for (const alias of ["git", "filesystem"]) {
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority({
+        backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+          observeBackup: () => ({
+            replacement_authority: {
+              ...completeReplacementAuthority(),
+              [alias]: alias === "git" ? {} : [],
+            },
+            artifacts: [],
+            legacy_roots: [],
+            external_pointers: [],
+            drovr_obligations: [],
+          }),
+          createBackup: () => {
+            throw new Error("legacy alias reached backup writer");
+          },
+        },
+      }),
+    });
+
+    const rejected = runtime.command({ type: "backup_create" });
+    assert.equal(rejected.code, "invalid_backup_manifest");
+    assert.equal(runtime.query().backup.state, "idle");
+  }
+});
+
 test("backup creation is deterministic and covers every retained authority category", () => {
   const observation = {
     replacement_authority: {
       database_streams: [{ id: "host:admission", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
-      git: {
+      git_state: {
         commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
       },
-      filesystem: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
     },
     artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
     legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
@@ -420,6 +526,7 @@ test("backup creation is deterministic and covers every retained authority categ
   const createRuntime = () => {
     const authority = createInMemoryRunAuthority({
       backupRestoreAdapter: {
+      ...RESTORE_WRITER,
         observeBackup: () => observation,
         createBackup: ({ manifest, manifest_bytes: bytes }) => {
           manifestBytes.push(Buffer.from(bytes));
@@ -463,6 +570,7 @@ test("backup creation canonicalizes unordered authority collections", () => {
         { path: "/state/z.sqlite", digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
         { path: "/state/a.sqlite", digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" },
       ],
+      git_state: completeReplacementAuthority().git_state,
     },
     artifacts: [],
     legacy_roots: [],
@@ -485,6 +593,7 @@ test("backup creation canonicalizes unordered authority collections", () => {
   const createRuntime = (observation) => createFlowRuntime({
     runAuthority: createInMemoryRunAuthority({
       backupRestoreAdapter: {
+      ...RESTORE_WRITER,
         observeBackup: () => observation,
         createBackup: (request) => {
           writes.push(request);
@@ -544,13 +653,14 @@ test("restore reconciles six evidence domains before admission and watermarks wa
     }],
   };
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest(observation);
   const watch = runtime.watch({ host: true })[Symbol.asyncIterator]();
   const initial = await watch.next();
   const entered = runtime.command({ type: "restore", manifest });
+  await watch.next();
   const barrier = await watch.next();
 
   assert.equal(entered.accepted, true);
@@ -637,7 +747,7 @@ test("semantically corrupt stream suffix evidence cannot create or admit restore
     drovr_obligations: [],
   };
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => observation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifestBody = {
@@ -685,7 +795,7 @@ test("restore requires complete Git identity evidence and recovers after correct
     git_state: {},
   } };
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => current },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => current },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest(valid);
@@ -709,7 +819,7 @@ test("restore requires complete Git identity evidence and recovers after correct
 
 test("backup manifest rejects duplicate external and Drovr obligations", () => {
   const observation = {
-    replacement_authority: { database_streams: [], filesystem_state: [] },
+    replacement_authority: completeReplacementAuthority(),
     artifacts: [],
     legacy_roots: [],
     external_pointers: [
@@ -727,7 +837,7 @@ test("backup manifest rejects duplicate external and Drovr obligations", () => {
 
 test("backup observation reentry is fenced by the host restore barrier", () => {
   const observation = {
-    replacement_authority: { database_streams: [], filesystem_state: [] },
+    replacement_authority: completeReplacementAuthority(),
     artifacts: [], legacy_roots: [], external_pointers: [], drovr_obligations: [],
   };
   const manifest = createBackupManifest(observation);
@@ -735,6 +845,7 @@ test("backup observation reentry is fenced by the host restore barrier", () => {
   let nested;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeBackup: () => {
         nested = runtime.command({ type: "restore", manifest });
         return observation;
@@ -752,22 +863,8 @@ test("backup observation reentry is fenced by the host restore barrier", () => {
   assert.equal(runtime.query().backup.state, "idle");
 });
 
-test("restore reconciliation reports a missing manifest stream as typed evidence", () => {
-  const observation = {
-    replacement_authority: {
-      database_streams: [{
-        id: "host:runs",
-        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      }],
-    },
-    artifacts: [],
-    legacy_roots: [],
-    external_pointers: [],
-    drovr_obligations: [],
-  };
-  const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => observation },
-  });
+test("restore rejects a manifest missing required authority domains before the barrier", () => {
+  const authority = createInMemoryRunAuthority();
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest({
     replacement_authority: {},
@@ -777,21 +874,11 @@ test("restore reconciliation reports a missing manifest stream as typed evidence
     drovr_obligations: [],
   });
 
-  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
-  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+  const rejected = runtime.command({ type: "restore", manifest });
 
-  assert.equal(reconciled.accepted, true);
-  assert.deepEqual(
-    reconciled.reconciliation.evidence_domains.find(({ domain }) =>
-      domain === "database_streams"),
-    {
-      domain: "database_streams",
-      expected_digest: null,
-      observed_digest: digest(observation.replacement_authority.database_streams),
-      status: "indeterminate",
-      reason: "database_stream_manifest_missing",
-    },
-  );
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(runtime.query().restore.active, false);
+  assert.equal(runtime.query().restore.state, "idle");
 });
 
 test("restore reconciliation treats set-like filesystem and legacy evidence as unordered", () => {
@@ -854,6 +941,7 @@ test("restore reconciliation treats set-like filesystem and legacy evidence as u
   let currentObservation = reorderedObservation;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => currentObservation,
     },
   });
@@ -956,6 +1044,7 @@ test("restore admission keeps canonical reconciliation across reordered artifact
   let observationCalls = 0;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => {
         observationCalls += 1;
         return observationCalls === 1 ? reorderedObservation : manifest;
@@ -999,6 +1088,7 @@ test("restore rejects corrupt immutable manifest structure before Adapter mutati
   let restoreCalls = 0;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       restore: () => {
         restoreCalls += 1;
         return { provider_receipt_id: "should-not-run" };
@@ -1044,6 +1134,7 @@ test("external and Drovr obligations require identity-bound settlement receipts"
   let currentObservation = observation;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => currentObservation,
     },
   });
@@ -1160,6 +1251,7 @@ test("Drovr obligations recover through an exact named durable-holder handoff", 
   let currentObservation = baseObservation;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => currentObservation,
     },
   });
@@ -1259,7 +1351,7 @@ test("restore rejects bare settlement, unavailable artifact bytes, and duplicate
   };
   let currentObservation = observation;
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => currentObservation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => currentObservation },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest(observation);
@@ -1351,7 +1443,7 @@ test("restore admission re-observes every domain and refuses stale ready reconci
   };
   let currentObservation = firstObservation;
   const authority = createInMemoryRunAuthority({
-    backupRestoreAdapter: { observeRestore: () => currentObservation },
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => currentObservation },
   });
   const runtime = createFlowRuntime({ runAuthority: authority });
   const manifest = createBackupManifest(firstObservation);
@@ -1418,6 +1510,7 @@ test("missing or corrupt restore evidence remains quarantined and recovers only 
   let currentObservation = observation;
   const authority = createInMemoryRunAuthority({
     backupRestoreAdapter: {
+      ...RESTORE_WRITER,
       observeRestore: () => currentObservation,
     },
   });
@@ -1435,7 +1528,10 @@ test("missing or corrupt restore evidence remains quarantined and recovers only 
       component === "artifacts").status,
     "missing_evidence",
   );
-  assert.equal(missingProjection.restore.applied_receipt, null);
+  assert.equal(
+    missingProjection.restore.applied_receipt.schema,
+    "flow.restore-receipt/v1",
+  );
   assert.equal(runtime.launch({}).code, "host_reconciliation_required");
 
   currentObservation = {
@@ -1451,7 +1547,10 @@ test("missing or corrupt restore evidence remains quarantined and recovers only 
       component === "replacement_authority").status,
     "corrupt_evidence",
   );
-  assert.equal(corruptProjection.restore.applied_receipt, null);
+  assert.equal(
+    corruptProjection.restore.applied_receipt.schema,
+    "flow.restore-receipt/v1",
+  );
 
   currentObservation = observation;
   const recovered = runtime.command(corruptProjection.restore.legal_actions[0]);
@@ -1990,11 +2089,13 @@ test("prepare returns an immutable content-addressed dynamic graph without creat
   assert.throws(() => {
     prepared.graph.cards[0].id = "changed";
   }, TypeError);
-  assert.deepEqual(runtime.query(), {
-    schema: "flow.run-index-projection/v1",
-    watermark: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    runs: [],
-  });
+  const host = runtime.query();
+  assert.equal(host.schema, "flow.run-index-projection/v1");
+  assert.deepEqual(host.runs, []);
+  assert.equal(host.backup.state, "idle");
+  assert.equal(host.backup.watermark, host.watermark);
+  assert.equal(host.restore.state, "idle");
+  assert.equal(host.restore.watermark, host.watermark);
 
   const equivalentRequest = dynamicCheckpointProposal();
   equivalentRequest.explicit_facts = Object.fromEntries(
@@ -2356,6 +2457,24 @@ test("query dispatches registered contracts through the five-operation runtime",
     }), unsupportedQuery);
   }
   assert.equal(runtime.query().schema, "flow.run-index-projection/v1");
+});
+
+test("registered backup and restore queries expose watermarked idle projections", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+  const host = runtime.query();
+
+  assert.deepEqual(runtime.query({
+    schema: "flow.query/v1",
+    query: "backup",
+  }), host.backup);
+  assert.deepEqual(runtime.query({
+    schema: "flow.query/v1",
+    query: "restore",
+  }), host.restore);
+  assert.equal(host.backup.watermark, host.watermark);
+  assert.equal(host.restore.watermark, host.watermark);
 });
 
 test("a typed checkpoint command completes the authority-derived run", () => {
