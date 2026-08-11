@@ -1,4 +1,9 @@
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
+import {
+  initialBackupProjection,
+  initialRestoreBarrier,
+  reduceHostRecoveryEvent,
+} from "./backup-restore.mjs";
 import { foldRun } from "./run-projection.mjs";
 import { foldWorkStream } from "./work-authority.mjs";
 
@@ -119,6 +124,7 @@ function reduceAuthorityStream(stream, records) {
     let declaredCapacity = null;
     let processIdentity = null;
     const activeRuns = new Set();
+    let recovery = null;
     for (const { payload } of records) {
       if (payload.type === "authority_acquired") {
         authorityEpoch = payload.authority_epoch;
@@ -130,6 +136,20 @@ function reduceAuthorityStream(stream, records) {
       } else if (payload.type === "run_capacity_released") {
         activeRuns.delete(payload.run_id);
       }
+      if (isHostRecoveryEvent(payload)) {
+        recovery ??= {
+          backup: initialBackupProjection(),
+          restore: initialRestoreBarrier(),
+        };
+        try {
+          recovery = reduceHostRecoveryEvent(recovery, payload);
+        } catch {
+          integrityFailure(
+            "corrupt_recovery_state",
+            "host restore state cannot be replayed",
+          );
+        }
+      }
     }
     return freezeCanonical({
       schema: "flow.host-admission-fold/v1",
@@ -139,6 +159,10 @@ function reduceAuthorityStream(stream, records) {
       declared_capacity: declaredCapacity,
       process_identity: processIdentity,
       active_runs: [...activeRuns].sort(),
+      ...(recovery === null ? {} : {
+        backup: recovery.backup,
+        restore: recovery.restore,
+      }),
     });
   }
   if (stream.stream_kind === "host_runs") {
@@ -174,6 +198,19 @@ function reduceAuthorityStream(stream, records) {
     );
   }
   integrityFailure("unknown_contract", "authority stream contract is unknown");
+}
+
+function isHostRecoveryEvent(payload) {
+  return [
+    "backup_created",
+    "backup_intent_recorded",
+    "backup_receipt_recorded",
+    "backup_reconciled",
+    "restore_barrier_entered",
+    "restore_applied",
+    "restore_reconciled",
+    "restore_admitted",
+  ].includes(payload?.type);
 }
 
 export function runEventsFromRecords(records) {

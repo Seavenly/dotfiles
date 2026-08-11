@@ -142,6 +142,13 @@ subject facts, and unresolved-effect evidence before restoring admission. It
 admits only that run; child runs require their own admission.
 _Avoid_: Automatic resume, process restart
 
+**Restore barrier**:
+The host-wide RunAuthority state entered before restored authority or host
+resources may mutate. It remains active until exact database-stream, artifact,
+Git, filesystem, external-effect, and Drovr-obligation observations reconcile
+to one deterministic backup manifest.
+_Avoid_: Run pause, rollback, best-effort restore
+
 **Time fact**:
 An exact typed observation of wall-clock time, suspend-excluding monotonic time,
 boot identity, or clock-source identity. Time facts carry their uncertainty and

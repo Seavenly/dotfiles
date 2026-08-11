@@ -31,7 +31,79 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 17);
+  assert.equal(catalog.catalog_version, 18);
+  assert.deepEqual(catalog.flow_runtime.host_recovery, {
+    authority: "RunAuthority",
+    command_contract: "flow.command/v1",
+    commands: [
+      "backup_create",
+      "backup_reconcile",
+      "restore",
+      "restore_reconcile",
+      "restore_admit",
+    ],
+    queries: {
+      backup: {
+        request: "flow.query/v1",
+        projection: "flow.backup-projection/v1",
+        rejection: "flow.rejection/v1",
+      },
+      restore: {
+        request: "flow.query/v1",
+        projection: "flow.restore-barrier-projection/v1",
+        rejection: "flow.rejection/v1",
+      },
+    },
+    watch: {
+      request: "flow.watch/v1",
+      projection: "flow.run-index-projection/v1",
+      barrier: "flow.restore-barrier-projection/v1",
+      reconciliation: "flow.restore-reconciliation/v1",
+      watermark: "exact_host_authority",
+    },
+    schemas: {
+      manifest: "flow.backup-manifest/v1",
+      intent: "flow.backup-intent/v1",
+      backup_receipt: "flow.backup-receipt/v1",
+      backup_reconciliation_observation:
+        "flow.backup-reconciliation-observation/v1",
+      backup_provider_evidence: "flow.backup-provider-evidence/v1",
+      restore_intent: "flow.restore-intent/v1",
+      restore_receipt: "flow.restore-receipt/v1",
+      barrier: "flow.restore-barrier-projection/v1",
+      reconciliation: "flow.restore-reconciliation/v1",
+      restore_admission_receipt: "flow.restore-admission-receipt/v1",
+      drovr_handoff_receipt: "flow.drovr-handoff-receipt/v1",
+    },
+    semantics: {
+      lifecycle_authority: "RunAuthority",
+      intent_before_effect: true,
+      reconciliation_source: "injected_adapter_only",
+      barrier_scope: "host_wide",
+      evidence_domains: [
+        "database_streams",
+        "artifact_state",
+        "git_state",
+        "filesystem_state",
+        "external_effects",
+        "drovr_obligations",
+      ],
+      admission: "fresh_exact_reconciliation",
+      unresolved_effects: "closed",
+      failure_boundary: "narrowest_provable",
+      backup_reconciliation: "identity_bound_absence_or_presence_observation",
+      drovr_disposition: "retire_receipt_or_named_durable_holder_handoff",
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.command.vocabulary.slice(-5), [
+    "backup_create",
+    "backup_reconcile",
+    "restore",
+    "restore_reconcile",
+    "restore_admit",
+  ]);
+  assert.equal(catalog.projections.includes("backup"), true);
+  assert.equal(catalog.projections.includes("restore"), true);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -328,6 +400,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
     },
     legacy_compatibility_inventory: {
       projection: "flow.legacy-compatibility-inventory/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    backup: {
+      projection: "flow.backup-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    restore: {
+      projection: "flow.restore-barrier-projection/v1",
       rejection: "flow.rejection/v1",
       request: "flow.query/v1",
     },

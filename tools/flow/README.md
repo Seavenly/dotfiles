@@ -101,6 +101,41 @@ disabled, so this API does not authorize normal replacement launches.
   observe mutable launch policy; repairing it requires constructing a fresh
   runtime. Unreadable, invalid, and digest-mismatched baselines remain distinct
   typed compatibility failures.
+- Backup and restore use the same five-operation Interface. A
+  `command({ type: "backup_create" })` obtains one injected host observation
+  and records an exact host operation intent before sending its canonical
+  `flow.backup-manifest/v1` bytes to the backup Adapter. The manifest
+  deterministically covers replacement authority, artifact manifests and
+  bytes, legacy roots, external pointers, and Drovr obligations. The
+  resulting identity-bound receipt is projected through the host watermark
+  and can be queried with
+  `query({ schema: "flow.query/v1", query: "backup" })`. A lost receipt keeps
+  the intent in `reconciling` with an exact `backup_reconcile` action; a retry
+  is legal only after the Adapter returns a
+  `flow.backup-reconciliation-observation/v1` bound to the exact operation,
+  manifest, and provider proof, proving the backup present or proving safe
+  absence.
+  `command({ type: "restore", manifest })` first records a host-wide
+  `flow.restore-barrier-projection/v1`; launch, lifecycle commands, effects,
+  and Work-domain mutations then return `host_reconciliation_required` until
+  every legal `restore_reconcile` action proves the six evidence domains:
+  database streams, artifact state, Git state, filesystem state, external
+  effects, and Drovr obligations. Missing, corrupt, mismatched, or
+  receipt-less observations remain failed at the named component and never
+  produce a receipt. Stream suffixes must be valid digest identities, and
+  external-effect and Drovr obligations require receipts bound to their exact
+  effect or turn identity. A Drovr turn may instead carry the strict named
+  durable-holder handoff receipt. Only the exact watermarked `restore_admit` action
+  clears the barrier. Use `watch({ host: true })` or
+  `query({ schema: "flow.query/v1", query: "restore" })` for the disposable,
+  authority-derived barrier projection.
+- Catalog v18 publishes this host-recovery vocabulary as the source contract:
+  exactly the five host commands above, the `backup` and `restore` registered
+  queries, the host watch and barrier projections, and the intent, receipt,
+  provider-observation, and reconciliation schemas, including named Drovr
+  handoff receipts. RunAuthority remains the lifecycle authority;
+  reconciliation is Adapter-only, intent precedes every host effect, and
+  admission requires fresh exact evidence with unresolved effects closed.
 - `command(command)` accepts the exact legal approve or decline checkpoint
   command projected by authority. A ready operation that does not require a
   checkpoint projects an exact `operation_execute` command. A
