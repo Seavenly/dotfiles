@@ -557,7 +557,7 @@ export function createDurableRunAuthority({
   const databasePath = join(authorityDirectory, "authority.sqlite");
   const lockPath = join(authorityDirectory, "authority.lock.sqlite");
   const watchers = new Map();
-  const effectsInFlight = new Set();
+  const effectsInFlight = new Map();
   let lockDatabase = null;
   let authorityEpoch = null;
   let authoritySchemaCompatibility = null;
@@ -1801,15 +1801,30 @@ export function createDurableRunAuthority({
         intent?.effect_id,
         intent?.idempotency_key,
       ].join("\0");
-      if (effectsInFlight.has(dispatchKey)) {
+      if (!readEffectRecoveryState(databasePath, intent).intentRecorded) {
         throw new AuthorityFenceError(
-          "effect_dispatch_in_progress",
-          "effect intent is already being dispatched by this authority",
+          "unrecorded_effect_intent",
+          "effect intent was not durably recorded by RunAuthority",
         );
       }
-      effectsInFlight.add(dispatchKey);
-      const database = openAuthorityDatabase(databasePath);
+      while (effectsInFlight.has(dispatchKey)) {
+        const inFlight = effectsInFlight.get(dispatchKey);
+        const recovery = readEffectRecoveryState(databasePath, intent);
+        if (!recovery.recoveryRequested) {
+          throw new AuthorityFenceError(
+            "effect_dispatch_in_progress",
+            "effect intent is already being dispatched by this authority",
+          );
+        }
+        await inFlight.settled;
+        const settled = readEffectRecoveryState(databasePath, intent);
+        if (settled.receiptRecorded) return settled.receipt;
+      }
+      const dispatch = deferredEffectDispatch();
+      effectsInFlight.set(dispatchKey, dispatch);
+      let database = null;
       try {
+        database = openAuthorityDatabase(databasePath);
         assertDurableHostRestoreClear(database);
         const stream = typeof intent?.run_id === "string"
           ? readStream(database, intent.run_id)
@@ -2170,10 +2185,16 @@ export function createDurableRunAuthority({
           if (database.isTransaction) database.exec("ROLLBACK");
           throw error;
         }
+        dispatch.resolve();
         return result;
+      } catch (error) {
+        dispatch.resolve();
+        throw error;
       } finally {
-        database.close();
-        effectsInFlight.delete(dispatchKey);
+        database?.close();
+        if (effectsInFlight.get(dispatchKey) === dispatch) {
+          effectsInFlight.delete(dispatchKey);
+        }
       }
     },
 
@@ -2484,6 +2505,40 @@ function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
   } catch (error) {
     database?.close();
     throw authorityIntegrityError(error) ?? error;
+  }
+}
+
+function deferredEffectDispatch() {
+  let resolve;
+  const settled = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { settled, resolve };
+}
+
+function readEffectRecoveryState(databasePath, intent) {
+  const database = openAuthorityDatabase(databasePath, { readOnly: true });
+  try {
+    const stream = typeof intent?.run_id === "string"
+      ? readStream(database, intent.run_id)
+      : null;
+    const intentRecorded = Boolean(stream?.records.some(({ payload }) =>
+      EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+      isDeepStrictEqual(payload.intent, intent)));
+    const recoveryRequested = Boolean(stream?.records.some(({ payload }) =>
+      payload.type === "effect_recovery_requested" &&
+      payload.effect_id === intent.effect_id));
+    const receiptEvent = stream?.records.find(({ payload }) =>
+      payload.type === "effect_receipt_recorded" &&
+      payload.effect_id === intent.effect_id);
+    return {
+      intentRecorded,
+      recoveryRequested,
+      receiptRecorded: receiptEvent !== undefined,
+      receipt: receiptEvent?.payload?.receipt,
+    };
+  } finally {
+    database.close();
   }
 }
 

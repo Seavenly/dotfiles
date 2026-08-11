@@ -71,16 +71,29 @@ export function snapshotRegisteredOperations(registrations) {
       validateCard: typeof registration.validateCard === "function"
         ? registration.validateCard.bind(registration)
         : registration.validateCard,
+      provider_receipt_validator: registration.provider_receipt_validator,
+      validateReceipt: typeof registration.validateReceipt === "function"
+        ? registration.validateReceipt.bind(registration)
+        : registration.validateReceipt,
     })]];
   }));
 }
 
-export function operationRegistrationIssue(registration, classification) {
+export function operationRegistrationIssue(
+  registration,
+  classification,
+  providerReceiptValidator,
+) {
   if (!registration) return "unregistered_operation_contract";
   const policy = effectClassPolicy(registration.classification);
   if (typeof registration.invoke !== "function" || !policy ||
       policy.requires_observation && typeof registration.observe !== "function") {
     return "incomplete_operation_registration";
+  }
+  if (providerReceiptValidator !== undefined &&
+      (registration.provider_receipt_validator !== providerReceiptValidator ||
+       typeof registration.validateReceipt !== "function")) {
+    return "incomplete_provider_receipt_validator";
   }
   return registration.classification === classification
     ? null
@@ -143,6 +156,7 @@ export function dispatchRegisteredEffect(
         async invoke(effectiveIntent) {
           const receipt = await registration.invoke(effectiveIntent);
           assertEffectReceipt(receipt, effectiveIntent);
+          assertProviderReceipt(receipt, effectiveIntent, registration);
           return receipt;
         },
       });
@@ -151,6 +165,7 @@ export function dispatchRegisteredEffect(
       async invoke(effectiveIntent) {
         const receipt = await registration.invoke(effectiveIntent);
         assertEffectReceipt(receipt, effectiveIntent);
+        assertProviderReceipt(receipt, effectiveIntent, registration);
         return receipt;
       },
     });
@@ -238,6 +253,18 @@ function assertEffectReceipt(receipt, intent) {
       receipt.provider_receipt === undefined) {
     const error = new Error("registered operation returned an invalid effect receipt");
     error.code = "invalid_effect_receipt";
+    throw error;
+  }
+}
+
+function assertProviderReceipt(receipt, intent, registration) {
+  const validatorContract = intent.operation_input?.provider_receipt_validator;
+  if (validatorContract === undefined) return;
+  if (registration.provider_receipt_validator !== validatorContract ||
+      typeof registration.validateReceipt !== "function" ||
+      registration.validateReceipt(receipt.provider_receipt, intent) !== true) {
+    const error = new Error("registered operation provider receipt failed validation");
+    error.code = "invalid_provider_receipt";
     throw error;
   }
 }

@@ -85,6 +85,7 @@ export function createFlowRuntime({
             ? operationRegistrationIssue(
                 registeredOperation(operationRegistry, card.executor.contract),
                 card.executor.effect_classification,
+                card.inputs.provider_receipt_validator,
               )
             : null,
         })).find(({ issue }) => issue !== null);
@@ -353,9 +354,12 @@ function recoverOutstandingEffects(
       const isDelegateEffect = ["delegate", "delegate_cancellation"].includes(
         effect?.effect_kind,
       );
+      const operationCard = projection.active_plan.cards.find(({ id }) =>
+        id === effect?.card_id);
       if (!effect || (!isDelegateEffect && operationRegistrationIssue(
         registeredOperation(operationRegistry, effect.operation_contract),
         effect.classification,
+        operationCard?.inputs?.provider_receipt_validator,
       ))) {
         compatible = false;
         break;
@@ -419,6 +423,7 @@ function commandRegistryRejection(command, operationRegistry, runAuthority) {
   const issue = operationRegistrationIssue(
     registeredOperation(operationRegistry, binding.contract),
     binding.classification,
+    binding.providerReceiptValidator,
   );
   if (!issue) return null;
   return createRejection({
@@ -444,6 +449,8 @@ function operationBinding(command, projection) {
     return effect ? {
       classification: effect.classification,
       contract: effect.operation_contract,
+      providerReceiptValidator: projection.active_plan.cards.find(({ id }) =>
+        id === effect.card_id)?.inputs?.provider_receipt_validator,
     } : null;
   }
   let operationId = command.card_id;
@@ -466,6 +473,7 @@ function operationBinding(command, projection) {
   return {
     classification: operation.executor.effect_classification,
     contract: operation.executor.contract,
+    providerReceiptValidator: operation.inputs.provider_receipt_validator,
   };
 }
 

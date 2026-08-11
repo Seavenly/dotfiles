@@ -9,7 +9,9 @@ import { digest } from "../src/canonical.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
   createFeatureDefinition,
+  FEATURE_TEST_RECEIPT_VALIDATOR,
   FEATURE_OPERATION_CONTRACTS,
+  validateFeatureTestReceipt,
 } from "../src/feature-flow.mjs";
 import { createDurableRunAuthority, createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
@@ -35,6 +37,7 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
   facts.validator_contracts.push("flow.validator/feature-evidence/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
     kind: "workspace",
     id: "workspace:producer",
@@ -49,6 +52,10 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     registeredOperations: Object.fromEntries(
       Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
         classification: "caller_idempotent",
+        ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
+          provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
+          validateReceipt: validateFeatureTestReceipt,
+        } : {}),
         invoke() {
           throw new Error("feature operations are not invoked during preparation");
         },
@@ -181,12 +188,12 @@ test("feature/v1 requires discriminating evidence at preparation", () => {
   );
 });
 
-test("feature/v1 is verify-only and requires one explicit non-destructive assertion", () => {
+test("feature/v1 requires one explicit non-destructive assertion and serialized test slices", () => {
   const testMode = featureInputs();
   testMode.mode = "test";
   assert.throws(
     () => prepareFeatureSelection(testMode),
-    /mode must be verify/,
+    /explicit serialized slices/,
   );
 
   const absentFlag = featureInputs();
@@ -251,6 +258,260 @@ test("feature/v1 is verify-only and requires one explicit non-destructive assert
   );
 });
 
+test("feature/v1 test mode prepares an honest failure-proving slice", () => {
+  const inputs = featureInputs();
+  inputs.mode = "test";
+  inputs.slices = [{
+    schema: "flow.feature-slice/v1",
+    id: "behavior",
+    mode: "test",
+    acceptance: ["the changed behavior is observable"],
+    test: {
+      schema: "flow.feature-test-request/v1",
+      intended_failure: "the behavior is absent before implementation",
+      environment_fingerprint: `sha256:${"a".repeat(64)}`,
+    },
+  }];
+
+  const prepared = prepareFeatureSelection(inputs);
+
+  assert.equal(prepared.selection.inputs.mode, "test");
+  assert.deepEqual(
+    prepared.selection.inputs.slices.map(({ id, mode }) => ({ id, mode })),
+    [{ id: "behavior", mode: "test" }],
+  );
+});
+
+test("feature/v1 serialized slices own the brief acceptance exactly once", async (t) => {
+  const cases = [
+    {
+      name: "omitted slice acceptance",
+      mutate(inputs) {
+        delete inputs.slices[0].acceptance;
+      },
+    },
+    {
+      name: "uncovered brief criterion",
+      mutate(inputs) {
+        inputs.brief.acceptance.push("the uncovered criterion is proven");
+      },
+    },
+    {
+      name: "duplicate ownership",
+      mutate(inputs) {
+        inputs.slices[1].acceptance = ["the changed behavior is observable"];
+      },
+    },
+    {
+      name: "out-of-brief criterion",
+      mutate(inputs) {
+        inputs.slices[1].acceptance = ["an unrequested behavior is accepted"];
+      },
+    },
+  ];
+  for (const { name, mutate } of cases) {
+    await t.test(name, () => {
+      const inputs = featureInputs();
+      inputs.mode = "mixed";
+      inputs.brief.acceptance = [
+        "the changed behavior is observable",
+        "the configuration remains declared",
+      ];
+      inputs.slices = [
+        {
+          schema: "flow.feature-slice/v1",
+          id: "behavior",
+          mode: "test",
+          acceptance: ["the changed behavior is observable"],
+          test: {
+            schema: "flow.feature-test-request/v1",
+            intended_failure: "the behavior is absent before implementation",
+            environment_fingerprint: `sha256:${"a".repeat(64)}`,
+          },
+        },
+        {
+          schema: "flow.feature-slice/v1",
+          id: "configuration",
+          mode: "verify",
+          acceptance: ["the configuration remains declared"],
+        },
+      ];
+      mutate(inputs);
+      assert.throws(
+        () => prepareFeatureSelection(inputs),
+        /slice acceptance must explicitly own every brief criterion exactly once/,
+      );
+    });
+  }
+});
+
+test("feature/v1 test-only selection needs no verify baseline", () => {
+  const inputs = featureInputs();
+  inputs.mode = "test";
+  delete inputs.verification.baseline;
+  inputs.slices = [{
+    schema: "flow.feature-slice/v1",
+    id: "behavior",
+    mode: "test",
+    acceptance: ["the changed behavior is observable"],
+    test: {
+      schema: "flow.feature-test-request/v1",
+      intended_failure: "the behavior is absent before implementation",
+      environment_fingerprint: `sha256:${"a".repeat(64)}`,
+    },
+  }];
+
+  const prepared = prepareFeatureSelection(inputs);
+
+  assert.equal(prepared.selection.inputs.mode, "test");
+  const testCard = prepared.graph.cards.find(({ id }) =>
+    id === "feature-slice-behavior-test");
+  assert.equal(testCard.inputs.verification, undefined);
+  assert.equal(testCard.inputs.test_selection.schema,
+    "flow.feature-test-selection/v1");
+});
+
+test("feature/v1 serializes mixed slices and keeps setup out of evidence", () => {
+  const inputs = featureInputs();
+  inputs.mode = "mixed";
+  inputs.brief.acceptance = [
+    "the changed behavior is observable",
+    "the configuration remains declared",
+  ];
+  inputs.setup = {
+    schema: "flow.feature-setup/v1",
+    id: "setup:fixture",
+    description: "install the fixture dependency once",
+    fingerprint: `sha256:${"b".repeat(64)}`,
+  };
+  inputs.slices = [
+    {
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    },
+    {
+      schema: "flow.feature-slice/v1",
+      id: "configuration",
+      mode: "verify",
+      acceptance: ["the configuration remains declared"],
+    },
+  ];
+
+  const prepared = prepareFeatureSelection(inputs);
+  const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
+  assert.deepEqual(cards.get("feature-setup").dependencies, []);
+  assert.deepEqual(cards.get("feature-slice-behavior-test").dependencies, [
+    "feature-setup",
+  ]);
+  assert.deepEqual(cards.get("feature-apply").dependencies, [
+    "feature-slice-behavior-test",
+  ]);
+  assert.deepEqual(cards.get("feature-slice-behavior-verify").dependencies, [
+    "feature-apply",
+  ]);
+  assert.deepEqual(
+    cards.get("feature-slice-behavior-verify").inputs.operation_evidence_card_ids,
+    ["feature-slice-behavior-test"],
+  );
+  assert.deepEqual(cards.get("feature-apply-configuration").dependencies, [
+    "feature-apply",
+    "feature-slice-behavior-verify",
+  ]);
+  assert.deepEqual(cards.get("feature-slice-configuration-verify").dependencies, [
+    "feature-apply-configuration",
+  ]);
+  assert.deepEqual(
+    cards.get("feature-slice-configuration-verify").inputs.operation_evidence_card_ids,
+    [],
+  );
+  assert.deepEqual(cards.get("feature-verify").dependencies, [
+    "feature-slice-configuration-verify",
+  ]);
+  assert.deepEqual(cards.get("feature-verify").inputs.operation_evidence_card_ids, [
+    "feature-slice-behavior-test",
+    "feature-slice-behavior-verify",
+    "feature-slice-configuration-verify",
+  ]);
+  assert.equal(
+    cards.get("feature-verify").inputs.operation_evidence_card_ids.includes(
+      "feature-setup",
+    ),
+    false,
+  );
+  assert.equal(cards.get("feature-setup").inputs.evidence_role, "setup_only");
+});
+
+test("feature/v1 setup requires explicit slices and serializes verify setup", () => {
+  const withoutSlices = featureInputs();
+  withoutSlices.setup = {
+    schema: "flow.feature-setup/v1",
+    id: "setup:fixture",
+    description: "install the fixture dependency once",
+    fingerprint: `sha256:${"b".repeat(64)}`,
+  };
+  assert.throws(
+    () => prepareFeatureSelection(withoutSlices),
+    /setup requires explicit slices/,
+  );
+
+  const withVerifySlice = featureInputs();
+  withVerifySlice.setup = structuredClone(withoutSlices.setup);
+  withVerifySlice.slices = [{
+    schema: "flow.feature-slice/v1",
+    id: "behavior",
+    mode: "verify",
+    acceptance: ["the changed behavior is observable"],
+  }];
+  const prepared = prepareFeatureSelection(withVerifySlice);
+  const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
+  assert.deepEqual(cards.get("feature-setup").dependencies, []);
+  assert.deepEqual(cards.get("feature-apply").dependencies, [
+    "feature-setup",
+  ]);
+  assert.deepEqual(cards.get("feature-slice-behavior-verify").dependencies, [
+    "feature-apply",
+  ]);
+  assert.deepEqual(cards.get("feature-verify").dependencies, [
+    "feature-slice-behavior-verify",
+  ]);
+});
+
+test("feature/v1 test mode rejects broken or unrelated failures", () => {
+  const broken = featureInputs();
+  broken.mode = "test";
+  broken.slices = [{
+    schema: "flow.feature-slice/v1",
+    id: "behavior",
+    mode: "test",
+    acceptance: ["the changed behavior is observable"],
+    test: {
+      schema: "flow.feature-test-request/v1",
+      intended_failure: "the behavior is absent before implementation",
+      environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      environment_status: "broken",
+    },
+  }];
+  assert.throws(
+    () => prepareFeatureSelection(broken),
+    /healthy environment fingerprint/,
+  );
+
+  const unrelated = structuredClone(broken);
+  unrelated.slices[0].test.environment_status = "healthy";
+  delete unrelated.slices[0].test.intended_failure;
+  assert.throws(
+    () => prepareFeatureSelection(unrelated),
+    /intended failure and healthy environment fingerprint/,
+  );
+});
+
 test("feature/v1 verify rejects an unchanged promoted workspace", () => {
   const inputs = featureInputs();
   inputs.finalization.publication.workspace.promoted_git =
@@ -259,6 +520,711 @@ test("feature/v1 verify rejects an unchanged promoted workspace", () => {
     () => prepareFeatureSelection(inputs),
     /finalization must bind and advance the selected clean workspace/,
   );
+});
+
+test("feature/v1 test mode proves failure before apply and seals a candidate", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "test",
+    setup: {
+      schema: "flow.feature-setup/v1",
+      id: "setup:feature-test",
+      description: "prepare the test fixture once",
+      fingerprint: `sha256:${"b".repeat(64)}`,
+    },
+    slices: [{
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
+
+  const order = await driveSerializedFeatureToSeal(fixture);
+  assert.deepEqual(order, [
+    "feature-setup",
+    "feature-slice-behavior-test",
+    "feature-apply",
+    "feature-slice-behavior-verify",
+    "feature-verify",
+    "feature-critique",
+    "feature-seal",
+  ]);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: "candidate:feature",
+  }).status, "sealed");
+  for (const action of completed.legal_actions) {
+    assert.equal(action.expected_watermark, completed.watermark);
+  }
+  const verifyEffect = completed.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-verify");
+  assert.ok(verifyEffect);
+  assert.deepEqual(
+    verifyEffect.receipt.provider_receipt.acceptance_criteria.map(({ criterion }) =>
+      criterion),
+    ["the changed behavior is observable"],
+  );
+});
+
+test("feature/v1 test-only mode seals from current intended-failure evidence", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "test",
+    testOnlyWithoutVerification: true,
+    slices: [{
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
+
+  const order = await driveSerializedFeatureToSeal(fixture, {
+    allowSealRefusal: true,
+  });
+  assert.deepEqual(order, [
+    "feature-slice-behavior-test",
+    "feature-apply",
+    "feature-slice-behavior-verify",
+    "feature-verify",
+    "feature-critique",
+    "feature-seal",
+  ]);
+  const projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(projection.phase, "succeeded", JSON.stringify({
+    phase: projection.phase,
+    effects: projection.effects,
+    legal_actions: projection.legal_actions,
+  }));
+});
+
+test("feature/v1 test receipts reject unrelated and broken-environment failures", async (t) => {
+  const cases = ["unrelated", "broken_environment", "stale_epoch"];
+  for (const testReceiptMode of cases) {
+    await t.test(testReceiptMode, async (caseTest) => {
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        mode: "test",
+        testOnlyWithoutVerification: true,
+        testReceiptMode,
+        slices: [{
+          schema: "flow.feature-slice/v1",
+          id: "behavior",
+          mode: "test",
+          acceptance: ["the changed behavior is observable"],
+          test: {
+            schema: "flow.feature-test-request/v1",
+            intended_failure: "the behavior is absent before implementation",
+            environment_fingerprint: `sha256:${"a".repeat(64)}`,
+          },
+        }],
+      });
+
+      const projection = await driveUntilTestReceiptBlocked(fixture);
+      assert.equal(projection.phase, "active");
+      assert.equal(projection.effects.find(({ card_id: cardId }) =>
+        cardId.endsWith("-test")).status, "unresolved");
+      assert.equal(fixture.reviewAuthority.query({
+        contract: "work.review/v1",
+        subject_id: "candidate:feature",
+      }).status, undefined);
+    });
+  }
+});
+
+test("feature/v1 rejects invalid test receipts before writer admission and recovers", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "test",
+    testOnlyWithoutVerification: true,
+    testReceiptMode: "unrelated",
+    slices: [{
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
+
+  const initial = fixture.runtime.query({ run_id: fixture.runId });
+  const testAction = initial.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "feature-slice-behavior-test");
+  assert.ok(testAction);
+  const commandReceipt = fixture.runtime.command(testAction);
+  assert.equal(commandReceipt.accepted, true, JSON.stringify(commandReceipt));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const blocked = fixture.runtime.query({ run_id: fixture.runId });
+  const testEffect = blocked.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-slice-behavior-test");
+  assert.equal(testEffect.status, "unresolved");
+  assert.equal(blocked.effects.some(({ card_id: cardId }) =>
+    cardId === "feature-apply"), false);
+  const recovery = blocked.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === testEffect.effect_id);
+  assert.ok(recovery);
+  assert.equal(recovery.expected_watermark, blocked.watermark);
+
+  fixture.setTestReceiptMode("valid");
+  const recovered = fixture.runtime.command(recovery);
+  assert.equal(recovered.accepted, true, JSON.stringify(recovered));
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.find(
+    ({ card_id: cardId }) => cardId === "feature-slice-behavior-test",
+  )?.status === "succeeded");
+  const afterRecovery = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(fixture.testInvocations(), 2);
+  assert.equal(afterRecovery.effects.filter(({ card_id: cardId }) =>
+    cardId === "feature-slice-behavior-test").length, 1);
+  assert.ok(afterRecovery.legal_actions.some(({ card_id: cardId }) =>
+    cardId === "feature-apply"));
+});
+
+test("feature/v1 mixed mode rejects invalid test-slice receipts despite a valid baseline", async (t) => {
+  const cases = ["unrelated", "broken_environment", "stale_epoch", "missing"];
+  for (const testReceiptMode of cases) {
+    await t.test(testReceiptMode, async (caseTest) => {
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        mode: "mixed",
+        briefAcceptance: [
+          "the changed behavior is observable",
+          "the configuration remains declared",
+        ],
+        compensatingAssertion: true,
+        testReceiptMode,
+        slices: [
+          {
+            schema: "flow.feature-slice/v1",
+            id: "behavior",
+            mode: "test",
+            acceptance: ["the changed behavior is observable"],
+            test: {
+              schema: "flow.feature-test-request/v1",
+              intended_failure: "the behavior is absent before implementation",
+              environment_fingerprint: `sha256:${"a".repeat(64)}`,
+            },
+          },
+          {
+            schema: "flow.feature-slice/v1",
+            id: "configuration",
+            mode: "verify",
+            acceptance: ["the configuration remains declared"],
+          },
+        ],
+      });
+
+      const projection = await driveUntilTestReceiptBlocked(fixture);
+      assert.equal(projection.phase, "active");
+      assert.equal(projection.effects.find(({ card_id: cardId }) =>
+        cardId.endsWith("-test")).status, "unresolved");
+      assert.equal(fixture.reviewAuthority.query({
+        contract: "work.review/v1",
+        subject_id: "candidate:feature",
+      }).status, undefined);
+    });
+  }
+});
+
+test("feature/v1 mixed mode requires every slice verification receipt", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "mixed",
+    briefAcceptance: [
+      "the changed behavior is observable",
+      "the configuration remains declared",
+    ],
+    compensatingAssertion: true,
+    sliceVerifyReceiptMode: "missing",
+    slices: [
+      {
+        schema: "flow.feature-slice/v1",
+        id: "behavior",
+        mode: "test",
+        acceptance: ["the changed behavior is observable"],
+        test: {
+          schema: "flow.feature-test-request/v1",
+          intended_failure: "the behavior is absent before implementation",
+          environment_fingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        schema: "flow.feature-slice/v1",
+        id: "configuration",
+        mode: "verify",
+        acceptance: ["the configuration remains declared"],
+      },
+    ],
+  });
+
+  await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
+  const projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(projection.phase, "active");
+  assert.equal(projection.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal").status, "unresolved");
+});
+
+test("feature/v1 slice verification rejects stale, foreign, or incomplete receipts", async (t) => {
+  const cases = [
+    "stale_epoch",
+    "wrong_operation",
+    "missing_verdict",
+    "wrong_acceptance",
+    "setup_only",
+  ];
+  for (const sliceVerifyReceiptMode of cases) {
+    await t.test(sliceVerifyReceiptMode, async (caseTest) => {
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        mode: "mixed",
+        briefAcceptance: [
+          "the changed behavior is observable",
+          "the configuration remains declared",
+        ],
+        compensatingAssertion: true,
+        sliceVerifyReceiptMode,
+        slices: [
+          {
+            schema: "flow.feature-slice/v1",
+            id: "behavior",
+            mode: "test",
+            acceptance: ["the changed behavior is observable"],
+            test: {
+              schema: "flow.feature-test-request/v1",
+              intended_failure: "the behavior is absent before implementation",
+              environment_fingerprint: `sha256:${"a".repeat(64)}`,
+            },
+          },
+          {
+            schema: "flow.feature-slice/v1",
+            id: "configuration",
+            mode: "verify",
+            acceptance: ["the configuration remains declared"],
+          },
+        ],
+      });
+
+      await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
+      const projection = fixture.runtime.query({ run_id: fixture.runId });
+      assert.equal(projection.phase, "active");
+      assert.equal(projection.effects.find(({ card_id: cardId }) =>
+        cardId === "feature-seal").status, "unresolved");
+    });
+  }
+});
+
+test("feature/v1 slice verification rejects malformed discriminators", async (t) => {
+  const cases = [
+    "missing_discriminator",
+    "malformed_discriminator",
+    "undistinguished_discriminator",
+    "stale_discriminator",
+  ];
+  for (const sliceDiscriminatorMode of cases) {
+    await t.test(sliceDiscriminatorMode, async (caseTest) => {
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        mode: "mixed",
+        briefAcceptance: [
+          "the changed behavior is observable",
+          "the configuration remains declared",
+        ],
+        compensatingAssertion: true,
+        sliceDiscriminatorMode,
+        slices: [
+          {
+            schema: "flow.feature-slice/v1",
+            id: "behavior",
+            mode: "test",
+            acceptance: ["the changed behavior is observable"],
+            test: {
+              schema: "flow.feature-test-request/v1",
+              intended_failure: "the behavior is absent before implementation",
+              environment_fingerprint: `sha256:${"a".repeat(64)}`,
+            },
+          },
+          {
+            schema: "flow.feature-slice/v1",
+            id: "configuration",
+            mode: "verify",
+            acceptance: ["the configuration remains declared"],
+          },
+        ],
+      });
+
+      await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
+      const projection = fixture.runtime.query({ run_id: fixture.runId });
+      assert.equal(projection.phase, "active");
+      assert.equal(projection.effects.find(({ card_id: cardId }) =>
+        cardId === "feature-seal").status, "unresolved");
+    });
+  }
+});
+
+test("feature/v1 setup evidence cannot substitute for test slice evidence", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "test",
+    testOnlyWithoutVerification: true,
+    testReceiptMode: "setup_only",
+    setup: {
+      schema: "flow.feature-setup/v1",
+      id: "setup:feature-test",
+      description: "prepare the test fixture once",
+      fingerprint: `sha256:${"b".repeat(64)}`,
+    },
+    slices: [{
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
+
+  const projection = await driveUntilTestReceiptBlocked(fixture);
+  assert.equal(projection.phase, "active");
+  assert.equal(projection.effects.find(({ card_id: cardId }) =>
+    cardId.endsWith("-test")).status, "unresolved");
+  assert.equal(fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: "candidate:feature",
+  }).status, undefined);
+});
+
+test("feature/v1 attributes mutation to the authority-owned apply card", async (t) => {
+  const accepted = await createFeatureFailureFixture(t, {
+    forgedDelegateSelfReport: true,
+  });
+  executeCard(accepted.runtime, accepted.runId, "delegate_execute", "feature-apply");
+  await until(() => accepted.runtime.query({ run_id: accepted.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+
+  const acceptedProjection = accepted.runtime.query({ run_id: accepted.runId });
+  const acceptedEffect = acceptedProjection.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-apply");
+  const acceptedAttempt = acceptedProjection.delegate_attempts.find(({ card_id: cardId }) =>
+    cardId === "feature-apply");
+  const acceptedWorkspace = accepted.workspaceAuthority.query(workspaceQuery());
+  assert.equal(acceptedEffect.card_id, "feature-apply");
+  assert.equal(acceptedEffect.operation_contract, "flow.delegated-agent-port/v1");
+  assert.equal(acceptedAttempt.card_id, acceptedEffect.card_id);
+  assert.equal(acceptedAttempt.effect_id, acceptedEffect.effect_id);
+  assert.equal(acceptedAttempt.validated_output, "apply verification passed accepted");
+  assert.equal(acceptedWorkspace.claims.length, 1);
+  assert.equal(acceptedWorkspace.claims[0].holder, accepted.runId);
+  assert.ok(acceptedWorkspace.claims[0].operations.includes(acceptedEffect.card_id));
+
+  const rejected = await createFeatureFailureFixture(t, {
+    forgedDelegateSelfReport: true,
+    workspaceClaimHolder: "run:competing-writer",
+  });
+  executeCard(rejected.runtime, rejected.runId, "delegate_execute", "feature-apply");
+  await settleFeatureEffect(rejected.runtime, rejected.runId, "feature-apply");
+  const rejectedProjection = rejected.runtime.query({ run_id: rejected.runId });
+  const rejectedEffect = rejectedProjection.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-apply");
+  const rejectedWorkspace = rejected.workspaceAuthority.query(workspaceQuery());
+  assert.equal(rejectedEffect.card_id, "feature-apply");
+  assert.equal(rejectedWorkspace.claims[0].holder, "run:competing-writer");
+  assert.equal(rejectedEffect.status, "unresolved");
+  assert.equal(rejected.delegateDispatches(), 0);
+});
+
+test("feature/v1 rejects aggregate verification from a stale mutation epoch", async (t) => {
+  const staleGit = promotedGitFacts();
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "test",
+    testOnlyWithoutVerification: true,
+    verification: {
+      workspace: {
+        subject_id: "workspace:producer",
+        generation: 1,
+        mutation_epoch: 6,
+        fingerprint: digestValue({ git: staleGit }),
+        git: staleGit,
+      },
+    },
+    slices: [{
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
+
+  await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
+  const projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(projection.phase, "active");
+  assert.equal(projection.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal").status, "unresolved");
+});
+
+test("feature/v1 test operation recovery reuses the current intent once", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "test",
+    testOnlyWithoutVerification: true,
+    testReceiptMode: "throw",
+    slices: [{
+      schema: "flow.feature-slice/v1",
+      id: "behavior",
+      mode: "test",
+      acceptance: ["the changed behavior is observable"],
+      test: {
+        schema: "flow.feature-test-request/v1",
+        intended_failure: "the behavior is absent before implementation",
+        environment_fingerprint: `sha256:${"a".repeat(64)}`,
+      },
+    }],
+  });
+  const initial = fixture.runtime.query({ run_id: fixture.runId });
+  const action = initial.legal_actions.find(({ type }) =>
+    type === "operation_execute");
+  assert.equal(action.card_id, "feature-slice-behavior-test");
+  const firstReceipt = fixture.runtime.command(action);
+  assert.equal(firstReceipt.accepted, true);
+  const [initialIntent] = firstReceipt.effect_intents;
+  await until(() => {
+    const current = fixture.runtime.query({ run_id: fixture.runId });
+    return current.effects.find(({ card_id: cardId }) =>
+      cardId === action.card_id)?.status === "unresolved";
+  });
+  const failed = fixture.runtime.query({ run_id: fixture.runId });
+  const recovery = failed.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === failed.effects[0].effect_id);
+  assert.ok(recovery);
+  assert.equal(recovery.expected_watermark, failed.watermark);
+  const retried = fixture.runtime.command(recovery);
+  assert.equal(retried.accepted, true, JSON.stringify(retried));
+  assert.deepEqual(retried.effect_intents, [initialIntent]);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const afterRecovery = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(afterRecovery.effects.find(({ card_id: cardId }) =>
+    cardId === action.card_id).status, "succeeded", JSON.stringify({
+      invocations: fixture.testInvocations(),
+      effects: afterRecovery.effects,
+      legal_actions: afterRecovery.legal_actions,
+    }));
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(fixture.testInvocations(), 2);
+  assert.equal(completed.effects.filter(({ card_id: cardId }) =>
+    cardId === action.card_id).length, 1);
+  for (const legalAction of completed.legal_actions) {
+    assert.equal(legalAction.expected_watermark, completed.watermark);
+  }
+});
+
+test("feature/v1 mixed slices serialize each writer and retain operation ownership", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "mixed",
+    briefAcceptance: [
+      "the changed behavior is observable",
+      "the configuration remains declared",
+    ],
+    compensatingAssertion: true,
+    slices: [
+      {
+        schema: "flow.feature-slice/v1",
+        id: "behavior",
+        mode: "test",
+        acceptance: ["the changed behavior is observable"],
+        test: {
+          schema: "flow.feature-test-request/v1",
+          intended_failure: "the behavior is absent before implementation",
+          environment_fingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        schema: "flow.feature-slice/v1",
+        id: "configuration",
+        mode: "verify",
+        acceptance: ["the configuration remains declared"],
+      },
+    ],
+  });
+
+  const order = await driveSerializedFeatureToSeal(fixture);
+  assert.deepEqual(order, [
+    "feature-slice-behavior-test",
+    "feature-apply",
+    "feature-slice-behavior-verify",
+    "feature-apply-configuration",
+    "feature-slice-configuration-verify",
+    "feature-verify",
+    "feature-critique",
+    "feature-seal",
+  ]);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  const seal = fixture.sealIntents.at(-1);
+  assert.deepEqual(
+    seal.operation_input.authority_materialized_evidence.accepted_delegates.map(
+      ({ card_id: cardId }) => cardId,
+    ),
+    ["feature-apply", "feature-apply-configuration", "feature-critique"],
+  );
+  assert.deepEqual(
+    seal.operation_input.authority_materialized_evidence.operation_receipts
+      .map(({ card_id: cardId }) => cardId),
+    [
+      "feature-slice-behavior-test",
+      "feature-slice-behavior-verify",
+      "feature-slice-configuration-verify",
+      "feature-verify",
+    ],
+  );
+  const materialized = seal.operation_input.authority_materialized_evidence;
+  const sourceEffects = new Map(completed.effects.map((effect) => [
+    effect.card_id,
+    effect,
+  ]));
+  for (const entry of materialized.operation_receipts) {
+    const source = sourceEffects.get(entry.card_id);
+    assert.ok(source);
+    assert.equal(entry.effect_id, source.effect_id);
+    assert.equal(entry.attempt_id, source.attempt_id);
+    assert.equal(entry.idempotency_key, source.idempotency_key);
+    assert.match(entry.source_authority_watermark, /^sha256:[0-9a-f]{64}$/);
+    assert.deepEqual(entry.receipt, source.receipt);
+  }
+  const configurationVerify = materialized.operation_receipts.find(({ card_id: cardId }) =>
+    cardId === "feature-slice-configuration-verify");
+  assert.deepEqual(
+    configurationVerify.receipt.provider_receipt.acceptance_criteria.map(
+      ({ criterion }) => criterion,
+    ),
+    ["the configuration remains declared"],
+  );
+});
+
+test("feature/v1 serialized slices advance honest workspace snapshots", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    mode: "mixed",
+    briefAcceptance: [
+      "the changed behavior is observable",
+      "the configuration remains declared",
+    ],
+    baselineFingerprint: digestValue({ git: exactGitFacts() }),
+    sliceSnapshots: [intermediateGitFacts(), promotedGitFacts()],
+    slices: [
+      {
+        schema: "flow.feature-slice/v1",
+        id: "configuration",
+        mode: "verify",
+        acceptance: ["the configuration remains declared"],
+      },
+      {
+        schema: "flow.feature-slice/v1",
+        id: "behavior",
+        mode: "test",
+        acceptance: ["the changed behavior is observable"],
+        test: {
+          schema: "flow.feature-test-request/v1",
+          intended_failure: "the behavior is absent before implementation",
+          environment_fingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      },
+    ],
+  });
+
+  await driveSerializedFeatureToSeal(fixture);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const seal = fixture.sealIntents.at(-1);
+  const receipts = seal.operation_input.authority_materialized_evidence
+    .operation_receipts;
+  const firstVerify = receipts.find(({ card_id: cardId }) =>
+    cardId === "feature-slice-configuration-verify");
+  const secondTest = receipts.find(({ card_id: cardId }) =>
+    cardId === "feature-slice-behavior-test");
+  const secondVerify = receipts.find(({ card_id: cardId }) =>
+    cardId === "feature-slice-behavior-verify");
+  const firstPost = firstVerify.receipt.provider_receipt.workspace;
+  const secondPre = secondTest.receipt.provider_receipt.workspace;
+  const secondPost = secondVerify.receipt.provider_receipt.workspace;
+  assert.deepEqual(secondPre, {
+    subject_id: firstPost.subject_id,
+    generation: firstPost.generation,
+    mutation_epoch: firstPost.mutation_epoch,
+    fingerprint: firstPost.fingerprint,
+  });
+  assert.notEqual(firstPost.fingerprint,
+    digestValue({ git: promotedGitFacts() }));
+  assert.deepEqual(secondPost.git, promotedGitFacts());
+  assert.equal(secondPost.fingerprint, digestValue({
+    git: promotedGitFacts(),
+  }));
+  assert.equal(completed.phase, "succeeded");
+});
+
+test("feature/v1 serialized slices reject stale, skipped, and reordered snapshots", async (t) => {
+  for (const snapshotMode of ["stale", "skip", "reordered"]) {
+    await t.test(snapshotMode, async (caseTest) => {
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        mode: "mixed",
+        briefAcceptance: [
+          "the changed behavior is observable",
+          "the configuration remains declared",
+        ],
+        baselineFingerprint: digestValue({ git: exactGitFacts() }),
+        snapshotMode,
+        sliceSnapshots: [intermediateGitFacts(), promotedGitFacts()],
+        slices: [
+          {
+            schema: "flow.feature-slice/v1",
+            id: "configuration",
+            mode: "verify",
+            acceptance: ["the configuration remains declared"],
+          },
+          {
+            schema: "flow.feature-slice/v1",
+            id: "behavior",
+            mode: "test",
+            acceptance: ["the changed behavior is observable"],
+            test: {
+              schema: "flow.feature-test-request/v1",
+              intended_failure: "the behavior is absent before implementation",
+              environment_fingerprint: `sha256:${"a".repeat(64)}`,
+            },
+          },
+        ],
+      });
+
+      if (snapshotMode === "stale") {
+        const blocked = await driveUntilTestReceiptBlocked(fixture);
+        assert.equal(blocked.phase, "active");
+        assert.equal(blocked.effects.find(({ card_id: cardId }) =>
+          cardId === "feature-slice-behavior-test").status, "unresolved");
+        return;
+      }
+      await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
+      const projection = fixture.runtime.query({ run_id: fixture.runId });
+      assert.equal(projection.phase, "active");
+      assert.equal(projection.effects.find(({ card_id: cardId }) =>
+        cardId === "feature-seal").status, "unresolved");
+      assert.equal(fixture.reviewAuthority.query({
+        contract: "work.review/v1",
+        subject_id: "candidate:feature",
+      }).status, undefined);
+    });
+  }
 });
 
 test("feature/v1 fences apply behind the exact workspace writer", async (t) => {
@@ -373,6 +1339,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
   facts.validator_contracts.push("flow.validator/feature-evidence/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
     kind: "workspace",
     id: "workspace:producer",
@@ -380,7 +1347,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     mutation_epoch: 7,
     fingerprint: digestValue({ git: exactGitFacts() }),
   });
-  facts.limits.max_cards = 8;
+  facts.limits.max_cards = Math.max(
+    8,
+    (inputs.slices?.length ?? 0) * 3 + 5,
+  );
   facts.limits.max_resources = 4;
 
   let runtime;
@@ -822,10 +1792,23 @@ function featureDelegateBindingFromDescription(role, description) {
   };
 }
 
-function completeVerificationReceipt(intent, inputs, overrides = {}) {
-  const discriminatingEvidence = inputs.verification.baseline ??
-    inputs.verification.compensating_assertion;
-  const acceptanceCriteria = inputs.brief.acceptance.map((criterion) => {
+function completeVerificationReceipt(
+  intent,
+  inputs,
+  overrides = {},
+  materialized = null,
+) {
+  const sliceTest = intent.operation_input.phase === "slice_verify" &&
+    intent.operation_input.slice?.mode === "test";
+  const testOnly = sliceTest || inputs.mode === "test" &&
+    !inputs.verification?.baseline &&
+    !inputs.verification?.compensating_assertion;
+  const discriminatingEvidence = testOnly
+    ? testSelectionForInputs(inputs)
+    : inputs.verification.baseline ?? inputs.verification.compensating_assertion;
+  const expectedCriteria = overrides.criteria ??
+    intent.operation_input.slice?.acceptance ?? inputs.brief.acceptance;
+  const acceptanceCriteria = expectedCriteria.map((criterion) => {
     if (overrides.omit_criteria?.includes(criterion)) return null;
     const verdict = overrides.verdicts?.[criterion] ?? "passed";
     const criterionReceipt = {
@@ -848,11 +1831,34 @@ function completeVerificationReceipt(intent, inputs, overrides = {}) {
     fingerprint: digestValue({ git: promotedGitFacts() }),
     git: promotedGitFacts(),
   };
-  const evidenceKind = overrides.discriminating_kind ??
-    (inputs.verification.baseline ? "safe_baseline" : "compensating_assertion");
+  const evidenceKind = overrides.discriminating_kind ?? (testOnly
+    ? "test_failure"
+    : inputs.verification.baseline ? "safe_baseline" : "compensating_assertion");
   const selectedFingerprint = overrides.discriminating_fingerprint ??
     discriminatingEvidence.fingerprint;
-  const discriminating = evidenceKind === "safe_baseline"
+  const testFailures = testOnly
+    ? (materialized?.operation_receipts ?? [])
+      .filter(({ card_id: cardId, receipt }) =>
+        cardId.endsWith("-test") && receipt?.provider_receipt !== null &&
+        receipt?.provider_receipt !== undefined)
+      .map((entry) => ({
+        card_id: entry.card_id,
+        effect_id: entry.effect_id,
+        receipt_digest: digestValue(entry.receipt.provider_receipt),
+        slice_id: entry.receipt.provider_receipt.slice_id,
+      }))
+    : undefined;
+  const discriminating = evidenceKind === "test_failure"
+    ? {
+        schema: "flow.feature-discriminating-evidence/v1",
+        kind: evidenceKind,
+        selected_fingerprint: selectedFingerprint,
+        post_mutation_fingerprint: overrides.post_mutation_fingerprint ??
+          workspace.fingerprint,
+        distinguished: overrides.distinguished ?? true,
+        test_failures: testFailures,
+      }
+    : evidenceKind === "safe_baseline"
     ? {
         schema: "flow.feature-discriminating-evidence/v1",
         kind: evidenceKind,
@@ -893,6 +1899,66 @@ function completeVerificationReceipt(intent, inputs, overrides = {}) {
     ...identity,
     receipt_digest: selfDigest,
     self_digest: selfDigest,
+  };
+}
+
+function featureSlicePostGit(inputs, scenario, slice, promotedGit) {
+  const sliceIndex = inputs.slices.findIndex(({ id }) => id === slice.id);
+  if (scenario.snapshotMode === "skip" &&
+      sliceIndex < inputs.slices.length - 1) {
+    return promotedGit;
+  }
+  if (scenario.snapshotMode === "reordered") {
+    const snapshots = scenario.sliceSnapshots ?? [];
+    return snapshots[snapshots.length - sliceIndex - 1] ?? promotedGit;
+  }
+  return scenario.sliceSnapshots?.[sliceIndex] ??
+    (sliceIndex === inputs.slices.length - 1
+      ? promotedGit
+      : intermediateGitFacts());
+}
+
+function featureSlicePreGit(inputs, scenario, slice, promotedGit) {
+  const sliceIndex = inputs.slices.findIndex(({ id }) => id === slice.id);
+  if (sliceIndex === 0) return exactGitFacts();
+  if (scenario.snapshotMode === "stale") return exactGitFacts();
+  const previousSlice = inputs.slices[sliceIndex - 1];
+  return featureSlicePostGit(inputs, scenario, previousSlice, promotedGit);
+}
+
+function featureWorkspaceSnapshot(workspace, git) {
+  return {
+    subject_id: workspace.subject_id,
+    generation: workspace.generation,
+    mutation_epoch: workspace.mutation_epoch,
+    fingerprint: digestValue({ git }),
+    git,
+  };
+}
+
+function featureTestWorkspaceSnapshot(workspace, git) {
+  return {
+    subject_id: workspace.subject_id,
+    generation: workspace.generation,
+    mutation_epoch: workspace.mutation_epoch,
+    fingerprint: digestValue({ git }),
+  };
+}
+
+function testSelectionForInputs(inputs) {
+  const identity = {
+    schema: "flow.feature-test-selection/v1",
+    slices: inputs.slices.filter(({ mode }) => mode === "test").map((slice) => ({
+      id: slice.id,
+      acceptance: [...(slice.acceptance ?? inputs.brief.acceptance)],
+      intended_failure: slice.test.intended_failure,
+      environment_fingerprint: slice.test.environment_fingerprint,
+      environment_status: slice.test.environment_status ?? "healthy",
+    })),
+  };
+  return {
+    ...identity,
+    fingerprint: digestValue(identity),
   };
 }
 
@@ -971,6 +2037,12 @@ async function createFeatureFailureFixture(t, scenario) {
     caller_metadata: { owner: "feature-flow-red" },
   }, {});
   const inputs = featureInputs();
+  if (scenario.mode !== undefined) inputs.mode = scenario.mode;
+  if (scenario.briefAcceptance !== undefined) {
+    inputs.brief.acceptance = [...scenario.briefAcceptance];
+  }
+  if (scenario.slices !== undefined) inputs.slices = structuredClone(scenario.slices);
+  if (scenario.setup !== undefined) inputs.setup = structuredClone(scenario.setup);
   if (scenario.compensatingAssertion === true) {
     delete inputs.verification.baseline;
     inputs.verification.compensating_assertion = {
@@ -979,6 +2051,12 @@ async function createFeatureFailureFixture(t, scenario) {
       non_destructive: true,
       fingerprint: `sha256:${"7".repeat(64)}`,
     };
+  }
+  if (scenario.baselineFingerprint !== undefined) {
+    inputs.verification.baseline.fingerprint = scenario.baselineFingerprint;
+  }
+  if (scenario.testOnlyWithoutVerification === true) {
+    delete inputs.verification.baseline;
   }
   inputs.workspace = {
     ...inputs.workspace,
@@ -1003,6 +2081,7 @@ async function createFeatureFailureFixture(t, scenario) {
   let verifyReceipt = null;
   let critiqueEvidence = null;
   let delegateDispatches = 0;
+  let testInvocations = 0;
   const sealIntents = [];
   const turnRecords = new Map();
   const delegatedAgentPort = {
@@ -1017,7 +2096,7 @@ async function createFeatureFailureFixture(t, scenario) {
     },
     async dispatch(request) {
       delegateDispatches += 1;
-      const role = request.agent_id.endsWith("apply") ? "apply" : "critique";
+      const role = request.agent_id.includes("apply") ? "apply" : "critique";
       const turnId = `turn:feature-red-${role}`;
       turnRecords.set(turnId, {
         agentId: request.agent_id,
@@ -1058,19 +2137,159 @@ async function createFeatureFailureFixture(t, scenario) {
       },
     },
     registeredOperations: {
+      [FEATURE_OPERATION_CONTRACTS.setup]: {
+        schema: "flow.registered-operation/v1",
+        classification: "caller_idempotent",
+        invoke(intent) {
+          return operationReceipt(intent, {
+            schema: "work.feature-setup-receipt/v1",
+            setup_id: intent.operation_input.setup.id,
+            evidence_role: intent.operation_input.evidence_role,
+          });
+        },
+      },
+      [FEATURE_OPERATION_CONTRACTS.test]: {
+        schema: "flow.registered-operation/v1",
+        classification: "caller_idempotent",
+        provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureTestReceipt,
+        invoke(intent) {
+          testInvocations += 1;
+          if (scenario.testReceiptMode === "missing") {
+            return operationReceipt(intent, null);
+          }
+          if (scenario.testReceiptMode === "throw" &&
+              !scenario.testReceiptRecovered) {
+            scenario.testReceiptRecovered = true;
+            throw new Error("test environment became unavailable");
+          }
+          const slice = intent.operation_input.slice;
+          const slicePreGit = featureSlicePreGit(
+            inputs,
+            scenario,
+            slice,
+            promotedGit,
+          );
+          const providerReceipt = {
+            attempt_id: intent.attempt_id,
+            effect_id: intent.effect_id,
+            idempotency_key: intent.idempotency_key,
+            schema: "work.feature-test-receipt/v1",
+            slice_id: slice.id,
+            phase: intent.operation_input.phase,
+            outcome: "expected_failure",
+            intended_failure: slice.test.intended_failure,
+            environment_status: slice.test.environment_status,
+            environment_fingerprint: slice.test.environment_fingerprint,
+            operation_contract: intent.operation_contract,
+            source_authority_watermark: intent.source_authority_watermark,
+            workspace: featureTestWorkspaceSnapshot(
+              intent.operation_input.workspace,
+              slicePreGit,
+            ),
+          };
+          if (scenario.testReceiptMode === "unrelated") {
+            providerReceipt.intended_failure =
+              "an unrelated failure from another behavior";
+          }
+          if (scenario.testReceiptMode === "broken_environment") {
+            providerReceipt.environment_status = "broken";
+          }
+          if (scenario.testReceiptMode === "stale_epoch") {
+            providerReceipt.workspace.mutation_epoch -= 1;
+          }
+          if (scenario.testReceiptMode === "setup_only") {
+            providerReceipt.schema = "work.feature-setup-receipt/v1";
+          }
+          const receipt = operationReceipt(intent, providerReceipt);
+          return receipt;
+        },
+      },
       [FEATURE_OPERATION_CONTRACTS.verify]: {
         schema: "flow.registered-operation/v1",
         classification: "caller_idempotent",
         invoke(intent) {
           if (scenario.verifyReceiptMode === "absent") return undefined;
+          if (intent.operation_input.phase === "slice_verify" &&
+              scenario.sliceVerifyReceiptMode === "missing") {
+            return operationReceipt(intent, null);
+          }
           if (scenario.verifyReceiptMode === "invalid") {
             return operationReceipt(intent, { schema: "invalid" });
           }
+          const sliceVerify = intent.operation_input.phase === "slice_verify";
+          const sliceMode = sliceVerify ? scenario.sliceVerifyReceiptMode : null;
+          const discriminatorMode = sliceVerify
+            ? scenario.sliceDiscriminatorMode
+            : null;
+          const slice = intent.operation_input.slice;
+          const slicePostGit = sliceVerify
+            ? featureSlicePostGit(inputs, scenario, slice, promotedGit)
+            : promotedGit;
+          const staleWorkspace = sliceMode === "stale_epoch"
+            ? {
+                subject_id: inputs.workspace.subject_id,
+                generation: inputs.workspace.generation,
+                mutation_epoch: inputs.workspace.mutation_epoch - 1,
+                fingerprint: digestValue({ git: promotedGitFacts() }),
+                git: promotedGitFacts(),
+              }
+            : undefined;
           const providerReceipt = completeVerificationReceipt(
             intent,
             inputs,
-            scenario.verification,
+            {
+              ...scenario.verification,
+              ...(sliceVerify && staleWorkspace === undefined ? {
+                workspace: featureWorkspaceSnapshot(
+                  inputs.workspace,
+                  slicePostGit,
+                ),
+              } : {}),
+              ...(staleWorkspace === undefined ? {} : {
+                workspace: staleWorkspace,
+              }),
+              ...(sliceMode === "missing_verdict" ? {
+                missing_verdicts: [slice.acceptance[0]],
+              } : {}),
+              ...(sliceMode === "wrong_acceptance" ? {
+                criteria: inputs.brief.acceptance,
+              } : {}),
+            },
+            intent.operation_input.authority_materialized_evidence,
           );
+          if (sliceMode === "wrong_operation") {
+            providerReceipt.operation_contract = FEATURE_OPERATION_CONTRACTS.test;
+          }
+          if (sliceMode === "setup_only") {
+            providerReceipt.schema = "work.feature-setup-receipt/v1";
+          }
+          if (discriminatorMode === "missing_discriminator") {
+            delete providerReceipt.discriminating_evidence;
+          }
+          if (discriminatorMode === "malformed_discriminator") {
+            providerReceipt.discriminating_evidence = {
+              schema: "flow.feature-discriminating-evidence/v1",
+              kind: "unknown",
+            };
+          }
+          if (discriminatorMode === "undistinguished_discriminator") {
+            providerReceipt.discriminating_evidence.distinguished = false;
+          }
+          if (discriminatorMode === "stale_discriminator") {
+            providerReceipt.discriminating_evidence.post_mutation_fingerprint =
+              `sha256:${"8".repeat(64)}`;
+          }
+          if (discriminatorMode?.endsWith("_discriminator")) {
+            const {
+              receipt_digest: _receiptDigest,
+              self_digest: _selfDigest,
+              ...identity
+            } = providerReceipt;
+            const selfDigest = digestValue(identity);
+            providerReceipt.receipt_digest = selfDigest;
+            providerReceipt.self_digest = selfDigest;
+          }
           verifyReceipt = operationReceipt(intent, providerReceipt);
           return verifyReceipt;
         },
@@ -1144,17 +2363,15 @@ async function createFeatureFailureFixture(t, scenario) {
   assert.equal(launch.created, true, JSON.stringify(launch));
   artifactAuthority.command(artifactRegistration(bytes, artifactDigest, launch.run_id));
   const registeredWorkspace = workspaceAuthority.query(workspaceQuery());
+  const workspaceOperations = prepared.graph.cards
+    .filter(({ resource_claims: resourceClaims }) => resourceClaims.some(({ kind }) =>
+      kind === "workspace"))
+    .map(({ id }) => id);
   assert.equal(workspaceAuthority.command(workspaceClaim({
     expectedWatermark: registeredWorkspace.watermark,
     expectedFingerprint: digestValue({ git: exactGitFacts() }),
     holder: scenario.workspaceClaimHolder ?? launch.run_id,
-    operations: [
-      "feature-apply",
-      "feature-verify",
-      "feature-critique",
-      "feature-seal",
-      "handoff_publication",
-    ],
+    operations: [...workspaceOperations, "handoff_publication"],
   })).accepted, true);
   return {
     artifactAuthority,
@@ -1167,8 +2384,14 @@ async function createFeatureFailureFixture(t, scenario) {
     delegateDispatches() {
       return delegateDispatches;
     },
+    testInvocations() {
+      return testInvocations;
+    },
     setCritiqueEvidence(evidence) {
       critiqueEvidence = evidence;
+    },
+    setTestReceiptMode(mode) {
+      scenario.testReceiptMode = mode;
     },
     workspaceAuthority,
   };
@@ -1212,6 +2435,67 @@ async function driveFeatureToSeal(fixture, { allowSealRefusal = false } = {}) {
     return current.phase !== "active" || effect?.invocation_started === true;
   });
   await new Promise((resolve) => setTimeout(resolve, 75));
+}
+
+async function driveSerializedFeatureToSeal(
+  fixture,
+  { allowSealRefusal = false } = {},
+) {
+  const { runId, runtime } = fixture;
+  const order = [];
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const projection = runtime.query({ run_id: runId });
+    if (projection.phase === "succeeded") return order;
+    const action = projection.legal_actions.find(({ type }) =>
+      ["operation_execute", "delegate_execute"].includes(type));
+    assert.ok(action, `serialized feature should expose a runnable action: ${
+      JSON.stringify(projection.legal_actions)}`);
+    assert.equal(action.expected_watermark, projection.watermark);
+    const result = runtime.command(action);
+    assert.equal(result.accepted, true, JSON.stringify(result));
+    order.push(action.card_id);
+    if (allowSealRefusal && action.card_id === "feature-seal") {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return order;
+    }
+    await until(() => runtime.query({ run_id: runId }).effects.some(
+      ({ card_id: cardId, status }) =>
+      cardId === action.card_id && status === "succeeded",
+    ));
+    const current = runtime.query({ run_id: runId });
+    for (const legalAction of current.legal_actions) {
+      assert.equal(legalAction.expected_watermark, current.watermark);
+    }
+    if (action.card_id === "feature-critique") {
+      fixture.critiqueEvidence = current.delegate_attempts.find(
+        ({ card_id: cardId }) => cardId === "feature-critique",
+      )?.evidence ?? null;
+      fixture.setCritiqueEvidence(fixture.critiqueEvidence);
+    }
+  }
+  assert.fail("serialized feature did not reach its terminal candidate");
+}
+
+async function driveUntilTestReceiptBlocked(fixture) {
+  const { runId, runtime } = fixture;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const projection = runtime.query({ run_id: runId });
+    const action = projection.legal_actions.find(({ type }) =>
+      ["operation_execute", "delegate_execute"].includes(type));
+    assert.ok(action, `test slice should expose a runnable action: ${
+      JSON.stringify(projection.legal_actions)}`);
+    const result = runtime.command(action);
+    assert.equal(result.accepted, true, JSON.stringify(result));
+    if (action.card_id.endsWith("-test")) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return runtime.query({ run_id: runId });
+    }
+    await until(() => runtime.query({ run_id: runId }).effects.some(
+      ({ card_id: cardId, status }) =>
+        cardId === action.card_id && status === "succeeded",
+    ));
+  }
+  assert.fail("serialized feature did not reach its test slice");
 }
 
 async function settleFeatureEffect(runtime, runId, cardId) {
@@ -1488,6 +2772,15 @@ function promotedGitFacts() {
   };
 }
 
+function intermediateGitFacts() {
+  return {
+    commit_sha: "5".repeat(40),
+    tree_sha: "6".repeat(40),
+    ref: "refs/heads/ticket/feature-intermediate",
+    clean: true,
+  };
+}
+
 function gitRetentionReceipt(git) {
   return {
     schema: "flow.git-retention-receipt/v1",
@@ -1558,6 +2851,10 @@ function prepareFeatureSelection(inputs) {
     registeredOperations: Object.fromEntries(
       Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
         classification: "caller_idempotent",
+        ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
+          provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
+          validateReceipt: validateFeatureTestReceipt,
+        } : {}),
         invoke() {
           throw new Error("feature operations are not invoked during preparation");
         },
@@ -1581,6 +2878,7 @@ function featureFactsForInputs(inputs) {
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
   facts.validator_contracts.push("flow.validator/feature-evidence/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
     kind: "workspace",
     id: inputs.workspace.subject_id,
@@ -1588,7 +2886,10 @@ function featureFactsForInputs(inputs) {
     mutation_epoch: inputs.workspace.mutation_epoch,
     fingerprint: inputs.workspace.fingerprint,
   });
-  facts.limits.max_cards = 8;
+  facts.limits.max_cards = Math.max(
+    8,
+    (inputs.slices?.length ?? 0) * 3 + 5,
+  );
   facts.limits.max_resources = 4;
   return facts;
 }

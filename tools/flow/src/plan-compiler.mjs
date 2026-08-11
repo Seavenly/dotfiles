@@ -1170,6 +1170,7 @@ function validateOperationCard(card, proposal, registeredOperations) {
     : operationRegistrationIssue(
         registration,
         card.executor.effect_classification,
+        card.inputs.provider_receipt_validator,
       );
   if (registrationIssue === "unregistered_operation_contract") {
     invalidPlan(
@@ -1181,6 +1182,20 @@ function validateOperationCard(card, proposal, registeredOperations) {
     invalidPlan(
       "incomplete_operation_registration",
       `operation adapter registration is incomplete: ${card.executor.contract}`,
+    );
+  }
+  if (registrationIssue === "incomplete_provider_receipt_validator") {
+    invalidPlan(
+      "incomplete_provider_receipt_validator",
+      `provider receipt validator registration is incomplete: ${card.id}`,
+    );
+  }
+  if (card.inputs.provider_receipt_validator !== undefined &&
+      (typeof card.inputs.provider_receipt_validator !== "string" ||
+       !facts.validator_contracts.includes(card.inputs.provider_receipt_validator))) {
+    invalidPlan(
+      "unsupported_provider_receipt_validator",
+      `unsupported provider receipt validator contract: ${card.id}`,
     );
   }
   if (!facts.operation_contracts.includes(card.executor.contract) ||
