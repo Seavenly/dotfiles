@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { createBackupManifest } from "../src/backup-restore.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { createInMemoryRunAuthority } from "../src/run-authority.mjs";
@@ -15,6 +16,23 @@ import {
   revisionBlockedCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+
+function completeReplacementAuthority(overrides = {}) {
+  return {
+    database_streams: [],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+    filesystem_state: [],
+    ...overrides,
+  };
+}
+
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
 
 test("prepare rejects malformed reboot time and subject facts at the public seam", () => {
   const runtime = createTestRuntime();
@@ -42,6 +60,1505 @@ test("prepare rejects malformed reboot time and subject facts at the public seam
     () => runtime.prepare(malformedSubject),
     /reboot time and subject facts are invalid/,
   );
+});
+
+test("restore establishes a host-wide barrier before any host mutation", () => {
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: RESTORE_WRITER,
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const pendingRunCommand = runtime.query({ run_id: launch.run_id }).legal_actions[0];
+  const manifest = createBackupManifest({
+    replacement_authority: completeReplacementAuthority({
+      watermark: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+
+  const entered = runtime.command({
+    schema: "flow.command/v1",
+    type: "restore",
+    manifest,
+  });
+
+  assert.equal(entered.accepted, true);
+  const host = runtime.query();
+  assert.equal(host.restore.state, "reconciling");
+  assert.deepEqual(host.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: host.watermark,
+  }]);
+  assert.equal(runtime.launch({}).code, "host_reconciliation_required");
+  assert.equal(runtime.command(pendingRunCommand).code,
+    "host_reconciliation_required");
+});
+
+test("restore passes one manifest-bound intent to its Adapter and preserves the receipt", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let request;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore(received) {
+        request = received;
+        return { provider_receipt_id: "restore/provider-1" };
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  const result = runtime.command({ type: "restore", manifest });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.receipt.manifest_digest, manifest.manifest_digest);
+  assert.equal(result.receipt.operation_id, request.intent.operation_id);
+  assert.equal(result.receipt.idempotency_key, request.intent.idempotency_key);
+  assert.equal(request.operation_id, request.intent.operation_id);
+  assert.equal(request.idempotency_key, request.intent.idempotency_key);
+  assert.deepEqual(runtime.query().restore.applied_receipt, result.receipt);
+});
+
+test("active host restore replaces ordinary run and view actions with reconciliation admission", async () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const watch = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+  await watch.next();
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const marker = blocked.host_reconciliation;
+  assert.equal(marker?.active, true);
+  assert.equal(marker?.state, "reconciling");
+  assert.deepEqual(blocked.legal_actions, []);
+  for (const view of Object.values(blocked.views)) {
+    assert.deepEqual(view.legal_actions, []);
+    assert.deepEqual(view.host_reconciliation, marker);
+  }
+  await watch.next();
+  const watched = await watch.next();
+  assert.deepEqual(watched.value.host_reconciliation, marker);
+  await watch.return();
+});
+
+test("host recovery accepts only exact projected command and query vocabulary", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+
+  assert.notEqual(runtime.command({ type: "backup" }).accepted, true);
+  assert.notEqual(runtime.command({ type: "restore_begin", manifest }).accepted, true);
+  assert.equal(runtime.query({
+    schema: "flow.query/v1",
+    query: "backup_manifest",
+  }).code, "unsupported_query");
+  assert.equal(runtime.query({
+    schema: "flow.query/v1",
+    query: "restore_barrier",
+  }).code, "unsupported_query");
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const reconcile = runtime.query().restore.legal_actions[0];
+  assert.equal(runtime.command({
+    type: reconcile.type,
+    expected_watermark: reconcile.expected_watermark,
+  }).code, "host_action_not_projected");
+  assert.equal(runtime.command(reconcile).accepted, true);
+  const ready = runtime.query();
+  assert.equal(runtime.command({
+    ...ready.restore.legal_actions[0],
+    type: "restore_reconcile",
+  }).code, "host_action_not_projected");
+  assert.equal(runtime.command({
+    ...ready.restore.legal_actions[0],
+    expected_watermark: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  }).code, "stale_authority_watermark");
+});
+
+test("restore reconciliation ignores caller observations and requires an observation Adapter", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore: () => ({ provider_receipt_id: "restore/provider-1" }),
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const action = runtime.query().restore.legal_actions[0];
+
+  const callerSupplied = runtime.command({ ...action, observations: observation });
+  assert.equal(callerSupplied.code, "host_action_not_projected");
+
+  const result = runtime.command(action);
+
+  assert.equal(result.code, "restore_observation_unavailable");
+  assert.equal(runtime.query().restore.state, "reconciling");
+});
+
+test("restore rejects a missing writer before entering the host barrier", () => {
+  const manifest = createBackupManifest({
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "restore_writer_unavailable");
+  assert.equal(runtime.query().restore.state, "idle");
+  assert.equal(runtime.query().restore.active, false);
+});
+
+test("restore is not projected while backup intent remains unresolved", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => observation,
+      createBackup: () => {
+        throw new Error("backup receipt lost");
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, undefined);
+  const pending = runtime.query();
+  assert.equal(pending.backup.state, "reconciling");
+
+  const blocked = runtime.command({ type: "restore", manifest });
+
+  assert.equal(blocked.code, "host_action_not_projected");
+  assert.deepEqual(blocked.legal_actions, pending.backup.legal_actions);
+  assert.equal(runtime.query().restore?.active ?? false, false);
+});
+
+test("backup reconciliation rejects a bare safe absence observation", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => observation,
+      createBackup: () => {
+        throw new Error("backup receipt lost");
+      },
+      reconcile: () => ({ status: "absent", safe_to_retry: true }),
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, undefined);
+
+  const action = runtime.query().backup.legal_actions[0];
+  const rejected = runtime.command(action);
+
+  assert.equal(rejected.code, "backup_reconciliation_invalid");
+  assert.equal(runtime.query().backup.state, "reconciling");
+});
+
+test("backup reconciliation recovers only from exact identity-bound absence", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let reconciliationObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => observation,
+      createBackup: () => {
+        throw new Error("backup receipt lost");
+      },
+      reconcile: ({ intent }) => reconciliationObservation ?? {
+        schema: "flow.backup-reconciliation-observation/v1",
+        operation: "backup_create",
+        operation_id: intent.operation_id,
+        idempotency_key: intent.idempotency_key,
+        manifest_digest: intent.manifest_digest,
+        status: "absent",
+        safe_to_retry: true,
+        provider_evidence: {
+          schema: "flow.backup-provider-evidence/v1",
+          provider: "test-backup",
+          proof_id: "absence-proof-1",
+          outcome: "absent",
+        },
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, undefined);
+  const action = runtime.query().backup.legal_actions[0];
+  reconciliationObservation = {
+    schema: "flow.backup-reconciliation-observation/v1",
+    operation: "backup_create",
+    operation_id: "wrong-operation",
+    idempotency_key: "wrong-operation",
+    manifest_digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    status: "absent",
+    safe_to_retry: true,
+    provider_evidence: {
+      schema: "flow.backup-provider-evidence/v1",
+      provider: "test-backup",
+      proof_id: "absence-proof-wrong",
+      outcome: "absent",
+    },
+  };
+  assert.equal(runtime.command(action).code, "backup_reconciliation_invalid");
+
+  reconciliationObservation = null;
+  const recovered = runtime.command(action);
+
+  assert.equal(recovered.accepted, true);
+  assert.equal(runtime.query().backup.state, "retryable");
+  assert.equal(runtime.query().backup.reconciliation.status, "absent");
+  assert.equal(
+    runtime.query().backup.reconciliation.operation_id,
+    runtime.query().backup.intent.operation_id,
+  );
+});
+
+test("backup fails closed before writing an incomplete authority manifest", () => {
+  let wrote = false;
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => ({
+          replacement_authority: {},
+          artifacts: [],
+          legacy_roots: [],
+          external_pointers: [],
+          drovr_obligations: [],
+        }),
+        createBackup: () => {
+          wrote = true;
+          return {};
+        },
+      },
+    }),
+  });
+
+  const rejected = runtime.command({ type: "backup_create" });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(wrote, false);
+  assert.equal(runtime.query().backup.state, "idle");
+});
+
+test("backup rejects legacy replacement authority aliases", () => {
+  for (const alias of ["git", "filesystem"]) {
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority({
+        backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+          observeBackup: () => ({
+            replacement_authority: {
+              ...completeReplacementAuthority(),
+              [alias]: alias === "git" ? {} : [],
+            },
+            artifacts: [],
+            legacy_roots: [],
+            external_pointers: [],
+            drovr_obligations: [],
+          }),
+          createBackup: () => {
+            throw new Error("legacy alias reached backup writer");
+          },
+        },
+      }),
+    });
+
+    const rejected = runtime.command({ type: "backup_create" });
+    assert.equal(rejected.code, "invalid_backup_manifest");
+    assert.equal(runtime.query().backup.state, "idle");
+  }
+});
+
+test("backup creation is deterministic and covers every retained authority category", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:admission", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const manifestBytes = [];
+  const createRuntime = () => {
+    const authority = createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => observation,
+        createBackup: ({ manifest, manifest_bytes: bytes }) => {
+          manifestBytes.push(Buffer.from(bytes));
+          return {
+          manifest_digest: manifest.manifest_digest,
+          destination: "backup/latest",
+          };
+        },
+      },
+    });
+    return createFlowRuntime({ runAuthority: authority });
+  };
+
+  const first = createRuntime().command({ type: "backup_create" });
+  const second = createRuntime().command({ type: "backup_create" });
+
+  assert.equal(first.accepted, true);
+  assert.deepEqual(first.manifest, second.manifest);
+  assert.deepEqual(first.manifest, {
+    schema: "flow.backup-manifest/v1",
+    version: 1,
+    replacement_authority: observation.replacement_authority,
+    artifacts: observation.artifacts,
+    legacy_roots: observation.legacy_roots,
+    external_pointers: observation.external_pointers,
+    drovr_obligations: observation.drovr_obligations,
+    manifest_digest: first.manifest.manifest_digest,
+  });
+  assert.equal(first.receipt.manifest_digest, first.manifest.manifest_digest);
+  assert.equal(manifestBytes[0].equals(manifestBytes[1]), true);
+});
+
+test("backup creation canonicalizes unordered authority collections", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [
+        { id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        { id: "host:admission", suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      ],
+      filesystem_state: [
+        { path: "/state/z.sqlite", digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        { path: "/state/a.sqlite", digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" },
+      ],
+      git_state: completeReplacementAuthority().git_state,
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const secondObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      ...firstObservation.replacement_authority,
+      database_streams: [
+        ...firstObservation.replacement_authority.database_streams,
+      ].reverse(),
+      filesystem_state: [
+        ...firstObservation.replacement_authority.filesystem_state,
+      ].reverse(),
+    },
+  };
+  const writes = [];
+  const createRuntime = (observation) => createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => observation,
+        createBackup: (request) => {
+          writes.push(request);
+          return { manifest_digest: request.manifest.manifest_digest };
+        },
+      },
+    }),
+  });
+
+  const first = createRuntime(firstObservation).command({ type: "backup_create" });
+  const second = createRuntime(secondObservation).command({ type: "backup_create" });
+
+  assert.equal(first.accepted, true);
+  assert.equal(second.accepted, true);
+  assert.deepEqual(first.manifest, second.manifest);
+  assert.deepEqual(writes[0].manifest_bytes, writes[1].manifest_bytes);
+  assert.equal(writes[0].operation_id, writes[1].operation_id);
+  assert.equal(writes[0].intent.operation_id, writes[1].intent.operation_id);
+});
+
+test("restore reconciles six evidence domains before admission and watermarks watch updates", async () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  const watch = runtime.watch({ host: true })[Symbol.asyncIterator]();
+  const initial = await watch.next();
+  const entered = runtime.command({ type: "restore", manifest });
+  await watch.next();
+  const barrier = await watch.next();
+
+  assert.equal(entered.accepted, true);
+  assert.notEqual(barrier.value.watermark, initial.value.watermark);
+  assert.equal(barrier.value.restore.state, "reconciling");
+  assert.deepEqual(barrier.value.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: barrier.value.watermark,
+  }]);
+
+  const reconciled = runtime.command(barrier.value.restore.legal_actions[0]);
+  const ready = runtime.query();
+  assert.equal(reconciled.accepted, true);
+  assert.equal(ready.restore.state, "ready");
+  assert.deepEqual(
+    await runtime.query({ schema: "flow.query/v1", query: "restore" }),
+    ready.restore,
+  );
+  assert.deepEqual(
+    ready.restore.reconciliation.evidence_domains.map(({ domain, status }) => ({
+      domain,
+      status,
+    })),
+    [
+      "database_streams",
+      "artifact_state",
+      "git_state",
+      "filesystem_state",
+      "external_effects",
+      "drovr_obligations",
+    ].map((domain) => ({ domain, status: "reconciled" })),
+  );
+  assert.deepEqual(ready.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_admit",
+    expected_watermark: ready.watermark,
+  }]);
+
+  const admitted = runtime.command(ready.restore.legal_actions[0]);
+  assert.equal(admitted.accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+  await watch.return();
+});
+
+test("in-memory host watch emits ordinary launch watermark changes", async () => {
+  const authority = createInMemoryRunAuthority();
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const watcher = runtime.watch({ host: true })[Symbol.asyncIterator]();
+  const initial = await watcher.next();
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const next = watcher.next();
+
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const update = await Promise.race([
+    next,
+    new Promise((resolve) => setTimeout(() => resolve(null), 100)),
+  ]);
+
+  assert.equal(launch.schema, "flow.launch-receipt/v1");
+  assert.notEqual(update, null);
+  assert.notEqual(update.value.watermark, initial.value.watermark);
+  assert.equal(update.value.runs.includes(launch.run_id), true);
+  await watcher.return();
+});
+
+test("semantically corrupt stream suffix evidence cannot create or admit restore", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "not-a-digest" }],
+      git_state: {
+        commit: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        tree: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifestBody = {
+    schema: "flow.backup-manifest/v1",
+    version: 1,
+    replacement_authority: observation.replacement_authority,
+    artifacts: observation.artifacts,
+    legacy_roots: observation.legacy_roots,
+    external_pointers: observation.external_pointers,
+    drovr_obligations: observation.drovr_obligations,
+  };
+  const rejected = runtime.command({
+    type: "restore",
+    manifest: {
+      ...manifestBody,
+      manifest_digest: digest(manifestBody),
+    },
+  });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(runtime.query().restore?.active ?? false, false);
+});
+
+test("restore requires complete Git identity evidence and recovers after correction", () => {
+  const valid = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let current = { ...valid, replacement_authority: {
+    ...valid.replacement_authority,
+    git_state: {},
+  } };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => current },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(valid);
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const failed = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(failed.accepted, true);
+  assert.equal(runtime.query().restore.state, "failed");
+  assert.equal(
+    runtime.query().restore.evidence_domains.find(({ domain }) => domain === "git_state").status,
+    "corrupt_evidence",
+  );
+
+  current = valid;
+  const recovered = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(recovered.accepted, true);
+  const ready = runtime.query();
+  assert.equal(runtime.command(ready.restore.legal_actions[0]).accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("backup manifest rejects duplicate external and Drovr obligations", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [
+      { effect_id: "e1", provider: "p", pointer: "x", idempotency_key: "i" },
+      { effect_id: "e1", provider: "p", pointer: "y", idempotency_key: "j" },
+    ],
+    drovr_obligations: [
+      { turn_id: "t1", disposition: "retire" },
+      { turn_id: "t1", disposition: "retire" },
+    ],
+  };
+  assert.throws(() => createBackupManifest(observation), (error) =>
+    error.code === "invalid_backup_observation");
+});
+
+test("backup observation reentry is fenced by the host restore barrier", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [], legacy_roots: [], external_pointers: [], drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  let runtime;
+  let nested;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => {
+        nested = runtime.command({ type: "restore", manifest });
+        return observation;
+      },
+      observeRestore: () => observation,
+    },
+  });
+  runtime = createFlowRuntime({ runAuthority: authority });
+  const rejected = runtime.command({ type: "backup_create" });
+  assert.equal(nested.accepted, true);
+  assert.equal(rejected.code, "host_reconciliation_required");
+  assert.equal(rejected.authority_watermark, runtime.query().watermark);
+  assert.deepEqual(rejected.legal_actions, runtime.query().restore.legal_actions);
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(runtime.query().backup.state, "idle");
+});
+
+test("restore rejects a manifest missing required authority domains before the barrier", () => {
+  const authority = createInMemoryRunAuthority();
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest({
+    replacement_authority: {},
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(runtime.query().restore.active, false);
+  assert.equal(runtime.query().restore.state, "idle");
+});
+
+test("restore reconciliation treats set-like filesystem and legacy evidence as unordered", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [
+        {
+          id: "host:runs",
+          suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+          id: "host:admission",
+          suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      ],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [
+        {
+          path: "/state/z.sqlite",
+          digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        },
+        {
+          path: "/state/a.sqlite",
+          digest: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        },
+      ],
+    },
+    artifacts: [],
+    legacy_roots: [
+      {
+        path: "/legacy/z",
+        digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      },
+      {
+        path: "/legacy/a",
+        digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      },
+    ],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(firstObservation);
+  const reorderedObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      ...firstObservation.replacement_authority,
+      database_streams: [
+        ...manifest.replacement_authority.database_streams,
+      ].reverse(),
+      filesystem_state: [
+        ...manifest.replacement_authority.filesystem_state,
+      ].reverse(),
+    },
+    legacy_roots: [...manifest.legacy_roots].reverse(),
+  };
+  let currentObservation = reorderedObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+
+  assert.equal(reconciled.accepted, true);
+  assert.equal(reconciled.reconciliation.complete, true);
+});
+
+test("restore admission keeps canonical reconciliation across reordered artifacts and obligations", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [
+      {
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        bytes_digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        byte_availability: "available",
+      },
+      {
+        digest: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        bytes_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        byte_availability: "available",
+      },
+    ],
+    legacy_roots: [],
+    external_pointers: [
+      {
+        effect_id: "e1",
+        provider: "github",
+        pointer: "issue:1",
+        idempotency_key: "issue:1",
+        receipt: {
+          schema: "flow.external-effect-receipt/v1",
+          effect_id: "e1",
+          idempotency_key: "issue:1",
+          provider_receipt_id: "provider/e1",
+          outcome: "succeeded",
+        },
+      },
+      {
+        effect_id: "e2",
+        provider: "github",
+        pointer: "issue:2",
+        idempotency_key: "issue:2",
+        receipt: {
+          schema: "flow.external-effect-receipt/v1",
+          effect_id: "e2",
+          idempotency_key: "issue:2",
+          provider_receipt_id: "provider/e2",
+          outcome: "succeeded",
+        },
+      },
+    ],
+    drovr_obligations: [
+      {
+        turn_id: "turn:1",
+        disposition: "retire",
+        receipt: {
+          schema: "flow.drovr-retirement-receipt/v1",
+          turn_id: "turn:1",
+          disposition: "retire",
+          retirement_receipt_id: "drovr/turn:1",
+          outcome: "retired",
+        },
+      },
+      {
+        turn_id: "turn:2",
+        disposition: "retire",
+        receipt: {
+          schema: "flow.drovr-retirement-receipt/v1",
+          turn_id: "turn:2",
+          disposition: "retire",
+          retirement_receipt_id: "drovr/turn:2",
+          outcome: "retired",
+        },
+      },
+    ],
+  };
+  const manifest = createBackupManifest(firstObservation);
+  const reorderedObservation = {
+    ...firstObservation,
+    artifacts: [...manifest.artifacts].reverse(),
+    external_pointers: [...manifest.external_pointers].reverse(),
+    drovr_obligations: [...manifest.drovr_obligations].reverse(),
+  };
+  let observationCalls = 0;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => {
+        observationCalls += 1;
+        return observationCalls === 1 ? reorderedObservation : manifest;
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted,
+    true);
+  const ready = runtime.query();
+  const admitted = runtime.command(ready.restore.legal_actions[0]);
+
+  assert.equal(admitted.accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("restore rejects corrupt immutable manifest structure before Adapter mutation", () => {
+  const manifestBody = {
+    schema: "flow.backup-manifest/v1",
+    version: 1,
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "not-a-digest" }],
+      git_state: {
+        commit: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        tree: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = {
+    ...manifestBody,
+    manifest_digest: digest(manifestBody),
+  };
+  let restoreCalls = 0;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore: () => {
+        restoreCalls += 1;
+        return { provider_receipt_id: "should-not-run" };
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(restoreCalls, 0);
+  assert.equal(runtime.query().restore?.active ?? false, false);
+});
+
+test("external and Drovr obligations require identity-bound settlement receipts", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "provider/e1",
+      idempotency_key: "provider/e1",
+    }],
+    drovr_obligations: [{ turn_id: "turn:1", disposition: "retire" }],
+  };
+  let currentObservation = observation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const missing = runtime.command(runtime.query().restore.legal_actions[0]);
+  let projection = runtime.query();
+  assert.equal(missing.accepted, true);
+  assert.equal(projection.restore.state, "failed");
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "missing_evidence",
+  );
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "drovr_obligations").status,
+    "missing_evidence",
+  );
+
+  currentObservation = {
+    ...observation,
+    external_pointers: [{
+      ...observation.external_pointers[0],
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e2",
+        idempotency_key: "provider/e1",
+        provider_receipt_id: "provider/e2",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      ...observation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:2",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:2",
+        outcome: "retired",
+      },
+    }],
+  };
+  const wrongReceipt = runtime.command(projection.restore.legal_actions[0]);
+  projection = runtime.query();
+  assert.equal(wrongReceipt.accepted, true);
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "drovr_obligations").status,
+    "corrupt_evidence",
+  );
+
+  currentObservation = {
+    ...observation,
+    external_pointers: [{
+      ...observation.external_pointers[0],
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "provider/e1",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      ...observation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const recovered = runtime.command(projection.restore.legal_actions[0]);
+  projection = runtime.query();
+  assert.equal(recovered.accepted, true);
+  assert.equal(projection.restore.state, "ready");
+  assert.equal(runtime.command(projection.restore.legal_actions[0]).accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("Drovr obligations recover through an exact named durable-holder handoff", () => {
+  const baseObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [{
+      turn_id: "turn:handoff",
+      disposition: "handoff",
+      durable_holder: "holder:registry",
+    }],
+  };
+  let currentObservation = baseObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(baseObservation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const missing = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(missing.accepted, true);
+  assert.equal(runtime.query().restore.state, "failed");
+
+  currentObservation = {
+    ...baseObservation,
+    drovr_obligations: [{
+      ...baseObservation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-handoff-receipt/v1",
+        turn_id: "turn:handoff",
+        disposition: "handoff",
+        durable_holder: "holder:wrong",
+        handoff_receipt_id: "handoff/wrong",
+        outcome: "handed_off",
+      },
+    }],
+  };
+  const wrongHolder = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(wrongHolder.accepted, true);
+  assert.equal(runtime.query().restore.state, "failed");
+
+  currentObservation = {
+    ...baseObservation,
+    drovr_obligations: [{
+      ...baseObservation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-handoff-receipt/v1",
+        turn_id: "turn:handoff",
+        disposition: "handoff",
+        durable_holder: "holder:registry",
+        handoff_receipt_id: "handoff/turn:handoff",
+        outcome: "handed_off",
+      },
+    }],
+  };
+  const recovered = runtime.command(runtime.query().restore.legal_actions[0]);
+
+  assert.equal(recovered.accepted, true);
+  assert.equal(runtime.query().restore.state, "ready");
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+});
+
+test("restore rejects bare settlement, unavailable artifact bytes, and duplicate streams before exact recovery", () => {
+  const validExternalReceipt = {
+    schema: "flow.external-effect-receipt/v1",
+    effect_id: "e1",
+    idempotency_key: "issue:15",
+    provider_receipt_id: "provider/e1",
+    outcome: "succeeded",
+  };
+  const validDrovrReceipt = {
+    schema: "flow.drovr-retirement-receipt/v1",
+    turn_id: "turn:1",
+    disposition: "retire",
+    retirement_receipt_id: "drovr/turn:1",
+    outcome: "retired",
+  };
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [{
+      digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      bytes_digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      byte_availability: "available",
+    }],
+    legacy_roots: [],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: validExternalReceipt,
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: validDrovrReceipt,
+    }],
+  };
+  let currentObservation = observation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => currentObservation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  currentObservation = {
+    ...observation,
+    replacement_authority: {
+      ...observation.replacement_authority,
+      database_streams: [
+        ...observation.replacement_authority.database_streams,
+        observation.replacement_authority.database_streams[0],
+      ],
+    },
+    artifacts: [{
+      digest: observation.artifacts[0].digest,
+      bytes_digest: observation.artifacts[0].bytes_digest,
+    }],
+    external_pointers: [{
+      ...observation.external_pointers[0],
+      receipt: { effect_id: "e1" },
+    }],
+    drovr_obligations: [{
+      ...observation.drovr_obligations[0],
+      receipt: { turn_id: "turn:1" },
+    }],
+  };
+  const failed = runtime.command(runtime.query().restore.legal_actions[0]);
+  const failedProjection = runtime.query();
+  assert.equal(failed.accepted, true);
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "database_streams").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "artifact_state").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "drovr_obligations").status,
+    "corrupt_evidence",
+  );
+
+  currentObservation = observation;
+  const recovered = runtime.command(failedProjection.restore.legal_actions[0]);
+  const ready = runtime.query();
+  assert.equal(recovered.accepted, true);
+  assert.equal(ready.restore.state, "ready");
+  assert.equal(runtime.command(ready.restore.legal_actions[0]).accepted, true);
+});
+
+test("restore admission re-observes every domain and refuses stale ready reconciliation", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const changedObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }],
+      git_state: firstObservation.replacement_authority.git_state,
+      filesystem_state: [],
+    },
+  };
+  let currentObservation = firstObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => currentObservation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(firstObservation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+  const ready = runtime.query();
+
+  currentObservation = changedObservation;
+  const stale = runtime.command(ready.restore.legal_actions[0]);
+  const quarantined = runtime.query();
+
+  assert.equal(stale.code, "restore_reconciliation_changed");
+  assert.equal(quarantined.restore.state, "failed");
+  assert.equal(quarantined.restore.active, true);
+  assert.deepEqual(quarantined.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: quarantined.watermark,
+  }]);
+  assert.equal(runtime.command({
+    ...ready.restore.legal_actions[0],
+    expected_watermark: ready.watermark,
+  }).code, "restore_reconciliation_incomplete");
+});
+
+test("missing or corrupt restore evidence remains quarantined and recovers only with exact evidence", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  let currentObservation = observation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  runtime.command({ type: "restore", manifest });
+
+  currentObservation = { ...observation, artifacts: undefined };
+  const missing = runtime.command(runtime.query().restore.legal_actions[0]);
+  const missingProjection = runtime.query();
+  assert.equal(missing.accepted, true);
+  assert.equal(missingProjection.restore.state, "failed");
+  assert.equal(
+    missingProjection.restore.reconciliation.components.find(({ component }) =>
+      component === "artifacts").status,
+    "missing_evidence",
+  );
+  assert.equal(
+    missingProjection.restore.applied_receipt.schema,
+    "flow.restore-receipt/v1",
+  );
+  assert.equal(runtime.launch({}).code, "host_reconciliation_required");
+
+  currentObservation = {
+    ...observation,
+    replacement_authority: { corrupt_suffix: () => {} },
+  };
+  const corrupt = runtime.command(missingProjection.restore.legal_actions[0]);
+  const corruptProjection = runtime.query();
+  assert.equal(corrupt.accepted, true);
+  assert.equal(corruptProjection.restore.state, "failed");
+  assert.equal(
+    corruptProjection.restore.reconciliation.components.find(({ component }) =>
+      component === "replacement_authority").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    corruptProjection.restore.applied_receipt.schema,
+    "flow.restore-receipt/v1",
+  );
+
+  currentObservation = observation;
+  const recovered = runtime.command(corruptProjection.restore.legal_actions[0]);
+  const ready = runtime.query();
+  assert.equal(recovered.accepted, true);
+  assert.equal(ready.restore.state, "ready");
+  assert.equal(runtime.command(ready.restore.legal_actions[0]).accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
 });
 
 test("a typed capability grant resolves an exact blocked plan without losing grant history", () => {
@@ -572,11 +2089,13 @@ test("prepare returns an immutable content-addressed dynamic graph without creat
   assert.throws(() => {
     prepared.graph.cards[0].id = "changed";
   }, TypeError);
-  assert.deepEqual(runtime.query(), {
-    schema: "flow.run-index-projection/v1",
-    watermark: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    runs: [],
-  });
+  const host = runtime.query();
+  assert.equal(host.schema, "flow.run-index-projection/v1");
+  assert.deepEqual(host.runs, []);
+  assert.equal(host.backup.state, "idle");
+  assert.equal(host.backup.watermark, host.watermark);
+  assert.equal(host.restore.state, "idle");
+  assert.equal(host.restore.watermark, host.watermark);
 
   const equivalentRequest = dynamicCheckpointProposal();
   equivalentRequest.explicit_facts = Object.fromEntries(
@@ -938,6 +2457,24 @@ test("query dispatches registered contracts through the five-operation runtime",
     }), unsupportedQuery);
   }
   assert.equal(runtime.query().schema, "flow.run-index-projection/v1");
+});
+
+test("registered backup and restore queries expose watermarked idle projections", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+  const host = runtime.query();
+
+  assert.deepEqual(runtime.query({
+    schema: "flow.query/v1",
+    query: "backup",
+  }), host.backup);
+  assert.deepEqual(runtime.query({
+    schema: "flow.query/v1",
+    query: "restore",
+  }), host.restore);
+  assert.equal(host.backup.watermark, host.watermark);
+  assert.equal(host.restore.watermark, host.watermark);
 });
 
 test("a typed checkpoint command completes the authority-derived run", () => {

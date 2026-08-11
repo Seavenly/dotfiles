@@ -84,5 +84,8 @@ export function createOneShotWatcher(result) {
 }
 
 function projectionWatermark(projection) {
+  if (projection?.host_reconciliation?.active === true) {
+    return projection.host_reconciliation.watermark;
+  }
   return projection.watermark ?? projection.authority_watermark ?? null;
 }

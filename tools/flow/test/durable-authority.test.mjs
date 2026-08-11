@@ -9,6 +9,13 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { canonicalize, digest } from "../src/canonical.mjs";
+import {
+  createBackupManifest,
+  initialBackupProjection,
+  initialRestoreBarrier,
+  reduceHostRecoveryEvent,
+} from "../src/backup-restore.mjs";
 import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
@@ -26,6 +33,999 @@ import {
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
+
+function completeReplacementAuthority(overrides = {}) {
+  return {
+    database_streams: [],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+    filesystem_state: [],
+    ...overrides,
+  };
+}
+
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
+
+test("durable backup manifests remain byte-identical across authority reopen", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-backup-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const adapter = {
+    observeBackup: () => observation,
+    createBackup: ({ manifest }) => ({
+      manifest_digest: manifest.manifest_digest,
+      bytes_digest: manifest.manifest_digest,
+    }),
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: adapter,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => firstAuthority.close());
+  const first = createFlowRuntime({ runAuthority: firstAuthority });
+  const firstReceipt = first.command({ type: "backup_create" });
+  const expected = createBackupManifest(observation);
+  assert.deepEqual(firstReceipt.manifest, expected);
+  firstAuthority.close();
+
+  const secondAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: adapter,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+  });
+  t.after(() => secondAuthority.close());
+  const second = createFlowRuntime({ runAuthority: secondAuthority });
+  const secondReceipt = second.command({ type: "backup_create" });
+
+  assert.deepEqual(secondReceipt.manifest, firstReceipt.manifest);
+  assert.deepEqual(second.query().backup.manifest, expected);
+});
+
+test("host replay rejects the obsolete backup_created event", () => {
+  const manifest = createBackupManifest({
+    replacement_authority: {},
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+  assert.throws(
+    () => reduceHostRecoveryEvent({
+      backup: initialBackupProjection(),
+      restore: initialRestoreBarrier(),
+    }, {
+      type: "backup_created",
+      manifest,
+      receipt: {
+        schema: "flow.backup-receipt/v1",
+        manifest_digest: manifest.manifest_digest,
+        provider_receipt: { id: "obsolete" },
+      },
+    }),
+    (error) => error.code === "backup_created_event_unsupported",
+  );
+});
+
+test("durable host replay rejects an obsolete backup_created event", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-backup-replay-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("backup-replay-boot", "process-a"),
+  });
+  authority.close();
+
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  allowEventTampering(database);
+  const stream = database.prepare(`
+    SELECT * FROM authority_streams WHERE stream_id = 'host:admission'
+  `).get();
+  const previous = database.prepare(`
+    SELECT * FROM authority_events
+     WHERE stream_id = 'host:admission'
+     ORDER BY sequence DESC LIMIT 1
+  `).get();
+  const payload = { type: "backup_created" };
+  const payloadJson = JSON.stringify(canonicalize(payload));
+  const payloadDigest = digest(payload);
+  const sequence = Number(stream.head_sequence) + 1;
+  const record = {
+    schema: "flow.authority-event-record/v1",
+    stream_id: "host:admission",
+    sequence,
+    generation: Number(stream.generation),
+    contract: "flow.host-admission-event/v1",
+    payload,
+    payload_digest: payloadDigest,
+    previous_digest: previous.record_digest,
+    authority_epoch: Number(previous.authority_epoch),
+    boot_id: previous.boot_id,
+    process_identity: previous.process_identity,
+  };
+  const recordDigest = digest(record);
+  database.prepare(`
+    INSERT INTO authority_events(
+      stream_id, sequence, generation, contract, payload_json,
+      payload_digest, previous_digest, record_digest, authority_epoch,
+      boot_id, process_identity
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "host:admission",
+    sequence,
+    Number(stream.generation),
+    "flow.host-admission-event/v1",
+    payloadJson,
+    payloadDigest,
+    previous.record_digest,
+    recordDigest,
+    Number(previous.authority_epoch),
+    previous.boot_id,
+    previous.process_identity,
+  );
+  database.prepare(`
+    UPDATE authority_streams
+       SET head_sequence = ?, head_digest = ?, fold_json = ?, fold_digest = ?
+     WHERE stream_id = 'host:admission'
+  `).run(
+    sequence,
+    recordDigest,
+    JSON.stringify(canonicalize({
+      ...JSON.parse(stream.fold_json),
+      watermark: recordDigest,
+    })),
+    digest({ ...JSON.parse(stream.fold_json), watermark: recordDigest }),
+  );
+  database.close();
+
+  const inspector = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("backup-replay-boot", "inspector"),
+  });
+  t.after(() => inspector.close());
+
+  const rejection = createFlowRuntime({ runAuthority: inspector }).query();
+
+  assert.equal(rejection.code, "authority_integrity_failure");
+  assert.equal(rejection.reason, "corrupt_recovery_state");
+});
+
+test("durable launch ownership reentry preserves host reconciliation rejection", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-launch-reentry-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [], legacy_roots: [], external_pointers: [], drovr_obligations: [],
+  };
+  let runtime;
+  let nested;
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    runOwnershipAdapter: {
+      observe: () => {
+        nested = runtime.command({ type: "restore", manifest: createBackupManifest(observation) });
+        return {
+          schema: "flow.run-ownership/v1",
+          scope: "top_level",
+          parent_run_id: null,
+        };
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("launch-reentry-boot", "launch-reentry-process"),
+  });
+  t.after(() => authority.close());
+  runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(nested.accepted, true);
+  assert.equal(launch.code, "host_reconciliation_required");
+  assert.equal(launch.authority_watermark_domain, "host");
+  assert.equal(launch.authority_watermark, runtime.query().watermark);
+  assert.deepEqual(launch.legal_actions, runtime.query().restore.legal_actions);
+  assert.equal(runtime.query().restore.active, true);
+  assert.deepEqual(runtime.query().restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: runtime.query().watermark,
+  }]);
+  assert.equal(runtime.query({ run_id: launch.run_id }).code, "unknown_run");
+});
+
+test("durable backup records intent before mutation and retains receipt loss for reconciliation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-backup-boundary-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let authority;
+  let writerCalls = 0;
+  let externalBackup = null;
+  let projectionDuringWriter = null;
+  const adapter = {
+    observeBackup: () => observation,
+    createBackup: ({ manifest }) => {
+      writerCalls += 1;
+      projectionDuringWriter = authority.query();
+      externalBackup = { manifest_digest: manifest.manifest_digest };
+      throw new Error("backup receipt lost after external write");
+    },
+    reconcile: ({ manifest, intent }) => externalBackup === null
+      ? {
+          schema: "flow.backup-reconciliation-observation/v1",
+          operation: "backup_create",
+          operation_id: intent.operation_id,
+          idempotency_key: intent.idempotency_key,
+          manifest_digest: intent.manifest_digest,
+          status: "absent",
+          safe_to_retry: true,
+          provider_evidence: {
+            schema: "flow.backup-provider-evidence/v1",
+            provider: "test-backup",
+            proof_id: "absence-proof-boundary",
+            outcome: "absent",
+          },
+        }
+      : {
+          schema: "flow.backup-reconciliation-observation/v1",
+          operation: "backup_create",
+          operation_id: intent.operation_id,
+          idempotency_key: intent.idempotency_key,
+          manifest_digest: intent.manifest_digest,
+          status: "present",
+          provider_evidence: {
+            schema: "flow.backup-provider-evidence/v1",
+            provider: "test-backup",
+            proof_id: "presence-proof-boundary",
+            outcome: "present",
+          },
+          receipt: {
+            manifest_digest: manifest.manifest_digest,
+            provider_receipt: externalBackup,
+          },
+        },
+  };
+  authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: adapter,
+    hostIdentityAdapter: fixedHostIdentity("backup-boot-a", "backup-process-a"),
+  });
+  const first = createFlowRuntime({ runAuthority: authority });
+  const failed = first.command({ type: "backup_create" });
+  assert.equal(failed.accepted, undefined);
+  assert.equal(projectionDuringWriter.backup.state, "reconciling");
+  assert.equal(writerCalls, 1);
+  authority.close();
+
+  authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: adapter,
+    hostIdentityAdapter: fixedHostIdentity("backup-boot-b", "backup-process-b"),
+  });
+  t.after(() => authority.close());
+  const second = createFlowRuntime({ runAuthority: authority });
+  const pending = second.query().backup;
+  assert.equal(pending.state, "reconciling");
+  assert.deepEqual(pending.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "backup_reconcile",
+    expected_watermark: second.query().watermark,
+  }]);
+  assert.equal(second.command({ type: "backup_create" }).code,
+    "host_reconciliation_required");
+  assert.equal(writerCalls, 1);
+  const restoreBlocked = second.command({
+    type: "restore",
+    manifest: createBackupManifest(observation),
+  });
+  assert.equal(restoreBlocked.code, "host_action_not_projected");
+  assert.deepEqual(restoreBlocked.legal_actions, pending.legal_actions);
+  const reconciled = second.command(pending.legal_actions[0]);
+  assert.equal(reconciled.accepted, true);
+  assert.equal(second.query().backup.state, "completed");
+  assert.equal(writerCalls, 1);
+});
+
+test("backup retry reuses the retained intent after safe absence despite observation drift", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-backup-retry-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const secondObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      ...firstObservation.replacement_authority,
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }],
+    },
+  };
+  let currentObservation = firstObservation;
+  let writerCalls = 0;
+  let failFirstWrite = true;
+  const writes = [];
+  const adapter = {
+    observeBackup: () => currentObservation,
+    createBackup: ({ manifest, operation_id, intent }) => {
+      writerCalls += 1;
+      writes.push({
+        manifest,
+        operation_id,
+        intent,
+      });
+      if (failFirstWrite) {
+        failFirstWrite = false;
+        throw new Error("backup receipt lost before external presence");
+      }
+      return {
+        manifest_digest: manifest.manifest_digest,
+        provider_receipt_id: "backup/retained-intent",
+      };
+    },
+    reconcile: ({ intent }) => ({
+      schema: "flow.backup-reconciliation-observation/v1",
+      operation: "backup_create",
+      operation_id: intent.operation_id,
+      idempotency_key: intent.idempotency_key,
+      manifest_digest: intent.manifest_digest,
+      status: "absent",
+      safe_to_retry: true,
+      provider_evidence: {
+        schema: "flow.backup-provider-evidence/v1",
+        provider: "test-backup",
+        proof_id: "absence-proof-retry",
+        outcome: "absent",
+      },
+    }),
+  };
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: adapter,
+    hostIdentityAdapter: fixedHostIdentity("retry-boot-a", "retry-process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const failed = runtime.command({ type: "backup_create" });
+  assert.equal(failed.accepted, undefined);
+  const pending = runtime.query().backup;
+  assert.equal(runtime.command(pending.legal_actions[0]).accepted, true);
+  const retryable = runtime.query().backup;
+  const originalManifestDigest = retryable.intent.manifest_digest;
+  const originalOperationId = retryable.intent.operation_id;
+  const restoreBlocked = runtime.command({
+    type: "restore",
+    manifest: retryable.manifest,
+  });
+  assert.equal(restoreBlocked.code, "host_action_not_projected");
+  assert.deepEqual(restoreBlocked.legal_actions, retryable.legal_actions);
+
+  currentObservation = secondObservation;
+  const retried = runtime.command(retryable.legal_actions[0]);
+
+  assert.equal(retried.accepted, true);
+  assert.equal(writerCalls, 2);
+  assert.equal(writes[1].manifest.manifest_digest, originalManifestDigest);
+  assert.equal(writes[1].operation_id, originalOperationId);
+  assert.equal(writes[1].intent.operation_id, originalOperationId);
+  assert.deepEqual(writes[1].manifest, writes[0].manifest);
+});
+
+test("durable restore barrier survives process replacement and gates launch", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  let firstAuthority;
+  let projectionDuringRestore;
+  const restoreAdapter = {
+    observeRestore: () => observation,
+    restore: ({ manifest: appliedManifest }) => {
+      projectionDuringRestore = firstAuthority.query();
+      assert.equal(appliedManifest.manifest_digest, manifest.manifest_digest);
+      throw new Error("restore receipt lost after mutation boundary");
+    },
+  };
+  firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: restoreAdapter,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const first = createFlowRuntime({ runAuthority: firstAuthority });
+  assert.equal(first.command({ type: "restore", manifest }).code,
+    "restore_apply_failed");
+  assert.equal(projectionDuringRestore.restore.active, true);
+  assert.equal(projectionDuringRestore.restore.applied_receipt, null);
+  firstAuthority.close();
+
+  const secondAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: restoreAdapter,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+  });
+  t.after(() => secondAuthority.close());
+  const second = createFlowRuntime({ runAuthority: secondAuthority });
+  const restored = second.query();
+  assert.equal(restored.restore.state, "reconciling");
+  assert.equal(restored.restore.applied_receipt, null);
+  assert.equal(second.launch({}).code, "host_reconciliation_required");
+  assert.equal(second.command(restored.restore.legal_actions[0]).accepted, true);
+  const ready = second.query();
+  assert.equal(second.command(ready.restore.legal_actions[0]).accepted, true);
+  assert.equal(second.query().restore.state, "admitted");
+});
+
+test("durable restore records an exact intent before mutation and preserves it across lost receipt", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-intent-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  let restoreCalls = 0;
+  let received;
+  const restoreAdapter = {
+    observeRestore: () => observation,
+    restore: (request) => {
+      restoreCalls += 1;
+      received = request;
+      throw new Error("restore receipt lost after provider mutation");
+    },
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: restoreAdapter,
+    hostIdentityAdapter: fixedHostIdentity("restore-intent-boot-a", "restore-intent-process-a"),
+  });
+  const first = createFlowRuntime({ runAuthority: firstAuthority });
+  assert.equal(first.command({ type: "restore", manifest }).code,
+    "restore_apply_failed");
+  const pending = first.query().restore;
+  assert.equal(restoreCalls, 1);
+  assert.equal(received.intent.operation, "restore");
+  assert.equal(received.intent.manifest_digest, manifest.manifest_digest);
+  assert.equal(received.operation_id, pending.intent.operation_id);
+  assert.equal(received.idempotency_key, pending.intent.idempotency_key);
+  assert.equal(pending.applied_receipt, null);
+  firstAuthority.close();
+
+  const secondAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => observation,
+    },
+    hostIdentityAdapter: fixedHostIdentity("restore-intent-boot-b", "restore-intent-process-b"),
+  });
+  t.after(() => secondAuthority.close());
+  const second = createFlowRuntime({ runAuthority: secondAuthority });
+  const restored = second.query().restore;
+  assert.deepEqual(restored.intent, pending.intent);
+  assert.equal(restored.applied_receipt, null);
+  assert.equal(second.command(restored.legal_actions[0]).accepted, true);
+  const ready = second.query().restore;
+  assert.equal(ready.applied_receipt, null);
+  const admission = second.command(ready.legal_actions[0]);
+  assert.equal(admission.accepted, true);
+  assert.equal(admission.receipt.operation_id, pending.intent.operation_id);
+  assert.equal(admission.receipt.idempotency_key, pending.intent.idempotency_key);
+  assert.equal(admission.receipt.reconciliation_digest,
+    ready.reconciliation.reconciliation_digest);
+});
+
+test("durable run query and watch expose host reconciliation while barrier is active", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-run-view-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-view-boot", "restore-view-process"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const watch = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+  await watch.next();
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const marker = blocked.host_reconciliation;
+  assert.equal(marker?.active, true);
+  assert.deepEqual(blocked.legal_actions, []);
+  for (const view of Object.values(blocked.views)) {
+    assert.deepEqual(view.legal_actions, []);
+    assert.deepEqual(view.host_reconciliation, marker);
+  }
+  await watch.next();
+  const watched = await watch.next();
+  assert.deepEqual(watched.value.host_reconciliation, marker);
+  await watch.return();
+});
+
+test("durable restore admission rejects changed Adapter evidence before clearing the barrier", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-fresh-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const changedObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      ...firstObservation.replacement_authority,
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }],
+    },
+  };
+  let currentObservation = firstObservation;
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+    hostIdentityAdapter: fixedHostIdentity("restore-fresh-boot", "restore-fresh-process"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(firstObservation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+  const ready = runtime.query();
+
+  currentObservation = changedObservation;
+  const stale = runtime.command(ready.restore.legal_actions[0]);
+  const quarantined = runtime.query();
+
+  assert.equal(stale.code, "restore_reconciliation_changed");
+  assert.equal(quarantined.restore.state, "failed");
+  assert.deepEqual(quarantined.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: quarantined.watermark,
+  }]);
+});
+
+test("durable restore admission remains closed while an external effect is in flight", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-effect-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let startedResolve;
+  let releaseEffect;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const effectPending = new Promise((resolve) => { releaseEffect = resolve; });
+  const registration = {
+    classification: "caller_idempotent",
+    invoke: async (intent) => {
+      startedResolve(intent);
+      const providerReceipt = await effectPending;
+      return operationReceipt(intent, providerReceipt);
+    },
+  };
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-effect-boot", "restore-effect-process"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration },
+  });
+  const prepared = runtime.prepare(registeredOperationProposal({ checkpointBound: false }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const operationAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "operation_execute",
+  );
+  const effectCommand = runtime.command(operationAction);
+  const intent = await started;
+  assert.equal(effectCommand.accepted, true);
+  assert.equal(intent.effect_id, effectCommand.effect_intents[0].effect_id);
+
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+  const ready = runtime.query();
+  const blocked = runtime.command(ready.restore.legal_actions[0]);
+  assert.equal(blocked.code, "host_effects_in_flight");
+  assert.equal(runtime.query().restore.state, "ready");
+
+  releaseEffect({ record: "effect-finished" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "active");
+  assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+  const stillBlocked = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(stillBlocked.code, "host_effects_unresolved");
+  assert.equal(runtime.query().restore.state, "ready");
+});
+
+test("durable restore admission remains closed for a persisted unresolved run effect", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-run-effect-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    lifecycleKernel: effectLifecycle,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-run-effect-boot", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const launch = launchDistinctRun(firstRuntime, "0");
+  const effectReceipt = firstRuntime.command(
+    firstRuntime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  assert.equal(effectReceipt.accepted, true);
+  assert.equal(firstRuntime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+  firstAuthority.close();
+
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    lifecycleKernel: effectLifecycle,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-run-effect-boot", "process-b"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted,
+    true);
+  const ready = runtime.query();
+  assert.equal(ready.restore.state, "ready");
+
+  const blocked = runtime.command(ready.restore.legal_actions[0]);
+
+  assert.equal(blocked.code, "host_effects_unresolved");
+  assert.equal(runtime.query().restore.state, "ready");
+  assert.equal(runtime.query().restore.active, true);
+});
+
+test("durable effect receipt is fenced if restore activates after Adapter return", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-effect-after-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    lifecycleKernel: effectLifecycle,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-effect-after-boot", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const effectReceipt = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  const [intent] = effectReceipt.effect_intents;
+  let adapterCalls = 0;
+
+  await assert.rejects(
+    () => authority.invokeEffect(intent, {
+      invoke() {
+        adapterCalls += 1;
+        assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+        return "provider-returned";
+      },
+    }),
+    (error) => error.code === "host_reconciliation_required",
+  );
+  assert.equal(adapterCalls, 1);
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+});
+
+test("durable async effect settlement is fenced when restore activates while pending", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-effect-pending-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    lifecycleKernel: effectLifecycle,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-effect-pending-boot", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const effectReceipt = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  const [intent] = effectReceipt.effect_intents;
+  let startedResolve;
+  let release;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const pending = authority.invokeEffect(intent, {
+    invoke() {
+      startedResolve();
+      return new Promise((resolve) => { release = resolve; });
+    },
+  });
+  await started;
+
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  release("provider-returned");
+
+  await assert.rejects(
+    () => pending,
+    (error) => error.code === "host_reconciliation_required",
+  );
+  assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+});
+
+test("durable effect admission rereads the host barrier before invocation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-effect-race-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let adapterCalls = 0;
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    lifecycleKernel: effectLifecycle,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    hostIdentityAdapter: fixedHostIdentity("restore-effect-race-boot", "restore-effect-race-process"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke: async () => operationReceipt({}),
+      },
+    },
+  });
+  const prepared = runtime.prepare(registeredOperationProposal({ checkpointBound: false }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const operationAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "operation_execute",
+  );
+  const effectReceipt = authority.command(operationAction);
+  const [intent] = effectReceipt.effect_intents;
+  const invocation = authority.invokeEffect(intent, {
+    invoke() {
+      adapterCalls += 1;
+    },
+  });
+
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  await assert.rejects(
+    () => invocation,
+    (error) => error.code === "host_reconciliation_required",
+  );
+  assert.equal(adapterCalls, 0);
+  assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+});
 
 test("a launched run and its authority projection survive process replacement", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
@@ -1835,6 +2835,52 @@ test("host stream corruption fails closed through the run index", async (t) => {
 
   assert.equal(rejection.code, "authority_integrity_failure");
   assert.equal(rejection.reason, "fold_mismatch");
+});
+
+test("schema-v2 host admission folds without recovery fields reopen cleanly", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "seed"),
+  });
+  t.after(() => authority.close());
+  authority.close();
+
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  const stream = database.prepare(`
+    SELECT head_digest FROM authority_streams WHERE stream_id = 'host:admission'
+  `).get();
+  const baselineFold = {
+    schema: "flow.host-admission-fold/v1",
+    watermark: stream.head_digest,
+    authority_epoch: 1,
+    boot_id: "boot-a",
+    declared_capacity: 4,
+    process_identity: "seed",
+    active_runs: [],
+  };
+  database.prepare(`
+    UPDATE authority_streams
+       SET fold_json = ?, fold_digest = ?
+     WHERE stream_id = 'host:admission'
+  `).run(JSON.stringify(canonicalize(baselineFold)), digest(baselineFold));
+  database.close();
+
+  const reopened = createDurableRunAuthority({
+    authorityDirectory,
+    access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "inspector"),
+  });
+  t.after(() => reopened.close());
+  const projection = createFlowRuntime({ runAuthority: reopened }).query();
+
+  assert.notEqual(
+    projection.code,
+    "authority_integrity_failure",
+    JSON.stringify(projection),
+  );
+  assert.equal(projection.authority_schema.status, "compatible");
 });
 
 test("a run stream without its launch event fails closed", async (t) => {

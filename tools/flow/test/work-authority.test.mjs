@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { createBackupManifest } from "../src/backup-restore.mjs";
 import {
   createGitRetentionAdapter,
   createGitWorkspaceObservationAdapter,
@@ -32,6 +33,110 @@ import {
 import { withoutViewWatermarks } from "../test-support/projection-assertions.mjs";
 
 const CLEANUP_OPERATION_CONTRACT = "flow.operation/resource-cleanup/v1";
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
+
+test("a host restore barrier fences Work-domain mutation until admission", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-restore-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
+    hostIdentityAdapter: fixedHostIdentity("restore-boot", "restore-process"),
+  });
+  t.after(() => runAuthority.close());
+  const runtime = createFlowRuntime({ runAuthority });
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  const registration = workspaceRegistration();
+  assert.equal(workspaceAuthority.command(registration).accepted, true);
+
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const blocked = workspaceAuthority.command({
+    ...workspaceRegistration(),
+    command_id: "workspace:blocked-during-restore",
+  });
+  assert.equal(blocked.code, "host_reconciliation_required");
+  assert.deepEqual(blocked.legal_actions, runtime.query().restore.legal_actions);
+
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(reconciled.accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+  assert.equal(workspaceAuthority.query(workspaceQuery()).schema,
+    "work.workspace-projection/v1");
+});
+
+test("a reentrant workspace Git observation cannot cross a restore barrier", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-reentrant-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  let runtime;
+  let restoreEntered = false;
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: {
+      observe() {
+        if (!restoreEntered) {
+          restoreEntered = true;
+          assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+        }
+        return {
+          schema: "work.git-observation/v1",
+          git: exactGitFacts(),
+        };
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("work-reentrant-boot", "process-a"),
+  });
+  t.after(() => runAuthority.close());
+  runtime = createFlowRuntime({ runAuthority });
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+
+  const rejected = workspaceAuthority.command(workspaceRegistration());
+
+  assert.equal(rejected.code, "host_reconciliation_required");
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(workspaceAuthority.query(workspaceQuery()).code,
+    "unknown_subject");
+});
 
 test("obsolete handoff cleanup cannot release a newer workspace generation", () => {
   const generationTwoGit = promotedGitFacts();

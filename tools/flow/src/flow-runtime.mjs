@@ -26,6 +26,7 @@ import {
   createSubrunRegistration,
   SUBRUN_CONTRACT,
 } from "./subrun-effects.mjs";
+import { isBackupRestoreCommand } from "./backup-restore.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
 
@@ -166,6 +167,23 @@ export function createFlowRuntime({
     },
 
     command(command) {
+      if (isBackupRestoreCommand(command)) {
+        if (typeof runAuthority.hostCommand !== "function") {
+          const host = runAuthority.query();
+          return createRejection({
+            operation: "command",
+            code: "unsupported_host_command",
+            commandType: typeof command?.type === "string"
+              ? command.type
+              : null,
+            authorityWatermark: host.watermark,
+            authorityWatermarkDomain: "host",
+            legalActions: host.legal_actions ?? host.restore?.legal_actions ??
+              host.backup?.legal_actions ?? [],
+          });
+        }
+        return runAuthority.hostCommand(command);
+      }
       const before = typeof command?.run_id === "string"
         ? runAuthority.query(command.run_id)
         : null;
@@ -221,7 +239,13 @@ export function createFlowRuntime({
       return runAuthority.query(request?.run_id);
     },
 
-    watch({ run_id: runId } = {}) {
+    watch(request = {}) {
+      if (request?.host === true) {
+        return typeof runAuthority.watchHost === "function"
+          ? runAuthority.watchHost()
+          : runAuthority.watch(undefined);
+      }
+      const runId = request?.run_id;
       return runAuthority.watch(runId);
     },
   });
@@ -446,6 +470,18 @@ function operationBinding(command, projection) {
 }
 
 function dispatchRegisteredQuery(request, registeredQueries, runAuthority) {
+  if (request?.query === "backup") {
+    return runAuthority.query()?.backup ?? hostQueryRejection(
+      runAuthority,
+      "backup_unavailable",
+    );
+  }
+  if (request?.query === "restore") {
+    return runAuthority.query()?.restore ?? hostQueryRejection(
+      runAuthority,
+      "restore_unavailable",
+    );
+  }
   if (!Object.hasOwn(registeredQueries, request.query)) {
     return hostQueryRejection(runAuthority, "unsupported_query");
   }

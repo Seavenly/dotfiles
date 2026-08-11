@@ -224,6 +224,71 @@ const PROJECTION_BUILDER = {
     operator: "flow.operator-projection/v1",
   },
 };
+const HOST_RECOVERY = {
+  authority: "RunAuthority",
+  command_contract: "flow.command/v1",
+  commands: [
+    "backup_create",
+    "backup_reconcile",
+    "restore",
+    "restore_reconcile",
+    "restore_admit",
+  ],
+  queries: {
+    backup: {
+      request: "flow.query/v1",
+      projection: "flow.backup-projection/v1",
+      rejection: "flow.rejection/v1",
+    },
+    restore: {
+      request: "flow.query/v1",
+      projection: "flow.restore-barrier-projection/v1",
+      rejection: "flow.rejection/v1",
+    },
+  },
+  watch: {
+    request: "flow.watch/v1",
+    projection: "flow.run-index-projection/v1",
+    barrier: "flow.restore-barrier-projection/v1",
+    reconciliation: "flow.restore-reconciliation/v1",
+    watermark: "exact_host_authority",
+  },
+  schemas: {
+    manifest: "flow.backup-manifest/v1",
+    intent: "flow.backup-intent/v1",
+    backup_receipt: "flow.backup-receipt/v1",
+    backup_reconciliation_observation:
+      "flow.backup-reconciliation-observation/v1",
+    backup_provider_evidence: "flow.backup-provider-evidence/v1",
+    restore_intent: "flow.restore-intent/v1",
+    restore_receipt: "flow.restore-receipt/v1",
+    barrier: "flow.restore-barrier-projection/v1",
+    reconciliation: "flow.restore-reconciliation/v1",
+    failure: "flow.restore-failure/v1",
+    host_marker: "flow.host-reconciliation-marker/v1",
+    restore_admission_receipt: "flow.restore-admission-receipt/v1",
+    drovr_handoff_receipt: "flow.drovr-handoff-receipt/v1",
+  },
+  semantics: {
+    lifecycle_authority: "RunAuthority",
+    intent_before_effect: true,
+    reconciliation_source: "injected_adapter_only",
+    barrier_scope: "host_wide",
+    evidence_domains: [
+      "database_streams",
+      "artifact_state",
+      "git_state",
+      "filesystem_state",
+      "external_effects",
+      "drovr_obligations",
+    ],
+    admission: "fresh_exact_reconciliation",
+    unresolved_effects: "closed",
+    failure_boundary: "narrowest_provable",
+    backup_reconciliation: "identity_bound_absence_or_presence_observation",
+    drovr_disposition: "retire_receipt_or_named_durable_holder_handoff",
+  },
+};
 const RESOURCE_SAFETY = {
   writer_fence: "exact_generation_fingerprint_and_exclusive_claim",
   taint_persistence: "durable_until_evidence_backed_disposition",
@@ -373,6 +438,26 @@ export async function loadContractCatalog({
     (contract) => catalog.contracts.includes(contract),
   )) {
     throw new Error("operator projection contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(catalog.flow_runtime?.host_recovery, HOST_RECOVERY) ||
+      !isExactSequence(
+        catalog.flow_runtime?.operation_contracts?.command?.vocabulary?.slice(-5),
+        HOST_RECOVERY.commands,
+      ) ||
+      !isDeepStrictEqual(
+        catalog.flow_runtime?.operation_contracts?.watch?.host,
+        HOST_RECOVERY.watch,
+      ) ||
+      !Object.entries(HOST_RECOVERY.queries).every(([name, registration]) =>
+        isDeepStrictEqual(
+          catalog.flow_runtime?.operation_contracts?.query?.registered?.[name],
+          registration,
+        ) && catalog.projections.includes(name)
+      ) ||
+      !Object.values(HOST_RECOVERY.schemas).every((contract) =>
+        catalog.contracts.includes(contract),
+      )) {
+    throw new Error("host backup and restore contracts are incomplete");
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
