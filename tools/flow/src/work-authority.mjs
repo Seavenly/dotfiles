@@ -60,10 +60,6 @@ export function decideWorkCommand(current, command) {
       command.type === "artifact_record") {
     return decideArtifactRegistration(current, command);
   }
-  if (command?.schema === "work.review-candidate-seal-command/v1" &&
-      command.type === "review_candidate_seal") {
-    return decideReviewCandidateSeal(current, command);
-  }
   if (command?.schema === "work.workspace-claim-command/v1" &&
       command.type === "workspace_claim") {
     return decideWorkspaceClaim(current, command);
@@ -629,11 +625,14 @@ function validFeatureVerificationReceipt({
       criterionReceipt.criterion === expectedCriteria[index] &&
       criterionReceipt.verdict === "passed" &&
       isDigest(criterionReceipt.evidence_digest));
-  const expectedEvidence = selectedVerification?.baseline ??
-    selectedVerification?.compensating_assertion;
-  const expectedEvidenceKind = selectedVerification?.baseline === undefined
-    ? "compensating_assertion"
-    : "safe_baseline";
+  const safeBaselineSelected =
+    selectedVerification?.baseline?.schema === "flow.feature-safe-baseline/v1";
+  const expectedEvidence = safeBaselineSelected
+    ? selectedVerification.baseline
+    : selectedVerification?.compensating_assertion;
+  const expectedEvidenceKind = safeBaselineSelected
+    ? "safe_baseline"
+    : "compensating_assertion";
   const verificationWorkspace = receipt?.workspace;
   const workspaceExact = hasExactKeys(verificationWorkspace, [
     "fingerprint",
@@ -1257,40 +1256,6 @@ export function buildHandoffCleanupPreview(projection) {
   });
 }
 
-function decideReviewCandidateSeal(current, command) {
-  if (!nonEmpty(command.command_id) ||
-      !validReviewCandidate(command.subject_id, command.candidate)) {
-    return reject(command, "invalid_review_candidate", current);
-  }
-  if (current === null) {
-    if (command.expected_generation !== 0) {
-      return reject(command, "stale_subject_generation", current);
-    }
-    const receipt = workIdempotencyReceipt(command);
-    return {
-      accepted: true,
-      streamKind: "review",
-      event: {
-        contract: "work.review-event/v1",
-        payload: {
-          type: "review_candidate_sealed",
-          candidate: command.candidate,
-          registration_receipt: receipt,
-          command_receipt: receipt,
-        },
-      },
-    };
-  }
-  if (command.expected_generation !== current.generation) {
-    return reject(command, "stale_subject_generation", current);
-  }
-  if (command.candidate.candidate_fingerprint ===
-      current.candidate_fingerprint) {
-    return reject(command, "review_candidate_duplicate", current);
-  }
-  return reject(command, "review_candidate_identity_conflict", current);
-}
-
 function decideHandoffDisposition(current, command) {
   if (current?.schema !== "flow.resource-handoff-projection/v1" ||
       command.expected_watermark !== current?.watermark) {
@@ -1761,6 +1726,9 @@ function validReviewCandidate(subjectId, candidate) {
   return digest(identity) === candidate.candidate_fingerprint;
 }
 
+// ReviewAuthority first enforces this self-contained candidate shape. The
+// feature seal path separately binds the same receipt to selected evidence,
+// operation authority, publication, and live Work-domain projections.
 function validReviewVerificationReceipt(receipt, candidateWorkspace, candidateGit) {
   const identity = stripReceiptDigests(receipt);
   if (!hasExactKeys(receipt, [

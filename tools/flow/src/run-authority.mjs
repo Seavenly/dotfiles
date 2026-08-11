@@ -2023,7 +2023,11 @@ export function createDurableRunAuthority({
           command.contract !== "work.review/v1") {
         return workRejection("command", "invalid_review_command", { command });
       }
-      return workCommand(command);
+      return workRejection(
+        "command",
+        "review_candidate_seal_requires_run_authority",
+        { command },
+      );
     },
     query(request) {
       if (request?.contract !== "work.review/v1") {

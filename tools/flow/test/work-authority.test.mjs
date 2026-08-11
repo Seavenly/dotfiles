@@ -209,7 +209,7 @@ test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects",
   ).code, "mutation_authority_unavailable");
 });
 
-test("ReviewAuthority seals one exact local candidate and rejects stale or conflicting identity", async (t) => {
+test("ReviewAuthority reserves candidate sealing for atomic RunAuthority finalization", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const runAuthority = createDurableRunAuthority({
@@ -223,159 +223,14 @@ test("ReviewAuthority seals one exact local candidate and rejects stale or confl
   assert.equal(reviewAuthority.schema, "work.review-authority/v1");
 
   const command = reviewCandidateSealCommand();
-  const sealed = reviewAuthority.command(command);
-  assert.equal(sealed.accepted, true);
-  assert.equal(sealed.created, true);
+  const rejected = reviewAuthority.command(command);
+  assert.equal(rejected.code, "review_candidate_seal_requires_run_authority");
+  assert.deepEqual(rejected.legal_actions, []);
   const projection = reviewAuthority.query({
     contract: "work.review/v1",
     subject_id: command.subject_id,
   });
-  assert.equal(projection.schema, "work.review-candidate-projection/v1");
-  assert.equal(projection.contract, "work.review/v1");
-  assert.equal(projection.subject_id, command.subject_id);
-  assert.equal(projection.watermark, sealed.authority_watermark);
-  assert.equal(projection.status, "sealed");
-  assert.equal(projection.generation, 1);
-  assert.equal(projection.candidate_fingerprint,
-    command.candidate.candidate_fingerprint);
-  assert.deepEqual(projection.git, command.candidate.git);
-  assert.deepEqual(projection.workspace, command.candidate.workspace);
-  assert.deepEqual(projection.verification, command.candidate.verification);
-  assert.deepEqual(projection.critique, command.candidate.critique);
-  assert.deepEqual(projection.artifacts, command.candidate.artifacts);
-  assert.deepEqual(projection.git_retention, command.candidate.git_retention);
-  assert.deepEqual(projection.legal_actions, []);
-
-  const duplicate = reviewAuthority.command(command);
-  assert.equal(duplicate.accepted, true);
-  assert.equal(duplicate.created, false);
-  assert.equal(duplicate.authority_watermark, projection.watermark);
-
-  const stale = reviewAuthority.command({
-    ...command,
-    command_id: "review-seal:stale",
-    expected_generation: 0,
-  });
-  assert.equal(stale.code, "stale_subject_generation");
-  assert.equal(reviewAuthority.query({
-    contract: "work.review/v1",
-    subject_id: command.subject_id,
-  }).watermark, projection.watermark);
-
-  const conflicting = reviewAuthority.command({
-    ...reviewCandidateSealCommand({
-      commandId: "review-seal:conflict",
-      expectedGeneration: 1,
-      git: {
-        ...exactGitFacts(),
-        commit_sha: "9".repeat(40),
-      },
-    }),
-  });
-  assert.equal(conflicting.code, "review_candidate_identity_conflict");
-  assert.equal(reviewAuthority.query({
-    contract: "work.review/v1",
-    subject_id: command.subject_id,
-  }).watermark, projection.watermark);
-});
-
-test("ReviewAuthority rejects candidates without exact local evidence", async (t) => {
-  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-rejection-"));
-  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
-  const runAuthority = createDurableRunAuthority({
-    authorityDirectory,
-    gitRetentionAdapter: deterministicGitRetentionAdapter(),
-    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
-    hostIdentityAdapter: fixedHostIdentity("boot-a", "review-rejection-process"),
-  });
-  t.after(() => runAuthority.close());
-  const reviewAuthority = getReviewAuthority({ runAuthority });
-  const cases = [
-    {
-      name: "dirty Git",
-      mutate(candidate) {
-        candidate.git.clean = false;
-      },
-    },
-    {
-      name: "skeletal verification receipt identity",
-      mutate(candidate) {
-        delete candidate.verification.receipt_digest;
-      },
-    },
-    {
-      name: "missing acceptance criteria",
-      mutate(candidate) {
-        delete candidate.verification.acceptance_criteria;
-      },
-    },
-    {
-      name: "missing verification self-digest",
-      mutate(candidate) {
-        delete candidate.verification.self_digest;
-      },
-    },
-    {
-      name: "missing critique self-digest",
-      mutate(candidate) {
-        delete candidate.critique.self_digest;
-      },
-    },
-    {
-      name: "missing acceptance receipt identity",
-      mutate(candidate) {
-        delete candidate.verification.selected_evidence_fingerprint;
-      },
-    },
-    {
-      name: "blocking critique finding",
-      mutate(candidate) {
-        candidate.critique.findings = [{
-          classification: "blocking",
-          summary: "unsafe change",
-        }];
-      },
-    },
-    {
-      name: "missing workspace generation",
-      mutate(candidate) {
-        delete candidate.workspace.generation;
-      },
-    },
-    {
-      name: "missing workspace mutation epoch",
-      mutate(candidate) {
-        delete candidate.workspace.mutation_epoch;
-      },
-    },
-    {
-      name: "missing Git retention binding",
-      mutate(candidate) {
-        delete candidate.git_retention;
-      },
-    },
-    {
-      name: "missing artifact binding",
-      mutate(candidate) {
-        candidate.artifacts = [];
-      },
-    },
-  ];
-
-  for (const [index, testCase] of cases.entries()) {
-    const command = reviewCandidateSealCommand({
-      commandId: `review-seal:invalid-${index}`,
-    });
-    testCase.mutate(command.candidate);
-    const { candidate_fingerprint: _candidateFingerprint, ...identity } =
-      command.candidate;
-    command.candidate = {
-      ...command.candidate,
-      candidate_fingerprint: digestValue(identity),
-    };
-    const result = reviewAuthority.command(command);
-    assert.equal(result.code, "invalid_review_candidate", testCase.name);
-  }
+  assert.equal(projection.code, "unknown_subject");
 });
 
 test("WorkspaceAuthority fences concurrent writers by generation and fingerprint", async (t) => {

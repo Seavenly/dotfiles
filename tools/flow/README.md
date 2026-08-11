@@ -68,7 +68,9 @@ disabled, so this API does not authorize normal replacement launches.
   `flow.subrun/create-and-observe/v1` child card.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
-  `operation_execute` command without adding human approval. The operation names a registered Adapter,
+  `operation_execute` command without adding human approval. A registered
+  operation is either bound to its exact checkpoint or belongs to a serialized
+  dependency chain authorized by `operation_execute`. The operation names a registered Adapter,
   declares its effect class, and binds its input, route, claims, validator, and
   attempt limit in the confirmed graph. A delegate card binds a compatible
   Drovr description, immutable route, prompt, bounded wait, validator
@@ -330,7 +332,8 @@ no authority watermark is available.
 `getResourceHandoffAuthority()` accessors. Their
 versioned Interfaces register canonical workspace subjects through
 `work.workspace/v1`, immutable artifact subjects through `work.artifact/v1`,
-seal immutable local candidates through `work.review/v1`, and query retained
+query immutable local candidates sealed only by RunAuthority's atomic
+finalization through `work.review/v1`, and query retained
 `flow.resource-handoff/v1` subjects.
 Workspace projections bind registration and subject generation, mutation
 epoch, independently observed exact commit, tree, ref, clean state, and
@@ -589,7 +592,8 @@ node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/registered-operation.test.mjs \
   tools/flow/test/cancellation.test.mjs \
   tools/flow/test/purity-contracts.test.mjs \
-  tools/flow/test/predefined-flow.test.mjs
+  tools/flow/test/predefined-flow.test.mjs \
+  tools/flow/test/feature-flow.test.mjs
 ```
 
 ## Delegated-agent preparation

@@ -113,6 +113,43 @@ test("safe effect classes execute without an unrelated human checkpoint", async 
   assert.equal(invocationCount, 1);
 });
 
+test("caller-idempotent operations may form an explicitly authorized chain", () => {
+  const runtime = operationRuntime(createNoopAuthority(), {
+    classification: "caller_idempotent",
+    invoke(intent) { return operationReceipt(intent); },
+  });
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  const first = proposal.graph.cards[0];
+  proposal.graph.cards.push({
+    ...structuredClone(first),
+    id: "record-summary",
+    dependencies: [first.id],
+    inputs: { value: "summarized" },
+  });
+  proposal.explicit_facts.limits.max_cards = 2;
+
+  const prepared = runtime.prepare(proposal);
+  assert.deepEqual(
+    prepared.graph.cards.find(({ id }) => id === "record-summary").dependencies,
+    ["record-outcome"],
+  );
+
+  const unauthorized = registeredOperationProposal();
+  const checkpointBound = unauthorized.graph.cards.find(({ id }) =>
+    id === "record-outcome");
+  unauthorized.graph.cards.push({
+    ...structuredClone(checkpointBound),
+    id: "record-summary",
+    dependencies: [checkpointBound.id],
+    inputs: { value: "summarized" },
+  });
+  unauthorized.explicit_facts.limits.max_cards = 3;
+  assert.throws(
+    () => runtime.prepare(unauthorized),
+    /direct operation execution authority is incomplete: record-summary/,
+  );
+});
+
 test("same-boot replacement automatically repeats the exact caller-idempotent intent", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));

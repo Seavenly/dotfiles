@@ -109,6 +109,8 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     cards.get("feature-critique").route,
     inputs.delegation.critique.route,
   );
+  assert.equal(cards.get("feature-apply").inputs.wait_timeout_ms, 300_000);
+  assert.equal(cards.get("feature-critique").inputs.wait_timeout_ms, 300_000);
   assert.equal(cards.get("feature-verify").inputs.receipt_owner,
     "registered_operation");
   assert.equal(cards.get("feature-seal").inputs.receipt_owner,
@@ -216,6 +218,29 @@ test("feature/v1 is verify-only and requires one explicit non-destructive assert
   assert.throws(
     () => prepareFeatureSelection(ambiguous),
     /exactly one safe baseline or compensating assertion/,
+  );
+
+  const malformedBaseline = structuredClone(ambiguous);
+  malformedBaseline.verification.baseline.schema =
+    "flow.feature-safe-baseline/invalid";
+  assert.throws(
+    () => prepareFeatureSelection(malformedBaseline),
+    /exactly one safe baseline or compensating assertion/,
+  );
+
+  const malformedBaselineOnly = featureInputs();
+  malformedBaselineOnly.verification.baseline.schema =
+    "flow.feature-safe-baseline/invalid";
+  assert.throws(
+    () => prepareFeatureSelection(malformedBaselineOnly),
+    /safe baseline or non-destructive compensating assertion/,
+  );
+
+  const zeroEpoch = featureInputs();
+  zeroEpoch.workspace.mutation_epoch = 0;
+  assert.throws(
+    () => prepareFeatureSelection(zeroEpoch),
+    /exact generation-fenced workspace binding/,
   );
 
   const dirty = featureInputs();

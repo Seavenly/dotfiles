@@ -120,7 +120,7 @@ function featureCards(selection, workspaceClaim) {
       ...inputs,
       description: binding.description,
       prompt: inputs.prompt,
-      wait_timeout_ms: 1_000,
+      wait_timeout_ms: 300_000,
     },
     outputs,
     success_criteria: ["delegate_observation:accepted"],
@@ -215,7 +215,7 @@ function validateFeatureInputs(inputs, explicitFacts) {
       !workspace.subject_id ||
       !Number.isSafeInteger(workspace.generation) || workspace.generation < 1 ||
       !Number.isSafeInteger(workspace.mutation_epoch) ||
-      workspace.mutation_epoch < 0 ||
+      workspace.mutation_epoch < 1 ||
       !isDigest(workspace.fingerprint)) {
     invalidFeature(
       "invalid_workspace_binding",
@@ -232,6 +232,11 @@ function validateFeatureInputs(inputs, explicitFacts) {
   }
   const baseline = verification.baseline;
   const compensating = verification.compensating_assertion;
+  const baselinePresent = Object.hasOwn(verification, "baseline");
+  const compensatingPresent = Object.hasOwn(
+    verification,
+    "compensating_assertion",
+  );
   const hasBaseline = isRecord(baseline) &&
     baseline.schema === "flow.feature-safe-baseline/v1" &&
     typeof baseline.assertion === "string" && baseline.assertion.length > 0 &&
@@ -242,13 +247,15 @@ function validateFeatureInputs(inputs, explicitFacts) {
     compensating.assertion.length > 0 &&
     compensating.non_destructive === true &&
     isDigest(compensating.fingerprint);
-  if (hasBaseline && isRecord(compensating)) {
+  if (baselinePresent && compensatingPresent) {
     invalidFeature(
       "ambiguous_discriminating_evidence",
       "feature/v1 requires exactly one safe baseline or compensating assertion",
     );
   }
-  if (!hasBaseline && !hasCompensating) {
+  if (baselinePresent !== hasBaseline ||
+      compensatingPresent !== hasCompensating ||
+      !hasBaseline && !hasCompensating) {
     invalidFeature(
       "missing_discriminating_evidence",
       "feature/v1 requires a safe baseline or non-destructive compensating assertion",
