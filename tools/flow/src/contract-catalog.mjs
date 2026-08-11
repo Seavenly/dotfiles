@@ -297,6 +297,33 @@ const RESOURCE_SAFETY = {
   forbidden_selection: "latest",
   exact_human_authority: ["destructive_reset", "risk_acceptance"],
 };
+const EVIDENCE_SAFETY = {
+  authority: "non_authoritative",
+  validator: "flow.evidence-safety-request/v1",
+  receipt: "flow.evidence-safety-receipt/v1",
+  rejection: "flow.evidence-safety-rejection/v1",
+  binding: "flow.evidence-safety-binding/v1",
+  catalog_view: "flow.evidence-safety-catalog/v1",
+  policy_id: "flow.evidence-safety-policy/v1",
+  catalog_id: "flow.contract-catalog/v1@21",
+  allowed_uses: [
+    "delegate_transfer",
+    "artifact_acceptance",
+    "resource_handoff_publication",
+  ],
+  redaction: "no_rejected_input_bytes_or_fragments",
+  prohibited_inputs: [
+    "credential_material",
+    "capability_reference_or_envelope",
+    "ambient_filesystem_path",
+    "ambiguous_or_malformed_encoding",
+  ],
+  boundaries: {
+    delegate_transfer: "receipt_only_non_authoritative_binding",
+    artifact_acceptance: "receipt_only_non_authoritative_binding",
+    resource_handoff_publication: "receipt_only_non_authoritative_binding",
+  },
+};
 const REVIEW_AUTHORITY = {
   authority: "ReviewAuthority",
   interface: "work.review-authority/v1",
@@ -487,6 +514,24 @@ export async function loadContractCatalog({
     "work.legal-next-action/v1",
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("Work-domain resource safety contracts are incomplete");
+  }
+  const evidenceCatalogIdForVersion =
+    `flow.contract-catalog/v1@${catalog.catalog_version}`;
+  const evidenceCatalogVersionMatches =
+    Number.isInteger(catalog.catalog_version) &&
+    EVIDENCE_SAFETY.catalog_id === evidenceCatalogIdForVersion;
+  if (!evidenceCatalogVersionMatches || !isDeepStrictEqual(
+    catalog.flow_runtime?.evidence_safety,
+    EVIDENCE_SAFETY,
+  ) || ![
+    EVIDENCE_SAFETY.validator,
+    EVIDENCE_SAFETY.receipt,
+    EVIDENCE_SAFETY.rejection,
+    EVIDENCE_SAFETY.binding,
+    EVIDENCE_SAFETY.catalog_view,
+    EVIDENCE_SAFETY.policy_id,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("evidence safety contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.work_domain_interfaces?.review,

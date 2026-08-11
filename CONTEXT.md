@@ -252,6 +252,18 @@ Positive, identity-bound provider evidence that settles one effect intent and
 allows its deferred operation completion to become authoritative.
 _Avoid_: Return value, successful process exit
 
+**Evidence safety receipt**:
+The deterministic, self-digest-bound result of validating canonical evidence
+against the exact versioned policy and catalog identity before a delegate
+transfer, artifact acceptance, or resource-handoff publication. It carries no
+lifecycle, publication, mutation, or capability authority.
+_Avoid_: Delegate output, artifact authority, lifecycle receipt
+
+**Evidence safety rejection**:
+A typed, redacted failure from the evidence safety validator whose stable code
+never reproduces rejected input bytes or fragments.
+_Avoid_: Sanitized transcript, secret-bearing error
+
 **Effect classification**:
 The declared recovery semantics for a registered operation: read-only,
 caller-idempotent, reconcilable, or one-shot uncertain.

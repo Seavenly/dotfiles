@@ -31,7 +31,34 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 20);
+  assert.equal(catalog.catalog_version, 21);
+  assert.deepEqual(catalog.flow_runtime.evidence_safety, {
+    authority: "non_authoritative",
+    validator: "flow.evidence-safety-request/v1",
+    receipt: "flow.evidence-safety-receipt/v1",
+    rejection: "flow.evidence-safety-rejection/v1",
+    binding: "flow.evidence-safety-binding/v1",
+    catalog_view: "flow.evidence-safety-catalog/v1",
+    policy_id: "flow.evidence-safety-policy/v1",
+    catalog_id: "flow.contract-catalog/v1@21",
+    allowed_uses: [
+      "delegate_transfer",
+      "artifact_acceptance",
+      "resource_handoff_publication",
+    ],
+    redaction: "no_rejected_input_bytes_or_fragments",
+    prohibited_inputs: [
+      "credential_material",
+      "capability_reference_or_envelope",
+      "ambient_filesystem_path",
+      "ambiguous_or_malformed_encoding",
+    ],
+    boundaries: {
+      delegate_transfer: "receipt_only_non_authoritative_binding",
+      artifact_acceptance: "receipt_only_non_authoritative_binding",
+      resource_handoff_publication: "receipt_only_non_authoritative_binding",
+    },
+  });
   assert.deepEqual(catalog.flow_runtime.host_recovery, {
     authority: "RunAuthority",
     command_contract: "flow.command/v1",
@@ -174,6 +201,12 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.plan-revision-template/v1",
     "flow.registered-operation/v1",
     "flow.validator/operation-receipt/v1",
+    "flow.evidence-safety-request/v1",
+    "flow.evidence-safety-receipt/v1",
+    "flow.evidence-safety-rejection/v1",
+    "flow.evidence-safety-binding/v1",
+    "flow.evidence-safety-catalog/v1",
+    "flow.evidence-safety-policy/v1",
     "flow.operation/tracker-progress/v1",
     "flow.operation/tracker-progress-github/v1",
     "flow.run-ownership/v1",
@@ -754,6 +787,33 @@ test("the public catalog requires the complete legacy import policy", async (t) 
       featureContractPath,
     }),
     /contract catalog contracts must be an explicit array/,
+  );
+});
+
+test("the public catalog requires the exact evidence-safety identity", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-evidence-safety-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.evidence_safety.catalog_id = "flow.contract-catalog/v1@20";
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    /evidence safety contracts are incomplete/,
+  );
+
+  const wrongVersionPath = join(scratch, "catalog-version.json");
+  const wrongVersion = JSON.parse(await readFile(catalogPath, "utf8"));
+  wrongVersion.catalog_version = 999;
+  await writeFile(wrongVersionPath, `${JSON.stringify(wrongVersion, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: wrongVersionPath,
+      featureContractPath,
+    }),
+    /evidence safety contracts are incomplete/,
   );
 });
 
