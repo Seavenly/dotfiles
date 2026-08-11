@@ -31,7 +31,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 17);
+  assert.equal(catalog.catalog_version, 18);
   assert.deepEqual(catalog.authority_persistence, {
     append_only_streams: true,
     authority_epoch: {
@@ -80,6 +80,10 @@ test("the public catalog exposes the settled interface and forbids legacy import
   });
   for (const contract of [
     "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+    "flow.predefined-definition/v1",
+    "flow.predefined-flow-confirmation/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
@@ -123,6 +127,22 @@ test("the public catalog exposes the settled interface and forbids legacy import
     catalog.flow_runtime.operation_contracts.prepare.block_observations,
     "flow.card-block-observation/v1",
   );
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.prepare.input, [
+    "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+  ]);
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.prepare.predefined, {
+    selection: "flow.predefined-flow-selection/v1",
+    definition: "flow.predefined-definition/v1",
+    confirmation: "flow.predefined-flow-confirmation/v1",
+    decision: "flow.predefined-flow-confirmation-decision/v1",
+    preparation: "non_authoritative_registered_definition_snapshot",
+    launch_binding: "exact_bundle_and_confirmation_digest",
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.launch.confirmation, [
+    "flow.dynamic-plan-confirmation-decision/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
+  ]);
   assert.ok(catalog.mechanism_adapters.includes("card_block_observation"));
   assert.deepEqual(catalog.flow_runtime.operation_execution, {
     authority: "RunAuthority",
@@ -305,6 +325,14 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "work.git-observation/v1",
     "work.artifact-authority/v1",
     "work.artifact-record-command/v1",
+    "work.review-authority/v1",
+    "work.review-candidate-seal-command/v1",
+    "work.review-candidate/v1",
+    "work.review-event/v1",
+    "work.review-candidate-projection/v1",
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
     "flow.resource-handoff-authority/v1",
     "work.command-receipt/v1",
     "work.rejection/v1",
@@ -320,6 +348,18 @@ test("the public catalog exposes the settled interface and forbids legacy import
   ]) {
     assert.ok(catalog.contracts.includes(contract), contract);
   }
+  assert.deepEqual(catalog.work_domain_interfaces.review, {
+    authority: "ReviewAuthority",
+    interface: "work.review-authority/v1",
+    contract: "work.review/v1",
+    candidate: "work.review-candidate/v1",
+    projection: "work.review-candidate-projection/v1",
+    event: "work.review-event/v1",
+    commands: ["work.review-candidate-seal-command/v1"],
+    statuses: ["sealed", "superseded", "abandoned"],
+    identity: "candidate_fingerprint",
+    legal_actions: "closed_after_seal",
+  });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
@@ -380,6 +420,61 @@ test("the public catalog exposes the settled interface and forbids legacy import
     () => authorizeLegacyImport(catalog, { adapter: "implicit" }),
     /no legacy import adapter is registered/,
   );
+});
+
+test("the public catalog requires both prepare input contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-prepare-input-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.operation_contracts.prepare.input = [
+    "flow.dynamic-plan-proposal/v1",
+  ];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /prepare inputs are incomplete/,
+  );
+
+  catalog.flow_runtime.operation_contracts.prepare.input = [
+    "flow.predefined-flow-selection/v1",
+  ];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /prepare inputs are incomplete/,
+  );
+});
+
+test("the public catalog requires both launch confirmation contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-launch-confirmation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+
+  for (const confirmation of [
+    ["flow.dynamic-plan-confirmation-decision/v1"],
+    ["flow.predefined-flow-confirmation-decision/v1"],
+  ]) {
+    catalog.flow_runtime.operation_contracts.launch.confirmation = confirmation;
+    await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+    await assert.rejects(
+      loadContractCatalog({
+        catalogPath: incompleteCatalogPath,
+        featureContractPath,
+      }),
+      /launch confirmation contracts are incomplete/,
+    );
+  }
 });
 
 test("the public catalog rejects a weakened Drovr feature baseline", async (t) => {

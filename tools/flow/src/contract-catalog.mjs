@@ -19,6 +19,28 @@ const FLOW_RUNTIME_OPERATIONS = [
   "query",
   "watch",
 ];
+const PREPARE_INPUTS = [
+  "flow.dynamic-plan-proposal/v1",
+  "flow.predefined-flow-selection/v1",
+];
+const LAUNCH_CONFIRMATION_CONTRACTS = [
+  "flow.dynamic-plan-confirmation-decision/v1",
+  "flow.predefined-flow-confirmation-decision/v1",
+];
+const PREDEFINED_FLOW = {
+  selection: "flow.predefined-flow-selection/v1",
+  definition: "flow.predefined-definition/v1",
+  confirmation: "flow.predefined-flow-confirmation/v1",
+  decision: "flow.predefined-flow-confirmation-decision/v1",
+  preparation: "non_authoritative_registered_definition_snapshot",
+  launch_binding: "exact_bundle_and_confirmation_digest",
+};
+const PREDEFINED_FLOW_CONTRACTS = [
+  PREDEFINED_FLOW.selection,
+  PREDEFINED_FLOW.definition,
+  PREDEFINED_FLOW.confirmation,
+  PREDEFINED_FLOW.decision,
+];
 const REJECTION_FIELDS = [
   "schema",
   "operation",
@@ -210,6 +232,18 @@ const RESOURCE_SAFETY = {
   forbidden_selection: "latest",
   exact_human_authority: ["destructive_reset", "risk_acceptance"],
 };
+const REVIEW_AUTHORITY = {
+  authority: "ReviewAuthority",
+  interface: "work.review-authority/v1",
+  contract: "work.review/v1",
+  candidate: "work.review-candidate/v1",
+  projection: "work.review-candidate-projection/v1",
+  event: "work.review-event/v1",
+  commands: ["work.review-candidate-seal-command/v1"],
+  statuses: ["sealed", "superseded", "abandoned"],
+  identity: "candidate_fingerprint",
+  legal_actions: "closed_after_seal",
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -236,6 +270,26 @@ export async function loadContractCatalog({
   }
   if (!Array.isArray(catalog.contracts)) {
     throw new Error("contract catalog contracts must be an explicit array");
+  }
+  if (!isExactSequence(
+    catalog.flow_runtime?.operation_contracts?.prepare?.input,
+    PREPARE_INPUTS,
+  ) || !PREPARE_INPUTS.every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("prepare inputs are incomplete");
+  }
+  if (!isExactSequence(
+    catalog.flow_runtime?.operation_contracts?.launch?.confirmation,
+    LAUNCH_CONFIRMATION_CONTRACTS,
+  ) || !LAUNCH_CONFIRMATION_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("launch confirmation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.operation_contracts?.prepare?.predefined,
+    PREDEFINED_FLOW,
+  ) || !PREDEFINED_FLOW_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("predefined flow preparation contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");
@@ -348,6 +402,22 @@ export async function loadContractCatalog({
     "work.legal-next-action/v1",
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("Work-domain resource safety contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.work_domain_interfaces?.review,
+    REVIEW_AUTHORITY,
+  ) || ![
+    REVIEW_AUTHORITY.interface,
+    REVIEW_AUTHORITY.contract,
+    REVIEW_AUTHORITY.candidate,
+    REVIEW_AUTHORITY.projection,
+    REVIEW_AUTHORITY.event,
+    ...REVIEW_AUTHORITY.commands,
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("ReviewAuthority contracts are incomplete");
   }
   let publishedFeatureContract;
   let publishedFeatureContractBytes;

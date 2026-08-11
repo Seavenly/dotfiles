@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 17,
+  "catalog_version": 18,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -190,17 +190,31 @@
     "operation_contracts": {
       "prepare": {
         "authority": "non_authoritative",
-        "input": "flow.dynamic-plan-proposal/v1",
+        "input": [
+          "flow.dynamic-plan-proposal/v1",
+          "flow.predefined-flow-selection/v1"
+        ],
         "result": "flow.prepared-run/v1",
         "identity": "content_addressed",
         "revision_templates": "flow.plan-revision-template/v1",
-        "block_observations": "flow.card-block-observation/v1"
+        "block_observations": "flow.card-block-observation/v1",
+        "predefined": {
+          "selection": "flow.predefined-flow-selection/v1",
+          "definition": "flow.predefined-definition/v1",
+          "confirmation": "flow.predefined-flow-confirmation/v1",
+          "decision": "flow.predefined-flow-confirmation-decision/v1",
+          "preparation": "non_authoritative_registered_definition_snapshot",
+          "launch_binding": "exact_bundle_and_confirmation_digest"
+        }
       },
       "launch": {
         "authority": "RunAuthority",
         "idempotency": "host_idempotent",
         "input": "exact_confirmed_prepared_bundle",
-        "confirmation": "flow.dynamic-plan-confirmation-decision/v1",
+        "confirmation": [
+          "flow.dynamic-plan-confirmation-decision/v1",
+          "flow.predefined-flow-confirmation-decision/v1"
+        ],
         "closed_facts": "flow.closed-fact-observation/v1",
         "result": "flow.launch-receipt/v1",
         "rejection": "flow.rejection/v1"
@@ -303,6 +317,24 @@
       "commands": ["work.artifact-record-command/v1"],
       "collection_preview": "work.artifact-collection-preview/v1"
     },
+    "review": {
+      "authority": "ReviewAuthority",
+      "interface": "work.review-authority/v1",
+      "contract": "work.review/v1",
+      "candidate": "work.review-candidate/v1",
+      "projection": "work.review-candidate-projection/v1",
+      "event": "work.review-event/v1",
+      "commands": [
+        "work.review-candidate-seal-command/v1"
+      ],
+      "statuses": [
+        "sealed",
+        "superseded",
+        "abandoned"
+      ],
+      "identity": "candidate_fingerprint",
+      "legal_actions": "closed_after_seal"
+    },
     "handoff": {
       "authority": "Work_domain_authorities_with_RunAuthority_finalization",
       "interface": "flow.resource-handoff-authority/v1",
@@ -339,6 +371,10 @@
     "flow.runtime/v1",
     "flow.query/v1",
     "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+    "flow.predefined-definition/v1",
+    "flow.predefined-flow-confirmation/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
@@ -429,6 +465,14 @@
     "work.rejection/v1",
     "work.workspace-projection/v1",
     "work.artifact-projection/v1",
+    "work.review-authority/v1",
+    "work.review-candidate-seal-command/v1",
+    "work.review-candidate/v1",
+    "work.review-event/v1",
+    "work.review-candidate-projection/v1",
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
     "work.idempotency-receipt/v1",
     "flow.launch-policy/v1",
     "flow.transition-ledger/v1",

@@ -164,7 +164,7 @@ function reduceAuthorityStream(stream, records) {
     };
     return foldRun(run, { watermark: stream.head_digest });
   }
-  if (["workspace", "artifact", "handoff"].includes(stream.stream_kind)) {
+  if (["workspace", "artifact", "review", "handoff"].includes(stream.stream_kind)) {
     const subjectId = stream.stream_id.split(":").slice(2).join(":");
     return foldWorkStream(
       stream.stream_kind,
@@ -190,6 +190,7 @@ function expectedEventContract(streamKind) {
     run: "flow.run-event/v1",
     workspace: "work.workspace-event/v1",
     artifact: "work.artifact-event/v1",
+    review: "work.review-event/v1",
     handoff: "flow.resource-handoff-event/v1",
   };
   const contract = contracts[streamKind];

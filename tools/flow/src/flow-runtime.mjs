@@ -2,6 +2,9 @@ import { digest } from "./canonical.mjs";
 import {
   applyRevisionGraphChanges,
   compileDynamicPlan,
+  compilePredefinedFlowSelection,
+  isPredefinedFlowSelection,
+  snapshotPredefinedDefinitions,
 } from "./plan-compiler.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
@@ -33,6 +36,7 @@ export function createFlowRuntime({
   registeredQueries = {},
   delegatedAgentPort = null,
   delegateOutputValidators = {},
+  predefinedDefinitions = {},
 } = {}) {
   if (registeredOperations === null ||
       !(registeredOperations instanceof Map) &&
@@ -51,6 +55,7 @@ export function createFlowRuntime({
   );
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
+  const predefinedRegistry = snapshotPredefinedDefinitions(predefinedDefinitions);
   operationRegistry.set(SUBRUN_CONTRACT, subrunRegistration);
   const compile = planCompiler === compileDynamicPlan
     ? (proposal) => compileDynamicPlan(proposal, {
@@ -59,6 +64,13 @@ export function createFlowRuntime({
     : planCompiler;
   runtime = Object.freeze({
     prepare(proposal) {
+      if (isPredefinedFlowSelection(proposal)) {
+        return compilePredefinedFlowSelection(
+          proposal,
+          predefinedRegistry.get(proposal.definition),
+          { registeredOperations: operationRegistry },
+        );
+      }
       return compile(proposal);
     },
 

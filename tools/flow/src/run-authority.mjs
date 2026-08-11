@@ -74,6 +74,7 @@ import {
   withArtifactAvailability,
   workRejection,
   workStreamIdentity,
+  workspaceEffectAuthorityIssue,
 } from "./work-authority.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
@@ -1608,6 +1609,7 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
+          assertEffectWorkspaceAuthority(database, effectiveIntent);
           result = await adapter.invoke(effectiveIntent);
         }
         assertMutationFence(lockDatabase, database, {
@@ -1659,12 +1661,17 @@ export function createDurableRunAuthority({
                 receipt: result,
                 },
               );
+          let reviewCandidateReference = null;
           if (publication !== null) {
-            appendHandoffPublication(database, publication, {
-              authorityEpoch,
-              bootId,
-              processIdentity,
-            });
+            reviewCandidateReference = appendHandoffPublication(
+              database,
+              publication,
+              {
+                authorityEpoch,
+                bootId,
+                processIdentity,
+              },
+            );
             beforeHandoffCommit({
               run_id: effectiveIntent.run_id,
               handoff: publication.handoff,
@@ -1718,6 +1725,16 @@ export function createDurableRunAuthority({
                     ),
                     gitRetentionAdapter,
                   ).watermark,
+                },
+              }]),
+              ...(reviewCandidateReference === null ? [] : [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "review_candidate_referenced",
+                  candidate_id: reviewCandidateReference.candidate_id,
+                  candidate_fingerprint: reviewCandidateReference.candidate_fingerprint,
+                  review_authority_watermark:
+                    reviewCandidateReference.review_authority_watermark,
                 },
               }]),
               ...(result?.outcome === "quarantined" ? [{
@@ -1999,6 +2016,25 @@ export function createDurableRunAuthority({
         : projection;
     },
   });
+  const reviewAuthority = Object.freeze({
+    schema: "work.review-authority/v1",
+    command(command) {
+      if (command?.schema !== "work.review-candidate-seal-command/v1" ||
+          command.contract !== "work.review/v1") {
+        return workRejection("command", "invalid_review_command", { command });
+      }
+      return workCommand(command);
+    },
+    query(request) {
+      if (request?.contract !== "work.review/v1") {
+        return workRejection("query", "invalid_review_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+  });
   const handoffAuthority = Object.freeze({
     schema: "flow.resource-handoff-authority/v1",
     command(command) {
@@ -2030,6 +2066,7 @@ export function createDurableRunAuthority({
   attachWorkAuthorities(runAuthority, Object.freeze({
     workspace: workspaceAuthority,
     artifact: artifactAuthority,
+    review: reviewAuthority,
     handoff: handoffAuthority,
   }));
   return runAuthority;
@@ -2358,6 +2395,29 @@ function appendResourceCleanupCompletion(database, intent, receipt, fence) {
 }
 
 function appendHandoffPublication(database, publication, fence) {
+  let reviewCandidateReference = null;
+  if (publication.reviewEvent !== null) {
+    const reviewIdentity = workStreamIdentity(
+      "work.review/v1",
+      publication.reviewEvent.payload.candidate.candidate_id,
+    );
+    if (!reviewIdentity || readStream(database, reviewIdentity.streamId)) {
+      throw new Error("review candidate identity is already active");
+    }
+    appendAuthorityEvents(database, {
+      streamId: reviewIdentity.streamId,
+      streamKind: reviewIdentity.streamKind,
+      events: [publication.reviewEvent],
+      ...fence,
+    });
+    const reviewStream = readStream(database, reviewIdentity.streamId);
+    reviewCandidateReference = {
+      candidate_id: publication.reviewEvent.payload.candidate.candidate_id,
+      candidate_fingerprint:
+        publication.reviewEvent.payload.candidate.candidate_fingerprint,
+      review_authority_watermark: reviewStream.fold.watermark,
+    };
+  }
   const workspaceIdentity = workStreamIdentity(
     "work.workspace/v1",
     publication.handoff.associated_workspace.subject_id,
@@ -2390,6 +2450,7 @@ function appendHandoffPublication(database, publication, fence) {
     events: [publication.handoffEvent],
     ...fence,
   });
+  return reviewCandidateReference;
 }
 
 function prepareConsumerHandoffBindings(
@@ -2741,6 +2802,37 @@ function appendAuthorityEvents(database, {
 
 function readStream(database, streamId) {
   return readAuthorityStream(database, streamId);
+}
+
+function assertEffectWorkspaceAuthority(database, intent) {
+  const workspaceClaims = (intent?.resource_claims ?? [])
+    .filter(({ kind }) => kind === "workspace");
+  const fullClaims = workspaceClaims.filter((claim) =>
+    typeof claim.id === "string" && claim.id.length > 0 &&
+    Number.isSafeInteger(claim.generation) && claim.generation >= 1 &&
+    Number.isSafeInteger(claim.mutation_epoch) && claim.mutation_epoch >= 0 &&
+    typeof claim.fingerprint === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(claim.fingerprint));
+  if (fullClaims.length === 0) return;
+  if (fullClaims.length !== workspaceClaims.length) {
+    throw new AuthorityFenceError(
+      "workspace_claim_incomplete",
+      "effect mixes exact and partial workspace claims",
+    );
+  }
+  for (const claim of fullClaims) {
+    const identity = workStreamIdentity("work.workspace/v1", claim.id);
+    const projection = identity
+      ? readStream(database, identity.streamId)?.fold ?? null
+      : null;
+    const issue = workspaceEffectAuthorityIssue(projection, claim, intent);
+    if (issue !== null) {
+      throw new AuthorityFenceError(
+        issue,
+        "effect workspace authority changed before Adapter invocation",
+      );
+    }
+  }
 }
 
 function replayStream(database, streamId, options) {

@@ -4,7 +4,7 @@ This directory contains the public transition contracts and the dark,
 harness-neutral `flow` replacement. The replacement launch policy remains
 disabled, so this API does not authorize normal replacement launches.
 
-## Dynamic checkpoint runtime
+## FlowRuntime
 
 `src/flow-runtime.mjs` exports `createFlowRuntime()`. The returned
 `flow.runtime/v1` Interface exposes exactly five operations:
@@ -78,7 +78,8 @@ disabled, so this API does not authorize normal replacement launches.
   validates exact caller-supplied block observations before they can become
   authoritative.
 - `launch({ prepared, confirmation, closed_facts })` accepts an explicit
-  `flow.dynamic-plan-confirmation-decision/v1` and a separately supplied
+  `flow.dynamic-plan-confirmation-decision/v1` or
+  `flow.predefined-flow-confirmation-decision/v1`, plus a separately supplied
   `flow.closed-fact-observation/v1`. It verifies both are bound to the prepared
   bundle, then atomically creates or adopts the content-derived run. Declining
   confirmation returns a typed rejection and creates no run. Repeating an
@@ -251,6 +252,64 @@ disabled, so this API does not authorize normal replacement launches.
   unknown run returns a one-shot iterator containing one typed rejection and
   then completes.
 
+### Predefined flow selection
+
+`createFlowRuntime({ predefinedDefinitions })` snapshots a registry of trusted,
+versioned definitions at construction. Each registry key must equal the
+definition's exact versioned `id` (for example `example/v1`), and each
+registration has exactly these fields: `schema` set to
+`flow.predefined-definition/v1`, non-empty `contract`, one pure `compile`
+function, `promised_outcomes` and `negative_outcomes` arrays, and a
+`trust_posture` record. The compiler receives the selected `inputs` and
+`explicit_facts` and returns one dynamic plan proposal. Callers select a
+registered definition with `prepare({ schema: "flow.predefined-flow-selection/v1",
+definition, inputs, explicit_facts })`. The selection carries no graph,
+executor contract, route, authority, or confirmation metadata; those values
+come from the registered definition and its explicit selection inputs.
+
+Preparation remains non-authoritative. It returns a deeply immutable,
+content-addressed `flow.prepared-run/v1` with `kind: "predefined"`, the exact
+derived graph, selected definition, explicit facts, revision templates, and a
+single `flow.predefined-flow-confirmation/v1` view. That view covers inputs,
+promised and negative outcomes, requested authority and mutations, routes,
+capabilities, limits, trust posture, and revision templates. The confirmation
+routes cover routed cards in both the base graph and revision templates. The
+confirmation view deliberately does not repeat the complete graph.
+
+Launch accepts the exact `flow.predefined-flow-confirmation-decision/v1` bound
+to the prepared bundle and confirmation digests, together with the exact
+closed-fact observation. Launch validates the prepared identity directly and
+does not invoke a definition compiler, consult mutable registration, or
+refresh facts. Dynamic proposals retain their separate complete-graph
+confirmation contract.
+
+### Verified feature candidate
+
+The trusted `feature/v1` predefined definition turns one accepted
+`flow.feature-brief/v1` into one local review candidate in `verify` mode. Its
+selection binds one workspace generation and mutation epoch, one safe baseline
+or explicit non-destructive compensating assertion, independent apply and
+critique delegate routes, and one exact finalization publication. Delegates may
+apply and critique the change, but registered `feature-verify/v1` and
+`feature-seal/v1` operations own the verification and sealing receipts.
+
+The seal operation receives only authority-materialized evidence selected by
+card identity. Success requires exact acceptance coverage with passed verdicts,
+the selected discriminating evidence, a clean post-mutation Git observation,
+fresh workspace and operation identities, and no blocking critique finding.
+Safe-baseline evidence must identify a distinct post-mutation fingerprint;
+compensating evidence must carry a self-bound receipt that the explicitly
+non-destructive assertion was satisfied. Every full workspace resource claim
+is rechecked immediately before its Adapter invocation against the current
+generation, mutation epoch, Git fingerprint, sole holder, and card scope.
+RunAuthority validates those receipts before atomically sealing
+`work.review/v1`, promoting the workspace generation and mutation epoch,
+transferring artifact pins, retaining Git, publishing the exact handoff, and
+finishing the run. Any missing, stale, dirty, unresolved, or blocking evidence
+leaves the run without a review candidate or handoff. The terminal projection
+contains the sealed candidate identity and ReviewAuthority watermark, with no
+review, integration, push, pull-request, cleanup, or tracker action.
+
 Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `reason` identify the rejected request; `command_type`, `run_id`, and
 `bundle_digest` are null when they do not apply. `authority_watermark_domain`
@@ -267,10 +326,12 @@ no authority watermark is available.
 ## Workspace, artifact, and resource handoff authority
 
 `src/work-authority.mjs` exports distinct `getWorkspaceAuthority()`,
-`getArtifactAuthority()`, and `getResourceHandoffAuthority()` accessors. Their
+`getArtifactAuthority()`, `getReviewAuthority()`, and
+`getResourceHandoffAuthority()` accessors. Their
 versioned Interfaces register canonical workspace subjects through
 `work.workspace/v1`, immutable artifact subjects through `work.artifact/v1`,
-and query retained `flow.resource-handoff/v1` subjects.
+seal immutable local candidates through `work.review/v1`, and query retained
+`flow.resource-handoff/v1` subjects.
 Workspace projections bind registration and subject generation, mutation
 epoch, independently observed exact commit, tree, ref, clean state, and
 disposition. An exclusive writer claim cites the exact generation and Git
@@ -527,7 +588,8 @@ node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/delegate-card.test.mjs \
   tools/flow/test/registered-operation.test.mjs \
   tools/flow/test/cancellation.test.mjs \
-  tools/flow/test/purity-contracts.test.mjs
+  tools/flow/test/purity-contracts.test.mjs \
+  tools/flow/test/predefined-flow.test.mjs
 ```
 
 ## Delegated-agent preparation
