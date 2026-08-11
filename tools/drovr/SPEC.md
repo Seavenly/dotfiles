@@ -307,6 +307,7 @@ The recovery and advanced interface is:
 ```text
 drovr doctor
 drovr status
+drovr lock abandon LOCK_ENTRY --authority-watermark JSON --decision ID
 drovr describe [launch options] --caller-metadata JSON
 
 drovr group list
@@ -842,6 +843,26 @@ the relevant operation without weakening the requested behavior.
 
 `drovr status` gives a machine-readable overview of the managed session, groups,
 tasks, agents, active turns, blocked events, loss, and reconciliation warnings.
+Its reconciliation projection includes the exact registry authority watermark
+and closed legal next actions. When a known lifecycle operation is retried
+after its process is proven absent, Drovr adopts a surviving lock only when its
+operation identity matches that retry. A different semantic operation on the
+same resource remains blocked. Lock age, timer expiry, and generic force unlock
+are not recovery mechanisms.
+
+For compatibility with legacy crash-created state, status may expose the closed
+`abandon_bare_registry_lock` action for a currently bare hashed lock entry. The
+operator must pass that exact projected authority watermark and a non-empty
+decision identity to:
+
+```text
+drovr lock abandon LOCK_ENTRY --authority-watermark JSON --decision ID
+```
+
+The command rejects held, successor, stale, and malformed entries. It records a
+typed operator disposition only for the bare subject; it does not accept caller
+claims of operation absence and is not a generic unlock or registry surgery
+surface.
 
 ## Host and process constraints
 

@@ -216,10 +216,8 @@ drovr agent get AGENT_ID
 drovr agent staged-input AGENT_ID
 drovr agent staged-input AGENT_ID --stage-unknown-file PROMPT_FILE
 drovr agent retire AGENT_ID
-drovr task close TASK_ID
-drovr task close TASK_ID --force
-drovr group close GROUP_ID
-drovr group close GROUP_ID --force
+drovr task close TASK_ID [--force]
+drovr group close GROUP_ID [--force]
 ```
 
 Wait timeouts are non-destructive. Completion is accepted only after every
@@ -318,6 +316,32 @@ anything.
 Records retired by an older task or group cleanup remain idempotently retired;
 Drovr reports that the legacy receipt is unavailable rather than fabricating
 one.
+
+Registry lock recovery remains bound to a known lifecycle operation. `drovr
+status` exposes the exact registry authority watermark and a reconciliation
+projection with closed legal next actions. If a lifecycle operation was
+interrupted after acquiring its lock, retry that same operation normally.
+Drovr adopts only a lock whose recorded operation identity matches the retry
+and whose recorded process is proven absent; the replacement owner is written
+with the new process authority and current watermark. A different semantic
+operation on the same resource remains blocked. Lock age, timer expiry, and a
+generic force-unlock command are never recovery evidence.
+
+A crash before lock metadata publication can leave a legacy bare hashed lock
+entry. `status` projects `abandon_bare_registry_lock` only for that currently
+bare entry. The operator may execute the exact closed action with the projected
+watermark and a non-empty decision identity:
+
+```sh
+drovr lock abandon LOCK_ENTRY \
+  --authority-watermark 'WATERMARK_JSON' \
+  --decision OPERATOR_DECISION_ID
+```
+
+This command accepts only a hashed lock entry that is still bare, rejects held,
+successor, stale, and malformed entries, and records typed operator
+disposition. It never accepts caller prose as proof that a lifecycle operation
+is absent and never acts as a generic unlock.
 
 Retirement results use stable `legal_next_actions` tokens. `doctor` renders
 `retire_agent` as the exact `drovr agent retire AGENT_ID` command and renders

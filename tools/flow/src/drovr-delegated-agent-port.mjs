@@ -35,6 +35,31 @@ const PROJECTION_CONTRACT =
   "flow.delegated-agent-description-projection/v1";
 const LIFECYCLE_PROJECTION_CONTRACT =
   "flow.delegated-agent-lifecycle-projection/v1";
+const REGISTRY_LOCK_OUTCOMES = new Set([
+  "registry_locked",
+  "registry_lock_recovery_required",
+  "registry_lock_recovery_evidence_invalid",
+  "registry_lock_release_failed",
+]);
+const REGISTRY_LOCK_LEGAL_ACTIONS = new Set([
+  "wait_for_registry_lock",
+  "status",
+  "agent_start",
+  "agent_retire",
+  "agent_staged_input",
+  "task_open",
+  "task_close",
+  "group_close",
+  "turn_start",
+  "turn_dispatch",
+  "turn_wait",
+  "turn_send",
+  "turn_cancel",
+  "abandon_bare_registry_lock",
+]);
+const SAFE_REGISTRY_LOCK_ACTIONS = [
+  "repair_delegated_runtime_registry",
+];
 const PROJECTION_SCHEMA_URL = new URL(
   "../../../config/flow/schemas/flow.delegated-agent-description-projection.v1.schema.json",
   import.meta.url,
@@ -445,6 +470,9 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
   try {
     return await execute();
   } catch (error) {
+    if (REGISTRY_LOCK_OUTCOMES.has(error?.outcome)) {
+      return lifecycleRegistryLockBlock(operation, error);
+    }
     if (error?.outcome === "compatibility_blocked") {
       return lifecycleBlock(
         operation,
@@ -475,6 +503,125 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
         : ["retry_delegated_runtime_operation"],
     );
   }
+}
+
+function lifecycleRegistryLockBlock(operation, error) {
+  const details = error?.details;
+  const authorityWatermark = validRegistryWatermark(
+    details?.authority_watermark,
+  )
+    ? structuredClone(details.authority_watermark)
+    : null;
+  const legalNextActions = validRegistryLockActions(
+    details?.legal_next_actions,
+  )
+    ? [...details.legal_next_actions]
+    : [...SAFE_REGISTRY_LOCK_ACTIONS];
+  const lockEntry = validRegistryLockEntry(details?.lock_entry)
+    ? details.lock_entry
+    : null;
+  if (
+    legalNextActions.includes("abandon_bare_registry_lock") &&
+    !lockEntry
+  ) {
+    legalNextActions.splice(
+      legalNextActions.indexOf("abandon_bare_registry_lock"),
+      1,
+    );
+    if (legalNextActions.length === 0) legalNextActions.push("status");
+  }
+  return freezeCanonical({
+    schema: LIFECYCLE_PROJECTION_CONTRACT,
+    operation,
+    status: "blocked",
+    watermark: authorityWatermark,
+    delegation: null,
+    turn: null,
+    compatibility: {
+      contract: PORT_CONTRACT,
+      code: error.outcome,
+    },
+    ...(lockEntry && legalNextActions.includes("abandon_bare_registry_lock")
+      ? { lock_entry: lockEntry }
+      : {}),
+    legal_next_actions: legalNextActions,
+  });
+}
+
+function validRegistryLockActions(actions) {
+  return Array.isArray(actions) &&
+    actions.length > 0 &&
+    new Set(actions).size === actions.length &&
+    actions.every((action) => REGISTRY_LOCK_LEGAL_ACTIONS.has(action));
+}
+
+function validRegistryLockEntry(lockEntry) {
+  return typeof lockEntry === "string" && /^[0-9a-f]{64}$/u.test(lockEntry);
+}
+
+function validRegistryWatermark(watermark) {
+  const requiredDigestKeys = [
+    "groups_sha256",
+    "tasks_sha256",
+    "agents_sha256",
+    "turns_sha256",
+    "blocks_sha256",
+  ];
+  const requiredCountKeys = [
+    "groups_count",
+    "tasks_count",
+    "agents_count",
+    "turns_count",
+    "blocks_count",
+  ];
+  if (!isRecord(watermark) ||
+    watermark.schema !== "drovr.registry-authority-watermark/v1" ||
+    watermark.authority !== "drovr.registry" ||
+    !requiredDigestKeys.every((key) => isDigest(watermark[key])) ||
+    !requiredCountKeys.every((key) =>
+      Number.isSafeInteger(watermark[key]) && watermark[key] >= 0
+    ) ||
+    !isDigest(watermark.generation) ||
+    !isDigest(watermark.registry_sha256)) {
+    return false;
+  }
+  const allowedKeys = new Set([
+    "schema",
+    "authority",
+    "groups_sha256",
+    "tasks_sha256",
+    "agents_sha256",
+    "turns_sha256",
+    "blocks_sha256",
+    "groups_count",
+    "tasks_count",
+    "agents_count",
+    "turns_count",
+    "blocks_count",
+    "generation",
+    "registry_sha256",
+  ]);
+  if (Object.keys(watermark).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+  for (const key of [
+    "groups_sha256",
+    "tasks_sha256",
+    "agents_sha256",
+    "blocks_sha256",
+    "generation",
+    "registry_sha256",
+  ]) {
+    if (Object.hasOwn(watermark, key) && !isDigest(watermark[key])) {
+      return false;
+    }
+  }
+  for (const key of requiredCountKeys) {
+    if (!Number.isSafeInteger(watermark[key]) || watermark[key] < 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function lifecycleConflictFromContext(operation, code, context) {

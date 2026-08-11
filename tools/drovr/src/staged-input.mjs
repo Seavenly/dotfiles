@@ -2,6 +2,8 @@ import { DrovrError } from "./errors.mjs";
 import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
+  registryLockOptions,
+  registryOperation,
   stateDirectory,
   taskLifecycleLockKey,
   withResourceLock,
@@ -31,6 +33,11 @@ export async function stageUnknownAgentInput(
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
   const initial = await stagedInputContext(registryDirectory, agentId);
+  const lockOperation = registryOperation(
+    "agent.stage_unknown_input",
+    agentId,
+    { agent_id: agentId, text },
+  );
   const harness = client(initial, env, dependencies);
   await requireRuntime(harness, initial.group.herdr.session);
   return withResourceLock(
@@ -84,7 +91,9 @@ export async function stageUnknownAgentInput(
             staged,
           );
         },
+        registryLockOptions(lockOperation),
       ),
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -97,6 +106,11 @@ export async function recoverAgentStagedInput(
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await stagedInputContext(registryDirectory, agentId);
+  const lockOperation = registryOperation(
+    "agent.recover_staged_input",
+    `${agentId}:${action}:${token}`,
+    { agent_id: agentId, action, token },
+  );
   const harness = client(initial, env, dependencies);
   await harness.ensureRuntime();
   return withResourceLock(
@@ -185,7 +199,9 @@ export async function recoverAgentStagedInput(
             ...(turn ? { turn } : {}),
           };
         },
+        registryLockOptions(lockOperation),
       ),
+    registryLockOptions(lockOperation),
   );
 }
 

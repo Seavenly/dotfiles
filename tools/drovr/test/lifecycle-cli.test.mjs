@@ -15,7 +15,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
+import {
+  readRecords,
+  registryOperation,
+  stateDirectory,
+  taskLifecycleLockKey,
+  writeRecord,
+} from "../src/registry.mjs";
 import {
   assertResultStatus,
   installProductionCliRuntime,
@@ -30,6 +36,7 @@ import {
 const execFileAsync = promisify(execFile);
 const drovr = fileURLToPath(new URL("../../../bin/drovr", import.meta.url));
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const registryModule = new URL("../src/registry.mjs", import.meta.url).href;
 
 test("public CLI cancels, retires, and closes exact managed resources", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-lifecycle-cli-"));
@@ -47,6 +54,7 @@ test("public CLI cancels, retires, and closes exact managed resources", async (t
     ...process.env,
     PATH: `${fakeBin}:${process.env.PATH}`,
     XDG_STATE_HOME: join(scratch, "state"),
+    DOTFILES_ROOT: repositoryRoot,
   };
   const managedRuntimeIdentity = await productionManagedRuntimeIdentity({
     codexPath,
@@ -207,11 +215,31 @@ esac
   );
   assert.equal((await readFile(join(herdrState, "closed-pane"), "utf8")).trim(), "pane-agent-1");
 
+  const taskCloseOperation = registryOperation("task.close", "task-1", {
+    task_id: "task-1",
+    force: false,
+  });
+  const taskCloseChild = [
+    `import { acquireResourceLock } from ${JSON.stringify(registryModule)};`,
+    `const processIdentity = { schema: "drovr.process-identity/v1", pid: 999999, boot_id: "terminated-test", start_token: "task-close" };`,
+    `await acquireResourceLock(${JSON.stringify(registryDirectory)}, "group-key:group", { operation: ${JSON.stringify(taskCloseOperation)}, authorityId: "terminated-task-close-group", processIdentity });`,
+    `await acquireResourceLock(${JSON.stringify(registryDirectory)}, ${JSON.stringify(taskLifecycleLockKey("task-1"))}, { operation: ${JSON.stringify(taskCloseOperation)}, authorityId: "terminated-task-close-task", processIdentity });`,
+  ].join("\n");
+  await execFileAsync(process.execPath, ["--input-type=module", "-e", taskCloseChild]);
   const closed = JSON.parse(
     (await execFileAsync(drovr, ["task", "close", "task-1"], { env })).stdout,
   );
   assertResultStatus(closed, "task close", "closed");
   assert.equal((await readFile(join(herdrState, "closed-tab"), "utf8")).trim(), "tab-task-1");
+  const groupCloseOperation = registryOperation("group.close", "group-1", {
+    group_id: "group-1",
+    force: true,
+  });
+  const groupCloseChild = [
+    `import { acquireResourceLock } from ${JSON.stringify(registryModule)};`,
+    `await acquireResourceLock(${JSON.stringify(registryDirectory)}, "group-key:group", { operation: ${JSON.stringify(groupCloseOperation)}, authorityId: "terminated-group-close", processIdentity: { schema: "drovr.process-identity/v1", pid: 999999, boot_id: "terminated-test", start_token: "group-close" } });`,
+  ].join("\n");
+  await execFileAsync(process.execPath, ["--input-type=module", "-e", groupCloseChild]);
   const groupClosed = JSON.parse(
     (
       await execFileAsync(
@@ -294,14 +322,47 @@ exit 1
     native_session: "native-lost",
   });
 
+  const publicationCrashSource = [
+    `import { acquireResourceLock } from ${JSON.stringify(registryModule)};`,
+    `const fs = { link: async () => process.kill(process.pid, "SIGKILL") };`,
+    `await acquireResourceLock(${JSON.stringify(registryDirectory)}, ${JSON.stringify(taskLifecycleLockKey("task-lost"))}, { operation: ${JSON.stringify(registryOperation("agent.retire", "agent-lost"))}, authorityId: "crashed-agent-retire", fs });`,
+  ].join("\n");
+  await assert.rejects(
+    execFileAsync(process.execPath, ["--input-type=module", "-e", publicationCrashSource]),
+    (error) => error.signal === "SIGKILL",
+  );
+  const afterPublicationCrash = JSON.parse(
+    (await execFileAsync(drovr, ["status"], { env })).stdout,
+  );
+  assert.equal(afterPublicationCrash.result.reconciliation.status, "clear");
+
+  const lockOperation = registryOperation("agent.retire", "agent-lost", {
+    agent_id: "agent-lost",
+  });
+  const childSource = [
+    `import { acquireResourceLock } from ${JSON.stringify(registryModule)};`,
+    `await acquireResourceLock(${JSON.stringify(registryDirectory)}, ${JSON.stringify(taskLifecycleLockKey("task-lost"))}, { operation: ${JSON.stringify(lockOperation)}, authorityId: "terminated-agent-retire" });`,
+  ].join("\n");
+  await execFileAsync(process.execPath, ["--input-type=module", "-e", childSource]);
+
+  const blocked = JSON.parse(
+    (await execFileAsync(drovr, ["status"], { env })).stdout,
+  );
+  assert.equal(blocked.result.reconciliation.status, "blocked");
+  assert.deepEqual(blocked.result.reconciliation.legal_next_actions, [
+    "agent_retire",
+  ]);
+  assert.deepEqual(blocked.result.reconciliation.locks[0].operation, lockOperation);
+
   const first = JSON.parse(
     (await execFileAsync(drovr, ["agent", "retire", "agent-lost"], { env })).stdout,
   );
+  assert.equal(first.ok, true);
   const repeated = JSON.parse(
     (await execFileAsync(drovr, ["agent", "retire", "agent-lost"], { env })).stdout,
   );
 
-  assert.equal(first.result.status, "retired");
+  assertResultStatus(first, "agent retire", "retired");
   assert.equal(first.result.cleanup_receipt.proof, "exact_absence");
   assert.deepEqual(repeated.result.cleanup_receipt, first.result.cleanup_receipt);
   const [agent] = await readRecords(registryDirectory, "agents");

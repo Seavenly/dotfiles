@@ -381,6 +381,32 @@ _Avoid_: Worker attempt, pane
 One request to a managed agent, including any ordered steering inputs and the final settled assistant result.
 _Avoid_: Native harness turn, prompt
 
+**Durable registry lock**:
+An atomically published, owner-checked authority record for one resource key,
+binding the owning operation, process authority, and exact registry watermark at
+acquisition. It is released only by its owner token and is never taken over by
+age or a timer.
+_Avoid_: Lease, stale-directory cleanup, force unlock
+
+**Registry operation identity**:
+The stable kind and resource identity for one Drovr mutation, bound to a
+canonical digest of its exact invocation payload so retries can prove they are
+continuing the same operation.
+_Avoid_: Caller key alone, retry UUID, lock age
+
+**Process identity**:
+The validated schema, positive process ID, boot identity, and start token used
+to distinguish one owning process from PID reuse. Missing or malformed facts are
+unproven rather than proof of absence.
+_Avoid_: PID alone, liveness guess
+
+**Recovery decision**:
+A typed, watermark-bound adoption, proven-absence, or bare-lock abandonment
+decision derived from current registry and process evidence. Its legal actions
+are closed and operation-specific; operator disposition does not claim an
+operation is absent.
+_Avoid_: Timer expiry, generic unlock, caller assertion
+
 **Semantic harness**:
 The internal Drovr interface that delivers and observes logical turns, ordered input, identity, interruption, staged input, and recovery evidence without exposing Herdr commands, native prompt keys, polling, or transcript parsing to callers.
 _Avoid_: Herdr client wrapper, harness controller

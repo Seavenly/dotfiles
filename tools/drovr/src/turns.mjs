@@ -19,6 +19,8 @@ import {
 import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
+  registryLockOptions,
+  registryOperation,
   stateDirectory,
   taskLifecycleLockKey,
   withResourceLock,
@@ -101,6 +103,21 @@ export async function startTurn(agentId, options, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await agentContext(registryDirectory, agentId);
+  const operationPrompt = typeof options.prompt === "string"
+    ? normalizeInputText(options.prompt)
+    : options.prompt ?? null;
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation(
+      "turn.start",
+      `${agentId}:${options.inputKey ?? textDigest(options.prompt ?? "")}`,
+      {
+        agent_id: agentId,
+        prompt: operationPrompt,
+        input_key: options.inputKey ?? null,
+        caller: options.caller ?? null,
+        launch_binding: options.launchBinding ?? null,
+      },
+    );
   const harness = harnessFor(initial, env, dependencies);
   if (harness.capabilities?.compatibility === "required") {
     const validation = await harness.validateLaunch({
@@ -119,6 +136,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
           env,
           harness,
           now,
+          lockOperation,
         });
         if (!["reconciled", "recovered"].includes(availability.status)) {
           throw new DrovrError(
@@ -260,6 +278,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
           });
           return { ...current, turn };
         },
+        registryLockOptions(lockOperation),
       );
       await deliverTurn({
         registryDirectory,
@@ -271,6 +290,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
       });
       return context;
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -316,6 +336,19 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
   validateLaunchBinding(options.launchBinding);
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation(
+      "turn.dispatch",
+      `${options.callerKey}:${options.inputKey}`,
+      {
+        agent_id: agentId,
+        prompt,
+        caller_key: options.callerKey,
+        input_key: options.inputKey,
+        caller_metadata: options.callerMetadata ?? null,
+        launch_binding: options.launchBinding,
+      },
+    );
   const payloadSha256 = callerPayloadDigest({
     agent_id: agentId,
     prompt,
@@ -413,9 +446,10 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
           payload_sha256: payloadSha256,
           metadata: structuredClone(options.callerMetadata),
         },
-      }, dependencies);
+      }, { ...dependencies, lockOperation });
       return { ...context, dispatch_status: "dispatched" };
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -423,6 +457,12 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("turn.wait", turnId, {
+      turn_id: turnId,
+      after_block_id: options.afterBlockId ?? null,
+      timeout_ms: options.timeoutMs ?? null,
+    });
   let context = await turnContext(registryDirectory, turnId);
   let acknowledgedBlock;
   if (options.afterBlockId) {
@@ -431,6 +471,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       turnId,
       blockId: options.afterBlockId,
       acknowledgedAt: now(),
+      lockOperation,
     }));
   }
   if (!acknowledgedBlock && context.turn.status === "working") {
@@ -466,12 +507,18 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     registryDirectory,
     turnId,
     observation: evidence.observation,
+    lockOperation,
   });
   if (evidence.outcome === "still_running") {
     return { ...context, wait_status: "still_running" };
   }
   if (evidence.outcome === "agent_lost") {
-    return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
+    return settleLostTurnWhileWaiting(
+      registryDirectory,
+      turnId,
+      now,
+      lockOperation,
+    );
   }
   if (evidence.outcome === "needs_input") {
     return recordSemanticBlock({
@@ -479,6 +526,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       context,
       evidence,
       now,
+      lockOperation,
     });
   }
   if (evidence.outcome === "block_changed") {
@@ -491,6 +539,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       blockId: acknowledgedBlock.id,
       observedAt: now(),
       observation: evidence.working_observation,
+      lockOperation,
     });
     if (recorded.currentBlock?.id !== acknowledgedBlock.id) {
       return { ...context, block: recorded.currentBlock };
@@ -500,6 +549,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       env,
       now,
       harness,
+      lockOperation,
     });
   }
   if (evidence.outcome !== "completed") {
@@ -516,7 +566,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
         await writeRecord(registryDirectory, "turns", current.turn);
       }
       return current;
-    });
+    }, registryLockOptions(lockOperation));
   }
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const current = await turnContext(registryDirectory, turnId);
@@ -541,13 +591,14 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       await writeRecord(registryDirectory, "blocks", block);
     }
     return current;
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function persistObservedAgentIdentity({
   registryDirectory,
   turnId,
   observation,
+  lockOperation,
 }) {
   if (observation?.evidence !== "present") return;
   const nativeSession = observation?.identity?.native_session;
@@ -579,10 +630,15 @@ async function persistObservedAgentIdentity({
       changed = true;
     }
     if (changed) await writeRecord(registryDirectory, "agents", current.agent);
-  });
+  }, registryLockOptions(lockOperation));
 }
 
-function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
+function settleLostTurnWhileWaiting(
+  registryDirectory,
+  turnId,
+  now,
+  lockOperation,
+) {
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
     if (context.turn.status === "working") {
@@ -594,7 +650,7 @@ function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
       await writeRecord(registryDirectory, "turns", context.turn);
     }
     return context;
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function recordSemanticBlock({
@@ -602,6 +658,7 @@ async function recordSemanticBlock({
   context,
   evidence,
   now,
+  lockOperation,
 }) {
   return withResourceLock(
     registryDirectory,
@@ -644,6 +701,7 @@ async function recordSemanticBlock({
       await writeRecord(registryDirectory, "blocks", block);
       return { ...current, block };
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -652,6 +710,7 @@ async function acknowledgeCurrentBlock({
   turnId,
   blockId,
   acknowledgedAt,
+  lockOperation,
 }) {
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
@@ -683,7 +742,7 @@ async function acknowledgeCurrentBlock({
       await writeRecord(registryDirectory, "blocks", block);
     }
     return { context, block };
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function recordBlockWorkingObservation({
@@ -692,6 +751,7 @@ async function recordBlockWorkingObservation({
   blockId,
   observedAt,
   observation,
+  lockOperation,
 }) {
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
@@ -708,7 +768,7 @@ async function recordBlockWorkingObservation({
     observeBlockWorking(block, { observedAt, observation });
     await writeRecord(registryDirectory, "blocks", block);
     return { block, currentBlock: block };
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function currentBlockForTurn(registryDirectory, turn) {
@@ -730,6 +790,18 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation(
+      "turn.send",
+      `${turnId}:${options.callerKey ?? "legacy"}`,
+      {
+        turn_id: turnId,
+        caller_key: options.callerKey ?? null,
+        prompt: typeof options.prompt === "string"
+          ? normalizeInputText(options.prompt)
+          : options.prompt ?? null,
+      },
+    );
   const prompt = typeof options.prompt === "string"
     ? normalizeInputText(options.prompt)
     : options.prompt;
@@ -768,6 +840,7 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
     env,
     harness,
     now,
+    lockOperation,
   });
   if (!["reconciled", "recovered"].includes(availability.status)) {
     return {
@@ -864,9 +937,13 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       });
       return context;
     },
+    registryLockOptions(lockOperation),
   );
   if (!outcome.reconcile_status) return outcome;
-  const reconciled = await waitForTurn(turnId, {}, dependencies);
+  const reconciled = await waitForTurn(turnId, {}, {
+    ...dependencies,
+    lockOperation,
+  });
   return { ...reconciled, command_status: outcome.reconcile_status };
 }
 
@@ -907,14 +984,23 @@ export async function reconcileTurn(
       outcome: "invalid_arguments",
     });
   }
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("turn.reconcile", turnId, {
+      turn_id: turnId,
+      timeout_ms: options.timeoutMs,
+    });
   const initial = await getTurn(turnId, dependencies);
   if (initial.turn.status !== "working") return initial;
   const recovery = await reconcileOrRecoverAgent(
     initial.agent.id,
-    dependencies,
+    { ...dependencies, lockOperation },
   );
   if (recovery.status === "reconciled") {
-    return waitForTurn(turnId, { timeoutMs: options.timeoutMs }, dependencies);
+    return waitForTurn(
+      turnId,
+      { timeoutMs: options.timeoutMs },
+      { ...dependencies, lockOperation },
+    );
   }
   const context = await getTurn(turnId, dependencies);
   if (recovery.status === "recovered") return context;
@@ -1083,6 +1169,11 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("turn.cancel", turnId, {
+      turn_id: turnId,
+      timeout_ms: options.timeoutMs ?? null,
+    });
   const initial = await turnContext(registryDirectory, turnId);
   if (initial.turn.status !== "working") {
     return { ...initial, command_status: "turn_closed" };
@@ -1097,6 +1188,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     env,
     harness,
     now,
+    lockOperation,
   });
   if (
     availability.status === "reconciled" &&
@@ -1137,7 +1229,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
         command_status: availability.status,
         recovery_reason: availability.reason,
       };
-    });
+    }, registryLockOptions(lockOperation));
   }
   const current = await turnContext(registryDirectory, turnId);
   if (current.turn.status !== "working") {
@@ -1149,6 +1241,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
       env,
       harness,
       now,
+      lockOperation,
     });
     return {
       ...reconciled,
@@ -1179,6 +1272,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
       await writeRecord(registryDirectory, "turns", context.turn);
       return context;
     },
+    registryLockOptions(lockOperation),
   );
   if (cancellation.command_status) {
     return cancellation;
@@ -1212,6 +1306,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
         env,
         harness,
         now,
+        lockOperation,
       });
     } else {
       settleTurnRecord(context.turn, {
@@ -1225,7 +1320,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     }
     await writeRecord(registryDirectory, "turns", context.turn);
     return context;
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 function semanticIdentityError(observation, harness = "codex") {

@@ -7,14 +7,21 @@ import {
   summarizeGroup,
   summarizeTask,
 } from "./queries.mjs";
-import { stateDirectory } from "./registry.mjs";
-import { loadRegistryRelationships } from "./registry-relationships.mjs";
+import {
+  readRegistrySnapshot,
+  resourceLockProjection,
+  stateDirectory,
+} from "./registry.mjs";
 
 export async function statusReport(dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
-  const { groups, tasks, agents, turns, blocks } =
-    await loadRegistryRelationships(registryDirectory);
+  const { groups, tasks, agents, turns, blocks, authority_watermark: authorityWatermark } =
+    await readRegistrySnapshot(registryDirectory);
+  const reconciliation = await resourceLockProjection(registryDirectory, {
+    ...dependencies,
+    authorityWatermark,
+  });
   const sessions = new Set(groups.map((group) => group.herdr?.session));
   if (sessions.has(undefined) || sessions.size > 1) {
     throw new DrovrError("registry groups do not share one Herdr session", {
@@ -51,6 +58,8 @@ export async function statusReport(dependencies = {}) {
     ok: true,
     result: {
       status: observation.running ? "completed" : "session_missing",
+      authority_watermark: authorityWatermark,
+      reconciliation,
       session: {
         name: session,
         status: observation.running ? "running" : "missing",
