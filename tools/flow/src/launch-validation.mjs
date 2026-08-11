@@ -4,6 +4,7 @@ import {
   CanonicalValueError,
   digest,
   freezeCanonical,
+  isPlainRecord,
 } from "./canonical.mjs";
 import {
   canonicalizeDynamicGraph,
@@ -289,14 +290,6 @@ function isExactRecord(value, fields) {
   if (prototype !== Object.prototype && prototype !== null) return false;
   const keys = Reflect.ownKeys(value);
   return keys.length === fields.length && keys.every((key) => fields.includes(key));
-}
-
-function isPlainRecord(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }
 
 class LaunchValidationError extends Error {

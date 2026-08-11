@@ -1,4 +1,9 @@
-import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
+import {
+  digest,
+  freezeCanonical,
+  isPlainRecord,
+  uniqueCanonical,
+} from "./canonical.mjs";
 import {
   hasActiveDependencyOnSuperseded,
   hasDependencyCycle,
@@ -424,14 +429,6 @@ export function predefinedRoutes(graph, revisionTemplates) {
 
 function invalidPredefined(reason, message, options) {
   throw new PredefinedFlowValidationError(reason, message, options);
-}
-
-function isPlainRecord(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }
 
 export function validateDynamicPlan(proposal, {
@@ -1267,8 +1264,12 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `checkpoint-bound operation requires one exact dependency: ${card.id}`,
     );
   }
-  if (checkpoints.length === 0 && (card.dependencies.length !== 0 ||
-      !proposal.requested_authority.commands.includes("operation_execute"))) {
+  // A registered operation may either be bound to its exact human
+  // checkpoint or be part of an explicitly-authorized serialized operation
+  // chain.  The latter keeps ordering in the immutable graph while every
+  // mutation still crosses RunAuthority's operation_execute fence.
+  if (checkpoints.length === 0 &&
+      !proposal.requested_authority.commands.includes("operation_execute")) {
     invalidPlan(
       "incomplete_operation_execution_authority",
       `direct operation execution authority is incomplete: ${card.id}`,

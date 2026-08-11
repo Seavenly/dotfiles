@@ -68,7 +68,9 @@ disabled, so this API does not authorize normal replacement launches.
   `flow.subrun/create-and-observe/v1` child card.
   A one-shot uncertain operation must be bound only to an exact fresh
   checkpoint; safer effect classes may instead project an exact
-  `operation_execute` command without adding human approval. The operation names a registered Adapter,
+  `operation_execute` command without adding human approval. A registered
+  operation is either bound to its exact checkpoint or belongs to a serialized
+  dependency chain authorized by `operation_execute`. The operation names a registered Adapter,
   declares its effect class, and binds its input, route, claims, validator, and
   attempt limit in the confirmed graph. A delegate card binds a compatible
   Drovr description, immutable route, prompt, bounded wait, validator
@@ -283,6 +285,33 @@ does not invoke a definition compiler, consult mutable registration, or
 refresh facts. Dynamic proposals retain their separate complete-graph
 confirmation contract.
 
+### Verified feature candidate
+
+The trusted `feature/v1` predefined definition turns one accepted
+`flow.feature-brief/v1` into one local review candidate in `verify` mode. Its
+selection binds one workspace generation and mutation epoch, one safe baseline
+or explicit non-destructive compensating assertion, independent apply and
+critique delegate routes, and one exact finalization publication. Delegates may
+apply and critique the change, but registered `feature-verify/v1` and
+`feature-seal/v1` operations own the verification and sealing receipts.
+
+The seal operation receives only authority-materialized evidence selected by
+card identity. Success requires exact acceptance coverage with passed verdicts,
+the selected discriminating evidence, a clean post-mutation Git observation,
+fresh workspace and operation identities, and no blocking critique finding.
+Safe-baseline evidence must identify a distinct post-mutation fingerprint;
+compensating evidence must carry a self-bound receipt that the explicitly
+non-destructive assertion was satisfied. Every full workspace resource claim
+is rechecked immediately before its Adapter invocation against the current
+generation, mutation epoch, Git fingerprint, sole holder, and card scope.
+RunAuthority validates those receipts before atomically sealing
+`work.review/v1`, promoting the workspace generation and mutation epoch,
+transferring artifact pins, retaining Git, publishing the exact handoff, and
+finishing the run. Any missing, stale, dirty, unresolved, or blocking evidence
+leaves the run without a review candidate or handoff. The terminal projection
+contains the sealed candidate identity and ReviewAuthority watermark, with no
+review, integration, push, pull-request, cleanup, or tracker action.
+
 Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `reason` identify the rejected request; `command_type`, `run_id`, and
 `bundle_digest` are null when they do not apply. `authority_watermark_domain`
@@ -299,10 +328,13 @@ no authority watermark is available.
 ## Workspace, artifact, and resource handoff authority
 
 `src/work-authority.mjs` exports distinct `getWorkspaceAuthority()`,
-`getArtifactAuthority()`, and `getResourceHandoffAuthority()` accessors. Their
+`getArtifactAuthority()`, `getReviewAuthority()`, and
+`getResourceHandoffAuthority()` accessors. Their
 versioned Interfaces register canonical workspace subjects through
 `work.workspace/v1`, immutable artifact subjects through `work.artifact/v1`,
-and query retained `flow.resource-handoff/v1` subjects.
+query immutable local candidates sealed only by RunAuthority's atomic
+finalization through `work.review/v1`, and query retained
+`flow.resource-handoff/v1` subjects.
 Workspace projections bind registration and subject generation, mutation
 epoch, independently observed exact commit, tree, ref, clean state, and
 disposition. An exclusive writer claim cites the exact generation and Git
@@ -560,7 +592,8 @@ node --test tools/flow/test/runtime-interface.test.mjs \
   tools/flow/test/registered-operation.test.mjs \
   tools/flow/test/cancellation.test.mjs \
   tools/flow/test/purity-contracts.test.mjs \
-  tools/flow/test/predefined-flow.test.mjs
+  tools/flow/test/predefined-flow.test.mjs \
+  tools/flow/test/feature-flow.test.mjs
 ```
 
 ## Delegated-agent preparation

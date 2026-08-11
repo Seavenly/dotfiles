@@ -232,6 +232,18 @@ const RESOURCE_SAFETY = {
   forbidden_selection: "latest",
   exact_human_authority: ["destructive_reset", "risk_acceptance"],
 };
+const REVIEW_AUTHORITY = {
+  authority: "ReviewAuthority",
+  interface: "work.review-authority/v1",
+  contract: "work.review/v1",
+  candidate: "work.review-candidate/v1",
+  projection: "work.review-candidate-projection/v1",
+  event: "work.review-event/v1",
+  commands: ["work.review-candidate-seal-command/v1"],
+  statuses: ["sealed", "superseded", "abandoned"],
+  identity: "candidate_fingerprint",
+  legal_actions: "closed_after_seal",
+};
 
 export async function loadContractCatalog({
   catalogPath,
@@ -390,6 +402,22 @@ export async function loadContractCatalog({
     "work.legal-next-action/v1",
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("Work-domain resource safety contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.work_domain_interfaces?.review,
+    REVIEW_AUTHORITY,
+  ) || ![
+    REVIEW_AUTHORITY.interface,
+    REVIEW_AUTHORITY.contract,
+    REVIEW_AUTHORITY.candidate,
+    REVIEW_AUTHORITY.projection,
+    REVIEW_AUTHORITY.event,
+    ...REVIEW_AUTHORITY.commands,
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("ReviewAuthority contracts are incomplete");
   }
   let publishedFeatureContract;
   let publishedFeatureContractBytes;

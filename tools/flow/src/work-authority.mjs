@@ -15,6 +15,10 @@ export function getArtifactAuthority({ runAuthority } = {}) {
   return getAttachedAuthority(runAuthority, "artifact");
 }
 
+export function getReviewAuthority({ runAuthority } = {}) {
+  return getAttachedAuthority(runAuthority, "review");
+}
+
 export function getResourceHandoffAuthority({ runAuthority } = {}) {
   return getAttachedAuthority(runAuthority, "handoff");
 }
@@ -23,6 +27,7 @@ export function attachWorkAuthorities(runAuthority, authorities) {
   if (attachedAuthorities.has(runAuthority) ||
       authorities?.workspace?.schema !== "work.workspace-authority/v1" ||
       authorities?.artifact?.schema !== "work.artifact-authority/v1" ||
+      authorities?.review?.schema !== "work.review-authority/v1" ||
       authorities?.handoff?.schema !== "flow.resource-handoff-authority/v1") {
     throw new TypeError("invalid durable Work-domain authority attachment");
   }
@@ -91,13 +96,15 @@ function getAttachedAuthority(runAuthority, name) {
 }
 
 export function workStreamIdentity(contract, subjectId) {
-  if (!["work.workspace/v1", "work.artifact/v1", "flow.resource-handoff/v1"]
+  if (!["work.workspace/v1", "work.artifact/v1", "work.review/v1",
+    "flow.resource-handoff/v1"]
     .includes(contract) || typeof subjectId !== "string" || subjectId.length === 0) {
     return null;
   }
   const kinds = {
     "work.workspace/v1": "workspace",
     "work.artifact/v1": "artifact",
+    "work.review/v1": "review",
     "flow.resource-handoff/v1": "handoff",
   };
   return {
@@ -271,6 +278,47 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
       legal_actions: [],
     });
   }
+  if (streamKind === "review") {
+    const sealed = records[0]?.payload;
+    if (sealed?.type !== "review_candidate_sealed" ||
+        !validReviewCandidate(subjectId, sealed.candidate)) {
+      throw new Error("review authority stream is missing a valid candidate seal");
+    }
+    let status = "sealed";
+    let candidate = sealed.candidate;
+    const commandReceipts = sealed.command_receipt
+      ? [sealed.command_receipt]
+      : [];
+    for (const { payload } of records.slice(1)) {
+      if (payload.type === "review_candidate_superseded") {
+        status = "superseded";
+        candidate = payload.candidate;
+      } else if (payload.type === "review_candidate_abandoned") {
+        status = "abandoned";
+      }
+      if (payload.command_receipt) commandReceipts.push(payload.command_receipt);
+    }
+    const legalActions = [];
+    return freezeCanonical({
+      schema: "work.review-candidate-projection/v1",
+      contract: "work.review/v1",
+      subject_id: subjectId,
+      watermark,
+      generation: 1,
+      status,
+      candidate_fingerprint: candidate.candidate_fingerprint,
+      git: candidate.git,
+      workspace: candidate.workspace,
+      verification: candidate.verification,
+      critique: candidate.critique,
+      artifacts: candidate.artifacts,
+      git_retention: candidate.git_retention,
+      candidate,
+      registration_receipt: sealed.registration_receipt,
+      command_receipts: commandReceipts,
+      legal_actions: legalActions,
+    });
+  }
   if (streamKind === "handoff") {
     const activated = records[0]?.payload;
     if (activated?.type !== "resource_handoff_activated") {
@@ -407,6 +455,367 @@ export function withHandoffObservations(
   });
 }
 
+export function buildReviewCandidateSealEvent({
+  artifacts,
+  candidate,
+  effectReceipt,
+  intent,
+  publication,
+  workspace,
+}) {
+  validateReviewCandidatePublicationBinding({
+    artifacts,
+    candidate,
+    effectReceipt,
+    intent,
+    publication,
+    workspace,
+  });
+  const command = {
+    schema: "work.review-candidate-seal-command/v1",
+    command_id: `review-seal:${candidate.candidate_id}`,
+    type: "review_candidate_seal",
+    contract: "work.review/v1",
+    subject_id: candidate.candidate_id,
+    expected_generation: 0,
+    candidate,
+  };
+  const commandReceipt = {
+    schema: "work.idempotency-receipt/v1",
+    command_id: command.command_id,
+    command_digest: digest(command),
+  };
+  return {
+    contract: "work.review-event/v1",
+    payload: {
+      type: "review_candidate_sealed",
+      candidate,
+      registration_receipt: commandReceipt,
+      command_receipt: commandReceipt,
+    },
+  };
+}
+
+export function workspaceEffectAuthorityIssue(projection, claim, intent) {
+  if (projection?.schema !== "work.workspace-projection/v1" ||
+      projection.subject_id !== claim?.id) {
+    return "workspace_claim_missing";
+  }
+  const publicationTaint = projection.taint;
+  const expectedPublicationTaint = intent?.operation_input?.publication !== undefined &&
+    publicationTaint?.reason === "handoff_publication_in_flight" &&
+    publicationTaint.source_effect_id === intent.effect_id &&
+    publicationTaint.evidence_digest === digest(intent);
+  if (projection.generation !== claim.generation ||
+      projection.mutation_epoch !== claim.mutation_epoch ||
+      digest({ git: projection.git }) !== claim.fingerprint) {
+    return "workspace_claim_stale";
+  }
+  if (projection.claims.length !== 1 ||
+      projection.claims[0].holder !== intent?.run_id ||
+      !projection.claims[0].operations.includes(intent?.card_id)) {
+    return "workspace_claim_conflict";
+  }
+  if (projection.taint !== null && !expectedPublicationTaint) {
+    return "workspace_claim_tainted";
+  }
+  return null;
+}
+
+function validateReviewCandidatePublicationBinding({
+  artifacts,
+  candidate,
+  effectReceipt,
+  intent,
+  publication,
+  workspace,
+}) {
+  const finalization = intent?.operation_input?.finalization;
+  const providerReceipt = effectReceipt?.provider_receipt;
+  const retention = providerReceipt?.git_retention;
+  const promotedGit = publication?.workspace?.promoted_git;
+  const candidateArtifacts = candidate?.artifacts;
+  if (!validFeatureSealEvidence({
+    candidate,
+    effectReceipt,
+    intent,
+    publication,
+  })) {
+    throw new TypeError("review candidate evidence is not an exact feature seal");
+  }
+  if (!validReviewCandidate(candidate?.candidate_id, candidate) ||
+      finalization?.schema !== "flow.feature-finalization-binding/v1" ||
+      finalization.candidate_id !== candidate.candidate_id ||
+      !sameCanonicalValue(finalization.publication, publication) ||
+      !isDeepStrictEqual(candidate.git, promotedGit) ||
+      candidate.workspace?.contract !== "work.workspace/v1" ||
+      candidate.workspace?.subject_id !== publication.workspace?.subject_id ||
+      candidate.workspace?.generation !== publication.workspace?.promoted_generation ||
+      candidate.workspace?.mutation_epoch !==
+        publication.workspace?.promoted_mutation_epoch ||
+      candidate.workspace?.fingerprint !== digest({ git: promotedGit }) ||
+      !sameCanonicalValue(candidate.git_retention, retention) ||
+      !Array.isArray(candidateArtifacts) ||
+      candidateArtifacts.length !== artifacts.length ||
+      candidateArtifacts.some((artifact, index) =>
+        artifact?.digest !== artifacts[index]?.digest ||
+        artifact?.generation !== artifacts[index]?.generation ||
+        artifact?.artifact_schema !== artifacts[index]?.artifact_schema) ||
+      !isDeepStrictEqual(
+        candidate.git_retention,
+        providerReceipt?.git_retention,
+      ) ||
+      !validGitFacts(promotedGit) ||
+      promotedGit.clean !== true ||
+      candidate.git?.clean !== true ||
+      workspace?.generation !== publication.workspace.expected_generation) {
+    throw new TypeError("review candidate is not bound to the exact publication");
+  }
+}
+
+function validFeatureSealEvidence({
+  candidate,
+  effectReceipt,
+  intent,
+  publication,
+}) {
+  const operationInput = intent?.operation_input;
+  const materialized = operationInput?.authority_materialized_evidence;
+  const verification = candidate?.verification;
+  const critique = candidate?.critique;
+  const verifyEntry = materialized?.operation_receipts?.find(({ card_id: cardId }) =>
+    cardId === "feature-verify");
+  const critiqueEntry = materialized?.accepted_delegates?.find(({ card_id: cardId }) =>
+    cardId === "feature-critique");
+  return validFeatureVerificationReceipt({
+    intent,
+    materialized,
+    operationInput,
+    publication,
+    receipt: verification,
+    verifyEntry,
+  }) && validFeatureCritiqueReceipt({
+    critique,
+    critiqueEntry,
+    effectReceipt,
+    intent,
+  });
+}
+
+function validFeatureVerificationReceipt({
+  intent,
+  materialized,
+  operationInput,
+  publication,
+  receipt,
+  verifyEntry,
+}) {
+  const brief = operationInput?.brief;
+  const selectedVerification = operationInput?.verification;
+  const selectedWorkspace = operationInput?.workspace;
+  const promotedGit = publication?.workspace?.promoted_git;
+  const effectReceipt = verifyEntry?.receipt;
+  const receiptIdentity = stripReceiptDigests(receipt);
+  const expectedCriteria = brief?.acceptance ?? [];
+  const criteria = receipt?.acceptance_criteria;
+  const criteriaExact = Array.isArray(criteria) &&
+    criteria.length === expectedCriteria.length &&
+    criteria.every((criterionReceipt, index) =>
+      hasExactKeys(criterionReceipt, ["criterion", "evidence_digest", "verdict"]) &&
+      criterionReceipt.criterion === expectedCriteria[index] &&
+      criterionReceipt.verdict === "passed" &&
+      isDigest(criterionReceipt.evidence_digest));
+  const safeBaselineSelected =
+    selectedVerification?.baseline?.schema === "flow.feature-safe-baseline/v1";
+  const expectedEvidence = safeBaselineSelected
+    ? selectedVerification.baseline
+    : selectedVerification?.compensating_assertion;
+  const expectedEvidenceKind = safeBaselineSelected
+    ? "safe_baseline"
+    : "compensating_assertion";
+  const verificationWorkspace = receipt?.workspace;
+  const workspaceExact = hasExactKeys(verificationWorkspace, [
+    "fingerprint",
+    "generation",
+    "git",
+    "mutation_epoch",
+    "subject_id",
+  ]) &&
+    verificationWorkspace.subject_id === selectedWorkspace?.subject_id &&
+    verificationWorkspace.subject_id === publication?.workspace?.subject_id &&
+    verificationWorkspace.generation === selectedWorkspace?.generation &&
+    verificationWorkspace.mutation_epoch === selectedWorkspace?.mutation_epoch &&
+    verificationWorkspace.fingerprint === digest({ git: promotedGit }) &&
+    isDeepStrictEqual(verificationWorkspace.git, promotedGit) &&
+    validGitFacts(verificationWorkspace.git) &&
+    verificationWorkspace.git.clean === true;
+  const effectExact = hasExactKeys(verifyEntry, [
+    "attempt_id",
+    "card_id",
+    "effect_id",
+    "idempotency_key",
+    "receipt",
+    "source_authority_watermark",
+  ]) && verifyEntry.card_id === "feature-verify" &&
+    hasExactKeys(effectReceipt, [
+      "effect_id",
+      "idempotency_key",
+      "outcome",
+      "provider_receipt",
+      "schema",
+    ]) && effectReceipt.schema === "flow.effect-receipt/v1" &&
+    effectReceipt.outcome === "succeeded" &&
+    effectReceipt.effect_id === verifyEntry.effect_id &&
+    effectReceipt.idempotency_key === verifyEntry.idempotency_key &&
+    effectReceipt.provider_receipt !== undefined &&
+    isDigest(verifyEntry.source_authority_watermark) &&
+    receipt?.source_authority_watermark === verifyEntry.source_authority_watermark &&
+    receipt?.effect_id === verifyEntry.effect_id &&
+    receipt?.attempt_id === verifyEntry.attempt_id &&
+    receipt?.idempotency_key === verifyEntry.idempotency_key &&
+    isDeepStrictEqual(effectReceipt.provider_receipt, receipt) &&
+    materialized?.verify_receipt !== undefined &&
+    isDeepStrictEqual(materialized.verify_receipt, effectReceipt);
+  return hasExactKeys(receipt, [
+    "acceptance_criteria",
+    "attempt_id",
+    "brief_id",
+    "discriminating_evidence",
+    "effect_id",
+    "idempotency_key",
+    "operation_contract",
+    "receipt_digest",
+    "schema",
+    "selected_evidence_fingerprint",
+    "self_digest",
+    "source_authority_watermark",
+    "workspace",
+  ]) && receipt.schema === "work.feature-verification-receipt/v1" &&
+    receipt.brief_id === brief?.id &&
+    receipt.operation_contract === "flow.operation/feature-verify/v1" &&
+    nonEmpty(receipt.effect_id) &&
+    nonEmpty(receipt.attempt_id) &&
+    nonEmpty(receipt.idempotency_key) &&
+    receipt.selected_evidence_fingerprint === expectedEvidence?.fingerprint &&
+    validSelectedDiscriminatingEvidence(
+      receipt.discriminating_evidence,
+      expectedEvidence,
+      expectedEvidenceKind,
+      verificationWorkspace?.fingerprint,
+    ) &&
+    criteriaExact &&
+    workspaceExact &&
+    effectExact &&
+    isDigest(receipt.receipt_digest) &&
+    isDigest(receipt.self_digest) &&
+    digest(receiptIdentity) === receipt.receipt_digest &&
+    receipt.receipt_digest === receipt.self_digest &&
+    receipt.operation_contract === effectReceipt.provider_receipt.operation_contract;
+}
+
+function validSelectedDiscriminatingEvidence(
+  evidence,
+  selected,
+  kind,
+  postMutationFingerprint,
+) {
+  if (kind === "safe_baseline") {
+    return hasExactKeys(evidence, [
+      "distinguished",
+      "kind",
+      "post_mutation_fingerprint",
+      "schema",
+      "selected_fingerprint",
+    ]) && evidence.schema === "flow.feature-discriminating-evidence/v1" &&
+      evidence.kind === kind &&
+      evidence.selected_fingerprint === selected?.fingerprint &&
+      evidence.post_mutation_fingerprint === postMutationFingerprint &&
+      evidence.selected_fingerprint !== evidence.post_mutation_fingerprint &&
+      evidence.distinguished === true;
+  }
+  return hasExactKeys(evidence, [
+    "assertion_receipt_digest",
+    "kind",
+    "non_destructive",
+    "post_mutation_fingerprint",
+    "satisfied",
+    "schema",
+    "selected_fingerprint",
+  ]) && evidence.schema === "flow.feature-discriminating-evidence/v1" &&
+    evidence.kind === "compensating_assertion" &&
+    selected?.non_destructive === true &&
+    evidence.selected_fingerprint === selected.fingerprint &&
+    evidence.post_mutation_fingerprint === postMutationFingerprint &&
+    evidence.assertion_receipt_digest === digest({
+      assertion: selected.assertion,
+      post_mutation_fingerprint: postMutationFingerprint,
+    }) &&
+    evidence.non_destructive === true && evidence.satisfied === true;
+}
+
+function validFeatureCritiqueReceipt({
+  critique,
+  critiqueEntry,
+  effectReceipt,
+  intent,
+}) {
+  const identity = stripReceiptDigests(critique);
+  return hasExactKeys(critique, [
+    "delegate_evidence",
+    "effect_id",
+    "findings",
+    "idempotency_key",
+    "operation_contract",
+    "receipt_digest",
+    "schema",
+    "self_digest",
+    "source_authority_watermark",
+  ]) && critique.schema === "work.feature-critique-receipt/v1" &&
+    hasExactKeys(critiqueEntry, [
+      "attempt_id",
+      "card_id",
+      "effect_id",
+      "evidence",
+      "idempotency_key",
+      "source_authority_watermark",
+    ]) && critiqueEntry.card_id === "feature-critique" &&
+    isDeepStrictEqual(critique.delegate_evidence, critiqueEntry) &&
+    Array.isArray(critique.findings) &&
+    critique.findings.every((finding) => isRecord(finding) &&
+      finding.classification !== "blocking") &&
+    critique.operation_contract === intent?.operation_contract &&
+    critique.effect_id === effectReceipt?.effect_id &&
+    critique.idempotency_key === effectReceipt?.idempotency_key &&
+    critique.source_authority_watermark === intent?.source_authority_watermark &&
+    isDigest(critique.receipt_digest) &&
+    isDigest(critique.self_digest) &&
+    digest(identity) === critique.receipt_digest &&
+    critique.receipt_digest === critique.self_digest;
+}
+
+function stripReceiptDigests(receipt) {
+  if (!isRecord(receipt)) return null;
+  const {
+    receipt_digest: _receiptDigest,
+    self_digest: _selfDigest,
+    ...identity
+  } = receipt;
+  return identity;
+}
+
+function hasExactKeys(value, keys) {
+  return isRecord(value) && Object.keys(value).sort().join(",") ===
+    [...keys].sort().join(",");
+}
+
+function sameCanonicalValue(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
+}
+
 export function buildHandoffPublication({
   artifacts,
   intent,
@@ -461,8 +870,25 @@ export function buildHandoffPublication({
   };
   const handoffId = `handoff:${digest(handoffBody).slice("sha256:".length)}`;
   const handoff = freezeCanonical({ handoff_id: handoffId, ...handoffBody });
+  const reviewCandidate = receipt?.provider_receipt?.review_candidate;
+  if (intent?.operation_input?.finalization?.schema ===
+        "flow.feature-finalization-binding/v1" &&
+      reviewCandidate === undefined) {
+    throw new TypeError("feature seal receipt is missing its review candidate");
+  }
+  const reviewEvent = reviewCandidate === undefined
+    ? null
+    : buildReviewCandidateSealEvent({
+      artifacts,
+      candidate: reviewCandidate,
+      effectReceipt: receipt,
+      intent,
+      publication,
+      workspace,
+    });
   return {
     handoff,
+    reviewEvent,
     workspaceEvent: {
       contract: "work.workspace-event/v1",
       payload: {
@@ -504,6 +930,8 @@ export function validateHandoffPublicationAuthority({
       workspace.generation !== publication.workspace.expected_generation ||
       workspace.mutation_epoch !== publication.workspace.expected_mutation_epoch ||
       digest(workspace.git) !== digest(publication.workspace.expected_git) ||
+      digest(publication.workspace.expected_git) ===
+        digest(publication.workspace.promoted_git) ||
       publication.workspace.promoted_generation !== workspace.generation + 1 ||
       !Number.isSafeInteger(publication.workspace.promoted_mutation_epoch) ||
       publication.workspace.promoted_mutation_epoch <= workspace.mutation_epoch ||
@@ -1241,6 +1669,201 @@ function validGitFacts(git) {
   return /^[0-9a-f]{40,64}$/u.test(git?.commit_sha ?? "") &&
     /^[0-9a-f]{40,64}$/u.test(git?.tree_sha ?? "") &&
     nonEmpty(git?.ref) && typeof git.clean === "boolean";
+}
+
+function validReviewCandidate(subjectId, candidate) {
+  if (!isRecord(candidate) ||
+      Object.keys(candidate).sort().join(",") !==
+        "artifacts,candidate_fingerprint,candidate_id,critique,git,git_retention,schema,verification,workspace" ||
+      candidate.schema !== "work.review-candidate/v1" ||
+      candidate.candidate_id !== subjectId ||
+      !isDigest(candidate.candidate_fingerprint) ||
+      !hasExactKeys(candidate.git, ["clean", "commit_sha", "ref", "tree_sha"]) ||
+      !validGitFacts(candidate.git) ||
+      candidate.git.clean !== true ||
+      !hasExactKeys(candidate.workspace, [
+        "contract",
+        "fingerprint",
+        "generation",
+        "mutation_epoch",
+        "subject_id",
+      ]) ||
+      candidate.workspace.contract !== "work.workspace/v1" ||
+      !nonEmpty(candidate.workspace.subject_id) ||
+      !Number.isSafeInteger(candidate.workspace.generation) ||
+      candidate.workspace.generation < 1 ||
+      !Number.isSafeInteger(candidate.workspace.mutation_epoch) ||
+      candidate.workspace.mutation_epoch < 1 ||
+      candidate.workspace.fingerprint !== digest({ git: candidate.git }) ||
+      !validReviewVerificationReceipt(
+        candidate.verification,
+        candidate.workspace,
+        candidate.git,
+      ) ||
+      !validReviewCritiqueReceipt(candidate.critique) ||
+      !Array.isArray(candidate.artifacts) ||
+      candidate.artifacts.length === 0 ||
+      candidate.artifacts.some((artifact) =>
+        !hasExactKeys(artifact, ["artifact_schema", "digest", "generation"]) ||
+        !isDigest(artifact.digest) ||
+        !Number.isSafeInteger(artifact.generation) || artifact.generation < 1 ||
+        !nonEmpty(artifact.artifact_schema)) ||
+      !hasExactKeys(candidate.git_retention, [
+        "commit_sha",
+        "repository_id",
+        "retention_ref",
+        "schema",
+        "tree_sha",
+      ]) ||
+      candidate.git_retention.schema !== "flow.git-retention-receipt/v1" ||
+      !nonEmpty(candidate.git_retention.repository_id) ||
+      candidate.git_retention.commit_sha !== candidate.git.commit_sha ||
+      candidate.git_retention.tree_sha !== candidate.git.tree_sha ||
+      !nonEmpty(candidate.git_retention.retention_ref)) {
+    return false;
+  }
+  const { candidate_fingerprint: ignoredFingerprint, ...identity } = candidate;
+  return digest(identity) === candidate.candidate_fingerprint;
+}
+
+// ReviewAuthority first enforces this self-contained candidate shape. The
+// feature seal path separately binds the same receipt to selected evidence,
+// operation authority, publication, and live Work-domain projections.
+function validReviewVerificationReceipt(receipt, candidateWorkspace, candidateGit) {
+  const identity = stripReceiptDigests(receipt);
+  if (!hasExactKeys(receipt, [
+    "acceptance_criteria",
+    "attempt_id",
+    "brief_id",
+    "discriminating_evidence",
+    "effect_id",
+    "idempotency_key",
+    "operation_contract",
+    "receipt_digest",
+    "schema",
+    "selected_evidence_fingerprint",
+    "self_digest",
+    "source_authority_watermark",
+    "workspace",
+  ]) ||
+      receipt.schema !== "work.feature-verification-receipt/v1" ||
+      !nonEmpty(receipt.brief_id) ||
+      !nonEmpty(receipt.effect_id) ||
+      !nonEmpty(receipt.attempt_id) ||
+      !nonEmpty(receipt.idempotency_key) ||
+      !nonEmpty(receipt.operation_contract) ||
+      !isDigest(receipt.source_authority_watermark) ||
+      !isDigest(receipt.selected_evidence_fingerprint) ||
+      !Array.isArray(receipt.acceptance_criteria) ||
+      receipt.acceptance_criteria.length === 0 ||
+      receipt.acceptance_criteria.some((criterion) =>
+        !hasExactKeys(criterion, ["criterion", "evidence_digest", "verdict"]) ||
+        !nonEmpty(criterion.criterion) ||
+        !isDigest(criterion.evidence_digest) ||
+        criterion.verdict !== "passed") ||
+      !hasExactKeys(receipt.workspace, [
+        "fingerprint",
+        "generation",
+        "git",
+        "mutation_epoch",
+        "subject_id",
+      ]) ||
+      receipt.workspace.subject_id !== candidateWorkspace.subject_id ||
+      !Number.isSafeInteger(receipt.workspace.generation) ||
+      receipt.workspace.generation < 1 ||
+      !Number.isSafeInteger(receipt.workspace.mutation_epoch) ||
+      receipt.workspace.mutation_epoch < 1 ||
+      !hasExactKeys(receipt.workspace.git, ["clean", "commit_sha", "ref", "tree_sha"]) ||
+      !validGitFacts(receipt.workspace.git) ||
+      receipt.workspace.git.clean !== true ||
+      !isDeepStrictEqual(receipt.workspace.git, candidateGit) ||
+      receipt.workspace.fingerprint !== digest({ git: receipt.workspace.git }) ||
+      !validReviewDiscriminatingEvidence(
+        receipt.discriminating_evidence,
+        receipt.selected_evidence_fingerprint,
+        receipt.workspace.fingerprint,
+      ) ||
+      !isDigest(receipt.receipt_digest) ||
+      !isDigest(receipt.self_digest) ||
+      digest(identity) !== receipt.receipt_digest ||
+      receipt.receipt_digest !== receipt.self_digest) {
+    return false;
+  }
+  return true;
+}
+
+function validReviewDiscriminatingEvidence(
+  evidence,
+  selectedFingerprint,
+  postMutationFingerprint,
+) {
+  if (evidence?.kind === "safe_baseline") {
+    return hasExactKeys(evidence, [
+      "distinguished",
+      "kind",
+      "post_mutation_fingerprint",
+      "schema",
+      "selected_fingerprint",
+    ]) && evidence.schema === "flow.feature-discriminating-evidence/v1" &&
+      evidence.selected_fingerprint === selectedFingerprint &&
+      evidence.post_mutation_fingerprint === postMutationFingerprint &&
+      evidence.selected_fingerprint !== evidence.post_mutation_fingerprint &&
+      evidence.distinguished === true;
+  }
+  return hasExactKeys(evidence, [
+    "assertion_receipt_digest",
+    "kind",
+    "non_destructive",
+    "post_mutation_fingerprint",
+    "satisfied",
+    "schema",
+    "selected_fingerprint",
+  ]) && evidence.schema === "flow.feature-discriminating-evidence/v1" &&
+    evidence.kind === "compensating_assertion" &&
+    evidence.selected_fingerprint === selectedFingerprint &&
+    evidence.post_mutation_fingerprint === postMutationFingerprint &&
+    isDigest(evidence.assertion_receipt_digest) &&
+    evidence.non_destructive === true && evidence.satisfied === true;
+}
+
+function validReviewCritiqueReceipt(receipt) {
+  const identity = stripReceiptDigests(receipt);
+  return hasExactKeys(receipt, [
+    "delegate_evidence",
+    "effect_id",
+    "findings",
+    "idempotency_key",
+    "operation_contract",
+    "receipt_digest",
+    "schema",
+    "self_digest",
+    "source_authority_watermark",
+  ]) && receipt.schema === "work.feature-critique-receipt/v1" &&
+    nonEmpty(receipt.effect_id) &&
+    nonEmpty(receipt.idempotency_key) &&
+    nonEmpty(receipt.operation_contract) &&
+    isDigest(receipt.source_authority_watermark) &&
+    hasExactKeys(receipt.delegate_evidence, [
+      "attempt_id",
+      "card_id",
+      "effect_id",
+      "evidence",
+      "idempotency_key",
+      "source_authority_watermark",
+    ]) &&
+    nonEmpty(receipt.delegate_evidence.card_id) &&
+    nonEmpty(receipt.delegate_evidence.effect_id) &&
+    nonEmpty(receipt.delegate_evidence.attempt_id) &&
+    nonEmpty(receipt.delegate_evidence.idempotency_key) &&
+    isDigest(receipt.delegate_evidence.source_authority_watermark) &&
+    receipt.delegate_evidence.evidence !== undefined &&
+    Array.isArray(receipt.findings) &&
+    receipt.findings.every((finding) => isRecord(finding) &&
+      finding.classification !== "blocking") &&
+    isDigest(receipt.receipt_digest) &&
+    isDigest(receipt.self_digest) &&
+    digest(identity) === receipt.receipt_digest &&
+    receipt.receipt_digest === receipt.self_digest;
 }
 
 function validArtifact(subjectId, artifact) {

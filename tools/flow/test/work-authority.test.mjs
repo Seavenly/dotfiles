@@ -16,6 +16,7 @@ import {
   buildHumanAuthorityBinding,
   foldWorkStream,
   getArtifactAuthority,
+  getReviewAuthority,
   getResourceHandoffAuthority,
   getWorkspaceAuthority,
 } from "../src/work-authority.mjs";
@@ -206,6 +207,30 @@ test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects",
   assert.equal(getArtifactAuthority({ runAuthority: inspector }).command(
     artifactRegistration(Buffer.from("inspect-only\n"), sha256(Buffer.from("inspect-only\n"))),
   ).code, "mutation_authority_unavailable");
+});
+
+test("ReviewAuthority reserves candidate sealing for atomic RunAuthority finalization", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "review-process"),
+  });
+  t.after(() => runAuthority.close());
+  const reviewAuthority = getReviewAuthority({ runAuthority });
+  assert.equal(reviewAuthority.schema, "work.review-authority/v1");
+
+  const command = reviewCandidateSealCommand();
+  const rejected = reviewAuthority.command(command);
+  assert.equal(rejected.code, "review_candidate_seal_requires_run_authority");
+  assert.deepEqual(rejected.legal_actions, []);
+  const projection = reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: command.subject_id,
+  });
+  assert.equal(projection.code, "unknown_subject");
 });
 
 test("WorkspaceAuthority fences concurrent writers by generation and fingerprint", async (t) => {
@@ -1374,6 +1399,108 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
     subject_id: artifactDigest,
   }).status, "collected");
 });
+
+function reviewCandidateSealCommand({
+  commandId = "review-seal:candidate",
+  expectedGeneration = 0,
+  candidateFingerprint = null,
+  git = exactGitFacts(),
+} = {}) {
+  const verificationIdentity = {
+    schema: "work.feature-verification-receipt/v1",
+    brief_id: "brief:local",
+    acceptance_criteria: [{
+      criterion: "the local candidate is ready for review",
+      evidence_digest: `sha256:${"7".repeat(64)}`,
+      verdict: "passed",
+    }],
+    discriminating_evidence: {
+      schema: "flow.feature-discriminating-evidence/v1",
+      kind: "safe_baseline",
+      selected_fingerprint: `sha256:${"3".repeat(64)}`,
+      post_mutation_fingerprint: digestValue({ git }),
+      distinguished: true,
+    },
+    selected_evidence_fingerprint: `sha256:${"3".repeat(64)}`,
+    workspace: {
+      subject_id: "workspace:producer",
+      generation: 1,
+      mutation_epoch: 7,
+      fingerprint: digestValue({ git }),
+      git: { ...git },
+    },
+    source_authority_watermark: `sha256:${"8".repeat(64)}`,
+    operation_contract: "flow.operation/feature-verify/v1",
+    effect_id: "effect:verify",
+    attempt_id: "attempt:verify",
+    idempotency_key: "idempotency:verify",
+  };
+  const verification = {
+    ...verificationIdentity,
+    receipt_digest: digestValue(verificationIdentity),
+    self_digest: digestValue(verificationIdentity),
+  };
+  const critiqueIdentity = {
+    schema: "work.feature-critique-receipt/v1",
+    delegate_evidence: {
+      card_id: "feature-critique",
+      effect_id: "effect:critique",
+      attempt_id: "attempt:critique",
+      idempotency_key: "idempotency:critique",
+      source_authority_watermark: `sha256:${"9".repeat(64)}`,
+      evidence: "independent critique evidence",
+    },
+    findings: [],
+    operation_contract: "flow.delegated-agent-port/v1",
+    effect_id: "effect:critique",
+    idempotency_key: "idempotency:critique",
+    source_authority_watermark: `sha256:${"9".repeat(64)}`,
+  };
+  const critique = {
+    ...critiqueIdentity,
+    receipt_digest: digestValue(critiqueIdentity),
+    self_digest: digestValue(critiqueIdentity),
+  };
+  const candidateIdentity = {
+    schema: "work.review-candidate/v1",
+    candidate_id: "candidate:local",
+    git,
+    workspace: {
+      contract: "work.workspace/v1",
+      subject_id: "workspace:producer",
+      generation: 1,
+      mutation_epoch: 7,
+      fingerprint: digestValue({ git }),
+    },
+    verification,
+    critique,
+    artifacts: [{
+      digest: `sha256:${"6".repeat(64)}`,
+      generation: 1,
+      artifact_schema: "example.candidate/v1",
+    }],
+    git_retention: {
+      schema: "flow.git-retention-receipt/v1",
+      repository_id: "github.com/Seavenly/example",
+      commit_sha: git.commit_sha,
+      tree_sha: git.tree_sha,
+      retention_ref: "refs/flow/review/candidate-local",
+    },
+  };
+  const candidate = {
+    ...candidateIdentity,
+    candidate_fingerprint: candidateFingerprint ?? digestValue(candidateIdentity),
+  };
+  return {
+    schema: "work.review-candidate-seal-command/v1",
+    command_id: commandId,
+    type: "review_candidate_seal",
+    contract: "work.review/v1",
+    subject_id: candidate.candidate_id,
+    expected_generation: expectedGeneration,
+    candidate,
+  };
+}
 
 function workspaceRegistration(canonicalPath = "/tmp/producer-worktree", {
   disposition = "producer_owned",

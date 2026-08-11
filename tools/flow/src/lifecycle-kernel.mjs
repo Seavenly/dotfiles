@@ -1,4 +1,4 @@
-import { digest } from "./canonical.mjs";
+import { digest, freezeCanonical } from "./canonical.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 import { createRejection } from "./rejection.mjs";
 
@@ -387,6 +387,7 @@ function delegateDecision(fold, command, delegate) {
       card_id: delegate.id,
       classification: "caller_idempotent",
       operation_contract: card.executor.contract,
+      source_authority_watermark: fold.watermark,
       delegate_input: delegateInput,
       delegate_validator_contracts: card.validators,
       managed_agent_binding: card.inputs.managed_agent ?? null,
@@ -424,6 +425,8 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
   const operationCard = fold.active_plan.cards.find(
     ({ id }) => id === operation.id,
   );
+  const materialized = materializeOperationEvidence(fold, operationCard);
+  if (materialized.code !== null) return reject(fold, command, materialized.code);
   const attemptId = `${fold.run_id}:${operation.id}:attempt:1`;
   const effectIdentity = digest({
     schema: "flow.operation-effect-identity/v1",
@@ -461,7 +464,12 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
       operation_contract: operationCard.executor.contract,
       card_identity: digest(operationCard),
       revision_ordinal: fold.current_revision.ordinal,
-      operation_input: operationCard.inputs,
+      operation_input: {
+        ...operationCard.inputs,
+        ...(materialized.evidence === null ? {} : {
+          authority_materialized_evidence: materialized.evidence,
+        }),
+      },
       source_authority_watermark: fold.watermark,
       route_binding: operationCard.route,
       resource_claims: operationCard.resource_claims,
@@ -469,6 +477,116 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
     obligations: [],
     projection_hints: ["operator", "graph"],
   };
+}
+
+function materializeOperationEvidence(fold, operationCard) {
+  const inputs = operationCard?.inputs ?? {};
+  if (Object.hasOwn(inputs, "authority_materialized_evidence")) {
+    return { code: "caller_materialized_evidence_forbidden", evidence: null };
+  }
+  const delegateCardIds = inputs.delegate_evidence_card_ids;
+  const operationCardIds = inputs.operation_evidence_card_ids;
+  if (delegateCardIds === undefined && operationCardIds === undefined) {
+    return { code: null, evidence: null };
+  }
+  if (delegateCardIds !== undefined &&
+      (!Array.isArray(delegateCardIds) || duplicateValues(delegateCardIds)) ||
+      operationCardIds !== undefined &&
+        (!Array.isArray(operationCardIds) || duplicateValues(operationCardIds))) {
+    return { code: "authority_evidence_declaration_invalid", evidence: null };
+  }
+  const delegates = [];
+  for (const cardId of delegateCardIds ?? []) {
+    const resolved = resolveDelegateEvidence(fold, cardId);
+    if (resolved.code !== null) return resolved;
+    delegates.push(resolved.evidence);
+  }
+  const operations = [];
+  for (const cardId of operationCardIds ?? []) {
+    const resolved = resolveOperationEvidence(fold, cardId);
+    if (resolved.code !== null) return resolved;
+    operations.push(resolved.evidence);
+  }
+  const evidence = {
+    schema: "flow.authority-materialized-evidence/v1",
+    ...(delegates.length === 0 ? {} : { accepted_delegates: delegates }),
+    ...(operations.length === 0 ? {} : {
+      operation_receipts: operations,
+      ...(operations.length === 1 ? { verify_receipt: operations[0].receipt } : {}),
+    }),
+  };
+  return { code: null, evidence: freezeCanonical(evidence) };
+}
+
+function resolveDelegateEvidence(fold, cardId) {
+  const card = fold.active_plan.cards.find(({ id }) => id === cardId);
+  if (!card) return { code: "authority_evidence_missing", evidence: null };
+  if (card.executor?.kind !== "delegate") {
+    return { code: "authority_evidence_wrong_kind", evidence: null };
+  }
+  const attempts = fold.delegate_attempts.filter(({ card_id: id }) => id === cardId);
+  if (attempts.some(({ status }) => status === "quarantined")) {
+    return { code: "authority_evidence_quarantined", evidence: null };
+  }
+  if (attempts.length > 1) {
+    return { code: "authority_evidence_ambiguous", evidence: null };
+  }
+  const attempt = attempts[0];
+  if (attempt?.status !== "accepted" || attempt.evidence === null) {
+    return { code: "authority_evidence_missing", evidence: null };
+  }
+  const intent = fold.effect_intents.find(({ effect_id: effectId }) =>
+    effectId === attempt.effect_id);
+  if (!intent) return { code: "authority_evidence_missing", evidence: null };
+  return {
+    code: null,
+    evidence: {
+      card_id: cardId,
+      effect_id: attempt.effect_id,
+      attempt_id: attempt.attempt_id,
+      idempotency_key: intent.idempotency_key,
+      source_authority_watermark: intent.source_authority_watermark,
+      evidence: attempt.evidence,
+    },
+  };
+}
+
+function resolveOperationEvidence(fold, cardId) {
+  const card = fold.active_plan.cards.find(({ id }) => id === cardId);
+  if (!card) return { code: "authority_evidence_missing", evidence: null };
+  if (card.executor?.kind !== "operation") {
+    return { code: "authority_evidence_wrong_kind", evidence: null };
+  }
+  const effects = fold.effects.filter(({ card_id: id }) => id === cardId);
+  if (effects.length > 1) {
+    return { code: "authority_evidence_ambiguous", evidence: null };
+  }
+  const effect = effects[0];
+  if (effect?.status === "quarantined") {
+    return { code: "authority_evidence_quarantined", evidence: null };
+  }
+  if (effect?.status !== "succeeded" || effect.receipt === null) {
+    return { code: "authority_evidence_missing", evidence: null };
+  }
+  const intent = fold.effect_intents.find(({ effect_id: effectId }) =>
+    effectId === effect.effect_id);
+  if (!intent) return { code: "authority_evidence_missing", evidence: null };
+  return {
+    code: null,
+    evidence: {
+      card_id: cardId,
+      effect_id: effect.effect_id,
+      attempt_id: intent.attempt_id,
+      idempotency_key: intent.idempotency_key,
+      source_authority_watermark: intent.source_authority_watermark,
+      receipt: effect.receipt,
+    },
+  };
+}
+
+function duplicateValues(values) {
+  return new Set(values).size !== values.length ||
+    values.some((value) => typeof value !== "string" || value.length === 0);
 }
 
 function sameCanonicalValue(left, right) {

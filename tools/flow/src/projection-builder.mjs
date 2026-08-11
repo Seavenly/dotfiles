@@ -76,6 +76,17 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     bindings: fold.resource_handoff_bindings,
     published: fold.handoffs,
   };
+  const reviewCandidateReference = fold.review_candidate_reference === undefined
+    ? null
+    : freezeCanonical({
+      schema: "flow.review-candidate-reference/v1",
+      candidate_id: fold.review_candidate_reference.candidate_id,
+      candidate_fingerprint: fold.review_candidate_reference.candidate_fingerprint,
+      review_authority_watermark:
+        fold.review_candidate_reference.review_authority_watermark,
+      authority_watermark: fold.watermark,
+      legal_actions: [],
+    });
   const revision = {
     current: fold.current_revision,
     history: fold.revisions,
@@ -94,6 +105,9 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     effects: fold.effects,
     resources,
     handoffs,
+    ...(reviewCandidateReference === null ? {} : {
+      review_candidate_reference: reviewCandidateReference,
+    }),
     legal_actions: fold.legal_actions,
   };
   const statuses = [...new Set(fold.cards.map(({ status }) => status))];
@@ -153,6 +167,9 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
       effects: fold.effects,
       resources,
       handoffs,
+      ...(reviewCandidateReference === null ? {} : {
+        review_candidate_reference: reviewCandidateReference,
+      }),
       legal_actions: fold.legal_actions,
     },
   });

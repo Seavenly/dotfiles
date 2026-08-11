@@ -65,6 +65,17 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       handoff_id: handoffId,
       handoff_watermark: handoffWatermark,
     }));
+  const reviewCandidateEvent = run.events
+    .filter(({ type }) => type === "review_candidate_referenced")
+    .at(-1);
+  const reviewCandidateReference = reviewCandidateEvent === undefined
+    ? null
+    : {
+      candidate_id: reviewCandidateEvent.candidate_id,
+      candidate_fingerprint: reviewCandidateEvent.candidate_fingerprint,
+      review_authority_watermark:
+        reviewCandidateEvent.review_authority_watermark,
+    };
   const resourceHandoffBindings = run.events
     .filter(({ type }) => type === "resource_handoff_bound")
     .map(({
@@ -488,6 +499,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       return {
         attempt_id: intent.attempt_id,
         card_id: intent.card_id,
+        effect_id: intent.effect_id,
         caller_key: intent.attempt_id,
         route_binding: intent.route_binding,
         status: isQuarantinedAfterCancellation(intent.effect_id)
@@ -577,6 +589,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     effects,
     ...(trackerProgress === null ? {} : { tracker_progress: trackerProgress }),
     handoffs,
+    ...(reviewCandidateReference === null ? {} : {
+      review_candidate_reference: reviewCandidateReference,
+    }),
     resource_handoff_bindings: resourceHandoffBindings,
     delegate_attempts: delegateAttempts,
     quarantined_delegate_outputs: quarantinedDelegateOutputs,
@@ -591,6 +606,17 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     throw new Error("run projection requires an authoritative fold");
   }
   const views = buildRunViews({ authorityEventStreamDigest, events, fold });
+  const reviewCandidateReference = fold.review_candidate_reference === undefined
+    ? null
+    : freezeCanonical({
+      schema: "flow.review-candidate-reference/v1",
+      candidate_id: fold.review_candidate_reference.candidate_id,
+      candidate_fingerprint: fold.review_candidate_reference.candidate_fingerprint,
+      review_authority_watermark:
+        fold.review_candidate_reference.review_authority_watermark,
+      authority_watermark: fold.watermark,
+      legal_actions: [],
+    });
   return freezeCanonical({
     schema: "flow.run-projection/v1",
     run_id: fold.run_id,
@@ -629,6 +655,9 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     effects: fold.effects,
     ...(fold.tracker_progress === undefined ? {} : {
       tracker_progress: fold.tracker_progress,
+    }),
+    ...(reviewCandidateReference === null ? {} : {
+      review_candidate_reference: reviewCandidateReference,
     }),
     handoffs: fold.handoffs,
     resource_handoff_bindings: fold.resource_handoff_bindings,

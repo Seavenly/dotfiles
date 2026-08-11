@@ -317,6 +317,24 @@
       "commands": ["work.artifact-record-command/v1"],
       "collection_preview": "work.artifact-collection-preview/v1"
     },
+    "review": {
+      "authority": "ReviewAuthority",
+      "interface": "work.review-authority/v1",
+      "contract": "work.review/v1",
+      "candidate": "work.review-candidate/v1",
+      "projection": "work.review-candidate-projection/v1",
+      "event": "work.review-event/v1",
+      "commands": [
+        "work.review-candidate-seal-command/v1"
+      ],
+      "statuses": [
+        "sealed",
+        "superseded",
+        "abandoned"
+      ],
+      "identity": "candidate_fingerprint",
+      "legal_actions": "closed_after_seal"
+    },
     "handoff": {
       "authority": "Work_domain_authorities_with_RunAuthority_finalization",
       "interface": "flow.resource-handoff-authority/v1",
@@ -447,6 +465,14 @@
     "work.rejection/v1",
     "work.workspace-projection/v1",
     "work.artifact-projection/v1",
+    "work.review-authority/v1",
+    "work.review-candidate-seal-command/v1",
+    "work.review-candidate/v1",
+    "work.review-event/v1",
+    "work.review-candidate-projection/v1",
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
     "work.idempotency-receipt/v1",
     "flow.launch-policy/v1",
     "flow.transition-ledger/v1",

@@ -325,6 +325,14 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "work.git-observation/v1",
     "work.artifact-authority/v1",
     "work.artifact-record-command/v1",
+    "work.review-authority/v1",
+    "work.review-candidate-seal-command/v1",
+    "work.review-candidate/v1",
+    "work.review-event/v1",
+    "work.review-candidate-projection/v1",
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
     "flow.resource-handoff-authority/v1",
     "work.command-receipt/v1",
     "work.rejection/v1",
@@ -340,6 +348,18 @@ test("the public catalog exposes the settled interface and forbids legacy import
   ]) {
     assert.ok(catalog.contracts.includes(contract), contract);
   }
+  assert.deepEqual(catalog.work_domain_interfaces.review, {
+    authority: "ReviewAuthority",
+    interface: "work.review-authority/v1",
+    contract: "work.review/v1",
+    candidate: "work.review-candidate/v1",
+    projection: "work.review-candidate-projection/v1",
+    event: "work.review-event/v1",
+    commands: ["work.review-candidate-seal-command/v1"],
+    statuses: ["sealed", "superseded", "abandoned"],
+    identity: "candidate_fingerprint",
+    legal_actions: "closed_after_seal",
+  });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",

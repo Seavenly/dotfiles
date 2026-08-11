@@ -121,6 +121,44 @@ templates before one explicit accept or decline decision. It is distinct from
 dynamic plan confirmation and does not require repeating the complete graph.
 _Avoid_: Implicit approval, graph ceremony
 
+**Feature brief**:
+One accepted, identity-bearing feature request whose acceptance criteria must
+all receive registered-operation verification verdicts before a local review
+candidate can be sealed.
+_Avoid_: Delegate prompt, issue snapshot
+
+**Safe baseline**:
+A non-mutating pre-change observation whose fingerprint must differ from the
+verified clean post-mutation workspace fingerprint.
+_Avoid_: Assumed prior behavior, prose-only expectation
+
+**Compensating assertion**:
+An explicitly non-destructive invariant used when obtaining a safe baseline is
+not practical; its registered receipt must bind the selected assertion and
+prove it remained satisfied after the change.
+_Avoid_: Destructive probe, unverified claim
+
+**Discriminating evidence**:
+Registered-operation evidence that binds either a safe baseline to a distinct
+post-mutation state or a compensating assertion to its satisfied receipt.
+_Avoid_: Delegate self-report, selected fingerprint alone
+
+**Feature finalization binding**:
+The selected candidate identity and exact handoff publication that cross-bind
+the workspace generation, mutation epoch, clean Git transition, artifacts, and
+retention before execution begins.
+_Avoid_: Latest workspace, publication assembled after verification
+
+**Feature verification receipt**:
+The registered verification operation's self-digest-bound verdicts and
+discriminating evidence for every acceptance criterion in one feature brief.
+_Avoid_: Delegate output, partial verdict list
+
+**Feature critique receipt**:
+The sealed operation receipt that binds independent critique evidence and its
+non-blocking findings to the exact candidate finalization effect.
+_Avoid_: Unbound review prose, ignored blocking finding
+
 **Checkpoint decision**:
 A typed approve or decline command for one currently actionable checkpoint,
 bound to the exact authority watermark from which it was offered.
@@ -445,6 +483,10 @@ _Avoid_: Migration record, replacement run
   coverage, policy, cleanup, and verification evidence all pass.
 - A **tracker issue** may own one **flow run** without exposing its internal
   **flow cards** or **legacy Kanban cards**.
+- **ReviewAuthority** seals one immutable local **review candidate** only after
+  registered verification receipts cover the accepted brief and bind the exact
+  clean workspace generation, mutation epoch, Git retention, artifacts, and
+  handoff.
 - A **review candidate** becomes externally complete only through its
   **completion PR**.
 - A **review projection** derives from one **review manifest** and never owns
