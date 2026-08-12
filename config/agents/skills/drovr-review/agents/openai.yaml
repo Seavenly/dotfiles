@@ -1,5 +1,5 @@
 interface:
   display_name: "Drovr Review"
-  short_description: "Iterate on a Claude review through Drovr"
+  short_description: "Run a Sol-led Drovr review with Luna corrections"
 policy:
   allow_implicit_invocation: false
