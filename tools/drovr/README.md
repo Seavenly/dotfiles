@@ -206,6 +206,8 @@ drovr turn get TURN_ID --include-messages
 drovr turn list --agent AGENT_ID
 drovr turn cancel TURN_ID
 drovr status
+drovr status --agent AGENT_ID
+drovr status --task TASK_ID
 drovr group list --status active
 drovr group get GROUP_ID
 drovr task open --key TASK_KEY --cwd /path/to/existing/directory
@@ -220,6 +222,12 @@ drovr agent retire AGENT_ID
 drovr task close TASK_ID [--force]
 drovr group close GROUP_ID [--force]
 ```
+
+Prefer the ID-scoped status forms when the task or agent identity is already
+known; the unfiltered form intentionally projects the complete registry. Run
+automation-facing Drovr commands and `drovr doctor` from the same non-login
+shell. A caller-shell compatibility block returns the exact `drovr doctor`
+remediation and does not justify launching a replacement agent.
 
 Wait timeouts are non-destructive. Completion is accepted only after every
 recorded input appears in order in the native transcript and a complete

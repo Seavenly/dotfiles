@@ -189,6 +189,68 @@ exit 1
     (await readFile(calls, "utf8")).trim().split("\n"),
     ["session list --json", "--session delegates agent list"],
   );
+
+  await writeRecord(fixture.registryDirectory, "agents", {
+    schema: "drovr.agent/v1",
+    id: "agent-sibling",
+    task_id: "task-active",
+    key: "reviewer",
+    label: "Reviewer",
+    status: "retired",
+    launch: {
+      harness: "codex",
+      model: "gpt-5.6-luna",
+      effort: "low",
+      capability: "read-only",
+    },
+    herdr: { name: "managed-sibling", pane_id: "pane-sibling" },
+    native_session: "native-sibling",
+    created_at: "2026-07-23T10:05:00.000Z",
+    retired_at: "2026-07-23T10:08:00.000Z",
+  });
+  await writeRecord(fixture.registryDirectory, "turns", {
+    schema: "drovr.turn/v1",
+    id: "turn-sibling",
+    agent_id: "agent-sibling",
+    task_id: "task-active",
+    status: "working",
+    inputs: [{ sequence: 1, text: "Review" }],
+    created_at: "2026-07-23T10:06:00.000Z",
+  });
+  await writeRecord(fixture.registryDirectory, "blocks", {
+    schema: "drovr.block/v1",
+    id: "block-sibling",
+    turn_id: "turn-sibling",
+    agent_id: "agent-sibling",
+    task_id: "task-active",
+    status: "open",
+    created_at: "2026-07-23T10:07:00.000Z",
+  });
+
+  for (const [filter, scope, expectedAgents, expectedTurns, expectedBlocks] of [
+    [
+      ["--agent", "agent-active"],
+      { agent_id: "agent-active" },
+      ["agent-active"],
+      ["turn-active"],
+      ["block-active"],
+    ],
+    [
+      ["--task", "task-active"],
+      { task_id: "task-active" },
+      ["agent-active", "agent-sibling"],
+      ["turn-active", "turn-sibling"],
+      ["block-active", "block-sibling"],
+    ],
+  ]) {
+    const scoped = await runDrovr(env, ["status", ...filter]);
+    assert.deepEqual(scoped.result.scope, scope);
+    assert.deepEqual(scoped.result.groups.map(({ id }) => id), ["group-active"]);
+    assert.deepEqual(scoped.result.tasks.map(({ id }) => id), ["task-active"]);
+    assert.deepEqual(scoped.result.agents.map(({ id }) => id), expectedAgents);
+    assert.deepEqual(scoped.result.active_turns.map(({ id }) => id), expectedTurns);
+    assert.deepEqual(scoped.result.blocked_events.map(({ id }) => id), expectedBlocks);
+  }
 });
 
 test("status reports a missing configured session without creating it", async (t) => {

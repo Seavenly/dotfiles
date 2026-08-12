@@ -36,6 +36,10 @@ test("public command advertises durable turn commands", async () => {
   });
 
   assert.match(stdout, /drovr doctor/);
+  assert.match(
+    stdout,
+    /drovr status \[--agent AGENT_ID \| --task TASK_ID\]/,
+  );
   assert.match(stdout, /drovr delegate \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr ask AGENT_ID \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr turn start AGENT_ID \[options\] \[PROMPT\]/);

@@ -309,6 +309,15 @@ function blockedCompatibility({
       ? { mismatches: deepFreeze(structuredClone(mismatches)) }
       : {}),
     ...(detail ? { detail } : {}),
+    ...(reason === "caller_shell_mismatch"
+      ? {
+          remediation: {
+            command: "drovr doctor",
+            shell: "same_non_login_shell",
+            detail: "run Drovr and doctor from the same non-login shell, then align the caller and managed harness executable",
+          },
+        }
+      : {}),
     evidence_digest: facts ? digestCanonical(facts) : null,
     legal_actions: legalActions(reason),
     upstream_gaps: UPSTREAM_GAPS,

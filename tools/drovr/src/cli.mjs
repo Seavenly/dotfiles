@@ -53,7 +53,7 @@ import {
 
 const HELP = `Usage:
   drovr doctor
-  drovr status
+  drovr status [--agent AGENT_ID | --task TASK_ID]
   drovr lock abandon LOCK_ENTRY --authority-watermark JSON --decision ID
   drovr lock release-absent LOCK_ENTRY --lock-id LOCK_ID --authority-watermark JSON --decision ID
   drovr describe [launch options] --caller-metadata JSON
@@ -189,8 +189,20 @@ export async function runCli(argv) {
     return report.ok ? 0 : 3;
   }
 
-  if (argv[0] === "status" && argv.length === 1) {
-    process.stdout.write(`${JSON.stringify(await statusReport())}\n`);
+  if (argv[0] === "status") {
+    const { options, positional } = parseOptions(
+      argv.slice(1),
+      new Map([
+        ["--agent", "agentId"],
+        ["--task", "taskId"],
+      ]),
+      "status",
+    );
+    if (positional.length) invalidArguments("status accepts no positional arguments");
+    if (options.agentId && options.taskId) {
+      invalidArguments("status accepts either --agent or --task, not both");
+    }
+    process.stdout.write(`${JSON.stringify(await statusReport(options))}\n`);
     return 0;
   }
 

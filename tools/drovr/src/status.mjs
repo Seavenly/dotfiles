@@ -13,11 +13,16 @@ import {
   stateDirectory,
 } from "./registry.mjs";
 
-export async function statusReport(dependencies = {}) {
+export async function statusReport(filters = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
-  const { groups, tasks, agents, turns, blocks, authority_watermark: authorityWatermark } =
+  const snapshot =
     await readRegistrySnapshot(registryDirectory);
+  const { groups, tasks, agents, turns, blocks } = scopedRegistry(
+    snapshot,
+    filters,
+  );
+  const authorityWatermark = snapshot.authority_watermark;
   const reconciliation = await resourceLockProjection(registryDirectory, {
     ...dependencies,
     authorityWatermark,
@@ -58,6 +63,8 @@ export async function statusReport(dependencies = {}) {
     ok: true,
     result: {
       status: observation.running ? "completed" : "session_missing",
+      ...(filters.agentId ? { scope: { agent_id: filters.agentId } } : {}),
+      ...(filters.taskId ? { scope: { task_id: filters.taskId } } : {}),
       authority_watermark: authorityWatermark,
       reconciliation,
       session: {
@@ -91,5 +98,30 @@ export async function statusReport(dependencies = {}) {
         })),
       warnings,
     },
+  };
+}
+
+function scopedRegistry(snapshot, { agentId, taskId }) {
+  if (!agentId && !taskId) return snapshot;
+  const agents = agentId
+    ? snapshot.agents.filter(({ id }) => id === agentId)
+    : snapshot.agents.filter(({ task_id: ownerTaskId }) => ownerTaskId === taskId);
+  const taskIds = new Set([
+    ...(taskId ? [taskId] : []),
+    ...agents.map(({ task_id: ownerTaskId }) => ownerTaskId),
+  ]);
+  const tasks = snapshot.tasks.filter(({ id }) => taskIds.has(id));
+  const groupIds = new Set(tasks.map(({ group_id: groupId }) => groupId));
+  const agentIds = new Set(agents.map(({ id }) => id));
+  const ownsActivity = agentId
+    ? ({ agent_id: ownerAgentId }) => agentIds.has(ownerAgentId)
+    : ({ task_id: ownerTaskId }) => taskIds.has(ownerTaskId);
+  return {
+    ...snapshot,
+    groups: snapshot.groups.filter(({ id }) => groupIds.has(id)),
+    tasks,
+    agents,
+    turns: snapshot.turns.filter(ownsActivity),
+    blocks: snapshot.blocks.filter(ownsActivity),
   };
 }

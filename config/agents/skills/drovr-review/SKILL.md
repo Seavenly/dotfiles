@@ -16,7 +16,10 @@ or Luna summary as proof; inspect the actual candidate state.
    review a moving or ambiguous candidate.
 
 2. From the candidate cwd, invoke one fresh, read-only Drovr reviewer with a
-   fresh task key:
+   fresh task key. Run Drovr with login-shell startup disabled so the caller
+   and managed pane resolve the same tracked harness executable. Before the
+   first launch, run `drovr doctor` once from that same cwd and non-login shell;
+   stop on an unqualified result instead of creating or retrying a reviewer.
 
    ```sh
    drovr delegate --task-key <key> --agent-key reviewer --cwd <cwd> \
@@ -29,6 +32,15 @@ or Luna summary as proof; inspect the actual candidate state.
    parent/blocker constraints, candidate identity, and state snapshot; do not
    require reviewer network access. Record the agent ID. Resume incomplete
    turns with that same agent; never replace it.
+
+   Retain the returned task, agent, and turn IDs. Resume a yielded automation
+   process through its existing process/session handle. Otherwise observe only
+   the exact turn with `drovr turn wait TURN_ID`, use `drovr turn get TURN_ID`
+   for a nonblocking snapshot, and add `--include-messages` only when the
+   transcript is needed. Use `drovr ask AGENT_ID "<prompt>"` and
+   `drovr agent get AGENT_ID` exactly. Do not use unfiltered `drovr status` to
+   rediscover known work; if IDs were lost, use `drovr status --agent AGENT_ID`
+   or `drovr status --task TASK_ID`.
 
 3. Adjudicate every finding as exactly one of `valid in-scope`, `invalid`,
    `out-of-scope`, or `needs clarification`. Use `drovr ask` on the same

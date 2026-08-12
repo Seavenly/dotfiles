@@ -460,6 +460,11 @@ test("managed-pane version drift from the caller shell is a typed compatibility 
     result.mismatches[0].field,
     "managed_pane_identity.executable.version",
   );
+  assert.deepEqual(result.remediation, {
+    command: "drovr doctor",
+    shell: "same_non_login_shell",
+    detail: "run Drovr and doctor from the same non-login shell, then align the caller and managed harness executable",
+  });
 });
 
 test("managed-pane executable, integration, path, file, and process binding changes are detected", async () => {
