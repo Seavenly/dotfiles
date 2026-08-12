@@ -6,6 +6,8 @@ import { createSemanticHarness } from "./harness-interface.mjs";
 import { resolveTaskIdentity } from "./identity.mjs";
 import {
   readRecords,
+  registryLockOptions,
+  registryOperation,
   stateDirectory,
   taskLifecycleLockKey,
   withResourceLock,
@@ -35,6 +37,20 @@ export async function openTask(options, dependencies = {}) {
     run: dependencies.run,
   });
   const registryDirectory = stateDirectory(env);
+  const lockOperation = registryOperation(
+    "task.open",
+    `${identity.groupKey}:${options.key}`,
+    {
+      identity,
+      request: {
+        group: options.group ?? null,
+        group_label: options.groupLabel ?? null,
+        key: options.key,
+        label: options.label ?? null,
+        cwd: options.cwd ?? null,
+      },
+    },
+  );
 
   return withResourceLock(
     registryDirectory,
@@ -144,6 +160,7 @@ export async function openTask(options, dependencies = {}) {
             }
             return { group, task: current };
           },
+          registryLockOptions(lockOperation),
         );
       }
 
@@ -179,6 +196,7 @@ export async function openTask(options, dependencies = {}) {
       );
       return { group, task: createdTask };
     },
+    registryLockOptions(lockOperation),
   );
 }
 

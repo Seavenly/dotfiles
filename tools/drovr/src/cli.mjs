@@ -38,6 +38,11 @@ import {
 } from "./queries.mjs";
 import { statusReport } from "./status.mjs";
 import { normalizeInputText } from "./turn-record.mjs";
+import {
+  abandonBareRegistryLock,
+  releaseAbsentRegistryLock,
+  stateDirectory,
+} from "./registry.mjs";
 import { openTask, taskOpenCommandResult } from "./task-open.mjs";
 import { agentStartCommandResult, startAgent } from "./agent-start.mjs";
 import {
@@ -49,6 +54,8 @@ import {
 const HELP = `Usage:
   drovr doctor
   drovr status
+  drovr lock abandon LOCK_ENTRY --authority-watermark JSON --decision ID
+  drovr lock release-absent LOCK_ENTRY --lock-id LOCK_ID --authority-watermark JSON --decision ID
   drovr describe [launch options] --caller-metadata JSON
   drovr delegate [options] [PROMPT]
   drovr ask AGENT_ID [options] [PROMPT]
@@ -184,6 +191,45 @@ export async function runCli(argv) {
 
   if (argv[0] === "status" && argv.length === 1) {
     process.stdout.write(`${JSON.stringify(await statusReport())}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "lock" && argv[1] === "abandon") {
+    const options = parseLockAbandonArguments(argv.slice(2));
+    const result = await abandonBareRegistryLock(
+      stateDirectory(process.env),
+      options.lockEntry,
+      {
+        authorityWatermark: options.authorityWatermark,
+        decisionId: options.decisionId,
+      },
+    );
+    process.stdout.write(`${JSON.stringify({
+      schema: "drovr.command/v1",
+      command: "lock abandon",
+      ok: true,
+      result,
+    })}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "lock" && argv[1] === "release-absent") {
+    const options = parseLockReleaseAbsentArguments(argv.slice(2));
+    const result = await releaseAbsentRegistryLock(
+      stateDirectory(process.env),
+      options.lockEntry,
+      {
+        lockId: options.lockId,
+        authorityWatermark: options.authorityWatermark,
+        decisionId: options.decisionId,
+      },
+    );
+    process.stdout.write(`${JSON.stringify({
+      schema: "drovr.command/v1",
+      command: "lock release-absent",
+      ok: true,
+      result,
+    })}\n`);
     return 0;
   }
 
@@ -522,6 +568,69 @@ function parseCloseArguments(argv, command, identifier) {
     invalidArguments("--force may be supplied once");
   }
   return { id, force: trailing.includes("--force") };
+}
+
+function parseLockAbandonArguments(argv) {
+  const lockEntry = argv[0];
+  if (!lockEntry) invalidArguments("lock abandon requires LOCK_ENTRY");
+  const { options, positional } = parseOptions(
+    argv.slice(1),
+    new Map([
+      ["--authority-watermark", "authorityWatermark"],
+      ["--decision", "decisionId"],
+    ]),
+    "lock abandon",
+  );
+  if (positional.length) invalidArguments("lock abandon accepts one LOCK_ENTRY");
+  if (!options.authorityWatermark) {
+    invalidArguments("lock abandon requires --authority-watermark JSON");
+  }
+  if (!options.decisionId) {
+    invalidArguments("lock abandon requires --decision ID");
+  }
+  return {
+    lockEntry,
+    authorityWatermark: parseJsonOption(
+      options.authorityWatermark,
+      "--authority-watermark",
+    ),
+    decisionId: options.decisionId,
+  };
+}
+
+function parseLockReleaseAbsentArguments(argv) {
+  const lockEntry = argv[0];
+  if (!lockEntry) invalidArguments("lock release-absent requires LOCK_ENTRY");
+  const { options, positional } = parseOptions(
+    argv.slice(1),
+    new Map([
+      ["--lock-id", "lockId"],
+      ["--authority-watermark", "authorityWatermark"],
+      ["--decision", "decisionId"],
+    ]),
+    "lock release-absent",
+  );
+  if (positional.length) {
+    invalidArguments("lock release-absent accepts one LOCK_ENTRY");
+  }
+  if (!options.lockId) {
+    invalidArguments("lock release-absent requires --lock-id LOCK_ID");
+  }
+  if (!options.authorityWatermark) {
+    invalidArguments("lock release-absent requires --authority-watermark JSON");
+  }
+  if (!options.decisionId) {
+    invalidArguments("lock release-absent requires --decision ID");
+  }
+  return {
+    lockEntry,
+    lockId: options.lockId,
+    authorityWatermark: parseJsonOption(
+      options.authorityWatermark,
+      "--authority-watermark",
+    ),
+    decisionId: options.decisionId,
+  };
 }
 
 function stagedInputCommandResult(context) {
@@ -899,7 +1008,7 @@ try {
   const command =
     process.argv[2] === "turn" && process.argv[3]
       ? `turn ${process.argv[3]}`
-      : ["agent", "group", "task"].includes(process.argv[2]) && process.argv[3]
+      : ["agent", "group", "task", "lock"].includes(process.argv[2]) && process.argv[3]
         ? `${process.argv[2]} ${process.argv[3]}`
         : (process.argv[2] ?? null);
   const report = expected

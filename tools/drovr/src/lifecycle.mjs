@@ -5,8 +5,11 @@ import { createAgentRetirementReceipt } from "./agent-retirement-receipt.mjs";
 import { observationErrorReason } from "./observation-reason.mjs";
 import {
   readRecords,
+  registryLockOptions,
+  registryOperation,
   stateDirectory,
   taskLifecycleLockKey,
+  withOrderedResourceLocks,
   withResourceLock,
   writeRecord,
 } from "./registry.mjs";
@@ -431,31 +434,14 @@ function withTaskLifecycleLocks(
   registryDirectory,
   taskIds,
   operation,
+  lockEvidence,
+  lockOptions = {},
 ) {
   return withOrderedResourceLocks(
     registryDirectory,
     taskIds.map(taskLifecycleLockKey),
     operation,
-  );
-}
-
-function withOrderedResourceLocks(
-  registryDirectory,
-  keys,
-  operation,
-  index = 0,
-) {
-  if (index === keys.length) return operation();
-  return withResourceLock(
-    registryDirectory,
-    keys[index],
-    () =>
-      withOrderedResourceLocks(
-        registryDirectory,
-        keys,
-        operation,
-        index + 1,
-      ),
+    registryLockOptions(lockEvidence, lockOptions),
   );
 }
 
@@ -482,6 +468,7 @@ async function forceInterruptActiveTurns({
   harness,
   now,
   timeoutMs,
+  lockEvidence,
 }) {
   const turnIds = turns
     .filter(({ status }) => status === "working")
@@ -600,6 +587,7 @@ async function forceInterruptActiveTurns({
           : {}),
       };
     },
+    registryLockOptions(lockEvidence),
   );
 }
 
@@ -761,6 +749,10 @@ export async function closeGroup(groupId, dependencies = {}) {
   const force = dependencies.force ?? false;
   const registryDirectory = stateDirectory(env);
   const initial = await groupLifecycleContext(registryDirectory, groupId);
+  const lockOperation = registryOperation("group.close", groupId, {
+    group_id: groupId,
+    force,
+  });
   return withResourceLock(
     registryDirectory,
     `group-key:${initial.group.key}`,
@@ -839,6 +831,7 @@ export async function closeGroup(groupId, dependencies = {}) {
                 harness,
                 now,
                 timeoutMs: dependencies.interruptTimeoutMs,
+                lockEvidence: lockOperation,
               })
             : { turns: [] };
           if (interruption.failure) {
@@ -868,8 +861,11 @@ export async function closeGroup(groupId, dependencies = {}) {
             ...(force ? { turn_outcomes: interruption.turns } : {}),
           };
         },
+        lockOperation,
+        {},
       );
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -893,6 +889,9 @@ export async function retireAgent(agentId, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await lifecycleContext(registryDirectory, "agent", agentId);
+  const lockOperation = registryOperation("agent.retire", agentId, {
+    agent_id: agentId,
+  });
   return withResourceLock(
     registryDirectory,
     taskLifecycleLockKey(initial.task.id),
@@ -1019,6 +1018,7 @@ export async function retireAgent(agentId, dependencies = {}) {
         cleanup_receipt: cleanupReceipt,
       };
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -1028,6 +1028,10 @@ export async function closeTask(taskId, dependencies = {}) {
   const force = dependencies.force ?? false;
   const registryDirectory = stateDirectory(env);
   const initial = await lifecycleContext(registryDirectory, "task", taskId);
+  const lockOperation = registryOperation("task.close", taskId, {
+    task_id: taskId,
+    force,
+  });
   return withResourceLock(
     registryDirectory,
     `group-key:${initial.group.key}`,
@@ -1103,6 +1107,7 @@ export async function closeTask(taskId, dependencies = {}) {
                 harness,
                 now,
                 timeoutMs: dependencies.interruptTimeoutMs,
+                lockEvidence: lockOperation,
               })
             : { turns: [] };
           if (interruption.failure) {
@@ -1136,7 +1141,9 @@ export async function closeTask(taskId, dependencies = {}) {
             ...(force ? { turn_outcomes: interruption.turns } : {}),
           };
         },
+        registryLockOptions(lockOperation),
       ),
+      registryLockOptions(lockOperation),
   );
 }
 

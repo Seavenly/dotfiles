@@ -19,7 +19,19 @@ import { captureClaudeTranscriptCursor } from "../src/claude-transcript.mjs";
 import { digestCanonical } from "../src/canonical-json.mjs";
 import { describeDelegatedAgent } from "../src/description.mjs";
 import { createBlockRecord } from "../src/block-record.mjs";
-import { readRecords, stateDirectory, writeRecord } from "../src/registry.mjs";
+import {
+  SEMANTIC_HARNESS_OPERATIONS,
+  SEMANTIC_HARNESS_TOPOLOGY_OPERATIONS,
+} from "../src/harness-interface.mjs";
+import {
+  acquireResourceLock,
+  readRecords,
+  registryOperation,
+  releaseResourceLock,
+  stateDirectory,
+  writeRecord,
+} from "../src/registry.mjs";
+import { stageUnknownAgentInput } from "../src/staged-input.mjs";
 import {
   bindStagedInputToken,
   stagedInputTextToken,
@@ -84,6 +96,168 @@ test("public turn summaries expose managed runtime evidence without private iden
     Object.hasOwn(report.result.turn.launch_binding, "managed_runtime_identity"),
     false,
   );
+});
+
+test("public dispatch fences a changed prompt before creating a caller-owned turn", async (t) => {
+  const fixture = await turnFixture(t);
+  const callerKey = "run:payload/attempt:1";
+  const inputKey = "input:payload/1";
+  const launchBinding = {
+    schema: "drovr.launch-binding/v1",
+    comparison_key: `sha256:${"a".repeat(64)}`,
+    configuration_watermark: `sha256:${"b".repeat(64)}`,
+    description_digest: `sha256:${"c".repeat(64)}`,
+  };
+  const predecessor = await acquireResourceLock(
+    fixture.registryDirectory,
+    `dispatch-key:${callerKey}`,
+    {
+      operation: registryOperation(
+        "turn.dispatch",
+        `${callerKey}:${inputKey}`,
+        {
+          agent_id: "agent-1",
+          prompt: "old prompt",
+          caller_key: callerKey,
+          input_key: inputKey,
+          caller_metadata: { source: "test" },
+          launch_binding: launchBinding,
+        },
+      ),
+      authorityId: "lost-dispatch-authority",
+      processIdentity: {
+        schema: "drovr.process-identity/v1",
+        pid: 999999,
+        boot_id: "boot-dispatch",
+        start_token: "1",
+      },
+    },
+  );
+
+  await assert.rejects(
+    () => dispatchTurn("agent-1", {
+      callerKey,
+      inputKey,
+      callerMetadata: { source: "test" },
+      launchBinding,
+      prompt: "changed prompt",
+    }, { env: fixture.env }),
+    { outcome: "registry_lock_recovery_required" },
+  );
+  assert.equal((await readRecords(fixture.registryDirectory, "turns")).length, 1);
+  await releaseResourceLock(predecessor);
+});
+
+test("public send fences a changed steering payload before delivery", async (t) => {
+  const fixture = await turnFixture(t);
+  const callerKey = "input:payload/1";
+  const predecessor = await acquireResourceLock(
+    fixture.registryDirectory,
+    `turn:${fixture.turn.id}`,
+    {
+      operation: registryOperation(
+        "turn.send",
+        `${fixture.turn.id}:${callerKey}`,
+        {
+          turn_id: fixture.turn.id,
+          caller_key: callerKey,
+          prompt: "old steering",
+        },
+      ),
+      authorityId: "lost-send-authority",
+      processIdentity: {
+        schema: "drovr.process-identity/v1",
+        pid: 999999,
+        boot_id: "boot-send",
+        start_token: "1",
+      },
+    },
+  );
+  const herdr = {
+    async ensureSession() {},
+    async agentRecord() {
+      return {
+        agent_status: "working",
+        state_change_seq: 1,
+        agent_session: { value: "codex-session-1" },
+      };
+    },
+    async prompt() {
+      assert.fail("changed steering must be fenced before delivery");
+    },
+    async waitForAgent() {
+      return { drovr_status: "still_running" };
+    },
+  };
+
+  await assert.rejects(
+    () => sendToTurn(fixture.turn.id, {
+      callerKey,
+      prompt: "changed steering",
+    }, { env: fixture.env, herdr }),
+    { outcome: "registry_lock_recovery_required" },
+  );
+  assert.equal((await readRecords(fixture.registryDirectory, "turns"))[0].inputs.length, 1);
+  await releaseResourceLock(predecessor);
+});
+
+test("public staged-input operation fences changed text before native mutation", async (t) => {
+  const fixture = await settledClaudeAgentFixture(t);
+  const predecessor = await acquireResourceLock(
+    fixture.registryDirectory,
+    "task-lifecycle:task-1",
+    {
+      operation: registryOperation(
+        "agent.stage_unknown_input",
+        "agent-1",
+        { agent_id: "agent-1", text: "old staged text" },
+      ),
+      authorityId: "lost-staged-authority",
+      processIdentity: {
+        schema: "drovr.process-identity/v1",
+        pid: 999999,
+        boot_id: "boot-staged",
+        start_token: "1",
+      },
+    },
+  );
+  const harness = Object.fromEntries(
+    SEMANTIC_HARNESS_OPERATIONS.map((operation) => [
+      operation,
+      async () => ({ evidence: "present", state: "idle" }),
+    ]),
+  );
+  harness.schema = "drovr.semantic-harness/v1";
+  harness.implementation = "trace-replay";
+  harness.observeRuntime = async () => ({ evidence: "present" });
+  harness.observeAgent = async () => ({
+    evidence: "present",
+    state: "idle",
+    identity: { native_session: "claude-session-1" },
+  });
+  harness.stageUnknownInput = async () => {
+    assert.fail("changed staged text must be fenced before native mutation");
+  };
+  harness.topology = Object.fromEntries(
+    SEMANTIC_HARNESS_TOPOLOGY_OPERATIONS.map((operation) => [
+      operation,
+      async () => ({}),
+    ]),
+  );
+
+  await assert.rejects(
+    () => stageUnknownAgentInput(
+      "agent-1",
+      { text: "changed staged text" },
+      { env: fixture.env, harness },
+    ),
+    { outcome: "registry_lock_recovery_required" },
+  );
+  assert.equal(
+    (await readRecords(fixture.registryDirectory, "agents"))[0].id,
+    "agent-1",
+  );
+  await releaseResourceLock(predecessor);
 });
 
 test("caller-owned dispatch and ordered input survive caller exit and fail closed on conflicts", async (t) => {

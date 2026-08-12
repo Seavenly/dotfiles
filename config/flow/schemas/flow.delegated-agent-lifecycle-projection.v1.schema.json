@@ -58,6 +58,10 @@
         "code": { "type": "string", "minLength": 1 }
       }
     },
+    "lock_entry": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "reason": { "type": "string", "minLength": 1 },
     "cleanup_receipt": {
       "type": "object",
@@ -118,7 +122,18 @@
       "properties": {
         "schema": { "const": "drovr.registry-authority-watermark/v1" },
         "authority": { "const": "drovr.registry" },
-        "turns_sha256": { "$ref": "#/$defs/digest" }
+        "groups_sha256": { "$ref": "#/$defs/digest" },
+        "tasks_sha256": { "$ref": "#/$defs/digest" },
+        "agents_sha256": { "$ref": "#/$defs/digest" },
+        "turns_sha256": { "$ref": "#/$defs/digest" },
+        "blocks_sha256": { "$ref": "#/$defs/digest" },
+        "groups_count": { "type": "integer", "minimum": 0 },
+        "tasks_count": { "type": "integer", "minimum": 0 },
+        "agents_count": { "type": "integer", "minimum": 0 },
+        "turns_count": { "type": "integer", "minimum": 0 },
+        "blocks_count": { "type": "integer", "minimum": 0 },
+        "generation": { "$ref": "#/$defs/digest" },
+        "registry_sha256": { "$ref": "#/$defs/digest" }
       }
     },
     "agentWatermark": {
