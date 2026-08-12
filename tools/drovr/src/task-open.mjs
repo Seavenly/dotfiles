@@ -67,6 +67,7 @@ export async function openTask(options, dependencies = {}) {
         );
       }
       let group = matchingGroups[0];
+      const groupCreated = group === undefined;
       if (group && group.status !== "active") {
         throw new DrovrError(`group key ${identity.groupKey} is closed`, {
           code: 0,
@@ -158,7 +159,12 @@ export async function openTask(options, dependencies = {}) {
               current.label = options.label;
               await writeRecord(registryDirectory, "tasks", current);
             }
-            return { group, task: current };
+            return {
+              group,
+              task: current,
+              groupCreated: false,
+              taskCreated: false,
+            };
           },
           registryLockOptions(lockOperation),
         );
@@ -194,7 +200,7 @@ export async function openTask(options, dependencies = {}) {
         harness,
         registryDirectory,
       );
-      return { group, task: createdTask };
+      return { group, task: createdTask, groupCreated, taskCreated: true };
     },
     registryLockOptions(lockOperation),
   );

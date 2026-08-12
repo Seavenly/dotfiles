@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { digestCanonical } from "../src/canonical-json.mjs";
 import {
+  assertQualifiedCompatibility,
   COMPATIBILITY_FEATURES,
   collectProductionCompatibility,
   qualifyCompatibility,
@@ -74,6 +75,19 @@ function managedIdentity({
     effort: harness === "claude" ? "low" : "high",
   };
 }
+
+test("unqualified compatibility is a structured expected outcome", () => {
+  const compatibility = { status: "blocked", reason: "missing_runtime" };
+
+  assert.throws(
+    () => assertQualifiedCompatibility(compatibility),
+    (error) =>
+      error instanceof DrovrError &&
+      error.code === 0 &&
+      error.outcome === "compatibility_blocked" &&
+      error.details?.compatibility === compatibility,
+  );
+});
 
 test("production compatibility records exact executable, integration, and adapter facts", async () => {
   const { run } = runtime();

@@ -25,9 +25,10 @@ or Luna summary as proof; inspect the actual candidate state.
    ```
 
    Request actionable correctness, regression, security, test, and spec
-   findings, each with evidence and a location. Include the round's candidate
-   identity and state snapshot. Record the agent ID. Resume incomplete turns
-   with that same agent; never replace it.
+   findings with evidence and locations. Embed the acceptance criteria,
+   parent/blocker constraints, candidate identity, and state snapshot; do not
+   require reviewer network access. Record the agent ID. Resume incomplete
+   turns with that same agent; never replace it.
 
 3. Adjudicate every finding as exactly one of `valid in-scope`, `invalid`,
    `out-of-scope`, or `needs clarification`. Use `drovr ask` on the same

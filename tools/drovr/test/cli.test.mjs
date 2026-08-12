@@ -927,10 +927,7 @@ esac
   assert.equal(waited.command, "turn wait");
   assert.equal(waited.result.status, "completed");
   assert.equal(waited.result.turn.result.text, "NATIVE STEERED");
-  assert.deepEqual(waited.result.turn.result.messages, [
-    "INTERMEDIATE",
-    "NATIVE STEERED",
-  ]);
+  assert.equal(waited.result.turn.result.messages, undefined);
 
   const { stdout: lateSendOutput } = await execFileAsync(
     drovr,

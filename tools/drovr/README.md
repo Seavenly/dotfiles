@@ -184,7 +184,8 @@ result. If an automation runner yields a live process or session handle before
 the command exits, resume that same process instead of starting another wait.
 Use `drovr turn get TURN_ID` when a caller needs an immediate, nonblocking
 snapshot of durable turn state. Multiple concurrent waits are safe but
-unnecessary.
+unnecessary. `turn wait` omits message history; use
+`turn get TURN_ID --include-messages` when needed.
 
 Reuse the returned agent ID for a later logical turn:
 

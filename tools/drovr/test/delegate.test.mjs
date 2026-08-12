@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { delegate } from "../src/delegate.mjs";
+import { DrovrError } from "../src/errors.mjs";
 import { retireAgent } from "../src/lifecycle.mjs";
 import {
   loadConfiguration,
@@ -18,6 +19,96 @@ import {
 } from "../src/registry.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
+
+test("delegate closes a newly created empty task after launch rejection", async () => {
+  const rejection = new DrovrError("runtime is unqualified", {
+    code: 0,
+    outcome: "compatibility_blocked",
+  });
+  let closed;
+
+  await assert.rejects(
+    () =>
+      delegate(
+        { prompt: "review" },
+        {
+          openTask: async () => ({
+            group: { id: "group-1" },
+            task: { id: "task-1" },
+            groupCreated: false,
+            taskCreated: true,
+          }),
+          startAgent: async () => {
+            throw rejection;
+          },
+          taskHasAgents: async () => false,
+          closeTask: async (id, options) => {
+            closed = { id, force: options.force };
+            return { status: "closed" };
+          },
+        },
+      ),
+    (error) => error === rejection,
+  );
+  assert.deepEqual(closed, { id: "task-1", force: true });
+});
+
+test("delegate closes its newly created group when launch leaves it empty", async () => {
+  let closed;
+
+  await assert.rejects(
+    () =>
+      delegate(
+        { prompt: "review" },
+        {
+          openTask: async () => ({
+            group: { id: "group-1" },
+            task: { id: "task-1" },
+            groupCreated: true,
+            taskCreated: true,
+          }),
+          startAgent: async () => {
+            throw new Error("launch failed");
+          },
+          taskHasAgents: async () => false,
+          closeGroup: async (id, options) => {
+            closed = { id, force: options.force };
+            return { status: "closed" };
+          },
+        },
+      ),
+    { message: "launch failed" },
+  );
+  assert.deepEqual(closed, { id: "group-1", force: true });
+});
+
+test("delegate preserves a task after an agent reservation is durable", async () => {
+  let cleanupCalls = 0;
+
+  await assert.rejects(
+    () =>
+      delegate(
+        { prompt: "review" },
+        {
+          openTask: async () => ({
+            group: { id: "group-1" },
+            task: { id: "task-1" },
+            groupCreated: true,
+            taskCreated: true,
+          }),
+          startAgent: async () => {
+            throw new Error("startup failed after reservation");
+          },
+          taskHasAgents: async () => true,
+          closeGroup: async () => {
+            cleanupCalls += 1;
+          },
+        },
+      ),
+    { message: "startup failed after reservation" },
+  );
+  assert.equal(cleanupCalls, 0);
+});
 
 test("delegate persists managed-agent ownership before startup readiness can fail", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-agent-startup-"));

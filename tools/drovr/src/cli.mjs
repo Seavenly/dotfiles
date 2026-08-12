@@ -884,7 +884,7 @@ async function runTurnCommand(argv) {
       ...(options.timeout ? { timeoutMs: parseDuration(options.timeout) } : {}),
     });
     process.stdout.write(
-      `${JSON.stringify(turnCommandResult("turn wait", context, { includeMessages: true }))}\n`,
+      `${JSON.stringify(turnCommandResult("turn wait", context))}\n`,
     );
     return 0;
   }
