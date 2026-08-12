@@ -1086,11 +1086,12 @@ function validFeatureTestEvidence({
   const valid = expectedTestCards.every(({ cardId, sliceId }) => {
     const entry = entries.find(({ card_id: entryCardId }) =>
       entryCardId === cardId);
+    if (entry === undefined) return false;
     if (evidence === null) return true;
     const failure = evidence.test_failures.find(({ card_id: failureCardId }) =>
       failureCardId === cardId);
     return failure?.card_id === entry.card_id &&
-      failure.slice_id === entry.receipt.provider_receipt.slice_id &&
+      failure.slice_id === sliceId &&
       failure.effect_id === entry.effect_id &&
       failure.receipt_digest === digest(entry.receipt.provider_receipt);
   });

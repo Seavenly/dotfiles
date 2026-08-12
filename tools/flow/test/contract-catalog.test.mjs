@@ -421,7 +421,6 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.feature-setup/v1",
     "flow.feature-setup-receipt/v1",
     "flow.feature-seal-receipt/v1",
-    "flow.feature-evidence/v1",
     "flow.operation/feature-setup/v1",
     "flow.operation/feature-test/v1",
     "flow.operation/feature-verify/v1",

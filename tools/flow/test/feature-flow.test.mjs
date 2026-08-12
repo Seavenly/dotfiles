@@ -20,6 +20,7 @@ import {
   getResourceHandoffAuthority,
   getReviewAuthority,
   getWorkspaceAuthority,
+  workspaceEffectAuthorityIssue,
 } from "../src/work-authority.mjs";
 import { completedTurnProjection } from "../test-support/delegate-card.mjs";
 import {
@@ -35,7 +36,6 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   const facts = dynamicCheckpointProposal().explicit_facts;
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
-  facts.validator_contracts.push("flow.validator/feature-evidence/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
@@ -345,6 +345,108 @@ test("feature/v1 serialized slices own the brief acceptance exactly once", async
   }
 });
 
+test("feature/v1 rejects unreachable serialized safe baselines during preparation", async (t) => {
+  const testSlice = {
+    schema: "flow.feature-slice/v1",
+    id: "behavior",
+    mode: "test",
+    acceptance: ["the changed behavior is observable"],
+    test: {
+      schema: "flow.feature-test-request/v1",
+      intended_failure: "the behavior is absent before implementation",
+      environment_fingerprint: `sha256:${"a".repeat(64)}`,
+    },
+  };
+  const verifySlice = (id, acceptance) => ({
+    schema: "flow.feature-slice/v1",
+    id,
+    mode: "verify",
+    acceptance: [acceptance],
+  });
+  const cases = [
+    {
+      name: "more than one verify slice",
+      inputs() {
+        const inputs = featureInputs();
+        inputs.brief.acceptance = ["first", "second"];
+        inputs.slices = [
+          verifySlice("first", "first"),
+          verifySlice("second", "second"),
+        ];
+        inputs.verification.baseline.fingerprint = inputs.workspace.fingerprint;
+        return inputs;
+      },
+    },
+    {
+      name: "verify slice after a test slice",
+      inputs() {
+        const inputs = featureInputs();
+        inputs.mode = "mixed";
+        inputs.brief.acceptance = [
+          "the changed behavior is observable",
+          "the configuration remains declared",
+        ];
+        inputs.slices = [
+          testSlice,
+          verifySlice("configuration", "the configuration remains declared"),
+        ];
+        inputs.verification.baseline.fingerprint = inputs.workspace.fingerprint;
+        return inputs;
+      },
+    },
+    {
+      name: "baseline does not select the current workspace",
+      inputs() {
+        const inputs = featureInputs();
+        inputs.slices = [verifySlice(
+          "configuration",
+          "the changed behavior is observable",
+        )];
+        return inputs;
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, () => {
+      assert.throws(
+        () => prepareFeatureSelection(scenario.inputs()),
+        (error) => error.reason === "unreachable_safe_baseline_slice",
+      );
+    });
+  }
+});
+
+test("workspace effect authority rejects an epoch-only stale claim", () => {
+  const git = exactGitFacts();
+  const projection = {
+    schema: "work.workspace-projection/v1",
+    subject_id: "workspace:producer",
+    generation: 1,
+    mutation_epoch: 8,
+    git,
+    claims: [{
+      holder: "run:feature",
+      operations: ["feature-apply"],
+    }],
+    taint: null,
+  };
+  const claim = {
+    id: projection.subject_id,
+    generation: projection.generation,
+    mutation_epoch: 7,
+    fingerprint: digestValue({ git }),
+  };
+  const intent = {
+    run_id: "run:feature",
+    card_id: "feature-apply",
+  };
+
+  assert.equal(
+    workspaceEffectAuthorityIssue(projection, claim, intent),
+    "workspace_claim_stale",
+  );
+});
+
 test("feature/v1 test-only selection needs no verify baseline", () => {
   const inputs = featureInputs();
   inputs.mode = "test";
@@ -403,6 +505,13 @@ test("feature/v1 serializes mixed slices and keeps setup out of evidence", () =>
       acceptance: ["the configuration remains declared"],
     },
   ];
+  delete inputs.verification.baseline;
+  inputs.verification.compensating_assertion = {
+    schema: "flow.feature-compensating-assertion/v1",
+    assertion: "the changed behavior remains bounded by an independent invariant",
+    non_destructive: true,
+    fingerprint: `sha256:${"7".repeat(64)}`,
+  };
 
   const prepared = prepareFeatureSelection(inputs);
   const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
@@ -469,6 +578,8 @@ test("feature/v1 setup requires explicit slices and serializes verify setup", ()
     mode: "verify",
     acceptance: ["the changed behavior is observable"],
   }];
+  withVerifySlice.verification.baseline.fingerprint =
+    withVerifySlice.workspace.fingerprint;
   const prepared = prepareFeatureSelection(withVerifySlice);
   const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
   assert.deepEqual(cards.get("feature-setup").dependencies, []);
@@ -1337,7 +1448,6 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   const facts = dynamicCheckpointProposal().explicit_facts;
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
-  facts.validator_contracts.push("flow.validator/feature-evidence/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
@@ -2876,7 +2986,6 @@ function featureFactsForInputs(inputs) {
   const facts = dynamicCheckpointProposal().explicit_facts;
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
-  facts.validator_contracts.push("flow.validator/feature-evidence/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.resource_claims.push({

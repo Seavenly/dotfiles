@@ -93,6 +93,11 @@ disabled, so this API does not authorize normal replacement launches.
   Launch also rejects operation cards with
   `unregistered_operation_contract`, `incomplete_operation_registration`, or
   `invalid_effect_classification` before any run or effect intent is created.
+  Preparation rejects a validator missing from its operation Adapter with
+  `incomplete_provider_receipt_validator` and a validator contract absent from
+  the prepared facts with `unsupported_provider_receipt_validator`; launch
+  rechecks the Adapter registration and rejects it with
+  `incomplete_provider_receipt_validator`.
   Preparation rejects `unsafe_publication_effect_class` when a one-shot
   uncertain operation attempts to publish a resource handoff.
   Recovery performs the same registration check before mutating authority, so
@@ -336,11 +341,12 @@ out-of-brief criteria are rejected. A test slice also carries one
 `flow.feature-test-request/v1` with an intended failure and a healthy,
 identity-bound `environment_fingerprint`. An environment failure or unrelated
 failure is not slice evidence. Verify mode retains its safe baseline or
-explicit non-destructive compensating assertion. In a serialized verify slice,
-the selected safe-baseline fingerprint must equal that slice's current
-pre-slice snapshot. A later verify slice normally uses the compensating
-assertion against its post-slice snapshot instead; the aggregate assertion is
-reusable only when its selected fingerprint remains honest for that slice.
+explicit non-destructive compensating assertion. In serialized slices, a safe
+baseline used by a verify slice is valid only when there is exactly one verify
+slice, that slice is first, and the baseline fingerprint equals the selected
+workspace fingerprint. Other serialized verify arrangements require the
+aggregate compensating assertion. Test-only slices may retain a safe baseline
+for the aggregate verification receipt.
 
 The compiler carries test intent in a `test_selection` shaped as
 `flow.feature-test-selection/v1`; this is selection identity, not a registered
@@ -370,10 +376,11 @@ the last slice must equal the promoted Git snapshot exactly.
 The final aggregate verification and seal remain registered operations. Their
 authority-materialized inputs select only the exact current slice receipts and
 delegate observations by card identity; setup receipts and stale operation
-receipts cannot be reused. A mutation-epoch change therefore invalidates the
-remaining workspace claim and all verification evidence bound to the prior
-operation sequence. Independent apply and critique delegate routes and one
-exact finalization publication remain required.
+receipts cannot be reused. A mutation-epoch change therefore invalidates all
+verification evidence bound to the prior operation sequence. The workspace
+claim recheck fences generation, mutation epoch, and Git fingerprint
+immediately before every Adapter invocation. Independent apply and critique
+delegate routes and one exact finalization publication remain required.
 
 The seal operation receives only authority-materialized evidence selected by
 card identity. Success requires exact acceptance coverage with passed verdicts,

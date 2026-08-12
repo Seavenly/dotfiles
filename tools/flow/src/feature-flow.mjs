@@ -339,7 +339,7 @@ function serializedFeatureCards(selection, workspaceClaim) {
       ...shared,
       phase: "verify",
       receipt_owner: "registered_operation",
-      delegate_evidence_usage: "evidence_input_only",
+          delegate_output_usage: "evidence_input_only",
       delegate_evidence_card_ids: [...applyCardIds],
       operation_evidence_card_ids: [
         ...testCardIds,
@@ -373,7 +373,7 @@ function serializedFeatureCards(selection, workspaceClaim) {
       publication: selection.finalization.publication,
       negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
       receipt_owner: "registered_operation",
-      delegate_evidence_usage: "evidence_input_only",
+          delegate_output_usage: "evidence_input_only",
       delegate_evidence_card_ids: [...applyCardIds, "feature-critique"],
       operation_evidence_card_ids: [
         ...testCardIds,
@@ -472,6 +472,17 @@ function validateFeatureInputs(inputs, explicitFacts) {
     invalidFeature(
       "missing_discriminating_evidence",
       "feature/v1 requires a safe baseline or non-destructive compensating assertion",
+    );
+  }
+  const verifySliceIndexes = slices.flatMap(({ mode }, index) =>
+    mode === "verify" ? [index] : []);
+  if (inputs.slices !== undefined && hasBaseline &&
+      verifySliceIndexes.length > 0 &&
+      (verifySliceIndexes.length !== 1 || verifySliceIndexes[0] !== 0 ||
+       baseline.fingerprint !== workspace.fingerprint)) {
+    invalidFeature(
+      "unreachable_safe_baseline_slice",
+      "feature/v1 serialized safe baseline must select the first and only verify slice at the current workspace fingerprint",
     );
   }
   const setup = validateFeatureSetup(inputs.setup);
