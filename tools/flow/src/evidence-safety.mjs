@@ -685,32 +685,28 @@ function looksLikeStructuralCapabilityEnvelope(value) {
         /(?:capability|authority|grant|permission|delegat|envelope)/i,
       );
   });
-  const subject = entries.find(([key]) =>
+  const subject = entries.find(([key, child]) =>
     semanticKeyMatches(
       key,
       /^(?:subject|target|resource|object|resourceid|resourcekey)$/,
-    ));
-  const grant = entries.find(([key]) =>
+    ) && hasSubstantiveEnvelopeMaterial(child));
+  const strongGrant = entries.find(([key, child]) =>
     semanticKeyMatches(
       key,
-      /^(?:scope|grant|grants|permission|permissions|action|actions|authority|authorityscope|capability|capabilities|command|commands|mutation|mutations|operation|operations|right|rights|privilege|privileges|effect|effects)$/,
-    ));
-  const substantiveEnvelope = subject !== undefined && grant !== undefined &&
-    hasSubstantiveEnvelopeMaterial(subject[1]) &&
-    hasSubstantiveEnvelopeMaterial(grant[1]);
-  if (substantiveEnvelope) return true;
-
-  const markerlessSubject = entries.find(([key]) =>
-    semanticKeyMatches(key, /^(?:subject|target)$/));
-  const markerlessGrant = entries.find(([key]) =>
+      /^(?:scope|grant|grants|permission|permissions|authority|authorityscope|capability|capabilities|right|rights|privilege|privileges)$/,
+    ) && hasSubstantiveEnvelopeMaterial(child));
+  const genericGrant = entries.find(([key, child]) =>
     semanticKeyMatches(
       key,
-      /^(?:scope|grant|grants|permission|permissions|action|actions|authority|authorityscope|capability|capabilities|command|commands|mutation|mutations|operation|operations|right|rights|privilege|privileges|effect|effects)$/,
-    ));
-  return !marker && markerlessSubject !== undefined &&
-    markerlessGrant !== undefined &&
-    hasSubstantiveEnvelopeMaterial(markerlessSubject[1]) &&
-    hasSubstantiveEnvelopeMaterial(markerlessGrant[1]);
+      /^(?:action|actions|command|commands|mutation|mutations|operation|operations|effect|effects)$/,
+    ) && hasSubstantiveEnvelopeMaterial(child));
+  if (subject === undefined) return false;
+  if (marker && (strongGrant !== undefined || genericGrant !== undefined)) {
+    return true;
+  }
+  if (strongGrant !== undefined) return true;
+  return genericGrant !== undefined &&
+    hasAuthorityBearingEnvelopeMaterial(subject[1], genericGrant[1]);
 }
 
 function semanticKeyMatches(key, pattern) {
@@ -747,6 +743,27 @@ function hasSubstantiveEnvelopeMaterial(value) {
   if (Array.isArray(value)) return value.some(hasSubstantiveEnvelopeMaterial);
   if (!isPlainRecord(value)) return true;
   return Object.values(value).some(hasSubstantiveEnvelopeMaterial);
+}
+
+function hasAuthorityBearingEnvelopeMaterial(subject, grant) {
+  return envelopeMaterialMatches(subject, (candidate) =>
+    /[:/#]/.test(candidate) ||
+    /^(?:artifact|branch|capability|repository|repo|resource|secret|service|workspace)$/i.test(
+      candidate.trim(),
+    )) || envelopeMaterialMatches(grant, (candidate) =>
+    /[a-z0-9*]:[a-z0-9*]/i.test(candidate));
+}
+
+function envelopeMaterialMatches(value, predicate) {
+  if (typeof value === "string") {
+    return semanticStringCandidates(value, 4).some(predicate);
+  }
+  if (Array.isArray(value)) {
+    return value.some((child) => envelopeMaterialMatches(child, predicate));
+  }
+  if (!isPlainRecord(value)) return false;
+  return Object.values(value).some((child) =>
+    envelopeMaterialMatches(child, predicate));
 }
 
 function scanString(
@@ -808,6 +825,7 @@ function inspectString(
   }
   if (looksLikeCredential(value)) return "credential_material";
   if (looksLikeCapabilityReference(value)) return "capability_reference";
+  if (hasEnvironmentRootedPath(value)) return "ambient_filesystem_path";
   if (looksLikeMalformedPercentEncoding(value)) return "malformed_encoding";
   if (decodePercentOnce(value).malformed) return "malformed_encoding";
   const immutableMetadataIssue = inspectImmutableUrlMetadata(value, {
@@ -1162,9 +1180,16 @@ function embeddedAmbientPath(value) {
     new RegExp(`(?:^|${pathDelimiter})\\\\(?!u[0-9a-fA-F]{4})[^\\s,;)'\`]+`).test(value) ||
     new RegExp(`(?:^|${pathDelimiter})\\\\\\\\[^\\s,;)'\`]+`).test(value) ||
     new RegExp(`(?:^|${pathDelimiter})~[\\\\/][^\\s,;)'\`]+`).test(value) ||
-    new RegExp(`(?:^|${pathDelimiter})(?:\\$PWD|\\$\\{PWD\\})(?:[\\\\/][^\\s,;)'\`]+|$)`, "i").test(value) ||
+    hasEnvironmentRootedPath(value) ||
     new RegExp(`(?:^|${pathDelimiter})(?:\\.\\.?[\\\\/])\\S+`).test(value) ||
     new RegExp(`(?:^|${pathDelimiter})\\S+[\\\\/]\\.\\.(?:[\\\\/]|$)`).test(value);
+}
+
+function hasEnvironmentRootedPath(value) {
+  const delimiter = `[\\s("'\`=,;#?:]`;
+  return new RegExp(`(?:^|${delimiter})(?:\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})[\\\\/][^\\s,;)'\`]+`).test(value) ||
+    new RegExp(`(?:^|${delimiter})%[A-Za-z_][A-Za-z0-9_]*%[\\\\/][^\\s,;)'\`]+`, "i").test(value) ||
+    new RegExp(`(?:^|${delimiter})(?:\\$(?:HOME|OLDPWD|PWD|TMPDIR|XDG_[A-Z0-9_]+_HOME)|\\$\\{(?:HOME|OLDPWD|PWD|TMPDIR|XDG_[A-Z0-9_]+_HOME)\\})$`).test(value);
 }
 
 function isPrivateHost(hostname) {
@@ -1215,14 +1240,19 @@ function looksLikeMalformedPercentEncoding(value) {
 }
 
 function looksLikeMalformedEncoding(value, keyName) {
-  if (typeof keyName !== "string" || keyName === "input" ||
-      !/(?:base64|encoded|encoding)/i.test(keyName) || isPlaceholder(value)) {
+  const normalizedKey = typeof keyName === "string"
+    ? normalizeSemanticKey(keyName)
+    : "";
+  if (keyName === "input" ||
+      !/(?:base64|encoded|encoding)/i.test(normalizedKey) ||
+      isPlaceholder(value)) {
     return false;
   }
   if (/^base64:/i.test(value)) {
     return decodeExplicitBase64(value).decoded === null;
   }
   if (/%[0-9A-Fa-f]{2}/.test(value)) return false;
+  if (!normalizedKey.includes("base64")) return false;
   if (value.length < 4) {
     return true;
   }

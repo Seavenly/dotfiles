@@ -108,6 +108,33 @@ test("the request factory bounds input before digesting or freezing it", () => {
   );
 });
 
+test("scan expansion remains bounded by every published aggregate limit", () => {
+  const nodeInflation = validateEvidenceSafety(requestFor({
+    nested: Array.from(
+      { length: EVIDENCE_SAFETY_LIMITS.max_nested_structured_strings },
+      () => JSON.stringify(Array.from({ length: 40 }, () => 0)),
+    ),
+  }));
+  assert.equal(nodeInflation.accepted, false);
+  assert.equal(nodeInflation.rejection.code, "evidence_too_large");
+
+  const decodedChunk = Buffer.from("a".repeat(6_000)).toString("base64");
+  const stringInflation = validateEvidenceSafety(requestFor({
+    encoded: Array.from({ length: 5 }, () => decodedChunk),
+  }));
+  assert.equal(stringInflation.accepted, false);
+  assert.equal(stringInflation.rejection.code, "evidence_too_large");
+
+  const nestedStructures = validateEvidenceSafety(requestFor({
+    nested: Array.from(
+      { length: EVIDENCE_SAFETY_LIMITS.max_nested_structured_strings + 1 },
+      () => "[]",
+    ),
+  }));
+  assert.equal(nestedStructures.accepted, false);
+  assert.equal(nestedStructures.rejection.code, "evidence_too_large");
+});
+
 test("request factory preflights its options container before reading fields", () => {
   let reads = 0;
   const options = {
@@ -736,6 +763,12 @@ test("cwd-qualified ambient paths embedded in prose remain prohibited", () => {
   for (const note of [
     "Evidence came from $PWD/private/report.md.",
     "Evidence came from ${PWD}/private/report.md.",
+    "Evidence came from $HOME/private/report.md.",
+    "Evidence came from ${HOME}/private/report.md.",
+    "Evidence came from $XDG_CONFIG_HOME/private/report.md.",
+    "Evidence came from %USERPROFILE%\\private\\report.md.",
+    "Evidence came from $PWD",
+    "Evidence came from ${HOME}",
   ]) {
     const result = validateEvidenceSafety(requestFor({ note }));
     assert.equal(result.accepted, false);
@@ -768,6 +801,9 @@ test("ordinary research prose remains a usable negative control corpus", () => {
       path: "Research about path normalization.",
     },
     { authority: "Research about authority and lifecycle vocabulary." },
+    { encoding: "utf-8" },
+    { encoding: "The evidence uses UTF-8 encoding." },
+    { encoded_at: "2026-08-11T12:13:37Z" },
   ]) {
     const result = validateEvidenceSafety(requestFor(input));
     assert.equal(result.accepted, true, JSON.stringify(input));
@@ -966,6 +1002,35 @@ test("structural capability envelopes are rejected without a capability key", ()
     },
   }));
   assert.equal(conceptualMarkerless.accepted, true);
+
+  for (const input of [
+    { target: "main", actions: ["build", "test"] },
+    { record: { target: "main", actions: ["build", "test"] } },
+  ]) {
+    assert.equal(validateEvidenceSafety(requestFor(input)).accepted, true);
+  }
+
+  for (const input of [
+    {
+      type: "capability",
+      subject: "workspace:repo",
+      actions: ["build"],
+    },
+    { target: "workspace:repo", actions: ["build"] },
+    { target: "repo", actions: ["write"] },
+    {
+      target: "main",
+      actions: [Buffer.from("repository:write").toString("base64")],
+    },
+    {
+      target: "main",
+      actions: { granted: ["repository:write"] },
+    },
+  ]) {
+    const result = validateEvidenceSafety(requestFor(input));
+    assert.equal(result.accepted, false, JSON.stringify(input));
+    assert.equal(result.rejection.code, "capability_reference");
+  }
 });
 
 test("descriptor-safe preflight rejects deep input before reading a later getter", () => {

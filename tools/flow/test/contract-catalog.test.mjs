@@ -10,6 +10,7 @@ import {
   authorizeLegacyImport,
   loadContractCatalog,
 } from "../src/contract-catalog.mjs";
+import { EVIDENCE_SAFETY_CATALOG_ID } from "../src/evidence-safety.mjs";
 const catalogPath = fileURLToPath(
   new URL("../../../config/flow/contracts/catalog.v1.json", import.meta.url),
 );
@@ -32,6 +33,14 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "watch",
   ]);
   assert.equal(catalog.catalog_version, 21);
+  assert.equal(
+    EVIDENCE_SAFETY_CATALOG_ID,
+    `flow.contract-catalog/v1@${catalog.catalog_version}`,
+  );
+  assert.equal(
+    catalog.flow_runtime.evidence_safety.catalog_id,
+    EVIDENCE_SAFETY_CATALOG_ID,
+  );
   assert.deepEqual(catalog.flow_runtime.evidence_safety, {
     authority: "non_authoritative",
     validator: "flow.evidence-safety-request/v1",
