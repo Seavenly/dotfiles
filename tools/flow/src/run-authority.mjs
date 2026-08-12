@@ -60,6 +60,7 @@ import {
   uninitializedAuthoritySchemaCompatibility,
 } from "./authority-schema.mjs";
 import {
+  attachRunEffectIntentReader,
   attachWorkAuthorities,
   buildArtifactCollectionPreview,
   buildConsumerHandoffBinding,
@@ -189,7 +190,7 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
     });
   };
 
-  return Object.freeze({
+  const runAuthority = Object.freeze({
     launch(request = {}) {
       if (hostProjection().restore?.active === true) {
         return hostMutationRejection("launch");
@@ -452,6 +453,17 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
 
     hostCommand,
   });
+  attachRunEffectIntentReader(runAuthority, Object.freeze({
+    schema: "flow.run-effect-intent-reader/v1",
+    query(runId, effectId) {
+      const run = runs.get(runId);
+      const effect = run === undefined
+        ? null
+        : foldRun(run).effects.find(({ effect_id: id }) => id === effectId) ?? null;
+      return effect === null ? null : freezeCanonical(effect);
+    },
+  }));
+  return runAuthority;
 }
 
 export function createDurableRunAuthority({
@@ -2529,6 +2541,21 @@ export function createDurableRunAuthority({
   delete authorityMethods.workCommand;
   delete authorityMethods.workQuery;
   const runAuthority = Object.freeze(authorityMethods);
+  attachRunEffectIntentReader(runAuthority, Object.freeze({
+    schema: "flow.run-effect-intent-reader/v1",
+    query(runId, effectId) {
+      assertOpen();
+      if (!databaseExists(databasePath)) return null;
+      const database = openAuthorityDatabase(databasePath, { readOnly: true });
+      try {
+        const effect = readStream(database, runId)?.fold?.effects
+          ?.find(({ effect_id: id }) => id === effectId) ?? null;
+        return effect === null ? null : freezeCanonical(effect);
+      } finally {
+        database.close();
+      }
+    },
+  }));
   attachWorkAuthorities(runAuthority, Object.freeze({
     workspace: workspaceAuthority,
     artifact: artifactAuthority,

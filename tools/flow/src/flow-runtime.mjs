@@ -27,7 +27,10 @@ import {
   SUBRUN_CONTRACT,
 } from "./subrun-effects.mjs";
 import { isBackupRestoreCommand } from "./backup-restore.mjs";
-import { getReviewAuthority } from "./work-authority.mjs";
+import {
+  getReviewAuthority,
+  getRunEffectIntentReader,
+} from "./work-authority.mjs";
 import {
   createInMemoryReviewAuthority,
   createReviewOperationRegistration,
@@ -59,7 +62,9 @@ export function createFlowRuntime({
     runAuthority,
   });
   const ownedReviewAuthority = reviewAuthority ?? attachedReviewAuthority(runAuthority) ??
-    createInMemoryReviewAuthority();
+    createInMemoryReviewAuthority({
+      sourceEffectIntentReader: attachedEffectIntentReader(runAuthority),
+    });
   const operationInputs = registeredOperations instanceof Map
     ? new Map(registeredOperations)
     : { ...registeredOperations };
@@ -115,10 +120,10 @@ export function createFlowRuntime({
     launch(request) {
       const validation = validateLaunchRequest(request);
       if (validation.accepted) {
-        const reviewTarget = executionCards(validation.prepared)
+        const reviewTargets = executionCards(validation.prepared)
           .map((card) => card.inputs?.target)
-          .find((target) => target?.schema === "flow.review-local-candidate/v1");
-        if (reviewTarget) {
+          .filter((target) => target?.schema === "flow.review-local-candidate/v1");
+        for (const reviewTarget of reviewTargets) {
           const issue = reviewCandidateAuthorityIssue(
             reviewTarget,
             ownedReviewAuthority,
@@ -342,6 +347,14 @@ function registeredOperationPresent(registry, contract) {
 function attachedReviewAuthority(runAuthority) {
   try {
     return getReviewAuthority({ runAuthority });
+  } catch {
+    return null;
+  }
+}
+
+function attachedEffectIntentReader(runAuthority) {
+  try {
+    return getRunEffectIntentReader({ runAuthority });
   } catch {
     return null;
   }

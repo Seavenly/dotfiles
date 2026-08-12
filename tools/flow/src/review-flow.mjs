@@ -1,4 +1,8 @@
-import { digest, freezeCanonical } from "./canonical.mjs";
+import {
+  digest,
+  freezeCanonical,
+  idempotencyCommandDigest,
+} from "./canonical.mjs";
 import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
 import {
   buildReviewSummary,
@@ -242,16 +246,24 @@ export function reviewRecordSourceAuthorityIssue(command, projection) {
   }
   const critic = accepted.find(({ card_id: id }) => id === "review-critic");
   if (!critic) return { code: "review_source_evidence_mismatch", reason: "authority-materialized critic evidence is missing" };
-  const expected = buildReviewSummary({
-    candidateFingerprint: command.candidate_fingerprint,
-    candidateAuthorityWatermark: command.candidate_authority_watermark,
-    lifecycleGeneration: command.lifecycle_generation,
-    enabledLenses: input.lenses,
-    lensResults,
-    criticResult: critic.evidence?.validated_output ?? critic.evidence,
-    sourceAuthorityWatermark: effect.source_authority_watermark,
-    findingCap: input.finding_cap,
-  });
+  let expected;
+  try {
+    expected = buildReviewSummary({
+      candidateFingerprint: command.candidate_fingerprint,
+      candidateAuthorityWatermark: command.candidate_authority_watermark,
+      lifecycleGeneration: command.lifecycle_generation,
+      enabledLenses: input.lenses,
+      lensResults,
+      criticResult: critic.evidence?.validated_output ?? critic.evidence,
+      sourceAuthorityWatermark: effect.source_authority_watermark,
+      findingCap: input.finding_cap,
+    });
+  } catch (error) {
+    return {
+      code: error?.code ?? "review_source_evidence_mismatch",
+      reason: "RunAuthority review evidence cannot produce a valid review summary",
+    };
+  }
   if (!isDeepEqualDigest(expected, command.summary) ||
       !isDeepEqualDigest(expected.automated_evidence, command.automated_evidence) ||
       command.artifacts?.provenance?.run_id !== command.source_run_id) {
@@ -445,8 +457,16 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
           card.inputs?.receipt_owner !== "ReviewAuthority" ||
           card.inputs?.completion_authority !== "automated_only" ||
           card.inputs?.target?.schema !== REVIEW_TARGET_SCHEMA ||
+          !validateReviewCandidate(card.inputs?.target?.candidate) ||
+          card.inputs.target.candidate_fingerprint !==
+            card.inputs.target.candidate.candidate_fingerprint ||
+          !isDigest(card.inputs.target.candidate_fingerprint) ||
           !isDigest(card.inputs?.target?.candidate_authority_watermark) ||
+          !Number.isSafeInteger(card.inputs.target.lifecycle_generation) ||
+          card.inputs.target.lifecycle_generation < 1 ||
           !Array.isArray(card.inputs?.lenses) || card.inputs.lenses.length === 0 ||
+          card.inputs.lenses.some((lens) => !REVIEW_LENSES.includes(lens)) ||
+          new Set(card.inputs.lenses).size !== card.inputs.lenses.length ||
           !Number.isSafeInteger(card.inputs?.finding_cap) ||
           card.inputs.finding_cap < 1 ||
           !Array.isArray(card.inputs?.delegate_evidence_card_ids) ||
@@ -454,7 +474,11 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
           card.inputs.delegate_evidence_card_ids.some((cardId) =>
             !nonEmpty(cardId)) ||
           new Set(card.inputs.delegate_evidence_card_ids).size !==
-            card.inputs.delegate_evidence_card_ids.length) {
+            card.inputs.delegate_evidence_card_ids.length ||
+          !isDeepEqualDigest(card.inputs.delegate_evidence_card_ids, [
+            ...card.inputs.lenses.map((lens) => `review-lens-${lens}`),
+            "review-critic",
+          ])) {
         throw new TypeError("review record operation is not bound to ReviewAuthority");
       }
     },
@@ -617,9 +641,8 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
  * an in-memory FlowRuntime. Durable runtimes use the Work-domain authority
  * with the same command and projection contracts.
  */
-export function createInMemoryReviewAuthority({ candidateProjection = null, sourceRunAuthority = null } = {}) {
+export function createInMemoryReviewAuthority({ candidateProjection = null, sourceEffectIntentReader = null } = {}) {
   const streams = new Map();
-  const watchers = new Map();
   const sealedCandidateProjection = candidateProjection?.schema ===
     "work.review-candidate-projection/v1"
     ? freezeCanonical(candidateProjection)
@@ -637,10 +660,6 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
     legal_actions: [],
     subject_id: subjectId,
   });
-  const publish = (subjectId) => {
-    const projection = queryProjection(subjectId);
-    for (const watcher of watchers.get(subjectId) ?? []) watcher.publish(projection);
-  };
   const authority = {
     schema: "work.review-authority/v1",
     command(command) {
@@ -653,19 +672,22 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
       const current = queryProjection(subjectId);
       const prior = streams.get(subjectId)?.find(({ type }) =>
         type === "review_recorded");
-      let replay = false;
+      let repeated = null;
       try {
-        replay = prior !== undefined && digest(prior.command) === digest(command);
+        if (prior?.command_receipt?.command_id === command.command_id) {
+          repeated = prior.command_receipt.command_digest ===
+            idempotencyCommandDigest(command)
+            ? {
+                accepted: true,
+                replayed: true,
+                authority_watermark: current.watermark,
+              }
+            : reviewRejection("idempotency_conflict", command, current);
+        }
       } catch {
-        replay = false;
+        repeated = null;
       }
-      if (replay) {
-        return {
-          accepted: true,
-          replayed: true,
-          authority_watermark: current.watermark,
-        };
-      }
+      if (repeated !== null) return repeated;
       if (current.schema === "flow.rejection/v1") {
         if (command.expected_watermark !== EMPTY_WATERMARK) {
           return reviewRejection("stale_authority_watermark", command, current);
@@ -678,7 +700,7 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
             current.lifecycle_generation !== command.lifecycle_generation) {
           return reviewRejection("review_target_mismatch", command, current);
         }
-        return reviewRejection("review_already_recorded", command, current);
+        return reviewRejection("idempotency_conflict", command, current);
       }
       const candidateProjection = queryCandidateProjection(command.candidate?.candidate_id);
       const candidateIssue = reviewRecordCandidateAuthorityIssue(
@@ -692,10 +714,15 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
           candidateIssue.projection ?? current,
         );
       }
-      const sourceProjection = typeof sourceRunAuthority?.query === "function"
-        ? sourceRunAuthority.query(command.source_run_id)
+      const sourceEffect = typeof sourceEffectIntentReader?.query === "function"
+        ? sourceEffectIntentReader.query(
+            command.source_run_id,
+            command.operation_effect_id,
+          )
         : null;
-      const sourceIssue = reviewRecordSourceAuthorityIssue(command, sourceProjection);
+      const sourceIssue = reviewRecordSourceAuthorityIssue(command, {
+        effects: sourceEffect === null ? [] : [sourceEffect],
+      });
       if (sourceIssue) return reviewRejection(sourceIssue.code, command, current);
       try {
         validateReviewRecordCommand(command);
@@ -728,15 +755,11 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
       if (command.artifacts?.watermark !== watermark) {
         return reviewRejection("artifact_watermark_mismatch", command, current);
       }
-      const commandReceipt = {
-        schema: "work.command-receipt/v1",
-        command_type: command.type,
-        contract: command.contract,
-        subject_id: subjectId,
-        authority_watermark: watermark,
-        accepted: true,
-        created: true,
-      };
+      const commandReceipt = freezeCanonical({
+        schema: "work.idempotency-receipt/v1",
+        command_id: command.command_id,
+        command_digest: idempotencyCommandDigest(command),
+      });
       const event = {
         type: "review_recorded",
         command,
@@ -745,8 +768,15 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
         command_receipt: commandReceipt,
       };
       streams.set(subjectId, [event]);
-      publish(subjectId);
-      return commandReceipt;
+      return {
+        schema: "work.command-receipt/v1",
+        command_type: command.type,
+        contract: command.contract,
+        subject_id: subjectId,
+        authority_watermark: watermark,
+        accepted: true,
+        created: true,
+      };
     },
     query(request = {}) {
       if (request?.contract !== "work.review/v1" || typeof request.subject_id !== "string") {
@@ -759,40 +789,7 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
     },
     watch(request = {}) {
       const subjectId = typeof request === "string" ? request : request.subject_id;
-      const current = queryProjection(subjectId);
-      if (current.schema === "flow.rejection/v1") return oneShot(current);
-      let queue = [current];
-      let pending;
-      let closed = false;
-      const watcher = {
-        publish(value) {
-          if (closed) return;
-          if (pending) {
-            const resolve = pending;
-            pending = null;
-            resolve({ value, done: false });
-          } else queue.push(value);
-        },
-        next() {
-          if (queue.length > 0) return Promise.resolve({ value: queue.shift(), done: false });
-          if (closed) return Promise.resolve({ value: undefined, done: true });
-          return new Promise((resolve) => { pending = resolve; });
-        },
-        return() {
-          closed = true;
-          watchers.get(subjectId)?.delete(watcher);
-          if (pending) {
-            pending({ value: undefined, done: true });
-            pending = null;
-          }
-          return Promise.resolve({ value: undefined, done: true });
-        },
-        [Symbol.asyncIterator]() { return this; },
-      };
-      const set = watchers.get(subjectId) ?? new Set();
-      set.add(watcher);
-      watchers.set(subjectId, set);
-      return watcher;
+      return oneShot(queryProjection(subjectId));
     },
   };
   return Object.freeze(authority);
@@ -800,7 +797,7 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
   function queryProjection(subjectId) {
     const events = streams.get(subjectId);
     if (!events) return emptyProjection(subjectId);
-    const event = events.at(-1);
+    const event = events[0];
     return projectReviewRecord(event.body, event.watermark, events);
   }
 
@@ -856,6 +853,8 @@ export function validateReviewRecordCommand(command) {
     );
   }
   if (!nonEmpty(command.command_id) ||
+      command.command_id !==
+        `review-record:${command.candidate_fingerprint}:${command.lifecycle_generation}` ||
       !isDigest(command.candidate_fingerprint) ||
       !isDigest(command.candidate_authority_watermark) ||
       !Number.isSafeInteger(command.lifecycle_generation) || command.lifecycle_generation < 1 ||

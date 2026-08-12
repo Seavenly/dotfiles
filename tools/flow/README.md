@@ -382,12 +382,21 @@ ReviewAuthority projections and `FlowRuntime` review queries/watchers expose
 the exact review watermark, append-only evidence, stable findings, posture,
 cap reasons, and deterministic JSON, Markdown, and HTML artifacts. Artifacts
 carry candidate, lifecycle, candidate-seal, source-authority, and exact
-registered-operation provenance. ReviewAuthority re-reads the sealed candidate
-projection on every review-record command, so a self-consistent forged
-candidate or stale candidate-seal watermark cannot create a review event. Review
-completion is automated evidence only: approval, integration, merge, tracker
-completion, and remote review submission remain unauthorized and have no legal
-actions in the projection.
+registered-operation provenance.
+Public run projections, including operator and trust views, omit raw operation
+inputs. Authority-owned review recording reads its settled effect intent through
+a private, read-only RunAuthority attachment instead of exposing delegated
+evidence through those projections.
+Review watchers are one-shot snapshots because an accepted review record is
+immutable; callers watching an unknown review receive that exact rejection and
+must start a later watch after the record exists.
+ReviewAuthority re-reads the sealed candidate projection on every review-record
+command, so a self-consistent forged candidate or stale candidate-seal watermark
+cannot create a review event. The first record requires its canonical command
+identity; later non-replay writes reject with `idempotency_conflict` and cannot
+append another event. Review completion is automated evidence only: approval,
+integration, merge, tracker completion, and remote review submission remain
+unauthorized and have no legal actions in the projection.
 
 ## Workspace, artifact, and resource handoff authority
 

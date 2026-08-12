@@ -21,6 +21,7 @@ import {
   getArtifactAuthority,
   getResourceHandoffAuthority,
   getReviewAuthority,
+  getRunEffectIntentReader,
   getWorkspaceAuthority,
 } from "../src/work-authority.mjs";
 import { completedTurnProjection } from "../test-support/delegate-card.mjs";
@@ -809,7 +810,21 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   const sourceRecordEffect = completedReviewRun.effects.find(({ card_id: cardId }) =>
     cardId === "review-record");
   assert.equal(sourceRecordEffect.status, "succeeded");
-  assert.ok(sourceRecordEffect.operation_input.authority_materialized_evidence);
+  assert.equal(sourceRecordEffect.operation_input, undefined);
+  assert.equal(completedReviewRun.views.operator.effects.find(({ card_id: cardId }) =>
+    cardId === "review-record").operation_input, undefined);
+  assert.equal(completedReviewRun.views.trust.effects.find(({ card_id: cardId }) =>
+    cardId === "review-record").operation_input, undefined);
+  const privateReviewIntent = getRunEffectIntentReader({ runAuthority })
+    .query(completedReviewRun.run_id, sourceRecordEffect.effect_id);
+  assert.ok(privateReviewIntent.operation_input.authority_materialized_evidence);
+  assert.equal(Object.isFrozen(privateReviewIntent), true);
+  assert.equal(completed.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal").operation_input, undefined);
+  assert.equal(completed.views.operator.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal").operation_input, undefined);
+  assert.equal(completed.views.trust.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal").operation_input, undefined);
 
   const reviewId = `review:${review.candidate_fingerprint}:4`;
   const reviewedCandidate = reviewAuthority.query({
@@ -834,6 +849,18 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     contract: "work.review/v1",
     subject_id: reviewId,
   }).watermark, stableWatermark);
+  const conflictingRecord = reviewAuthority.command({
+    ...firstReviewRecordCommand,
+    command_id: "review-record:conflicting-command-id",
+    expected_watermark: stableWatermark,
+  });
+  assert.equal(conflictingRecord.code, "idempotency_conflict");
+  const afterConflict = reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: reviewId,
+  });
+  assert.equal(afterConflict.watermark, stableWatermark);
+  assert.equal(afterConflict.append_only_event_count, 1);
 });
 
 test("feature/v1 seal rejects invalid verification and publication evidence", async (t) => {

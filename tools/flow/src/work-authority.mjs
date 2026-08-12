@@ -1,6 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { digest, freezeCanonical } from "./canonical.mjs";
+import {
+  digest,
+  freezeCanonical,
+  idempotencyCommandDigest,
+} from "./canonical.mjs";
 import {
   projectReviewRecord,
   reviewEventWatermark,
@@ -26,19 +30,40 @@ export function getReviewAuthority({ runAuthority } = {}) {
   return getAttachedAuthority(runAuthority, "review");
 }
 
+export function getRunEffectIntentReader({ runAuthority } = {}) {
+  return getAttachedAuthority(runAuthority, "effect_intent_reader");
+}
+
 export function getResourceHandoffAuthority({ runAuthority } = {}) {
   return getAttachedAuthority(runAuthority, "handoff");
 }
 
 export function attachWorkAuthorities(runAuthority, authorities) {
-  if (attachedAuthorities.has(runAuthority) ||
+  const attached = attachedAuthorities.get(runAuthority) ?? {};
+  if (attached.workspace !== undefined ||
       authorities?.workspace?.schema !== "work.workspace-authority/v1" ||
       authorities?.artifact?.schema !== "work.artifact-authority/v1" ||
       authorities?.review?.schema !== "work.review-authority/v1" ||
       authorities?.handoff?.schema !== "flow.resource-handoff-authority/v1") {
     throw new TypeError("invalid durable Work-domain authority attachment");
   }
-  attachedAuthorities.set(runAuthority, authorities);
+  attachedAuthorities.set(runAuthority, Object.freeze({
+    ...attached,
+    ...authorities,
+  }));
+}
+
+export function attachRunEffectIntentReader(runAuthority, reader) {
+  const attached = attachedAuthorities.get(runAuthority) ?? {};
+  if (attached.effect_intent_reader !== undefined ||
+      reader?.schema !== "flow.run-effect-intent-reader/v1" ||
+      typeof reader.query !== "function") {
+    throw new TypeError("invalid RunAuthority effect-intent reader attachment");
+  }
+  attachedAuthorities.set(runAuthority, Object.freeze({
+    ...attached,
+    effect_intent_reader: reader,
+  }));
 }
 
 export function buildHumanAuthorityBinding(command, action) {
@@ -110,6 +135,9 @@ function decideReviewRecord(current, command) {
       (current.candidate_fingerprint !== command.candidate_fingerprint ||
        current.lifecycle_generation !== command.lifecycle_generation)) {
     return reject(command, "review_target_mismatch", current);
+  }
+  if (current !== null) {
+    return reject(command, "idempotency_conflict", current);
   }
   try {
     validateReviewRecordCommand(command);
@@ -1675,7 +1703,7 @@ function repeatedWorkCommand(current, command) {
   const receipt = current.command_receipts.find(({ command_id: commandId }) =>
     commandId === command.command_id);
   if (!receipt) return null;
-  return receipt.command_digest === commandDigest(command)
+  return receipt.command_digest === idempotencyCommandDigest(command)
     ? { accepted: true, replayed: true, streamKind: null, event: null }
     : reject(command, "idempotency_conflict", current);
 }
@@ -1684,14 +1712,14 @@ function workIdempotencyReceipt(command) {
   return freezeCanonical({
     schema: "work.idempotency-receipt/v1",
     command_id: command.command_id,
-    command_digest: commandDigest(command),
+    command_digest: idempotencyCommandDigest(command),
   });
 }
 
 function repeatedRegistration(current, command) {
   const receipt = current.registration_receipt;
   if (receipt?.command_id === command?.command_id &&
-      receipt.command_digest === commandDigest(command)) {
+      receipt.command_digest === idempotencyCommandDigest(command)) {
     return { accepted: true, replayed: true, streamKind: null, event: null };
   }
   return reject(
@@ -1707,27 +1735,8 @@ function registrationReceiptFor(command) {
   return freezeCanonical({
     schema: "work.idempotency-receipt/v1",
     command_id: command.command_id,
-    command_digest: commandDigest(command),
+    command_digest: idempotencyCommandDigest(command),
   });
-}
-
-function commandDigest(command) {
-  if (!isRecord(command)) return safeDigest(command);
-  const {
-    evidence_validation: ignoredEvidenceValidation,
-    git_observation: ignoredGitObservation,
-    human_authority_validation: ignoredHumanValidation,
-    ...requestedCommand
-  } = command;
-  return safeDigest(requestedCommand);
-}
-
-function safeDigest(value) {
-  try {
-    return digest(value);
-  } catch {
-    return null;
-  }
 }
 
 function validWorkspaceRegistration(subjectId, registration) {

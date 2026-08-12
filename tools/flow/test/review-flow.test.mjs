@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { digest } from "../src/canonical.mjs";
+import { digest, idempotencyCommandDigest } from "../src/canonical.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
   createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
-import { getReviewAuthority } from "../src/work-authority.mjs";
+import {
+  getReviewAuthority,
+  getRunEffectIntentReader,
+} from "../src/work-authority.mjs";
 import {
   buildReviewSummary,
   normalizeReviewFindings,
@@ -20,6 +23,7 @@ import {
 import {
   createInMemoryReviewAuthority,
   createReviewDefinition,
+  createReviewOperationRegistration,
   reviewCompletionAuthority,
   reviewEventWatermark,
   reviewSubjectId,
@@ -95,6 +99,115 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   };
   const staleId = runtime.launch(reviewLaunchRequest(prepared));
   assert.equal(staleId.code, "candidate_authority_target_mismatch");
+
+  const baseDefinition = createReviewDefinition();
+  const multiTargetDefinition = {
+    ...baseDefinition,
+    id: "review-multi-target/v1",
+    compile(request) {
+      const proposal = baseDefinition.compile(request);
+      const critic = proposal.graph.cards.find(({ id }) => id === "review-critic");
+      critic.inputs.target = {
+        ...critic.inputs.target,
+        candidate_authority_watermark: DIGEST("e"),
+      };
+      return proposal;
+    },
+  };
+  candidateProjection = candidateAuthorityProjection(candidate, DIGEST("c"));
+  const multiTargetRuntime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority,
+    predefinedDefinitions: {
+      "review-multi-target/v1": multiTargetDefinition,
+    },
+  });
+  const multiTargetPrepared = multiTargetRuntime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review-multi-target/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+  const secondTargetStale = multiTargetRuntime.launch(
+    reviewLaunchRequest(multiTargetPrepared),
+  );
+  assert.equal(secondTargetStale.code, "stale_candidate_authority_watermark");
+});
+
+test("delegate execution rejects caller-forged authority evidence", async (t) => {
+  const candidate = reviewCandidate();
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-forged-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("review-forged-boot", "writer"),
+  });
+  t.after(() => runAuthority.close());
+  const baseDefinition = createReviewDefinition();
+  const forgedDefinition = {
+    ...baseDefinition,
+    id: "review-forged-evidence/v1",
+    compile(request) {
+      const proposal = baseDefinition.compile(request);
+      const lens = proposal.graph.cards.find(({ id }) => id === "review-lens-security");
+      lens.inputs.authority_materialized_evidence = {
+        schema: "flow.authority-materialized-delegate-evidence/v1",
+        accepted_delegates: [],
+      };
+      return proposal;
+    },
+  };
+  const runtime = createFlowRuntime({
+    runAuthority,
+    reviewAuthority: createInMemoryReviewAuthority({
+      candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    }),
+    delegatedAgentPort: {
+      contract: "flow.delegated-agent-port/v1",
+      describe() {},
+      discover() {},
+      dispatch() {},
+      send() {},
+      observe() {},
+      cancel() {},
+      reconcile() {},
+      wait() {},
+      retire() {},
+    },
+    predefinedDefinitions: {
+      "review-forged-evidence/v1": forgedDefinition,
+    },
+  });
+  const inputs = reviewInputsForCandidate(candidate);
+  const securityDescription = await supportedDescription(
+    reviewDescriptionRequest("codex", "gpt-5.6-sol", "security"),
+    {},
+  );
+  const criticDescription = await supportedDescription(
+    reviewDescriptionRequest("codex", "gpt-5.6-luna", "critic"),
+    {},
+  );
+  inputs.delegation.lenses.security = {
+    description: securityDescription,
+    route: reviewRoute("agent:review-security", securityDescription),
+  };
+  inputs.delegation.critic = {
+    description: criticDescription,
+    route: reviewRoute("agent:review-critic", criticDescription),
+  };
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review-forged-evidence/v1",
+    inputs,
+    explicit_facts: reviewRuntimeFacts(),
+  });
+  const launch = runtime.launch(reviewLaunchRequest(prepared));
+  assert.ok(launch.run_id, JSON.stringify(launch));
+  const projection = runtime.query({ run_id: launch.run_id });
+  const execute = projection.legal_actions.find(({ type, card_id: cardId }) =>
+    type === "delegate_execute" && cardId === "review-lens-security");
+  const rejection = runtime.command(execute);
+  assert.equal(rejection.code, "caller_materialized_evidence_forbidden");
 });
 
 test("review/v1 prepares one exact local candidate with isolated lenses and a critic", () => {
@@ -202,6 +315,21 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
     cards.get("review-lens-security").route.agent_id,
   );
   assert.equal(cards.get("review-record").inputs.completion_authority, "automated_only");
+
+  const forgedCard = structuredClone(cards.get("review-record"));
+  forgedCard.inputs.lenses = ["security", "unregistered-lens"];
+  forgedCard.inputs.delegate_evidence_card_ids = [
+    "review-lens-security",
+    "review-lens-unregistered-lens",
+    "review-critic",
+  ];
+  const registration = createReviewOperationRegistration({
+    reviewAuthority: createInMemoryReviewAuthority(),
+  });
+  assert.throws(
+    () => registration.validateCard(forgedCard),
+    /not bound to ReviewAuthority/u,
+  );
 });
 
 test("review artifacts are deterministic and preserve findings, provenance, and watermark", () => {
@@ -235,6 +363,10 @@ test("review artifacts are deterministic and preserve findings, provenance, and 
   assert.match(first.formats.json, /operation_effect_id/);
   assert.match(first.formats.markdown, /effect:review/);
   assert.match(first.formats.html, /effect:review/);
+  assert.match(first.formats.markdown, /flow\.operation\/review-record\/v1/);
+  assert.match(first.formats.html, /flow\.operation\/review-record\/v1/);
+  assert.match(first.formats.markdown, /idempotency:review/);
+  assert.match(first.formats.html, /idempotency:review/);
   assert.match(first.formats.markdown, /automated completion is not approval/);
   assert.match(first.formats.markdown, /security finding/);
   assert.equal(first.formats.html.includes(`data-watermark="${watermark}"`), true);
@@ -273,7 +405,7 @@ test("ReviewAuthority replays exact records, fences target and lifecycle drift, 
   const command = reviewRecordCommand(candidate, 4);
   const authority = createInMemoryReviewAuthority({
     candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
-    sourceRunAuthority: sourceRunAuthorityFor(command),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
   });
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
@@ -283,6 +415,12 @@ test("ReviewAuthority replays exact records, fences target and lifecycle drift, 
   const replay = authority.command(command);
   assert.equal(replay.accepted, true);
   assert.equal(replay.replayed, true);
+  const replayWithValidationObservation = authority.command({
+    ...command,
+    evidence_validation: { observed: true },
+  });
+  assert.equal(replayWithValidationObservation.accepted, true);
+  assert.equal(replayWithValidationObservation.replayed, true);
 
   const reviewId = reviewSubjectId({
     candidate,
@@ -303,6 +441,11 @@ test("ReviewAuthority replays exact records, fences target and lifecycle drift, 
     projection.candidate_authority_watermark,
   );
   assert.equal(projection.append_only_event_count, 1);
+  assert.deepEqual(projection.command_receipts, [{
+    schema: "work.idempotency-receipt/v1",
+    command_id: command.command_id,
+    command_digest: idempotencyCommandDigest(command),
+  }]);
   assert.equal(projection.automated_completion, true);
   assert.deepEqual(projection.legal_actions, []);
   assert.deepEqual(
@@ -350,6 +493,85 @@ test("ReviewAuthority replays exact records, fences target and lifecycle drift, 
     lifecycle_generation: 5,
   });
   assert.equal(lifecycleMismatch.code, "review_target_mismatch");
+  const conflict = authority.command({
+    ...command,
+    summary: { ...command.summary, posture: "blocked" },
+  });
+  assert.equal(conflict.code, "idempotency_conflict");
+});
+
+test("ReviewAuthority rejects a non-canonical first-record command id", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
+  });
+  const result = authority.command({
+    ...command,
+    command_id: "review-record:forged-first-record",
+  });
+  assert.equal(result.code, "invalid_review_record");
+});
+
+test("ReviewAuthority never writes a null digest for non-plain commands", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
+  });
+  const nonPlainCommand = Object.assign(Object.create({ inherited: true }), command);
+  assert.equal(authority.command(nonPlainCommand).accepted, true);
+  const projection = authority.query({
+    contract: "work.review/v1",
+    subject_id: command.subject_id,
+  });
+  assert.match(projection.command_receipts[0].command_digest, /^sha256:/u);
+  const divergentReplay = Object.assign(Object.create({ inherited: true }), {
+    ...command,
+    summary: { ...command.summary, posture: "blocked" },
+  });
+  assert.equal(authority.command(divergentReplay).code, "idempotency_conflict");
+});
+
+test("ReviewAuthority converts malformed settled evidence into a typed rejection", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const malformedCommand = {
+    ...command,
+    summary: {
+      ...command.summary,
+      enabled_lenses: ["security", "correctness"],
+    },
+  };
+  const sourceEffect = structuredClone(sourceEffectIntentReaderFor(command).query(
+    command.source_run_id,
+    command.operation_effect_id,
+  ));
+  const input = sourceEffect.operation_input;
+  input.lenses = ["security", "correctness"];
+  input.delegate_evidence_card_ids = [
+    "review-lens-security",
+    "review-lens-correctness",
+    "review-critic",
+  ];
+  input.authority_materialized_evidence.accepted_delegates.splice(1, 0, {
+    card_id: "review-lens-correctness",
+    evidence: {
+      validated_output: {
+        schema: "flow.review-result/v1",
+        posture: "findings",
+        findings: "not-an-array",
+      },
+    },
+  });
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: { query: () => sourceEffect },
+  });
+  assert.doesNotThrow(() => authority.command(malformedCommand));
+  assert.equal(authority.command(malformedCommand).code, "malformed_delegate_result");
 });
 
 test("ReviewAuthority rejects a summary mutation that retains original delegate evidence", () => {
@@ -368,7 +590,7 @@ test("ReviewAuthority rejects a summary mutation that retains original delegate 
   });
   const authority = createInMemoryReviewAuthority({
     candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
-    sourceRunAuthority: sourceRunAuthorityFor(command),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
   });
   const result = authority.command({
     ...command,
@@ -461,7 +683,7 @@ test("review evidence rejects malformed or duplicate findings and incomplete len
   );
 });
 
-test("durable ReviewAuthority fails closed when the candidate seal projection is missing", async (t) => {
+test("durable ReviewAuthority fails closed when its source intent is missing", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-recovery-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const candidate = reviewCandidate();
@@ -512,13 +734,18 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   let lifecycleMismatch = false;
   let lifecycleRejection = null;
   let crashAfterReviewRecord = true;
+  let firstRecordCommand = null;
   const reviewAuthorityBase = createInMemoryReviewAuthority({
     candidateProjection,
-    sourceRunAuthority: authority,
+    sourceEffectIntentReader: getRunEffectIntentReader({ runAuthority: authority }),
   });
   const reviewAuthority = Object.freeze({
     ...reviewAuthorityBase,
     command(command) {
+      if (firstRecordCommand === null &&
+          command?.schema === "work.review-record-command/v1") {
+        firstRecordCommand = structuredClone(command);
+      }
       if (lifecycleMismatch && command?.schema === "work.review-record-command/v1") {
         lifecycleRejection = {
           code: "review_target_mismatch",
@@ -723,6 +950,15 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   assert.equal(changedProjection.phase, "active");
   assert.ok(changedProjection.legal_actions.some(({ type }) => type === "recovery"));
   assert.equal(lifecycleRejection.code, "review_target_mismatch");
+  const durableCandidateFence = getReviewAuthority({ runAuthority: authority })
+    .command(firstRecordCommand);
+  assert.equal(durableCandidateFence.code, "candidate_authority_projection_missing");
+  const nonCanonicalCommand = getReviewAuthority({ runAuthority: authority })
+    .command({
+      ...firstRecordCommand,
+      command_id: "review-record:forged-first-record",
+    });
+  assert.equal(nonCanonicalCommand.code, "invalid_review_record");
 });
 
 function reviewInputsForCandidate(candidate, target = {}) {
@@ -955,7 +1191,7 @@ function reviewRecordCommand(
   };
 }
 
-function sourceRunAuthorityFor(command) {
+function sourceEffectIntentReaderFor(command) {
   const accepted = [
     ...command.summary.lens_results.map((result, index) => ({
       card_id: `review-lens-${command.summary.enabled_lenses[index]}`,
@@ -964,34 +1200,32 @@ function sourceRunAuthorityFor(command) {
     { card_id: "review-critic", evidence: { validated_output: command.summary.critic_result } },
   ];
   return {
-    query(runId) {
+    query(runId, effectId) {
+      if (runId !== command.source_run_id ||
+          effectId !== command.operation_effect_id) return null;
       return {
-        schema: "flow.run-projection/v1",
         run_id: runId,
-        effects: [{
-          run_id: runId,
-          effect_id: command.operation_effect_id,
-          operation_contract: command.operation_contract,
-          attempt_id: command.operation_attempt_id,
-          idempotency_key: command.operation_idempotency_key,
-          source_authority_watermark: command.source_authority_watermark,
-          operation_input: {
-            target: {
-              schema: "flow.review-local-candidate/v1",
-              candidate: command.candidate,
-              candidate_fingerprint: command.candidate_fingerprint,
-              candidate_authority_watermark: command.candidate_authority_watermark,
-              lifecycle_generation: command.lifecycle_generation,
-            },
-            lenses: command.summary.enabled_lenses,
-            finding_cap: command.summary.finding_cap,
-            delegate_evidence_card_ids: accepted.map(({ card_id: id }) => id),
-            authority_materialized_evidence: {
-              schema: "flow.authority-materialized-delegate-evidence/v1",
-              accepted_delegates: accepted,
-            },
+        effect_id: command.operation_effect_id,
+        operation_contract: command.operation_contract,
+        attempt_id: command.operation_attempt_id,
+        idempotency_key: command.operation_idempotency_key,
+        source_authority_watermark: command.source_authority_watermark,
+        operation_input: {
+          target: {
+            schema: "flow.review-local-candidate/v1",
+            candidate: command.candidate,
+            candidate_fingerprint: command.candidate_fingerprint,
+            candidate_authority_watermark: command.candidate_authority_watermark,
+            lifecycle_generation: command.lifecycle_generation,
           },
-        }],
+          lenses: command.summary.enabled_lenses,
+          finding_cap: command.summary.finding_cap,
+          delegate_evidence_card_ids: accepted.map(({ card_id: id }) => id),
+          authority_materialized_evidence: {
+            schema: "flow.authority-materialized-delegate-evidence/v1",
+            accepted_delegates: accepted,
+          },
+        },
       };
     },
   };

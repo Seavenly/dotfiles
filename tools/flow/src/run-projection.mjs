@@ -3,7 +3,10 @@ import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import { isTrackerProgressContract } from "./tracker-progress.mjs";
-import { buildRunViews } from "./projection-builder.mjs";
+import {
+  buildRunViews,
+  publicEffectProjection,
+} from "./projection-builder.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const launchOwnership = run.events.find(({ type }) => type === "run_launched")
@@ -659,7 +662,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     limits: fold.limits,
     attempts: fold.attempts,
     subruns: fold.subruns,
-    effects: fold.effects,
+    effects: fold.effects.map(publicEffectProjection),
     ...(fold.tracker_progress === undefined ? {} : {
       tracker_progress: fold.tracker_progress,
     }),

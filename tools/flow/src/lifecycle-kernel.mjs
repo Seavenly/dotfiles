@@ -419,9 +419,13 @@ function delegateDecision(fold, command, delegate) {
 }
 
 function materializeDelegateJoin(fold, inputs) {
+  if (inputs && Object.hasOwn(inputs, "authority_materialized_evidence")) {
+    return { code: "caller_materialized_evidence_forbidden", evidence: null };
+  }
   const cardIds = inputs?.finding_lens_card_ids ?? inputs?.delegate_evidence_card_ids;
   if (cardIds === undefined) return { code: null, evidence: null };
-  if (!Array.isArray(cardIds) || duplicateValues(cardIds)) {
+  if (!Array.isArray(cardIds) || duplicateValues(cardIds) ||
+      typeof inputs?.prompt !== "string" || inputs.prompt.length === 0) {
     return { code: "authority_evidence_declaration_invalid", evidence: null };
   }
   const evidence = [];

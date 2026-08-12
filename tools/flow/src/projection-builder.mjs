@@ -102,7 +102,7 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     routes,
     capability,
     checkpoints,
-    effects: fold.effects,
+    effects: fold.effects.map(publicEffectProjection),
     resources,
     handoffs,
     ...(reviewCandidateReference === null ? {} : {
@@ -164,7 +164,7 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
       admission,
       routes,
       capability,
-      effects: fold.effects,
+      effects: fold.effects.map(publicEffectProjection),
       resources,
       handoffs,
       ...(reviewCandidateReference === null ? {} : {
@@ -173,6 +173,11 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
       legal_actions: fold.legal_actions,
     },
   });
+}
+
+export function publicEffectProjection(effect) {
+  const { operation_input: _operationInput, ...projection } = effect;
+  return projection;
 }
 
 function assertMatchingAuthorityEvents(fold, events, authorityEventStreamDigest) {
