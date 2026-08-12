@@ -12,6 +12,32 @@ import { isExactSequence } from "./validation.mjs";
 const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
 const REQUIRED_FEATURE_CONTRACT_FILENAME = "drovr-required-features.v1.json";
 
+const FEATURE_CONTRACTS = Object.freeze([
+  "flow.feature-brief/v1",
+  "flow.feature-verification-request/v1",
+  "flow.feature-safe-baseline/v1",
+  "flow.feature-compensating-assertion/v1",
+  "flow.feature-finalization-binding/v1",
+  "flow.feature-workspace-binding/v1",
+  "flow.feature-delegation-bindings/v1",
+  "flow.feature-trust-posture/v1",
+  "flow.feature-slice/v1",
+  "flow.feature-test-request/v1",
+  "flow.feature-test-selection/v1",
+  "flow.feature-setup/v1",
+  "flow.feature-setup-receipt/v1",
+  "flow.feature-seal-receipt/v1",
+  "flow.feature-discriminating-evidence/v1",
+  "flow.operation/feature-setup/v1",
+  "flow.operation/feature-test/v1",
+  "flow.operation/feature-verify/v1",
+  "flow.operation/feature-seal/v1",
+  "work.feature-test-receipt/v1",
+  "work.feature-verification-receipt/v1",
+  "work.feature-critique-receipt/v1",
+  "flow.validator/feature-test-receipt/v1",
+]);
+
 const FLOW_RUNTIME_OPERATIONS = [
   "prepare",
   "launch",
@@ -617,6 +643,9 @@ export async function loadContractCatalog({
     "work.feature-critique-receipt/v1",
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("ReviewAuthority contracts are incomplete");
+  }
+  if (!FEATURE_CONTRACTS.every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("feature/v1 contracts are incomplete");
   }
   let publishedFeatureContract;
   let publishedFeatureContractBytes;

@@ -122,6 +122,11 @@ filesystem, environment, process, transcript, cwd, or credential reads.
   Launch also rejects operation cards with
   `unregistered_operation_contract`, `incomplete_operation_registration`, or
   `invalid_effect_classification` before any run or effect intent is created.
+  Preparation rejects a validator missing from its operation Adapter with
+  `incomplete_provider_receipt_validator` and a validator contract absent from
+  the prepared facts with `unsupported_provider_receipt_validator`; launch
+  rechecks the Adapter registration and rejects it with
+  `incomplete_provider_receipt_validator`.
   Preparation rejects `unsafe_publication_effect_class` when a one-shot
   uncertain operation attempts to publish a resource handoff.
   Recovery performs the same registration check before mutating authority, so
@@ -355,12 +360,56 @@ confirmation contract.
 ### Verified feature candidate
 
 The trusted `feature/v1` predefined definition turns one accepted
-`flow.feature-brief/v1` into one local review candidate in `verify` mode. Its
-selection binds one workspace generation and mutation epoch, one safe baseline
-or explicit non-destructive compensating assertion, independent apply and
-critique delegate routes, and one exact finalization publication. Delegates may
-apply and critique the change, but registered `feature-verify/v1` and
-`feature-seal/v1` operations own the verification and sealing receipts.
+`flow.feature-brief/v1` into one local review candidate. A selection may use
+`verify`, `test`, or `mixed` mode. `test` and `mixed` selections carry a
+non-empty ordered `slices` array. Each slice has schema
+`flow.feature-slice/v1`, a stable `id`, `mode` (`test` or `verify`), and its
+explicit acceptance criteria. Across serialized slices, every brief acceptance
+criterion must be owned by exactly one slice - omitted, duplicated, or
+out-of-brief criteria are rejected. A test slice also carries one
+`flow.feature-test-request/v1` with an intended failure and a healthy,
+identity-bound `environment_fingerprint`. An environment failure or unrelated
+failure is not slice evidence. Verify mode retains its safe baseline or
+explicit non-destructive compensating assertion. In serialized slices, a safe
+baseline used by a verify slice is valid only when there is exactly one verify
+slice, that slice is first, and the baseline fingerprint equals the selected
+workspace fingerprint. Other serialized verify arrangements require the
+aggregate compensating assertion. Test-only slices may retain a safe baseline
+for the aggregate verification receipt.
+
+The compiler carries test intent in a `test_selection` shaped as
+`flow.feature-test-selection/v1`; this is selection identity, not a registered
+test receipt. Registered test operations must independently return
+`work.feature-test-receipt/v1` evidence for every test slice. Their cards
+declare `flow.validator/feature-test-receipt/v1`; the registered adapter must
+advertise that exact validator and validate the receipt before RunAuthority
+records effect success. The validator binds the operation, effect, attempt,
+idempotency key, authority watermark, intended failure, healthy environment,
+and current pre-slice workspace snapshot.
+
+An optional `flow.feature-setup/v1` selection is a one-time setup operation
+with its own identity and fingerprint; setup is valid only with explicit
+serialized slices. It is serialized before the slices and
+its receipt is never selected as slice evidence. Every slice then runs in
+order: a test slice first records its expected pre-implementation failure,
+one exact workspace writer applies that slice, and a registered verification
+operation records the post-implementation result. The writer card is bound to
+an immutable managed-agent sequence when the route is reused. This keeps every
+mutation attributed to its registered card while one workspace generation and
+mutation epoch fence the complete sequence.
+
+Each slice verification advances the clean Git snapshot used by the next
+slice. Stale, skipped, reordered, or future final snapshots are rejected, and
+the last slice must equal the promoted Git snapshot exactly.
+
+The final aggregate verification and seal remain registered operations. Their
+authority-materialized inputs select only the exact current slice receipts and
+delegate observations by card identity; setup receipts and stale operation
+receipts cannot be reused. A mutation-epoch change therefore invalidates all
+verification evidence bound to the prior operation sequence. The workspace
+claim recheck fences generation, mutation epoch, and Git fingerprint
+immediately before every Adapter invocation. Independent apply and critique
+delegate routes and one exact finalization publication remain required.
 
 The seal operation receives only authority-materialized evidence selected by
 card identity. Success requires exact acceptance coverage with passed verdicts,

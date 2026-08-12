@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import {
   normalizeEffectObservation,
   validateEffectObservation,
@@ -1406,6 +1407,97 @@ test("prepare rejects incomplete operation adapter registrations", () => {
       /operation adapter registration is incomplete/,
     );
   }
+});
+
+test("prepare rejects a declared provider receipt validator missing from the adapter", () => {
+  const validatorContract = "flow.validator/conformance-provider-receipt/v1";
+  const runtime = operationRuntime(createNoopAuthority(), {
+    classification: "caller_idempotent",
+    invoke(intent) { return operationReceipt(intent); },
+  });
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  proposal.graph.cards[0].inputs.provider_receipt_validator = validatorContract;
+  proposal.explicit_facts.validator_contracts.push(validatorContract);
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    /provider receipt validator registration is incomplete/,
+  );
+});
+
+test("launch rejects a prepared card whose validator does not match the registered adapter", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const declaredContract = "flow.validator/conformance-provider-receipt/v1";
+  const registeredContract = "flow.validator/other-provider-receipt/v1";
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    planCompiler(proposal) {
+      return compileDynamicPlan(proposal, { registeredOperations: null });
+    },
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        provider_receipt_validator: registeredContract,
+        validateReceipt() { return true; },
+        invoke(intent) { return operationReceipt(intent); },
+      },
+    },
+  });
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  proposal.graph.cards[0].inputs.provider_receipt_validator = declaredContract;
+  proposal.explicit_facts.validator_contracts.push(declaredContract);
+  const prepared = runtime.prepare(proposal);
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(rejection.code, "incomplete_provider_receipt_validator");
+  assert.equal(rejection.authority_watermark_domain, "host");
+});
+
+test("a registered provider receipt validator blocks false evidence before success", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => authority.close());
+  const validatorContract = "flow.validator/conformance-provider-receipt/v1";
+  let invocationCount = 0;
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    provider_receipt_validator: validatorContract,
+    validateReceipt(receipt, intent) {
+      assert.equal(receipt.record, "forged");
+      assert.equal(intent.operation_contract, TEST_OPERATION_CONTRACT);
+      return false;
+    },
+    invoke(intent) {
+      invocationCount += 1;
+      return operationReceipt(intent, { record: "forged" });
+    },
+  });
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  proposal.graph.cards[0].inputs.provider_receipt_validator = validatorContract;
+  proposal.explicit_facts.validator_contracts.push(validatorContract);
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const execution = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "operation_execute",
+  );
+  assert.ok(execution);
+  assert.equal(runtime.command(execution).accepted, true);
+  await until(() => invocationCount === 1);
+  const unresolved = runtime.query({ run_id: launch.run_id });
+  assert.equal(unresolved.effects[0].status, "unresolved");
+  assert.equal(unresolved.effects[0].receipt, null);
+  assert.deepEqual(unresolved.legal_actions.map(({ type }) => type), [
+    "recovery",
+  ]);
 });
 
 test("operation launch requires durable effect authority", () => {

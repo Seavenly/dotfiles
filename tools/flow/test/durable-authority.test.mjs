@@ -2309,6 +2309,120 @@ test("concurrent dispatch reaches the effect Adapter only once", async (t) => {
   assert.equal(invocationCount, 1);
 });
 
+test("same-authority recovery waits for the in-flight effect before retrying", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: (fold, command) => command.type === "recovery"
+      ? decideLifecycle(fold, command)
+      : effectLifecycle(fold, command),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const receipt = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  const [intent] = receipt.effect_intents;
+  let rejectInitial;
+  let invocationCount = 0;
+  const invoke = (receivedIntent) => {
+    invocationCount += 1;
+    assert.equal(receivedIntent.effect_id, intent.effect_id);
+    assert.equal(receivedIntent.idempotency_key, intent.idempotency_key);
+    if (invocationCount === 1) {
+      return new Promise((_, reject) => { rejectInitial = reject; });
+    }
+    return "retried";
+  };
+  const initial = authority.invokeEffect(intent, { invoke });
+  await until(() => typeof rejectInitial === "function");
+
+  const pending = runtime.query({ run_id: launch.run_id });
+  const recovery = pending.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === intent.effect_id);
+  assert.ok(recovery);
+  assert.equal(recovery.expected_watermark, pending.watermark);
+  const recoveryReceipt = authority.command(recovery);
+  assert.equal(recoveryReceipt.accepted, true, JSON.stringify(recoveryReceipt));
+  const [recoveryIntent] = recoveryReceipt.effect_intents;
+  assert.deepEqual(recoveryReceipt.effect_intents, [intent]);
+  assert.equal(recoveryIntent.effect_id, intent.effect_id);
+  assert.equal(recoveryIntent.idempotency_key, intent.idempotency_key);
+
+  const retry = authority.invokeEffect(recoveryIntent, { invoke });
+  rejectInitial(new Error("initial provider failure"));
+  await assert.rejects(initial, /initial provider failure/);
+  assert.equal(await retry, "retried");
+
+  const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(invocationCount, 2);
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(completed.effects.filter(({ effect_id: effectId }) =>
+    effectId === intent.effect_id).length, 1);
+  assert.equal(completed.effects[0].idempotency_key, intent.idempotency_key);
+  for (const legalAction of completed.legal_actions) {
+    assert.equal(legalAction.expected_watermark, completed.watermark);
+  }
+});
+
+test("same-key recovery rejects an intent changed while dispatch is in flight", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: (fold, command) => command.type === "recovery"
+      ? decideLifecycle(fold, command)
+      : effectLifecycle(fold, command),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const receipt = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  const [intent] = receipt.effect_intents;
+  let settleInitial;
+  let invocationCount = 0;
+  const initial = authority.invokeEffect(intent, {
+    invoke() {
+      invocationCount += 1;
+      return new Promise((resolve) => { settleInitial = resolve; });
+    },
+  });
+  await until(() => typeof settleInitial === "function");
+
+  const pending = runtime.query({ run_id: launch.run_id });
+  const recovery = pending.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === intent.effect_id);
+  assert.ok(recovery);
+  const recoveryReceipt = authority.command(recovery);
+  assert.equal(recoveryReceipt.accepted, true, JSON.stringify(recoveryReceipt));
+  const changedIntent = structuredClone(recoveryReceipt.effect_intents[0]);
+  changedIntent.operation_input = {
+    ...changedIntent.operation_input,
+    route: "route:changed",
+  };
+  changedIntent.route = "route:changed";
+
+  const changed = authority.invokeEffect(changedIntent, {
+    invoke() {
+      invocationCount += 1;
+      return "must not run";
+    },
+  });
+  settleInitial("initial receipt");
+  assert.equal(await initial, "initial receipt");
+  await assert.rejects(
+    changed,
+    (error) => error.code === "unrecorded_effect_intent",
+  );
+  assert.equal(invocationCount, 1);
+});
+
 test("settlement after lock release cannot write an effect receipt", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));

@@ -12,6 +12,7 @@ import {
   validateReviewRecordCommand,
 } from "./review-flow.mjs";
 import { validReviewCandidate as canonicalValidReviewCandidate } from "./review-candidate.mjs";
+import { validateFeatureTestReceipt } from "./feature-flow.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const RETAINED_WORKSPACE_DISPOSITIONS = new Set(["retained_for_handoff"]);
@@ -691,19 +692,21 @@ function validFeatureSealEvidence({
     cardId === "feature-verify");
   const critiqueEntry = materialized?.accepted_delegates?.find(({ card_id: cardId }) =>
     cardId === "feature-critique");
-  return validFeatureVerificationReceipt({
+  const verificationValid = validFeatureVerificationReceipt({
     intent,
     materialized,
     operationInput,
     publication,
     receipt: verification,
     verifyEntry,
-  }) && validFeatureCritiqueReceipt({
+  });
+  const critiqueValid = validFeatureCritiqueReceipt({
     critique,
     critiqueEntry,
     effectReceipt,
     intent,
   });
+  return verificationValid && critiqueValid;
 }
 
 function validFeatureVerificationReceipt({
@@ -720,6 +723,16 @@ function validFeatureVerificationReceipt({
   const promotedGit = publication?.workspace?.promoted_git;
   const effectReceipt = verifyEntry?.receipt;
   const receiptIdentity = stripReceiptDigests(receipt);
+  const operationEvidenceExact = validFeatureOperationEvidenceSet(
+    materialized,
+    operationInput,
+  );
+  const sliceVerificationValid = validFeatureSliceVerificationReceipts({
+    materialized,
+    operationInput,
+    publication,
+    selectedWorkspace,
+  });
   const expectedCriteria = brief?.acceptance ?? [];
   const criteria = receipt?.acceptance_criteria;
   const criteriaExact = Array.isArray(criteria) &&
@@ -731,12 +744,20 @@ function validFeatureVerificationReceipt({
       isDigest(criterionReceipt.evidence_digest));
   const safeBaselineSelected =
     selectedVerification?.baseline?.schema === "flow.feature-safe-baseline/v1";
-  const expectedEvidence = safeBaselineSelected
-    ? selectedVerification.baseline
-    : selectedVerification?.compensating_assertion;
-  const expectedEvidenceKind = safeBaselineSelected
-    ? "safe_baseline"
-    : "compensating_assertion";
+  const hasTestSlices = operationInput?.slices?.some(({ mode }) =>
+    mode === "test") === true;
+  const testSelectionSelected = selectedVerification === undefined &&
+    operationInput?.test_selection?.schema === "flow.feature-test-selection/v1";
+  const expectedEvidence = testSelectionSelected
+    ? operationInput.test_selection
+    : safeBaselineSelected
+      ? selectedVerification.baseline
+      : selectedVerification?.compensating_assertion;
+  const expectedEvidenceKind = testSelectionSelected
+    ? "test_failure"
+    : safeBaselineSelected
+      ? "safe_baseline"
+      : "compensating_assertion";
   const verificationWorkspace = receipt?.workspace;
   const workspaceExact = hasExactKeys(verificationWorkspace, [
     "fingerprint",
@@ -778,8 +799,8 @@ function validFeatureVerificationReceipt({
     receipt?.attempt_id === verifyEntry.attempt_id &&
     receipt?.idempotency_key === verifyEntry.idempotency_key &&
     isDeepStrictEqual(effectReceipt.provider_receipt, receipt) &&
-    materialized?.verify_receipt !== undefined &&
-    isDeepStrictEqual(materialized.verify_receipt, effectReceipt);
+    (materialized?.verify_receipt === undefined ||
+      isDeepStrictEqual(materialized.verify_receipt, effectReceipt));
   return hasExactKeys(receipt, [
     "acceptance_criteria",
     "attempt_id",
@@ -807,6 +828,13 @@ function validFeatureVerificationReceipt({
       expectedEvidenceKind,
       verificationWorkspace?.fingerprint,
     ) &&
+    (!hasTestSlices || validFeatureTestEvidence({
+      materialized,
+      operationInput,
+      evidence: testSelectionSelected ? receipt.discriminating_evidence : null,
+    })) &&
+    operationEvidenceExact &&
+    sliceVerificationValid &&
     criteriaExact &&
     workspaceExact &&
     effectExact &&
@@ -817,12 +845,294 @@ function validFeatureVerificationReceipt({
     receipt.operation_contract === effectReceipt.provider_receipt.operation_contract;
 }
 
+function validFeatureOperationEvidenceSet(materialized, operationInput) {
+  const expectedCardIds = operationInput?.operation_evidence_card_ids;
+  const entries = materialized?.operation_receipts;
+  if (!Array.isArray(expectedCardIds) || !Array.isArray(entries) ||
+      expectedCardIds.length !== entries.length ||
+      new Set(expectedCardIds).size !== expectedCardIds.length ||
+      new Set(entries.map(({ card_id: cardId }) => cardId)).size !== entries.length ||
+      expectedCardIds.includes("feature-setup")) {
+    return false;
+  }
+  return entries.every(({ card_id: cardId }, index) =>
+    expectedCardIds[index] === cardId && cardId !== "feature-setup");
+}
+
+function validFeatureSliceVerificationReceipts({
+  materialized,
+  operationInput,
+  publication,
+  selectedWorkspace,
+}) {
+  const slices = operationInput?.slices;
+  if (!Array.isArray(slices) || slices.length === 0) return true;
+  const entries = materialized?.operation_receipts;
+  if (!Array.isArray(entries)) return false;
+  const selectedVerification = operationInput.verification;
+  const selectedVerificationEvidence = selectedVerification?.baseline ??
+    selectedVerification?.compensating_assertion;
+  const promotedGit = publication?.workspace?.promoted_git;
+  let currentSnapshot = featureSnapshotFromSelectedWorkspace(selectedWorkspace);
+  if (currentSnapshot === null) return false;
+  for (const [index, slice] of slices.entries()) {
+    const cardId = `feature-slice-${slice.id}-verify`;
+    const matching = entries.filter(({ card_id: entryCardId }) =>
+      entryCardId === cardId);
+    if (matching.length !== 1) return false;
+    const entry = matching[0];
+    const effectReceipt = entry.receipt;
+    const receipt = effectReceipt?.provider_receipt;
+    const selectedEvidence = slice.mode === "test"
+      ? operationInput.test_selection
+      : selectedVerificationEvidence;
+    const expectedEvidenceKind = slice.mode === "test"
+      ? "test_failure"
+      : selectedVerification?.baseline === undefined
+        ? "compensating_assertion"
+        : "safe_baseline";
+    const criteria = receipt?.acceptance_criteria;
+    const criteriaExact = Array.isArray(criteria) &&
+      criteria.length === slice.acceptance.length &&
+      criteria.every((criterionReceipt, index) =>
+        hasExactKeys(criterionReceipt, ["criterion", "evidence_digest", "verdict"]) &&
+        criterionReceipt.criterion === slice.acceptance[index] &&
+        criterionReceipt.verdict === "passed" &&
+        isDigest(criterionReceipt.evidence_digest));
+    const verificationWorkspace = receipt?.workspace;
+    const workspaceExact = validFeatureVerificationWorkspace(
+      verificationWorkspace,
+      currentSnapshot,
+      selectedWorkspace,
+      publication,
+      promotedGit,
+      index === slices.length - 1,
+    );
+    const discriminatorValid = slice.mode === "test"
+      ? validFeatureSliceTestDiscriminator({
+          slice,
+          materialized,
+          operationInput,
+          receipt,
+          currentSnapshot,
+          postMutationFingerprint: verificationWorkspace?.fingerprint,
+        })
+      : (expectedEvidenceKind !== "safe_baseline" ||
+          receipt?.discriminating_evidence?.selected_fingerprint ===
+            currentSnapshot.fingerprint) &&
+        validSelectedDiscriminatingEvidence(
+            receipt?.discriminating_evidence,
+            selectedEvidence,
+            expectedEvidenceKind,
+            verificationWorkspace?.fingerprint,
+          );
+    const receiptIdentity = stripReceiptDigests(receipt);
+    const receiptExact = hasExactKeys(entry, [
+      "attempt_id",
+      "card_id",
+      "effect_id",
+      "idempotency_key",
+      "receipt",
+      "source_authority_watermark",
+    ]) && entry.card_id === cardId &&
+      hasExactKeys(effectReceipt, [
+        "effect_id",
+        "idempotency_key",
+        "outcome",
+        "provider_receipt",
+        "schema",
+      ]) && effectReceipt.schema === "flow.effect-receipt/v1" &&
+      effectReceipt.outcome === "succeeded" &&
+      effectReceipt.effect_id === entry.effect_id &&
+      effectReceipt.idempotency_key === entry.idempotency_key &&
+      isRecord(receipt) &&
+      hasExactKeys(receipt, [
+        "acceptance_criteria",
+        "attempt_id",
+        "brief_id",
+        "discriminating_evidence",
+        "effect_id",
+        "idempotency_key",
+        "operation_contract",
+        "receipt_digest",
+        "schema",
+        "selected_evidence_fingerprint",
+        "self_digest",
+        "source_authority_watermark",
+        "workspace",
+      ]) && receipt.schema === "work.feature-verification-receipt/v1" &&
+      receipt.brief_id === operationInput.brief?.id &&
+      receipt.operation_contract === "flow.operation/feature-verify/v1" &&
+      receipt.effect_id === entry.effect_id &&
+      receipt.attempt_id === entry.attempt_id &&
+      receipt.idempotency_key === entry.idempotency_key &&
+      receipt.source_authority_watermark === entry.source_authority_watermark &&
+      isDigest(entry.source_authority_watermark) &&
+      receipt.selected_evidence_fingerprint === selectedEvidence?.fingerprint &&
+      discriminatorValid &&
+      criteriaExact &&
+      workspaceExact &&
+      isDeepStrictEqual(effectReceipt.provider_receipt, receipt) &&
+      isDigest(receipt.receipt_digest) &&
+      isDigest(receipt.self_digest) &&
+      digest(receiptIdentity) === receipt.receipt_digest &&
+      receipt.receipt_digest === receipt.self_digest;
+    if (!receiptExact) return false;
+    currentSnapshot = featureSnapshotFromVerificationWorkspace(
+      verificationWorkspace,
+    );
+    if (currentSnapshot === null) return false;
+  }
+  return currentSnapshot.fingerprint === digest({ git: promotedGit }) &&
+    isDeepStrictEqual(currentSnapshot.git, promotedGit);
+}
+
+function featureSnapshotFromSelectedWorkspace(workspace) {
+  return hasExactKeys(workspace, [
+    "fingerprint",
+    "generation",
+    "mutation_epoch",
+    "schema",
+    "subject_id",
+  ]) && workspace.schema === "flow.feature-workspace-binding/v1" &&
+    isDigest(workspace.fingerprint) &&
+    Number.isSafeInteger(workspace.generation) &&
+    Number.isSafeInteger(workspace.mutation_epoch)
+    ? {
+        subject_id: workspace.subject_id,
+        generation: workspace.generation,
+        mutation_epoch: workspace.mutation_epoch,
+        fingerprint: workspace.fingerprint,
+      }
+    : null;
+}
+
+function featureSnapshotFromVerificationWorkspace(workspace) {
+  return hasExactKeys(workspace, [
+    "fingerprint",
+    "generation",
+    "git",
+    "mutation_epoch",
+    "subject_id",
+  ]) && isDigest(workspace.fingerprint) && validGitFacts(workspace.git)
+    ? {
+        subject_id: workspace.subject_id,
+        generation: workspace.generation,
+        mutation_epoch: workspace.mutation_epoch,
+        fingerprint: workspace.fingerprint,
+        git: workspace.git,
+      }
+    : null;
+}
+
+function validFeatureVerificationWorkspace(
+  workspace,
+  currentSnapshot,
+  selectedWorkspace,
+  publication,
+  promotedGit,
+  final,
+) {
+  return featureSnapshotFromVerificationWorkspace(workspace) !== null &&
+    workspace.subject_id === currentSnapshot.subject_id &&
+    workspace.subject_id === selectedWorkspace?.subject_id &&
+    workspace.subject_id === publication?.workspace?.subject_id &&
+    workspace.generation === currentSnapshot.generation &&
+    workspace.generation === selectedWorkspace?.generation &&
+    workspace.mutation_epoch === currentSnapshot.mutation_epoch &&
+    workspace.mutation_epoch === selectedWorkspace?.mutation_epoch &&
+    workspace.fingerprint === digest({ git: workspace.git }) &&
+    workspace.git.clean === true &&
+    workspace.fingerprint !== currentSnapshot.fingerprint &&
+    (final
+      ? workspace.fingerprint === digest({ git: promotedGit }) &&
+        isDeepStrictEqual(workspace.git, promotedGit)
+      : workspace.fingerprint !== digest({ git: promotedGit }));
+}
+
+function validFeatureSliceTestDiscriminator({
+  slice,
+  materialized,
+  operationInput,
+  receipt,
+  currentSnapshot,
+  postMutationFingerprint,
+}) {
+  const testCardId = `feature-slice-${slice.id}-test`;
+  const entries = materialized?.operation_receipts?.filter(({ card_id: cardId }) =>
+    cardId === testCardId) ?? [];
+  if (entries.length !== 1) return false;
+  const testEntry = entries[0];
+  const testReceipt = testEntry.receipt?.provider_receipt;
+  const expectedFailure = isRecord(testReceipt)
+    ? {
+        card_id: testEntry.card_id,
+        effect_id: testEntry.effect_id,
+        receipt_digest: digest(testReceipt),
+        slice_id: testReceipt.slice_id,
+      }
+    : null;
+  return validFeatureTestReceiptEntry({
+    entry: testEntry,
+    expectedSlice: slice,
+    expectedSnapshot: currentSnapshot,
+  }) && validTestFailureEvidence(
+    receipt.discriminating_evidence,
+    operationInput.test_selection?.fingerprint,
+    postMutationFingerprint,
+    expectedFailure === null ? null : [expectedFailure],
+  );
+}
+
+function validTestFailureEvidence(
+  evidence,
+  selectedFingerprint,
+  postMutationFingerprint,
+  expectedFailures = null,
+) {
+  if (!hasExactKeys(evidence, [
+    "distinguished",
+    "kind",
+    "post_mutation_fingerprint",
+    "schema",
+    "selected_fingerprint",
+    "test_failures",
+  ]) || evidence.schema !== "flow.feature-discriminating-evidence/v1" ||
+      evidence.kind !== "test_failure" ||
+      evidence.selected_fingerprint !== selectedFingerprint ||
+      evidence.post_mutation_fingerprint !== postMutationFingerprint ||
+      evidence.selected_fingerprint === evidence.post_mutation_fingerprint ||
+      evidence.distinguished !== true ||
+      !Array.isArray(evidence.test_failures) ||
+      evidence.test_failures.length === 0 ||
+      !evidence.test_failures.every((failure) => hasExactKeys(failure, [
+        "card_id",
+        "effect_id",
+        "receipt_digest",
+        "slice_id",
+      ]) && nonEmpty(failure.card_id) && nonEmpty(failure.effect_id) &&
+        isDigest(failure.receipt_digest) && nonEmpty(failure.slice_id))) {
+    return false;
+  }
+  return expectedFailures === null ||
+    (evidence.test_failures.length === expectedFailures.length &&
+      expectedFailures.every((expected) => evidence.test_failures.some((failure) =>
+        isDeepStrictEqual(failure, expected))));
+}
+
 function validSelectedDiscriminatingEvidence(
   evidence,
   selected,
   kind,
   postMutationFingerprint,
 ) {
+  if (kind === "test_failure") {
+    return validTestFailureEvidence(
+      evidence,
+      selected?.fingerprint,
+      postMutationFingerprint,
+    );
+  }
   if (kind === "safe_baseline") {
     return hasExactKeys(evidence, [
       "distinguished",
@@ -855,6 +1165,119 @@ function validSelectedDiscriminatingEvidence(
       post_mutation_fingerprint: postMutationFingerprint,
     }) &&
     evidence.non_destructive === true && evidence.satisfied === true;
+}
+
+function validFeatureTestEvidence({
+  materialized,
+  operationInput,
+  evidence,
+}) {
+  const expectedSlices = operationInput?.slices
+    ?.filter(({ mode }) => mode === "test") ?? [];
+  const expectedTestCards = expectedSlices.map(({ id }) => ({
+    cardId: `feature-slice-${id}-test`,
+    sliceId: id,
+  }));
+  const entries = materialized?.operation_receipts
+    ?.filter(({ card_id: cardId }) => expectedTestCards.some(({ cardId: expected }) =>
+      expected === cardId)) ?? [];
+  if (entries.length !== expectedTestCards.length) return false;
+  if (evidence !== null &&
+      (!Array.isArray(evidence.test_failures) ||
+       evidence.test_failures.length !== expectedTestCards.length)) {
+    return false;
+  }
+  const valid = expectedTestCards.every(({ cardId, sliceId }) => {
+    const entry = entries.find(({ card_id: entryCardId }) =>
+      entryCardId === cardId);
+    if (entry === undefined) return false;
+    if (evidence === null) return true;
+    const failure = evidence.test_failures.find(({ card_id: failureCardId }) =>
+      failureCardId === cardId);
+    return failure?.card_id === entry.card_id &&
+      failure.slice_id === sliceId &&
+      failure.effect_id === entry.effect_id &&
+      failure.receipt_digest === digest(entry.receipt.provider_receipt);
+  });
+  return valid;
+}
+
+function validFeatureTestReceiptEntry({
+  entry,
+  expectedSlice,
+  expectedSnapshot,
+}) {
+  const effectReceipt = entry?.receipt;
+  const providerReceipt = effectReceipt?.provider_receipt;
+  const expectedWorkspace = {
+    subject_id: expectedSnapshot?.subject_id,
+    generation: expectedSnapshot?.generation,
+    mutation_epoch: expectedSnapshot?.mutation_epoch,
+    fingerprint: expectedSnapshot?.fingerprint,
+  };
+  const semanticIntent = {
+    attempt_id: entry?.attempt_id,
+    effect_id: entry?.effect_id,
+    idempotency_key: entry?.idempotency_key,
+    operation_contract: "flow.operation/feature-test/v1",
+    source_authority_watermark: entry?.source_authority_watermark,
+    operation_input: {
+      slice: expectedSlice,
+      workspace: expectedWorkspace,
+    },
+  };
+  return validateFeatureTestReceipt(
+    providerReceipt,
+    semanticIntent,
+    expectedWorkspace,
+  ) && hasExactKeys(entry, [
+    "attempt_id",
+    "card_id",
+    "effect_id",
+    "idempotency_key",
+    "receipt",
+    "source_authority_watermark",
+  ]) && entry.card_id === `feature-slice-${expectedSlice?.id}-test` &&
+    hasExactKeys(effectReceipt, [
+      "effect_id",
+      "idempotency_key",
+      "outcome",
+      "provider_receipt",
+      "schema",
+    ]) && effectReceipt.schema === "flow.effect-receipt/v1" &&
+    effectReceipt.outcome === "succeeded" &&
+    effectReceipt.effect_id === entry.effect_id &&
+    effectReceipt.idempotency_key === entry.idempotency_key &&
+    isRecord(providerReceipt) &&
+    hasExactKeys(providerReceipt, [
+      "attempt_id",
+      "effect_id",
+      "environment_fingerprint",
+      "environment_status",
+      "idempotency_key",
+      "intended_failure",
+      "operation_contract",
+      "outcome",
+      "phase",
+      "schema",
+      "slice_id",
+      "source_authority_watermark",
+      "workspace",
+    ]) && providerReceipt.schema === "work.feature-test-receipt/v1" &&
+    providerReceipt.slice_id === expectedSlice?.id &&
+    providerReceipt.phase === "test_before" &&
+    providerReceipt.outcome === "expected_failure" &&
+    providerReceipt.intended_failure === expectedSlice?.test?.intended_failure &&
+    providerReceipt.environment_status === "healthy" &&
+    providerReceipt.environment_fingerprint ===
+      expectedSlice?.test?.environment_fingerprint &&
+    providerReceipt.operation_contract === "flow.operation/feature-test/v1" &&
+    providerReceipt.attempt_id === entry.attempt_id &&
+    providerReceipt.effect_id === entry.effect_id &&
+    providerReceipt.idempotency_key === entry.idempotency_key &&
+    isDigest(entry.source_authority_watermark) &&
+    providerReceipt.source_authority_watermark === entry.source_authority_watermark &&
+    isDeepStrictEqual(providerReceipt.workspace, expectedWorkspace);
 }
 
 function validFeatureCritiqueReceipt({

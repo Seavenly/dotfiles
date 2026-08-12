@@ -133,6 +133,13 @@ function validReviewDiscriminatingEvidence(
   selectedFingerprint,
   postMutationFingerprint,
 ) {
+  if (evidence?.kind === "test_failure") {
+    return validTestFailureEvidence(
+      evidence,
+      selectedFingerprint,
+      postMutationFingerprint,
+    );
+  }
   if (evidence?.kind === "safe_baseline") {
     return hasExactKeys(evidence, [
       "distinguished",
@@ -160,6 +167,35 @@ function validReviewDiscriminatingEvidence(
     evidence.post_mutation_fingerprint === postMutationFingerprint &&
     isDigest(evidence.assertion_receipt_digest) &&
     evidence.non_destructive === true && evidence.satisfied === true;
+}
+
+function validTestFailureEvidence(
+  evidence,
+  selectedFingerprint,
+  postMutationFingerprint,
+) {
+  return hasExactKeys(evidence, [
+    "distinguished",
+    "kind",
+    "post_mutation_fingerprint",
+    "schema",
+    "selected_fingerprint",
+    "test_failures",
+  ]) && evidence.schema === "flow.feature-discriminating-evidence/v1" &&
+    evidence.kind === "test_failure" &&
+    evidence.selected_fingerprint === selectedFingerprint &&
+    evidence.post_mutation_fingerprint === postMutationFingerprint &&
+    evidence.selected_fingerprint !== evidence.post_mutation_fingerprint &&
+    evidence.distinguished === true &&
+    Array.isArray(evidence.test_failures) &&
+    evidence.test_failures.length > 0 &&
+    evidence.test_failures.every((failure) => hasExactKeys(failure, [
+      "card_id",
+      "effect_id",
+      "receipt_digest",
+      "slice_id",
+    ]) && nonEmpty(failure.card_id) && nonEmpty(failure.effect_id) &&
+      isDigest(failure.receipt_digest) && nonEmpty(failure.slice_id));
 }
 
 function validReviewCritiqueReceipt(receipt) {
