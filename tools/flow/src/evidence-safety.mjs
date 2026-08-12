@@ -19,7 +19,7 @@ export const EVIDENCE_SAFETY_REJECTION_SCHEMA =
 export const EVIDENCE_SAFETY_BINDING_SCHEMA =
   "flow.evidence-safety-binding/v1";
 export const EVIDENCE_SAFETY_POLICY_ID = "flow.evidence-safety-policy/v1";
-export const EVIDENCE_SAFETY_CATALOG_ID = "flow.contract-catalog/v1@21";
+export const EVIDENCE_SAFETY_CATALOG_ID = "flow.contract-catalog/v1@22";
 
 export const EVIDENCE_SAFETY_BOUNDARIES = Object.freeze([
   "delegate_transfer",

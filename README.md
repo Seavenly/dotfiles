@@ -163,7 +163,7 @@ Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
 `tools/flow/src/evidence-safety.mjs`. Catalog v21 binds policy
 `flow.evidence-safety-policy/v1` to exact catalog identity
-`flow.contract-catalog/v1@21`; rejected evidence produces only typed redacted
+`flow.contract-catalog/v1@22`; rejected evidence produces only typed redacted
 codes and never reads ambient host state.
 
 The three implementations use disjoint authority roots, and existing runs

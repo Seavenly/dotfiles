@@ -3,7 +3,10 @@ import { effectClassPolicy } from "./operation-effects.mjs";
 import { admitPlanRevision } from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import { isTrackerProgressContract } from "./tracker-progress.mjs";
-import { buildRunViews } from "./projection-builder.mjs";
+import {
+  buildRunViews,
+  publicEffectProjection,
+} from "./projection-builder.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const launchOwnership = run.events.find(({ type }) => type === "run_launched")
@@ -438,11 +441,18 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     !isCancellationEffect(effectId) &&
     (!effectReceipts.has(effectId) || hasLateReceipt(effectId));
   const effects = [...effectIntents.values()].map((intent) => ({
+    ...(intent.run_id === undefined ? {} : { run_id: intent.run_id }),
     effect_id: intent.effect_id,
     card_id: intent.card_id ?? null,
     attempt_id: intent.attempt_id,
     classification: intent.classification,
     operation_contract: intent.operation_contract,
+    ...(intent.operation_input === undefined ? {} : {
+      operation_input: intent.operation_input,
+    }),
+    ...(intent.source_authority_watermark === undefined ? {} : {
+      source_authority_watermark: intent.source_authority_watermark,
+    }),
     effect_kind: intent.effect_kind ?? "operation",
     idempotency_key: intent.idempotency_key,
     route_binding: intent.route_binding,
@@ -652,7 +662,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     limits: fold.limits,
     attempts: fold.attempts,
     subruns: fold.subruns,
-    effects: fold.effects,
+    effects: fold.effects.map(publicEffectProjection),
     ...(fold.tracker_progress === undefined ? {} : {
       tracker_progress: fold.tracker_progress,
     }),

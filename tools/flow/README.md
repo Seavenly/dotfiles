@@ -9,7 +9,7 @@ disabled, so this API does not authorize normal replacement launches.
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
 `flow.evidence-safety-policy/v1`, and catalog v21 binds it to
-`flow.contract-catalog/v1@21`. The request shape is
+`flow.contract-catalog/v1@22`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -391,6 +391,41 @@ registration; an unrelated run lifecycle event does not change it.
 `authority_watermark` may be null only when the authority could not be observed.
 `legal_actions` is always derived from the represented authority, or empty when
 no authority watermark is available.
+
+### Automated local review
+
+The registered `review/v1` definition reviews exactly one complete
+`work.review-candidate/v1` verified local candidate. The target binds the
+candidate fingerprint separately from the review lifecycle generation and
+from the owning candidate-seal authority watermark. Launch re-reads the
+sealed candidate projection and rejects missing, stale, or mismatched
+candidate identity before creating a run. Its selected security, correctness, tests,
+style, and observability lenses each use an isolated delegated route; one
+fresh critic depends on every enabled lens and receives their accepted
+authority evidence. A registered review operation appends one immutable
+`work.review/v1` record to ReviewAuthority with the candidate fingerprint and
+lifecycle generation bound independently. The ReviewAuthority-owned operation
+registration is reserved and cannot be replaced by caller code.
+
+ReviewAuthority projections and `FlowRuntime` review queries/watchers expose
+the exact review watermark, append-only evidence, stable findings, posture,
+cap reasons, and deterministic JSON, Markdown, and HTML artifacts. Artifacts
+carry candidate, lifecycle, candidate-seal, source-authority, and exact
+registered-operation provenance.
+Public run projections, including operator and trust views, omit raw operation
+inputs. Authority-owned review recording reads its settled effect intent through
+a private, read-only RunAuthority attachment instead of exposing delegated
+evidence through those projections.
+Review watchers are one-shot snapshots because an accepted review record is
+immutable; callers watching an unknown review receive that exact rejection and
+must start a later watch after the record exists.
+ReviewAuthority re-reads the sealed candidate projection on every review-record
+command, so a self-consistent forged candidate or stale candidate-seal watermark
+cannot create a review event. The first record requires its canonical command
+identity; later non-replay writes reject with `idempotency_conflict` and cannot
+append another event. Review completion is automated evidence only: approval,
+integration, merge, tracker completion, and remote review submission remain
+unauthorized and have no legal actions in the projection.
 
 ## Workspace, artifact, and resource handoff authority
 

@@ -355,9 +355,19 @@ function delegateDecision(fold, command, delegate) {
   const routeBinding = fallback?.activate_for_attempt === ordinal
     ? fallback.route
     : card.route;
-  const delegateInput = fallback?.activate_for_attempt === ordinal
+  let delegateInput = fallback?.activate_for_attempt === ordinal
     ? { ...card.inputs, description: fallback.description }
     : card.inputs;
+  const joined = materializeDelegateJoin(fold, delegateInput);
+  if (joined.code !== null) return reject(fold, command, joined.code);
+  if (joined.evidence !== null) {
+    const evidenceJson = JSON.stringify(joined.evidence);
+    delegateInput = {
+      ...delegateInput,
+      authority_materialized_evidence: joined.evidence,
+      prompt: `${delegateInput.prompt}\n\nAuthority-settled finding lens results:\n${evidenceJson}`,
+    };
+  }
   const attemptId = `${fold.run_id}:${delegate.id}:attempt:${ordinal}`;
   const effectIdentity = digest({
     schema: "flow.delegate-effect-identity/v1",
@@ -405,6 +415,31 @@ function delegateDecision(fold, command, delegate) {
     }],
     obligations: [],
     projection_hints: ["operator", "graph"],
+  };
+}
+
+function materializeDelegateJoin(fold, inputs) {
+  if (inputs && Object.hasOwn(inputs, "authority_materialized_evidence")) {
+    return { code: "caller_materialized_evidence_forbidden", evidence: null };
+  }
+  const cardIds = inputs?.finding_lens_card_ids ?? inputs?.delegate_evidence_card_ids;
+  if (cardIds === undefined) return { code: null, evidence: null };
+  if (!Array.isArray(cardIds) || duplicateValues(cardIds) ||
+      typeof inputs?.prompt !== "string" || inputs.prompt.length === 0) {
+    return { code: "authority_evidence_declaration_invalid", evidence: null };
+  }
+  const evidence = [];
+  for (const cardId of cardIds) {
+    const resolved = resolveDelegateEvidence(fold, cardId);
+    if (resolved.code !== null) return resolved;
+    evidence.push(resolved.evidence);
+  }
+  return {
+    code: null,
+    evidence: {
+      schema: "flow.authority-materialized-delegate-evidence/v1",
+      accepted_delegates: evidence,
+    },
   };
 }
 

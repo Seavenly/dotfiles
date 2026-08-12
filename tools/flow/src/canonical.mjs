@@ -83,6 +83,19 @@ export function digest(value) {
     .digest("hex")}`;
 }
 
+export function idempotencyCommandDigest(command) {
+  if (command === null || typeof command !== "object" || Array.isArray(command)) {
+    return safeDigest(command);
+  }
+  const {
+    evidence_validation: ignoredEvidenceValidation,
+    git_observation: ignoredGitObservation,
+    human_authority_validation: ignoredHumanValidation,
+    ...requestedCommand
+  } = command;
+  return safeDigest(requestedCommand);
+}
+
 export function freezeCanonical(value) {
   return deepFreeze(canonicalize(value));
 }
@@ -99,6 +112,14 @@ export function uniqueCanonical(values) {
   const byDigest = new Map(values.map((value) => [digest(value), value]));
   return [...byDigest].sort(([left], [right]) => left < right ? -1 : 1)
     .map(([, value]) => value);
+}
+
+function safeDigest(value) {
+  try {
+    return digest(value);
+  } catch {
+    return null;
+  }
 }
 
 function deepFreeze(value) {
