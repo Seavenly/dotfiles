@@ -743,6 +743,9 @@ Machine-local state lives under the XDG state directory in a file-based
 registry. It stores groups, tasks, agents, turns, ordered inputs, extracted
 messages, results, launch specifications, native session references, transcript
 cursors, blocked events, and lifecycle history.
+Operator-authorized held-lock recovery decisions are stored as private,
+immutable receipts under `lock-recovery-decisions`; they are audit evidence and
+do not participate in the registry authority watermark.
 
 Registry requirements:
 
@@ -850,6 +853,34 @@ operation identity matches that retry. A different semantic operation on the
 same resource remains blocked. Lock age, timer expiry, and generic force unlock
 are not recovery mechanisms.
 
+An operation-specific recovery action names the public operation kind that may
+continue the lock. Adoption succeeds only when the operator reproduces the
+identical invocation, including flags, input, operation ID, kind, and payload
+digest; the action token alone does not prove that identity. Similar operation
+names do not authorize adoption. When no public operation can reproduce the
+identity and the recorded owner is proven absent,
+the operator-only `release_absent_registry_lock` action is projected after any
+exact retry action. It is never delegated to Flow automation.
+
+The exact command is:
+
+```text
+drovr lock release-absent LOCK_ENTRY --lock-id LOCK_ID --authority-watermark JSON --decision ID
+```
+
+It requires the projected hashed entry, exact lock ID, exact current registry
+watermark, and a non-empty decision identity. Drovr independently rechecks the
+held document, resource binding, and recorded process absence. Before removing
+the owner token it persists a private decision receipt binding the operation,
+payload digest, dead process identity, acquisition watermark, current
+watermark, and decision ID. The result reports whether the registry generation
+changed since acquisition; that signal warns of possible partial mutation but
+does not weaken or replace the evidence fence.
+If removal fails after the write-ahead receipt is durable, a later identity
+collision exposes the receipt watermark. Replaying that exact receipt-bound
+decision remains valid after unrelated registry movement, but Drovr still
+rechecks the current subject, exact lock ID, and process absence before removal.
+
 For compatibility with legacy crash-created state, status may expose the closed
 `abandon_bare_registry_lock` action for a currently bare hashed lock entry. The
 operator must pass that exact projected authority watermark and a non-empty
@@ -863,6 +894,30 @@ The command rejects held, successor, stale, and malformed entries. It records a
 typed operator disposition only for the bare subject; it does not accept caller
 claims of operation absence and is not a generic unlock or registry surgery
 surface.
+
+The bare disposition is persisted before removal and may be replayed with the
+same decision identity, subject, and watermark. Replay reports the already
+completed abandonment without touching a later successor. If unrelated
+registry movement follows a failed removal, the identity-collision result
+exposes the immutable receipt watermark needed to resume the same decision.
+
+Bare-lock abandonment uses the closed disposition vocabulary
+`owner_terminated`, `operation_failed`, `operation_cancelled`, and
+`operator_disposition`. The public compatibility command uses only
+`operator_disposition`; the remaining values are retained as the versioned
+domain contract for typed recovery decisions.
+
+A read-only registry snapshot that cannot observe stable record bytes after its
+bounded retries returns `registry_snapshot_unstable`. This is a transient,
+retryable observation failure and never authorizes lock adoption or release.
+Acquisition recomputes the registry watermark immediately before every
+publication attempt; it does not cache authority across contention.
+
+If a wrapper detects `successor_owner` while releasing the lock that protected
+its critical section, it raises `registry_lock_ownership_lost` rather than
+returning the mutation as successful. The result binds the expected and
+observed lock identities, current registry watermark, and closed inspection
+actions.
 
 ## Host and process constraints
 

@@ -419,6 +419,31 @@ test("DelegatedAgentPort preserves release-failure watermark and actions", async
   assert.deepEqual(blocked.legal_next_actions, ["status"]);
 });
 
+test("DelegatedAgentPort blocks detected registry lock ownership loss", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async retireDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_ownership_lost",
+        authorityWatermark,
+        ["status"],
+      );
+    },
+  });
+
+  const blocked = await port.retire({
+    schema: "flow.delegated-agent-retire-request/v1",
+    agent_id: "agent:1",
+    turn_id: "turn:1",
+    attempt_id: "run:1/card:review/attempt:1",
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "registry_lock_ownership_lost");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, ["status"]);
+});
+
 test("DelegatedAgentPort sanitizes malformed registry-lock details without authority", async () => {
   const port = createDrovrDelegatedAgentPort({
     async waitDrovr() {
@@ -506,6 +531,37 @@ test("DelegatedAgentPort does not expose internal registry recovery verbs", asyn
   assert.deepEqual(blocked.legal_next_actions, [
     "repair_delegated_runtime_registry",
   ]);
+});
+
+test("DelegatedAgentPort keeps absent-owner lock release operator-only", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async reconcileDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_required",
+        authorityWatermark,
+        ["turn_wait", "release_absent_registry_lock"],
+        {
+          owner_status: "absent",
+          lock_entry: "a".repeat(64),
+          lock_id: "lock-1",
+        },
+      );
+    },
+  });
+
+  const blocked = await port.reconcile({
+    schema: "flow.delegated-agent-reconcile-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_runtime_registry",
+  ]);
+  assert.equal(Object.hasOwn(blocked, "lock_entry"), false);
 });
 
 test("DelegatedAgentPort preserves a bare-lock abandonment subject", async () => {

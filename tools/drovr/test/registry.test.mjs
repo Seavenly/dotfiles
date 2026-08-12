@@ -35,6 +35,13 @@ import {
 const execFileAsync = promisify(execFile);
 const registryModule = new URL("../src/registry.mjs", import.meta.url).href;
 
+function claimName(lockId, { pid, bootId, startToken, nonce = "test" }) {
+  const encode = (value) => value
+    ? Buffer.from(value, "utf8").toString("base64url")
+    : "-";
+  return `.claim.${lockId}.${pid}.${encode(bootId)}.${encode(startToken)}.${nonce}`;
+}
+
 test("registry reads reject unsafe directory permissions without repairing them", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-permissions-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -283,23 +290,83 @@ test("continuing-operation recovery adopts the exact operation with a new proces
   const adopted = await acquireResourceLock(registryDirectory, "resource-1", {
     operationId: "operation-continuing",
     authorityId: "authority-new",
-    recover: async (input) => ({
-      action: "adopt",
-      evidence: {
-        kind: "continuing_operation",
-        operation_id: input.lock.operation.id,
-        operation_kind: input.lock.operation.kind,
-        owner_status: input.owner_status,
-        process_identity: input.lock.owner.process_identity,
-        receipt: "resume-1",
-      },
-      authority_watermark: input.authority_watermark,
-    }),
+    recover: async (input) => {
+      await writeRecord(registryDirectory, "groups", {
+        schema: "drovr.group/v1",
+        id: "unrelated-concurrent-mutation",
+      });
+      return {
+        action: "adopt",
+        evidence: {
+          kind: "continuing_operation",
+          operation_id: input.lock.operation.id,
+          operation_kind: input.lock.operation.kind,
+          owner_status: input.owner_status,
+          process_identity: input.lock.owner.process_identity,
+          receipt: "resume-1",
+        },
+        authority_watermark: input.authority_watermark,
+      };
+    },
   });
   assert.equal(adopted.metadata.operation.id, predecessor.metadata.operation.id);
   assert.equal(adopted.metadata.owner.authority_id, "authority-new");
   assert.notEqual(adopted.metadata.lock_id, predecessor.metadata.lock_id);
   await releaseResourceLock(adopted);
+});
+
+test("an adoption publication race returns typed successor contention", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-lock-adoption-race-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const registryDirectory = join(scratch, "drovr");
+  const key = "resource-1";
+  const operation = registryOperation("task.close", "task-1", { force: false });
+  await acquireResourceLock(registryDirectory, key, {
+    operation,
+    authorityId: "authority-old",
+    processIdentity: {
+      schema: "drovr.process-identity/v1",
+      pid: 999999,
+      boot_id: "boot-old",
+      start_token: "1",
+    },
+  });
+  const canonicalPath = resourceLockPath(registryDirectory, key);
+  let canonicalAttempts = 0;
+  let successor;
+  const fs = {
+    link: async (source, target) => {
+      if (target === canonicalPath && ++canonicalAttempts === 2) {
+        successor = await acquireResourceLock(registryDirectory, key, {
+          operation: registryOperation("agent.retire", "agent-1"),
+          authorityId: "authority-successor",
+        });
+      }
+      return link(source, target);
+    },
+  };
+
+  await assert.rejects(
+    () => acquireResourceLock(
+      registryDirectory,
+      key,
+      registryLockOptions(operation, {
+        authorityId: "authority-retry",
+        maxAttempts: 0,
+        fs,
+      }),
+    ),
+    (error) => {
+      assert.equal(error.outcome, "registry_locked");
+      assert.notEqual(error.code, "EEXIST");
+      return true;
+    },
+  );
+  assert.equal(
+    (await readResourceLock(registryDirectory, key)).metadata.lock_id,
+    successor.metadata.lock_id,
+  );
+  await releaseResourceLock(successor);
 });
 
 test("recovery rejects claimed absence while the current owner is live", async (t) => {
@@ -422,7 +489,10 @@ test("automatic recovery blocks a different semantic operation on the same resou
       ),
     (error) => {
       assert.equal(error.outcome, "registry_lock_recovery_required");
-      assert.deepEqual(error.details.legal_next_actions, ["task_close"]);
+      assert.deepEqual(error.details.legal_next_actions, [
+        "task_close",
+        "release_absent_registry_lock",
+      ]);
       return true;
     },
   );
@@ -624,7 +694,7 @@ test("simultaneous token claims never recreate a missing token or unlink a succe
   const fs = {
     rename: async (source, target) => {
       const result = await import("node:fs/promises").then(({ rename }) => rename(source, target));
-      if (target.endsWith(".claim")) {
+      if (target.includes("/.claim.")) {
         claimReady();
         await secondStarted;
       }
@@ -662,7 +732,11 @@ test("an absent claimant can be reclaimed after an unlink failure", async (t) =>
   const lockPath = resourceLockPath(directory, key);
   const token = (await readdir(join(directory, "locks"))).find((name) => name.endsWith(".token"));
   await rm(join(directory, "locks", token), { force: true });
-  await link(lockPath, join(directory, "locks", `${token}.999999.unknown.12345.dead.claim`));
+  await link(lockPath, join(directory, "locks", claimName(handle.metadata.lock_id, {
+    pid: 999999,
+    startToken: "12345",
+    nonce: "dead",
+  })));
   const result = await releaseResourceLock(handle);
   assert.equal(result.status, "released");
   assert.equal((await readResourceLock(directory, key)).status, "absent");
@@ -678,7 +752,43 @@ test("live or unproven claimants cannot be stolen", async (t) => {
   const token = (await readdir(join(directory, "locks"))).find((name) => name.endsWith(".token"));
   await rm(join(directory, "locks", token), { force: true });
   const identity = handle.metadata.owner.process_identity;
-  await link(lockPath, join(directory, "locks", `${token}.${identity.pid}.${encodeURIComponent(identity.boot_id ?? "unknown")}.${encodeURIComponent(identity.start_token ?? "unknown")}.live.claim`));
+  await link(lockPath, join(directory, "locks", claimName(handle.metadata.lock_id, {
+    pid: identity.pid,
+    bootId: identity.boot_id,
+    startToken: identity.start_token,
+    nonce: "live",
+  })));
+  const result = await releaseResourceLock(handle);
+  assert.equal(result.status, "successor_owner");
+  assert.equal((await readResourceLock(directory, key)).status, "held");
+  await rm(lockPath, { force: true });
+});
+
+test("a live claimant with incomplete process facts remains unproven", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-lock-unproven-claim-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const directory = join(scratch, "drovr");
+  const key = "resource-1";
+  const handle = await acquireResourceLock(directory, key, {
+    operationId: "operation-1",
+    authorityId: "authority-1",
+  });
+  const lockPath = resourceLockPath(directory, key);
+  const token = (await readdir(join(directory, "locks")))
+    .find((name) => name.endsWith(".token"));
+  await rm(join(directory, "locks", token), { force: true });
+  await link(
+    lockPath,
+    join(
+      directory,
+      "locks",
+      claimName(handle.metadata.lock_id, {
+        pid: process.pid,
+        nonce: "incomplete",
+      }),
+    ),
+  );
+
   const result = await releaseResourceLock(handle);
   assert.equal(result.status, "successor_owner");
   assert.equal((await readResourceLock(directory, key)).status, "held");
@@ -694,7 +804,10 @@ test("malformed claim metadata is a typed blocking state", async (t) => {
   const lockPath = resourceLockPath(directory, key);
   const token = (await readdir(join(directory, "locks"))).find((name) => name.endsWith(".token"));
   await rm(join(directory, "locks", token), { force: true });
-  await link(lockPath, join(directory, "locks", `${token}.malformed.claim`));
+  await link(
+    lockPath,
+    join(directory, "locks", `.claim.${handle.metadata.lock_id}.malformed`),
+  );
   await assert.rejects(releaseResourceLock(handle), (error) => {
     assert.equal(error.outcome, "registry_lock_recovery_required");
     assert.equal(error.details.owner_status, "unproven");
@@ -730,6 +843,95 @@ test("partial multi-lock acquisition releases only locks owned by the failed ope
   await releaseResourceLock(unrelated);
 });
 
+test("multi-lock rollback keeps operation failure evidence on a release failure", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-lock-multi-error-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const directory = join(scratch, "drovr");
+  const operationError = new Error("operation failed before rollback");
+  const fs = {
+    rm: async (path, options) => {
+      if (path === resourceLockPath(directory, "resource-1")) {
+        const error = new Error("release failed during rollback");
+        error.code = "EIO";
+        throw error;
+      }
+      return rm(path, options);
+    },
+  };
+
+  await assert.rejects(
+    () => withOrderedResourceLocks(
+      directory,
+      ["resource-1"],
+      async () => { throw operationError; },
+      {
+        operation: registryOperation("group.close", "group-1"),
+        authorityId: "authority-1",
+        fs,
+      },
+    ),
+    (error) => {
+      assert.equal(error.outcome, "registry_lock_release_failed");
+      assert.equal(error.details.operation_error, operationError.message);
+      assert.deepEqual(error.details.legal_next_actions, ["group_close", "status"]);
+      return true;
+    },
+  );
+});
+
+test("lock wrappers surface successor ownership detected at release", async (t) => {
+  for (const [name, run] of [
+    ["single", (directory, key, operation, options) =>
+      withResourceLock(directory, key, operation, options)],
+    ["ordered", (directory, key, operation, options) =>
+      withOrderedResourceLocks(directory, [key], operation, options)],
+  ]) {
+    const scratch = await mkdtemp(join(tmpdir(), `drovr-registry-lock-${name}-ownership-loss-`));
+    t.after(() => rm(scratch, { recursive: true, force: true }));
+    const directory = join(scratch, "drovr");
+    const key = "resource-1";
+    let successor;
+
+    await assert.rejects(
+      () => run(
+        directory,
+        key,
+        async () => {
+          await rm(resourceLockPath(directory, key), { force: true });
+          successor = await acquireResourceLock(directory, key, {
+            operation: registryOperation("agent.retire", "agent-successor"),
+            authorityId: "successor-authority",
+          });
+          if (name === "single") {
+            await writeFile(join(directory, "groups", "invalid.json"), "{");
+          }
+          return "mutation-complete";
+        },
+        {
+          operation: registryOperation("task.close", "task-1"),
+          authorityId: "original-authority",
+        },
+      ),
+      (error) => {
+        assert.equal(error.outcome, "registry_lock_ownership_lost");
+        assert.equal(error.details.expected_lock_id !== error.details.observed_lock_id, true);
+        if (name === "single") {
+          assert.equal(error.details.authority_watermark, null);
+        } else {
+          assert.ok(error.details.authority_watermark);
+        }
+        assert.deepEqual(error.details.legal_next_actions, ["status"]);
+        return true;
+      },
+    );
+    assert.equal(
+      (await readResourceLock(directory, key)).metadata.lock_id,
+      successor.metadata.lock_id,
+    );
+    await releaseResourceLock(successor);
+  }
+});
+
 test("bare lock directories are blocked until typed reconciliation", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-lock-bare-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -747,6 +949,7 @@ test("bare lock directories are blocked until typed reconciliation", async (t) =
     (error) => {
       assert.equal(error.outcome, "registry_lock_recovery_required");
       assert.equal(error.details.owner_status, "unproven");
+      assert.match(error.details.lock_entry, /^[0-9a-f]{64}$/u);
       assert.deepEqual(error.details.legal_next_actions, [
         "abandon_bare_registry_lock",
       ]);
@@ -826,6 +1029,31 @@ test("lock projection rejects a forged hashed path", async (t) => {
     { outcome: "corrupt_registry" },
   );
   await releaseResourceLock(handle);
+});
+
+test("unmapped absent operations expose only operator proven-absence release", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-lock-unmapped-actions-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const registryDirectory = join(scratch, "drovr");
+  for (const [index, kind] of ["turn.reconcile", "agent.recover", "registry_mutation"].entries()) {
+    await acquireResourceLock(registryDirectory, `resource-${index}`, {
+      operation: registryOperation(kind, `subject-${index}`),
+      authorityId: "authority-lost",
+      processIdentity: {
+        schema: "drovr.process-identity/v1",
+        pid: 999999 - index,
+        start_token: "1",
+      },
+    });
+  }
+
+  const projection = await resourceLockProjection(registryDirectory);
+  for (const lock of projection.locks) {
+    assert.equal(lock.owner_status, "absent");
+    assert.deepEqual(lock.legal_next_actions, [
+      "release_absent_registry_lock",
+    ]);
+  }
 });
 
 test("lock projection rejects a held lock with malformed resource identity", async (t) => {

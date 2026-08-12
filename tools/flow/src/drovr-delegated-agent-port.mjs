@@ -40,6 +40,7 @@ const REGISTRY_LOCK_OUTCOMES = new Set([
   "registry_lock_recovery_required",
   "registry_lock_recovery_evidence_invalid",
   "registry_lock_release_failed",
+  "registry_lock_ownership_lost",
 ]);
 const REGISTRY_LOCK_LEGAL_ACTIONS = new Set([
   "wait_for_registry_lock",
@@ -603,23 +604,6 @@ function validRegistryWatermark(watermark) {
   ]);
   if (Object.keys(watermark).some((key) => !allowedKeys.has(key))) {
     return false;
-  }
-  for (const key of [
-    "groups_sha256",
-    "tasks_sha256",
-    "agents_sha256",
-    "blocks_sha256",
-    "generation",
-    "registry_sha256",
-  ]) {
-    if (Object.hasOwn(watermark, key) && !isDigest(watermark[key])) {
-      return false;
-    }
-  }
-  for (const key of requiredCountKeys) {
-    if (!Number.isSafeInteger(watermark[key]) || watermark[key] < 0) {
-      return false;
-    }
   }
   return true;
 }

@@ -675,6 +675,17 @@ If registry discovery cannot produce the exact conflict projection, the port
 returns `delegated_runtime_projection_unavailable` with only
 `repair_delegated_runtime_registry`; it never recommends retirement without an
 exact delegation identity and registry watermark.
+Drovr registry-lock outcomes are projected as blocked lifecycle results only
+when their full registry watermark and closed legal actions validate. A bare
+lock may carry its hashed `lock_entry` with `abandon_bare_registry_lock` so an
+operator can act on the exact subject. Held-lock proven-absence release remains
+operator-only: the port does not accept `release_absent_registry_lock` and
+collapses that disposition to `repair_delegated_runtime_registry`. Unknown,
+malformed, or internal recovery actions are likewise never exposed as Flow
+authority.
+Detected ownership loss during lock release is projected as a typed blocked
+result with the exact registry watermark and inspection-only actions; Flow
+never treats the protected mutation as successful.
 An invalid Drovr configuration produces a `description_unavailable` block with
 repair and refresh actions, while a transient description failure exposes only
 `retry_delegated_runtime_description`.

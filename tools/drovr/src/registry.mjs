@@ -44,6 +44,7 @@ export const REGISTRY_LOCK_RECOVERY_ACTIONS = Object.freeze({
   abandon: "abandon_registry_operation",
 });
 export const PUBLIC_BARE_LOCK_ABANDON_ACTION = "abandon_bare_registry_lock";
+export const PUBLIC_ABSENT_LOCK_RELEASE_ACTION = "release_absent_registry_lock";
 const execFileAsync = promisify(execFileCallback);
 
 export function stateDirectory(env = process.env) {
@@ -84,22 +85,46 @@ function ownerTokenPath(path, lockId) {
 
 function ownerClaimPath(path, lockId, processIdentity = {}) {
   const pid = processIdentity.pid ?? process.pid;
-  const boot = encodeURIComponent(processIdentity.boot_id ?? "unknown");
-  const start = encodeURIComponent(processIdentity.start_token ?? "unknown");
-  return `${ownerTokenPath(path, lockId)}.${pid}.${boot}.${start}.${randomUUID()}.claim`;
+  const boot = encodeClaimIdentityField(processIdentity.boot_id);
+  const start = encodeClaimIdentityField(processIdentity.start_token);
+  return join(
+    dirname(path),
+    `.claim.${lockId}.${pid}.${boot}.${start}.${randomUUID()}`,
+  );
 }
 
-function claimProcessIdentity(name, tokenName) {
-  if (!name.startsWith(`${tokenName}.`) || !name.endsWith(".claim")) return null;
-  const fields = name.slice(tokenName.length + 1, -".claim".length).split(".");
+function encodeClaimIdentityField(value) {
+  return validNonEmpty(value)
+    ? Buffer.from(value, "utf8").toString("base64url")
+    : "-";
+}
+
+function decodeClaimIdentityField(value) {
+  if (value === "-") return undefined;
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new Error("claim process identity is not canonical base64url");
+  }
+  const decoded = Buffer.from(value, "base64url").toString("utf8");
+  if (!validNonEmpty(decoded) || encodeClaimIdentityField(decoded) !== value) {
+    throw new Error("claim process identity is not canonical base64url");
+  }
+  return decoded;
+}
+
+function claimProcessIdentity(name, lockId) {
+  const prefix = `.claim.${lockId}.`;
+  if (!name.startsWith(prefix)) return null;
+  const fields = name.slice(prefix.length).split(".");
   if (fields.length !== 4 || !/^\d+$/u.test(fields[0])) return null;
   try {
     const [pid, boot, start] = fields;
+    const bootId = decodeClaimIdentityField(boot);
+    const startToken = decodeClaimIdentityField(start);
     return {
       schema: PROCESS_SCHEMA,
       pid: Number(pid),
-      boot_id: decodeURIComponent(boot),
-      start_token: decodeURIComponent(start),
+      ...(bootId ? { boot_id: bootId } : {}),
+      ...(startToken ? { start_token: startToken } : {}),
     };
   } catch {
     return null;
@@ -120,6 +145,13 @@ async function ensureStateDirectory(directory) {
   const launchDocuments = join(directory, "launch-documents");
   await mkdir(launchDocuments, { recursive: true, mode: 0o700 });
   await chmod(launchDocuments, 0o700);
+}
+
+async function ensureRecoveryDecisionDirectory(directory) {
+  const path = join(directory, "lock-recovery-decisions");
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
+  return path;
 }
 
 function recordPath(directory, kind, id) {
@@ -256,7 +288,7 @@ async function readRegistryRecords(directory) {
 }
 
 export async function readRegistrySnapshot(directory, options = {}) {
-  const maxAttempts = options.maxAttempts ?? 3;
+  const maxAttempts = options.maxAttempts ?? 8;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const records = await readRegistryRecords(directory);
     const authorityWatermark = watermarkForRecords(records);
@@ -266,6 +298,12 @@ export async function readRegistrySnapshot(directory, options = {}) {
         ...records,
         authority_watermark: authorityWatermark,
       };
+    }
+    if (attempt + 1 < maxAttempts) {
+      // Yield between observations so a burst of mutations does not make all
+      // read-only retries collide in the same event-loop turn. Elapsed time
+      // never participates in lock ownership or recovery authority.
+      await new Promise((resolve) => setImmediate(resolve));
     }
   }
   throw new DrovrError(
@@ -542,6 +580,9 @@ function lockDetails({
   return {
     schema: LOCK_SCHEMA,
     resource_key: key,
+    ...(LOCK_ENTRY_PATTERN.test(basename(path))
+      ? { lock_entry: basename(path) }
+      : {}),
     lock_path: path,
     lock: clone(metadata),
     owner_status: ownerStatus,
@@ -561,7 +602,7 @@ function lockRecoveryError(
 function releaseFailureLegalActions(metadata) {
   return [
     ...new Set([
-      ...publicRecoveryActions("unproven", metadata),
+      ...(publicOperationAction(metadata) ? [publicOperationAction(metadata)] : []),
       "status",
     ]),
   ];
@@ -917,9 +958,16 @@ export async function resourceLockProjection(directory, options = {}) {
       owner_status: ownerStatus,
       ...(metadata
         ? {
+            lock_id: metadata.lock_id,
             operation: clone(metadata.operation),
             authority_id: metadata.owner.authority_id,
             acquisition_watermark: metadata.acquisition_watermark,
+            registry_changed_since_acquisition:
+              metadata.acquisition_watermark.generation !==
+                authorityWatermark.generation,
+            acquisition_generation:
+              metadata.acquisition_watermark.generation,
+            current_generation: authorityWatermark.generation,
           }
         : {}),
       legal_next_actions: legalNextActions,
@@ -1051,9 +1099,9 @@ async function claimOwnerToken(state, options) {
         if (error.code === "ENOENT") return [];
         throw error;
       });
-      const claimPrefix = `${basename(tokenPath)}.`;
-      for (const name of names.filter((item) => item.startsWith(claimPrefix) && item.endsWith(".claim"))) {
-        const identity = claimProcessIdentity(name, basename(tokenPath));
+      const claimPrefix = `.claim.${metadata.lock_id}.`;
+      for (const name of names.filter((item) => item.startsWith(claimPrefix))) {
+        const identity = claimProcessIdentity(name, metadata.lock_id);
         if (!identity) {
           throw lockRecoveryError(
             `registry lock has an unproven owner claim for ${state.resource_key}`,
@@ -1197,12 +1245,13 @@ async function removeOwnedLock(state, options = {}) {
     throw error;
   }
   if (pathMetadata === "file") {
+    const releaseContext = options.releaseContext ?? {};
     const claim = await claimOwnerToken(state, {
       fs,
-      releaseClaimPath: options.releaseClaimPath,
+      releaseClaimPath: releaseContext.releaseClaimPath,
     });
     if (claim.status !== "claimed") return claim;
-    options.releaseClaimPath = claim.claimPath;
+    releaseContext.releaseClaimPath = claim.claimPath;
     try {
       await unlinkImpl(state.lock_path, { force: false });
     } catch (error) {
@@ -1377,6 +1426,17 @@ function publicRecoveryActions(ownerStatus, metadata) {
     return ["status"];
   }
   if (!metadata?.operation?.kind) return [PUBLIC_BARE_LOCK_ABANDON_ACTION];
+  if (ownerStatus !== "absent") return ["status"];
+  const operationAction = publicOperationAction(metadata);
+  return [
+    ...new Set([
+      ...(operationAction ? [operationAction] : []),
+      PUBLIC_ABSENT_LOCK_RELEASE_ACTION,
+    ]),
+  ];
+}
+
+function publicOperationAction(metadata) {
   const actionByOperation = {
     "agent.start": "agent_start",
     "agent.retire": "agent_retire",
@@ -1391,7 +1451,7 @@ function publicRecoveryActions(ownerStatus, metadata) {
     "turn.send": "turn_send",
     "turn.cancel": "turn_cancel",
   };
-  return [actionByOperation[metadata.operation.kind] ?? "status"];
+  return actionByOperation[metadata?.operation?.kind] ?? null;
 }
 
 function recoveryDecisionError(message, details) {
@@ -1408,7 +1468,8 @@ async function applyRecoveryDecision(
   decision,
   options = {},
 ) {
-  const authorityWatermark = await registryWatermark(directory);
+  const authorityWatermark = options.validatedAuthorityWatermark ??
+    await registryWatermark(directory);
   const details = lockDetails({
     key,
     path: state.lock_path,
@@ -1639,6 +1700,35 @@ export async function abandonBareRegistryLock(
   }
   const lockPath = join(directory, "locks", lockEntry);
   const state = await readResourceLockAtPath(lockPath);
+  const existingReceipt = await readLockRecoveryDecision(directory, decisionId);
+  if (existingReceipt) {
+    if (
+      existingReceipt.action !== PUBLIC_BARE_LOCK_ABANDON_ACTION ||
+      existingReceipt.lock_entry !== lockEntry ||
+      !sameWatermark(existingReceipt.authority_watermark, authorityWatermark)
+    ) {
+      throw recoveryDecisionError(
+        "registry lock recovery decision identity is already bound to different evidence",
+        {
+          decision_id: decisionId,
+          lock_entry: lockEntry,
+          authority_watermark: clone(existingReceipt.authority_watermark),
+          evidence_watermark: clone(authorityWatermark),
+          legal_next_actions: [PUBLIC_BARE_LOCK_ABANDON_ACTION],
+        },
+      );
+    }
+    if (state.status !== "bare") {
+      return {
+        status: "abandoned",
+        already_abandoned: true,
+        lock_entry: lockEntry,
+        abandonment_type: existingReceipt.abandonment_type,
+        authority_watermark: clone(existingReceipt.authority_watermark),
+        legal_next_actions: ["acquire_registry_lock"],
+      };
+    }
+  }
   const currentWatermark = await registryWatermark(directory);
   const details = {
     resource_key: null,
@@ -1657,13 +1747,24 @@ export async function abandonBareRegistryLock(
       { outcome: "registry_lock_recovery_evidence_invalid", code: 0 },
     );
   }
-  if (!sameWatermark(authorityWatermark, currentWatermark)) {
+  if (!existingReceipt && !sameWatermark(authorityWatermark, currentWatermark)) {
     throw lockRecoveryError(
       "public bare registry lock abandonment requires the exact current authority watermark",
       { ...details, evidence_watermark: authorityWatermark },
       { outcome: "registry_lock_recovery_evidence_invalid", code: 0 },
     );
   }
+  const decisionWatermark = existingReceipt?.authority_watermark ??
+    currentWatermark;
+  const receipt = existingReceipt ?? {
+    schema: "drovr.registry-lock-recovery-decision/v1",
+    decision_id: decisionId,
+    action: PUBLIC_BARE_LOCK_ABANDON_ACTION,
+    abandonment_type: "operator_disposition",
+    lock_entry: lockEntry,
+    authority_watermark: clone(decisionWatermark),
+  };
+  if (!existingReceipt) await persistLockRecoveryDecision(directory, receipt);
   const result = await applyRecoveryDecision(
     directory,
     null,
@@ -1672,10 +1773,238 @@ export async function abandonBareRegistryLock(
       action: "abandon",
       abandonment_type: "operator_disposition",
       evidence: { kind: "operator_disposition", decision_id: decisionId },
-      authority_watermark: currentWatermark,
+      authority_watermark: decisionWatermark,
     },
+    { validatedAuthorityWatermark: decisionWatermark },
   );
   return { ...result, lock_entry: lockEntry };
+}
+
+function lockRecoveryDecisionPath(directory, decisionId) {
+  const digest = createHash("sha256")
+    .update(decisionId)
+    .digest("hex");
+  return join(directory, "lock-recovery-decisions", `${digest}.json`);
+}
+
+async function readLockRecoveryDecision(directory, decisionId) {
+  const path = lockRecoveryDecisionPath(directory, decisionId);
+  try {
+    await validatePrivateFile(path);
+    const receipt = JSON.parse(await readFile(path, "utf8"));
+    if (
+      receipt?.schema !== "drovr.registry-lock-recovery-decision/v1" ||
+      receipt.decision_id !== decisionId
+    ) {
+      throw new Error("recovery decision receipt identity is invalid");
+    }
+    return receipt;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw lockRecoveryError(
+      `corrupt registry lock recovery decision ${path}`,
+      { decision_id: decisionId, error: error.message },
+      { outcome: "corrupt_registry", code: 5 },
+    );
+  }
+}
+
+async function persistLockRecoveryDecision(directory, receipt) {
+  const decisions = await ensureRecoveryDecisionDirectory(directory);
+  const path = lockRecoveryDecisionPath(directory, receipt.decision_id);
+  const digest = basename(path, ".json");
+  const temporary = join(
+    decisions,
+    `.${digest}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  const bytes = `${JSON.stringify(receipt, null, 2)}\n`;
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(bytes, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await link(temporary, path);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    await validatePrivateFile(path);
+    const existing = JSON.parse(await readFile(path, "utf8"));
+    if (digestCanonical(existing) !== digestCanonical(receipt)) {
+      throw recoveryDecisionError(
+        "registry lock recovery decision identity is already bound to different evidence",
+        {
+          decision_id: receipt.decision_id,
+          legal_next_actions: ["status"],
+        },
+      );
+    }
+  } finally {
+    await rm(temporary, { force: true });
+  }
+  return { path, receipt };
+}
+
+function absentLockReleaseResult(receipt, { alreadyReleased = false } = {}) {
+  return {
+    status: "released",
+    ...(alreadyReleased ? { already_released: true } : {}),
+    lock_entry: receipt.lock_entry,
+    lock_id: receipt.lock_id,
+    resource_key: receipt.resource_key,
+    operation: clone(receipt.operation),
+    owner_status: "absent",
+    absence_proof: clone(receipt.absence_proof),
+    registry_changed_since_acquisition:
+      receipt.registry_changed_since_acquisition,
+    acquisition_generation: receipt.acquisition_watermark.generation,
+    current_generation: receipt.authority_watermark.generation,
+    authority_watermark: clone(receipt.authority_watermark),
+    legal_next_actions: ["acquire_registry_lock"],
+  };
+}
+
+export async function releaseAbsentRegistryLock(
+  directory,
+  lockEntry,
+  { lockId, authorityWatermark, decisionId } = {},
+) {
+  if (!LOCK_ENTRY_PATTERN.test(lockEntry ?? "")) {
+    throw new DrovrError(
+      "absent-owner registry lock release requires a hashed lock entry",
+      { code: 2, outcome: "invalid_arguments" },
+    );
+  }
+  if (!validNonEmpty(lockId) || !validNonEmpty(decisionId)) {
+    throw new DrovrError(
+      "absent-owner registry lock release requires a lock and decision identity",
+      { code: 2, outcome: "invalid_arguments" },
+    );
+  }
+  const lockPath = join(directory, "locks", lockEntry);
+  const state = await readResourceLockAtPath(lockPath);
+  const existingReceipt = await readLockRecoveryDecision(directory, decisionId);
+  if (existingReceipt) {
+    if (
+      existingReceipt.action !== PUBLIC_ABSENT_LOCK_RELEASE_ACTION ||
+      existingReceipt.lock_entry !== lockEntry ||
+      existingReceipt.lock_id !== lockId ||
+      !sameWatermark(
+        existingReceipt.authority_watermark,
+        authorityWatermark,
+      )
+    ) {
+      throw recoveryDecisionError(
+        "registry lock recovery decision identity is already bound to different evidence",
+        {
+          decision_id: decisionId,
+          lock_entry: lockEntry,
+          expected_lock_id: lockId,
+          authority_watermark: clone(existingReceipt.authority_watermark),
+          evidence_watermark: clone(authorityWatermark),
+          legal_next_actions: [PUBLIC_ABSENT_LOCK_RELEASE_ACTION],
+        },
+      );
+    }
+    if (state.status === "absent" || state.metadata?.lock_id !== lockId) {
+      return absentLockReleaseResult(existingReceipt, {
+        alreadyReleased: true,
+      });
+    }
+  }
+  const currentWatermark = await registryWatermark(directory);
+  const metadata = state.metadata;
+  const ownerStatus = metadata
+    ? await ownerLiveness(metadata)
+    : state.status === "bare" ? "unproven" : null;
+  const details = {
+    resource_key: metadata?.resource_key ?? null,
+    lock_entry: lockEntry,
+    lock_id: metadata?.lock_id ?? null,
+    lock_path: lockPath,
+    owner_status: ownerStatus,
+    authority_watermark: currentWatermark,
+    legal_next_actions: ["status"],
+  };
+  if (
+    state.status !== "held" ||
+    !metadata ||
+    lockDigest(metadata.resource_key) !== lockEntry ||
+    metadata.lock_id !== lockId
+  ) {
+    throw recoveryDecisionError(
+      "absent-owner registry lock release requires the exact current held lock identity",
+      { ...details, expected_lock_id: lockId },
+    );
+  }
+  if (!existingReceipt && !sameWatermark(authorityWatermark, currentWatermark)) {
+    throw recoveryDecisionError(
+      "absent-owner registry lock release requires the exact current authority watermark",
+      { ...details, evidence_watermark: authorityWatermark },
+    );
+  }
+  if (ownerStatus !== "absent") {
+    throw recoveryDecisionError(
+      "absent-owner registry lock release requires proven process absence",
+      details,
+    );
+  }
+  const decisionWatermark = existingReceipt?.authority_watermark ?? currentWatermark;
+  const registryChangedSinceAcquisition = existingReceipt
+    ?.registry_changed_since_acquisition ??
+    metadata.acquisition_watermark.generation !== decisionWatermark.generation;
+  const absenceProof = {
+    schema: "drovr.registry-lock-absence-proof/v1",
+    owner_status: "absent",
+    process_identity: clone(metadata.owner.process_identity),
+  };
+  const receipt = existingReceipt ?? {
+    schema: "drovr.registry-lock-recovery-decision/v1",
+    decision_id: decisionId,
+    action: PUBLIC_ABSENT_LOCK_RELEASE_ACTION,
+    lock_entry: lockEntry,
+    lock_id: metadata.lock_id,
+    resource_key: metadata.resource_key,
+    operation: clone(metadata.operation),
+    owner: clone(metadata.owner),
+    acquisition_watermark: clone(metadata.acquisition_watermark),
+    authority_watermark: clone(decisionWatermark),
+    absence_proof: absenceProof,
+    registry_changed_since_acquisition: registryChangedSinceAcquisition,
+  };
+  if (!existingReceipt) await persistLockRecoveryDecision(directory, receipt);
+  const result = await applyRecoveryDecision(
+    directory,
+    metadata.resource_key,
+    { ...state, resource_key: metadata.resource_key, owner_status: "absent" },
+    {
+      action: "proven_absence",
+      evidence: {
+        kind: "operation_absence",
+        operation_id: metadata.operation.id,
+        operation_kind: metadata.operation.kind,
+        ...(metadata.operation.payload_digest
+          ? { operation_payload_digest: metadata.operation.payload_digest }
+          : {}),
+        owner_status: "absent",
+        process_identity: clone(metadata.owner.process_identity),
+        decision_id: decisionId,
+      },
+      authority_watermark: decisionWatermark,
+    },
+    {
+      releaseContext: {},
+      validatedAuthorityWatermark: decisionWatermark,
+    },
+  );
+  if (result.status !== "released") {
+    throw lockRecoveryError(
+      "absent-owner registry lock release lost the exact predecessor",
+      { ...details, release: result },
+    );
+  }
+  return absentLockReleaseResult(receipt);
 }
 
 export async function acquireResourceLock(directory, key, options = {}) {
@@ -1775,13 +2104,23 @@ export async function acquireResourceLock(directory, key, options = {}) {
               legal_next_actions: publicRecoveryActions(ownerStatus, state.metadata),
             })
           : recovery;
-        const result = await applyRecoveryDecision(
-          directory,
-          key,
-          { ...state, owner_status: ownerStatus },
-          decision,
-          normalized,
-        );
+        let result;
+        try {
+          result = await applyRecoveryDecision(
+            directory,
+            key,
+            { ...state, owner_status: ownerStatus },
+            decision,
+            {
+              ...normalized,
+              releaseContext: {},
+              validatedAuthorityWatermark: authorityWatermark,
+            },
+          );
+        } catch (recoveryError) {
+          if (LOCK_CONTENTION_ERRORS.has(recoveryError.code)) continue;
+          throw recoveryError;
+        }
         if (result.status === "adopted") {
           return {
             directory,
@@ -1842,12 +2181,34 @@ export async function releaseResourceLock(handle) {
   const result = await removeOwnedLockWithEvidence(
     releaseState,
     handle.directory,
-    handle,
+    { fs: handle.fs, releaseContext: handle },
   );
   if (["released", "successor_owner"].includes(result.status)) {
     handle.released = true;
   }
   return result;
+}
+
+async function ownershipLostError(result, directory, metadata, operationError) {
+  let authorityWatermark = null;
+  try {
+    authorityWatermark = await registryWatermark(directory);
+  } catch {
+    // Ownership loss is the primary failure. Watermark enrichment is best effort.
+  }
+  return lockRecoveryError(
+    `registry lock ownership was lost while releasing ${metadata.resource_key}`,
+    {
+      resource_key: metadata.resource_key,
+      lock_entry: basename(resourceLockPath(directory, metadata.resource_key)),
+      expected_lock_id: metadata.lock_id,
+      observed_lock_id: result.observed_lock_id ?? null,
+      authority_watermark: authorityWatermark,
+      legal_next_actions: ["status"],
+      ...(operationError ? { operation_error: operationError.message } : {}),
+    },
+    { outcome: "registry_lock_ownership_lost", code: 5 },
+  );
 }
 
 export async function withResourceLock(directory, key, operation, options = {}) {
@@ -1866,7 +2227,15 @@ export async function withResourceLock(directory, key, operation, options = {}) 
     operationError = error;
   }
   try {
-    await releaseResourceLock(handle);
+    const release = await releaseResourceLock(handle);
+    if (release.status !== "released") {
+      throw await ownershipLostError(
+        release,
+        directory,
+        handle.metadata,
+        operationError,
+      );
+    }
   } catch (releaseError) {
     releaseError.details = {
       ...(releaseError.details ?? {}),
@@ -1904,20 +2273,39 @@ export async function withOrderedResourceLocks(
   }
   const uniqueKeys = [...new Set(keys)].sort();
   const handles = [];
+  let value;
+  let operationError;
   try {
     for (const key of uniqueKeys) {
       handles.push(await acquireResourceLock(directory, key, options));
     }
-    return await operation(handles.map(({ metadata }) => clone(metadata)));
-  } finally {
-    let firstError;
-    for (const handle of handles.reverse()) {
-      try {
-        await releaseResourceLock(handle);
-      } catch (error) {
-        firstError ??= error;
-      }
-    }
-    if (firstError) throw firstError;
+    value = await operation(handles.map(({ metadata }) => clone(metadata)));
+  } catch (error) {
+    operationError = error;
   }
+  let firstReleaseError;
+  for (const handle of handles.reverse()) {
+    try {
+      const release = await releaseResourceLock(handle);
+      if (release.status !== "released") {
+        throw await ownershipLostError(
+          release,
+          directory,
+          handle.metadata,
+          operationError,
+        );
+      }
+    } catch (error) {
+      firstReleaseError ??= error;
+    }
+  }
+  if (firstReleaseError) {
+    firstReleaseError.details = {
+      ...(firstReleaseError.details ?? {}),
+      ...(operationError ? { operation_error: operationError.message } : {}),
+    };
+    throw firstReleaseError;
+  }
+  if (operationError) throw operationError;
+  return value;
 }

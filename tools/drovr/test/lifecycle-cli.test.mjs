@@ -351,6 +351,7 @@ exit 1
   assert.equal(blocked.result.reconciliation.status, "blocked");
   assert.deepEqual(blocked.result.reconciliation.legal_next_actions, [
     "agent_retire",
+    "release_absent_registry_lock",
   ]);
   assert.deepEqual(blocked.result.reconciliation.locks[0].operation, lockOperation);
 

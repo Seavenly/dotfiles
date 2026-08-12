@@ -404,7 +404,11 @@ _Avoid_: PID alone, liveness guess
 A typed, watermark-bound adoption, proven-absence, or bare-lock abandonment
 decision derived from current registry and process evidence. Its legal actions
 are closed and operation-specific; operator disposition does not claim an
-operation is absent.
+operation is absent. Bare-lock abandonment has the closed types
+`owner_terminated`, `operation_failed`, `operation_cancelled`, and
+`operator_disposition`. Both public operator dispositions persist the decision
+receipt. Releasing a held absent-owner lock additionally binds the exact lock
+ID.
 _Avoid_: Timer expiry, generic unlock, caller assertion
 
 **Semantic harness**:

@@ -321,11 +321,36 @@ Registry lock recovery remains bound to a known lifecycle operation. `drovr
 status` exposes the exact registry authority watermark and a reconciliation
 projection with closed legal next actions. If a lifecycle operation was
 interrupted after acquiring its lock, retry that same operation normally.
+The retry must reproduce the exact invocation, including flags, input, and
+other payload-bearing options; an operation-kind action token is guidance, not
+proof that a different invocation may adopt the lock.
 Drovr adopts only a lock whose recorded operation identity matches the retry
 and whose recorded process is proven absent; the replacement owner is written
 with the new process authority and current watermark. A different semantic
 operation on the same resource remains blocked. Lock age, timer expiry, and a
 generic force-unlock command are never recovery evidence.
+
+When the original operation cannot be reproduced, `status` projects
+`release_absent_registry_lock` only after independently proving that the held
+lock's recorded process is absent. The operator can release that exact subject
+with both its projected lock identity and registry watermark:
+
+```sh
+drovr lock release-absent LOCK_ENTRY \
+  --lock-id LOCK_ID \
+  --authority-watermark 'WATERMARK_JSON' \
+  --decision OPERATOR_DECISION_ID
+```
+
+The command rechecks process absence, lock identity, resource binding, and the
+current watermark. It persists a decision receipt before releasing the owner
+token and reports whether the registry generation changed since acquisition,
+which warns that the interrupted operation may have completed only part of its
+mutation. Live, unproven, malformed, stale, bare, and successor subjects remain
+blocked. If removal fails after receipt persistence, the receipt watermark
+remains the replay authority and is exposed by a later identity mismatch.
+Drovr still rechecks the exact current subject before resuming. Flow does not
+receive this operator-only disposition authority.
 
 A crash before lock metadata publication can leave a legacy bare hashed lock
 entry. `status` projects `abandon_bare_registry_lock` only for that currently
@@ -341,7 +366,10 @@ drovr lock abandon LOCK_ENTRY \
 This command accepts only a hashed lock entry that is still bare, rejects held,
 successor, stale, and malformed entries, and records typed operator
 disposition. It never accepts caller prose as proof that a lifecycle operation
-is absent and never acts as a generic unlock.
+is absent and never acts as a generic unlock. The private disposition receipt
+makes an exact retry idempotent without allowing it to remove a later
+successor. After a failed removal, a mismatch exposes the immutable receipt
+watermark needed to resume across unrelated registry movement.
 
 Retirement results use stable `legal_next_actions` tokens. `doctor` renders
 `retire_agent` as the exact `drovr agent retire AGENT_ID` command and renders
