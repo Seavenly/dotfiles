@@ -159,6 +159,13 @@ same versioned policy from `config/flow/launch-policy.v1.json`; it does not
 change the selector merely because replacement sources are installed. The
 future launcher remains responsible for enforcing that converged decision.
 
+Canonical evidence crossing the delegate, artifact, or resource-handoff
+boundary is validated by the pure versioned evidence-safety contract in
+`tools/flow/src/evidence-safety.mjs`. Catalog v21 binds policy
+`flow.evidence-safety-policy/v1` to exact catalog identity
+`flow.contract-catalog/v1@21`; rejected evidence produces only typed redacted
+codes and never reads ambient host state.
+
 The three implementations use disjoint authority roots, and existing runs
 remain owned by the implementation that created them. No legacy import adapter
 ships initially. Inspect the exact transition watermark, evidence status, and

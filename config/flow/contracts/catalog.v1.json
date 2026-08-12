@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 20,
+  "catalog_version": 21,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -80,6 +80,33 @@
         "released",
         "quarantined"
       ]
+    },
+    "evidence_safety": {
+      "authority": "non_authoritative",
+      "validator": "flow.evidence-safety-request/v1",
+      "receipt": "flow.evidence-safety-receipt/v1",
+      "rejection": "flow.evidence-safety-rejection/v1",
+      "binding": "flow.evidence-safety-binding/v1",
+      "catalog_view": "flow.evidence-safety-catalog/v1",
+      "policy_id": "flow.evidence-safety-policy/v1",
+      "catalog_id": "flow.contract-catalog/v1@21",
+      "allowed_uses": [
+        "delegate_transfer",
+        "artifact_acceptance",
+        "resource_handoff_publication"
+      ],
+      "redaction": "no_rejected_input_bytes_or_fragments",
+      "prohibited_inputs": [
+        "credential_material",
+        "capability_reference_or_envelope",
+        "ambient_filesystem_path",
+        "ambiguous_or_malformed_encoding"
+      ],
+      "boundaries": {
+        "delegate_transfer": "receipt_only_non_authoritative_binding",
+        "artifact_acceptance": "receipt_only_non_authoritative_binding",
+        "resource_handoff_publication": "receipt_only_non_authoritative_binding"
+      }
     },
     "tracker_progress": {
       "authority": "RunAuthority",
@@ -489,6 +516,12 @@
     "flow.effect-intent/v1",
     "flow.effect-observation/v1",
     "flow.effect-receipt/v1",
+    "flow.evidence-safety-request/v1",
+    "flow.evidence-safety-receipt/v1",
+    "flow.evidence-safety-rejection/v1",
+    "flow.evidence-safety-binding/v1",
+    "flow.evidence-safety-catalog/v1",
+    "flow.evidence-safety-policy/v1",
     "flow.delegate-evidence/v1",
     "flow.delegate-quarantine/v1",
     "flow.delegate-card-block/v1",

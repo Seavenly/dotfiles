@@ -4,6 +4,35 @@ This directory contains the public transition contracts and the dark,
 harness-neutral `flow` replacement. The replacement launch policy remains
 disabled, so this API does not authorize normal replacement launches.
 
+## Evidence safety contract
+
+`src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
+evidence crossing a Flow boundary. Its exact policy identity is
+`flow.evidence-safety-policy/v1`, and catalog v21 binds it to
+`flow.contract-catalog/v1@21`. The request shape is
+`flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
+`catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
+`input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
+ordering is canonicalized, while arrays retain their declared order.
+
+Accepted requests return one `flow.evidence-safety-receipt/v1` containing the
+classification, normalized allowed-use set, input digest, and self-bound
+receipt digest. The same receipt may be bound, without gaining authority, to
+`delegate_transfer`, `artifact_acceptance`, and
+`resource_handoff_publication` through
+`flow.evidence-safety-binding/v1`. These binders do not create lifecycle state,
+publish resources, mutate work, or grant capabilities. A rejected request
+returns `flow.evidence-safety-rejection/v1`; its reason is a stable code and
+never includes rejected input bytes, fragments, paths, or secret material.
+
+The recursive policy inspects object keys and values, arrays, nested structured
+strings, bounded percent/base64 encodings, and normalization boundaries. It
+rejects actual credentials, capability references or envelopes, ambient POSIX,
+Windows, UNC, URI, cwd, traversal, or encoded paths, authority-bearing
+capability material, and ambiguous or malformed encodings. Conceptual research
+prose and immutable public source URIs remain valid. The validator performs no
+filesystem, environment, process, transcript, cwd, or credential reads.
+
 ## FlowRuntime
 
 `src/flow-runtime.mjs` exports `createFlowRuntime()`. The returned
