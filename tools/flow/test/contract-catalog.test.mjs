@@ -184,6 +184,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "authority_watermark_domain",
       "legal_actions",
     ],
+    optional_fields: ["authority_fact"],
     watermark_domains: {
       host: "host_run_index_admission_and_authority_schema",
       run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
@@ -195,6 +196,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.predefined-definition/v1",
     "flow.predefined-flow-confirmation/v1",
     "flow.predefined-flow-confirmation-decision/v1",
+    "flow.required-authority/v1",
+    "flow.authority-observation/v1",
+    "flow.required-authority-binding/v1",
+    "flow.required-authority-revalidation/v1",
+    "flow.registered-authority/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
@@ -347,6 +353,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     authority: "RunAuthority",
     command: "reboot_admission",
     revalidation: "flow.reboot-revalidation/v1",
+    authority_bindings: "flow.required-authority-revalidation/v1",
     effect_rechecks: "flow.reboot-effect-recheck/v1",
     time_facts: [
       "wall_clock",

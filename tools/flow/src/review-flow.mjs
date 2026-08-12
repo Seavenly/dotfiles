@@ -12,6 +12,9 @@ import {
   reviewValidationError,
 } from "./review-rendering.mjs";
 import { validateReviewCandidate } from "./review-candidate.mjs";
+import {
+  SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
+} from "./authority-bindings.mjs";
 
 export { validateReviewCandidate };
 
@@ -60,6 +63,7 @@ export function createReviewDefinition() {
     promised_outcomes: [...PROMISED_OUTCOMES],
     negative_outcomes: [REVIEW_NEGATIVE_OUTCOME],
     trust_posture: { ...TRUST_POSTURE },
+    required_authorities: SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
     compile: compileReviewSelection,
   };
 }

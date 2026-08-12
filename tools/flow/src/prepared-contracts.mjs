@@ -13,6 +13,7 @@ export function createPreparedBundle({
   negativeOutcomes,
   routes,
   trustPosture,
+  requiredAuthorities = [],
 }) {
   const bundle = {
     schema: "flow.prepared-bundle/v1",
@@ -31,6 +32,7 @@ export function createPreparedBundle({
       negative_outcomes: negativeOutcomes,
       routes,
       trust_posture: trustPosture,
+      required_authorities: requiredAuthorities,
     });
   }
   return freezeCanonical(bundle);
@@ -64,6 +66,7 @@ export function createPredefinedFlowConfirmation({
   routes,
   trustPosture,
   revisionTemplates,
+  requiredAuthorities = [],
 }) {
   return freezeCanonical({
     schema: "flow.predefined-flow-confirmation/v1",
@@ -79,5 +82,6 @@ export function createPredefinedFlowConfirmation({
     limits,
     trust_posture: trustPosture,
     revision_templates: revisionTemplates,
+    required_authorities: requiredAuthorities,
   });
 }

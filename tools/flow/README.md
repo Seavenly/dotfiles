@@ -334,7 +334,23 @@ definition's exact versioned `id` (for example `example/v1`), and each
 registration has exactly these fields: `schema` set to
 `flow.predefined-definition/v1`, non-empty `contract`, one pure `compile`
 function, `promised_outcomes` and `negative_outcomes` arrays, and a
-`trust_posture` record. The compiler receives the selected `inputs` and
+`trust_posture` record. A definition may also declare
+`required_authorities`, each bound to one exact
+`flow.required-authority/v1` identity and immutable observation input. The
+runtime resolves those declarations only from the trusted
+`registeredAuthorities` catalog; the prepared run records
+`flow.required-authority-binding/v1` observations plus the exact registered
+provider identity and never embeds the Adapter callbacks. Each registered
+authority uses a `flow.registered-authority/v1` provider identity with an
+immutable adapter id and version, so a same-contract adapter substitution is
+rejected even when its observation has not drifted. A `RunAuthority` accepts
+one exact authority catalog identity: reattaching that identity is idempotent,
+while a conflicting provider or definition catalog is rejected rather than
+overwriting the first runtime's semantics. The shipped `feature/v1` and
+`review/v1` definitions require caller-injected registered generic route,
+resource, contract, and subject-generation providers; FlowRuntime does not
+synthesize providers from a prepared bundle. The compiler receives the
+selected `inputs` and
 `explicit_facts` and returns one dynamic plan proposal. Callers select a
 registered definition with `prepare({ schema: "flow.predefined-flow-selection/v1",
 definition, inputs, explicit_facts })`. The selection carries no graph,
@@ -346,7 +362,8 @@ content-addressed `flow.prepared-run/v1` with `kind: "predefined"`, the exact
 derived graph, selected definition, explicit facts, revision templates, and a
 single `flow.predefined-flow-confirmation/v1` view. That view covers inputs,
 promised and negative outcomes, requested authority and mutations, routes,
-capabilities, limits, trust posture, and revision templates. The confirmation
+capabilities, limits, trust posture, required authority bindings, and revision
+templates. The confirmation
 routes cover routed cards in both the base graph and revision templates. The
 confirmation view deliberately does not repeat the complete graph.
 
@@ -354,7 +371,16 @@ Launch accepts the exact `flow.predefined-flow-confirmation-decision/v1` bound
 to the prepared bundle and confirmation digests, together with the exact
 closed-fact observation. Launch validates the prepared identity directly and
 does not invoke a definition compiler, consult mutable registration, or
-refresh facts. Dynamic proposals retain their separate complete-graph
+refresh facts. An exact existing run is adopted idempotently before authority
+rechecks; an absent run rechecks every required authority from the registered
+catalog before its fenced creation transaction. Reboot admission repeats those
+rechecks alongside route, resource, generation, time, and unresolved-effect
+facts and emits the closed `authority_bindings` projection. Missing, stale,
+unavailable, contradictory, or uncertain observations
+remain typed rejections with their provider watermark or generation-only
+`authority_fact` and closed legal actions. A generation-only rejection keeps
+`authority_watermark` null rather than borrowing the unrelated host watermark.
+Dynamic proposals retain their separate complete-graph
 confirmation contract.
 
 ### Verified feature candidate

@@ -4,7 +4,7 @@
   "title": "flow.reboot-revalidation/v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "valid", "expected", "observed", "unresolved_effects"],
+  "required": ["schema", "valid", "expected", "observed", "unresolved_effects", "authority_bindings"],
   "properties": {
     "schema": { "const": "flow.reboot-revalidation/v1" },
     "valid": { "type": "boolean" },
@@ -18,6 +18,9 @@
     "unresolved_effects": {
       "type": "array",
       "items": { "type": "object" }
+    },
+    "authority_bindings": {
+      "$ref": "flow.required-authority-revalidation.v1.schema.json"
     }
   },
   "$defs": {

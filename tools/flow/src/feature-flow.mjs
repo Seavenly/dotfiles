@@ -1,5 +1,8 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
 import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
+import {
+  SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
+} from "./authority-bindings.mjs";
 
 // These contracts are intentionally registered operation contracts.  The
 // feature definition owns the order and inputs, while the host owns the
@@ -47,6 +50,7 @@ export function createFeatureDefinition() {
     promised_outcomes: [...PROMISED_OUTCOMES],
     negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
     trust_posture: { ...TRUST_POSTURE },
+    required_authorities: SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
     compile: compileFeatureSelection,
   };
 }

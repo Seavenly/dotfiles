@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
   createFeatureDefinition,
@@ -31,6 +32,10 @@ import { completedTurnProjection } from "../test-support/delegate-card.mjs";
 import {
   dynamicCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+import {
+  shippedAuthorityRegistrations,
+  shippedAuthorityStateFromFacts,
+} from "../test-support/authority-bindings.mjs";
 import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
 
@@ -54,6 +59,9 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   facts.limits.max_resources = 4;
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     registeredOperations: Object.fromEntries(
       Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
         classification: "caller_idempotent",
@@ -84,6 +92,14 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   assert.equal(prepared.selection.inputs.mode, "verify");
   assert.equal(prepared.confirmation.schema, "flow.predefined-flow-confirmation/v1");
   assert.equal(prepared.trust_posture.evidence, "registered_operations_only");
+  assert.deepEqual(prepared.required_authorities.map(({ id }) => id), [
+    "contract:facts",
+    "generation:facts",
+    "resource:facts",
+    "route:facts",
+  ]);
+  assert.equal(prepared.required_authorities.every(({ observation }) =>
+    observation.status === "available" && observation.watermark.startsWith("sha256:")), true);
   assert.equal(
     prepared.trust_posture.delegation,
     "bounded_implementation_and_independent_critique_only",
@@ -166,6 +182,28 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
       explicit_facts: facts,
     }),
     /independently declared route/,
+  );
+});
+
+test("feature/v1 requires registered authority providers", () => {
+  const inputs = featureInputs();
+  const facts = featureFactsForInputs(inputs);
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredOperations: featurePreparationOperations(),
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+    },
+  });
+
+  assert.throws(
+    () => runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "feature/v1",
+      inputs,
+      explicit_facts: facts,
+    }),
+    (error) => error.reason === "required_authority_catalog_unavailable",
   );
 });
 
@@ -1389,6 +1427,106 @@ test("feature/v1 cancellation stops admission without sealing a candidate", asyn
   assert.deepEqual(cancelled.legal_actions, []);
 });
 
+test("feature/v1 rechecks current route, resource, and generation providers on absent launch", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {});
+  const cases = [
+    {
+      id: "route:facts",
+      observation: {
+        status: "stale",
+        watermark: digestValue("feature-route-drift"),
+      },
+    },
+    {
+      id: "resource:facts",
+      observation: {
+        status: "stale",
+        watermark: digestValue("feature-resource-drift"),
+      },
+    },
+    {
+      id: "generation:facts",
+      observation: {
+        status: "stale",
+        generation: 9,
+      },
+    },
+  ];
+
+  for (const [index, { id, observation }] of cases.entries()) {
+    const inputs = structuredClone(fixture.inputs);
+    inputs.brief.summary = `drifted feature ${index}`;
+    const prepared = fixture.runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "feature/v1",
+      inputs,
+      explicit_facts: fixture.facts,
+    });
+    const original = fixture.authorityState[id];
+    fixture.authorityState[id] = observation;
+    const rejection = fixture.runtime.launch(
+      confirmedPredefinedLaunchRequest(prepared),
+    );
+    fixture.authorityState[id] = original;
+
+    assert.equal(rejection.code, "required_authority_stale", id);
+    assert.equal(rejection.authority_fact.authority_id, id);
+    assert.deepEqual(fixture.runtime.query().runs, [fixture.runId]);
+  }
+});
+
+test("feature/v1 reboot admission rechecks the current shipped resource provider", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {});
+  fixture.runAuthority.close();
+  fixture.authorityState["resource:facts"] = {
+    status: "stale",
+    watermark: digestValue("feature-reboot-resource-drift"),
+  };
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity(
+      "boot-feature-reboot",
+      "feature-process-reboot",
+    ),
+    rebootObservationAdapter: {
+      observe({ prepared }) {
+        const observation = preparedObservation(prepared);
+        return {
+          ...observation,
+          time_facts: observation.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-feature-reboot" } : fact),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebootedRuntime = createFlowRuntime({
+    runAuthority: rebootedAuthority,
+    registeredAuthorities: fixture.registeredAuthorities,
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+    },
+  });
+  const suspended = rebootedRuntime.query({ run_id: fixture.runId });
+  const action = suspended.legal_actions[0];
+  assert.equal(action.type, "reboot_admission");
+  assert.equal(action.revalidation.authority_bindings.valid, false);
+  assert.equal(
+    action.revalidation.authority_bindings.issues[0].authority_id,
+    "resource:facts",
+  );
+
+  const rejection = rebootedRuntime.command(action);
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_fact.authority_id, "resource:facts");
+  assert.equal(suspended.admission, "suspended_after_reboot");
+});
+
 test("feature/v1 verify executes and seals one durable local candidate", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-feature-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -1467,6 +1605,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     (inputs.slices?.length ?? 0) * 3 + 5,
   );
   facts.limits.max_resources = 4;
+  const authorityState = shippedAuthorityStateFromFacts(facts);
+  const registeredAuthorities = shippedAuthorityRegistrations({
+    current: authorityState,
+  });
 
   let runtime;
   let verifyReceipt = null;
@@ -1515,6 +1657,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   };
   runtime = createFlowRuntime({
     runAuthority,
+    registeredAuthorities,
     delegatedAgentPort,
     delegateOutputValidators: {
       [DELEGATE_OUTPUT_VALIDATOR]: {
@@ -1601,8 +1744,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
         },
       },
     },
+    registeredAuthorities,
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
+      "review/v1": createReviewDefinition(),
     },
   });
   const prepared = runtime.prepare({
@@ -1801,6 +1946,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   );
   reviewFacts.limits.max_cards = 8;
   reviewFacts.limits.max_resources = 2;
+  Object.assign(authorityState, shippedAuthorityStateFromFacts(reviewFacts));
   const reviewPrompts = [];
   const reviewDelegatedAgentPort = {
     contract: "flow.delegated-agent-port/v1",
@@ -1843,9 +1989,13 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   };
   const reviewRuntime = createFlowRuntime({
     runAuthority,
+    registeredAuthorities,
     reviewAuthority: reviewAuthorityWithReceiptLoss,
     delegatedAgentPort: reviewDelegatedAgentPort,
-    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+      "review/v1": createReviewDefinition(),
+    },
   });
   const preparedReview = reviewRuntime.prepare({
     schema: "flow.predefined-flow-selection/v1",
@@ -2453,6 +2603,10 @@ async function createFeatureFailureFixture(t, scenario) {
     publication: handoffPublication(artifactDigest, scenario.publication),
   };
   const facts = featureFactsForInputs(inputs);
+  const authorityState = shippedAuthorityStateFromFacts(facts);
+  const registeredAuthorities = shippedAuthorityRegistrations({
+    current: authorityState,
+  });
 
   let verifyReceipt = null;
   let critiqueEvidence = null;
@@ -2504,6 +2658,7 @@ async function createFeatureFailureFixture(t, scenario) {
   };
   const runtime = createFlowRuntime({
     runAuthority,
+    registeredAuthorities,
     delegatedAgentPort,
     delegateOutputValidators: {
       [DELEGATE_OUTPUT_VALIDATOR]: {
@@ -2725,6 +2880,7 @@ async function createFeatureFailureFixture(t, scenario) {
         },
       },
     },
+    registeredAuthorities,
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
     },
@@ -2752,9 +2908,15 @@ async function createFeatureFailureFixture(t, scenario) {
   return {
     artifactAuthority,
     artifactDigest,
+    authorityDirectory,
+    authorityState,
     handoffAuthority,
+    inputs,
+    facts,
+    registeredAuthorities,
     reviewAuthority,
     runId: launch.run_id,
+    runAuthority,
     runtime,
     sealIntents,
     delegateDispatches() {
@@ -3224,18 +3386,10 @@ function prepareFeatureSelection(inputs) {
   const facts = featureFactsForInputs(inputs);
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
-    registeredOperations: Object.fromEntries(
-      Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
-        classification: "caller_idempotent",
-        ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
-          provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
-          validateReceipt: validateFeatureTestReceipt,
-        } : {}),
-        invoke() {
-          throw new Error("feature operations are not invoked during preparation");
-        },
-      }]),
-    ),
+    registeredOperations: featurePreparationOperations(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
     },
@@ -3246,6 +3400,21 @@ function prepareFeatureSelection(inputs) {
     inputs,
     explicit_facts: facts,
   });
+}
+
+function featurePreparationOperations() {
+  return Object.fromEntries(
+    Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
+      classification: "caller_idempotent",
+      ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
+        provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureTestReceipt,
+      } : {}),
+      invoke() {
+        throw new Error("feature operations are not invoked during preparation");
+      },
+    }]),
+  );
 }
 
 function featureFactsForInputs(inputs) {

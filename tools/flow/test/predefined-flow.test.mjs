@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import Ajv2020 from "ajv/dist/2020.js";
+
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { PlanCompiler } from "../src/plan-compiler.mjs";
+import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import {
   createDurableRunAuthority,
   createInMemoryRunAuthority,
@@ -774,6 +778,680 @@ test("declining a predefined checkpoint reaches a terminal negative outcome", ()
   assert.deepEqual(declined.legal_actions, []);
 });
 
+test("predefined preparation binds required authority contracts and launch rechecks them", () => {
+  const observations = new Map();
+  const authority = (id, contract, providerId, digit, generation) =>
+    registeredAuthority({
+      id,
+      contract,
+      providerId,
+      observe({ observation_input }) {
+        observations.set(id, (observations.get(id) ?? 0) + 1);
+        return {
+          schema: "flow.authority-observation/v1",
+          status: "available",
+          watermark: `sha256:${digit.repeat(64)}`,
+          generation,
+          observation_input,
+        };
+      },
+    });
+  const routeAuthority = authority(
+    "route:example",
+    "flow.route-authority/v1",
+    "route-adapter",
+    "a",
+    3,
+  );
+  const resourceAuthority = authority(
+    "resource:example",
+    "flow.resource-authority/v1",
+    "resource-adapter",
+    "b",
+    7,
+  );
+  const contractAuthority = authority(
+    "contract:example",
+    "flow.contract-authority/v1",
+    "contract-adapter",
+    "c",
+    11,
+  );
+  const requiredAuthorities = [
+    {
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    },
+    {
+      schema: "flow.required-authority/v1",
+      id: "resource:example",
+      contract: "flow.resource-authority/v1",
+      observation_input: { resource: "example", generation: 7 },
+    },
+    {
+      schema: "flow.required-authority/v1",
+      id: "contract:example",
+      contract: "flow.contract-authority/v1",
+      observation_input: { contract: "example", generation: 11 },
+    },
+  ];
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: {
+      "route:example": routeAuthority,
+      "resource:example": resourceAuthority,
+      "contract:example": contractAuthority,
+    },
+    predefinedDefinitions: {
+      "example/v1": {
+        ...exampleDefinition(),
+        required_authorities: requiredAuthorities,
+      },
+    },
+  });
+
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Confirm the example" },
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+
+  assert.deepEqual(prepared.required_authorities.map((binding) => ({
+    id: binding.id,
+    contract: binding.contract,
+    provider_identity: binding.provider_identity,
+    observation_input: binding.observation_input,
+    observation: binding.observation,
+  })), [
+    {
+      id: "contract:example",
+      contract: "flow.contract-authority/v1",
+      provider_identity: {
+        schema: "flow.registered-authority/v1",
+        id: "contract-adapter",
+        version: "v1",
+      },
+      observation_input: { contract: "example", generation: 11 },
+      observation: {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"c".repeat(64)}`,
+        generation: 11,
+        observation_input: { contract: "example", generation: 11 },
+      },
+    },
+    {
+      id: "resource:example",
+      contract: "flow.resource-authority/v1",
+      provider_identity: {
+        schema: "flow.registered-authority/v1",
+        id: "resource-adapter",
+        version: "v1",
+      },
+      observation_input: { resource: "example", generation: 7 },
+      observation: {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"b".repeat(64)}`,
+        generation: 7,
+        observation_input: { resource: "example", generation: 7 },
+      },
+    },
+    {
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      provider_identity: {
+        schema: "flow.registered-authority/v1",
+        id: "route-adapter",
+        version: "v1",
+      },
+      observation_input: { route: "example" },
+      observation: {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"a".repeat(64)}`,
+        generation: 3,
+        observation_input: { route: "example" },
+      },
+    },
+  ]);
+  assert.equal(prepared.required_authorities.every((binding) =>
+    !Object.values(binding).some((value) => typeof value === "function")), true);
+  assert.deepEqual([...observations], [
+    ["contract:example", 1],
+    ["resource:example", 1],
+    ["route:example", 1],
+  ]);
+
+  const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+  assert.equal(launch.created, true);
+  assert.deepEqual([...observations], [
+    ["contract:example", 2],
+    ["resource:example", 2],
+    ["route:example", 2],
+  ]);
+});
+
+test("exact existing predefined launch is adopted before authority rechecks", () => {
+  let observations = 0;
+  let available = true;
+  const authority = registeredAuthority({
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    providerId: "route-adapter",
+    observe({ observation_input }) {
+      observations += 1;
+      if (!available) throw new Error("provider unavailable");
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"a".repeat(64)}`,
+        generation: 3,
+        observation_input,
+      };
+    },
+  });
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+  };
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: { "route:example": authority },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Confirm the example" },
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+  const request = confirmedPredefinedLaunchRequest(prepared);
+  const first = runtime.launch(request);
+  assert.equal(first.created, true);
+  const observationsAtLaunch = observations;
+  available = false;
+
+  const adopted = runtime.launch(structuredClone(request));
+  assert.equal(adopted.created, false);
+  assert.equal(observations, observationsAtLaunch);
+});
+
+test("exact existing predefined launch is adopted before operation compatibility checks", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-adoption-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => runAuthority.close());
+  let compatible = true;
+  const definition = {
+    ...exampleDefinition(),
+    compile({ inputs, explicit_facts }) {
+      const proposal = registeredOperationProposal({ checkpointBound: false });
+      proposal.graph.cards[0].inputs.value = inputs.value;
+      const facts = structuredClone(explicit_facts);
+      proposal.explicit_facts = facts;
+      return proposal;
+    },
+  };
+  const operation = {
+    schema: "flow.registered-operation/v1",
+    contract: TEST_OPERATION_CONTRACT,
+    classification: "caller_idempotent",
+    validateCard() {
+      if (!compatible) throw new Error("operation registration drifted");
+    },
+    invoke() {},
+  };
+  const runtime = createFlowRuntime({
+    runAuthority,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: operation },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const explicitFacts = registeredOperationProposal({ checkpointBound: false })
+    .explicit_facts;
+  const prepareOperation = (value) => runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { value },
+    explicit_facts: explicitFacts,
+  });
+  const prepared = prepareOperation("first");
+  const request = confirmedPredefinedLaunchRequest(prepared);
+  const first = runtime.launch(request);
+  assert.equal(first.created, true);
+
+  const absentPrepared = prepareOperation("second");
+  compatible = false;
+  const adopted = runtime.launch(structuredClone(request));
+  assert.equal(adopted.created, false);
+
+  const absent = runtime.launch(confirmedPredefinedLaunchRequest(
+    absentPrepared,
+  ));
+  assert.equal(absent.code, "invalid_operation_input");
+});
+
+test("predefined launch rejects an absent run when its registered authority drifts", () => {
+  const firstAuthority = registeredAuthority({
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    providerId: "route-adapter",
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"a".repeat(64)}`,
+        generation: 3,
+        observation_input,
+      };
+    },
+  });
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+  };
+  const authority = createInMemoryRunAuthority();
+  const preparing = createFlowRuntime({
+    runAuthority: authority,
+    registeredAuthorities: { "route:example": firstAuthority },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = preparing.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Confirm the example" },
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+  const request = confirmedPredefinedLaunchRequest(prepared);
+  const replacementAuthority = registeredAuthority({
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    providerId: "route-adapter",
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "stale",
+        watermark: `sha256:${"b".repeat(64)}`,
+        generation: 4,
+        observation_input,
+      };
+    },
+  });
+  const replacing = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: { "route:example": replacementAuthority },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+
+  const rejection = replacing.launch(request);
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_watermark,
+    `sha256:${"b".repeat(64)}`);
+  assert.deepEqual(replacing.query().runs, []);
+});
+
+test("predefined launch rejects an absent run when a resource generation drifts", () => {
+  let generation = 7;
+  const authority = createInMemoryRunAuthority();
+  const resourceAuthority = registeredAuthority({
+    id: "resource:example",
+    contract: "flow.resource-authority/v1",
+    providerId: "resource-adapter",
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${(generation === 7 ? "a" : "b").repeat(64)}`,
+        generation,
+        observation_input,
+      };
+    },
+  });
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "resource:example",
+      contract: "flow.resource-authority/v1",
+      observation_input: { resource: "example" },
+    }],
+  };
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredAuthorities: { "resource:example": resourceAuthority },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = prepareExample(runtime);
+  generation = 8;
+
+  const rejection = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_watermark,
+    `sha256:${"b".repeat(64)}`);
+  assert.deepEqual(runtime.query().runs, []);
+});
+
+test("predefined launch rejects a same-contract adapter substitution", () => {
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+  };
+  const authority = createInMemoryRunAuthority();
+  const original = createFlowRuntime({
+    runAuthority: authority,
+    registeredAuthorities: {
+      "route:example": registeredAuthority({
+        id: "route:example",
+        contract: "flow.route-authority/v1",
+        providerId: "route-adapter-a",
+        observe({ observation_input }) {
+          return {
+            schema: "flow.authority-observation/v1",
+            status: "available",
+            watermark: `sha256:${"a".repeat(64)}`,
+            generation: 3,
+            observation_input,
+          };
+        },
+      }),
+    },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = prepareExample(original);
+  const replacement = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: {
+      "route:example": registeredAuthority({
+        id: "route:example",
+        contract: "flow.route-authority/v1",
+        providerId: "route-adapter-b",
+        observe({ observation_input }) {
+          return {
+            schema: "flow.authority-observation/v1",
+            status: "available",
+            watermark: `sha256:${"a".repeat(64)}`,
+            generation: 3,
+            observation_input,
+          };
+        },
+      }),
+    },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+
+  const rejection = replacement.launch(
+    confirmedPredefinedLaunchRequest(prepared),
+  );
+  assert.equal(rejection.code, "required_authority_provider_mismatch");
+  assert.deepEqual(replacement.query().runs, []);
+});
+
+test("predefined launch preserves typed authority status and recovery facts", () => {
+  const cases = [
+    ["missing", "required_authority_missing", "c"],
+    ["unavailable", "required_authority_unavailable", "d"],
+    ["contradictory", "required_authority_contradictory", "e"],
+    ["uncertain", "required_authority_uncertain", "f"],
+  ];
+  for (const [status, code, digit] of cases) {
+    const authorityId = `route:${status}`;
+    const definition = {
+      ...exampleDefinition(),
+      required_authorities: [{
+        schema: "flow.required-authority/v1",
+        id: authorityId,
+        contract: "flow.route-authority/v1",
+        observation_input: { route: status },
+      }],
+    };
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority(),
+      registeredAuthorities: {
+        [authorityId]: registeredAuthority({
+          id: authorityId,
+          contract: "flow.route-authority/v1",
+          providerId: `${status}-adapter`,
+          observe({ observation_input }) {
+            return {
+              schema: "flow.authority-observation/v1",
+              status,
+              watermark: `sha256:${digit.repeat(64)}`,
+              generation: 4,
+              observation_input,
+              legal_actions: [{ decision: "retry" }],
+            };
+          },
+        }),
+      },
+      predefinedDefinitions: { "example/v1": definition },
+    });
+    const prepared = prepareExample(runtime);
+    const rejection = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+
+    assert.equal(rejection.code, code, status);
+    assert.equal(rejection.authority_watermark,
+      `sha256:${digit.repeat(64)}`, status);
+    assert.deepEqual(rejection.legal_actions, [{ decision: "retry" }], status);
+    assert.deepEqual(runtime.query().runs, [], status);
+  }
+});
+
+test("generation-only authority rejection does not borrow the host watermark", () => {
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "resource:example",
+      contract: "flow.resource-authority/v1",
+      observation_input: { resource: "example" },
+    }],
+  };
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: {
+      "resource:example": registeredAuthority({
+        id: "resource:example",
+        contract: "flow.resource-authority/v1",
+        providerId: "resource-adapter",
+        observe({ observation_input }) {
+          return {
+            schema: "flow.authority-observation/v1",
+            status: "stale",
+            generation: 9,
+            observation_input,
+            legal_actions: [{ decision: "refresh" }],
+          };
+        },
+      }),
+    },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const rejection = runtime.launch(
+    confirmedPredefinedLaunchRequest(prepareExample(runtime)),
+  );
+
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_watermark, null);
+  assert.deepEqual(rejection.legal_actions, [{ decision: "refresh" }]);
+  assert.deepEqual(rejection.authority_fact, {
+    schema: "flow.authority-fact/v1",
+    authority_id: "resource:example",
+    authority_contract: "flow.resource-authority/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "resource-adapter",
+      version: "v1",
+    },
+    watermark: null,
+    generation: 9,
+    legal_actions: [{ decision: "refresh" }],
+  });
+});
+
+test("predefined reboot admission rechecks every bound authority", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-binding-reboot-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authoritySpecs = [
+    ["contract:example", "flow.contract-authority/v1", "c", 11],
+    ["generation:example", "flow.subject-generation/v1", "d", 13],
+    ["resource:example", "flow.resource-authority/v1", "b", 7],
+    ["route:example", "flow.route-authority/v1", "a", 3],
+  ];
+  const observations = new Map();
+  const requiredAuthority = ([id, contract, digit, initialGeneration], status,
+    generationOnly = false) =>
+    registeredAuthority({
+      id,
+      contract,
+      providerId: `${id}-adapter`,
+      observe({ observation_input }) {
+        observations.set(id, (observations.get(id) ?? 0) + 1);
+        return {
+          schema: "flow.authority-observation/v1",
+          status,
+          ...(generationOnly ? {} : {
+            watermark: `sha256:${digit.repeat(64)}`,
+          }),
+          generation: status === "available"
+            ? initialGeneration
+            : initialGeneration + 1,
+          observation_input,
+          legal_actions: [{ decision: "refresh" }],
+        };
+      },
+    });
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: authoritySpecs.map(([id, contract]) => ({
+      schema: "flow.required-authority/v1",
+      id,
+      contract,
+      observation_input: { authority: id },
+    })),
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  t.after(() => firstAuthority.close());
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredAuthorities: Object.fromEntries(authoritySpecs.map((spec) => [
+      spec[0], requiredAuthority(spec, "available"),
+    ])),
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = firstRuntime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Confirm the example" },
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+  const launch = firstRuntime.launch(confirmedPredefinedLaunchRequest(prepared));
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared: observedPrepared }) {
+        return {
+          ...preparedObservation(observedPrepared),
+          time_facts: observedPrepared.explicit_facts.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-b" } : fact),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({
+    runAuthority: rebootedAuthority,
+    registeredAuthorities: Object.fromEntries(authoritySpecs.map((spec) => [
+      spec[0], requiredAuthority(
+        spec,
+        spec[0] === "generation:example" ? "stale" : "available",
+        spec[0] === "generation:example",
+      ),
+    ])),
+  });
+
+  const suspended = rebooted.query({ run_id: launch.run_id });
+  const action = suspended.legal_actions[0];
+  assert.equal(action.revalidation.valid, false);
+  assert.equal(action.revalidation.authority_bindings.valid, false);
+  assert.deepEqual(action.revalidation.authority_bindings.expected.map(
+    ({ id }) => id,
+  ), authoritySpecs.map(([id]) => id));
+  assert.deepEqual(action.revalidation.authority_bindings.observed.map(
+    ({ id }) => id,
+  ), authoritySpecs.map(([id]) => id));
+  assert.equal(action.revalidation.authority_bindings.issues[0].code,
+    "required_authority_stale");
+  assert.equal(action.revalidation.authority_bindings.issues[0].authority_id,
+    "generation:example");
+  assert.deepEqual([...observations], authoritySpecs.map(([id]) => [id, 3]));
+  const rejection = rebooted.command(action);
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_watermark, null);
+  assert.deepEqual(rejection.authority_fact, {
+    schema: "flow.authority-fact/v1",
+    authority_id: "generation:example",
+    authority_contract: "flow.subject-generation/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "generation:example-adapter",
+      version: "v1",
+    },
+    watermark: null,
+    generation: 14,
+    legal_actions: [{ decision: "refresh" }],
+  });
+  assert.deepEqual(rebooted.query({ run_id: launch.run_id }).legal_actions.map(
+    ({ type }) => type,
+  ), ["reboot_admission"]);
+
+  const schemaRoot = new URL("../../../config/flow/schemas/", import.meta.url).pathname;
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schemaNames = [
+    "flow.time-fact.v1.schema.json",
+    "flow.subject-generation.v1.schema.json",
+    "flow.reboot-effect-recheck.v1.schema.json",
+    "flow.authority-observation.v1.schema.json",
+    "flow.required-authority-binding.v1.schema.json",
+    "flow.required-authority-revalidation.v1.schema.json",
+    "flow.reboot-revalidation.v1.schema.json",
+  ];
+  for (const name of schemaNames) {
+    ajv.addSchema(JSON.parse(readFileSync(join(schemaRoot, name), "utf8")));
+  }
+  const validateReboot = ajv.getSchema(
+    "https://dotfiles.local/schemas/flow.reboot-revalidation.v1.schema.json",
+  );
+  assert.equal(validateReboot(action.revalidation), true,
+    JSON.stringify(validateReboot.errors));
+});
+
 function exampleDefinition() {
   return {
     schema: "flow.predefined-definition/v1",
@@ -791,6 +1469,20 @@ function exampleDefinition() {
       proposal.explicit_facts = explicit_facts;
       return proposal;
     },
+  };
+}
+
+function registeredAuthority({ id, contract, providerId, observe }) {
+  return {
+    schema: "flow.registered-authority/v1",
+    id,
+    contract,
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: providerId,
+      version: "v1",
+    },
+    observe,
   };
 }
 

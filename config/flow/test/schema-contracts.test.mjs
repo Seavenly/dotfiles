@@ -18,6 +18,12 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 test("reboot admission schemas compile in strict mode", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const names = [
+    "flow.required-authority.v1.schema.json",
+    "flow.authority-observation.v1.schema.json",
+    "flow.authority-fact.v1.schema.json",
+    "flow.required-authority-binding.v1.schema.json",
+    "flow.required-authority-revalidation.v1.schema.json",
+    "flow.rejection.v1.schema.json",
     "flow.time-fact.v1.schema.json",
     "flow.subject-generation.v1.schema.json",
     "flow.reboot-effect-recheck.v1.schema.json",
@@ -93,6 +99,11 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     join(root, "schemas", "flow.rejection.v1.schema.json"),
     "utf8",
   ));
+  const authorityFactSchema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.authority-fact.v1.schema.json"),
+    "utf8",
+  ));
+  ajv.addSchema(authorityFactSchema);
   const scratch = await mkdtemp(join(tmpdir(), "flow-schema-contract-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const hermesRuns = join(scratch, "agent-flow", "runs");

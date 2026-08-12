@@ -67,6 +67,30 @@ const PREDEFINED_FLOW_CONTRACTS = [
   PREDEFINED_FLOW.confirmation,
   PREDEFINED_FLOW.decision,
 ];
+const PREDEFINED_AUTHORITY_BINDINGS = {
+  authority: "RunAuthority",
+  declaration: "flow.required-authority/v1",
+  observation: "flow.authority-observation/v1",
+  binding: "flow.required-authority-binding/v1",
+  revalidation: "flow.required-authority-revalidation/v1",
+  registration: "flow.registered-authority/v1",
+  provider_identity: "flow.registered-authority/v1",
+  authority_fact: "flow.authority-fact/v1",
+  resolution: "trusted_registered_catalog_only",
+  callbacks: "forbidden_in_prepared_records",
+};
+const PREDEFINED_AUTHORITY_CONTRACTS = [
+  PREDEFINED_AUTHORITY_BINDINGS.declaration,
+  PREDEFINED_AUTHORITY_BINDINGS.observation,
+  PREDEFINED_AUTHORITY_BINDINGS.binding,
+  PREDEFINED_AUTHORITY_BINDINGS.revalidation,
+  PREDEFINED_AUTHORITY_BINDINGS.registration,
+  PREDEFINED_AUTHORITY_BINDINGS.authority_fact,
+  "flow.route-authority/v1",
+  "flow.resource-authority/v1",
+  "flow.contract-authority/v1",
+  "flow.subject-generation/v1",
+];
 const REJECTION_FIELDS = [
   "schema",
   "operation",
@@ -79,6 +103,7 @@ const REJECTION_FIELDS = [
   "authority_watermark_domain",
   "legal_actions",
 ];
+const REJECTION_OPTIONAL_FIELDS = ["authority_fact"];
 const LEGACY_IMPORT_VALIDATIONS = [
   "digest",
   "schema",
@@ -212,6 +237,7 @@ const REBOOT_ADMISSION = {
   authority: "RunAuthority",
   command: "reboot_admission",
   revalidation: "flow.reboot-revalidation/v1",
+  authority_bindings: "flow.required-authority-revalidation/v1",
   effect_rechecks: "flow.reboot-effect-recheck/v1",
   time_facts: [
     "wall_clock",
@@ -421,6 +447,7 @@ export async function loadContractCatalog({
   const rejection = catalog.flow_runtime.rejection_contract;
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
+      !isExactSequence(rejection.optional_fields, REJECTION_OPTIONAL_FIELDS) ||
       rejection.watermark_domains?.host !==
         "host_run_index_admission_and_authority_schema" ||
       rejection.watermark_domains?.run !==
@@ -450,6 +477,13 @@ export async function loadContractCatalog({
   ) || !PREDEFINED_FLOW_CONTRACTS.every((contract) =>
     catalog.contracts.includes(contract))) {
     throw new Error("predefined flow preparation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.predefined_authority_bindings,
+    PREDEFINED_AUTHORITY_BINDINGS,
+  ) || !PREDEFINED_AUTHORITY_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("predefined authority binding contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");

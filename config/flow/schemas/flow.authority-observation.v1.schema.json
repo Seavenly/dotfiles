@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.authority-observation.v1.schema.json",
+  "title": "flow.authority-observation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status"],
+  "properties": {
+    "schema": { "const": "flow.authority-observation/v1" },
+    "status": {
+      "enum": [
+        "available",
+        "present",
+        "missing",
+        "stale",
+        "unavailable",
+        "contradictory",
+        "uncertain"
+      ]
+    },
+    "watermark": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "authority_watermark": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "provider_watermark": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "generation": { "type": "integer", "minimum": 0 },
+    "provider_generation": { "type": "integer", "minimum": 0 },
+    "observation_input": { "type": "object" },
+    "legal_actions": { "type": "array" }
+  },
+  "anyOf": [
+    {
+      "required": ["watermark"],
+      "properties": {
+        "watermark": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "required": ["generation"],
+      "properties": {
+        "generation": { "type": "integer", "minimum": 0 }
+      }
+    },
+    {
+      "required": ["authority_watermark"],
+      "properties": {
+        "authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "required": ["provider_watermark"],
+      "properties": {
+        "provider_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "required": ["provider_generation"],
+      "properties": {
+        "provider_generation": { "type": "integer", "minimum": 0 }
+      }
+    }
+  ]
+}

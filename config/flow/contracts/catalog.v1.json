@@ -51,10 +51,23 @@
         "authority_watermark_domain",
         "legal_actions"
       ],
+      "optional_fields": ["authority_fact"],
       "watermark_domains": {
         "host": "host_run_index_admission_and_authority_schema",
         "run": "run_lifecycle_stream_authority_epoch_and_authority_schema"
       }
+    },
+    "predefined_authority_bindings": {
+      "authority": "RunAuthority",
+      "declaration": "flow.required-authority/v1",
+      "observation": "flow.authority-observation/v1",
+      "binding": "flow.required-authority-binding/v1",
+      "revalidation": "flow.required-authority-revalidation/v1",
+      "registration": "flow.registered-authority/v1",
+      "provider_identity": "flow.registered-authority/v1",
+      "authority_fact": "flow.authority-fact/v1",
+      "resolution": "trusted_registered_catalog_only",
+      "callbacks": "forbidden_in_prepared_records"
     },
     "operation_execution": {
       "authority": "RunAuthority",
@@ -176,6 +189,7 @@
       "authority": "RunAuthority",
       "command": "reboot_admission",
       "revalidation": "flow.reboot-revalidation/v1",
+      "authority_bindings": "flow.required-authority-revalidation/v1",
       "effect_rechecks": "flow.reboot-effect-recheck/v1",
       "time_facts": [
         "wall_clock",
@@ -527,6 +541,15 @@
     "flow.predefined-definition/v1",
     "flow.predefined-flow-confirmation/v1",
     "flow.predefined-flow-confirmation-decision/v1",
+    "flow.required-authority/v1",
+    "flow.authority-observation/v1",
+    "flow.required-authority-binding/v1",
+    "flow.required-authority-revalidation/v1",
+    "flow.registered-authority/v1",
+    "flow.authority-fact/v1",
+    "flow.route-authority/v1",
+    "flow.resource-authority/v1",
+    "flow.contract-authority/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",

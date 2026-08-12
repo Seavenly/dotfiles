@@ -90,6 +90,12 @@ import {
   snapshotBackupRestoreAdapter,
   reduceHostRecoveryEvent,
 } from "./backup-restore.mjs";
+import {
+  authorityBindingCatalogIdentity,
+  authorityFactFromIssue,
+  recheckAuthorityBindings,
+  validateDefinitionAuthorityBindings,
+} from "./authority-bindings.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const EFFECT_INTENT_EVENT_TYPES = new Set([
@@ -104,6 +110,36 @@ const DEFERRED_EFFECT_EVENT_TYPES = new Set([
 ]);
 const require = createRequire(import.meta.url);
 let databaseConstructor = null;
+const authorityBindingCatalogs = new WeakMap();
+
+export function attachAuthorityBindingCatalogs(
+  runAuthority,
+  { authorities = new Map(), predefinedDefinitions = new Map() } = {},
+) {
+  if (runAuthority === null || typeof runAuthority !== "object") {
+    throw new TypeError("run authority is required for authority catalog binding");
+  }
+  if (!(authorities instanceof Map) || !(predefinedDefinitions instanceof Map)) {
+    throw new TypeError("authority catalogs must be Maps");
+  }
+  const snapshot = {
+    authorities: new Map(authorities),
+    predefinedDefinitions: new Map(predefinedDefinitions),
+  };
+  // The first catalog becomes the RunAuthority's immutable provider view.
+  // Same-identity attachment is a no-op; callbacks from later runtimes never
+  // replace the attached mechanism.
+  const identity = authorityBindingCatalogIdentity(snapshot);
+  const existing = authorityBindingCatalogs.get(runAuthority);
+  if (existing !== undefined) {
+    if (existing.identity !== identity) {
+      throw new TypeError("conflicting authority catalog attachment");
+    }
+    return undefined;
+  }
+  const attached = Object.freeze({ ...snapshot, identity });
+  authorityBindingCatalogs.set(runAuthority, attached);
+}
 
 export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {}) {
   const runs = new Map();
@@ -191,6 +227,23 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
   };
 
   const runAuthority = Object.freeze({
+    adoptExactLaunch(request = {}) {
+      if (hostProjection().restore?.active === true) return null;
+      const validation = validateLaunchRequest(request);
+      if (!validation.accepted) return null;
+      const runId = childLaunchLineage === null
+        ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(childLaunchLineage);
+      const existingRunId = childLaunchLineage === null
+        ? bundleRuns.get(validation.prepared.bundle_digest)
+        : null;
+      if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
+      if (childLaunchLineage !== null && runs.has(runId)) {
+        return launchReceipt(runs.get(runId), false);
+      }
+      return null;
+    },
+
     launch(request = {}) {
       if (hostProjection().restore?.active === true) {
         return hostMutationRejection("launch");
@@ -207,17 +260,26 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
       }
       const { prepared, closedFacts } = validation;
 
+      const runId = lineage === null
+        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(lineage);
       const existingRunId = lineage === null
         ? bundleRuns.get(prepared.bundle_digest)
         : null;
       if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
-
-      const runId = lineage === null
-        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
-        : deriveChildRunId(lineage);
       if (lineage !== null && runs.has(runId)) {
         return launchReceipt(runs.get(runId), false);
       }
+
+      const authorityIssue = launchAuthorityBindingIssue(runAuthority, prepared);
+      if (authorityIssue) {
+        return launchAuthorityBindingRejection(
+          prepared,
+          authorityIssue,
+          authorityWatermark(authorityEvents),
+        );
+      }
+
       const runOwnership = lineage === null
         ? topLevelRunOwnership()
         : childRunOwnership(lineage.parent_run_id);
@@ -568,7 +630,16 @@ export function createDurableRunAuthority({
     database,
     stream,
     rebootObservationAdapter,
+    () => authorityBindingCatalogs.get(runAuthority),
   );
+  const fenceRunWithoutAuthorityRevalidation = (database, stream) =>
+    fencedRunFold(
+      database,
+      stream,
+      rebootObservationAdapter,
+      () => authorityBindingCatalogs.get(runAuthority),
+      { revalidateAuthorities: false },
+    );
 
   const databasePath = join(authorityDirectory, "authority.sqlite");
   const lockPath = join(authorityDirectory, "authority.lock.sqlite");
@@ -791,6 +862,33 @@ export function createDurableRunAuthority({
     completeSameBootRecovery(runId) {
       sameBootRecoveryRunIds.delete(runId);
     },
+    adoptExactLaunch(request = {}) {
+      assertOpen();
+      if (authoritySchemaCompatibility?.status !== "compatible" ||
+          !databaseExists(databasePath)) return null;
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath, { readOnly: true });
+        const host = durableHostProjection(database);
+        if (host.restore?.active === true) return null;
+        const validation = validateLaunchRequest(request);
+        if (!validation.accepted) return null;
+        const runId = childLaunchLineage === null
+          ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
+          : deriveChildRunId(childLaunchLineage);
+        const existing = readStream(database, runId);
+        if (!existing) return null;
+        return durableLaunchReceipt(
+          database,
+          existing,
+          false,
+          fenceRunWithoutAuthorityRevalidation,
+        );
+      } finally {
+        database?.close();
+      }
+    },
+
     launch(request = {}) {
       const lineage = childLaunchLineage;
       assertOpen();
@@ -907,6 +1005,18 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
+          const authorityIssue = launchAuthorityBindingIssue(
+            runAuthority,
+            prepared,
+          );
+          if (authorityIssue) {
+            database.exec("ROLLBACK");
+            return durableLaunchAuthorityBindingRejection(
+              prepared,
+              databasePath,
+              authorityIssue,
+            );
+          }
           const admission = readStream(database, "host:admission").fold;
           if (admission.active_runs.length >= admission.declared_capacity) {
             database.exec("ROLLBACK");
@@ -3800,7 +3910,12 @@ function invalidCommandRejection(fold, command) {
   });
 }
 
-function durableLaunchReceipt(database, stream, created, fenceRun) {
+function durableLaunchReceipt(
+  database,
+  stream,
+  created,
+  fenceRun,
+) {
   const fold = fenceRun(database, stream);
   return freezeCanonical({
     schema: "flow.launch-receipt/v1",
@@ -3813,14 +3928,25 @@ function durableLaunchReceipt(database, stream, created, fenceRun) {
   });
 }
 
-function fencedRunFold(database, stream, rebootObservationAdapter) {
+function fencedRunFold(
+  database,
+  stream,
+  rebootObservationAdapter,
+  authorityCatalogs = () => null,
+  { revalidateAuthorities = true } = {},
+) {
   const admission = readStream(database, "host:admission")?.fold;
   const hostRestoreBarrier = admission?.restore?.active === true;
   if (!admission) throw new Error("authority admission stream is missing");
   const suspendedAfterReboot = stream.fold.phase === "active" &&
     !hasCurrentBootAdmission(stream, admission.boot_id);
-  const revalidation = suspendedAfterReboot
-    ? rebootRevalidation(stream, rebootObservationAdapter, admission.boot_id)
+  const revalidation = suspendedAfterReboot && revalidateAuthorities
+    ? rebootRevalidation(
+        stream,
+        rebootObservationAdapter,
+        admission.boot_id,
+        authorityCatalogs(),
+      )
     : null;
   const watermark = digest({
     schema: "flow.fenced-run-watermark/v1",
@@ -3902,7 +4028,12 @@ function projectFencedRun(database, stream, fenceRun) {
   });
 }
 
-function rebootRevalidation(stream, adapter, currentBootId) {
+function rebootRevalidation(
+  stream,
+  adapter,
+  currentBootId,
+  authorityCatalogs = null,
+) {
   const prepared = stream.records[0].payload.prepared;
   const currentFacts = {
     resource_claims: stream.fold.resource_claims,
@@ -3913,7 +4044,7 @@ function rebootRevalidation(stream, adapter, currentBootId) {
     .filter(({ payload }) => payload.type === "effect_receipt_recorded")
     .map(({ payload }) => payload.effect_id));
   const reconstruction = reconstructRebootEffects(stream);
-  return buildRebootRevalidation({
+  const revalidation = buildRebootRevalidation({
     adapter,
     currentBootId,
     currentFacts,
@@ -3922,6 +4053,16 @@ function rebootRevalidation(stream, adapter, currentBootId) {
       intent !== null && typeof intent === "object" &&
       !receipts.has(intent.effect_id)),
     unresolvedEffectsValid: reconstruction.valid,
+  });
+  const bindingRevalidation = recheckAuthorityBindings(
+    prepared.required_authorities ?? [],
+    authorityCatalogs?.authorities,
+    { prepared, phase: "reboot" },
+  );
+  return freezeCanonical({
+    ...revalidation,
+    valid: revalidation.valid && bindingRevalidation.valid,
+    authority_bindings: bindingRevalidation,
   });
 }
 
@@ -4382,6 +4523,44 @@ function launchRejection(code, prepared, authorityEvents, reason = null) {
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
   });
+}
+
+function launchAuthorityBindingIssue(runAuthority, prepared) {
+  const catalogs = authorityBindingCatalogs.get(runAuthority);
+  return validateDefinitionAuthorityBindings(
+    prepared,
+    catalogs?.authorities,
+    catalogs?.predefinedDefinitions,
+  );
+}
+
+function launchAuthorityBindingRejection(prepared, issue, watermark) {
+  const providerFact = issue.authority_watermark !== null ||
+    issue.authority_generation !== null;
+  return createRejection({
+    operation: "launch",
+    code: issue.code,
+    reason: issue.reason,
+    bundleDigest: stringOrNull(prepared?.bundle_digest),
+    authorityWatermark: issue.authority_watermark ??
+      (providerFact ? null : watermark ?? EMPTY_WATERMARK),
+    authorityWatermarkDomain: "host",
+    legalActions: issue.legal_actions ?? [],
+    authorityFact: authorityFactFromIssue(issue),
+  });
+}
+
+function durableLaunchAuthorityBindingRejection(prepared, databasePath, issue) {
+  let watermark = EMPTY_WATERMARK;
+  if (databaseExists(databasePath)) {
+    const database = openAuthorityDatabase(databasePath, { readOnly: true });
+    try {
+      watermark = durableHostProjection(database).watermark;
+    } finally {
+      database.close();
+    }
+  }
+  return launchAuthorityBindingRejection(prepared, issue, watermark);
 }
 
 function hostCommandRejection(operation, code, reason, hostProjection) {

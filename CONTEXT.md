@@ -97,6 +97,42 @@ plan and explicit identity-bearing facts without creating authoritative run
 state.
 _Avoid_: Draft run, pending run
 
+**Required authority contract**:
+A versioned definition declaration for one route, resource, contract, or
+generation fact that must be observed before a predefined run can be admitted.
+It names the authority identity and observation input, not an executable
+provider.
+_Avoid_: Ambient adapter, callback authority
+
+**Required authority binding**:
+The immutable prepared-run record of one required authority contract, its exact
+registered provider identity, observation input, and observation. It is carried
+through launch and reboot admission without executable callbacks.
+_Avoid_: Route cache, latest resource state
+
+**Authority observation**:
+A typed provider result captured at the owning transaction boundary, including
+status and the exact provider watermark or generation used for admission.
+_Avoid_: Health check, best-effort refresh
+
+**Required authority revalidation**:
+The closed comparison of every definition-required authority binding with fresh
+provider observations at launch or reboot admission. An unresolved, stale, or
+uncertain result remains blocked until its legal action is taken.
+_Avoid_: Partial authority check, automatic resume
+
+**Registered authority provider**:
+A trusted catalog entry with one immutable provider identity and a read-only
+observation mechanism. It supplies facts to RunAuthority but never owns flow
+lifecycle, scheduling, or mutation policy.
+_Avoid_: Orchestrator, flow-specific controller
+
+**Authority fact**:
+The canonical public rejection and admission fact containing the owning
+authority identity, contract, provider identity, watermark or generation, and
+closed legal actions.
+_Avoid_: Free-form error detail, caller-supplied authority
+
 **Plan fingerprint**:
 The content digest of the canonical finite run-plan graph. It identifies the
 graph but not the wider prepared bundle or its explicit facts.

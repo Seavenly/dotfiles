@@ -34,6 +34,128 @@ const RESTORE_WRITER = Object.freeze({
   restore: () => ({ provider_receipt_id: "restore/test" }),
 });
 
+test("shared RunAuthority rejects a conflicting immutable authority catalog", () => {
+  const runAuthority = createInMemoryRunAuthority();
+  const definition = {
+    schema: "flow.predefined-definition/v1",
+    id: "example/v1",
+    contract: "flow.definition/example/v1",
+    promised_outcomes: ["one outcome"],
+    negative_outcomes: ["no mutation"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+    compile() {
+      return dynamicCheckpointProposal();
+    },
+  };
+  const authority = (providerId) => ({
+    schema: "flow.registered-authority/v1",
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: providerId,
+      version: "v1",
+    },
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"a".repeat(64)}`,
+        observation_input,
+      };
+    },
+  });
+  createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: { "route:example": authority("route-adapter-a") },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  assert.throws(
+    () => createFlowRuntime({
+      runAuthority,
+      registeredAuthorities: { "route:example": authority("route-adapter-b") },
+      predefinedDefinitions: { "example/v1": definition },
+    }),
+    /conflicting authority catalog attachment/,
+  );
+});
+
+test("shared RunAuthority keeps the first exact provider semantics", () => {
+  const runAuthority = createInMemoryRunAuthority();
+  const definition = {
+    schema: "flow.predefined-definition/v1",
+    id: "example/v1",
+    contract: "flow.definition/example/v1",
+    promised_outcomes: ["one outcome"],
+    negative_outcomes: ["no mutation"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+    compile() {
+      return dynamicCheckpointProposal();
+    },
+  };
+  const authority = (status) => ({
+    schema: "flow.registered-authority/v1",
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "route-adapter",
+      version: "v1",
+    },
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status,
+        watermark: `sha256:${"a".repeat(64)}`,
+        observation_input,
+      };
+    },
+  });
+  const first = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: { "route:example": authority("available") },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const second = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: { "route:example": authority("stale") },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = first.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: {},
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+  const launch = second.launch({
+    prepared,
+    confirmation: {
+      schema: "flow.predefined-flow-confirmation-decision/v1",
+      decision: "accept",
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    },
+    closed_facts: {
+      schema: "flow.closed-fact-observation/v1",
+      bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts),
+    },
+  });
+  assert.equal(launch.created, true);
+});
+
 test("prepare rejects malformed reboot time and subject facts at the public seam", () => {
   const runtime = createTestRuntime();
   const malformedTime = dynamicCheckpointProposal();
