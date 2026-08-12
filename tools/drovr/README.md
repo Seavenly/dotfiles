@@ -208,7 +208,7 @@ drovr turn cancel TURN_ID
 drovr status
 drovr status --agent AGENT_ID
 drovr status --task TASK_ID
-drovr group list --status active
+drovr group list --key REVIEW_GROUP_KEY --status active --limit 1
 drovr group get GROUP_ID
 drovr task open --key TASK_KEY --cwd /path/to/existing/directory
 drovr task list --group GROUP_ID --status active

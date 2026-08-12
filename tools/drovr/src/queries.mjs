@@ -79,9 +79,15 @@ export function summarizeAgent(agent) {
 }
 
 export async function listGroups(filters = {}, { env = process.env } = {}) {
-  return (await readRecords(stateDirectory(env), "groups"))
-    .filter((group) => !filters.status || group.status === filters.status)
+  const groups = (await readRecords(stateDirectory(env), "groups"))
+    .filter(
+      (group) =>
+        (!filters.id || group.id === filters.id) &&
+        (!filters.key || group.key === filters.key) &&
+        (!filters.status || group.status === filters.status),
+    )
     .sort(compareByCreation);
+  return filters.limit === undefined ? groups : groups.slice(0, filters.limit);
 }
 
 export async function getGroup(groupId, { env = process.env } = {}) {

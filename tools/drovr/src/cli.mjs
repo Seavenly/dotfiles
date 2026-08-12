@@ -67,7 +67,7 @@ const HELP = `Usage:
   drovr turn get TURN_ID [--include-messages]
   drovr turn list [filters]
   drovr turn cancel TURN_ID
-  drovr group list [--status STATUS]
+  drovr group list [--id GROUP_ID] [--key KEY] [--status STATUS] [--limit COUNT]
   drovr group get GROUP_ID
   drovr group close GROUP_ID [--force]
   drovr task open [options]
@@ -288,16 +288,21 @@ export async function runCli(argv) {
   if (argv[0] === "group" && argv[1] === "list") {
     const { options, positional } = parseOptions(
       argv.slice(2),
-      new Map([["--status", "status"]]),
+      new Map([
+        ["--id", "id"],
+        ["--key", "key"],
+        ["--status", "status"],
+        ["--limit", "limit"],
+      ]),
       "group list",
     );
     if (positional.length) {
       invalidArguments("group list accepts no positional arguments");
     }
-    const report = queryListCommandResult(
-      "group",
-      await listGroups(options),
-    );
+    if (options.limit !== undefined) {
+      options.limit = parsePositiveInteger(options.limit, "--limit");
+    }
+    const report = queryListCommandResult("group", await listGroups(options));
     process.stdout.write(`${JSON.stringify(report)}\n`);
     return 0;
   }
@@ -755,6 +760,17 @@ function parseOptions(argv, optionMap, command) {
     positional.push(argument);
   }
   return { options, positional };
+}
+
+function parsePositiveInteger(value, option) {
+  if (!/^[1-9][0-9]*$/u.test(value)) {
+    invalidArguments(`${option} requires a positive integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    invalidArguments(`${option} exceeds the supported integer range`);
+  }
+  return parsed;
 }
 
 async function resolvePrompt(positionalPrompt, promptFile) {

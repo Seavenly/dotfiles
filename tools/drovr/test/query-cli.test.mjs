@@ -79,6 +79,26 @@ test("group list filters durable records and group get uses immutable identity",
   assert.equal(fetched.result.group.id, "group-closed");
   assert.equal(fetched.result.group.key, "work/closed");
   assert.equal(fetched.result.group.lifecycle_status, "closed");
+
+  const bounded = await runDrovr(fixture.env, [
+    "group",
+    "list",
+    "--id",
+    "group-active",
+    "--key",
+    "work/active",
+    "--limit",
+    "1",
+  ]);
+  assert.deepEqual(bounded.result.groups.map(({ id }) => id), ["group-active"]);
+
+  const invalidLimit = await runDrovrFailure(fixture.env, [
+    "group",
+    "list",
+    "--limit",
+    "0",
+  ]);
+  assert.equal(invalidLimit.error.outcome, "invalid_arguments");
 });
 
 test("task and agent queries filter by stable owner identity", async (t) => {

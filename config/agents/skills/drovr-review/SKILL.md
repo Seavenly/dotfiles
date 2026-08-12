@@ -42,6 +42,19 @@ or Luna summary as proof; inspect the actual candidate state.
    rediscover known work; if IDs were lost, use `drovr status --agent AGENT_ID`
    or `drovr status --task TASK_ID`.
 
+   If a later turn alone is blocked by the typed `caller_shell_mismatch`
+   outcome after at least one correlated reviewer response, first retry from
+   the same non-login shell and run `drovr doctor`. If the original reviewer
+   still cannot resume, an evidence-preserving rollover is the only permitted
+   replacement. Capture `drovr agent get AGENT_ID` and `drovr turn get TURN_ID
+   --include-messages` outside the candidate worktree, hash both records, and
+   launch one fresh reviewer with the same role, harness, model, effort, and
+   read-only capability. Bind its prompt to the original IDs, record hashes,
+   prior response count, complete finding/disposition ledger, and current
+   candidate snapshot. Report the new agent as a rollover, never as the same
+   reviewer. Count responses from both agents against the shared three-response
+   cap. Do not roll over any other compatibility or identity failure.
+
 3. Adjudicate every finding as exactly one of `valid in-scope`, `invalid`,
    `out-of-scope`, or `needs clarification`. Use `drovr ask` on the same
    reviewer only when clarification or review evidence is necessary. Keep a

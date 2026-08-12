@@ -314,6 +314,19 @@ Finish with a concise report containing:
 
 The durable integration branch is `feature/flow-runtime`.
 
+Serialize every aggregate publication with
+`../scripts/with-integration-lock.sh -- COMMAND [ARG...]`, resolved relative to
+this protocol's skill directory. The guarded command must encompass the whole
+authorized integration transaction: final fetch and ancestry checks, exact-SHA
+push, remote verification, optional local convergence, issue closure, and any
+authorized worktree or branch cleanup. Do not split those mutations across
+separate lock acquisitions. The lock is stored in the repository's Git common
+directory, so all local worktrees contend on the same atomic owner. If another
+owner is reported, stop without modifying aggregate state. Never delete or
+replace a surviving lock merely because it appears old; inspect the recorded
+owner and obtain explicit recovery authority if an interrupted process left it
+behind.
+
 - Fetch `refs/heads/feature/flow-runtime` into the remote-tracking ref
   `refs/remotes/origin/feature/flow-runtime`. Resolve and record that exact SHA
   as both the ticket source and initial review fixed point.
@@ -338,6 +351,9 @@ The durable integration branch is `feature/flow-runtime`.
 - Do not mutate a dirty worktree where the aggregate branch is checked out. The
   exact-SHA push above does not require checking out or rewriting that local
   branch.
+- Use exact `get` commands or retained IDs for cleanup verification. If
+  discovery is unavoidable, bound it with filters such as `drovr group list
+  --key KEY --limit 1`; do not ingest an unfiltered historical registry dump.
 - If the remote moves again after review or the update is not a fast-forward,
   stop and repeat the fetch, merge, validation, and review sequence. Never
   rebase or force-push.

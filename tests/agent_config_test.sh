@@ -40,6 +40,8 @@ assert_contains "$(cat "$implement_ticket/SKILL.md")" \
   'disable-model-invocation: true'
 assert_contains "$(cat "$implement_ticket/agents/openai.yaml")" \
   'allow_implicit_invocation: false'
+[[ -x "$implement_ticket/scripts/with-integration-lock.sh" ]] \
+  || fail "implement ticket integration lock is not executable"
 echo "ok - implement ticket accepts one URL and requires explicit invocation"
 
 tmp="$(mktemp -d)"
