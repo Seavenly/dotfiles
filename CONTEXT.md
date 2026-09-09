@@ -187,6 +187,16 @@ capabilities, resources, and limits while superseding only blocked pending work
 and its pending dependent closure. It never rewrites accepted upstream history.
 _Avoid_: In-place plan edit, restart
 
+**Feature repair**:
+The `flow.feature-repair/v1` binding that maps one blocked Feature brief card
+to one closed repair kind, exact accepted criteria, remaining scope, preserved
+verification and critique evidence, and the required finalization path. It is
+carried by Plan revision templates; any template-derived scope, capability,
+resource, graph, or raised-limit expansion is deferred behind its exact
+checkpoint, and declined or exhausted attempts remain authority-watermarked
+outcomes.
+_Avoid_: Retry flag, caller scope boolean, replacement without evidence
+
 **Reboot admission**:
 The exact public command that rechecks one suspended run against its current
 authoritative contracts, routes, capabilities, revision facts, typed time and

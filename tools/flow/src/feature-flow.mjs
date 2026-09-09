@@ -1,4 +1,8 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
+import {
+  FEATURE_REPAIR_CONTRACTS,
+  validateFeatureRepairContract,
+} from "./feature-repair-contract.mjs";
 import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
 
 // These contracts are intentionally registered operation contracts.  The
@@ -19,6 +23,7 @@ export const FEATURE_TEST_RECEIPT_VALIDATOR =
 
 const FEATURE_DEFINITION_SCHEMA = "flow.predefined-definition/v1";
 const FEATURE_SELECTION_MODE = new Set(["verify", "test", "mixed"]);
+const FEATURE_REPAIR_KINDS = new Set(Object.keys(FEATURE_REPAIR_CONTRACTS));
 const FEATURE_NEGATIVE_OUTCOME =
   "no review, integration, push, pull request, cleanup, or tracker completion";
 
@@ -61,6 +66,7 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
     fingerprint: selection.workspace.fingerprint,
   };
   const cards = featureCards(selection, workspaceClaim);
+  const repairs = validateFeatureRepairCards(selection, cards, explicitFacts.limits);
 
   // A predefined compiler may only carry the selected facts through.  In
   // particular, it must not manufacture a generation, epoch, route, or
@@ -77,12 +83,17 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
         "delegate_execute",
         "operation_execute",
         "terminal_disposition",
+        ...(repairs.length > 0 ? ["revision_decision"] : []),
+        ...(repairs.some(({ template }) =>
+          template.changes.add_cards.some(({ executor }) =>
+            executor?.kind === "checkpoint"),
+        ) ? ["checkpoint_decision"] : []),
       ],
       capabilities: [],
       mutations: featureOperationContracts(selection),
     },
     explicit_facts: explicitFacts,
-    revision_templates: [],
+    revision_templates: repairs.map(({ template }) => template),
   };
 }
 
@@ -494,6 +505,7 @@ function validateFeatureInputs(inputs, explicitFacts) {
   }
   const delegation = validateDelegationBindings(inputs.delegation, explicitFacts);
   const finalization = validateFeatureFinalization(inputs.finalization, workspace);
+  const repairs = validateFeatureRepairs(inputs.repairs, inputs.brief, explicitFacts);
   const evidence = hasBaseline ? baseline : compensating;
   const normalized = {
     brief: inputs.brief,
@@ -510,6 +522,7 @@ function validateFeatureInputs(inputs, explicitFacts) {
       },
     }),
     ...(testSelection === null ? {} : { test_selection: testSelection }),
+    repairs,
     delegation,
     finalization,
   };
@@ -536,6 +549,82 @@ function buildFeatureTestSelection(slices) {
   };
 }
 
+function validateFeatureRepairs(rawRepairs, brief, explicitFacts) {
+  if (rawRepairs === undefined) return [];
+  if (!Array.isArray(rawRepairs) || rawRepairs.length === 0) {
+    invalidFeature(
+      "invalid_feature_repairs",
+      "feature/v1 repairs must be a non-empty serialized list when declared",
+    );
+  }
+  const ids = new Set();
+  return rawRepairs.map((repair, index) => {
+    if (!isRecord(repair) ||
+        repair.schema !== "flow.feature-repair/v1" ||
+        typeof repair.id !== "string" || !repair.id || ids.has(repair.id) ||
+        !FEATURE_REPAIR_KINDS.has(repair.kind) ||
+        typeof repair.card_id !== "string" || !repair.card_id ||
+        !Array.isArray(repair.acceptance) || repair.acceptance.length === 0 ||
+        !repair.acceptance.every((criterion) =>
+          typeof criterion === "string" && criterion.length > 0) ||
+        new Set(repair.acceptance).size !== repair.acceptance.length ||
+        !Array.isArray(repair.remaining_scope) ||
+        repair.remaining_scope.length === 0 ||
+        !repair.remaining_scope.every((scope) =>
+          typeof scope === "string" && scope.length > 0) ||
+        new Set(repair.remaining_scope).size !== repair.remaining_scope.length) {
+      invalidFeature(
+        "invalid_feature_repair",
+        `feature/v1 repair ${index + 1} is not an exact acceptance and scope mapping`,
+      );
+    }
+    ids.add(repair.id);
+    if (repair.scope_expansion !== undefined &&
+        typeof repair.scope_expansion !== "boolean") {
+      invalidFeature(
+        "invalid_feature_repair",
+        `feature/v1 repair ${repair.id} scope expansion must be boolean`,
+      );
+    }
+    const template = repair.template ?? repair.revision_template;
+    if (!isRecord(template) ||
+        template.schema !== "flow.plan-revision-template/v1" ||
+        typeof template.id !== "string" || !template.id) {
+      invalidFeature(
+        "invalid_feature_repair_template",
+        `feature/v1 repair ${repair.id} requires one exact revision template`,
+      );
+    }
+    const observation = (explicitFacts?.block_observations ?? []).find((entry) =>
+      entry?.card_id === repair.card_id &&
+      entry.block?.revision_template_ids?.includes(template.id));
+    if (observation === undefined) {
+      invalidFeature(
+        "missing_feature_repair_block",
+        `feature/v1 repair ${repair.id} is not bound to an exact card block`,
+      );
+    }
+    const checkpointId = repair.checkpoint_id ?? null;
+    const normalized = {
+      schema: "flow.feature-repair/v1",
+      id: repair.id,
+      kind: repair.kind,
+      card_id: repair.card_id,
+      acceptance: [...repair.acceptance],
+      remaining_scope: [...repair.remaining_scope],
+      scope_expansion: repair.scope_expansion ?? false,
+      checkpoint_id: checkpointId,
+    };
+    return {
+      ...normalized,
+      template: {
+        ...template,
+        repair: normalized,
+      },
+    };
+  });
+}
+
 function featureSelectionInputs(selection) {
   return {
     ...(selection.verification === undefined ? {} : {
@@ -545,6 +634,21 @@ function featureSelectionInputs(selection) {
       test_selection: selection.test_selection,
     }),
   };
+}
+
+function validateFeatureRepairCards(selection, cards, limits) {
+  return selection.repairs.map((repairEntry) => {
+    const result = validateFeatureRepairContract({
+      repair: repairEntry.template.repair,
+      template: repairEntry.template,
+      existingCards: cards,
+      brief: selection.brief,
+      limits,
+      bindCheckpoint: true,
+      fail: invalidFeature,
+    });
+    return { ...repairEntry, template: result.template };
+  });
 }
 
 function featureSelectionReferences(selection) {

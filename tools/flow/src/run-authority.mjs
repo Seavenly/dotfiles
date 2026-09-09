@@ -3854,6 +3854,13 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
   return freezeCanonical({
     ...stream.fold,
     watermark,
+    revision_outcomes: (stream.fold.revision_outcomes ?? []).map((outcome) => ({
+      ...outcome,
+      authority_watermark: watermark,
+      legal_next_actions: legalActions.filter((action) =>
+        action.type === "revision_decision" &&
+        action.template_id === outcome.template_id),
+    })),
     admission: hostRestoreBarrier
       ? "suspended_host_reconciliation"
       : suspendedAfterReboot

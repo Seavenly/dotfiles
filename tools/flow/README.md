@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v21 binds it to
-`flow.contract-catalog/v1@22`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v23 binds it to
+`flow.contract-catalog/v1@23`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -427,6 +427,46 @@ finishing the run. Any missing, stale, dirty, unresolved, or blocking evidence
 leaves the run without a review candidate or handoff. The terminal projection
 contains the sealed candidate identity and ReviewAuthority watermark, with no
 review, integration, push, pull-request, cleanup, or tracker action.
+
+#### Feature repairs and revision projections
+
+A feature repair replaces the blocked card and its pending dependent closure.
+Every replacement must carry the explicit `replaces_card_id` identity; tuple
+matching by phase and executor is not accepted. The replacement preserves the
+original executor, route, limits, recovery, evidence, and authority-bearing
+inputs, including `description`, `prompt`, and `managed_agent`. Any managed-agent
+binding is rebound to replacement card IDs before the revised `active_plan` is
+stored, so superseded IDs do not remain executable authority.
+
+Revision projections distinguish effective state from pending reservations.
+`capability_bindings`, `resource_claims`, and `limits` contain effective base
+and approved revisions. A gated revision exposes pending capability and resource
+consumption in `admission_capability_bindings`, `admission_resource_claims`, and
+`revision_reservations`; its unapproved limit raise is not effective admission
+capacity. `max_cards` counts active cards only - superseded historical cards do
+not consume that active-card cap.
+
+Checkpoint-bound revisions expose `effect_state` with `applied`, `gated`, and
+`voided` branches. In every branch, `card_ids` means cards added by the
+revision, while `superseded_card_ids` separately names replaced cards. Declined
+gated additions have card status `voided`; the outcome is
+`expansion_declined` with an authority watermark and no legal actions. Structural
+admission failures project as `structurally_rejected`; closed capacity failures
+project as `cap_exhausted`. Recorded outcomes are retained chronologically and
+deduplicated only when their complete outcome identity is identical.
+
+Feature repair and replan inputs are optional and remain part of the prepared
+selection identity. Each `flow.feature-repair/v1` entry names one blocked card,
+one closed repair kind, the exact acceptance criteria it repairs, and its
+remaining scope. Its bound `flow.plan-revision-template/v1` is admitted only
+when the caller also supplies the matching digest-bound card-block observation.
+The template's complete card, edge, supersession, capability, resource, and
+limit changes are accepted as one append-only revision or rejected as one unit.
+Expansion is derived from those changes, not from a caller flag, and must name
+an exact checkpoint card in that same template; no repair may silently widen
+the confirmed feature authority. Revision commands and their decline or
+cap-exhaustion outcomes are projected with the current run watermark, repair
+metadata, and legal next actions, while accepted history remains immutable.
 
 Every `flow.rejection/v1` has the same fields. `operation`, `code`, and optional
 `reason` identify the rejected request; `command_type`, `run_id`, and

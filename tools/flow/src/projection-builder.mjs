@@ -90,6 +90,7 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
   const revision = {
     current: fold.current_revision,
     history: fold.revisions,
+    outcomes: fold.revision_outcomes,
   };
   const operator = {
     schema: "flow.operator-projection/v1",

@@ -86,6 +86,7 @@ test("query exposes complete watermarked operator views from run authority", () 
   assert.deepEqual(projection.views.operator.revision, {
     current: projection.current_revision,
     history: projection.revisions,
+    outcomes: projection.revision_outcomes,
   });
   assert.deepEqual(projection.views.operator.attempts, []);
   assert.deepEqual(projection.views.operator.capability, {
