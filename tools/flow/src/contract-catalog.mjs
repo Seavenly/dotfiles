@@ -27,6 +27,8 @@ const FEATURE_CONTRACTS = Object.freeze([
   "flow.feature-setup/v1",
   "flow.feature-setup-receipt/v1",
   "flow.feature-seal-receipt/v1",
+  "flow.feature-repair/v1",
+  "flow.feature-repair-outcome/v1",
   "flow.feature-discriminating-evidence/v1",
   "flow.operation/feature-setup/v1",
   "flow.operation/feature-test/v1",
@@ -331,7 +333,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@22",
+  catalog_id: "flow.contract-catalog/v1@23",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",

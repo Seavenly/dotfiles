@@ -1,5 +1,8 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
-import { admitPlanRevision } from "./plan-revision.mjs";
+import {
+  admitPlanRevision,
+  checkRevisionCapacity,
+} from "./plan-revision.mjs";
 import { createRejection } from "./rejection.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
@@ -127,7 +130,12 @@ export function decideLifecycle(fold, command) {
     const legalRevision = fold.legal_actions.find((action) =>
       action.type === "revision_decision" && digest(action) === digest(command));
     if (!legalRevision) return reject(fold, command, "revision_not_actionable");
+    const template = fold.revision_templates.find(
+      ({ id }) => id === command.template_id,
+    );
+    const repair = template?.repair;
     if (command.decision === "decline") {
+      const admissionCode = legalRevision.admission?.code ?? null;
       return {
         schema: "flow.decision/v1",
         command_type: command.type,
@@ -136,15 +144,20 @@ export function decideLifecycle(fold, command) {
           template_id: command.template_id,
           base_plan_fingerprint: command.base_plan_fingerprint,
           trigger: command.trigger,
+          changes: command.changes,
+          reason: admissionCode === null
+            ? "operator_declined"
+            : "revision_admission_rejected",
+          code: admissionCode ?? "revision_declined",
+          ...(repair === undefined ? {} : {
+            repair,
+          }),
         }],
         effect_intents: [],
         obligations: [],
         projection_hints: ["operator", "graph"],
       };
     }
-    const template = fold.revision_templates.find(
-      ({ id }) => id === command.template_id,
-    );
     const revision = admitPlanRevision(fold, template);
     if (revision.code) return reject(fold, command, revision.code);
     const completesRun = decisionCompletesRun(fold, {
@@ -162,6 +175,9 @@ export function decideLifecycle(fold, command) {
         plan_fingerprint: revision.plan_fingerprint,
         trigger: command.trigger,
         changes: command.changes,
+        ...(repair === undefined ? {} : {
+          repair,
+        }),
         active_plan: revision.active_plan,
       }, ...(completesRun ? [{ type: "run_succeeded" }] : [])],
       effect_intents: [],
@@ -262,6 +278,23 @@ export function decideLifecycle(fold, command) {
         settlementPhase: "declined",
       }),
     );
+  }
+
+  const gatedRevision = (fold.revisions ?? [])
+    .filter(({ repair }) => repair?.checkpoint_id === checkpoint.id)
+    .at(-1);
+  if (gatedRevision) {
+    const approvalCapacity = checkRevisionCapacity({
+      limits: fold.admission_limits ?? fold.limits,
+      capabilityBindings: fold.admission_capability_bindings ??
+        fold.capability_bindings,
+      resourceClaims: fold.admission_resource_claims ?? fold.resource_claims,
+      elapsedSeconds: fold.elapsed_seconds,
+      changes: gatedRevision.changes,
+    });
+    if (approvalCapacity.code) {
+      return reject(fold, command, approvalCapacity.code);
+    }
   }
 
   const operation = nextOperation(fold, checkpoint.id);

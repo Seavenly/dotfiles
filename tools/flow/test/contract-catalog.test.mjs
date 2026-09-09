@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 22);
+  assert.equal(catalog.catalog_version, 23);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -49,7 +49,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@22",
+    catalog_id: "flow.contract-catalog/v1@23",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -488,6 +488,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.feature-setup/v1",
     "flow.feature-setup-receipt/v1",
     "flow.feature-seal-receipt/v1",
+    "flow.feature-repair/v1",
+    "flow.feature-repair-outcome/v1",
     "flow.operation/feature-setup/v1",
     "flow.operation/feature-test/v1",
     "flow.operation/feature-verify/v1",
