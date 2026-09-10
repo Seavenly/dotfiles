@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 22,
+  "catalog_version": 25,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -89,7 +89,7 @@
       "binding": "flow.evidence-safety-binding/v1",
       "catalog_view": "flow.evidence-safety-catalog/v1",
       "policy_id": "flow.evidence-safety-policy/v1",
-      "catalog_id": "flow.contract-catalog/v1@22",
+      "catalog_id": "flow.contract-catalog/v1@25",
       "allowed_uses": [
         "delegate_transfer",
         "artifact_acceptance",
@@ -485,7 +485,32 @@
         "abandoned"
       ],
       "identity": "candidate_fingerprint",
-      "legal_actions": "closed_after_seal"
+      "legal_actions": "closed_after_seal",
+      "github": {
+        "target": "flow.review-github-pull-request/v1",
+        "snapshot": "flow.github-pull-request-snapshot/v1",
+        "pending_operation": "flow.operation/github-review-pending/v1",
+        "pending_request": "flow.github-pending-review-request/v1",
+        "pending_draft": "flow.github-pending-review-draft/v1",
+        "receipt_validator": "flow.validator/github-review-receipt/v1",
+        "receipt": "flow.github-review-receipt/v1",
+        "observation_request": "flow.github-pull-request-observation-request/v1",
+        "observation": "flow.github-review-observation/v1",
+        "record_command": "work.github-review-record-command/v1",
+        "record": "flow.github-review-record/v1",
+        "projection": "flow.review-projection/v1",
+        "invalidation": "flow.github-review-invalidation/v1",
+        "effect_classification": "one_shot_uncertain",
+        "completion_authority": "pending_only_no_submission",
+        "allowed_remote_mutation": "create_one_unsubmitted_pending_review",
+        "forbidden_remote_mutations": [
+          "submit",
+          "approve",
+          "request_changes",
+          "delete",
+          "repost"
+        ]
+      }
     },
     "handoff": {
       "authority": "Work_domain_authorities_with_RunAuthority_finalization",
@@ -601,6 +626,7 @@
     "flow.runtime-release/v1",
     "flow.checkpoint/confirmation/v1",
     "flow.validator/checkpoint-decision/v1",
+    "flow.checkpoint-binding/v1",
     "flow.resource-handoff/v1",
     "flow.resource-handoff-publication/v1",
     "flow.resource-handoff-projection/v1",
@@ -667,6 +693,18 @@
     "flow.authority-materialized-evidence/v1",
     "flow.authority-materialized-delegate-evidence/v1",
     "flow.review-projection/v1",
+    "flow.review-github-pull-request/v1",
+    "flow.github-pull-request-snapshot/v1",
+    "flow.operation/github-review-pending/v1",
+    "flow.github-pending-review-request/v1",
+    "flow.github-pending-review-draft/v1",
+    "flow.validator/github-review-receipt/v1",
+    "flow.github-review-receipt/v1",
+    "flow.github-pull-request-observation-request/v1",
+    "flow.github-review-observation/v1",
+    "work.github-review-record-command/v1",
+    "flow.github-review-record/v1",
+    "flow.github-review-invalidation/v1",
     "flow.feature-discriminating-evidence/v1",
     "work.feature-verification-receipt/v1",
     "work.feature-critique-receipt/v1",

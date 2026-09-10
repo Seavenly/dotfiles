@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v21 binds it to
-`flow.contract-catalog/v1@22`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v25 binds it to
+`flow.contract-catalog/v1@25`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -475,6 +475,43 @@ identity; later non-replay writes reject with `idempotency_conflict` and cannot
 append another event. Review completion is automated evidence only: approval,
 integration, merge, tracker completion, and remote review submission remain
 unauthorized and have no legal actions in the projection.
+
+### Immutable GitHub pull-request review snapshots
+
+The same `review/v1` semantic graph may target one exact open GitHub pull
+request snapshot through `flow.review-github-pull-request/v1`. Preparation
+binds the repository, pull-request number, base and head commits, diff digest,
+snapshot fingerprint, lifecycle generation, and target-authority watermark.
+Launch structurally validates the declared exact snapshot. The Forge Adapter
+observes and revalidates the provider snapshot, including an explicitly
+observed `state: "open"`, immediately before any remote mutation. A moved
+target blocks with zero creation calls.
+
+The optional `flow.operation/github-review-pending/v1` is a one-shot uncertain
+operation behind the `FlowRuntime` five-operation Interface. Accepting its
+fresh checkpoint can create exactly one `flow.github-pending-review-draft/v1`
+as an unsubmitted pending review. The provider receipt must echo the exact
+target fingerprint and watermark, draft digest, flow marker, repository,
+pull-request number, head commit, review ID, and pending/unsubmitted state.
+The Adapter never submits, approves, requests changes, deletes, or reposts a
+review. Declining the checkpoint completes locally without Forge mutation.
+The request must be exactly `pending_review: { schema:
+"flow.github-pending-review-request/v1", mode: "create_pending_unsubmitted" }`;
+legacy booleans and aliases are rejected. If the target moves, the retained
+review history is projected as invalidated with only recovery or cancellation
+actions available.
+
+An approved operation-bound checkpoint also carries the typed
+`flow.checkpoint-binding/v1` draft and digest into the durable RunAuthority
+effect intent. A runtime restart therefore recovers the same exact draft rather
+than relying on process-local approval state.
+
+After invocation, zero or multiple exact provider matches remain indeterminate;
+the authority retains the one-shot intent and exposes only exact recovery or
+cancel actions. An unrelated provider pending review is preserved and cannot
+serve as causation. The semantic GitHub review record, command receipt,
+watermark, artifacts, and closed legal-action projection are owned by the
+durable Work-domain `ReviewAuthority` and survive FlowRuntime close/reopen.
 
 ## Workspace, artifact, and resource handoff authority
 
