@@ -45,7 +45,7 @@ export function buildRebootRevalidation({
     elapsed_seconds: expected.elapsed_seconds,
   });
   let observed;
-  let valid = false;
+  let baseValid = false;
   try {
     if (unresolvedEffectsValid) {
       const candidate = adapter.observe({
@@ -56,7 +56,7 @@ export function buildRebootRevalidation({
       if (isExactObservation(candidate) &&
           validateRebootFacts(candidate.time_facts, candidate.subject_generations)) {
         observed = candidate;
-        valid = stableObservationMatches(expected, observed) &&
+        baseValid = stableObservationMatches(expected, observed) &&
           evaluateRebootTimeFacts({
             currentBootId,
             elapsedSeconds: expected.elapsed_seconds,
@@ -70,11 +70,12 @@ export function buildRebootRevalidation({
       }
     }
   } catch {
-    valid = false;
+    baseValid = false;
   }
   return freezeCanonical({
     schema: "flow.reboot-revalidation/v1",
-    valid,
+    base_valid: baseValid,
+    valid: baseValid,
     expected,
     observed: observed ?? null,
     unresolved_effects: pendingEffects,

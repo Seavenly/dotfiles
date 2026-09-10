@@ -864,11 +864,23 @@ export function createDurableRunAuthority({
     },
     adoptExactLaunch(request = {}) {
       assertOpen();
-      if (authoritySchemaCompatibility?.status !== "compatible" ||
+      // Exact adoption is intentionally read-only, including while another
+      // process owns the mutation lock. New launches take the fence below.
+      if (authoritySchemaCompatibility?.status === "incompatible" ||
           !databaseExists(databasePath)) return null;
       let database = null;
       try {
         database = openAuthorityDatabase(databasePath, { readOnly: true });
+        const compatibility = readAuthoritySchemaCompatibility(database);
+        if (compatibility.status !== "compatible") return null;
+        const hostRuns = readStream(database, "host:runs");
+        const admission = readStream(database, "host:admission");
+        if (!admission) {
+          throw new AuthorityIntegrityError(
+            "missing_stream",
+            "authority host stream is missing",
+          );
+        }
         const host = durableHostProjection(database);
         if (host.restore?.active === true) return null;
         const validation = validateLaunchRequest(request);
@@ -877,13 +889,31 @@ export function createDurableRunAuthority({
           ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
           : deriveChildRunId(childLaunchLineage);
         const existing = readStream(database, runId);
-        if (!existing) return null;
+        if (!existing) {
+          if (hostRuns?.fold.runs.includes(runId)) {
+            throw new AuthorityIntegrityError(
+              "missing_stream",
+              "authority run stream is missing",
+            );
+          }
+          return null;
+        }
+        if (!hostRuns) {
+          throw new AuthorityIntegrityError(
+            "missing_stream",
+            "authority run index stream is missing",
+          );
+        }
         return durableLaunchReceipt(
           database,
           existing,
           false,
           fenceRunWithoutAuthorityRevalidation,
         );
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("launch", integrity.reason);
       } finally {
         database?.close();
       }
@@ -4061,7 +4091,7 @@ function rebootRevalidation(
   );
   return freezeCanonical({
     ...revalidation,
-    valid: revalidation.valid && bindingRevalidation.valid,
+    valid: revalidation.base_valid && bindingRevalidation.valid,
     authority_bindings: bindingRevalidation,
   });
 }
@@ -4535,15 +4565,12 @@ function launchAuthorityBindingIssue(runAuthority, prepared) {
 }
 
 function launchAuthorityBindingRejection(prepared, issue, watermark) {
-  const providerFact = issue.authority_watermark !== null ||
-    issue.authority_generation !== null;
   return createRejection({
     operation: "launch",
     code: issue.code,
     reason: issue.reason,
     bundleDigest: stringOrNull(prepared?.bundle_digest),
-    authorityWatermark: issue.authority_watermark ??
-      (providerFact ? null : watermark ?? EMPTY_WATERMARK),
+    authorityWatermark: watermark ?? EMPTY_WATERMARK,
     authorityWatermarkDomain: "host",
     legalActions: issue.legal_actions ?? [],
     authorityFact: authorityFactFromIssue(issue),
@@ -4552,15 +4579,20 @@ function launchAuthorityBindingRejection(prepared, issue, watermark) {
 
 function durableLaunchAuthorityBindingRejection(prepared, databasePath, issue) {
   let watermark = EMPTY_WATERMARK;
-  if (databaseExists(databasePath)) {
-    const database = openAuthorityDatabase(databasePath, { readOnly: true });
-    try {
+  let database = null;
+  try {
+    if (databaseExists(databasePath)) {
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
       watermark = durableHostProjection(database).watermark;
-    } finally {
-      database.close();
     }
+    return launchAuthorityBindingRejection(prepared, issue, watermark);
+  } catch (error) {
+    const integrity = authorityIntegrityError(error);
+    if (!integrity) throw error;
+    return authorityIntegrityRejection("launch", integrity.reason);
+  } finally {
+    database?.close();
   }
-  return launchAuthorityBindingRejection(prepared, issue, watermark);
 }
 
 function hostCommandRejection(operation, code, reason, hostProjection) {

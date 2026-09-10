@@ -14,6 +14,7 @@ import {
   createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
+import { normalizeRequiredAuthorities } from "../src/authority-bindings.mjs";
 import {
   confirmedLaunchRequest,
   dynamicCheckpointProposal,
@@ -935,6 +936,132 @@ test("predefined preparation binds required authority contracts and launch reche
   ]);
 });
 
+test("authority preparation requires the exact observation input", () => {
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+  };
+  for (const [label, input] of [
+    ["missing", undefined],
+    ["augmented", { route: "example", extra: true }],
+    ["substituted", { route: "other" }],
+  ]) {
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority(),
+      registeredAuthorities: {
+        "route:example": registeredAuthority({
+          id: "route:example",
+          contract: "flow.route-authority/v1",
+          providerId: "route-adapter",
+          observe() {
+            return {
+              schema: "flow.authority-observation/v1",
+              status: "available",
+              watermark: `sha256:${"a".repeat(64)}`,
+              ...(input === undefined
+                ? {}
+                : { observation_input: input }),
+            };
+          },
+        }),
+      },
+      predefinedDefinitions: { "example/v1": definition },
+    });
+    assert.throws(
+      () => prepareExample(runtime),
+      (error) => error.name === "PredefinedFlowValidationError" &&
+        error.reason === "required_authority_unavailable",
+      label,
+    );
+  }
+});
+
+test("required authority declarations are records, not string shorthands", () => {
+  assert.throws(
+    () => normalizeRequiredAuthorities(["route:example"]),
+    TypeError,
+  );
+  assert.deepEqual(
+    normalizeRequiredAuthorities([{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }]),
+    [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+  );
+});
+
+test("definition-scoped authority issues identify the prepared definition", () => {
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+  };
+  const source = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: {
+      "route:example": registeredAuthority({
+        id: "route:example",
+        contract: "flow.route-authority/v1",
+        providerId: "route-adapter",
+        observe({ observation_input }) {
+          return {
+            schema: "flow.authority-observation/v1",
+            status: "available",
+            watermark: `sha256:${"a".repeat(64)}`,
+            observation_input,
+          };
+        },
+      }),
+    },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = prepareExample(source);
+  const request = confirmedPredefinedLaunchRequest(prepared);
+  const expectedFact = {
+    schema: "flow.authority-fact/v1",
+    authority_id: "example/v1",
+    authority_contract: "flow.definition/example/v1",
+    provider_identity: null,
+    watermark: null,
+    generation: null,
+    legal_actions: [],
+  };
+
+  const unavailable = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  }).launch(request);
+  assert.equal(unavailable.code, "required_authority_catalog_unavailable");
+  assert.deepEqual(unavailable.authority_fact, expectedFact);
+
+  const mismatch = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    predefinedDefinitions: {
+      "example/v1": {
+        ...definition,
+        contract: "flow.definition/other/v1",
+      },
+    },
+  }).launch(request);
+  assert.equal(mismatch.code, "required_authority_binding_mismatch");
+  assert.deepEqual(mismatch.authority_fact, expectedFact);
+});
+
 test("exact existing predefined launch is adopted before authority rechecks", () => {
   let observations = 0;
   let available = true;
@@ -1101,8 +1228,7 @@ test("predefined launch rejects an absent run when its registered authority drif
 
   const rejection = replacing.launch(request);
   assert.equal(rejection.code, "required_authority_stale");
-  assert.equal(rejection.authority_watermark,
-    `sha256:${"b".repeat(64)}`);
+  assert.equal(rejection.authority_watermark, replacing.query().watermark);
   assert.deepEqual(replacing.query().runs, []);
 });
 
@@ -1142,8 +1268,7 @@ test("predefined launch rejects an absent run when a resource generation drifts"
 
   const rejection = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
   assert.equal(rejection.code, "required_authority_stale");
-  assert.equal(rejection.authority_watermark,
-    `sha256:${"b".repeat(64)}`);
+  assert.equal(rejection.authority_watermark, runtime.query().watermark);
   assert.deepEqual(runtime.query().runs, []);
 });
 
@@ -1250,14 +1375,13 @@ test("predefined launch preserves typed authority status and recovery facts", ()
     const rejection = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
 
     assert.equal(rejection.code, code, status);
-    assert.equal(rejection.authority_watermark,
-      `sha256:${digit.repeat(64)}`, status);
+    assert.equal(rejection.authority_watermark, runtime.query().watermark, status);
     assert.deepEqual(rejection.legal_actions, [{ decision: "retry" }], status);
     assert.deepEqual(runtime.query().runs, [], status);
   }
 });
 
-test("generation-only authority rejection does not borrow the host watermark", () => {
+test("authority rejection keeps the host watermark for stale retry", () => {
   const definition = {
     ...exampleDefinition(),
     required_authorities: [{
@@ -1292,7 +1416,7 @@ test("generation-only authority rejection does not borrow the host watermark", (
   );
 
   assert.equal(rejection.code, "required_authority_stale");
-  assert.equal(rejection.authority_watermark, null);
+  assert.equal(rejection.authority_watermark, runtime.query().watermark);
   assert.deepEqual(rejection.legal_actions, [{ decision: "refresh" }]);
   assert.deepEqual(rejection.authority_fact, {
     schema: "flow.authority-fact/v1",
@@ -1413,7 +1537,8 @@ test("predefined reboot admission rechecks every bound authority", async (t) => 
   assert.deepEqual([...observations], authoritySpecs.map(([id]) => [id, 3]));
   const rejection = rebooted.command(action);
   assert.equal(rejection.code, "required_authority_stale");
-  assert.equal(rejection.authority_watermark, null);
+  assert.equal(rejection.authority_watermark,
+    rebooted.query({ run_id: launch.run_id }).watermark);
   assert.deepEqual(rejection.authority_fact, {
     schema: "flow.authority-fact/v1",
     authority_id: "generation:example",
@@ -1450,6 +1575,119 @@ test("predefined reboot admission rechecks every bound authority", async (t) => 
   );
   assert.equal(validateReboot(action.revalidation), true,
     JSON.stringify(validateReboot.errors));
+});
+
+test("public FlowRuntime reports base reboot failure before authority failure", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-binding-effects-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const operationProposal = registeredOperationProposal({ checkpointBound: false });
+  let authorityStatus = "available";
+  let authorityWatermarkDigit = "a";
+  let rebootObservationRequest;
+  const authorityRegistration = registeredAuthority({
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    providerId: "route-adapter",
+    observe(request) {
+      if (request.phase === "reboot") rebootObservationRequest = request;
+      return {
+        schema: "flow.authority-observation/v1",
+        status: authorityStatus,
+        watermark: `sha256:${authorityWatermarkDigit.repeat(64)}`,
+        observation_input: request.observation_input,
+        legal_actions: [{ decision: "refresh" }],
+      };
+    },
+  });
+  const definition = {
+    ...exampleDefinition(),
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+    compile() {
+      return registeredOperationProposal({ checkpointBound: false });
+    },
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredAuthorities: { "route:example": authorityRegistration },
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke() {
+          return new Promise(() => {});
+        },
+      },
+    },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = firstRuntime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Record the example" },
+    explicit_facts: operationProposal.explicit_facts,
+  });
+  const launch = firstRuntime.launch(confirmedPredefinedLaunchRequest(prepared));
+  const operation = firstRuntime.query({ run_id: launch.run_id }).legal_actions
+    .find(({ type }) => type === "operation_execute");
+  const effectReceipt = firstRuntime.command(operation);
+  assert.equal(effectReceipt.accepted, true);
+  assert.equal(effectReceipt.effect_intents.length, 1);
+  firstAuthority.close();
+
+  authorityStatus = "stale";
+  authorityWatermarkDigit = "b";
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    rebootObservationAdapter: {
+      observe({ prepared: observedPrepared }) {
+        const observation = preparedObservation(observedPrepared);
+        return {
+          ...observation,
+          time_facts: observation.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-b" } : fact),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebooted = createFlowRuntime({
+    runAuthority: rebootedAuthority,
+    registeredAuthorities: { "route:example": authorityRegistration },
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke: operationReceipt,
+      },
+    },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const suspended = rebooted.query({ run_id: launch.run_id });
+  const action = suspended.legal_actions[0];
+  assert.equal(action.type, "reboot_admission");
+  assert.equal(action.revalidation.base_valid, false);
+  assert.equal(action.revalidation.valid, false);
+  assert.equal(action.revalidation.unresolved_effects.length, 1);
+  assert.equal(action.revalidation.authority_bindings.valid, false);
+  assert.equal(action.revalidation.authority_bindings.issues[0].code,
+    "required_authority_stale");
+  assert.deepEqual(suspended.reboot_revalidation, action.revalidation);
+  assert.equal(Object.hasOwn(rebootObservationRequest, "expected_observation"), false);
+
+  const rejection = rebooted.command(action);
+  assert.equal(rejection.code, "reboot_revalidation_failed");
+  assert.equal(rejection.authority_fact.authority_id, "route:example");
+  assert.equal(rejection.authority_fact.generation, null);
+  assert.equal(rejection.authority_fact.watermark,
+    `sha256:${"b".repeat(64)}`);
 });
 
 function exampleDefinition() {

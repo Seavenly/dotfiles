@@ -377,9 +377,13 @@ catalog before its fenced creation transaction. Reboot admission repeats those
 rechecks alongside route, resource, generation, time, and unresolved-effect
 facts and emits the closed `authority_bindings` projection. Missing, stale,
 unavailable, contradictory, or uncertain observations
-remain typed rejections with their provider watermark or generation-only
-`authority_fact` and closed legal actions. A generation-only rejection keeps
-`authority_watermark` null rather than borrowing the unrelated host watermark.
+remain typed rejections with provider identity, provider watermark or
+generation, and closed legal actions in `authority_fact`. The rejection's
+top-level `authority_watermark` remains the owning host or run watermark used
+for stale retry. Every observation must include the exact binding
+`observation_input`; JSON Schema cannot express the cross-object digest
+equality, so runtime validation rejects missing, augmented, or substituted
+input.
 Dynamic proposals retain their separate complete-graph
 confirmation contract.
 

@@ -36,6 +36,36 @@ test("reboot admission schemas compile in strict mode", async () => {
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
 });
 
+test("authority observations require their binding observation input", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.authority-observation.v1.schema.json"),
+    "utf8",
+  ));
+  const validate = ajv.compile(schema);
+  const observation = {
+    schema: "flow.authority-observation/v1",
+    status: "available",
+    watermark: `sha256:${"a".repeat(64)}`,
+    observation_input: { fact: "route_snapshot" },
+  };
+  assert.equal(validate(observation), true, ajv.errorsText());
+  const missingInput = structuredClone(observation);
+  delete missingInput.observation_input;
+  assert.equal(validate(missingInput), false);
+  for (const alias of [
+    "authority_watermark",
+    "provider_watermark",
+    "provider_generation",
+  ]) {
+    const aliased = {
+      ...observation,
+      [alias]: alias.endsWith("generation") ? 1 : observation.watermark,
+    };
+    assert.equal(validate(aliased), false, alias);
+  }
+});
+
 test("Flow description schema accepts the current Drovr description shape", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const schema = JSON.parse(await readFile(

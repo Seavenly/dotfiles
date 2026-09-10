@@ -37,10 +37,7 @@ const OBSERVATION_FIELDS = new Set([
   "schema",
   "status",
   "watermark",
-  "authority_watermark",
-  "provider_watermark",
   "generation",
-  "provider_generation",
   "observation_input",
   "legal_actions",
 ]);
@@ -149,14 +146,6 @@ export function normalizeRequiredAuthorities(requirements = []) {
     throw new TypeError("required authorities must be an array");
   }
   const normalized = requirements.map((requirement) => {
-    if (typeof requirement === "string") {
-      return freezeCanonical({
-        schema: AUTHORITY_SCHEMA,
-        id: requirement,
-        contract: requirement,
-        observation_input: {},
-      });
-    }
     if (!isPlainRecord(requirement)) {
       throw new TypeError("required authority declaration is invalid");
     }
@@ -282,7 +271,6 @@ export function recheckAuthorityBindings(bindings, catalog, context = {}) {
           },
           observation_input: binding.observation_input,
           input: binding.observation_input,
-          expected_observation: binding.observation,
         }),
       });
     } catch {
@@ -328,7 +316,7 @@ export function validateDefinitionAuthorityBindings(
     contract: binding.contract,
     observation_input: binding.observation_input,
   }));
-  const definitionBinding = prepared.required_authorities?.[0] ?? {
+  const definitionBinding = {
     id: prepared.definition?.id ?? null,
     contract: prepared.definition?.contract ?? null,
   };
@@ -441,8 +429,10 @@ export function normalizeAuthorityObservation(observation, binding) {
   if (Reflect.ownKeys(normalized).some((key) => !OBSERVATION_FIELDS.has(key))) {
     throw new TypeError("authority observation contains an unknown field");
   }
+  if (!isPlainRecord(normalized.observation_input)) {
+    throw new TypeError("authority observation input is required");
+  }
   if (binding?.observation_input !== undefined &&
-      normalized.observation_input !== undefined &&
       digest(normalized.observation_input) !== digest(binding.observation_input)) {
     throw new TypeError("authority observation input changed");
   }
@@ -489,13 +479,12 @@ export function createAuthorityFact({
 }
 
 export function authorityWatermark(observation) {
-  const watermark = observation?.watermark ?? observation?.authority_watermark ??
-    observation?.provider_watermark;
+  const watermark = observation?.watermark;
   return /^sha256:[0-9a-f]{64}$/.test(watermark ?? "") ? watermark : null;
 }
 
 export function authorityGeneration(observation) {
-  const generation = observation?.generation ?? observation?.provider_generation;
+  const generation = observation?.generation;
   return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
 }
 

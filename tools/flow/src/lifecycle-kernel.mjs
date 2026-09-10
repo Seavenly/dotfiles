@@ -40,11 +40,14 @@ export function decideLifecycle(fold, command) {
     if (fold.reboot_revalidation.valid !== true) {
       const authorityIssue = fold.reboot_revalidation.authority_bindings
         ?.issues?.[0];
+      const code = fold.reboot_revalidation.base_valid !== true
+        ? "reboot_revalidation_failed"
+        : authorityIssue?.code ?? "reboot_revalidation_failed";
       return reject(
         fold,
         command,
-        authorityIssue?.code ?? "reboot_revalidation_failed",
-        authorityIssue?.authority_watermark ?? null,
+        code,
+        undefined,
         authorityIssue == null ? undefined : authorityFactFromIssue(authorityIssue),
       );
     }

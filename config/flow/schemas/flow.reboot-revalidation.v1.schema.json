@@ -4,9 +4,10 @@
   "title": "flow.reboot-revalidation/v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "valid", "expected", "observed", "unresolved_effects", "authority_bindings"],
+  "required": ["schema", "base_valid", "valid", "expected", "observed", "unresolved_effects", "authority_bindings"],
   "properties": {
     "schema": { "const": "flow.reboot-revalidation/v1" },
+    "base_valid": { "type": "boolean" },
     "valid": { "type": "boolean" },
     "expected": { "$ref": "#/$defs/observation" },
     "observed": {
