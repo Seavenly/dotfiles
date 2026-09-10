@@ -20,6 +20,7 @@ import {
   createPreparedBundle,
   createPredefinedFlowConfirmation,
 } from "./prepared-contracts.mjs";
+import { normalizeAuthorityBindings } from "./authority-bindings.mjs";
 
 const PREPARED_RUN_FIELDS = [
   "schema",
@@ -41,6 +42,7 @@ const PREDEFINED_RUN_FIELDS = [
   "negative_outcomes",
   "routes",
   "trust_posture",
+  "required_authorities",
 ];
 const PREDEFINED_DEFINITION_ID = /^[A-Za-z0-9._-]+\/v[0-9]+$/;
 
@@ -124,6 +126,16 @@ function assertPreparedBundle(prepared) {
     );
   }
   if (prepared.kind === "predefined") assertPredefinedRoutes(prepared);
+  if (prepared.kind === "predefined") {
+    try {
+      normalizeAuthorityBindings(prepared.required_authorities);
+    } catch {
+      invalidLaunch(
+        "invalid_required_authority_bindings",
+        "prepared required authority bindings are invalid",
+      );
+    }
+  }
   if (!isDeepStrictEqual(
     prepared.explicit_facts,
     canonicalizeExplicitFacts(prepared.explicit_facts),
@@ -157,6 +169,7 @@ function assertPreparedBundle(prepared) {
       negativeOutcomes: prepared.negative_outcomes,
       routes: prepared.routes,
       trustPosture: prepared.trust_posture,
+      requiredAuthorities: prepared.required_authorities,
     }));
   } catch (error) {
     translateCanonicalError(error);
@@ -176,6 +189,7 @@ function assertPreparedBundle(prepared) {
         routes: prepared.routes,
         trustPosture: prepared.trust_posture,
         revisionTemplates: prepared.revision_templates,
+        requiredAuthorities: prepared.required_authorities,
       })
     : createDynamicPlanConfirmation({
         bundleDigest: prepared.bundle_digest,
@@ -217,6 +231,7 @@ function assertPredefinedEnvelope(prepared) {
       !Array.isArray(prepared.promised_outcomes) ||
       !Array.isArray(prepared.negative_outcomes) ||
       !Array.isArray(prepared.routes) ||
+      !Array.isArray(prepared.required_authorities) ||
       !isPlainRecord(prepared.trust_posture)) {
     invalidLaunch(
       "invalid_predefined_selection",
@@ -237,6 +252,7 @@ function assertPredefinedEnvelope(prepared) {
     digest(prepared.promised_outcomes);
     digest(prepared.negative_outcomes);
     digest(prepared.routes);
+    digest(prepared.required_authorities);
     digest(prepared.trust_posture);
   } catch (error) {
     translateCanonicalError(error);

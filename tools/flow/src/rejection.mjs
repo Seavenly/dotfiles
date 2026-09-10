@@ -10,8 +10,9 @@ export function createRejection({
   authorityWatermark = null,
   authorityWatermarkDomain,
   legalActions = [],
+  authorityFact = undefined,
 }) {
-  return freezeCanonical({
+  const rejection = {
     schema: "flow.rejection/v1",
     operation,
     code,
@@ -22,5 +23,7 @@ export function createRejection({
     authority_watermark: authorityWatermark,
     authority_watermark_domain: authorityWatermarkDomain,
     legal_actions: legalActions,
-  });
+  };
+  if (authorityFact !== undefined) rejection.authority_fact = authorityFact;
+  return freezeCanonical(rejection);
 }

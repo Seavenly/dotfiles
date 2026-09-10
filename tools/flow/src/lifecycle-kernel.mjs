@@ -5,6 +5,7 @@ import {
   checkRevisionCapacity,
 } from "./plan-revision.mjs";
 import { createRejection } from "./rejection.mjs";
+import { authorityFactFromIssue } from "./authority-bindings.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
   "generic_setter",
@@ -42,7 +43,18 @@ export function decideLifecycle(fold, command) {
       return reject(fold, command, "stale_reboot_admission");
     }
     if (fold.reboot_revalidation.valid !== true) {
-      return reject(fold, command, "reboot_revalidation_failed");
+      const authorityIssue = fold.reboot_revalidation.authority_bindings
+        ?.issues?.[0];
+      const code = fold.reboot_revalidation.base_valid !== true
+        ? "reboot_revalidation_failed"
+        : authorityIssue?.code ?? "reboot_revalidation_failed";
+      return reject(
+        fold,
+        command,
+        code,
+        undefined,
+        authorityIssue == null ? undefined : authorityFactFromIssue(authorityIssue),
+      );
     }
     return {
       schema: "flow.decision/v1",
@@ -756,15 +768,24 @@ export const LifecycleKernel = Object.freeze({
   decide: decideLifecycle,
 });
 
-function reject(fold, command, code) {
+function reject(
+  fold,
+  command,
+  code,
+  authorityWatermark = undefined,
+  authorityFact = undefined,
+) {
   return createRejection({
     operation: "command",
     code,
     commandType: command?.type ?? null,
     runId: command?.run_id ?? null,
     bundleDigest: fold.bundle_digest,
-    authorityWatermark: fold.watermark,
+    authorityWatermark: authorityWatermark === undefined
+      ? fold.watermark
+      : authorityWatermark,
     authorityWatermarkDomain: "run",
     legalActions: fold.legal_actions,
+    authorityFact,
   });
 }

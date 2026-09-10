@@ -50,6 +50,10 @@ import {
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
 import { completedTurnProjection } from "../test-support/delegate-card.mjs";
+import {
+  shippedAuthorityRegistrations,
+  shippedAuthorityStateFromFacts,
+} from "../test-support/authority-bindings.mjs";
 import { supportedDescription } from "../test-support/delegated-agent-description.mjs";
 import { dynamicCheckpointProposal } from "../test-support/dynamic-checkpoint.mjs";
 import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
@@ -94,6 +98,9 @@ test("review/v1 prepares an exact GitHub snapshot with an optional pending-revie
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
     githubReviewForge: {},
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
 
@@ -174,6 +181,9 @@ test("declining the exact GitHub pending-review checkpoint completes locally wit
     runAuthority,
     githubReviewForge: forge,
     delegatedAgentPort: githubReviewDelegatedPort(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
   const prepared = runtime.prepare({
@@ -234,6 +244,9 @@ test("accepting the exact GitHub checkpoint creates one unsubmitted pending revi
     runAuthority,
     githubReviewForge: forge,
     delegatedAgentPort: githubReviewDelegatedPort(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
   const prepared = runtime.prepare({
@@ -983,6 +996,7 @@ test("GitHub target movement invalidates semantic review authority without losin
 
 test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermark", () => {
   const candidate = reviewCandidate();
+  const facts = reviewRuntimeFacts();
   const baseAuthority = createInMemoryReviewAuthority();
   let candidateProjection = candidateAuthorityProjection(candidate, DIGEST("c"));
   const reviewAuthority = Object.freeze({
@@ -995,9 +1009,11 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
     reviewAuthority,
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
-  const facts = reviewRuntimeFacts();
   const inputs = reviewInputsForCandidate(candidate);
   const prepared = runtime.prepare({
     schema: "flow.predefined-flow-selection/v1",
@@ -1005,6 +1021,14 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
     inputs,
     explicit_facts: facts,
   });
+  assert.deepEqual(prepared.required_authorities.map(({ id }) => id), [
+    "contract:facts",
+    "generation:facts",
+    "resource:facts",
+    "route:facts",
+  ]);
+  assert.equal(prepared.required_authorities.every(({ observation }) =>
+    observation.status === "available" && observation.watermark.startsWith("sha256:")), true);
 
   candidateProjection = candidateAuthorityProjection({
     ...candidate,
@@ -1046,6 +1070,9 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   const multiTargetRuntime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
     reviewAuthority,
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: {
       "review-multi-target/v1": multiTargetDefinition,
     },
@@ -1060,6 +1087,71 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
     reviewLaunchRequest(multiTargetPrepared),
   );
   assert.equal(secondTargetStale.code, "stale_candidate_authority_watermark");
+});
+
+test("review/v1 absent launch rechecks the current shipped route provider", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("review-provider-boot", "review-provider-process"),
+  });
+  t.after(() => runAuthority.close());
+  const candidate = reviewCandidate();
+  const facts = reviewRuntimeFacts();
+  const current = shippedAuthorityStateFromFacts(facts);
+  const runtime = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: shippedAuthorityRegistrations({ current }),
+    reviewAuthority: createInMemoryReviewAuthority({
+      candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    }),
+    delegatedAgentPort: {
+      contract: "flow.delegated-agent-port/v1",
+      describe() {},
+      discover() {},
+      dispatch() {},
+      send() {},
+      observe() {},
+      cancel() {},
+      reconcile() {},
+      wait() {},
+      retire() {},
+    },
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const inputs = reviewInputsForCandidate(candidate);
+  const securityDescription = await supportedDescription(
+    reviewDescriptionRequest("codex", "gpt-5.6-luna", "security"),
+    {},
+  );
+  const criticDescription = await supportedDescription(
+    reviewDescriptionRequest("claude", "gpt-5.6", "critic"),
+    {},
+  );
+  inputs.delegation.lenses.security = {
+    description: securityDescription,
+    route: reviewRoute("agent:review-security", securityDescription),
+  };
+  inputs.delegation.critic = {
+    description: criticDescription,
+    route: reviewRoute("agent:review-critic", criticDescription),
+  };
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+  current["route:facts"] = {
+    status: "stale",
+    watermark: DIGEST("a"),
+  };
+
+  const rejection = runtime.launch(reviewLaunchRequest(prepared));
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_fact.authority_id, "route:facts");
+  assert.deepEqual(runtime.query().runs, []);
 });
 
 test("delegate execution rejects caller-forged authority evidence", async (t) => {
@@ -1102,6 +1194,9 @@ test("delegate execution rejects caller-forged authority evidence", async (t) =>
       wait() {},
       retire() {},
     },
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(reviewRuntimeFacts()),
+    }),
     predefinedDefinitions: {
       "review-forged-evidence/v1": forgedDefinition,
     },
@@ -1218,6 +1313,9 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
   };
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
 
@@ -2472,6 +2570,9 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
     delegateOutputValidators: {
       [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: { validate: () => true },
     },
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
   const prepared = runtime.prepare({
@@ -3086,6 +3187,9 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
       },
     },
     delegatedAgentPort,
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
   const prepared = runtime.prepare({
@@ -3461,6 +3565,9 @@ async function launchGitHubPendingScenario(t, {
     runAuthority,
     githubReviewForge: forge,
     delegatedAgentPort: githubReviewDelegatedPort(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
   const prepared = runtime.prepare({

@@ -8,7 +8,14 @@ import {
 } from "./plan-compiler.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
-import { createInMemoryRunAuthority } from "./run-authority.mjs";
+import {
+  attachAuthorityBindingCatalogs,
+  createInMemoryRunAuthority,
+} from "./run-authority.mjs";
+import {
+  snapshotPredefinedAuthorityCatalog,
+  snapshotRegisteredAuthorities,
+} from "./authority-bindings.mjs";
 import {
   delegateCompatibilityIssue,
   dispatchDelegateEffect,
@@ -74,6 +81,7 @@ export function createFlowRuntime({
   delegatedAgentPort = null,
   delegateOutputValidators = {},
   predefinedDefinitions = {},
+  registeredAuthorities = {},
   reviewAuthority = null,
   githubReviewAuthority = null,
   githubReviewForge = null,
@@ -142,6 +150,14 @@ export function createFlowRuntime({
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
   const predefinedRegistry = snapshotPredefinedDefinitions(predefinedDefinitions);
+  const authorityRegistry = snapshotRegisteredAuthorities(registeredAuthorities);
+  const predefinedAuthorityCatalog = snapshotPredefinedAuthorityCatalog(
+    predefinedRegistry,
+  );
+  attachAuthorityBindingCatalogs(runAuthority, {
+    authorities: authorityRegistry,
+    predefinedDefinitions: predefinedAuthorityCatalog,
+  });
   operationRegistry.set(SUBRUN_CONTRACT, subrunRegistration);
   const compile = planCompiler === compileDynamicPlan
     ? (proposal) => compileDynamicPlan(proposal, {
@@ -154,13 +170,20 @@ export function createFlowRuntime({
         return compilePredefinedFlowSelection(
           proposal,
           predefinedRegistry.get(proposal.definition),
-          { registeredOperations: operationRegistry },
+          {
+            registeredOperations: operationRegistry,
+            registeredAuthorities: authorityRegistry,
+          },
         );
       }
       return compile(proposal);
     },
 
     launch(request) {
+      const adopted = typeof runAuthority.adoptExactLaunch === "function"
+        ? runAuthority.adoptExactLaunch(request)
+        : null;
+      if (adopted !== null && adopted !== undefined) return adopted;
       const validation = validateLaunchRequest(request);
       if (validation.accepted) {
         const reviewTargets = executionCards(validation.prepared)

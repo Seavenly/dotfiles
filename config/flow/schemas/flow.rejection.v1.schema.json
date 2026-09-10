@@ -29,6 +29,9 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "authority_watermark_domain": { "enum": ["host", "run"] },
-    "legal_actions": { "type": "array" }
+    "legal_actions": { "type": "array" },
+    "authority_fact": {
+      "$ref": "flow.authority-fact.v1.schema.json"
+    }
   }
 }
