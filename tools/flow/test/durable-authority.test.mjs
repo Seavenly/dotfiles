@@ -2274,6 +2274,44 @@ test("a rejected asynchronous effect is not receipted", async (t) => {
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
 });
 
+test("RunAuthority durably records a valid provider observation without provider-specific error matching", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-provider-observation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: effectLifecycle,
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const receipt = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  const [intent] = receipt.effect_intents;
+  const providerObservation = {
+    schema: "flow.test-provider-observation/v1",
+    code: "test_provider_failure",
+    reason: "provider response was unavailable",
+  };
+  await assert.rejects(
+    () => authority.invokeEffect(intent, {
+      invoke() {
+        throw Object.assign(new Error(providerObservation.reason), {
+          code: providerObservation.code,
+          provider_observation: providerObservation,
+        });
+      },
+    }),
+    /provider response was unavailable/,
+  );
+  const projection = authority.query(launch.run_id);
+  assert.deepEqual(
+    projection.effects[0].last_observation.provider_observation,
+    providerObservation,
+  );
+});
+
 test("concurrent dispatch reaches the effect Adapter only once", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));

@@ -6,9 +6,13 @@ import {
   idempotencyCommandDigest,
 } from "./canonical.mjs";
 import {
+  GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
+  GITHUB_REVIEW_RECORD_SCHEMA,
+  projectGitHubReviewRecord,
   projectReviewRecord,
   reviewEventWatermark,
   reviewRecordWatermarkIdentity,
+  reviewTargetFingerprint,
   validateReviewRecordCommand,
 } from "./review-flow.mjs";
 import { validReviewCandidate as canonicalValidReviewCandidate } from "./review-candidate.mjs";
@@ -93,8 +97,10 @@ export function decideWorkCommand(current, command) {
       command.type === "artifact_record") {
     return decideArtifactRegistration(current, command);
   }
-  if (command?.schema === "work.review-record-command/v1" &&
-      command.type === "review_record") {
+  if ((command?.schema === "work.review-record-command/v1" &&
+       command.type === "review_record") ||
+      (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA &&
+       command.type === "github_review_record")) {
     return decideReviewRecord(current, command);
   }
   if (command?.schema === "work.workspace-claim-command/v1" &&
@@ -132,8 +138,15 @@ function decideReviewRecord(current, command) {
       command.expected_watermark !== (current?.watermark ?? EMPTY_WATERMARK)) {
     return reject(command, "stale_authority_watermark", current);
   }
+  const targetFingerprint = reviewTargetFingerprint(command.target ?? {
+    schema: "flow.review-local-candidate/v1",
+    candidate: command.candidate,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+  });
   if (current !== null &&
-      (current.candidate_fingerprint !== command.candidate_fingerprint ||
+      (current.candidate_fingerprint !== targetFingerprint ||
        current.lifecycle_generation !== command.lifecycle_generation)) {
     return reject(command, "review_target_mismatch", current);
   }
@@ -145,23 +158,42 @@ function decideReviewRecord(current, command) {
   } catch (error) {
     return reject(command, error.code ?? "invalid_review_record", current);
   }
-  const body = {
-    schema: "flow.review-record/v1",
-    review_id: command.subject_id,
-    candidate_fingerprint: command.candidate_fingerprint,
-    candidate_authority_watermark: command.candidate_authority_watermark,
-    lifecycle_generation: command.lifecycle_generation,
-    candidate: command.candidate,
-    summary: command.summary,
-    automated_evidence: command.automated_evidence,
-    artifacts: command.artifacts,
-    source_authority_watermark: command.source_authority_watermark,
-    operation_contract: command.operation_contract,
-    operation_effect_id: command.operation_effect_id,
-    operation_attempt_id: command.operation_attempt_id,
-    operation_idempotency_key: command.operation_idempotency_key,
-    source_run_id: command.source_run_id,
-  };
+  const github = command.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA;
+  const body = github
+    ? {
+        schema: GITHUB_REVIEW_RECORD_SCHEMA,
+        review_id: command.subject_id,
+        target: command.target,
+        target_fingerprint: command.target_fingerprint,
+        target_authority_watermark: command.target_authority_watermark,
+        lifecycle_generation: command.lifecycle_generation,
+        summary: command.summary,
+        automated_evidence: command.automated_evidence,
+        artifacts: command.artifacts,
+        source_authority_watermark: command.source_authority_watermark,
+        operation_contract: command.operation_contract,
+        operation_effect_id: command.operation_effect_id,
+        operation_attempt_id: command.operation_attempt_id,
+        operation_idempotency_key: command.operation_idempotency_key,
+        source_run_id: command.source_run_id,
+      }
+    : {
+        schema: "flow.review-record/v1",
+        review_id: command.subject_id,
+        candidate_fingerprint: command.candidate_fingerprint,
+        candidate_authority_watermark: command.candidate_authority_watermark,
+        lifecycle_generation: command.lifecycle_generation,
+        candidate: command.candidate,
+        summary: command.summary,
+        automated_evidence: command.automated_evidence,
+        artifacts: command.artifacts,
+        source_authority_watermark: command.source_authority_watermark,
+        operation_contract: command.operation_contract,
+        operation_effect_id: command.operation_effect_id,
+        operation_attempt_id: command.operation_attempt_id,
+        operation_idempotency_key: command.operation_idempotency_key,
+        source_run_id: command.source_run_id,
+      };
   const watermark = reviewEventWatermark({
     previousWatermark: command.expected_watermark,
     event: reviewRecordWatermarkIdentity(body),
@@ -173,9 +205,12 @@ function decideReviewRecord(current, command) {
     accepted: true,
     streamKind: "review",
     event: {
+      // SQLite replay owns the stream envelope contract. The GitHub-specific
+      // event schema remains in the payload/body, while the durable review
+      // stream uses its established work.review envelope.
       contract: "work.review-event/v1",
       payload: {
-        type: "review_recorded",
+        type: github ? "github_review_recorded" : "review_recorded",
         body,
         watermark,
         command_receipt: workIdempotencyReceipt(command),
@@ -376,13 +411,21 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
     });
   }
   if (streamKind === "review") {
-    if (records[0]?.payload?.type === "review_recorded") {
+    if (records[0]?.payload?.type === "review_recorded" ||
+        records[0]?.payload?.type === "github_review_recorded") {
       const recorded = records[0].payload;
-      return projectReviewRecord(
-        recorded.body,
-        recorded.watermark ?? watermark,
-        records.map(({ payload }) => payload),
-      );
+      const events = records.map(({ payload }) => payload);
+      return recorded.body?.schema === GITHUB_REVIEW_RECORD_SCHEMA
+        ? projectGitHubReviewRecord(
+            recorded.body,
+            recorded.watermark ?? watermark,
+            events,
+          )
+        : projectReviewRecord(
+            recorded.body,
+            recorded.watermark ?? watermark,
+            events,
+          );
     }
     const sealed = records[0]?.payload;
     if (sealed?.type !== "review_candidate_sealed" ||

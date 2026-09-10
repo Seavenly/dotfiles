@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 23);
+  assert.equal(catalog.catalog_version, 26);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -49,7 +49,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@23",
+    catalog_id: "flow.contract-catalog/v1@26",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -554,6 +554,31 @@ test("the public catalog exposes the settled interface and forbids legacy import
     statuses: ["sealed", "superseded", "abandoned"],
     identity: "candidate_fingerprint",
     legal_actions: "closed_after_seal",
+    github: {
+      target: "flow.review-github-pull-request/v1",
+      snapshot: "flow.github-pull-request-snapshot/v1",
+      pending_operation: "flow.operation/github-review-pending/v1",
+      pending_request: "flow.github-pending-review-request/v1",
+      pending_draft: "flow.github-pending-review-draft/v1",
+      receipt_validator: "flow.validator/github-review-receipt/v1",
+      receipt: "flow.github-review-receipt/v1",
+      observation_request: "flow.github-pull-request-observation-request/v1",
+      observation: "flow.github-review-observation/v1",
+      record_command: "work.github-review-record-command/v1",
+      record: "flow.github-review-record/v1",
+      projection: "flow.review-projection/v1",
+      invalidation: "flow.github-review-invalidation/v1",
+      effect_classification: "one_shot_uncertain",
+      completion_authority: "pending_only_no_submission",
+      allowed_remote_mutation: "create_one_unsubmitted_pending_review",
+      forbidden_remote_mutations: [
+        "submit",
+        "approve",
+        "request_changes",
+        "delete",
+        "repost",
+      ],
+    },
   });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
@@ -666,6 +691,32 @@ test("the public catalog requires both prepare input contracts", async (t) => {
       featureContractPath,
     }),
     /prepare inputs are incomplete/,
+  );
+});
+
+test("the public catalog binds checkpoint contracts in its source and JSON", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-checkpoint-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  for (const contract of [
+    "flow.checkpoint/confirmation/v1",
+    "flow.validator/checkpoint-decision/v1",
+    "flow.checkpoint-binding/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
+  catalog.contracts = catalog.contracts.filter(
+    (contract) => contract !== "flow.checkpoint-binding/v1",
+  );
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /checkpoint contracts are incomplete/,
   );
 });
 

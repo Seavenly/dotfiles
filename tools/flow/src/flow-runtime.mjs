@@ -1,4 +1,4 @@
-import { digest } from "./canonical.mjs";
+import { digest, freezeCanonical } from "./canonical.mjs";
 import {
   applyRevisionGraphChanges,
   compileDynamicPlan,
@@ -32,8 +32,15 @@ import {
   getRunEffectIntentReader,
 } from "./work-authority.mjs";
 import {
+  buildGitHubPendingDraft,
   createInMemoryReviewAuthority,
+  createInMemoryGitHubReviewAuthority,
+  createGitHubReviewOperationRegistration,
   createReviewOperationRegistration,
+  GITHUB_REVIEW_OPERATION_CONTRACTS,
+  GITHUB_REVIEW_PENDING_CHECKPOINT_ID,
+  GITHUB_REVIEW_TARGET_SCHEMA,
+  githubPendingEffectIdentity,
   reviewCandidateAuthorityIssue,
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "./review-flow.mjs";
@@ -49,7 +56,15 @@ export function createFlowRuntime({
   delegateOutputValidators = {},
   predefinedDefinitions = {},
   reviewAuthority = null,
+  githubReviewAuthority = null,
+  githubReviewForge = null,
+  githubReviewAdapter = null,
 } = {}) {
+  if (githubReviewAdapter !== null) {
+    throw new TypeError(
+      "FlowRuntime accepts a raw githubReviewForge, not a registered operation",
+    );
+  }
   if (registeredOperations === null ||
       !(registeredOperations instanceof Map) &&
       (typeof registeredOperations !== "object" ||
@@ -65,6 +80,12 @@ export function createFlowRuntime({
     createInMemoryReviewAuthority({
       sourceEffectIntentReader: attachedEffectIntentReader(runAuthority),
     });
+  const ownedGitHubReviewAuthority = githubReviewAuthority ??
+    (attachedReviewAuthority(runAuthority)?.schema === "work.review-authority/v1"
+      ? ownedReviewAuthority
+      : createInMemoryGitHubReviewAuthority({
+          sourceEffectIntentReader: attachedEffectIntentReader(runAuthority),
+        }));
   const operationInputs = registeredOperations instanceof Map
     ? new Map(registeredOperations)
     : { ...registeredOperations };
@@ -76,8 +97,18 @@ export function createFlowRuntime({
     "flow.operation/review-record/v1",
     createReviewOperationRegistration({
       reviewAuthority: ownedReviewAuthority,
+      githubReviewAuthority: ownedGitHubReviewAuthority,
     }),
   );
+  if (githubReviewForge !== null) {
+    setRegisteredOperation(
+      operationInputs,
+      GITHUB_REVIEW_OPERATION_CONTRACTS.pending,
+      createGitHubReviewOperationRegistration({
+        forge: githubReviewForge,
+      }),
+    );
+  }
   const operationRegistry = snapshotRegisteredOperations(operationInputs);
   const validatorInputs = delegateOutputValidators instanceof Map
     ? new Map(delegateOutputValidators)
@@ -252,13 +283,30 @@ export function createFlowRuntime({
       const before = typeof command?.run_id === "string"
         ? runAuthority.query(command.run_id)
         : null;
+      const checkpointBinding = githubCheckpointDraftBinding(before, command);
+      if (checkpointBinding?.code || checkpointBinding?.missing) {
+        return createRejection({
+          operation: "command",
+          code: checkpointBinding.code,
+          reason: checkpointBinding.reason,
+          commandType: command?.type ?? null,
+          runId: command?.run_id ?? null,
+          bundleDigest: before?.bundle_digest,
+          authorityWatermark: before?.watermark,
+          authorityWatermarkDomain: "run",
+          legalActions: decorateReviewRunProjection(before)?.legal_actions ?? [],
+        });
+      }
+      const authorityCommand = checkpointBinding === null
+        ? command
+        : bindCheckpointDraft(command, checkpointBinding);
       const registryRejection = commandRegistryRejection(
-        command,
+        authorityCommand,
         operationRegistry,
         runAuthority,
       );
       if (registryRejection) return registryRejection;
-      const receipt = runAuthority.command(command);
+      const receipt = runAuthority.command(authorityCommand);
       for (const intent of receipt?.effect_intents ?? []) {
         if (["delegate", "delegate_cancellation"].includes(intent.effect_kind)) {
           dispatchDelegateEffect(
@@ -270,17 +318,19 @@ export function createFlowRuntime({
               settleCancelled:
                 (intent.effect_kind === "delegate_cancellation" &&
                   intent.settlement_phase !== "declined") ||
-                (command?.type === "recovery" &&
-                  command.recovery === "settle_cancelled"),
+                (authorityCommand?.type === "recovery" &&
+                  authorityCommand.recovery === "settle_cancelled"),
             },
           );
         } else {
           dispatchRegisteredEffect(intent, operationRegistry, runAuthority, {
-            recovery: command?.type === "recovery" ? command.recovery : null,
+            recovery: authorityCommand?.type === "recovery"
+              ? authorityCommand.recovery
+              : null,
           });
         }
       }
-      if (receipt?.accepted === true && command?.type === "cancel") {
+      if (receipt?.accepted === true && authorityCommand?.type === "cancel") {
         for (const subrun of before?.subruns ?? []) {
           const intent = before.effects?.find(({ card_id: cardId }) =>
             cardId === subrun.card_id);
@@ -289,9 +339,9 @@ export function createFlowRuntime({
           if (completeIntent) subrunRegistration.requestCancellation(completeIntent);
         }
       }
-      if (receipt?.accepted === true && command?.type === "recovery" &&
-          command.recovery === "settle_cancelled") {
-        const completeIntent = subrunIntentForEffect(before, command.effect_id);
+      if (receipt?.accepted === true && authorityCommand?.type === "recovery" &&
+          authorityCommand.recovery === "settle_cancelled") {
+        const completeIntent = subrunIntentForEffect(before, authorityCommand.effect_id);
         if (completeIntent) subrunRegistration.requestCancellation(completeIntent);
       }
       return receipt;
@@ -300,6 +350,17 @@ export function createFlowRuntime({
     query(request = {}) {
       const reviewSubject = reviewRequestSubject(request);
       if (reviewSubject !== null) {
+        const authority = ownedGitHubReviewAuthority.query({
+          contract: "work.review/v1",
+          subject_id: reviewSubject,
+        });
+        if (authority?.schema !== "flow.rejection/v1" ||
+            authority.code !== "unknown_subject") {
+          return decorateGitHubReviewProjection(
+            authority,
+            runAuthority,
+          );
+        }
         return ownedReviewAuthority.query({
           contract: "work.review/v1",
           subject_id: reviewSubject,
@@ -308,12 +369,24 @@ export function createFlowRuntime({
       if (request?.schema === "flow.query/v1") {
         return dispatchRegisteredQuery(request, registeredQueries, runAuthority);
       }
-      return runAuthority.query(request?.run_id);
+      return decorateReviewRunProjection(runAuthority.query(request?.run_id));
     },
 
     watch(request = {}) {
       const reviewSubject = reviewRequestSubject(request);
       if (reviewSubject !== null) {
+        const githubProjection = ownedGitHubReviewAuthority.query({
+          contract: "work.review/v1",
+          subject_id: reviewSubject,
+        });
+        if (githubProjection?.schema !== "flow.rejection/v1" ||
+            githubProjection.code !== "unknown_subject") {
+          const projection = decorateGitHubReviewProjection(
+            githubProjection,
+            runAuthority,
+          );
+          return oneShotReviewObservation(projection);
+        }
         return typeof ownedReviewAuthority.watch === "function"
           ? ownedReviewAuthority.watch({ subject_id: reviewSubject })
           : oneShotReviewObservation(ownedReviewAuthority.query({
@@ -327,7 +400,7 @@ export function createFlowRuntime({
           : runAuthority.watch(undefined);
       }
       const runId = request?.run_id;
-      return runAuthority.watch(runId);
+      return decorateReviewRunWatcher(runAuthority.watch(runId));
     },
   });
   recoverOutstandingEffects(
@@ -337,6 +410,255 @@ export function createFlowRuntime({
     subrunRegistration,
   );
   return runtime;
+}
+
+function decorateReviewRunProjection(projection) {
+  if (projection?.schema !== "flow.run-projection/v1") return projection;
+  const activePlan = projection.active_plan === null ||
+      projection.active_plan === undefined
+    ? projection.active_plan
+    : {
+        ...projection.active_plan,
+        cards: projection.active_plan.cards.map((card) => {
+          if (card.id !== GITHUB_REVIEW_PENDING_CHECKPOINT_ID) return card;
+          const binding = githubCheckpointDraftBinding(projection, {
+            type: "checkpoint_decision",
+            checkpoint_id: card.id,
+          }, { validateCommand: false });
+          if (binding?.code || !binding?.draft) return card;
+          return {
+            ...card,
+            inputs: {
+              ...card.inputs,
+              draft: binding.draft,
+              draft_digest: binding.draft_digest,
+            },
+          };
+        }),
+      };
+  const legalActions = projection.legal_actions.flatMap((action) => {
+    const binding = githubCheckpointDraftBinding(projection, action, {
+      validateCommand: false,
+    });
+    if (binding?.code === "github_review_checkpoint_draft_unavailable") return [];
+    if (binding === null || binding.code || !binding.draft) return [action];
+    return [{
+      ...action,
+      draft: binding.draft,
+      draft_digest: digest(binding.draft),
+    }];
+  });
+  return freezeCanonical({ ...projection, active_plan: activePlan, legal_actions: legalActions });
+}
+
+function decorateReviewRunWatcher(watcher) {
+  return {
+    async next(...args) {
+      const result = await watcher.next(...args);
+      return result.done
+        ? result
+        : { ...result, value: decorateReviewRunProjection(result.value) };
+    },
+    async return(...args) {
+      return typeof watcher.return === "function"
+        ? watcher.return(...args)
+        : { value: undefined, done: true };
+    },
+    async throw(...args) {
+      if (typeof watcher.throw === "function") return watcher.throw(...args);
+      throw args[0];
+    },
+    [Symbol.asyncIterator]() { return this; },
+  };
+}
+
+function githubCheckpointDraftBinding(
+  projection,
+  command,
+  { validateCommand = true } = {},
+) {
+  if (projection?.schema !== "flow.run-projection/v1" ||
+      command?.type !== "checkpoint_decision") return null;
+  const checkpoint = projection.active_plan?.cards?.find(({ id }) =>
+    id === command.checkpoint_id);
+  if (checkpoint?.id !== GITHUB_REVIEW_PENDING_CHECKPOINT_ID ||
+      checkpoint.inputs?.operation_card_id !== "review-github-pending") {
+    return null;
+  }
+  const pending = projection.active_plan.cards.find(({ id }) =>
+    id === "review-github-pending");
+  const target = pending?.inputs?.target;
+  const recordEffect = projection.effects?.find(({ card_id: cardId }) =>
+    cardId === "review-record");
+  const summary = recordEffect?.receipt?.provider_receipt?.summary;
+  const identity = githubPendingEffectIdentity({ runId: projection.run_id });
+  if (target?.schema !== GITHUB_REVIEW_TARGET_SCHEMA ||
+      !summary || !identity) {
+    return {
+      code: "github_review_checkpoint_draft_unavailable",
+      reason: "the exact settled GitHub pending-review draft is unavailable",
+    };
+  }
+  let draft;
+  try {
+    draft = buildGitHubPendingDraft({
+      target,
+      summary,
+      intent: { idempotency_key: identity.idempotency_key },
+    });
+  } catch (error) {
+    return {
+      code: error.code ?? "github_review_checkpoint_draft_unavailable",
+      reason: error.message,
+    };
+  }
+  if (!validateCommand) return { draft, draft_digest: digest(draft) };
+  if (!Object.hasOwn(command, "draft") &&
+      !Object.hasOwn(command, "draft_digest")) {
+    return {
+      draft,
+      draft_digest: digest(draft),
+      missing: true,
+      code: "github_review_checkpoint_draft_mismatch",
+      reason: "checkpoint decision must include the exact rendered GitHub draft",
+    };
+  }
+  if (!isCanonicalEqual(command.draft, draft) ||
+      command.draft_digest !== digest(draft)) {
+    return {
+      code: "github_review_checkpoint_draft_mismatch",
+      reason: "checkpoint decision is not bound to the exact rendered GitHub draft",
+      draft,
+    };
+  }
+  return { draft, draft_digest: digest(draft) };
+}
+
+function bindCheckpointDraft(command, binding) {
+  if (!isRecord(command)) return command;
+  const { draft: _draft, draft_digest: _draftDigest, ...authorityCommand } = command;
+  return {
+    ...authorityCommand,
+    checkpoint_binding: {
+      schema: "flow.checkpoint-binding/v1",
+      checkpoint_id: command.checkpoint_id,
+      draft: binding.draft,
+      draft_digest: binding.draft_digest,
+    },
+  };
+}
+
+function isCanonicalEqual(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function decorateGitHubReviewProjection(
+  projection,
+  runAuthority,
+) {
+  if (projection?.schema !== "flow.review-projection/v1" ||
+      projection.target_kind !== "github") return projection;
+  const runProjection = typeof projection.source_run_id === "string"
+    ? runAuthority.query(projection.source_run_id)
+    : null;
+  const pendingEffect = runProjection?.effects?.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  const providerObservation = pendingEffect?.last_observation?.provider_observation;
+  const providerReceipt = pendingEffect?.receipt?.outcome === "succeeded"
+    ? pendingEffect.receipt.provider_receipt
+    : null;
+  const remoteReview = githubRemoteReviewProjection(
+    projection.remote_review,
+    providerReceipt,
+  );
+  const invalidation = providerObservation?.code === "github_review_target_moved"
+      ? {
+        intent: { run_id: projection.source_run_id },
+        target: projection.target,
+        code: providerObservation.code,
+        reason: providerObservation.reason,
+        target_observation: providerObservation.target_observation ?? null,
+      }
+      : null;
+  if (!invalidation) {
+    return remoteReview === projection.remote_review
+      ? projection
+      : freezeCanonical({ ...projection, remote_review: remoteReview });
+  }
+  const safeActions = (runProjection?.legal_actions ?? []).filter(({ type }) =>
+    ["recovery", "cancel"].includes(type));
+  const runWatermark = runProjection?.watermark ?? null;
+  return freezeCanonical({
+    ...projection,
+    status: "invalidated",
+    posture: "blocked",
+    automated_completion: false,
+    automated_evidence_status: "invalidated",
+    approval: "blocked",
+    integration_authorized: false,
+    merge_authorized: false,
+    tracker_completion_authorized: false,
+    remote_submission_authorized: false,
+    remote_review: {
+      ...remoteReview,
+      status: "invalidated",
+      submitted: false,
+    },
+    review_authority_watermark: projection.watermark,
+    invalidation: {
+      schema: "flow.github-review-invalidation/v1",
+      code: invalidation.code,
+      reason: invalidation.reason,
+      run_id: invalidation.intent?.run_id ?? projection.source_run_id,
+      run_authority_watermark: runWatermark,
+      review_authority_watermark: projection.watermark,
+      target_observation: invalidation.target_observation ?? null,
+      history_preserved: true,
+    },
+    legal_actions: safeActions,
+  });
+}
+
+function githubRemoteReviewProjection(remoteReview, providerReceipt) {
+  if (!isRecord(providerReceipt) ||
+      providerReceipt.schema !== "flow.github-review-receipt/v1" ||
+      providerReceipt.action !== "create_pending_review" ||
+      providerReceipt.state !== "pending" ||
+      providerReceipt.submitted !== false ||
+      typeof providerReceipt.review_id !== "string" ||
+      providerReceipt.review_id.length === 0) {
+    return remoteReview;
+  }
+  const receiptIdentity = {
+    schema: providerReceipt.schema,
+    effect_id: providerReceipt.effect_id,
+    idempotency_key: providerReceipt.idempotency_key,
+    review_id: providerReceipt.review_id,
+    target_fingerprint: providerReceipt.target_fingerprint,
+    target_authority_watermark: providerReceipt.target_authority_watermark,
+    draft_digest: providerReceipt.draft_digest,
+  };
+  return {
+    ...remoteReview,
+    status: "created",
+    state: "pending",
+    submitted: false,
+    review_id: providerReceipt.review_id,
+    effect_id: providerReceipt.effect_id,
+    idempotency_key: providerReceipt.idempotency_key,
+    target_fingerprint: providerReceipt.target_fingerprint,
+    target_authority_watermark: providerReceipt.target_authority_watermark,
+    draft_digest: providerReceipt.draft_digest,
+    receipt_identity: receiptIdentity,
+  };
 }
 
 function registeredOperationPresent(registry, contract) {
