@@ -274,6 +274,26 @@ A typed, redacted failure from the evidence safety validator whose stable code
 never reproduces rejected input bytes or fragments.
 _Avoid_: Sanitized transcript, secret-bearing error
 
+**Quick spike**:
+The predefined, quick-only tracer that binds one confirmed question to one
+read-only researcher and one independently routed synthesizer. It can finish
+with lower-assurance evidence and residual gaps, but it has no mutation,
+publication, review, tracker, or prototype authority.
+_Avoid_: Production implementation, review run, deep investigation
+
+**Authority-materialized delegate evidence**:
+The digest-bound envelope RunAuthority creates from accepted upstream delegate
+evidence for one declared dependent card. It is the only evidence context a
+dependent quick-spike delegate may receive; caller-provided and ambient sibling
+data are not accepted.
+_Avoid_: Ambient transcript, caller-forged evidence, shared workspace state
+
+**Canonical spike report**:
+The lower-assurance, evidence-cited report answering one confirmed quick-spike
+question and retaining a nonempty residual-gap list. Its citations bind both
+accepted immutable sources and the exact researcher evidence digest.
+_Avoid_: Unbound synthesis prose, approval, publication
+
 **Effect classification**:
 The declared recovery semantics for a registered operation: read-only,
 caller-idempotent, reconcilable, or one-shot uncertain.

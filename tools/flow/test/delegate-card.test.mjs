@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { digest } from "../src/canonical.mjs";
 import {
   delegateCompatibilityIssue,
   snapshotRequiredDrovrFeatures,
@@ -84,6 +85,15 @@ test("FlowRuntime executes one exact delegate card from reserved authority", asy
   assert.equal(receipt.effect_intents.length, 1);
   assert.equal(receipt.effect_intents[0].attempt_id,
     `${launch.run_id}:delegate-review:attempt:1`);
+  const legacyEffectIdentity = digest({
+    schema: "flow.delegate-effect-identity/v1",
+    run_id: launch.run_id,
+    card_id: "delegate-review",
+    attempt_id: `${launch.run_id}:delegate-review:attempt:1`,
+    route_binding: prepared.graph.cards[1].route,
+  });
+  assert.equal(receipt.effect_intents[0].effect_id,
+    `effect:${legacyEffectIdentity.slice("sha256:".length)}`);
   assert.deepEqual(receipt.effect_intents[0].route_binding,
     prepared.graph.cards[1].route);
   assert.equal(receipt.effect_intents[0].terminal_disposition_policy.schema,

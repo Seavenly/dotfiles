@@ -919,8 +919,17 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   assert.equal(review.tracker_completion_authorized, false);
   assert.equal(review.remote_submission_authorized, false);
   assert.equal(prompts.filter((prompt) => prompt.includes("Authority-settled finding lens results:")).length, 1);
-  assert.match(prompts.find((prompt) => prompt.includes("Authority-settled")), /review-lens-security/);
-  assert.match(prompts.find((prompt) => prompt.includes("Authority-settled")), /review-lens-correctness/);
+  const findingLensPrompt = prompts.find((prompt) => prompt.includes("Authority-settled"));
+  assert.match(findingLensPrompt, /review-lens-security/);
+  assert.match(findingLensPrompt, /review-lens-correctness/);
+  const findingLensEvidence = JSON.parse(
+    findingLensPrompt.slice(findingLensPrompt.indexOf("{", findingLensPrompt.indexOf("Authority-settled"))),
+  );
+  assert.equal(
+    findingLensEvidence.schema,
+    "flow.authority-materialized-delegate-evidence/v1",
+  );
+  assert.equal(Object.hasOwn(findingLensEvidence, "evidence_digest"), false);
   const watched = await runtime.watch({ review_id: reviewId }).next();
   assert.equal(watched.value.watermark, review.watermark);
 

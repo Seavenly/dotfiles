@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v23 binds it to
-`flow.contract-catalog/v1@23`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v24 binds it to
+`flow.contract-catalog/v1@24`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -356,6 +356,33 @@ closed-fact observation. Launch validates the prepared identity directly and
 does not invoke a definition compiler, consult mutable registration, or
 refresh facts. Dynamic proposals retain their separate complete-graph
 confirmation contract.
+
+### Bounded quick spike
+
+The cataloged `spike/v1` predefined definition is a quick-only research
+tracer. Its required `flow.spike-delegation-bindings/v1` selection input binds
+one confirmed `flow.spike-question/v1`, immutable
+HTTPS source references with content digests, and two independently declared
+read-only Drovr routes: `spike-research` followed by `spike-synthesis`.
+The researcher returns canonical, source-cited
+`flow.spike-research-evidence/v1` with lower assurance; semantic residual gaps
+remain valid evidence.
+
+RunAuthority accepts researcher evidence only after the registered validator
+and shared evidence-safety policy succeed. It then materializes the accepted
+delegate evidence as a digest-bound
+`flow.authority-materialized-evidence/v1` envelope and delivers that
+exact envelope through the `flow.delegate-input-envelope/v1` prompt boundary.
+The synthesizer validator receives no ambient transcript or sibling data and
+requires immutable source citations, the exact researcher evidence digest,
+lower assurance, and nonempty residual gaps in one canonical
+`flow.spike-report/v1`.
+
+Unsafe or uncertain evidence is quarantined through the existing delegate
+settlement behavior. The quick tracer has no operation cards, mutation or
+publication authority, prototype or revision loop, tracker action, review or
+approval behavior, or implicit cross-run transfer. Any later resource
+publication remains an explicit handoff outside this flow.
 
 ### Verified feature candidate
 

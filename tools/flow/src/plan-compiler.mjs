@@ -1135,6 +1135,36 @@ function validateCheckpointCard(card, facts) {
 
 function validateDelegateCard(card, proposal) {
   const { explicit_facts: facts } = proposal;
+  const declaredEvidence = card.inputs?.delegate_evidence_card_ids ??
+    card.inputs?.finding_lens_card_ids;
+  if (declaredEvidence !== undefined &&
+      (!Array.isArray(declaredEvidence) ||
+       new Set(declaredEvidence).size !== declaredEvidence.length ||
+       declaredEvidence.some((cardId) =>
+         typeof cardId !== "string" || cardId.length === 0))) {
+    invalidPlan(
+      "authority_evidence_declaration_invalid",
+      `delegate evidence declaration is invalid: ${card.id}`,
+    );
+  }
+  if (card.inputs?.delegate_evidence_card_ids !== undefined &&
+      card.inputs?.finding_lens_card_ids !== undefined) {
+    invalidPlan(
+      "authority_evidence_declaration_invalid",
+      `delegate evidence declaration is ambiguous: ${card.id}`,
+    );
+  }
+  for (const evidenceCardId of declaredEvidence ?? []) {
+    const evidenceCard = proposal.graph.cards.find(({ id }) =>
+      id === evidenceCardId);
+    if (!card.dependencies.includes(evidenceCardId) ||
+        evidenceCard?.executor?.kind !== "delegate") {
+      invalidPlan(
+        "delegate_evidence_dependency_invalid",
+        `delegate evidence must name a direct delegate dependency: ${card.id}`,
+      );
+    }
+  }
   const description = card.inputs.description;
   if (card.executor.contract !== DELEGATE_CONTRACT ||
       !["delegate_execute", "terminal_disposition"].every((command) =>

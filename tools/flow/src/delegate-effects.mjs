@@ -1,4 +1,9 @@
-import { digest, freezeCanonical } from "./canonical.mjs";
+import {
+  canonicalize,
+  digest,
+  freezeCanonical,
+  isPlainRecord,
+} from "./canonical.mjs";
 import {
   featureConformanceFindings,
   loadRequiredDrovrFeatures,
@@ -59,6 +64,9 @@ export function snapshotDelegateOutputValidators(validators) {
       validate: typeof registration?.validate === "function"
         ? registration.validate.bind(registration)
         : registration?.validate,
+      evidenceSafety: typeof registration?.evidenceSafety === "function"
+        ? registration.evidenceSafety.bind(registration)
+        : registration?.evidenceSafety,
     }),
   ]));
 }
@@ -114,7 +122,7 @@ export function dispatchDelegateEffect(
         return executeDelegateCancellation(effectiveIntent, port);
       }
       return settleCancelled
-        ? executeCancelledDelegate(effectiveIntent, port)
+        ? executeCancelledDelegate(effectiveIntent, port, validators)
         : executeDelegate(effectiveIntent, port, validators);
     },
   }).then(() => {
@@ -204,7 +212,7 @@ async function executeDelegateCancellation(intent, port) {
   });
 }
 
-async function executeCancelledDelegate(intent, port) {
+async function executeCancelledDelegate(intent, port, validators) {
   const current = await port.discover({
     schema: "flow.delegated-agent-discover-request/v1",
     caller_key: intent.attempt_id,
@@ -219,6 +227,14 @@ async function executeCancelledDelegate(intent, port) {
   if (current.turn?.status === "working") {
     throw delegatedRuntimeError(current);
   }
+  const output = current.turn?.late_result?.text ??
+    current.turn?.result?.text ?? null;
+  const safety = await safetyCheckDelegateOutput({
+    output,
+    intent,
+    validators,
+    proof: current.turn?.settlement_proof ?? null,
+  });
   const receipt = freezeCanonical({
     schema: "flow.effect-receipt/v1",
     effect_id: intent.effect_id,
@@ -234,8 +250,12 @@ async function executeCancelledDelegate(intent, port) {
       settlement_proof: current.turn?.settlement_proof ?? null,
       validator_receipts: [],
       quarantine_reason: "run_cancelled",
-      correlated_output: current.turn?.late_result?.text ??
-        current.turn?.result?.text ?? null,
+      correlated_output: safety.safe && typeof output === "string"
+        ? output
+        : null,
+      ...(safety.validatorReceipts.length === 0 ? {} : {
+        validator_receipts: safety.validatorReceipts,
+      }),
     },
   });
   return settleTerminalDisposition({
@@ -261,7 +281,7 @@ async function executeDelegate(intent, port, validators) {
       agent_id: intent.route_binding.agent_id,
       caller_key: callerKey,
       input_key: inputKey,
-      prompt: intent.delegate_input.prompt,
+      prompt: delegateInputPrompt(intent.delegate_input),
       description: intent.delegate_input.description,
     });
   } else if (discovered.turn?.id) {
@@ -316,7 +336,7 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
   const expectedInputs = [{
     sequence: 1,
     caller_key: inputKey,
-    payload_sha256: digest(intent.delegate_input.prompt),
+    payload_sha256: digest(delegateInputPrompt(intent.delegate_input)),
     delivery_proof: "exact_transcript_correlation",
   }, ...(intent.delegate_input.steering ?? []).map((steering, index) => ({
     sequence: index + 2,
@@ -371,23 +391,42 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
     reason = "missing_exact_output";
   }
 
-  const validatorReceipts = [];
+  const safety = await safetyCheckDelegateOutput({
+    output,
+    intent,
+    validators,
+    proof,
+  });
+  const validatorReceipts = safety.validatorReceipts;
+  const safetyReceipt = validatorReceipts.find(({ evidence_safety_accepted }) =>
+    evidence_safety_accepted === true);
   if (!reason) {
     for (const contract of intent.delegate_validator_contracts) {
+      const validator = validators.get(contract);
       let accepted = false;
       try {
-        accepted = await validators.get(contract).validate(output, {
+        accepted = await validator.validate(output, {
           attempt_id: intent.attempt_id,
           card_id: intent.card_id,
           settlement_proof: proof,
+          delegate_input: intent.delegate_input,
+          authority_materialized_evidence:
+            intent.delegate_input.authority_materialized_evidence ?? null,
         }) === true;
       } catch {
         accepted = false;
       }
-      validatorReceipts.push({ contract, accepted });
+      const receipt = validatorReceipts.find(({ contract: receiptContract }) =>
+        receiptContract === contract);
+      if (receipt) {
+        receipt.accepted = accepted && receipt.evidence_safety_accepted !== false;
+      } else {
+        validatorReceipts.push({ contract, accepted });
+      }
       if (!accepted) reason = "independent_validation_failed";
     }
   }
+  if (safety.rejected) reason ??= "independent_validation_failed";
 
   const commonRecord = {
     attempt_id: intent.attempt_id,
@@ -397,13 +436,19 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
     route_binding: intent.route_binding,
     settlement_proof: proof ?? null,
     validator_receipts: validatorReceipts,
+    ...(safetyReceipt === undefined ? {} : {
+      evidence_safety_receipt: safetyReceipt.evidence_safety_receipt,
+      evidence_safety_binding: safetyReceipt.evidence_safety_binding,
+    }),
   };
   const providerReceipt = freezeCanonical(reason
     ? {
         schema: "flow.delegate-quarantine/v1",
         ...commonRecord,
         quarantine_reason: reason,
-        correlated_output: typeof output === "string" ? output : null,
+        correlated_output: safety.safe && typeof output === "string"
+          ? output
+          : null,
       }
     : {
         schema: "flow.delegate-evidence/v1",
@@ -417,6 +462,81 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
     outcome: reason ? "quarantined" : "succeeded",
     provider_receipt: providerReceipt,
   });
+}
+
+async function safetyCheckDelegateOutput({ output, intent, validators, proof }) {
+  const validatorReceipts = [];
+  let rejected = false;
+  let safe = true;
+  for (const contract of intent.delegate_validator_contracts ?? []) {
+    const validator = validators.get(contract);
+    if (typeof validator?.evidenceSafety !== "function" ||
+        typeof output !== "string") continue;
+
+    let result;
+    try {
+      result = await validator.evidenceSafety(output, {
+        attempt_id: intent.attempt_id,
+        card_id: intent.card_id,
+        settlement_proof: proof,
+        delegate_input: intent.delegate_input,
+        authority_materialized_evidence:
+          intent.delegate_input?.authority_materialized_evidence ?? null,
+      });
+    } catch {
+      result = null;
+    }
+    if (result?.accepted === true && isPlainRecord(result.receipt) &&
+        isPlainRecord(result.binding)) {
+      validatorReceipts.push({
+        contract,
+        accepted: false,
+        evidence_safety_accepted: true,
+        evidence_safety_receipt: result.receipt,
+        evidence_safety_binding: result.binding,
+      });
+      continue;
+    }
+    rejected = true;
+    safe = false;
+    validatorReceipts.push({
+      contract,
+      accepted: false,
+      evidence_safety_accepted: false,
+      evidence_safety_rejection: redactedSafetyRejection(result),
+    });
+  }
+  return { safe, rejected, validatorReceipts };
+}
+
+function redactedSafetyRejection(result) {
+  const code = typeof result?.rejection?.code === "string" &&
+      /^[a-z0-9_:-]+$/u.test(result.rejection.code)
+    ? result.rejection.code
+    : "validator_rejected";
+  return {
+    schema: "flow.evidence-safety-rejection/v1",
+    operation: "validate",
+    code,
+    reason: code,
+    redacted: true,
+  };
+}
+
+function delegateInputPrompt(delegateInput) {
+  if (delegateInput?.authority_materialized_evidence === undefined) {
+    return delegateInput?.prompt;
+  }
+  if (delegateInput.authority_materialization !== "exact_digest_bound") {
+    return `${delegateInput.prompt}\n\nAuthority-settled finding lens results:\n${
+      JSON.stringify(delegateInput.authority_materialized_evidence)}`;
+  }
+  return JSON.stringify(canonicalize({
+    schema: "flow.delegate-input-envelope/v1",
+    prompt: delegateInput.prompt,
+    authority_materialized_evidence:
+      delegateInput.authority_materialized_evidence,
+  }));
 }
 
 async function settleTerminalDisposition({

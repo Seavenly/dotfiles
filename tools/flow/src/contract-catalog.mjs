@@ -69,6 +69,31 @@ const PREDEFINED_FLOW_CONTRACTS = [
   PREDEFINED_FLOW.confirmation,
   PREDEFINED_FLOW.decision,
 ];
+const SPIKE_FLOW = {
+  definition: "flow.definition/spike/v1",
+  mode: "quick",
+  delegation_bindings: "flow.spike-delegation-bindings/v1",
+  question: "flow.spike-question/v1",
+  source: "flow.spike-source/v1",
+  citation: "flow.spike-citation/v1",
+  researcher: {
+    output: "flow.spike-research-evidence/v1",
+    validator: "flow.validator/spike-research-evidence/v1",
+  },
+  synthesizer: {
+    output: "flow.spike-report/v1",
+    validator: "flow.validator/spike-report/v1",
+  },
+  evidence: {
+    envelope: "flow.authority-materialized-evidence/v1",
+    input: "flow.delegate-input-envelope/v1",
+    authority: "RunAuthority",
+    transfer: "exact_digest_bound_materialized_research_evidence",
+  },
+  assurance: "lower",
+  publication: "explicit_resource_handoff_only_outside_quick_flow",
+  negative_outcome: "no_prototype_or_publication_or_tracker_mutation",
+};
 const REJECTION_FIELDS = [
   "schema",
   "operation",
@@ -333,7 +358,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@23",
+  catalog_id: "flow.contract-catalog/v1@24",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -452,6 +477,22 @@ export async function loadContractCatalog({
   ) || !PREDEFINED_FLOW_CONTRACTS.every((contract) =>
     catalog.contracts.includes(contract))) {
     throw new Error("predefined flow preparation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(catalog.predefined_flows?.["spike/v1"], SPIKE_FLOW) ||
+      ![
+        SPIKE_FLOW.definition,
+        SPIKE_FLOW.delegation_bindings,
+        SPIKE_FLOW.question,
+        SPIKE_FLOW.source,
+        SPIKE_FLOW.citation,
+        SPIKE_FLOW.researcher.output,
+        SPIKE_FLOW.researcher.validator,
+        SPIKE_FLOW.synthesizer.output,
+        SPIKE_FLOW.synthesizer.validator,
+        SPIKE_FLOW.evidence.envelope,
+        SPIKE_FLOW.evidence.input,
+      ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("quick spike flow contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");

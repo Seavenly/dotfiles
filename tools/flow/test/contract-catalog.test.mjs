@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 23);
+  assert.equal(catalog.catalog_version, 24);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -41,6 +41,31 @@ test("the public catalog exposes the settled interface and forbids legacy import
     catalog.flow_runtime.evidence_safety.catalog_id,
     EVIDENCE_SAFETY_CATALOG_ID,
   );
+  assert.deepEqual(catalog.predefined_flows["spike/v1"], {
+    definition: "flow.definition/spike/v1",
+    mode: "quick",
+    delegation_bindings: "flow.spike-delegation-bindings/v1",
+    question: "flow.spike-question/v1",
+    source: "flow.spike-source/v1",
+    citation: "flow.spike-citation/v1",
+    researcher: {
+      output: "flow.spike-research-evidence/v1",
+      validator: "flow.validator/spike-research-evidence/v1",
+    },
+    synthesizer: {
+      output: "flow.spike-report/v1",
+      validator: "flow.validator/spike-report/v1",
+    },
+    evidence: {
+      envelope: "flow.authority-materialized-evidence/v1",
+      input: "flow.delegate-input-envelope/v1",
+      authority: "RunAuthority",
+      transfer: "exact_digest_bound_materialized_research_evidence",
+    },
+    assurance: "lower",
+    publication: "explicit_resource_handoff_only_outside_quick_flow",
+    negative_outcome: "no_prototype_or_publication_or_tracker_mutation",
+  });
   assert.deepEqual(catalog.flow_runtime.evidence_safety, {
     authority: "non_authoritative",
     validator: "flow.evidence-safety-request/v1",
@@ -49,7 +74,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@23",
+    catalog_id: "flow.contract-catalog/v1@24",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -470,6 +495,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.review-candidate-reference/v1",
     "flow.authority-materialized-evidence/v1",
     "flow.authority-materialized-delegate-evidence/v1",
+    "flow.definition/spike/v1",
+    "flow.spike-delegation-bindings/v1",
+    "flow.spike-question/v1",
+    "flow.spike-source/v1",
+    "flow.spike-citation/v1",
+    "flow.spike-research-evidence/v1",
+    "flow.spike-report/v1",
+    "flow.delegate-input-envelope/v1",
+    "flow.validator/spike-research-evidence/v1",
+    "flow.validator/spike-report/v1",
     "flow.review-projection/v1",
     "flow.feature-discriminating-evidence/v1",
     "work.feature-verification-receipt/v1",

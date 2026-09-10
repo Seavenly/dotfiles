@@ -388,19 +388,19 @@ function delegateDecision(fold, command, delegate) {
   const routeBinding = fallback?.activate_for_attempt === ordinal
     ? fallback.route
     : card.route;
-  let delegateInput = fallback?.activate_for_attempt === ordinal
+  const baseDelegateInput = fallback?.activate_for_attempt === ordinal
     ? { ...card.inputs, description: fallback.description }
     : card.inputs;
-  const joined = materializeDelegateJoin(fold, delegateInput);
-  if (joined.code !== null) return reject(fold, command, joined.code);
-  if (joined.evidence !== null) {
-    const evidenceJson = JSON.stringify(joined.evidence);
-    delegateInput = {
-      ...delegateInput,
-      authority_materialized_evidence: joined.evidence,
-      prompt: `${delegateInput.prompt}\n\nAuthority-settled finding lens results:\n${evidenceJson}`,
-    };
+  const materialized = materializeAuthorityEvidence(fold, card);
+  if (materialized.code !== null) {
+    return reject(fold, command, materialized.code);
   }
+  const delegateInput = materialized.evidence === null
+    ? baseDelegateInput
+    : {
+        ...baseDelegateInput,
+        authority_materialized_evidence: materialized.evidence,
+      };
   const attemptId = `${fold.run_id}:${delegate.id}:attempt:${ordinal}`;
   const effectIdentity = digest({
     schema: "flow.delegate-effect-identity/v1",
@@ -408,6 +408,9 @@ function delegateDecision(fold, command, delegate) {
     card_id: delegate.id,
     attempt_id: attemptId,
     route_binding: routeBinding,
+    ...(materialized.evidence?.evidence_digest === undefined ? {} : {
+      authority_evidence_digest: materialized.evidence.evidence_digest,
+    }),
   });
   const completesRun = decisionCompletesRun(fold, {
     completedCardIds: [delegate.id],
@@ -451,31 +454,6 @@ function delegateDecision(fold, command, delegate) {
   };
 }
 
-function materializeDelegateJoin(fold, inputs) {
-  if (inputs && Object.hasOwn(inputs, "authority_materialized_evidence")) {
-    return { code: "caller_materialized_evidence_forbidden", evidence: null };
-  }
-  const cardIds = inputs?.finding_lens_card_ids ?? inputs?.delegate_evidence_card_ids;
-  if (cardIds === undefined) return { code: null, evidence: null };
-  if (!Array.isArray(cardIds) || duplicateValues(cardIds) ||
-      typeof inputs?.prompt !== "string" || inputs.prompt.length === 0) {
-    return { code: "authority_evidence_declaration_invalid", evidence: null };
-  }
-  const evidence = [];
-  for (const cardId of cardIds) {
-    const resolved = resolveDelegateEvidence(fold, cardId);
-    if (resolved.code !== null) return resolved;
-    evidence.push(resolved.evidence);
-  }
-  return {
-    code: null,
-    evidence: {
-      schema: "flow.authority-materialized-delegate-evidence/v1",
-      accepted_delegates: evidence,
-    },
-  };
-}
-
 function nextOperation(fold, checkpointId) {
   const completed = new Set(fold.cards
     .filter(({ status }) => status === "completed")
@@ -493,7 +471,7 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
   const operationCard = fold.active_plan.cards.find(
     ({ id }) => id === operation.id,
   );
-  const materialized = materializeOperationEvidence(fold, operationCard);
+  const materialized = materializeAuthorityEvidence(fold, operationCard);
   if (materialized.code !== null) return reject(fold, command, materialized.code);
   const attemptId = `${fold.run_id}:${operation.id}:attempt:1`;
   const effectIdentity = digest({
@@ -547,15 +525,20 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
   };
 }
 
-function materializeOperationEvidence(fold, operationCard) {
-  const inputs = operationCard?.inputs ?? {};
+function materializeAuthorityEvidence(fold, card) {
+  const inputs = card?.inputs ?? {};
   if (Object.hasOwn(inputs, "authority_materialized_evidence")) {
     return { code: "caller_materialized_evidence_forbidden", evidence: null };
   }
-  const delegateCardIds = inputs.delegate_evidence_card_ids;
+  const delegateCardIds = inputs.delegate_evidence_card_ids ??
+    inputs.finding_lens_card_ids;
   const operationCardIds = inputs.operation_evidence_card_ids;
   if (delegateCardIds === undefined && operationCardIds === undefined) {
     return { code: null, evidence: null };
+  }
+  if (inputs.delegate_evidence_card_ids !== undefined &&
+      inputs.finding_lens_card_ids !== undefined) {
+    return { code: "authority_evidence_declaration_invalid", evidence: null };
   }
   if (delegateCardIds !== undefined &&
       (!Array.isArray(delegateCardIds) || duplicateValues(delegateCardIds)) ||
@@ -575,6 +558,17 @@ function materializeOperationEvidence(fold, operationCard) {
     if (resolved.code !== null) return resolved;
     operations.push(resolved.evidence);
   }
+  if (inputs.finding_lens_card_ids !== undefined &&
+      inputs.authority_materialization !== "exact_digest_bound" &&
+      operationCardIds === undefined) {
+    return {
+      code: null,
+      evidence: freezeCanonical({
+        schema: "flow.authority-materialized-delegate-evidence/v1",
+        accepted_delegates: delegates,
+      }),
+    };
+  }
   const evidence = {
     schema: "flow.authority-materialized-evidence/v1",
     ...(delegates.length === 0 ? {} : { accepted_delegates: delegates }),
@@ -583,7 +577,13 @@ function materializeOperationEvidence(fold, operationCard) {
       ...(operations.length === 1 ? { verify_receipt: operations[0].receipt } : {}),
     }),
   };
-  return { code: null, evidence: freezeCanonical(evidence) };
+  return {
+    code: null,
+    evidence: freezeCanonical({
+      ...evidence,
+      evidence_digest: digest(evidence),
+    }),
+  };
 }
 
 function resolveDelegateEvidence(fold, cardId) {
