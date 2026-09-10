@@ -31,6 +31,7 @@ import {
   canonicalizeTimeFacts,
   validateRebootFacts,
 } from "./reboot-facts.mjs";
+import { validateFeatureRepairContract } from "./feature-repair-contract.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
@@ -434,6 +435,8 @@ function invalidPredefined(reason, message, options) {
 export function validateDynamicPlan(proposal, {
   registeredOperations = null,
   skipRevisionTemplates = false,
+  supersededCardIds = [],
+  replacementBindings = new Map(),
 } = {}) {
   if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {
     invalidPlan("invalid_proposal_contract", "dynamic plan proposal contract is invalid");
@@ -466,7 +469,10 @@ export function validateDynamicPlan(proposal, {
       "dynamic plan requires a non-empty finite graph",
     );
   }
-  if (proposal.graph.cards.length > facts.limits.max_cards) {
+  const ignoredCards = new Set(supersededCardIds);
+  const countedCards = proposal.graph.cards.filter(({ id }) =>
+    !ignoredCards.has(id));
+  if (countedCards.length > facts.limits.max_cards) {
     invalidPlan(
       "card_limit_exceeded",
       "dynamic plan exceeds the explicit card limit",
@@ -548,7 +554,11 @@ export function validateDynamicPlan(proposal, {
       );
     }
   }
-  validateManagedAgentBindings(proposal.graph.cards);
+  validateManagedAgentBindings(
+    proposal.graph.cards,
+    supersededCardIds,
+    replacementBindings,
+  );
   if (proposal.graph.cards.some(({ executor }) => executor.kind === "checkpoint") &&
       !proposal.requested_authority.commands.includes("checkpoint_decision")) {
     invalidPlan(
@@ -642,7 +652,31 @@ function validateSubrunCard(card, proposal, registeredOperations) {
   }
 }
 
-function validateManagedAgentBindings(cards) {
+function validateManagedAgentBindings(
+  cards,
+  supersededCardIds = [],
+  replacementBindings = new Map(),
+) {
+  const superseded = new Set(supersededCardIds);
+  cards = cards
+    .filter(({ id }) => !superseded.has(id))
+    .map((card) => {
+      const binding = card.inputs?.managed_agent;
+      if (!isPlainRecord(binding) || replacementBindings.size === 0) {
+        return card;
+      }
+      const rebound = {
+        ...binding,
+        card_ids: binding.card_ids?.map((id) =>
+          replacementBindings.get(id) ?? id),
+        terminal_card_id: replacementBindings.get(binding.terminal_card_id) ??
+          binding.terminal_card_id,
+      };
+      return {
+        ...card,
+        inputs: { ...card.inputs, managed_agent: rebound },
+      };
+    });
   const delegates = cards.filter(({ executor }) => executor.kind === "delegate");
   for (const card of delegates.filter(({ inputs }) => inputs.fallback)) {
     if (delegates.some((candidate) => candidate.id !== card.id && [
@@ -709,6 +743,9 @@ function validateDeclaredRecoveryCapacity(proposal) {
   const declaredResources = uniqueCanonical([
     ...proposal.explicit_facts.resource_claims,
     ...templates.flatMap(({ changes }) => changes.resource_additions),
+    ...templates.flatMap(({ changes }) => changes.add_cards.flatMap(
+      ({ resource_claims: claims }) => claims ?? [],
+    )),
   ]);
   if (declaredResources.length > resourceLimit) {
     invalidPlan(
@@ -869,10 +906,13 @@ function validateRevisionTemplates(proposal, registeredOperations) {
   for (const template of templates) {
     if (!isRecord(template) || template.schema !== "flow.plan-revision-template/v1" ||
         typeof template.id !== "string" || !template.id || ids.has(template.id) ||
-        Object.keys(template).length !== 5 ||
+        Object.keys(template).length < 5 || Object.keys(template).length > 6 ||
         !Object.hasOwn(template, "trigger") ||
         !Object.hasOwn(template, "limits") ||
-        !Object.hasOwn(template, "changes")) {
+        !Object.hasOwn(template, "changes") ||
+        Object.keys(template).some((field) =>
+          !["schema", "id", "trigger", "limits", "changes", "repair"]
+            .includes(field))) {
       invalidPlan("invalid_revision_template", "plan revision template is invalid");
     }
     if (!isRecord(template.limits) ||
@@ -889,6 +929,18 @@ function validateRevisionTemplates(proposal, registeredOperations) {
     if (binding === undefined ||
         digest(template.trigger) !== digest(binding.trigger)) {
       invalidPlan("invalid_revision_trigger", `revision trigger is not declared: ${template.id}`);
+    }
+    if (template.repair !== undefined) {
+      validateFeatureRepairContract({
+        repair: template.repair,
+        template,
+        existingCards: proposal.graph.cards,
+        brief: proposal.graph.cards.find(({ id }) => id === binding.card_id)
+          ?.inputs?.brief,
+        limits: proposal.explicit_facts.limits,
+        boundCardId: binding.card_id,
+        fail: invalidPlan,
+      });
     }
     validateRevisionChanges(proposal, template, registeredOperations);
   }
@@ -944,7 +996,8 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
     .filter((card) => card.executor?.kind === "delegate" &&
       isRecord(card.inputs?.managed_agent))
     .map(({ id }) => id));
-  if (changes.supersede_cards.some((id) => managedBindingCardIds.has(id))) {
+  if (changes.supersede_cards.some((id) => managedBindingCardIds.has(id)) &&
+      template.repair === undefined) {
     invalidPlan(
       "managed_agent_binding_revision",
       `revision cannot supersede an immutable managed-agent binding: ${template.id}`,
@@ -1033,17 +1086,34 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
   if (uniqueCanonical([
     ...proposal.explicit_facts.resource_claims,
     ...changes.resource_additions,
+    ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
   ]).length > limits.max_resources) {
     invalidPlan("revision_resource_limit", "revision resource limit exceeded");
   }
   if (proposal.explicit_facts.elapsed_seconds > limits.max_elapsed_seconds) {
     invalidPlan("revision_elapsed_limit", "revision elapsed limit exceeded");
   }
+  const revisedResourceClaims = uniqueCanonical([
+    ...proposal.explicit_facts.resource_claims,
+    ...changes.resource_additions,
+  ]);
   validateDynamicPlan({
     ...proposal,
     graph: revisedGraph,
-    explicit_facts: { ...proposal.explicit_facts, limits },
-  }, { registeredOperations, skipRevisionTemplates: true });
+    explicit_facts: {
+      ...proposal.explicit_facts,
+      resource_claims: revisedResourceClaims,
+      limits,
+    },
+  }, {
+    registeredOperations,
+    skipRevisionTemplates: true,
+    supersededCardIds: changes.supersede_cards,
+    replacementBindings: new Map(changes.add_cards.map((card) => [
+      card.replaces_card_id ?? card.inputs?.replaces_card_id,
+      card.id,
+    ]).filter(([from]) => from !== undefined)),
+  });
 }
 
 function validateCheckpointCard(card, facts) {

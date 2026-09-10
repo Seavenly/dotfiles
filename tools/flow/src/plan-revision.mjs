@@ -1,8 +1,59 @@
-import { digest, uniqueCanonical } from "./canonical.mjs";
+import { digest, isPlainRecord, uniqueCanonical } from "./canonical.mjs";
 import {
   hasActiveDependencyOnSuperseded,
   hasDependencyCycle,
 } from "./plan-graph.mjs";
+
+// These are closed capacity decisions.  Every other admission failure is a
+// structural rejection and must never be rendered as if a cap were spent.
+export const REVISION_CAP_CODES = Object.freeze(new Set([
+  "revision_template_limit_exceeded",
+  "revision_limit_exceeded",
+  "revision_card_limit_exceeded",
+  "card_limit_exceeded",
+  "revision_capability_limit_exceeded",
+  "revision_resource_limit_exceeded",
+  "revision_elapsed_limit_exceeded",
+]));
+
+export function revisionAdmissionStatus(code) {
+  return REVISION_CAP_CODES.has(code)
+    ? "cap_exhausted"
+    : "structurally_rejected";
+}
+
+export function checkRevisionCapacity({
+  limits,
+  capabilityBindings = [],
+  resourceClaims = [],
+  elapsedSeconds = 0,
+  changes,
+}) {
+  const nextLimits = { ...limits, ...changes.limit_changes };
+  if (changes.add_cards.length > nextLimits.max_cards_per_revision) {
+    return { code: "revision_card_limit_exceeded" };
+  }
+  const capabilities = uniqueCanonical([
+    ...capabilityBindings,
+    ...changes.capability_additions,
+  ]);
+  if (new Set(capabilities.map(({ capability }) => capability)).size >
+      nextLimits.max_capabilities) {
+    return { code: "revision_capability_limit_exceeded" };
+  }
+  const resources = uniqueCanonical([
+    ...resourceClaims,
+    ...changes.resource_additions,
+    ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+  ]);
+  if (resources.length > nextLimits.max_resources) {
+    return { code: "revision_resource_limit_exceeded" };
+  }
+  if (elapsedSeconds > nextLimits.max_elapsed_seconds) {
+    return { code: "revision_elapsed_limit_exceeded" };
+  }
+  return { limits: nextLimits, capabilities, resources };
+}
 
 export function admitPlanRevision(state, template) {
   const changes = template.changes;
@@ -13,13 +64,26 @@ export function admitPlanRevision(state, template) {
     return { code: "revision_template_limit_exceeded" };
   }
   const nextOrdinal = state.current_revision.ordinal + 1;
-  const limits = { ...state.limits, ...changes.limit_changes };
+  // A gated revision may reserve capability and resource additions, but its
+  // limit changes are not effective until its checkpoint is approved.  The
+  // revision itself is checked against the current effective limits plus its
+  // own declared change below.
+  const limits = {
+    ...state.limits,
+    ...changes.limit_changes,
+  };
   if (nextOrdinal > limits.max_revisions) {
     return { code: "revision_limit_exceeded" };
   }
-  if (changes.add_cards.length > limits.max_cards_per_revision) {
-    return { code: "revision_card_limit_exceeded" };
-  }
+  const capacity = checkRevisionCapacity({
+    limits,
+    capabilityBindings: state.admission_capability_bindings ??
+      state.capability_bindings,
+    resourceClaims: state.admission_resource_claims ?? state.resource_claims,
+    elapsedSeconds: state.elapsed_seconds,
+    changes,
+  });
+  if (capacity.code) return capacity;
   if (changes.supersede_cards.some((id) => {
     const status = state.cards.find((card) => card.id === id)?.status;
     return !["pending", "blocked"].includes(status);
@@ -52,7 +116,7 @@ export function admitPlanRevision(state, template) {
   if (hasActiveDependencyOnSuperseded(cards, superseded)) {
     return { code: "active_card_depends_on_superseded_work" };
   }
-  if (cards.length > limits.max_cards) {
+  if (cards.filter(({ id }) => !superseded.has(id)).length > limits.max_cards) {
     return { code: "card_limit_exceeded" };
   }
   if (hasDependencyCycle(cards)) return { code: "cyclic_graph" };
@@ -60,30 +124,19 @@ export function admitPlanRevision(state, template) {
     !state.capability_envelopes.includes(capability))) {
     return { code: "capability_outside_envelope" };
   }
-  const capabilityBindings = uniqueCanonical([
-    ...state.capability_bindings,
-    ...changes.capability_additions,
-  ]);
-  const capabilityCount = new Set(
-    capabilityBindings.map(({ capability }) => capability),
-  ).size;
-  if (capabilityCount > limits.max_capabilities) {
-    return { code: "revision_capability_limit_exceeded" };
-  }
-  const resourceClaims = uniqueCanonical([
-    ...state.resource_claims,
-    ...changes.resource_additions,
-  ]);
-  if (resourceClaims.length > limits.max_resources) {
-    return { code: "revision_resource_limit_exceeded" };
-  }
-  if (state.elapsed_seconds > limits.max_elapsed_seconds) {
-    return { code: "revision_elapsed_limit_exceeded" };
-  }
+  const capabilityBindings = capacity.capabilities;
+  const resourceClaims = capacity.resources;
   const supersededCards = [...superseded].sort();
+  const replacementBindings = new Map(changes.add_cards.map((card) => [
+    card.replaces_card_id ?? card.inputs?.replaces_card_id,
+    card.id,
+  ]).filter(([originalId]) => originalId !== undefined));
   const activePlan = {
     ...state.active_plan,
-    cards: cards.sort((left, right) => left.id < right.id ? -1 : 1),
+    cards: rebindManagedAgentCards(
+      cards.sort((left, right) => left.id < right.id ? -1 : 1),
+      replacementBindings,
+    ),
   };
   return {
     ordinal: nextOrdinal,
@@ -94,4 +147,29 @@ export function admitPlanRevision(state, template) {
     resource_claims: resourceClaims,
     limits,
   };
+}
+
+function rebindManagedAgentCards(cards, replacementBindings) {
+  if (replacementBindings.size === 0) return cards;
+  return cards.map((card) => {
+    const binding = card.inputs?.managed_agent;
+    if (!isPlainRecord(binding)) return card;
+    return {
+      ...card,
+      inputs: {
+        ...card.inputs,
+        managed_agent: {
+          ...binding,
+          ...(Array.isArray(binding.card_ids) ? {
+            card_ids: binding.card_ids.map((id) =>
+              replacementBindings.get(id) ?? id),
+          } : {}),
+          ...(binding.terminal_card_id === undefined ? {} : {
+            terminal_card_id: replacementBindings.get(binding.terminal_card_id) ??
+              binding.terminal_card_id,
+          }),
+        },
+      },
+    };
+  });
 }

@@ -51,17 +51,23 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
   };
   const checkpointDecisions = new Map(events
     .filter(({ type }) => type === "checkpoint_decided")
-    .map(({ checkpoint_id: checkpointId, decision }) => [
+    .map(({ checkpoint_id: checkpointId, decision, checkpoint_binding: checkpointBinding }) => [
       checkpointId,
-      decision,
+      { decision, checkpoint_binding: checkpointBinding },
     ]));
   const checkpoints = fold.cards
     .filter(({ executor_kind: kind }) => kind === "checkpoint")
-    .map(({ id, status }) => ({
-      card_id: id,
-      decision: checkpointDecisions.get(id) ?? null,
-      status,
-    }));
+    .map(({ id, status }) => {
+      const decision = checkpointDecisions.get(id);
+      return {
+        card_id: id,
+        decision: decision?.decision ?? null,
+        status,
+        ...(decision?.checkpoint_binding === undefined ? {} : {
+          checkpoint_binding: decision.checkpoint_binding,
+        }),
+      };
+    });
   const capability = {
     bindings: fold.capability_bindings,
     effective: fold.capabilities,
@@ -90,6 +96,7 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
   const revision = {
     current: fold.current_revision,
     history: fold.revisions,
+    outcomes: fold.revision_outcomes,
   };
   const operator = {
     schema: "flow.operator-projection/v1",
@@ -177,7 +184,10 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
 
 export function publicEffectProjection(effect) {
   const { operation_input: _operationInput, ...projection } = effect;
-  return projection;
+  const checkpointBinding = effect.operation_input?.checkpoint_binding;
+  return checkpointBinding === undefined
+    ? projection
+    : { ...projection, checkpoint_binding: checkpointBinding };
 }
 
 function assertMatchingAuthorityEvents(fold, events, authorityEventStreamDigest) {

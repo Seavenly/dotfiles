@@ -1,6 +1,9 @@
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import { effectClassPolicy } from "./operation-effects.mjs";
-import { admitPlanRevision } from "./plan-revision.mjs";
+import {
+  admitPlanRevision,
+  revisionAdmissionStatus,
+} from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import { isTrackerProgressContract } from "./tracker-progress.mjs";
 import {
@@ -110,6 +113,23 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const grantEvents = run.events.filter(({ type }) => type === "capability_granted");
   const grants = grantEvents.map(({ type: _type, ...grant }) => grant);
   const revisionEvents = run.events.filter(({ type }) => type === "plan_revised");
+  const revisionDeclineEvents = run.events
+    .map((event, eventIndex) => ({ event, eventIndex }))
+    .filter(({ event }) => event.type === "plan_revision_declined");
+  const gatedRevisionEvents = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id !== undefined &&
+    revision.repair.checkpoint_id !== null &&
+    checkpointDecisions.get(revision.repair.checkpoint_id) !== "approve");
+  const reservedRevisionEvents = gatedRevisionEvents.filter((revision) =>
+    checkpointDecisions.get(revision.repair.checkpoint_id) !== "decline");
+  const admissionRevisionEvents = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id === undefined ||
+    revision.repair.checkpoint_id === null ||
+    checkpointDecisions.get(revision.repair.checkpoint_id) !== "decline");
+  const effectiveRevisionEvents = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id === undefined ||
+    revision.repair.checkpoint_id === null ||
+    checkpointDecisions.get(revision.repair.checkpoint_id) === "approve");
   const latestRevision = revisionEvents.at(-1);
   const activePlan = latestRevision?.active_plan ?? run.prepared.graph;
   const supersededCards = [...new Set(
@@ -122,16 +142,61 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     })),
     ...grantEvents.flatMap(({ capabilities: values, card_ids: cardIds }) =>
       values.map((capability) => ({ capability, card_ids: cardIds }))),
-    ...revisionEvents.flatMap(({ changes }) => changes.capability_additions),
+    ...effectiveRevisionEvents.flatMap(({ changes }) =>
+      changes.capability_additions),
   ]);
   const capabilities = [...new Set(
     capabilityBindings.map(({ capability }) => capability),
   )].sort();
   const resourceClaims = uniqueCanonical([
     ...run.prepared.explicit_facts.resource_claims,
-    ...revisionEvents.flatMap(({ changes }) => changes.resource_additions),
+    ...effectiveRevisionEvents.flatMap(({ changes }) =>
+      [
+        ...changes.resource_additions,
+        ...changes.add_cards.flatMap(({ resource_claims: claims }) =>
+          claims ?? []),
+      ]),
   ]);
-  const limits = revisionEvents.reduce(
+  const limits = effectiveRevisionEvents.reduce(
+    (current, { changes }) => ({ ...current, ...changes.limit_changes }),
+    run.prepared.explicit_facts.limits,
+  );
+  // Accepted gated revisions reserve their declared capability and resource
+  // additions immediately.  The authority withholds those additions from
+  // effective execution until the bound checkpoint is approved, but later
+  // admissions must still count them against the same caps.
+  const admissionCapabilityBindings = uniqueCanonical([
+    ...run.prepared.requested_authority.capabilities.map((capability) => ({
+      capability,
+      card_ids: ["*"],
+    })),
+    ...grantEvents.flatMap(({ capabilities: values, card_ids: cardIds }) =>
+      values.map((capability) => ({ capability, card_ids: cardIds }))),
+    ...admissionRevisionEvents.flatMap(({ changes }) => changes.capability_additions),
+  ]);
+  const admissionResourceClaims = uniqueCanonical([
+    ...run.prepared.explicit_facts.resource_claims,
+    ...admissionRevisionEvents.flatMap(({ changes }) => [
+      ...changes.resource_additions,
+      ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+    ]),
+  ]);
+  const revisionReservations = {
+    capability_additions: reservedRevisionEvents.flatMap(({ changes }) =>
+      changes.capability_additions),
+    resource_additions: reservedRevisionEvents.flatMap(({ changes }) => [
+      ...changes.resource_additions,
+      ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+    ]),
+    limit_changes: reservedRevisionEvents.reduce(
+      (current, { changes }) => ({ ...current, ...changes.limit_changes }),
+      {},
+    ),
+  };
+  // Pending gated limit changes are not effective admission capacity.  Keep
+  // their reservation visible separately, while later admissions use only
+  // approved/effective revisions (and their own proposed limit changes).
+  const admissionLimits = effectiveRevisionEvents.reduce(
     (current, { changes }) => ({ ...current, ...changes.limit_changes }),
     run.prepared.explicit_facts.limits,
   );
@@ -147,10 +212,20 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       claim,
       disposition: phase === "active" ? "held" : "released",
     }));
+  const declinedGatedRevisions = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id !== undefined &&
+    revision.repair.checkpoint_id !== null &&
+    checkpointDecisions.get(revision.repair.checkpoint_id) === "decline");
+  const voidedCardIds = new Set(declinedGatedRevisions.flatMap(({ changes }) =>
+    changes.add_cards
+      .filter(({ executor }) => executor?.kind !== "checkpoint")
+      .map(({ id }) => id)));
   const activeObservedBlocks = new Map();
   const cards = activePlan.cards.map((card) => {
     let status = "pending";
-    if (supersededCards.includes(card.id)) {
+    if (voidedCardIds.has(card.id)) {
+      status = "voided";
+    } else if (supersededCards.includes(card.id)) {
       status = "superseded";
     } else if (failedSubruns.has(card.id)) {
       status = "declined";
@@ -220,6 +295,11 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     plan_fingerprint: revision.plan_fingerprint,
     trigger: revision.trigger,
     changes: revision.changes,
+    ...(revision.repair === undefined ? {} : { repair: revision.repair }),
+    ...(revision.repair?.checkpoint_id === undefined ||
+      revision.repair.checkpoint_id === null ? {} : {
+        effect_state: revisionEffectState(revision, checkpointDecisions),
+      }),
   }));
   const currentRevision = latestRevision
     ? {
@@ -227,6 +307,13 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       base_plan_fingerprint: latestRevision.base_plan_fingerprint,
       plan_fingerprint: latestRevision.plan_fingerprint,
       trigger: latestRevision.trigger,
+      ...(latestRevision.repair === undefined ? {} : {
+        repair: latestRevision.repair,
+      }),
+      ...(latestRevision.repair?.checkpoint_id === undefined ||
+        latestRevision.repair.checkpoint_id === null ? {} : {
+          effect_state: revisionEffectState(latestRevision, checkpointDecisions),
+        }),
     }
     : { ordinal: 0, plan_fingerprint: run.prepared.plan_fingerprint };
   const revisionState = {
@@ -239,6 +326,10 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     capability_envelopes: run.prepared.explicit_facts.capability_envelopes,
     capability_bindings: capabilityBindings,
     resource_claims: resourceClaims,
+    admission_capability_bindings: admissionCapabilityBindings,
+    revision_reservations: revisionReservations,
+    admission_limits: admissionLimits,
+    admission_resource_claims: admissionResourceClaims,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
   };
   const checkpointActions = cards
@@ -280,6 +371,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       const template = run.prepared.revision_templates.find(
         ({ id }) => id === templateId,
       );
+      const admission = admitPlanRevision(revisionState, template);
       const action = {
         schema: "flow.command/v1",
         type: "revision_decision",
@@ -289,9 +381,16 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         trigger: block.trigger,
         changes: template.changes,
         expected_watermark: watermark,
+        ...(admission.code === undefined ? {} : {
+          admission: {
+            accepted: false,
+            code: admission.code,
+          },
+        }),
+        ...(template.repair === undefined ? {} : { repair: template.repair }),
       };
       const decline = { ...action, decision: "decline" };
-      if (admitPlanRevision(revisionState, template).code) return [decline];
+      if (admission.code) return [decline];
       return [{ ...action, decision: "accept" }, decline];
     }),
   );
@@ -426,6 +525,89 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         ...cancellationActions,
       ]
       : [];
+  const recordedRevisionOutcomes = revisionDeclineEvents
+    .filter(({ event }) => event.repair !== undefined)
+    .map(({ event, eventIndex }) => ({
+      eventIndex,
+      outcome: {
+      schema: "flow.feature-repair-outcome/v1",
+      status: revisionAdmissionStatus(event.code) === "cap_exhausted"
+        ? "cap_exhausted"
+        : event.code && event.code !== "revision_declined"
+          ? "structurally_rejected"
+          : "declined",
+      template_id: event.template_id,
+      base_plan_fingerprint: event.base_plan_fingerprint,
+      trigger: event.trigger,
+      changes: event.changes ?? null,
+      reason: event.reason ?? "operator_declined",
+      code: event.code ?? "revision_declined",
+      repair: event.repair,
+      authority_watermark: watermark,
+      legal_next_actions: legalActions.filter((action) =>
+        action.type === "revision_decision" &&
+        action.template_id === event.template_id),
+      },
+    }));
+  const declinedGatedOutcomes = declinedGatedRevisions.map((revision) => {
+    const checkpointIndex = run.events.findIndex((event) =>
+      event.type === "checkpoint_decided" &&
+      event.checkpoint_id === revision.repair.checkpoint_id &&
+      event.decision === "decline");
+    return {
+      eventIndex: checkpointIndex < 0 ? run.events.length : checkpointIndex,
+      outcome: {
+        schema: "flow.feature-repair-outcome/v1",
+        status: "expansion_declined",
+        template_id: revision.template_id,
+        base_plan_fingerprint: revision.base_plan_fingerprint,
+        trigger: revision.trigger,
+        changes: revision.changes,
+        reason: "checkpoint_declined",
+        code: "expansion_declined",
+        repair: revision.repair,
+        effect_state: revisionEffectState(revision, checkpointDecisions),
+        authority_watermark: watermark,
+        legal_next_actions: [],
+      },
+    };
+  });
+  const projectedAdmissionOutcomes = revisionActions
+    .filter((action) => action.admission !== undefined &&
+      action.repair !== undefined)
+    .map((action) => ({
+      eventIndex: run.events.length,
+      outcome: {
+      schema: "flow.feature-repair-outcome/v1",
+      status: revisionAdmissionStatus(action.admission.code),
+      template_id: action.template_id,
+      base_plan_fingerprint: action.base_plan_fingerprint,
+      trigger: action.trigger,
+      changes: action.changes,
+      reason: "revision_admission_rejected",
+      code: action.admission.code,
+      ...(action.repair === undefined ? {} : { repair: action.repair }),
+      authority_watermark: watermark,
+      legal_next_actions: [action],
+      },
+    }));
+  const outcomeIdentities = new Set();
+  const revisionOutcomes = [];
+  for (const { outcome } of [
+    ...recordedRevisionOutcomes,
+    ...declinedGatedOutcomes,
+  ].sort((left, right) => left.eventIndex - right.eventIndex)) {
+    const identity = revisionOutcomeIdentity(outcome);
+    if (outcomeIdentities.has(identity)) continue;
+    outcomeIdentities.add(identity);
+    revisionOutcomes.push(outcome);
+  }
+  for (const { outcome } of projectedAdmissionOutcomes) {
+    const identity = revisionOutcomeIdentity(outcome);
+    if (outcomeIdentities.has(identity)) continue;
+    outcomeIdentities.add(identity);
+    revisionOutcomes.push(outcome);
+  }
   const progress = phase !== "active"
     ? "complete"
     : blocks.length > 0 ? "blocked"
@@ -589,8 +771,12 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     grants,
     capabilities,
     capability_bindings: capabilityBindings,
+    admission_capability_bindings: admissionCapabilityBindings,
+    revision_reservations: revisionReservations,
+    admission_limits: admissionLimits,
     capability_envelopes: run.prepared.explicit_facts.capability_envelopes,
     resource_claims: resourceClaims,
+    admission_resource_claims: admissionResourceClaims,
     resource_dispositions: resourceDispositions,
     limits,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
@@ -605,6 +791,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     resource_handoff_bindings: resourceHandoffBindings,
     delegate_attempts: delegateAttempts,
     quarantined_delegate_outputs: quarantinedDelegateOutputs,
+    revision_outcomes: revisionOutcomes,
     revision_templates: run.prepared.revision_templates,
     effect_intents: [...effectIntents.values()],
     legal_actions: legalActions,
@@ -649,6 +836,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     plan_fingerprint: fold.plan_fingerprint,
     current_revision: fold.current_revision,
     revisions: fold.revisions,
+    revision_outcomes: fold.revision_outcomes,
     active_plan: fold.active_plan,
     cards: fold.cards,
     checkpoints: views.operator.checkpoints,
@@ -656,8 +844,12 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     grants: fold.grants,
     capabilities: fold.capabilities,
     capability_bindings: fold.capability_bindings,
+    admission_capability_bindings: fold.admission_capability_bindings,
+    revision_reservations: fold.revision_reservations,
+    admission_limits: fold.admission_limits,
     capability_envelopes: fold.capability_envelopes,
     resource_claims: fold.resource_claims,
+    admission_resource_claims: fold.admission_resource_claims,
     resource_dispositions: fold.resource_dispositions,
     limits: fold.limits,
     attempts: fold.attempts,
@@ -687,6 +879,77 @@ function trackerProgressActionIsCurrent({ activePlan, cards, operationId }) {
     !["completed", "superseded"].includes(
       cards.find(({ id }) => id === candidate.id)?.status,
     ));
+}
+
+function revisionEffectState(revision, checkpointDecisions) {
+  const changes = revision.changes;
+  const checkpointId = revision.repair?.checkpoint_id;
+  const decision = checkpointDecisions.get(checkpointId);
+  const gated = {
+    card_ids: changes.add_cards.map(({ id }) => id),
+    superseded_card_ids: [],
+    edge_ids: changes.add_edges.map(({ from, to }) => `${from}->${to}`),
+    capabilities: changes.capability_additions,
+    resources: [
+      ...changes.resource_additions,
+      ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+    ],
+    limits: changes.limit_changes,
+  };
+  const appliedSupersession = {
+    superseded_card_ids: changes.supersede_cards,
+  };
+  if (decision === "approve") {
+    return {
+      status: "applied",
+      applied: {
+        ...emptyRevisionEffects(),
+        ...gated,
+        ...appliedSupersession,
+      },
+      gated: emptyRevisionEffects(),
+      voided: emptyRevisionEffects(),
+    };
+  }
+  if (decision === "decline") {
+    return {
+      status: "voided",
+      applied: { ...emptyRevisionEffects(), ...appliedSupersession },
+      gated: emptyRevisionEffects(),
+      voided: gated,
+    };
+  }
+  return {
+    status: "gated",
+    applied: { ...emptyRevisionEffects(), ...appliedSupersession },
+    gated,
+    voided: emptyRevisionEffects(),
+  };
+}
+
+function revisionOutcomeIdentity(outcome) {
+  return digest(JSON.stringify({
+    status: outcome.status,
+    template_id: outcome.template_id,
+    base_plan_fingerprint: outcome.base_plan_fingerprint ?? null,
+    trigger: outcome.trigger ?? null,
+    changes: outcome.changes ?? null,
+    reason: outcome.reason ?? null,
+    code: outcome.code ?? null,
+    repair: outcome.repair ?? null,
+    effect_state: outcome.effect_state ?? null,
+  }));
+}
+
+function emptyRevisionEffects() {
+  return {
+    card_ids: [],
+    superseded_card_ids: [],
+    edge_ids: [],
+    capabilities: [],
+    resources: [],
+    limits: {},
+  };
 }
 
 function buildTrackerProgressProjection({

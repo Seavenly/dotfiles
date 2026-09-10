@@ -187,6 +187,16 @@ capabilities, resources, and limits while superseding only blocked pending work
 and its pending dependent closure. It never rewrites accepted upstream history.
 _Avoid_: In-place plan edit, restart
 
+**Feature repair**:
+The `flow.feature-repair/v1` binding that maps one blocked Feature brief card
+to one closed repair kind, exact accepted criteria, remaining scope, preserved
+verification and critique evidence, and the required finalization path. It is
+carried by Plan revision templates; any template-derived scope, capability,
+resource, graph, or raised-limit expansion is deferred behind its exact
+checkpoint, and declined or exhausted attempts remain authority-watermarked
+outcomes.
+_Avoid_: Retry flag, caller scope boolean, replacement without evidence
+
 **Reboot admission**:
 The exact public command that rechecks one suspended run against its current
 authoritative contracts, routes, capabilities, revision facts, typed time and
@@ -470,6 +480,26 @@ The append-only ReviewAuthority result of one automated review, bound separately
 to the candidate seal watermark and review lifecycle generation; it records
 automated completion only and never grants human approval or integration power.
 _Avoid_: Approval record, merge decision
+
+**GitHub pull-request snapshot**:
+An immutable review target binding one open repository pull request to its base
+and head commits, diff digest, lifecycle generation, and exact target-authority
+watermark. The pending effect revalidates every binding before remote mutation.
+_Avoid_: Current pull request, branch name
+
+**Pending GitHub review draft**:
+The authority-rendered body, summary, target binding, marker, and exact digest
+shown at the one-shot checkpoint. Acceptance binds that exact draft to the
+RunAuthority effect intent; the only permitted remote result is one unsubmitted
+pending review.
+_Avoid_: Review comment, submitted review, mutable template
+
+**GitHub review record/projection**:
+The durable ReviewAuthority record and disposable authority-derived view for a
+GitHub snapshot, retaining findings, artifacts, source effect evidence, and an
+exact watermark. Target movement invalidates automation and integration
+eligibility while preserving the record history and safe recovery actions.
+_Avoid_: Provider listing, approval, remote review status
 
 **Integration receipt**:
 Durable evidence binding a reviewed head to the exact target ref, resulting

@@ -13,11 +13,14 @@ import {
   FEATURE_OPERATION_CONTRACTS,
   validateFeatureTestReceipt,
 } from "../src/feature-flow.mjs";
+import { validateFeatureRepairContract } from
+  "../src/feature-repair-contract.mjs";
 import {
   buildReviewTargetObservation,
   createReviewDefinition,
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
+import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { createDurableRunAuthority, createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
 import {
@@ -168,6 +171,950 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     }),
     /independently declared route/,
   );
+});
+
+test("feature/v1 prepares an exact bounded critique repair template", () => {
+  const inputs = featureInputs();
+  const repairTemplateId = "feature-repair-critique";
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "feature_critique_repair_required",
+  };
+  const repairCard = {
+    id: "feature-seal-repair",
+    replaces_card_id: "feature-seal",
+    executor: {
+      kind: "operation",
+      contract: FEATURE_OPERATION_CONTRACTS.seal,
+      effect_classification: "caller_idempotent",
+    },
+    dependencies: [],
+    inputs: {
+      brief: inputs.brief,
+      mode: inputs.mode,
+      workspace: inputs.workspace,
+      verification: normalizedFeatureVerificationInput(inputs),
+      phase: "seal",
+      finalization: inputs.finalization,
+      publication: inputs.finalization.publication,
+      negative_outcomes: [
+        "no review, integration, push, pull request, cleanup, or tracker completion",
+      ],
+      receipt_owner: "registered_operation",
+      delegate_output_usage: "evidence_input_only",
+      delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
+      operation_evidence_card_ids: ["feature-verify"],
+    },
+    outputs: ["review_candidate_receipt"],
+    success_criteria: ["registered_operation_receipt:succeeded"],
+    validators: ["flow.validator/operation-receipt/v1"],
+    data_references: [inputs.brief.id],
+    evidence_references: [
+      `flow.feature-verification-request/v1:${inputs.verification.baseline.fingerprint}`,
+    ],
+    route: null,
+    limits: { max_attempts: 1 },
+    resource_claims: [{
+      kind: "workspace",
+      id: inputs.workspace.subject_id,
+      generation: inputs.workspace.generation,
+      mutation_epoch: inputs.workspace.mutation_epoch,
+      fingerprint: inputs.workspace.fingerprint,
+    }],
+    recovery: "caller_idempotent",
+  };
+  inputs.repairs = [{
+    schema: "flow.feature-repair/v1",
+    id: "repair:critique",
+    kind: "critique",
+    card_id: "feature-seal",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["re-run the independent critique and seal"],
+    template: {
+      schema: "flow.plan-revision-template/v1",
+      id: repairTemplateId,
+      trigger,
+      limits: { max_applications: 1 },
+      changes: {
+        add_cards: [repairCard],
+        add_edges: [{ from: "feature-critique", to: repairCard.id }],
+        supersede_cards: ["feature-seal"],
+        capability_additions: [],
+        resource_additions: [],
+        limit_changes: {},
+      },
+    },
+  }];
+  const facts = featureFactsForInputs(inputs);
+  facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+  facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+  Object.assign(facts.limits, {
+    max_revisions: 1,
+    max_cards_per_revision: 1,
+  });
+  facts.block_observations.push(observeCardBlock({
+    card_id: "feature-seal",
+    block: {
+      schema: "flow.card-block/v1",
+      id: "feature-seal:critique-repair",
+      type: "plan_revision_required",
+      trigger,
+      required_capabilities: [],
+      revision_template_ids: [repairTemplateId],
+    },
+  }));
+
+  const prepared = prepareFeatureSelection(inputs, facts);
+
+  assert.deepEqual(prepared.revision_templates.map(({ id, repair }) => ({
+    id,
+    repair,
+  })), [{
+    id: repairTemplateId,
+    repair: {
+      schema: "flow.feature-repair/v1",
+      id: "repair:critique",
+      kind: "critique",
+      card_id: "feature-seal",
+      acceptance: ["the changed behavior is observable"],
+      remaining_scope: ["re-run the independent critique and seal"],
+      scope_expansion: false,
+      checkpoint_id: null,
+    },
+  }]);
+  assert.equal(prepared.requested_authority.commands.includes("revision_decision"), true);
+  assert.equal(prepared.confirmation.revision_templates.length, 1);
+});
+
+test("feature/v1 repairs preserve every authority-bearing card field", () => {
+  const inputs = featureInputs();
+  const base = prepareFeatureSelection(inputs);
+  const existingCards = base.graph.cards.map((card) => structuredClone(card));
+  const original = existingCards.find(({ id }) => id === "feature-apply");
+  original.inputs.managed_agent = {
+    schema: "flow.managed-agent-binding/v1",
+    binding_id: "managed-agent:feature-apply",
+    card_ids: [original.id],
+    terminal_card_id: original.id,
+  };
+  const repair = {
+    schema: "flow.feature-repair/v1",
+    id: "repair:authority-fields",
+    kind: "replan",
+    card_id: original.id,
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["retain the original authority contract"],
+    scope_expansion: false,
+    checkpoint_id: null,
+  };
+  const template = {
+    schema: "flow.plan-revision-template/v1",
+    id: "feature-repair-authority-fields",
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: "feature_replan_required",
+    },
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [],
+      add_edges: [],
+      supersede_cards: [original.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  };
+  const validReplacement = () => {
+    const replacement = structuredClone(original);
+    replacement.id = "feature-apply-repair";
+    replacement.replaces_card_id = original.id;
+    replacement.inputs.managed_agent.card_ids = [replacement.id];
+    replacement.inputs.managed_agent.terminal_card_id = replacement.id;
+    template.changes.add_cards = [replacement];
+    return replacement;
+  };
+  validReplacement();
+  assert.doesNotThrow(() => validateFeatureRepairContract({
+    repair,
+    template,
+    existingCards,
+    brief: inputs.brief,
+    fail(reason, message) {
+      throw new Error(`${reason}: ${message}`);
+    },
+  }));
+  const missingIdentity = validReplacement();
+  delete missingIdentity.replaces_card_id;
+  assert.throws(
+    () => validateFeatureRepairContract({
+      repair,
+      template,
+      existingCards,
+      brief: inputs.brief,
+      fail(reason, message) {
+        throw new Error(`${reason}: ${message}`);
+      },
+    }),
+    /must identify a replacement.*replaces_card_id/,
+  );
+  validReplacement();
+  const falseDerivedFlag = { ...repair, scope_expansion: true };
+  assert.throws(
+    () => validateFeatureRepairContract({
+      repair: falseDerivedFlag,
+      template,
+      existingCards,
+      brief: inputs.brief,
+      fail(reason, message) {
+        throw new Error(`${reason}: ${message}`);
+      },
+    }),
+    /scope expansion does not match/,
+  );
+  for (const [field, mutate] of [
+    ["route", (card) => { card.route.agent_id = "agent:changed-route"; }],
+    ["description", (card) => {
+      card.inputs.description = structuredClone(card.inputs.description);
+      card.inputs.description.watermark.content_sha256 =
+        `sha256:${"a".repeat(64)}`;
+    }],
+    ["prompt", (card) => { card.inputs.prompt = "changed prompt"; }],
+    ["recovery", (card) => { card.recovery = "retry"; }],
+    ["limits", (card) => { card.limits.max_attempts = 2; }],
+    ["managed-agent", (card) => {
+      card.inputs.managed_agent = structuredClone(card.inputs.managed_agent);
+      card.inputs.managed_agent.card_ids = ["unbound-card"];
+    }],
+  ]) {
+    const replacement = validReplacement();
+    mutate(replacement);
+    assert.throws(
+      () => validateFeatureRepairContract({
+        repair,
+        template,
+        existingCards,
+        brief: inputs.brief,
+        fail(reason, message) {
+          throw new Error(`${reason}: ${message}`);
+        },
+      }),
+      /authority-bearing|managed-agent|route, limits, recovery|does not safely rebind/,
+      field,
+    );
+  }
+});
+
+test("feature/v1 rejects an upstream repair that leaves the evidence closure without a replacement", () => {
+  const inputs = featureInputs();
+  const templateId = "feature-repair-upstream-empty";
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "feature_slice_repair_required",
+  };
+  inputs.repairs = [{
+    schema: "flow.feature-repair/v1",
+    id: "repair:upstream-empty",
+    kind: "critique",
+    card_id: "feature-critique",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["restore the independent critique evidence"],
+    template: {
+      schema: "flow.plan-revision-template/v1",
+      id: templateId,
+      trigger,
+      limits: { max_applications: 1 },
+      changes: {
+        add_cards: [],
+        add_edges: [],
+        supersede_cards: ["feature-critique", "feature-seal"],
+        capability_additions: [],
+        resource_additions: [],
+        limit_changes: {},
+      },
+    },
+  }];
+  const facts = featureFactsForInputs(inputs);
+  facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+  facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+  facts.limits.max_revisions = 1;
+  facts.block_observations.push(observeCardBlock({
+    card_id: "feature-critique",
+    block: {
+      schema: "flow.card-block/v1",
+      id: "feature-critique:empty-repair",
+      type: "plan_revision_required",
+      trigger,
+      required_capabilities: [],
+      revision_template_ids: [templateId],
+    },
+  }));
+
+  assert.throws(
+    () => prepareFeatureSelection(inputs, facts),
+    /replacement|evidence|finalization gate/,
+  );
+});
+
+test("feature/v1 does not admit a seal repair that drops seal evidence", () => {
+  const inputs = featureInputs();
+  inputs.repairs = [{
+    schema: "flow.feature-repair/v1",
+    id: "repair:incomplete-seal",
+    kind: "critique",
+    card_id: "feature-seal",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["retain the original seal evidence gate"],
+    template: {
+      schema: "flow.plan-revision-template/v1",
+      id: "feature-repair-incomplete-seal",
+      trigger: {
+        schema: "flow.revision-trigger/v1",
+        type: "plan_revision_required",
+        code: "feature_critique_repair_required",
+      },
+      limits: { max_applications: 1 },
+      changes: {
+        add_cards: [{
+          id: "feature-seal-repair",
+          replaces_card_id: "feature-seal",
+          executor: {
+            kind: "operation",
+            contract: FEATURE_OPERATION_CONTRACTS.seal,
+            effect_classification: "caller_idempotent",
+          },
+          dependencies: [],
+          inputs: { phase: "seal", receipt_owner: "registered_operation" },
+          outputs: ["review_candidate_receipt"],
+          success_criteria: ["registered_operation_receipt:succeeded"],
+          validators: ["flow.validator/operation-receipt/v1"],
+          data_references: [inputs.brief.id],
+          evidence_references: [],
+          route: null,
+          limits: { max_attempts: 1 },
+          resource_claims: [],
+          recovery: "caller_idempotent",
+        }],
+        add_edges: [{ from: "feature-critique", to: "feature-seal-repair" }],
+        supersede_cards: ["feature-seal"],
+        capability_additions: [],
+        resource_additions: [],
+        limit_changes: {},
+      },
+    },
+  }];
+  const facts = featureFactsForInputs(inputs);
+  facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+  facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+  facts.limits.max_revisions = 1;
+  facts.limits.max_cards_per_revision = 1;
+  facts.block_observations.push(observeCardBlock({
+    card_id: "feature-seal",
+    block: {
+      schema: "flow.card-block/v1",
+      id: "feature-seal:incomplete-repair",
+      type: "plan_revision_required",
+      trigger: inputs.repairs[0].template.trigger,
+      required_capabilities: [],
+      revision_template_ids: ["feature-repair-incomplete-seal"],
+    },
+  }));
+
+  assert.throws(
+    () => prepareFeatureSelection(inputs, facts),
+    /retain the feature seal evidence and finalization gate/,
+  );
+});
+
+test("feature/v1 exposes a stale-safe repair action and recovers the blocked seal", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    repair: "critique",
+  });
+  await driveFeatureToSeal(fixture, { allowSealRefusal: true });
+  const blocked = fixture.runtime.query({ run_id: fixture.runId });
+  const revisionAction = blocked.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.ok(revisionAction);
+  assert.equal(revisionAction.expected_watermark, blocked.watermark);
+  assert.deepEqual(revisionAction.repair, {
+    schema: "flow.feature-repair/v1",
+    id: "repair:critique",
+    kind: "critique",
+    card_id: "feature-seal",
+    acceptance: ["the changed behavior is observable"],
+    remaining_scope: ["re-run the independent critique and seal"],
+    scope_expansion: false,
+    checkpoint_id: null,
+  });
+  const stale = structuredClone(revisionAction);
+  stale.base_plan_fingerprint = `sha256:${"9".repeat(64)}`;
+  const rejected = fixture.runtime.command(stale);
+  assert.equal(rejected.code, "revision_not_actionable");
+  assert.deepEqual(fixture.runtime.query({ run_id: fixture.runId }), blocked);
+
+  const declined = fixture.runtime.command({
+    ...revisionAction,
+    decision: "decline",
+  });
+  assert.equal(declined.accepted, true, JSON.stringify(declined));
+  let stillBlocked = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(stillBlocked.phase, "active");
+  assert.equal(stillBlocked.revisions.length, 0);
+  assert.equal(stillBlocked.revision_outcomes.length, 1);
+  assert.equal(stillBlocked.revision_outcomes[0].status, "declined");
+  assert.equal(stillBlocked.revision_outcomes[0].template_id,
+    revisionAction.template_id);
+  assert.equal(stillBlocked.revision_outcomes[0].repair.id,
+    revisionAction.repair.id);
+  assert.equal(stillBlocked.revision_outcomes[0].authority_watermark,
+    stillBlocked.watermark);
+  assert.ok(stillBlocked.revision_outcomes[0].legal_next_actions.some(
+    ({ decision }) => decision === "accept"));
+  assert.ok(stillBlocked.legal_actions.some(({ type, decision }) =>
+    type === "revision_decision" && decision === "accept"));
+  const duplicateDecline = fixture.runtime.command(stillBlocked.legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "decline",
+  ));
+  assert.equal(duplicateDecline.accepted, true);
+  stillBlocked = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(stillBlocked.revision_outcomes.length, 1);
+  const accepted = fixture.runtime.command(stillBlocked.legal_actions.find(
+    ({ type, decision }) => type === "revision_decision" && decision === "accept",
+  ));
+  assert.equal(accepted.accepted, true, JSON.stringify(accepted));
+  const recovered = fixture.runtime.query({ run_id: fixture.runId });
+  assert.deepEqual(recovered.revisions[0].repair, revisionAction.repair);
+  assert.equal(recovered.cards.find(({ id }) => id === "feature-seal").status,
+    "superseded");
+  assert.equal(recovered.cards.find(({ id }) => id === "feature-seal-repair").status,
+    "ready");
+  assert.ok(recovered.legal_actions.some(({ type, card_id: cardId }) =>
+    type === "operation_execute" && cardId === "feature-seal-repair"));
+});
+
+test("feature/v1 rejects repair scope expansion without its exact checkpoint", () => {
+  const inputs = featureInputs();
+  inputs.repairs = [{
+    schema: "flow.feature-repair/v1",
+    id: "repair:replan",
+    kind: "replan",
+    card_id: "feature-seal",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["replan the bounded implementation"],
+    scope_expansion: true,
+    template: {
+      schema: "flow.plan-revision-template/v1",
+      id: "feature-replan",
+      trigger: {
+        schema: "flow.revision-trigger/v1",
+        type: "plan_revision_required",
+        code: "feature_replan_required",
+      },
+      limits: { max_applications: 1 },
+      changes: {
+        add_cards: [],
+        add_edges: [],
+        supersede_cards: ["feature-seal"],
+        capability_additions: [],
+        resource_additions: [],
+        limit_changes: {},
+      },
+    },
+  }];
+  const facts = featureFactsForInputs(inputs);
+  facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+  facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+  facts.limits.max_revisions = 1;
+  facts.block_observations.push(observeCardBlock({
+    card_id: "feature-seal",
+    block: {
+      schema: "flow.card-block/v1",
+      id: "feature-seal:replan",
+      type: "plan_revision_required",
+      trigger: inputs.repairs[0].template.trigger,
+      required_capabilities: [],
+      revision_template_ids: ["feature-replan"],
+    },
+  }));
+  assert.throws(
+    () => prepareFeatureSelection(inputs, facts),
+    /requires an exact scope checkpoint|evidence-preserving replacement|must identify a replacement/,
+  );
+});
+
+test("feature/v1 derives expansion from added cards, resources, and limits instead of the caller flag", () => {
+  const inputs = featureInputs();
+  const base = prepareFeatureSelection(inputs);
+  const seal = base.graph.cards.find(({ id }) => id === "feature-seal");
+  const repairCard = structuredClone(seal);
+  repairCard.id = "feature-seal-repair";
+  repairCard.replaces_card_id = "feature-seal";
+  repairCard.dependencies = ["feature-critique"];
+  const checkpoint = structuredClone(dynamicCheckpointProposal().graph.cards[0]);
+  checkpoint.id = "feature-repair-checkpoint";
+  const templateId = "feature-repair-derived-expansion";
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "feature_replan_required",
+  };
+  inputs.repairs = [{
+    schema: "flow.feature-repair/v1",
+    id: "repair:derived-expansion",
+    kind: "replan",
+    card_id: "feature-seal",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["accept the exact bounded replan checkpoint"],
+    scope_expansion: false,
+    template: {
+      schema: "flow.plan-revision-template/v1",
+      id: templateId,
+      trigger,
+      limits: { max_applications: 1 },
+      changes: {
+        add_cards: [checkpoint, repairCard],
+        add_edges: [{ from: checkpoint.id, to: repairCard.id }],
+        supersede_cards: ["feature-seal"],
+        capability_additions: [],
+        resource_additions: [{ kind: "artifact", id: "repair-output" }],
+        limit_changes: { max_cards: 9 },
+      },
+    },
+  }];
+  const facts = featureFactsForInputs(inputs);
+  facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+  facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+  facts.limits.max_revisions = 1;
+  facts.limits.max_cards_per_revision = 2;
+  facts.block_observations.push(observeCardBlock({
+    card_id: "feature-seal",
+    block: {
+      schema: "flow.card-block/v1",
+      id: "feature-seal:derived-expansion",
+      type: "plan_revision_required",
+      trigger,
+      required_capabilities: [],
+      revision_template_ids: [templateId],
+    },
+  }));
+
+  assert.throws(
+    () => prepareFeatureSelection(inputs, facts),
+    /requires an exact scope checkpoint|scope expansion does not match/,
+  );
+});
+
+test("feature/v1 applies a closed target and evidence contract for every repair kind", () => {
+  for (const [kind, cardId] of [
+    ["slice", "feature-seal"],
+    ["completeness", "feature-apply"],
+    ["critique", "feature-apply"],
+    ["replan", "feature-critique"],
+  ]) {
+    const inputs = featureInputs();
+    const templateId = `feature-repair-${kind}-contract`;
+    const trigger = {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: `feature_${kind}_repair_required`,
+    };
+    inputs.repairs = [{
+      schema: "flow.feature-repair/v1",
+      id: `repair:${kind}:contract`,
+      kind,
+      card_id: cardId,
+      acceptance: [...inputs.brief.acceptance],
+      remaining_scope: [`retain the ${kind} evidence contract`],
+      template: {
+        schema: "flow.plan-revision-template/v1",
+        id: templateId,
+        trigger,
+        limits: { max_applications: 1 },
+        changes: {
+          add_cards: [],
+          add_edges: [],
+          supersede_cards: [cardId],
+          capability_additions: [],
+          resource_additions: [],
+          limit_changes: {},
+        },
+      },
+    }];
+    const facts = featureFactsForInputs(inputs);
+    facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+    facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+    facts.limits.max_revisions = 1;
+    facts.block_observations.push(observeCardBlock({
+      card_id: cardId,
+      block: {
+        schema: "flow.card-block/v1",
+        id: `${cardId}:${kind}-contract`,
+        type: "plan_revision_required",
+        trigger,
+        required_capabilities: [],
+        revision_template_ids: [templateId],
+      },
+    }));
+    assert.throws(
+      () => prepareFeatureSelection(inputs, facts),
+      new RegExp(`feature ${kind} repair must target`),
+    );
+  }
+});
+
+test("feature/v1 admits serialized slice and completeness repairs with explicit identities", async (t) => {
+  for (const [targetId, kind] of [
+    ["feature-slice-red-test", "slice"],
+    ["feature-slice-blue-verify", "slice"],
+    ["feature-verify", "completeness"],
+  ]) {
+    const inputs = featureInputs();
+    inputs.mode = "mixed";
+    inputs.brief.acceptance = ["the red behavior is observable", "the blue behavior is observable"];
+    inputs.verification = {
+      schema: "flow.feature-verification-request/v1",
+      compensating_assertion: {
+        schema: "flow.feature-compensating-assertion/v1",
+        assertion: "the changed behavior remains bounded",
+        non_destructive: true,
+        fingerprint: `sha256:${"8".repeat(64)}`,
+      },
+    };
+    inputs.slices = [
+      {
+        schema: "flow.feature-slice/v1",
+        id: "red",
+        mode: "test",
+        acceptance: ["the red behavior is observable"],
+        test: {
+          schema: "flow.feature-test-request/v1",
+          intended_failure: "the red behavior is absent before apply",
+          environment_fingerprint: `sha256:${"9".repeat(64)}`,
+        },
+      },
+      {
+        schema: "flow.feature-slice/v1",
+        id: "blue",
+        mode: "verify",
+        acceptance: ["the blue behavior is observable"],
+      },
+    ];
+    if (targetId === "feature-slice-red-test") {
+      const applyDescription = await supportedDescription({
+        schema: "drovr.delegated-agent-description-request/v1",
+        launch: {
+          harness: "codex",
+          role: "reviewer",
+          model: "gpt-5.6",
+          effort: "high",
+          capability: "read-only",
+        },
+        caller_metadata: { owner: "feature-flow-serialized-repair" },
+      }, {});
+      const critiqueDescription = await supportedDescription({
+        schema: "drovr.delegated-agent-description-request/v1",
+        launch: {
+          harness: "claude",
+          role: "reviewer",
+          model: "gpt-5.6",
+          effort: "high",
+          capability: "read-only",
+        },
+        caller_metadata: { owner: "feature-flow-serialized-repair" },
+      }, {});
+      inputs.delegation = {
+        ...inputs.delegation,
+        apply: featureDelegateBindingFromDescription("apply", applyDescription),
+        critique: featureDelegateBindingFromDescription(
+          "critique",
+          critiqueDescription,
+        ),
+      };
+    }
+    const base = prepareFeatureSelection(inputs);
+    const target = base.graph.cards.find(({ id }) => id === targetId);
+    assert.ok(target, targetId);
+    const superseded = downstreamClosure(base.graph.cards, targetId);
+    const replacements = new Map(superseded.map((card) => [
+      card.id,
+      `${card.id}-repair`,
+    ]));
+    const addCards = superseded.map((card) => {
+      const replacement = structuredClone(card);
+      replacement.id = replacements.get(card.id);
+      replacement.replaces_card_id = card.id;
+      replacement.dependencies = card.dependencies.map((id) =>
+        replacements.get(id) ?? id);
+      replacement.inputs = rebindFeatureCardInputs(replacement.inputs, replacements);
+      if (replacement.inputs?.managed_agent) {
+        replacement.inputs.managed_agent = rebindFeatureManagedAgent(
+          replacement.inputs.managed_agent,
+          replacements,
+        );
+      }
+      return replacement;
+    });
+    const templateId = `feature-repair-${targetId}`;
+    inputs.repairs = [{
+      schema: "flow.feature-repair/v1",
+      id: `repair:${targetId}`,
+      kind,
+      card_id: targetId,
+      acceptance: [...inputs.brief.acceptance],
+      remaining_scope: [`re-run ${targetId} with the original evidence contract`],
+      scope_expansion: false,
+      template: {
+        schema: "flow.plan-revision-template/v1",
+        id: templateId,
+        trigger: {
+          schema: "flow.revision-trigger/v1",
+          type: "plan_revision_required",
+          code: "feature_slice_repair_required",
+        },
+        limits: { max_applications: 1 },
+        changes: {
+          add_cards: addCards,
+          add_edges: [],
+          supersede_cards: superseded.map(({ id }) => id),
+          capability_additions: [],
+          resource_additions: [],
+          limit_changes: {},
+        },
+      },
+    }];
+    const facts = featureFactsForInputs(inputs);
+    facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+    facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+    facts.limits.max_revisions = 1;
+    facts.limits.max_cards_per_revision = addCards.length;
+    facts.block_observations.push(observeCardBlock({
+      card_id: targetId,
+      block: {
+        schema: "flow.card-block/v1",
+        id: `${targetId}:repair`,
+        type: "plan_revision_required",
+        trigger: inputs.repairs[0].template.trigger,
+        required_capabilities: [],
+        revision_template_ids: [templateId],
+      },
+    }));
+    let runtime = null;
+    if (targetId === "feature-slice-red-test") {
+      const authorityDirectory = await mkdtemp(join(
+        tmpdir(),
+        "flow-feature-serialized-repair-",
+      ));
+      t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+      const runAuthority = createDurableRunAuthority({
+        authorityDirectory,
+        gitRetentionAdapter: deterministicGitRetentionAdapter(),
+        gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+          promotion: true,
+        }),
+        hostIdentityAdapter: fixedHostIdentity(
+          "boot-feature-serialized-repair",
+          "feature-process-serialized-repair",
+        ),
+      });
+      t.after(() => runAuthority.close());
+      runtime = featurePreparationRuntime(runAuthority);
+    }
+    const prepared = prepareFeatureSelection(inputs, facts, runtime);
+    assert.equal(prepared.revision_templates[0].repair.kind, kind);
+    assert.deepEqual(
+      prepared.revision_templates[0].changes.supersede_cards,
+      superseded.map(({ id }) => id),
+    );
+
+    if (runtime !== null) {
+      const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+      assert.equal(launch.created, true, JSON.stringify(launch));
+      let projection = runtime.query({ run_id: launch.run_id });
+      assert.equal(projection.cards.find(({ id }) =>
+        id === targetId).status, "blocked");
+      const revisionAction = projection.legal_actions.find(({ type, decision }) =>
+        type === "revision_decision" && decision === "accept");
+      assert.ok(revisionAction);
+      const watcher = runtime.watch({ run_id: launch.run_id })
+        [Symbol.asyncIterator]();
+      assert.deepEqual((await watcher.next()).value, projection);
+      const update = watcher.next();
+      assert.equal(runtime.command(revisionAction).accepted, true);
+      projection = runtime.query({ run_id: launch.run_id });
+      assert.deepEqual(await update, { done: false, value: projection });
+      assert.equal(projection.revisions.length, 1);
+      assert.equal(projection.cards.find(({ id }) =>
+        id === `${targetId}-repair`).status, "ready");
+      const activeApply = projection.active_plan.cards.find(({ id }) =>
+        id === "feature-apply-repair");
+      assert.deepEqual(activeApply.inputs.managed_agent.card_ids, [
+        "feature-apply-repair",
+        "feature-apply-blue-repair",
+      ]);
+      assert.equal(activeApply.inputs.managed_agent.terminal_card_id,
+        "feature-apply-blue-repair");
+      assert.equal(activeApply.inputs.managed_agent.card_ids.some((id) =>
+        superseded.some((originalId) => originalId === id)), false);
+      await watcher.return();
+    }
+  }
+});
+
+test("feature/v1 gates repair expansion behind an exact checkpoint", async (t) => {
+  const declinedFixture = await createFeatureFailureFixture(t, {
+    repair: "scope",
+  });
+  await driveFeatureToSeal(declinedFixture, { allowSealRefusal: true });
+  let projection = declinedFixture.runtime.query({
+    run_id: declinedFixture.runId,
+  });
+  const revision = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision" && projection.revisions.length === 0);
+  assert.ok(revision);
+  assert.equal(declinedFixture.runtime.command(revision).accepted, true);
+  projection = declinedFixture.runtime.query({ run_id: declinedFixture.runId });
+  assert.deepEqual(projection.capabilities, []);
+  assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
+    false);
+  const checkpoint = projection.legal_actions.find(({ type }) =>
+    type === "checkpoint_decision");
+  assert.ok(checkpoint);
+  const declinedWatch = declinedFixture.runtime.watch({
+    run_id: declinedFixture.runId,
+  })[Symbol.asyncIterator]();
+  assert.deepEqual((await declinedWatch.next()).value, projection);
+  const stale = declinedFixture.runtime.command({
+    ...checkpoint,
+    expected_watermark: `sha256:${"f".repeat(64)}`,
+  });
+  assert.equal(stale.code, "stale_authority_watermark");
+  assert.deepEqual(declinedFixture.runtime.query({
+    run_id: declinedFixture.runId,
+  }).capabilities, []);
+  assert.equal(declinedFixture.runtime.command({
+    ...checkpoint,
+    decision: "decline",
+  }).accepted, true);
+  projection = declinedFixture.runtime.query({ run_id: declinedFixture.runId });
+  const expansionDeclined = projection.revision_outcomes.find(({ code }) =>
+    code === "expansion_declined");
+  assert.ok(expansionDeclined);
+  assert.equal(expansionDeclined.status, "expansion_declined");
+  assert.deepEqual(expansionDeclined.legal_next_actions, []);
+  assert.equal(expansionDeclined.authority_watermark, projection.watermark);
+  assert.equal(expansionDeclined.effect_state.status, "voided");
+  assert.deepEqual(expansionDeclined.effect_state.applied.card_ids, []);
+  assert.deepEqual(expansionDeclined.effect_state.applied.superseded_card_ids,
+    ["feature-seal"]);
+  assert.deepEqual(expansionDeclined.effect_state.voided.superseded_card_ids, []);
+  assert.ok(expansionDeclined.effect_state.voided.card_ids.includes(
+    "feature-seal-repair",
+  ));
+  assert.equal(projection.cards.find(({ id }) => id === "feature-seal-repair").status,
+    "voided");
+  assert.deepEqual(projection.legal_actions, []);
+  const watchedDecline = await declinedWatch.next();
+  assert.equal(watchedDecline.value.phase, "declined");
+  assert.equal(watchedDecline.value.revision_outcomes[0].status,
+    "expansion_declined");
+  await declinedWatch.return();
+  assert.deepEqual(projection.capabilities, []);
+  assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
+    false);
+  assert.equal(projection.legal_actions.some(({ type, card_id: cardId }) =>
+    type === "operation_execute" && cardId === "feature-seal-repair"), false);
+
+  const acceptedFixture = await createFeatureFailureFixture(t, {
+    repair: "scope",
+  });
+  await driveFeatureToSeal(acceptedFixture, { allowSealRefusal: true });
+  projection = acceptedFixture.runtime.query({ run_id: acceptedFixture.runId });
+  const revisionToAccept = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.equal(acceptedFixture.runtime.command(revisionToAccept).accepted, true);
+  projection = acceptedFixture.runtime.query({ run_id: acceptedFixture.runId });
+  assert.deepEqual(projection.capabilities, []);
+  assert.ok(projection.admission_capability_bindings.some(({ capability }) =>
+    capability === "repository:write"));
+  assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
+    false);
+  assert.ok(projection.admission_resource_claims.some(({ id }) =>
+    id === "repair-output"));
+  assert.deepEqual(projection.revision_reservations.limit_changes, {});
+  assert.ok(projection.revision_reservations.capability_additions.some(
+    ({ capability }) => capability === "repository:write",
+  ));
+  assert.ok(projection.revision_reservations.resource_additions.some(({ id }) =>
+    id === "repair-output"));
+  const gatedEffectState = projection.revisions.at(-1).effect_state;
+  assert.equal(gatedEffectState.status, "gated");
+  assert.deepEqual(gatedEffectState.applied.card_ids, []);
+  assert.deepEqual(gatedEffectState.applied.superseded_card_ids,
+    ["feature-seal"]);
+  assert.ok(gatedEffectState.gated.card_ids.includes("feature-seal-repair"));
+  assert.deepEqual(gatedEffectState.gated.superseded_card_ids, []);
+  assert.deepEqual(gatedEffectState.voided.superseded_card_ids, []);
+  const checkpointToApprove = projection.legal_actions.find(({ type, decision }) =>
+    type === "checkpoint_decision" && decision === "approve");
+  assert.ok(checkpointToApprove);
+  assert.equal(acceptedFixture.runtime.command(checkpointToApprove).accepted, true);
+  projection = acceptedFixture.runtime.query({ run_id: acceptedFixture.runId });
+  assert.deepEqual(projection.capabilities, ["repository:write"]);
+  assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
+    true);
+  const appliedEffectState = projection.revisions.at(-1).effect_state;
+  assert.equal(appliedEffectState.status, "applied");
+  assert.ok(appliedEffectState.applied.card_ids.includes("feature-seal-repair"));
+  assert.deepEqual(appliedEffectState.applied.superseded_card_ids,
+    ["feature-seal"]);
+  assert.deepEqual(appliedEffectState.gated.card_ids, []);
+  assert.deepEqual(appliedEffectState.gated.superseded_card_ids, []);
+  assert.deepEqual(appliedEffectState.voided.card_ids, []);
+  assert.deepEqual(appliedEffectState.voided.superseded_card_ids, []);
+  assert.ok(projection.legal_actions.some(({ type, card_id: cardId }) =>
+    type === "operation_execute" && cardId === "feature-seal-repair"));
+});
+
+test("feature/v1 preserves chronological decline and expansion-decline outcomes", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, { repair: "scope" });
+  await driveFeatureToSeal(fixture, { allowSealRefusal: true });
+
+  let projection = fixture.runtime.query({ run_id: fixture.runId });
+  const firstRevision = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.ok(firstRevision);
+  assert.equal(fixture.runtime.command({
+    ...firstRevision,
+    decision: "decline",
+  }).accepted, true);
+
+  projection = fixture.runtime.query({ run_id: fixture.runId });
+  const secondRevision = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.ok(secondRevision);
+  assert.equal(fixture.runtime.command({
+    ...secondRevision,
+    decision: "accept",
+  }).accepted, true);
+
+  projection = fixture.runtime.query({ run_id: fixture.runId });
+  const checkpoint = projection.legal_actions.find(({ type }) =>
+    type === "checkpoint_decision");
+  assert.ok(checkpoint);
+  assert.equal(fixture.runtime.command({
+    ...checkpoint,
+    decision: "decline",
+  }).accepted, true);
+
+  projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.deepEqual(
+    projection.revision_outcomes.map(({ status }) => status),
+    ["declined", "expansion_declined"],
+  );
+  assert.deepEqual(projection.revision_outcomes.map(({ legal_next_actions }) =>
+    legal_next_actions), [[], []]);
 });
 
 test("feature/v1 requires discriminating evidence at preparation", () => {
@@ -2564,6 +3511,56 @@ async function createFeatureFailureFixture(t, scenario) {
   if (scenario.testOnlyWithoutVerification === true) {
     delete inputs.verification.baseline;
   }
+  if (scenario.repair === "critique") {
+    inputs.repairs = [{
+      schema: "flow.feature-repair/v1",
+      id: "repair:critique",
+      kind: "critique",
+      card_id: "feature-seal",
+      acceptance: [...inputs.brief.acceptance],
+      remaining_scope: ["re-run the independent critique and seal"],
+      template: {
+        schema: "flow.plan-revision-template/v1",
+        id: "feature-repair-critique",
+        trigger: {
+          schema: "flow.revision-trigger/v1",
+          type: "plan_revision_required",
+          code: "feature_critique_repair_required",
+        },
+        limits: { max_applications: 1 },
+        changes: {
+          add_cards: [{
+            id: "feature-seal-repair",
+            replaces_card_id: "feature-seal",
+            executor: {
+              kind: "operation",
+              contract: FEATURE_OPERATION_CONTRACTS.seal,
+              effect_classification: "caller_idempotent",
+            },
+            dependencies: [],
+            inputs: {
+              phase: "seal",
+              receipt_owner: "registered_operation",
+            },
+            outputs: ["review_candidate_receipt"],
+            success_criteria: ["registered_operation_receipt:succeeded"],
+            validators: ["flow.validator/operation-receipt/v1"],
+            data_references: [inputs.brief.id],
+            evidence_references: [],
+            route: null,
+            limits: { max_attempts: 1 },
+            resource_claims: [],
+            recovery: "caller_idempotent",
+          }],
+          add_edges: [{ from: "feature-critique", to: "feature-seal-repair" }],
+          supersede_cards: ["feature-seal"],
+          capability_additions: [],
+          resource_additions: [],
+          limit_changes: {},
+        },
+      },
+    }];
+  }
   inputs.workspace = {
     ...inputs.workspace,
     subject_id: "workspace:producer",
@@ -2582,7 +3579,172 @@ async function createFeatureFailureFixture(t, scenario) {
     candidate_id: "candidate:feature",
     publication: handoffPublication(artifactDigest, scenario.publication),
   };
+  if (scenario.repair === "critique") {
+    const repairCard = inputs.repairs[0].template.changes.add_cards[0];
+    repairCard.inputs = {
+      brief: inputs.brief,
+      mode: inputs.mode,
+      workspace: inputs.workspace,
+      verification: normalizedFeatureVerificationInput(inputs),
+      phase: "seal",
+      finalization: inputs.finalization,
+      publication: inputs.finalization.publication,
+      negative_outcomes: [
+        "no review, integration, push, pull request, cleanup, or tracker completion",
+      ],
+      receipt_owner: "registered_operation",
+      delegate_output_usage: "evidence_input_only",
+      delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
+      operation_evidence_card_ids: ["feature-verify"],
+    };
+    repairCard.evidence_references = [
+      `flow.feature-verification-request/v1:${inputs.verification.baseline.fingerprint}`,
+    ];
+    repairCard.resource_claims = [{
+      kind: "workspace",
+      id: inputs.workspace.subject_id,
+      generation: inputs.workspace.generation,
+      mutation_epoch: inputs.workspace.mutation_epoch,
+      fingerprint: inputs.workspace.fingerprint,
+    }];
+  }
+  if (scenario.repair === "scope") {
+    const repairTemplateId = "feature-repair-scope";
+    const trigger = {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: "feature_scope_expansion_required",
+    };
+    const checkpointId = "feature-repair-checkpoint";
+    const repairCard = {
+      id: "feature-seal-repair",
+      replaces_card_id: "feature-seal",
+      executor: {
+        kind: "operation",
+        contract: FEATURE_OPERATION_CONTRACTS.seal,
+        effect_classification: "caller_idempotent",
+      },
+      dependencies: ["feature-critique"],
+      outputs: ["review_candidate_receipt"],
+      success_criteria: ["registered_operation_receipt:succeeded"],
+      validators: ["flow.validator/operation-receipt/v1"],
+      data_references: [inputs.brief.id],
+      evidence_references: [
+        `flow.feature-verification-request/v1:${inputs.verification.baseline.fingerprint}`,
+      ],
+      route: null,
+      limits: { max_attempts: 1 },
+      resource_claims: [{
+        kind: "workspace",
+        id: inputs.workspace.subject_id,
+        generation: inputs.workspace.generation,
+        mutation_epoch: inputs.workspace.mutation_epoch,
+        fingerprint: inputs.workspace.fingerprint,
+      }],
+      recovery: "caller_idempotent",
+      inputs: {
+        brief: inputs.brief,
+        mode: inputs.mode,
+        workspace: inputs.workspace,
+        verification: normalizedFeatureVerificationInput(inputs),
+        phase: "seal",
+        finalization: inputs.finalization,
+        publication: inputs.finalization.publication,
+        negative_outcomes: [
+          "no review, integration, push, pull request, cleanup, or tracker completion",
+        ],
+        receipt_owner: "registered_operation",
+        delegate_output_usage: "evidence_input_only",
+        delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
+        operation_evidence_card_ids: ["feature-verify"],
+      },
+    };
+    inputs.repairs = [{
+      schema: "flow.feature-repair/v1",
+      id: "repair:scope",
+      kind: "replan",
+      card_id: "feature-seal",
+      acceptance: [...inputs.brief.acceptance],
+      remaining_scope: ["accept the exact scope checkpoint before re-running seal"],
+      scope_expansion: true,
+      checkpoint_id: checkpointId,
+      template: {
+        schema: "flow.plan-revision-template/v1",
+        id: repairTemplateId,
+        trigger,
+        limits: { max_applications: 1 },
+        changes: {
+          add_cards: [{
+            id: checkpointId,
+            executor: {
+              kind: "checkpoint",
+              contract: "flow.checkpoint/confirmation/v1",
+            },
+            dependencies: [],
+            inputs: { prompt: "Confirm the bounded repair scope" },
+            outputs: [],
+            success_criteria: ["decision:approve"],
+            validators: ["flow.validator/checkpoint-decision/v1"],
+            data_references: [],
+            evidence_references: [],
+            route: null,
+            limits: {},
+            resource_claims: [],
+            recovery: "human_decision",
+          }, repairCard],
+          add_edges: [{ from: checkpointId, to: repairCard.id }],
+          supersede_cards: ["feature-seal"],
+          capability_additions: [{
+            capability: "repository:write",
+            card_ids: [repairCard.id],
+          }],
+          resource_additions: [{ kind: "artifact", id: "repair-output" }],
+          limit_changes: {},
+        },
+      },
+    }];
+  }
   const facts = featureFactsForInputs(inputs);
+  if (scenario.repair === "critique") {
+    facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+    facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+    Object.assign(facts.limits, {
+      max_revisions: 1,
+      max_cards_per_revision: 1,
+    });
+    facts.block_observations.push(observeCardBlock({
+      card_id: "feature-seal",
+      block: {
+        schema: "flow.card-block/v1",
+        id: "feature-seal:critique-repair",
+        type: "plan_revision_required",
+        trigger: inputs.repairs[0].template.trigger,
+        required_capabilities: [],
+        revision_template_ids: ["feature-repair-critique"],
+      },
+    }));
+  }
+  if (scenario.repair === "scope") {
+    facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+    facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+    facts.capability_envelopes.push("repository:write");
+    Object.assign(facts.limits, {
+      max_revisions: 1,
+      max_cards_per_revision: 2,
+      max_capabilities: 1,
+    });
+    facts.block_observations.push(observeCardBlock({
+      card_id: "feature-seal",
+      block: {
+        schema: "flow.card-block/v1",
+        id: "feature-seal:scope-repair",
+        type: "plan_revision_required",
+        trigger: inputs.repairs[0].template.trigger,
+        required_capabilities: [],
+        revision_template_ids: ["feature-repair-scope"],
+      },
+    }));
+  }
 
   let verifyReceipt = null;
   let critiqueEvidence = null;
@@ -3366,10 +4528,60 @@ function featureInputs() {
   };
 }
 
-function prepareFeatureSelection(inputs) {
-  const facts = featureFactsForInputs(inputs);
-  const runtime = createFlowRuntime({
-    runAuthority: createInMemoryRunAuthority(),
+function normalizedFeatureVerificationInput(inputs) {
+  const evidence = inputs.verification.baseline ??
+    inputs.verification.compensating_assertion;
+  return {
+    ...inputs.verification,
+    evidence_id: `${inputs.verification.schema}:${evidence.fingerprint}`,
+  };
+}
+
+function prepareFeatureSelection(
+  inputs,
+  explicitFacts = null,
+  flowRuntime = undefined,
+) {
+  const facts = explicitFacts ?? featureFactsForInputs(inputs);
+  const runtime = flowRuntime ?? featurePreparationRuntime();
+  return runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "feature/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+}
+
+function featurePreparationRuntime(runAuthority = createInMemoryRunAuthority()) {
+  return createFlowRuntime({
+    runAuthority,
+    delegatedAgentPort: {
+      contract: "flow.delegated-agent-port/v1",
+      async describe() {},
+      async send() {},
+      async observe() {},
+      async cancel() {},
+      async reconcile() {},
+      async discover() {
+        return absentDiscovery();
+      },
+      async dispatch() {
+        throw new Error("feature preparation runtime does not dispatch delegates");
+      },
+      async wait() {
+        throw new Error("feature preparation runtime does not wait delegates");
+      },
+      async retire() {
+        throw new Error("feature preparation runtime does not retire delegates");
+      },
+    },
+    delegateOutputValidators: {
+      [DELEGATE_OUTPUT_VALIDATOR]: {
+        validate() {
+          return true;
+        },
+      },
+    },
     registeredOperations: Object.fromEntries(
       Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
         classification: "caller_idempotent",
@@ -3385,12 +4597,6 @@ function prepareFeatureSelection(inputs) {
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
     },
-  });
-  return runtime.prepare({
-    schema: "flow.predefined-flow-selection/v1",
-    definition: "feature/v1",
-    inputs,
-    explicit_facts: facts,
   });
 }
 
@@ -3439,5 +4645,47 @@ function featureDelegateBinding(role, launchByte, authorityByte, watermarkByte) 
       launch_comparison_key: description.comparison_keys.launch,
     },
     validators: [DELEGATE_OUTPUT_VALIDATOR],
+  };
+}
+
+function downstreamClosure(cards, rootId) {
+  const closure = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const card of cards) {
+      if (!closure.has(card.id) && card.dependencies.some((id) => closure.has(id))) {
+        closure.add(card.id);
+        changed = true;
+      }
+    }
+  }
+  return cards.filter(({ id }) => closure.has(id));
+}
+
+function rebindFeatureCardInputs(inputs, replacements) {
+  const rebound = structuredClone(inputs ?? {});
+  for (const field of [
+    "delegate_evidence_card_ids",
+    "operation_evidence_card_ids",
+    "test_card_ids",
+    "setup_card_id",
+    "mutation_owner",
+  ]) {
+    if (Array.isArray(rebound[field])) {
+      rebound[field] = rebound[field].map((id) => replacements.get(id) ?? id);
+    } else if (typeof rebound[field] === "string") {
+      rebound[field] = replacements.get(rebound[field]) ?? rebound[field];
+    }
+  }
+  return rebound;
+}
+
+function rebindFeatureManagedAgent(binding, replacements) {
+  return {
+    ...binding,
+    card_ids: binding.card_ids.map((id) => replacements.get(id) ?? id),
+    terminal_card_id: replacements.get(binding.terminal_card_id) ??
+      binding.terminal_card_id,
   };
 }

@@ -21,6 +21,7 @@ import {
   canonicalize,
   digest,
   freezeCanonical,
+  isPlainRecord,
 } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
 import {
@@ -80,6 +81,7 @@ import {
 import {
   isReviewTargetInvalidationCommand,
   isReviewTargetRefreshCommand,
+  GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
   reviewRecordCandidateAuthorityIssue,
   reviewRecordSourceAuthorityIssue,
 } from "./review-flow.mjs";
@@ -2297,6 +2299,20 @@ export function createDurableRunAuthority({
         dispatch.resolve();
         return result;
       } catch (error) {
+        const providerObservation = durableProviderObservation(error);
+        if (providerObservation !== null) {
+          try {
+            appendEffectObservation(
+              database,
+              intent,
+              providerEffectErrorObservation(intent, providerObservation),
+            );
+          } catch {
+            // Preserve the provider failure. The original error remains the
+            // caller-visible result if durable observation publication is
+            // fenced, while successful publication survives a restart.
+          }
+        }
         dispatch.resolve();
         throw error;
       } finally {
@@ -2317,79 +2333,7 @@ export function createDurableRunAuthority({
       }
       const database = openAuthorityDatabase(databasePath);
       try {
-        assertDurableHostRestoreClear(
-          database,
-          "effect observations are fenced by the host restore barrier",
-        );
-        assertMutationFence(lockDatabase, database, {
-          authorityEpoch,
-          bootId,
-          processIdentity,
-        });
-        const stream = readStream(database, intent?.run_id);
-        const recorded = stream?.records.some(({ payload }) =>
-          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
-          isDeepStrictEqual(payload.intent, intent));
-        if (!recorded) {
-          throw new AuthorityFenceError(
-            "unrecorded_effect_intent",
-            "effect observation is not bound to a recorded intent",
-          );
-        }
-        assertEffectRunAdmitted(stream, bootId);
-        if (stream.records.some(({ payload }) =>
-          payload.type === "effect_receipt_recorded" &&
-          payload.effect_id === intent.effect_id)) {
-          throw new AuthorityFenceError(
-            "effect_already_recorded",
-            "effect already has a durable receipt",
-          );
-        }
-        if (!["active", "cancelled"].includes(stream.fold.phase)) {
-          throw new AuthorityFenceError(
-            "run_terminal",
-            "effect observations cannot mutate a settled terminal run",
-          );
-        }
-        const normalizedObservation = normalizeEffectObservation(
-          observation,
-          intent,
-        );
-        database.exec("BEGIN IMMEDIATE");
-        try {
-          assertAuthorityEpoch(database, {
-            authorityEpoch,
-            bootId,
-            processIdentity,
-          });
-          appendAuthorityEvents(database, {
-            streamId: intent.run_id,
-            streamKind: "run",
-            events: [{
-              contract: "flow.run-event/v1",
-              payload: {
-                type: "effect_observation_recorded",
-                effect_id: intent.effect_id,
-                observation: normalizedObservation,
-              },
-            }],
-            authorityEpoch,
-            bootId,
-            processIdentity,
-          });
-          database.exec("COMMIT");
-        } catch (error) {
-          if (database.isTransaction) database.exec("ROLLBACK");
-          throw error;
-        }
-        const projection = projectFencedRun(database, readStream(
-          database,
-          intent.run_id,
-        ), fenceRun);
-        for (const watcher of watchers.get(intent.run_id) ?? []) {
-          watcher.publish(projection);
-        }
-        return normalizedObservation;
+        return appendEffectObservation(database, intent, observation);
       } finally {
         database.close();
       }
@@ -2412,6 +2356,79 @@ export function createDurableRunAuthority({
 
   function assertOpen() {
     if (closed) throw new Error("durable run authority is closed");
+  }
+
+  function appendEffectObservation(database, intent, observation) {
+    assertDurableHostRestoreClear(
+      database,
+      "effect observations are fenced by the host restore barrier",
+    );
+    assertMutationFence(lockDatabase, database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    const stream = readStream(database, intent?.run_id);
+    const recorded = stream?.records.some(({ payload }) =>
+      EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+      isDeepStrictEqual(payload.intent, intent));
+    if (!recorded) {
+      throw new AuthorityFenceError(
+        "unrecorded_effect_intent",
+        "effect observation is not bound to a recorded intent",
+      );
+    }
+    assertEffectRunAdmitted(stream, bootId);
+    if (stream.records.some(({ payload }) =>
+      payload.type === "effect_receipt_recorded" &&
+      payload.effect_id === intent.effect_id)) {
+      throw new AuthorityFenceError(
+        "effect_already_recorded",
+        "effect already has a durable receipt",
+      );
+    }
+    if (!["active", "cancelled"].includes(stream.fold.phase)) {
+      throw new AuthorityFenceError(
+        "run_terminal",
+        "effect observations cannot mutate a settled terminal run",
+      );
+    }
+    const normalizedObservation = normalizeEffectObservation(observation, intent);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertAuthorityEpoch(database, {
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      appendAuthorityEvents(database, {
+        streamId: intent.run_id,
+        streamKind: "run",
+        events: [{
+          contract: "flow.run-event/v1",
+          payload: {
+            type: "effect_observation_recorded",
+            effect_id: intent.effect_id,
+            observation: normalizedObservation,
+          },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+    const projection = projectFencedRun(database, readStream(
+      database,
+      intent.run_id,
+    ), fenceRun);
+    for (const watcher of watchers.get(intent.run_id) ?? []) {
+      watcher.publish(projection);
+    }
+    return normalizedObservation;
   }
 
   function applySchemaTransitionCommand(command) {
@@ -2550,11 +2567,13 @@ export function createDurableRunAuthority({
         "work.review-record-command/v1",
         "work.review-target-invalidation-command/v1",
         "work.review-target-refresh-command/v1",
+        GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
       ].includes(command?.schema) ||
           command.contract !== "work.review/v1") {
         return workRejection("command", "invalid_review_command", { command });
       }
-      if (command.schema === "work.review-record-command/v1") {
+      if (command.schema === "work.review-record-command/v1" ||
+          command.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) {
         return workCommand(command);
       }
       if (isReviewTargetInvalidationCommand(command)) {
@@ -2782,11 +2801,15 @@ function evaluateWorkCommand(database, identity, command, authorityObservation =
 }
 
 function isReviewRecordCommand(command) {
-  return command?.schema === "work.review-record-command/v1" &&
-    command.type === "review_record" && command.contract === "work.review/v1";
+  return ((command?.schema === "work.review-record-command/v1" &&
+    command.type === "review_record") ||
+    (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA &&
+      command.type === "github_review_record")) &&
+    command.contract === "work.review/v1";
 }
 
 function reviewCandidateCommandIssue(database, command) {
+  if (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) return null;
   const candidateIdentity = workStreamIdentity(
     "work.review/v1",
     command.candidate?.candidate_id,
@@ -3934,6 +3957,13 @@ function fencedRunFold(database, stream, rebootObservationAdapter) {
   return freezeCanonical({
     ...stream.fold,
     watermark,
+    revision_outcomes: (stream.fold.revision_outcomes ?? []).map((outcome) => ({
+      ...outcome,
+      authority_watermark: watermark,
+      legal_next_actions: legalActions.filter((action) =>
+        action.type === "revision_decision" &&
+        action.template_id === outcome.template_id),
+    })),
     admission: hostRestoreBarrier
       ? "suspended_host_reconciliation"
       : suspendedAfterReboot
@@ -4029,6 +4059,32 @@ function sameEffectIntentIdentity(left, right) {
   } catch {
     return false;
   }
+}
+
+function durableProviderObservation(error) {
+  const observation = error?.provider_observation;
+  if (!isPlainRecord(observation) ||
+      typeof observation.schema !== "string" ||
+      observation.schema.length === 0) {
+    return null;
+  }
+  try {
+    digest(observation);
+    return observation;
+  } catch {
+    return null;
+  }
+}
+
+function providerEffectErrorObservation(intent, providerObservation) {
+  return {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "indeterminate",
+    causation: null,
+    provider_observation: providerObservation,
+  };
 }
 
 function effectIntentIdentity(intent) {

@@ -1,5 +1,9 @@
 import { digest, freezeCanonical } from "./canonical.mjs";
-import { admitPlanRevision } from "./plan-revision.mjs";
+import { operationEffectIdentity } from "./effect-identity.mjs";
+import {
+  admitPlanRevision,
+  checkRevisionCapacity,
+} from "./plan-revision.mjs";
 import { createRejection } from "./rejection.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
@@ -8,6 +12,7 @@ const FORBIDDEN_COMMANDS = new Set([
   "generic_unblock",
   "timer_lease_takeover",
 ]);
+const CHECKPOINT_BINDING_SCHEMA = "flow.checkpoint-binding/v1";
 
 export function decideLifecycle(fold, command) {
   if (FORBIDDEN_COMMANDS.has(command?.type)) {
@@ -127,7 +132,12 @@ export function decideLifecycle(fold, command) {
     const legalRevision = fold.legal_actions.find((action) =>
       action.type === "revision_decision" && digest(action) === digest(command));
     if (!legalRevision) return reject(fold, command, "revision_not_actionable");
+    const template = fold.revision_templates.find(
+      ({ id }) => id === command.template_id,
+    );
+    const repair = template?.repair;
     if (command.decision === "decline") {
+      const admissionCode = legalRevision.admission?.code ?? null;
       return {
         schema: "flow.decision/v1",
         command_type: command.type,
@@ -136,15 +146,20 @@ export function decideLifecycle(fold, command) {
           template_id: command.template_id,
           base_plan_fingerprint: command.base_plan_fingerprint,
           trigger: command.trigger,
+          changes: command.changes,
+          reason: admissionCode === null
+            ? "operator_declined"
+            : "revision_admission_rejected",
+          code: admissionCode ?? "revision_declined",
+          ...(repair === undefined ? {} : {
+            repair,
+          }),
         }],
         effect_intents: [],
         obligations: [],
         projection_hints: ["operator", "graph"],
       };
     }
-    const template = fold.revision_templates.find(
-      ({ id }) => id === command.template_id,
-    );
     const revision = admitPlanRevision(fold, template);
     if (revision.code) return reject(fold, command, revision.code);
     const completesRun = decisionCompletesRun(fold, {
@@ -162,6 +177,9 @@ export function decideLifecycle(fold, command) {
         plan_fingerprint: revision.plan_fingerprint,
         trigger: command.trigger,
         changes: command.changes,
+        ...(repair === undefined ? {} : {
+          repair,
+        }),
         active_plan: revision.active_plan,
       }, ...(completesRun ? [{ type: "run_succeeded" }] : [])],
       effect_intents: [],
@@ -240,15 +258,25 @@ export function decideLifecycle(fold, command) {
   }
 
   const checkpoint = fold.cards.find(({ id }) => id === command.checkpoint_id);
-  if (!checkpoint || checkpoint.executor_kind !== "checkpoint" ||
+  const checkpointDefinition = fold.active_plan?.cards?.find(({ id }) =>
+    id === command.checkpoint_id) ?? checkpoint;
+  if (!checkpoint || !checkpointDefinition || checkpoint.executor_kind !== "checkpoint" ||
       checkpoint.status !== "waiting_checkpoint") {
     return reject(fold, command, "checkpoint_not_actionable");
   }
   if (!["approve", "decline"].includes(command.decision)) {
     return reject(fold, command, "unsupported_checkpoint_decision");
   }
+  const checkpointBinding = validateCheckpointBinding(
+    command.checkpoint_binding,
+    checkpointDefinition,
+  );
+  if (checkpointBinding.code !== null) {
+    return reject(fold, command, checkpointBinding.code);
+  }
   const legalCheckpointDecision = fold.legal_actions.find((action) =>
-    action.type === "checkpoint_decision" && digest(action) === digest(command));
+    action.type === "checkpoint_decision" &&
+    digest(action) === digest(checkpointCommandIdentity(command)));
   if (!legalCheckpointDecision) {
     return reject(fold, command, "checkpoint_not_actionable");
   }
@@ -261,7 +289,25 @@ export function decideLifecycle(fold, command) {
       heldManagedAgentRetirementIntents(fold, {
         settlementPhase: "declined",
       }),
+      checkpointBinding.value,
     );
+  }
+
+  const gatedRevision = (fold.revisions ?? [])
+    .filter(({ repair }) => repair?.checkpoint_id === checkpoint.id)
+    .at(-1);
+  if (gatedRevision) {
+    const approvalCapacity = checkRevisionCapacity({
+      limits: fold.admission_limits ?? fold.limits,
+      capabilityBindings: fold.admission_capability_bindings ??
+        fold.capability_bindings,
+      resourceClaims: fold.admission_resource_claims ?? fold.resource_claims,
+      elapsedSeconds: fold.elapsed_seconds,
+      changes: gatedRevision.changes,
+    });
+    if (approvalCapacity.code) {
+      return reject(fold, command, approvalCapacity.code);
+    }
   }
 
   const operation = nextOperation(fold, checkpoint.id);
@@ -270,7 +316,10 @@ export function decideLifecycle(fold, command) {
       type: "checkpoint_decided",
       checkpoint_id: checkpoint.id,
       decision: command.decision,
-    }]);
+      ...(checkpointBinding.value === null ? {} : {
+        checkpoint_binding: checkpointBinding.value,
+      }),
+    }], checkpointBinding.value);
   }
 
   return decision(
@@ -279,6 +328,8 @@ export function decideLifecycle(fold, command) {
     decisionCompletesRun(fold, { completedCardIds: [checkpoint.id] })
       ? [{ type: "run_succeeded" }]
       : [],
+    [],
+    checkpointBinding.value,
   );
 }
 
@@ -456,20 +507,24 @@ function nextOperation(fold, checkpointId) {
       .inputs?.operation_card_id === card.id);
 }
 
-function operationDecision(fold, command, operation, immediateEvents = []) {
+function operationDecision(
+  fold,
+  command,
+  operation,
+  immediateEvents = [],
+  checkpointBinding = null,
+) {
   const operationCard = fold.active_plan.cards.find(
     ({ id }) => id === operation.id,
   );
   const materialized = materializeOperationEvidence(fold, operationCard);
   if (materialized.code !== null) return reject(fold, command, materialized.code);
-  const attemptId = `${fold.run_id}:${operation.id}:attempt:1`;
-  const effectIdentity = digest({
-    schema: "flow.operation-effect-identity/v1",
-    run_id: fold.run_id,
-    card_id: operation.id,
-    attempt_id: attemptId,
-    operation_contract: operationCard.executor.contract,
+  const identity = operationEffectIdentity({
+    runId: fold.run_id,
+    cardId: operation.id,
+    operationContract: operationCard.executor.contract,
   });
+  if (identity === null) return reject(fold, command, "invalid_operation_identity");
   const completedCardIds = [
     operation.id,
     ...immediateEvents
@@ -485,15 +540,15 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
       {
         type: "operation_completed",
         card_id: operation.id,
-        attempt_id: attemptId,
+        attempt_id: identity.attempt_id,
       },
       ...(completesRun ? [{ type: "run_succeeded" }] : []),
     ],
     effect_intents: [{
       schema: "flow.effect-intent/v1",
-      effect_id: `effect:${effectIdentity.slice("sha256:".length)}`,
-      idempotency_key: `operation:${effectIdentity.slice("sha256:".length)}`,
-      attempt_id: attemptId,
+      effect_id: identity.effect_id,
+      idempotency_key: identity.idempotency_key,
+      attempt_id: identity.attempt_id,
       card_id: operation.id,
       classification: operationCard.executor.effect_classification,
       operation_contract: operationCard.executor.contract,
@@ -503,6 +558,9 @@ function operationDecision(fold, command, operation, immediateEvents = []) {
         ...operationCard.inputs,
         ...(materialized.evidence === null ? {} : {
           authority_materialized_evidence: materialized.evidence,
+        }),
+        ...(checkpointBinding === null ? {} : {
+          checkpoint_binding: checkpointBinding,
         }),
       },
       source_authority_watermark: fold.watermark,
@@ -632,7 +690,13 @@ function sameCanonicalValue(left, right) {
   }
 }
 
-function decision(command, checkpoint, terminalEvents, effectIntents = []) {
+function decision(
+  command,
+  checkpoint,
+  terminalEvents,
+  effectIntents = [],
+  checkpointBinding = null,
+) {
   return {
     schema: "flow.decision/v1",
     command_type: command.type,
@@ -641,6 +705,9 @@ function decision(command, checkpoint, terminalEvents, effectIntents = []) {
         type: "checkpoint_decided",
         checkpoint_id: checkpoint.id,
         decision: command.decision,
+        ...(checkpointBinding === null ? {} : {
+          checkpoint_binding: checkpointBinding,
+        }),
       },
       ...terminalEvents,
     ],
@@ -648,6 +715,41 @@ function decision(command, checkpoint, terminalEvents, effectIntents = []) {
     obligations: [],
     projection_hints: ["operator", "graph"],
   };
+}
+
+function checkpointCommandIdentity(command) {
+  if (!Object.hasOwn(command, "checkpoint_binding")) return command;
+  const { checkpoint_binding: _binding, ...identity } = command;
+  return identity;
+}
+
+function validateCheckpointBinding(binding, checkpoint) {
+  const requiredSchema = checkpoint.inputs?.required_checkpoint_binding_schema;
+  if (binding === undefined) {
+    return requiredSchema === undefined
+      ? { code: null, value: null }
+      : { code: "checkpoint_binding_required", value: null };
+  }
+  try {
+    if (binding?.schema !== CHECKPOINT_BINDING_SCHEMA ||
+        Object.keys(binding).length !== 4 ||
+        !["schema", "checkpoint_id", "draft", "draft_digest"].every((key) =>
+          Object.hasOwn(binding, key)) ||
+        binding.checkpoint_id !== checkpoint.id ||
+        requiredSchema !== undefined && binding.schema !== requiredSchema ||
+        !isRecord(binding.draft) ||
+        typeof binding.draft_digest !== "string" ||
+        digest(binding.draft) !== binding.draft_digest) {
+      return { code: "invalid_checkpoint_binding", value: null };
+    }
+    return { code: null, value: binding };
+  } catch {
+    return { code: "invalid_checkpoint_binding", value: null };
+  }
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export const LifecycleKernel = Object.freeze({

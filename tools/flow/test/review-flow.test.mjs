@@ -9,6 +9,7 @@ import {
   createFlowRuntime,
   validateReviewDelegateOutput,
 } from "../src/flow-runtime.mjs";
+import { operationEffectIdentity } from "../src/effect-identity.mjs";
 import {
   createDurableRunAuthority,
   createInMemoryRunAuthority,
@@ -29,6 +30,7 @@ import {
 } from "../src/review-rendering.mjs";
 import {
   createInMemoryReviewAuthority,
+  createInMemoryGitHubReviewAuthority,
   createReviewDefinition,
   createReviewOperationRegistration,
   buildReviewTargetObservation,
@@ -36,6 +38,9 @@ import {
   buildReviewTargetRefreshEvent,
   materializeReviewDelegateResult,
   projectReviewRecord,
+  GITHUB_REVIEW_OPERATION_CONTRACTS,
+  GITHUB_REVIEW_TARGET_SCHEMA,
+  githubPendingEffectIdentity,
   reviewCompletionAuthority,
   reviewEventWatermark,
   reviewAuthorityEventWatermark,
@@ -78,6 +83,902 @@ test("review/v1 reports invalid urgency_floor as typed caller input", () => {
     }),
     (error) => error.reason === "invalid_urgency_floor",
   );
+});
+
+test("review/v1 prepares an exact GitHub snapshot with an optional pending-review checkpoint", () => {
+  const target = githubReviewTarget();
+  const inputs = githubReviewInputs(target, { createPendingReview: true });
+  const facts = reviewRuntimeFacts();
+  facts.operation_contracts.push(GITHUB_REVIEW_OPERATION_CONTRACTS.pending);
+  facts.validator_contracts.push("flow.validator/github-review-receipt/v1");
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    githubReviewForge: {},
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+
+  const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
+  assert.equal(cards.get("review-record").inputs.target.schema, GITHUB_REVIEW_TARGET_SCHEMA);
+  assert.equal(cards.get("review-github-pending-checkpoint").executor.kind, "checkpoint");
+  assert.equal(
+    cards.get("review-github-pending").executor.effect_classification,
+    "one_shot_uncertain",
+  );
+  assert.deepEqual(cards.get("review-github-pending").dependencies, [
+    "review-github-pending-checkpoint",
+  ]);
+});
+
+test("review/v1 rejects unversioned or aliased pending-review requests", () => {
+  const target = githubReviewTarget();
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    githubReviewForge: {},
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  for (const pendingRequest of [
+    true,
+    { create: true },
+    { enabled: true },
+    { schema: "flow.github-pending-review-request/v1", enabled: true },
+  ]) {
+    assert.throws(
+      () => runtime.prepare({
+        schema: "flow.predefined-flow-selection/v1",
+        definition: "review/v1",
+        inputs: {
+          ...githubReviewInputs(target),
+          pending_review: pendingRequest,
+        },
+        explicit_facts: reviewRuntimeFacts(),
+      }),
+      (error) => error.reason === "invalid_github_pending_request",
+    );
+  }
+});
+
+test("declining the exact GitHub pending-review checkpoint completes locally without Forge mutation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-github-review-decline-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-decline-boot", "writer"),
+  });
+  t.after(() => runAuthority.close());
+  const forge = githubForge();
+  const target = githubReviewTarget();
+  const inputs = githubReviewInputs(target, { createPendingReview: true });
+  const [securityDescription, criticDescription] = await Promise.all([
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-sol", "security"), {}),
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-luna", "critic"), {}),
+  ]);
+  inputs.delegation.lenses.security = {
+    description: securityDescription,
+    route: reviewRoute("agent:github-security", securityDescription),
+  };
+  inputs.delegation.critic = {
+    description: criticDescription,
+    route: reviewRoute("agent:github-critic", criticDescription),
+  };
+  const facts = reviewRuntimeFacts();
+  facts.operation_contracts.push(GITHUB_REVIEW_OPERATION_CONTRACTS.pending);
+  facts.validator_contracts.push("flow.validator/github-review-receipt/v1");
+  const runtime = createFlowRuntime({
+    runAuthority,
+    githubReviewForge: forge,
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+  const launch = runtime.launch(reviewLaunchRequest(prepared));
+  assert.ok(launch.run_id, JSON.stringify(launch));
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  const declined = runtime.command({ ...checkpoint, decision: "decline" });
+  assert.equal(declined.accepted, true, JSON.stringify(declined));
+  const projection = runtime.query({ run_id: launch.run_id });
+  assert.equal(projection.phase, "declined");
+  assert.equal(forge.createCount, 0);
+  const declinedCheckpoint = projection.checkpoints.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending-checkpoint");
+  assert.equal(declinedCheckpoint.decision, "decline");
+  assert.deepEqual(declinedCheckpoint.checkpoint_binding, {
+    schema: "flow.checkpoint-binding/v1",
+    checkpoint_id: "review-github-pending-checkpoint",
+    draft: checkpoint.draft,
+    draft_digest: checkpoint.draft_digest,
+  });
+  assert.equal(projection.effects.some(({ card_id: cardId }) =>
+    cardId === "review-github-pending"), false);
+  assert.deepEqual(projection.legal_actions, []);
+});
+
+test("accepting the exact GitHub checkpoint creates one unsubmitted pending review only", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-github-review-accept-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-accept-boot", "writer"),
+  });
+  t.after(() => runAuthority.close());
+  const forge = githubForge();
+  const target = githubReviewTarget();
+  const inputs = githubReviewInputs(target, { createPendingReview: true });
+  const [securityDescription, criticDescription] = await Promise.all([
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-sol", "security"), {}),
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-luna", "critic"), {}),
+  ]);
+  inputs.delegation.lenses.security = {
+    description: securityDescription,
+    route: reviewRoute("agent:github-accept-security", securityDescription),
+  };
+  inputs.delegation.critic = {
+    description: criticDescription,
+    route: reviewRoute("agent:github-accept-critic", criticDescription),
+  };
+  const facts = reviewRuntimeFacts();
+  facts.operation_contracts.push(GITHUB_REVIEW_OPERATION_CONTRACTS.pending);
+  facts.validator_contracts.push("flow.validator/github-review-receipt/v1");
+  const runtime = createFlowRuntime({
+    runAuthority,
+    githubReviewForge: forge,
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+  const launch = runtime.launch(reviewLaunchRequest(prepared));
+  assert.ok(launch.run_id, JSON.stringify(launch));
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  const approved = runtime.command({ ...checkpoint, decision: "approve" });
+  assert.equal(approved.accepted, true, JSON.stringify(approved));
+  await driveUntilTerminal(runtime, launch.run_id);
+  const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(forge.createCount, 1);
+  assert.equal(forge.submitCount, 0);
+  assert.deepEqual(forge.forbiddenMutationCalls, []);
+  assert.equal(forge.createRequests.length, 1);
+  assert.deepEqual(forge.createRequests[0].target, target);
+  assert.equal(forge.createRequests[0].target_fingerprint, target.snapshot_fingerprint);
+  assert.equal(forge.createRequests[0].commit_id, target.snapshot.head_sha);
+  assert.deepEqual(forge.createRequests[0].expected_snapshot, target.snapshot);
+  assert.equal(forge.createRequests[0].submitted, false);
+  assert.equal(forge.createRequests[0].draft.schema, "flow.github-pending-review-draft/v1");
+  assert.match(forge.createRequests[0].marker, /^flow-github-review:/u);
+  const pendingEffect = completed.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(pendingEffect.status, "succeeded");
+  assert.equal(pendingEffect.receipt.provider_receipt.submitted, false);
+  assert.equal(pendingEffect.receipt.provider_receipt.state, "pending");
+  assert.deepEqual(
+    pendingEffect.receipt.provider_receipt.target_fingerprint,
+    target.snapshot_fingerprint,
+  );
+  assert.match(completed.watermark, /^sha256:[0-9a-f]{64}$/u);
+  assert.deepEqual(completed.legal_actions, []);
+  const runWatch = runtime.watch({ run_id: launch.run_id });
+  const watchedRun = await runWatch.next();
+  assert.equal(watchedRun.value.watermark, completed.watermark);
+  assert.deepEqual(watchedRun.value.legal_actions, []);
+  const review = runtime.query({ review_id: reviewSubjectId(target) });
+  assert.equal(review.target_kind, "github", JSON.stringify(review));
+  assert.deepEqual(review.target, target);
+  assert.equal(review.watermark, review.authority_watermark);
+  assert.equal(review.target_authority_watermark, target.target_authority_watermark);
+  assert.equal(review.remote_review.status, "created");
+  assert.equal(review.remote_review.state, "pending");
+  assert.equal(review.remote_review.submitted, false);
+  assert.equal(review.remote_review.review_id, pendingEffect.receipt.provider_receipt.review_id);
+  assert.equal(review.remote_review.draft_digest, pendingEffect.receipt.provider_receipt.draft_digest);
+  assert.equal(review.remote_review.effect_id, pendingEffect.receipt.provider_receipt.effect_id);
+  assert.deepEqual(review.legal_actions, []);
+  const reviewWatch = runtime.watch({ review_id: reviewSubjectId(target) });
+  const watchedReview = await reviewWatch.next();
+  assert.equal(watchedReview.value.watermark, review.watermark);
+  assert.deepEqual(watchedReview.value.legal_actions, []);
+});
+
+test("GitHub checkpoint exposes and binds the exact rendered pending-review draft", async (t) => {
+  const forge = githubForge();
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(checkpoint.draft?.schema, "flow.github-pending-review-draft/v1");
+  assert.equal(checkpoint.draft_digest, digest(checkpoint.draft));
+  assert.equal(checkpoint.draft.target_fingerprint, githubReviewTarget().snapshot_fingerprint);
+  const checkpointCard = runtime.query({ run_id: launch.run_id }).active_plan.cards.find(({ id }) =>
+    id === "review-github-pending-checkpoint");
+  assert.deepEqual(checkpointCard.inputs.draft, checkpoint.draft);
+  assert.equal(checkpointCard.inputs.draft_digest, checkpoint.draft_digest);
+
+  const tampered = runtime.command({
+    ...checkpoint,
+    decision: "approve",
+    draft: { ...checkpoint.draft, body: `${checkpoint.draft.body}\nforged` },
+  });
+  assert.equal(tampered.accepted, undefined);
+  assert.equal(tampered.code, "github_review_checkpoint_draft_mismatch");
+  assert.equal(forge.createCount, 0);
+
+  const approved = runtime.command({ ...checkpoint, decision: "approve" });
+  assert.equal(approved.accepted, true, JSON.stringify(approved));
+  await driveUntilTerminal(runtime, launch.run_id);
+  assert.equal(forge.createCount, 1);
+  assert.deepEqual(forge.createRequests[0].draft, checkpoint.draft);
+  assert.equal(forge.createRequests[0].draft_digest, checkpoint.draft_digest);
+});
+
+test("durable RunAuthority requires the declarative GitHub checkpoint binding", async (t) => {
+  const forge = githubForge();
+  const { runtime, runAuthority, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(
+    runAuthority.query(launch.run_id).active_plan.cards.find(({ id }) =>
+      id === "review-github-pending-checkpoint").inputs.required_checkpoint_binding_schema,
+    "flow.checkpoint-binding/v1",
+  );
+  const { draft: _draft, draft_digest: _draftDigest, ...identity } = checkpoint;
+  assert.equal(Object.hasOwn(identity, "checkpoint_binding"), false);
+  const missing = runAuthority.command({ ...identity, decision: "approve" });
+  assert.equal(missing.accepted, undefined);
+  assert.equal(missing.code, "checkpoint_binding_required");
+  const tamperedDraft = { ...checkpoint.draft, body: `${checkpoint.draft.body}\nforged` };
+  const tampered = runAuthority.command({
+    ...identity,
+    decision: "approve",
+    checkpoint_binding: {
+      schema: "flow.checkpoint-binding/v1",
+      checkpoint_id: checkpoint.checkpoint_id,
+      draft: tamperedDraft,
+      draft_digest: checkpoint.draft_digest,
+    },
+  });
+  assert.equal(tampered.accepted, undefined);
+  assert.equal(tampered.code, "invalid_checkpoint_binding");
+  assert.equal(forge.createCount, 0);
+});
+
+test("GitHub draft pre-render uses the lifecycle operation effect identity", async (t) => {
+  const forge = githubForge();
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  const identity = githubPendingEffectIdentity({ runId: launch.run_id });
+  assert.ok(identity);
+  assert.match(
+    checkpoint.draft.body,
+    new RegExp(`flow-github-review:${identity.idempotency_key}`),
+  );
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const operation = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.find(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "succeeded"));
+  const effect = operation.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(effect.effect_id, identity.effect_id);
+  assert.equal(effect.idempotency_key, identity.idempotency_key);
+  assert.equal(effect.attempt_id, identity.attempt_id);
+});
+
+test("generic operation identity requires explicit operation identity fields", () => {
+  assert.equal(operationEffectIdentity({ runId: "run:test" }), null);
+  assert.equal(operationEffectIdentity({
+    runId: "run:test",
+    cardId: "card:test",
+    operationContract: "flow.operation/test/v1",
+  }).attempt_id, "run:test:card:test:attempt:1");
+});
+
+test("durable FlowRuntime reopens the exact GitHub semantic review projection", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-github-review-reopen-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-reopen-a", "writer"),
+  });
+  const forge = githubForge();
+  const first = await launchGitHubPendingScenario(t, {
+    forge,
+    runAuthority: firstAuthority,
+  });
+  const checkpoint = await driveToAction(first.runtime, first.launch.run_id, "checkpoint_decision");
+  assert.equal(first.runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const completed = await driveUntilTerminal(first.runtime, first.launch.run_id);
+  const subjectId = reviewSubjectId(first.target);
+  const beforeClose = first.runtime.query({ review_id: subjectId });
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(beforeClose.target_kind, "github");
+  assert.equal(beforeClose.remote_review.status, "created");
+  assert.equal(beforeClose.remote_review.state, "pending");
+  firstAuthority.close();
+
+  const reopenedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-reopen-b", "writer"),
+  });
+  t.after(() => reopenedAuthority.close());
+  const reopened = createFlowRuntime({
+    runAuthority: reopenedAuthority,
+    githubReviewForge: forge,
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const afterReopen = reopened.query({ review_id: subjectId });
+  assert.equal(afterReopen.target_kind, "github");
+  assert.deepEqual(afterReopen.target, beforeClose.target);
+  assert.equal(afterReopen.watermark, beforeClose.watermark);
+  assert.deepEqual(afterReopen.remote_review, beforeClose.remote_review);
+  assert.deepEqual(afterReopen.command_receipts, beforeClose.command_receipts);
+  assert.deepEqual(afterReopen.artifacts, beforeClose.artifacts);
+  assert.deepEqual(afterReopen.legal_actions, []);
+  const watched = await reopened.watch({ review_id: subjectId }).next();
+  assert.equal(watched.value.watermark, beforeClose.watermark);
+  assert.deepEqual(watched.value.legal_actions, []);
+});
+
+test("reopened FlowRuntime recovers a pending intent with its durable exact draft binding", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-github-review-draft-reopen-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-draft-reopen-boot", "writer"),
+  });
+  t.after(() => runAuthority.close());
+  const forge = githubForge({
+    onCreate(request) {
+      const review = {
+        id: "github-review:draft-reopen",
+        state: "pending",
+        submitted: false,
+        marker: request.marker,
+        target_fingerprint: request.target_fingerprint,
+        target_authority_watermark: request.target_authority_watermark,
+        draft_digest: request.draft_digest,
+        repository: request.repository,
+        pull_request_number: request.pull_request_number,
+        commit_id: request.commit_id,
+      };
+      this.pendingReviews.push(review);
+      throw Object.assign(new Error("pending review response was lost"), {
+        code: "github_review_receipt_ambiguous",
+      });
+    },
+  });
+  const first = await launchGitHubPendingScenario(t, { forge, runAuthority });
+  const checkpoint = await driveToAction(first.runtime, first.launch.run_id, "checkpoint_decision");
+  const acceptedDraft = checkpoint.draft;
+  const acceptedDraftDigest = checkpoint.draft_digest;
+  assert.equal(first.runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const unresolved = await waitForProjection(first.runtime, first.launch.run_id, (projection) =>
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "unresolved"));
+  const pendingEffect = unresolved.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(
+    pendingEffect.checkpoint_binding?.draft_digest,
+    acceptedDraftDigest,
+  );
+
+  runAuthority.close();
+  const reopenedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-draft-reopen-boot", "writer"),
+  });
+  t.after(() => reopenedAuthority.close());
+  const reopened = createFlowRuntime({
+    runAuthority: reopenedAuthority,
+    githubReviewForge: forge,
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const immediatelyReopened = reopened.query({ run_id: first.launch.run_id });
+  assert.ok(
+    immediatelyReopened.effects.find(({ card_id: cardId }) =>
+      cardId === "review-github-pending")?.checkpoint_binding,
+    JSON.stringify(immediatelyReopened),
+  );
+  const recovery = immediatelyReopened.legal_actions.find(({ type }) => type === "recovery");
+  if (recovery) assert.equal(reopened.command(recovery).accepted, true);
+  const reopenedProjection = await waitForProjection(reopened, first.launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "succeeded"));
+  const reopenedEffect = reopenedProjection.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(
+    reopenedEffect.checkpoint_binding.draft_digest,
+    acceptedDraftDigest,
+  );
+  assert.deepEqual(
+    reopenedEffect.checkpoint_binding.draft,
+    acceptedDraft,
+  );
+  assert.equal(forge.createCount, 1);
+  assert.equal(forge.submitCount, 0);
+  assert.equal(
+    reopenedEffect.receipt.provider_receipt.draft_digest,
+    acceptedDraftDigest,
+  );
+});
+
+test("GitHub pending creation requires complete provider identity evidence", async (t) => {
+  const forge = githubForge({
+    onCreate() {
+      return { id: "github-review:incomplete", state: "pending" };
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const unresolved = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "unresolved"));
+  const pending = unresolved.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(pending.receipt, null);
+  assert.equal(forge.createCount, 1);
+  assert.equal(forge.submitCount, 0);
+});
+
+test("an unrelated pending GitHub review is preserved and cannot satisfy this flow", async (t) => {
+  const unrelated = {
+    id: "human-review:existing",
+    state: "pending",
+    submitted: false,
+    body: "A reviewer draft for a different purpose",
+  };
+  const forge = githubForge({ pendingReviews: [unrelated] });
+  const { runtime, launch, target } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const completed = await driveUntilTerminal(runtime, launch.run_id);
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(forge.createCount, 1);
+  assert.equal(forge.submitCount, 0);
+  assert.deepEqual(forge.pendingReviews[0], unrelated);
+  assert.equal(forge.pendingReviews.length, 2);
+  assert.notEqual(forge.pendingReviews[1].id, unrelated.id);
+  assert.equal(
+    forge.pendingReviews[1].target_fingerprint,
+    target.snapshot_fingerprint,
+  );
+  assert.equal(
+    forge.pendingReviews[1].draft_digest,
+    forge.createRequests[0].draft_digest,
+  );
+  assert.notEqual(forge.pendingReviews[1].marker, undefined);
+});
+
+test("an ambiguous GitHub receipt stays one-shot uncertain without reposting", async (t) => {
+  const forge = githubForge({
+    onCreate(request) {
+      const exact = {
+        state: "pending",
+        submitted: false,
+        marker: request.marker,
+        target_fingerprint: request.target_fingerprint,
+        target_authority_watermark: request.target_authority_watermark,
+        draft_digest: request.draft_digest,
+        repository: request.repository,
+        pull_request_number: request.pull_request_number,
+        commit_id: request.commit_id,
+      };
+      this.pendingReviews.push({ ...exact, id: "github-review:ambiguous-1" });
+      this.pendingReviews.push({ ...exact, id: "github-review:ambiguous-2" });
+      throw Object.assign(new Error("Forge response was lost"), {
+        code: "github_review_receipt_ambiguous",
+      });
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "unresolved"));
+  assert.equal(forge.createCount, 1);
+  const pendingEffect = uncertain.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(pendingEffect.receipt, null);
+  assert.equal(pendingEffect.last_observation, null);
+  assert.ok(uncertain.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(uncertain.legal_actions.some(({ type }) => type === "cancel"));
+  assert.equal(
+    uncertain.legal_actions.some(({ type }) => type === "operation_execute"),
+    false,
+  );
+
+  const recovery = uncertain.legal_actions.find(({ type }) => type === "recovery");
+  assert.equal(runtime.command(recovery).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.presence === "indeterminate"));
+  const blockedEffect = blocked.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(blockedEffect.status, "uncertain");
+  assert.equal(forge.createCount, 1);
+  assert.equal(forge.submitCount, 0);
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "cancel"));
+  assert.equal(
+    blocked.legal_actions.some(({ type }) => type === "operation_execute"),
+    false,
+  );
+  // Even if a later listing observes zero exact matches, the one-shot intent
+  // remains unresolved and is never replayed as a new creation.
+  forge.pendingReviews = [];
+  const secondRecovery = blocked.legal_actions.find(({ type }) => type === "recovery");
+  assert.equal(runtime.command(secondRecovery).accepted, true);
+  const stillUnresolved = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.matching_review_count === 0));
+  assert.equal(stillUnresolved.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending").status, "uncertain");
+  assert.equal(forge.createCount, 1);
+  const watcher = runtime.watch({ run_id: launch.run_id });
+  const watched = await watcher.next();
+  assert.equal(watched.value.watermark, stillUnresolved.watermark);
+  assert.deepEqual(watched.value.legal_actions, stillUnresolved.legal_actions);
+});
+
+test("GitHub target movement before mutation blocks with zero creation calls", async (t) => {
+  const movedSnapshot = githubReviewTarget({ headSha: "f".repeat(40) }).snapshot;
+  const forge = githubForge({ snapshot: movedSnapshot });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  assert.ok(forge.readCount >= 1);
+  assert.equal(forge.createCount, 0);
+  assert.equal(forge.submitCount, 0);
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "cancel"));
+  assert.equal(
+    blocked.legal_actions.some(({ type }) => type === "operation_execute"),
+    false,
+  );
+  const invalidated = runtime.query({ review_id: reviewSubjectId(githubReviewTarget()) });
+  assert.equal(invalidated.status, "invalidated");
+  assert.equal(invalidated.automated_completion, false);
+  assert.equal(invalidated.invalidation.code, "github_review_target_moved");
+  assert.ok(invalidated.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(invalidated.legal_actions.some(({ type }) => type === "cancel"));
+});
+
+test("Forge target-moved error codes cannot invalidate without snapshot movement", async (t) => {
+  const forge = githubForge({
+    onRead() {
+      throw Object.assign(new Error("provider reported a stale target"), {
+        code: "github_review_target_moved",
+      });
+    },
+  });
+  const { runtime, launch, target } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.provider_error_code ===
+        "github_review_target_moved"));
+  const pending = blocked.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(
+    pending.last_observation.provider_observation.code,
+    "github_review_target_observation_unavailable",
+  );
+  assert.equal(
+    pending.last_observation.provider_observation.provider_error_code,
+    "github_review_target_moved",
+  );
+  assert.equal(pending.status, "uncertain");
+  const review = runtime.query({ review_id: reviewSubjectId(target) });
+  assert.notEqual(review.status, "invalidated");
+  assert.equal(review.invalidation, undefined);
+  assert.equal(forge.createCount, 0);
+});
+
+test("initial GitHub target movement is durable across restart before recovery", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-github-review-moved-reopen-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const movedSnapshot = githubReviewTarget({ headSha: "f".repeat(40) }).snapshot;
+  const forge = githubForge({ snapshot: movedSnapshot });
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-moved-reopen-a", "writer"),
+  });
+  const first = await launchGitHubPendingScenario(t, {
+    forge,
+    runAuthority: firstAuthority,
+  });
+  const checkpoint = await driveToAction(first.runtime, first.launch.run_id, "checkpoint_decision");
+  assert.equal(first.runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(first.runtime, first.launch.run_id, (projection) =>
+    forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  const subjectId = reviewSubjectId(first.target);
+  const beforeClose = first.runtime.query({ review_id: subjectId });
+  assert.equal(beforeClose.status, "invalidated");
+  assert.equal(beforeClose.invalidation.code, "github_review_target_moved");
+  assert.ok(blocked.effects.find(({ card_id: cardId }) => cardId === "review-github-pending")
+    ?.last_observation?.provider_observation);
+  firstAuthority.close();
+
+  const reopenedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-moved-reopen-b", "writer"),
+  });
+  t.after(() => reopenedAuthority.close());
+  const durableAfterRestart = reopenedAuthority.query(first.launch.run_id);
+  assert.equal(durableAfterRestart.admission, "suspended_after_reboot");
+  const durableEffect = durableAfterRestart.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(
+    durableEffect.last_observation.provider_observation.code,
+    "github_review_target_moved",
+  );
+  const reopened = createFlowRuntime({
+    runAuthority: reopenedAuthority,
+    githubReviewForge: forge,
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const runAfterReopen = reopened.query({ run_id: first.launch.run_id });
+  assert.equal(runAfterReopen.admission, "suspended_after_reboot");
+  assert.equal(runAfterReopen.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending").last_observation.provider_observation.code,
+  "github_review_target_moved");
+  const afterReopen = reopened.query({ review_id: subjectId });
+  assert.equal(afterReopen.status, "invalidated");
+  assert.equal(afterReopen.invalidation.code, "github_review_target_moved");
+  assert.deepEqual(afterReopen.findings, beforeClose.findings);
+  assert.equal(forge.createCount, 0);
+});
+
+test("GitHub snapshot revalidation requires an explicit open state", async (t) => {
+  const forge = githubForge({
+    onRead() {
+      const { state: _state, ...withoutState } = githubReviewTarget().snapshot;
+      return withoutState;
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  assert.equal(forge.createCount, 0);
+  assert.equal(forge.submitCount, 0);
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "cancel"));
+});
+
+test("GitHub snapshot revalidation requires an explicit target authority watermark", async (t) => {
+  const target = githubReviewTarget();
+  const forge = githubForge({
+    includeTargetAuthorityWatermark: false,
+    onRead() {
+      return target.snapshot;
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge, target });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  assert.equal(forge.createCount, 0);
+  assert.equal(forge.submitCount, 0);
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "cancel"));
+});
+
+test("non-canonical GitHub snapshots become typed observation evidence", async (t) => {
+  const forge = githubForge({
+    onRead() {
+      return { ...githubReviewTarget().snapshot, diff_sha256: undefined };
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  const pending = blocked.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(
+    pending.last_observation?.provider_observation?.code,
+    "github_review_observation_incomplete",
+  );
+  assert.equal(forge.createCount, 0);
+});
+
+test("missing GitHub target watermark is observation-incomplete, never target-moved", async (t) => {
+  const target = githubReviewTarget();
+  const forge = githubForge({
+    includeTargetAuthorityWatermark: false,
+    onRead() {
+      return target.snapshot;
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge, target });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  const pending = blocked.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  assert.equal(
+    pending.last_observation?.provider_observation?.code,
+    "github_review_observation_incomplete",
+  );
+  const review = runtime.query({ review_id: reviewSubjectId(target) });
+  assert.notEqual(review.status, "invalidated");
+  assert.equal(review.invalidation, undefined);
+  assert.equal(forge.createCount, 0);
+});
+
+test("Forge pending-review listing requires one explicit complete page", async (t) => {
+  for (const listing of ["bare", "incomplete"]) {
+    const forge = githubForge({
+      bareListing: listing === "bare",
+      incompleteListing: listing === "incomplete",
+    });
+    const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+    const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+    assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+    const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+      forge.readCount >= 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+        cardId === "review-github-pending" && status === "uncertain"));
+    const pending = blocked.effects.find(({ card_id: cardId }) =>
+      cardId === "review-github-pending");
+    assert.equal(
+      pending.last_observation?.provider_observation?.code,
+      listing === "bare"
+        ? "github_review_listing_invalid"
+        : "github_review_listing_incomplete",
+    );
+    assert.equal(forge.createCount, 0);
+  }
+});
+
+test("Forge Adapter exposes only the canonical three provider methods", async (t) => {
+  const target = githubReviewTarget();
+  const forge = {
+    readPullRequest() {
+      return {
+        snapshot: target.snapshot,
+        target_authority_watermark: target.target_authority_watermark,
+      };
+    },
+    listPullRequestReviews() {
+      return { reviews: [], complete: true };
+    },
+    createReview() {},
+  };
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge, target });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "uncertain"));
+  assert.equal(
+    blocked.effects.find(({ card_id: cardId }) => cardId === "review-github-pending")
+      .last_observation.provider_observation.code,
+    "github_review_adapter_incomplete",
+  );
+});
+
+test("GitHub target movement during recovery remains indeterminate without reposting", async (t) => {
+  let moved = false;
+  const forge = githubForge({
+    onRead() {
+      return moved
+        ? githubReviewTarget({ headSha: "f".repeat(40) }).snapshot
+        : githubReviewTarget().snapshot;
+    },
+    onCreate() {
+      throw Object.assign(new Error("creation response was lost"), {
+        code: "github_review_receipt_ambiguous",
+      });
+    },
+  });
+  const { runtime, launch } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "unresolved"));
+  assert.equal(forge.createCount, 1);
+  moved = true;
+  const recovery = uncertain.legal_actions.find(({ type }) => type === "recovery");
+  assert.ok(recovery);
+  assert.equal(runtime.command(recovery).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.presence === "indeterminate"));
+  assert.equal(blocked.effects.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending").status, "uncertain");
+  assert.equal(forge.createCount, 1);
+  assert.equal(forge.submitCount, 0);
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(blocked.legal_actions.some(({ type }) => type === "cancel"));
+});
+
+test("GitHub target movement invalidates semantic review authority without losing history", async (t) => {
+  let moved = false;
+  const forge = githubForge({
+    onRead() {
+      return moved
+        ? githubReviewTarget({ headSha: "f".repeat(40) }).snapshot
+        : githubReviewTarget().snapshot;
+    },
+    onCreate() {
+      throw Object.assign(new Error("creation response was lost"), {
+        code: "github_review_receipt_ambiguous",
+      });
+    },
+  });
+  const { runtime, launch, target } = await launchGitHubPendingScenario(t, { forge });
+  const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
+  assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
+  const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
+      cardId === "review-github-pending" && status === "unresolved"));
+  const subjectId = reviewSubjectId(target);
+  const beforeMovement = runtime.query({ review_id: subjectId });
+  moved = true;
+  const recovery = uncertain.legal_actions.find(({ type }) => type === "recovery");
+  assert.equal(runtime.command(recovery).accepted, true);
+  const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
+    projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.code === "github_review_target_moved"));
+
+  const invalidated = runtime.query({ review_id: subjectId });
+  assert.equal(invalidated.status, "invalidated");
+  assert.equal(invalidated.posture, "blocked");
+  assert.equal(invalidated.automated_completion, false);
+  assert.equal(invalidated.approval, "blocked");
+  assert.equal(invalidated.integration_authorized, false);
+  assert.equal(invalidated.merge_authorized, false);
+  assert.equal(invalidated.tracker_completion_authorized, false);
+  assert.equal(invalidated.remote_submission_authorized, false);
+  assert.deepEqual(invalidated.findings, beforeMovement.findings);
+  assert.equal(invalidated.review_authority_watermark, beforeMovement.watermark);
+  assert.equal(invalidated.invalidation.code, "github_review_target_moved");
+  assert.equal(invalidated.invalidation.run_authority_watermark, blocked.watermark);
+  assert.ok(invalidated.legal_actions.some(({ type }) => type === "recovery"));
+  assert.ok(invalidated.legal_actions.some(({ type }) => type === "cancel"));
+  assert.equal(
+    invalidated.legal_actions.some(({ type }) =>
+      ["operation_execute", "submit", "approve", "request_changes", "delete"].includes(type)),
+    false,
+  );
+  const watched = await runtime.watch({ review_id: subjectId }).next();
+  assert.equal(watched.value.status, "invalidated");
+  assert.equal(watched.value.invalidation.run_authority_watermark, blocked.watermark);
+  assert.deepEqual(watched.value.legal_actions, invalidated.legal_actions);
 });
 
 test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermark", () => {
@@ -1911,6 +2812,62 @@ test("durable ReviewAuthority fails closed when its source intent is missing", a
   assert.equal(unknown.code, "unknown_subject");
 });
 
+test("durable GitHub ReviewAuthority rejects forged source identity and evidence", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-github-review-forgery-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-forgery-boot", "writer"),
+  });
+  t.after(() => runAuthority.close());
+  const target = githubReviewTarget();
+  const authority = getReviewAuthority({ runAuthority });
+  const validCommand = githubReviewRecordCommand(target);
+  const forgedSourceRunId = "run:forged";
+  const forgedBody = {
+    schema: "flow.github-review-record/v1",
+    review_id: validCommand.subject_id,
+    target: validCommand.target,
+    target_fingerprint: validCommand.target_fingerprint,
+    target_authority_watermark: validCommand.target_authority_watermark,
+    lifecycle_generation: validCommand.lifecycle_generation,
+    summary: validCommand.summary,
+    automated_evidence: validCommand.automated_evidence,
+    source_authority_watermark: validCommand.source_authority_watermark,
+    source_run_id: forgedSourceRunId,
+    operation_contract: validCommand.operation_contract,
+    operation_effect_id: validCommand.operation_effect_id,
+    operation_attempt_id: validCommand.operation_attempt_id,
+    operation_idempotency_key: validCommand.operation_idempotency_key,
+  };
+  const forgedWatermark = reviewEventWatermark({
+    previousWatermark: validCommand.expected_watermark,
+    event: forgedBody,
+  });
+  const forgedArtifacts = renderReviewArtifacts({
+    summary: validCommand.summary,
+    watermark: forgedWatermark,
+    provenance: {
+      ...validCommand.artifacts.provenance,
+      run_id: forgedSourceRunId,
+    },
+  });
+  const result = authority.command({
+    ...validCommand,
+    source_run_id: forgedSourceRunId,
+    artifacts: forgedArtifacts,
+  });
+  assert.equal(result.accepted, undefined);
+  assert.equal(result.code, "review_source_intent_mismatch");
+});
+
+test("in-memory GitHub ReviewAuthority fails closed without a source intent reader", () => {
+  const authority = createInMemoryGitHubReviewAuthority();
+  const result = authority.command(githubReviewRecordCommand(githubReviewTarget()));
+  assert.equal(result.accepted, undefined);
+  assert.equal(result.code, "review_source_intent_mismatch");
+});
+
 test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -2357,6 +3314,268 @@ function reviewInputsForCandidate(candidate, target = {}) {
   };
 }
 
+function githubReviewInputs(target, { createPendingReview = false } = {}) {
+  const inputs = target?.schema === GITHUB_REVIEW_TARGET_SCHEMA
+    ? { ...reviewInputsForCandidate(reviewCandidate()), target }
+    : reviewInputsForCandidate(reviewCandidate(), target);
+  return {
+    ...inputs,
+    ...(createPendingReview
+      ? {
+          pending_review: {
+            schema: "flow.github-pending-review-request/v1",
+            mode: "create_pending_unsubmitted",
+          },
+        }
+      : {}),
+  };
+}
+
+function githubReviewTarget({ headSha = "c".repeat(40) } = {}) {
+  const snapshotIdentity = {
+    schema: "flow.github-pull-request-snapshot/v1",
+    repository: { owner: "acme", name: "example" },
+    pull_request_number: 42,
+    state: "open",
+    base_sha: "b".repeat(40),
+    head_sha: headSha,
+    diff_sha256: DIGEST("d"),
+  };
+  return {
+    schema: GITHUB_REVIEW_TARGET_SCHEMA,
+    repository: { owner: "acme", name: "example" },
+    pull_request_number: 42,
+    lifecycle_generation: 4,
+    target_authority_watermark: DIGEST("e"),
+    snapshot: snapshotIdentity,
+    snapshot_fingerprint: digest(snapshotIdentity),
+  };
+}
+
+function githubForge({
+  pendingReviews = [],
+  snapshot = githubReviewTarget().snapshot,
+  onCreate = null,
+  onRead = null,
+  includeTargetAuthorityWatermark = true,
+  bareListing = false,
+  incompleteListing = false,
+} = {}) {
+  const forge = {
+    createCount: 0,
+    submitCount: 0,
+    forbiddenMutationCalls: [],
+    readCount: 0,
+    createRequests: [],
+    pendingReviews: [...pendingReviews],
+    observePullRequest(request) {
+      this.readCount += 1;
+      return {
+        snapshot: onRead?.(request, this) ?? snapshot,
+        ...(includeTargetAuthorityWatermark ? {
+          target_authority_watermark: request.target_authority_watermark,
+        } : {}),
+      };
+    },
+    listPendingReviews() {
+      if (bareListing) return [...this.pendingReviews];
+      return {
+        reviews: [...this.pendingReviews],
+        complete: !incompleteListing,
+      };
+    },
+    createPendingReview(request) {
+      this.createCount += 1;
+      this.createRequests.push(request);
+      if (onCreate) return onCreate.call(this, request);
+      const review = {
+        id: `github-review:${this.createCount}`,
+        submitted: false,
+        state: "pending",
+        marker: request.marker,
+        target_fingerprint: request.target_fingerprint,
+        target_authority_watermark: request.target_authority_watermark,
+        draft_digest: request.draft_digest,
+        repository: request.repository,
+        pull_request_number: request.pull_request_number,
+        commit_id: request.commit_id,
+      };
+      this.pendingReviews.push(review);
+      return review;
+    },
+  };
+  const forbiddenMutationNames = new Set([
+    "submitReview",
+    "approveReview",
+    "requestChanges",
+    "deleteReview",
+    "repostReview",
+  ]);
+  return new Proxy(forge, {
+    get(target, property, receiver) {
+      if (!forbiddenMutationNames.has(property)) {
+        return Reflect.get(target, property, receiver);
+      }
+      return () => {
+        target.forbiddenMutationCalls.push(property);
+        if (property === "submitReview") target.submitCount += 1;
+        throw new Error(`forbidden GitHub review mutation: ${property}`);
+      };
+    },
+  });
+}
+
+async function launchGitHubPendingScenario(t, {
+  forge = githubForge(),
+  target = githubReviewTarget(),
+  runAuthority: suppliedRunAuthority = null,
+} = {}) {
+  const authorityDirectory = suppliedRunAuthority === null
+    ? await mkdtemp(join(tmpdir(), "flow-github-review-scenario-"))
+    : null;
+  if (authorityDirectory !== null) {
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  }
+  const runAuthority = suppliedRunAuthority ?? createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("github-review-scenario-boot", "writer"),
+  });
+  if (suppliedRunAuthority === null) t.after(() => runAuthority.close());
+  const inputs = githubReviewInputs(target, { createPendingReview: true });
+  const [securityDescription, criticDescription] = await Promise.all([
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-sol", "security"), {}),
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-luna", "critic"), {}),
+  ]);
+  inputs.delegation.lenses.security = {
+    description: securityDescription,
+    route: reviewRoute("agent:scenario-security", securityDescription),
+  };
+  inputs.delegation.critic = {
+    description: criticDescription,
+    route: reviewRoute("agent:scenario-critic", criticDescription),
+  };
+  const facts = reviewRuntimeFacts();
+  facts.operation_contracts.push(GITHUB_REVIEW_OPERATION_CONTRACTS.pending);
+  facts.validator_contracts.push("flow.validator/github-review-receipt/v1");
+  const runtime = createFlowRuntime({
+    runAuthority,
+    githubReviewForge: forge,
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+  const launch = runtime.launch(reviewLaunchRequest(prepared));
+  assert.ok(launch.run_id, JSON.stringify(launch));
+  return { forge, runAuthority, runtime, target, launch };
+}
+
+function githubReviewDelegatedPort() {
+  return {
+    contract: "flow.delegated-agent-port/v1",
+    describe() {},
+    discover() {
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "discover",
+        status: "proven_absent",
+        watermark: null,
+        delegation: null,
+        turn: null,
+        legal_next_actions: ["dispatch"],
+      };
+    },
+    dispatch(request) {
+      const lens = request.agent_id.includes("critic") ? "critic" : "security";
+      return completedTurnProjection({
+        agentId: request.agent_id,
+        callerKey: request.caller_key,
+        description: request.description,
+        output: reviewResult(lens, lens === "critic" ? { findings: [] } : {}),
+        prompt: request.prompt,
+        turnId: `turn:${request.caller_key}`,
+      });
+    },
+    send() {},
+    observe() {},
+    cancel() {},
+    reconcile() {},
+    wait() {},
+    retire({ agent_id: agentId, turn_id: turnId }) {
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "retire",
+        status: "retired",
+        watermark: { schema: "drovr.agent-authority-watermark/v1", agent_id: agentId },
+        delegation: { agent_id: agentId },
+        turn: { id: turnId, status: "completed" },
+        legal_next_actions: [],
+      };
+    },
+  };
+}
+
+function githubReviewDescription() {
+  const identity = {
+    schema: "drovr.delegated-agent-description/v1",
+    comparison_keys: { launch: DIGEST("1"), effective_authority: DIGEST("2") },
+    watermark: { content_sha256: DIGEST("3") },
+  };
+  return { ...identity, description_digest: digest(identity) };
+}
+
+async function driveToAction(runtime, runId, type) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const projection = runtime.query({ run_id: runId });
+    const action = projection.legal_actions?.find((candidate) => candidate.type === type);
+    if (action) return action;
+    if (["failed", "succeeded", "declined", "cancelled"].includes(projection.phase)) {
+      assert.fail(`run reached ${projection.phase} before ${type}: ${JSON.stringify(projection)}`);
+    }
+    const next = projection.legal_actions?.find((candidate) => [
+      "checkpoint_decision",
+      "delegate_execute",
+      "operation_execute",
+      "recovery",
+    ].includes(candidate.type));
+    if (next) runtime.command(next);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const current = runtime.query({ run_id: runId });
+  assert.fail(`timed out waiting for ${type}: phase=${current.phase} legal=${JSON.stringify(current.legal_actions)} effects=${JSON.stringify(current.effects?.map(({ card_id: cardId, status, receipt, last_observation: observation }) => ({ cardId, status, receipt, observation })))}`);
+}
+
+async function driveUntilTerminal(runtime, runId) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const projection = runtime.query({ run_id: runId });
+    if (["failed", "succeeded", "declined", "cancelled"].includes(projection.phase)) {
+      return projection;
+    }
+    const action = projection.legal_actions?.find((candidate) => [
+      "checkpoint_decision",
+      "delegate_execute",
+      "operation_execute",
+      "recovery",
+    ].includes(candidate.type));
+    if (action) runtime.command(action);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`timed out waiting for terminal run ${runId}`);
+}
+
+async function waitForProjection(runtime, runId, predicate) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const projection = runtime.query({ run_id: runId });
+    if (predicate(projection)) return projection;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`timed out waiting for run projection ${runId}`);
+}
+
 function minimalReviewCandidate() {
   const identity = {
     schema: "work.review-candidate/v1",
@@ -2561,6 +3780,76 @@ function reviewRecordCommand(
     operation_attempt_id: body.operation_attempt_id,
     operation_idempotency_key: body.operation_idempotency_key,
     source_run_id: body.source_run_id,
+  };
+}
+
+function githubReviewRecordCommand(target) {
+  const sourceAuthorityWatermark = DIGEST("a");
+  const sourceRunId = "run:valid";
+  const operationEffectId = "effect:valid";
+  const operationAttemptId = "attempt:valid";
+  const operationIdempotencyKey = "idempotency:valid";
+  const summary = buildReviewSummary({
+    candidateFingerprint: target.snapshot_fingerprint,
+    candidateAuthorityWatermark: target.target_authority_watermark,
+    lifecycleGeneration: target.lifecycle_generation,
+    enabledLenses: ["security"],
+    lensResults: { security: reviewResult("security") },
+    criticResult: reviewResult("critic", { findings: [] }),
+    sourceAuthorityWatermark: sourceAuthorityWatermark,
+  });
+  const body = {
+    schema: "flow.github-review-record/v1",
+    review_id: reviewSubjectId(target),
+    target,
+    target_fingerprint: target.snapshot_fingerprint,
+    target_authority_watermark: target.target_authority_watermark,
+    lifecycle_generation: target.lifecycle_generation,
+    summary,
+    automated_evidence: summary.automated_evidence,
+    source_authority_watermark: sourceAuthorityWatermark,
+    source_run_id: sourceRunId,
+    operation_contract: REVIEW_OPERATION_CONTRACTS.record,
+    operation_effect_id: operationEffectId,
+    operation_attempt_id: operationAttemptId,
+    operation_idempotency_key: operationIdempotencyKey,
+  };
+  const watermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: body,
+  });
+  const artifacts = renderReviewArtifacts({
+    summary,
+    watermark,
+    provenance: {
+      operation_contract: REVIEW_OPERATION_CONTRACTS.record,
+      source_run_id: sourceRunId,
+      run_id: sourceRunId,
+      operation_effect_id: operationEffectId,
+      operation_attempt_id: operationAttemptId,
+      operation_idempotency_key: operationIdempotencyKey,
+    },
+  });
+  return {
+    schema: "work.github-review-record-command/v1",
+    type: "github_review_record",
+    contract: "work.review/v1",
+    subject_id: body.review_id,
+    command_id: `github-review-record:${target.snapshot_fingerprint}:${target.lifecycle_generation}`,
+    expected_watermark: EMPTY_WATERMARK,
+    target,
+    target_fingerprint: target.snapshot_fingerprint,
+    target_authority_watermark: target.target_authority_watermark,
+    lifecycle_generation: target.lifecycle_generation,
+    summary,
+    automated_evidence: summary.automated_evidence,
+    artifacts,
+    source_authority_watermark: sourceAuthorityWatermark,
+    source_run_id: sourceRunId,
+    operation_contract: REVIEW_OPERATION_CONTRACTS.record,
+    operation_effect_id: operationEffectId,
+    operation_attempt_id: operationAttemptId,
+    operation_idempotency_key: operationIdempotencyKey,
   };
 }
 

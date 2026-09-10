@@ -5,7 +5,9 @@ import { digest } from "../src/canonical.mjs";
 import { createBackupManifest } from "../src/backup-restore.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
+import { revisionAdmissionStatus } from "../src/plan-revision.mjs";
 import { createInMemoryRunAuthority } from "../src/run-authority.mjs";
+import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import {
   capabilityBlockedCheckpointProposal,
   confirmedLaunchRequest,
@@ -1845,6 +1847,150 @@ test("runtime admission withholds a revision beyond the declared run cap", () =>
     type === "revision_decision" && decision === "decline"));
 });
 
+test("revision admission projects only closed capacity failures as cap exhaustion", () => {
+  for (const code of [
+    "revision_template_limit_exceeded",
+    "revision_limit_exceeded",
+    "revision_card_limit_exceeded",
+    "card_limit_exceeded",
+    "revision_capability_limit_exceeded",
+    "revision_resource_limit_exceeded",
+    "revision_elapsed_limit_exceeded",
+  ]) {
+    assert.equal(revisionAdmissionStatus(code), "cap_exhausted", code);
+  }
+  for (const code of [
+    "accepted_history_is_immutable",
+    "incomplete_pending_dependent_closure",
+    "active_card_depends_on_superseded_work",
+    "cyclic_graph",
+    "capability_outside_envelope",
+  ]) {
+    assert.equal(revisionAdmissionStatus(code), "structurally_rejected", code);
+  }
+});
+
+test("FlowRuntime projects a repair cap exhaustion with its exact repair outcome", async () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(repairProjectionProposal({
+    max_revisions: 1,
+  }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+  const watcher = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+
+  assert.deepEqual(await watcher.next(), { done: false, value: initial });
+  const firstRevision = initial.legal_actions.find(({ template_id: id,
+    decision }) => id === "repair-a" && decision === "accept");
+  assert.ok(firstRevision);
+  assert.equal(runtime.command(firstRevision).accepted, true);
+
+  const projected = runtime.query({ run_id: launch.run_id });
+  const outcome = projected.revision_outcomes.find(({ template_id: id }) =>
+    id === "repair-b");
+  const decline = projected.legal_actions.find(({ template_id: id, decision }) =>
+    id === "repair-b" && decision === "decline");
+  assert.deepEqual(await watcher.next(), { done: false, value: projected });
+  assert.deepEqual(outcome, {
+    schema: "flow.feature-repair-outcome/v1",
+    status: "cap_exhausted",
+    template_id: "repair-b",
+    base_plan_fingerprint: projected.revisions[0].plan_fingerprint,
+    trigger: prepared.revision_templates[1].trigger,
+    changes: prepared.revision_templates[1].changes,
+    reason: "revision_admission_rejected",
+    code: "revision_limit_exceeded",
+    repair: prepared.revision_templates[1].repair,
+    authority_watermark: projected.watermark,
+    legal_next_actions: [decline],
+  });
+  assert.equal(projected.revision_outcomes.length, 1);
+  assert.equal(projected.legal_actions.some(({ template_id: id, decision }) =>
+    id === "repair-b" && decision === "accept"), false);
+  assert.equal(projected.revisions.length, 1);
+  assert.equal(projected.active_plan.cards.some(({ id }) =>
+    id === "target-b-replacement"), false);
+  assert.equal(projected.cards.find(({ id }) => id === "target-b").status,
+    "blocked");
+  assert.ok(decline);
+  const recordedUpdate = watcher.next();
+  assert.equal(runtime.command(decline).accepted, true);
+  const recorded = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(await recordedUpdate, { done: false, value: recorded });
+  assert.equal(recorded.revision_outcomes.length, 1);
+  assert.equal(recorded.revision_outcomes[0].status, "cap_exhausted");
+  assert.equal(recorded.revision_outcomes[0].code, "revision_limit_exceeded");
+  assert.equal(recorded.revision_outcomes[0].authority_watermark,
+    recorded.watermark);
+  await watcher.return();
+});
+
+test("FlowRuntime projects a structurally rejected repair without partial graph mutation", async () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(repairProjectionProposal({
+    shared_replacement: true,
+  }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+  const watcher = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+  assert.deepEqual(await watcher.next(), { done: false, value: initial });
+  const firstRevision = initial.legal_actions.find(({ template_id: id,
+    decision }) => id === "repair-a" && decision === "accept");
+  assert.ok(firstRevision);
+  const update = watcher.next();
+  assert.equal(runtime.command(firstRevision).accepted, true);
+
+  const projected = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(await update, { done: false, value: projected });
+  const outcome = projected.revision_outcomes.find(({ template_id: id }) =>
+    id === "repair-b");
+  const decline = projected.legal_actions.find(({ template_id: id, decision }) =>
+    id === "repair-b" && decision === "decline");
+  assert.equal(outcome.status, "structurally_rejected");
+  assert.equal(outcome.code, "revision_card_conflict");
+  assert.deepEqual(outcome.repair, prepared.revision_templates[1].repair);
+  assert.equal(outcome.authority_watermark, projected.watermark);
+  assert.deepEqual(outcome.legal_next_actions, [decline]);
+  assert.equal(outcome.legal_next_actions.some(({ decision }) =>
+    decision === "accept"), false);
+  assert.equal(projected.revision_outcomes.length, 1);
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }).revision_outcomes,
+    projected.revision_outcomes);
+  assert.equal(projected.revisions.length, 1);
+  assert.equal(projected.active_plan.cards.some(({ id }) =>
+    id === "replacement-shared"), true);
+  assert.equal(projected.active_plan.cards.some(({ id }) =>
+    id === "target-b-replacement"), false);
+  assert.equal(projected.cards.find(({ id }) => id === "target-b").status,
+    "blocked");
+  await watcher.return();
+});
+
+test("FlowRuntime max_cards counts active cards across non-repair revision history", () => {
+  const runtime = createTestRuntime();
+  const proposal = repeatedRevisionCheckpointProposal();
+  proposal.explicit_facts.limits.max_cards = 2;
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  let projection = runtime.query({ run_id: launch.run_id });
+
+  for (let ordinal = 1; ordinal <= 2; ordinal += 1) {
+    const action = projection.legal_actions.find(({ decision }) =>
+      decision === "accept");
+    assert.ok(action);
+    assert.equal(runtime.command(action).accepted, true);
+    projection = runtime.query({ run_id: launch.run_id });
+    assert.equal(projection.revisions.length, ordinal);
+    assert.ok(projection.cards.filter(({ status }) =>
+      status !== "superseded").length <= 2);
+    assert.equal(projection.legal_actions.some(({ type, decision }) =>
+      type === "revision_decision" && decision === "accept"), ordinal < 2);
+  }
+  assert.equal(projection.phase, "active");
+  assert.equal(projection.cards.filter(({ status }) => status !== "superseded").length,
+    2);
+});
+
 test("every active checkpoint-only projection exposes a legal action", () => {
   const capped = repeatedRevisionCheckpointProposal();
   capped.explicit_facts.limits.max_revisions = 1;
@@ -2873,4 +3019,157 @@ function rebindPreparedIdentity(prepared) {
 function rebindBlockObservation(observation) {
   const { schema: _schema, evidence_digest: _digest, ...evidence } = observation;
   observation.evidence_digest = digest(evidence);
+}
+
+function repairProjectionProposal({
+  max_revisions: maxRevisions = 2,
+  shared_replacement: sharedReplacement = false,
+} = {}) {
+  const brief = {
+    schema: "flow.feature-brief/v1",
+    id: "brief:repair-projection",
+    summary: "Exercise repair projection admission",
+    acceptance: ["the repair projection is observable"],
+  };
+  const workspace = {
+    schema: "flow.feature-workspace-binding/v1",
+    subject_id: "workspace:repair-projection",
+    generation: 1,
+    mutation_epoch: 1,
+    fingerprint: digest({ schema: "test.workspace/v1" }),
+  };
+  const checkpoint = (id) => ({
+    id,
+    executor: {
+      kind: "checkpoint",
+      contract: "flow.checkpoint/confirmation/v1",
+    },
+    dependencies: [],
+    inputs: {
+      prompt: `Confirm ${id}`,
+      phase: "seal",
+      brief,
+      workspace,
+    },
+    outputs: [],
+    success_criteria: ["decision:approve"],
+    validators: ["flow.validator/checkpoint-decision/v1"],
+    data_references: [],
+    evidence_references: [],
+    route: null,
+    limits: {},
+    resource_claims: [],
+    recovery: "human_decision",
+  });
+  const graphCards = [checkpoint("target-a"), checkpoint("target-b")];
+  const templates = graphCards.map((card, index) => ({
+    schema: "flow.plan-revision-template/v1",
+    id: `repair-${index === 0 ? "a" : "b"}`,
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: `${card.id}_repair_required`,
+    },
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [{
+        ...structuredClone(card),
+        id: sharedReplacement
+          ? "replacement-shared"
+          : `${card.id}-replacement`,
+        replaces_card_id: card.id,
+      }],
+      add_edges: [],
+      supersede_cards: [card.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+    repair: {
+      schema: "flow.feature-repair/v1",
+      id: `repair:${card.id}`,
+      kind: "replan",
+      card_id: card.id,
+      acceptance: [...brief.acceptance],
+      remaining_scope: [`repair ${card.id}`],
+      scope_expansion: false,
+      checkpoint_id: null,
+    },
+  }));
+  const blockObservations = graphCards.map((card, index) =>
+    observeCardBlock({
+      card_id: card.id,
+      block: {
+        schema: "flow.card-block/v1",
+        id: `${card.id}:repair`,
+        type: "plan_revision_required",
+        trigger: templates[index].trigger,
+        required_capabilities: [],
+        revision_template_ids: [templates[index].id],
+      },
+    }));
+  return {
+    schema: "flow.dynamic-plan-proposal/v1",
+    graph: {
+      schema: "flow.run-plan/v1",
+      cards: graphCards,
+    },
+    requested_authority: {
+      commands: ["checkpoint_decision", "revision_decision"],
+      capabilities: [],
+      mutations: [],
+    },
+    explicit_facts: {
+      catalog_fingerprint: `sha256:${"1".repeat(64)}`,
+      route_snapshot: {
+        watermark: `sha256:${"2".repeat(64)}`,
+        bindings: [],
+      },
+      capability_envelopes: [],
+      operation_contracts: ["flow.adapter/card-block-observation/v1"],
+      validator_contracts: [
+        "flow.validator/checkpoint-decision/v1",
+        "flow.validator/card-block-observation/v1",
+      ],
+      block_observations: blockObservations,
+      time_facts: [
+        {
+          schema: "flow.time-fact/v1",
+          kind: "wall_clock",
+          value_ms: 1_700_000_000_000,
+          uncertainty_ms: 0,
+          clock_source_id: "wall:repair-projection",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "suspend_excluding_monotonic",
+          value_ns: "1000000000",
+          uncertainty_ns: "0",
+          clock_source_id: "mono:repair-projection",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "boot",
+          boot_id: "boot:repair-projection",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "clock_source",
+          identity: "clock:repair-projection",
+        },
+      ],
+      subject_generations: [],
+      elapsed_seconds: 0,
+      limits: {
+        max_cards: 2,
+        max_revisions: maxRevisions,
+        max_cards_per_revision: 1,
+        max_capabilities: 0,
+        max_resources: 0,
+        max_elapsed_seconds: 0,
+      },
+      resource_claims: [],
+    },
+    revision_templates: templates,
+  };
 }

@@ -27,6 +27,8 @@ const FEATURE_CONTRACTS = Object.freeze([
   "flow.feature-setup/v1",
   "flow.feature-setup-receipt/v1",
   "flow.feature-seal-receipt/v1",
+  "flow.feature-repair/v1",
+  "flow.feature-repair-outcome/v1",
   "flow.feature-discriminating-evidence/v1",
   "flow.operation/feature-setup/v1",
   "flow.operation/feature-test/v1",
@@ -52,6 +54,11 @@ const PREPARE_INPUTS = [
 const LAUNCH_CONFIRMATION_CONTRACTS = [
   "flow.dynamic-plan-confirmation-decision/v1",
   "flow.predefined-flow-confirmation-decision/v1",
+];
+const CHECKPOINT_CONTRACTS = [
+  "flow.checkpoint/confirmation/v1",
+  "flow.validator/checkpoint-decision/v1",
+  "flow.checkpoint-binding/v1",
 ];
 const PREDEFINED_FLOW = {
   selection: "flow.predefined-flow-selection/v1",
@@ -331,7 +338,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@23",
+  catalog_id: "flow.contract-catalog/v1@27",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -406,7 +413,47 @@ const REVIEW_AUTHORITY = {
   review_legal_actions: "refresh_when_stale",
   identity: "candidate_fingerprint",
   legal_actions: "closed_after_seal",
+  github: {
+    target: "flow.review-github-pull-request/v1",
+    snapshot: "flow.github-pull-request-snapshot/v1",
+    pending_operation: "flow.operation/github-review-pending/v1",
+    pending_request: "flow.github-pending-review-request/v1",
+    pending_draft: "flow.github-pending-review-draft/v1",
+    receipt_validator: "flow.validator/github-review-receipt/v1",
+    receipt: "flow.github-review-receipt/v1",
+    observation_request: "flow.github-pull-request-observation-request/v1",
+    observation: "flow.github-review-observation/v1",
+    record_command: "work.github-review-record-command/v1",
+    record: "flow.github-review-record/v1",
+    projection: "flow.review-projection/v1",
+    invalidation: "flow.github-review-invalidation/v1",
+    effect_classification: "one_shot_uncertain",
+    completion_authority: "pending_only_no_submission",
+    allowed_remote_mutation: "create_one_unsubmitted_pending_review",
+    forbidden_remote_mutations: [
+      "submit",
+      "approve",
+      "request_changes",
+      "delete",
+      "repost",
+    ],
+  },
 };
+const GITHUB_REVIEW_CONTRACTS = [
+  REVIEW_AUTHORITY.github.target,
+  REVIEW_AUTHORITY.github.snapshot,
+  REVIEW_AUTHORITY.github.pending_operation,
+  REVIEW_AUTHORITY.github.pending_request,
+  REVIEW_AUTHORITY.github.pending_draft,
+  REVIEW_AUTHORITY.github.receipt_validator,
+  REVIEW_AUTHORITY.github.receipt,
+  REVIEW_AUTHORITY.github.observation_request,
+  REVIEW_AUTHORITY.github.observation,
+  REVIEW_AUTHORITY.github.record_command,
+  REVIEW_AUTHORITY.github.record,
+  REVIEW_AUTHORITY.github.projection,
+  REVIEW_AUTHORITY.github.invalidation,
+];
 const REVIEW_QUERY = {
   request: "flow.query/v1",
   projection: "flow.review-projection/v1",
@@ -463,6 +510,10 @@ export async function loadContractCatalog({
   ) || !PREDEFINED_FLOW_CONTRACTS.every((contract) =>
     catalog.contracts.includes(contract))) {
     throw new Error("predefined flow preparation contracts are incomplete");
+  }
+  if (!CHECKPOINT_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("checkpoint contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");
@@ -658,6 +709,7 @@ export async function loadContractCatalog({
     REVIEW_AUTHORITY.orientation,
     REVIEW_AUTHORITY.diagram,
     REVIEW_AUTHORITY.terminal_disposition,
+    ...GITHUB_REVIEW_CONTRACTS,
     "flow.feature-discriminating-evidence/v1",
     "work.feature-verification-receipt/v1",
     "work.feature-critique-receipt/v1",
