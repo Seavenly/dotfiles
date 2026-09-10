@@ -1,6 +1,6 @@
 {
   "schema": "flow.transition-ledger/v1",
-  "sequence": 22,
+  "sequence": 28,
   "release": {
     "id": "flow-stage0/v1",
     "source_commit": "1e3e4665d4241419ad573d208077a20d845289bc"
@@ -21,9 +21,9 @@
     {
       "id": "public_contract_catalog",
       "path": "contracts/catalog.v1.json",
-      "sha256": "cb81862613e68d73f96b17096ec41e59dc93c7716b9f056f1701b731eca507f3",
+      "sha256": "62feb7d954f5de9a1e7b919b52b6779f83d037e0551c2a0909d15bb93b382303",
       "status": "passed",
-      "recorded_at": "2026-08-12T05:02:05Z"
+      "recorded_at": "2026-09-10T17:42:35Z"
     },
     {
       "id": "legacy_default_policy",
@@ -55,5 +55,5 @@
     "replacement_launch_enabled": false,
     "decided_at": "2026-07-30T23:06:09Z"
   },
-  "recorded_at": "2026-08-12T05:02:05Z"
+  "recorded_at": "2026-09-10T17:42:35Z"
 }

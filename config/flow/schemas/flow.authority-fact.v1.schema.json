@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.authority-fact.v1.schema.json",
+  "title": "flow.authority-fact/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "authority_id",
+    "authority_contract",
+    "provider_identity",
+    "watermark",
+    "generation",
+    "legal_actions"
+  ],
+  "properties": {
+    "schema": { "const": "flow.authority-fact/v1" },
+    "authority_id": { "type": ["string", "null"] },
+    "authority_contract": { "type": ["string", "null"] },
+    "provider_identity": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "id", "version"],
+          "properties": {
+            "schema": { "const": "flow.registered-authority/v1" },
+            "id": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "watermark": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "generation": { "type": ["integer", "null"], "minimum": 0 },
+    "legal_actions": { "type": "array" }
+  }
+}

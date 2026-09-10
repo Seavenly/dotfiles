@@ -32,6 +32,10 @@ import {
   validateRebootFacts,
 } from "./reboot-facts.mjs";
 import { validateFeatureRepairContract } from "./feature-repair-contract.mjs";
+import {
+  normalizeRequiredAuthorities,
+  prepareAuthorityBindings,
+} from "./authority-bindings.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
@@ -182,7 +186,7 @@ export function isPredefinedFlowSelection(value) {
 export function compilePredefinedFlowSelection(
   selection,
   registration,
-  { registeredOperations = null } = {},
+  { registeredOperations = null, registeredAuthorities = null } = {},
 ) {
   const normalizedSelection = canonicalizePredefinedSelection(selection);
   if (!registration) {
@@ -201,6 +205,27 @@ export function compilePredefinedFlowSelection(
   const generated = runPredefinedCompiler(registration, context);
   const proposal = normalizePredefinedProposal(generated, normalizedSelection);
   validateDynamicPlan(proposal, { registeredOperations });
+
+  let requiredAuthorities;
+  try {
+    requiredAuthorities = prepareAuthorityBindings(
+      registration.required_authorities,
+      registeredAuthorities,
+      {
+        definition: registration.identity,
+        selection: normalizedSelection,
+      },
+    );
+  } catch (error) {
+    if (error?.name === "RequiredAuthorityError") {
+      invalidPredefined(
+        error.code,
+        `required authority is unavailable: ${error.reason}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 
   const graph = canonicalizeDynamicGraph(proposal.graph);
   const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
@@ -226,6 +251,7 @@ export function compilePredefinedFlowSelection(
     negativeOutcomes: confirmationFacts.negative_outcomes,
     routes: confirmationFacts.routes,
     trustPosture: confirmationFacts.trust_posture,
+    requiredAuthorities,
   });
   const bundleDigest = digest(bundle);
   const confirmation = createPredefinedFlowConfirmation({
@@ -239,6 +265,7 @@ export function compilePredefinedFlowSelection(
     routes: confirmationFacts.routes,
     trustPosture: confirmationFacts.trust_posture,
     revisionTemplates,
+    requiredAuthorities,
   });
   const confirmationDigest = digest(confirmation);
 
@@ -258,6 +285,7 @@ export function compilePredefinedFlowSelection(
     negative_outcomes: confirmationFacts.negative_outcomes,
     routes: confirmationFacts.routes,
     trust_posture: confirmationFacts.trust_posture,
+    required_authorities: requiredAuthorities,
     confirmation,
   });
 }
@@ -305,10 +333,18 @@ function normalizePredefinedDefinition(definition, key) {
     "promised_outcomes",
     "schema",
     "trust_posture",
+    "required_authorities",
   ];
   const keys = Reflect.ownKeys(definition);
-  if (keys.length !== fields.length ||
-      keys.some((key) => typeof key !== "string" || !fields.includes(key))) {
+  const requiredAuthoritiesPresent = Object.hasOwn(
+    definition,
+    "required_authorities",
+  );
+  const allowedFields = requiredAuthoritiesPresent
+    ? fields
+    : fields.filter((field) => field !== "required_authorities");
+  if (keys.length !== allowedFields.length ||
+      keys.some((key) => typeof key !== "string" || !allowedFields.includes(key))) {
     throw new TypeError(`predefined definition registration is incomplete: ${key}`);
   }
   if (definition.schema !== PREDEFINED_DEFINITION_SCHEMA) {
@@ -332,12 +368,21 @@ function normalizePredefinedDefinition(definition, key) {
     id: definition.id,
     contract: definition.contract,
   });
+  let requiredAuthorities;
+  try {
+    requiredAuthorities = normalizeRequiredAuthorities(
+      definition.required_authorities ?? [],
+    );
+  } catch {
+    throw new TypeError(`predefined definition required authorities are invalid: ${key}`);
+  }
   return {
     identity,
     compile: definition.compile,
     promised_outcomes: freezeCanonical(definition.promised_outcomes),
     negative_outcomes: freezeCanonical(definition.negative_outcomes),
     trust_posture: freezeCanonical(definition.trust_posture),
+    required_authorities: requiredAuthorities,
   };
 }
 

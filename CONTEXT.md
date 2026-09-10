@@ -97,6 +97,42 @@ plan and explicit identity-bearing facts without creating authoritative run
 state.
 _Avoid_: Draft run, pending run
 
+**Required authority contract**:
+A versioned definition declaration for one route, resource, contract, or
+generation fact that must be observed before a predefined run can be admitted.
+It names the authority identity and observation input, not an executable
+provider.
+_Avoid_: Ambient adapter, callback authority
+
+**Required authority binding**:
+The immutable prepared-run record of one required authority contract, its exact
+registered provider identity, observation input, and observation. It is carried
+through launch and reboot admission without executable callbacks.
+_Avoid_: Route cache, latest resource state
+
+**Authority observation**:
+A typed provider result captured at the owning transaction boundary, including
+status and the exact provider watermark or generation used for admission.
+_Avoid_: Health check, best-effort refresh
+
+**Required authority revalidation**:
+The closed comparison of every definition-required authority binding with fresh
+provider observations at launch or reboot admission. An unresolved, stale, or
+uncertain result remains blocked until its legal action is taken.
+_Avoid_: Partial authority check, automatic resume
+
+**Registered authority provider**:
+A trusted catalog entry with one immutable provider identity and a read-only
+observation mechanism. It supplies facts to RunAuthority but never owns flow
+lifecycle, scheduling, or mutation policy.
+_Avoid_: Orchestrator, flow-specific controller
+
+**Authority fact**:
+The canonical public rejection and admission fact containing the owning
+authority identity, contract, provider identity, watermark or generation, and
+closed legal actions.
+_Avoid_: Free-form error detail, caller-supplied authority
+
 **Plan fingerprint**:
 The content digest of the canonical finite run-plan graph. It identifies the
 graph but not the wider prepared bundle or its explicit facts.
@@ -500,6 +536,26 @@ The append-only ReviewAuthority result of one automated review, bound separately
 to the candidate seal watermark and review lifecycle generation; it records
 automated completion only and never grants human approval or integration power.
 _Avoid_: Approval record, merge decision
+
+**GitHub pull-request snapshot**:
+An immutable review target binding one open repository pull request to its base
+and head commits, diff digest, lifecycle generation, and exact target-authority
+watermark. The pending effect revalidates every binding before remote mutation.
+_Avoid_: Current pull request, branch name
+
+**Pending GitHub review draft**:
+The authority-rendered body, summary, target binding, marker, and exact digest
+shown at the one-shot checkpoint. Acceptance binds that exact draft to the
+RunAuthority effect intent; the only permitted remote result is one unsubmitted
+pending review.
+_Avoid_: Review comment, submitted review, mutable template
+
+**GitHub review record/projection**:
+The durable ReviewAuthority record and disposable authority-derived view for a
+GitHub snapshot, retaining findings, artifacts, source effect evidence, and an
+exact watermark. Target movement invalidates automation and integration
+eligibility while preserving the record history and safe recovery actions.
+_Avoid_: Provider listing, approval, remote review status
 
 **Integration receipt**:
 Durable evidence binding a reviewed head to the exact target ref, resulting

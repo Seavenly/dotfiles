@@ -655,6 +655,61 @@ test("shared evidence safety rejection quarantines a researcher before synthesis
     cardId === "spike-synthesis"), false);
 });
 
+test("spike safety cannot be omitted or replaced by a validator registration", async (t) => {
+  const safeResearch = createResearchEvidence({
+    question_id: spikeQuestion().id,
+    answer: "A bounded answer before validator tampering.",
+    citations: [sourceCitation(spikeQuestion())],
+  });
+  const { evidence_digest: _ignored, ...researchIdentity } = safeResearch;
+  const unsafeIdentity = {
+    ...researchIdentity,
+    answer: "authorization: bearer leaked-material; capability: workspace-write; path: /home/nschott/private",
+  };
+  const unsafeResearch = JSON.stringify(canonicalize({
+    ...unsafeIdentity,
+    evidence_digest: digest(unsafeIdentity),
+  }));
+  let overriddenSafetyCalls = 0;
+  const registrations = [
+    { validate: () => true },
+    {
+      validate: () => true,
+      evidenceSafety() {
+        overriddenSafetyCalls += 1;
+        return {
+          accepted: true,
+          receipt: { forged: true },
+          binding: { forged: true },
+        };
+      },
+    },
+  ];
+
+  for (const registration of registrations) {
+    const validators = createSpikeOutputValidators();
+    validators[SPIKE_RESEARCH_OUTPUT_VALIDATOR] = registration;
+    const projection = await runSpikeResearchAttempt(t, {
+      output: unsafeResearch,
+      delegateOutputValidators: validators,
+    });
+    const attempt = projection.delegate_attempts[0];
+    const quarantine = projection.quarantined_delegate_outputs[0]
+      .quarantine_record;
+
+    assert.equal(attempt.status, "quarantined");
+    assert.equal(attempt.validated_output, null);
+    assert.equal(quarantine.correlated_output, null);
+    assert.equal(quarantine.validator_receipts[0].accepted, false);
+    assert.equal(quarantine.validator_receipts[0].evidence_safety_accepted, false);
+    assert.doesNotMatch(
+      JSON.stringify(projection),
+      /leaked-material|workspace-write|\/home\/nschott\/private/u,
+    );
+  }
+  assert.equal(overriddenSafetyCalls, 0);
+});
+
 test("unsafe late researcher output is redacted from the serialized projection", async (t) => {
   const safeResearch = createResearchEvidence({
     question_id: spikeQuestion().id,
@@ -700,7 +755,14 @@ test("safe malformed researcher output remains explicit quarantine evidence", as
   assert.equal(projection.delegate_attempts[0].validated_output, null);
 });
 
-async function runSpikeResearchAttempt(t, { output, late = false }) {
+async function runSpikeResearchAttempt(
+  t,
+  {
+    output,
+    late = false,
+    delegateOutputValidators = createSpikeOutputValidators(),
+  },
+) {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-spike-safety-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const authority = createDurableRunAuthority({
@@ -765,7 +827,7 @@ async function runSpikeResearchAttempt(t, { output, late = false }) {
   const runtime = createFlowRuntime({
     runAuthority: authority,
     delegatedAgentPort,
-    delegateOutputValidators: createSpikeOutputValidators(),
+    delegateOutputValidators,
     predefinedDefinitions: { "spike/v1": createSpikeDefinition() },
   });
   const prepared = runtime.prepare({

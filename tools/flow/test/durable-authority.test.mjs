@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1337,14 +1337,105 @@ test("reboot admission uses current Adapter observations", async (t) => {
   const suspended = rebooted.query({ run_id: launch.run_id });
 
   assert.equal(suspended.legal_actions[0].revalidation.valid, false);
-  assert.equal(
-    rebooted.command(suspended.legal_actions[0]).code,
-    "reboot_revalidation_failed",
-  );
+  const rejection = rebooted.command(suspended.legal_actions[0]);
+  assert.equal(rejection.code, "reboot_revalidation_failed");
+  assert.equal(rejection.authority_watermark, suspended.watermark);
   assert.equal(
     rebooted.query({ run_id: launch.run_id }).admission,
     "suspended_after_reboot",
   );
+});
+
+test("same-boot durable restart adopts bound runs without an authority catalog", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-same-boot-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const definition = {
+    schema: "flow.predefined-definition/v1",
+    id: "example/v1",
+    contract: "flow.definition/example/v1",
+    promised_outcomes: ["an exact example outcome"],
+    negative_outcomes: ["no remote mutation"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+    compile({ explicit_facts }) {
+      const proposal = dynamicCheckpointProposal();
+      proposal.explicit_facts = explicit_facts;
+      return proposal;
+    },
+  };
+  const registeredAuthority = {
+    schema: "flow.registered-authority/v1",
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "route-adapter",
+      version: "v1",
+    },
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"a".repeat(64)}`,
+        observation_input,
+      };
+    },
+  };
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({
+    runAuthority: firstAuthority,
+    registeredAuthorities: { "route:example": registeredAuthority },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = firstRuntime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: { prompt: "Confirm the example" },
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+  assert.equal(prepared.required_authorities.length, 1);
+  const request = {
+    prepared,
+    confirmation: {
+      schema: "flow.predefined-flow-confirmation-decision/v1",
+      decision: "accept",
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    },
+    closed_facts: {
+      schema: "flow.closed-fact-observation/v1",
+      bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts),
+    },
+  };
+  const launch = firstRuntime.launch(request);
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recovered = createFlowRuntime({ runAuthority: recoveredAuthority });
+
+  const adopted = recovered.launch(structuredClone(request));
+  assert.equal(adopted.created, false);
+  assert.equal(adopted.run_id, launch.run_id);
+  assert.equal(adopted.bundle_digest, launch.bundle_digest);
+  assert.equal(adopted.plan_fingerprint, launch.plan_fingerprint);
+  const projection = recovered.query({ run_id: launch.run_id });
+  assert.equal(projection.admission, "admitted");
+  assert.equal(Object.hasOwn(projection, "reboot_revalidation"), false);
+  assert.equal(projection.legal_actions.some(({ type }) =>
+    type === "reboot_admission"), false);
 });
 
 test("reboot admission fails closed without a current-observation Adapter", async (t) => {
@@ -1905,7 +1996,8 @@ test("a competing runtime inspects but cannot mutate regardless of lock age", as
   t.after(() => ownerAuthority.close());
   const owner = createFlowRuntime({ runAuthority: ownerAuthority });
   const prepared = owner.prepare(dynamicCheckpointProposal());
-  const launch = owner.launch(confirmedLaunchRequest(prepared));
+  const launchRequest = confirmedLaunchRequest(prepared);
+  const launch = owner.launch(launchRequest);
 
   await utimes(join(authorityDirectory, "authority.lock.sqlite"), 0, 0);
   const competitorAuthority = createDurableRunAuthority({
@@ -1916,6 +2008,16 @@ test("a competing runtime inspects but cannot mutate regardless of lock age", as
   const competitor = createFlowRuntime({ runAuthority: competitorAuthority });
 
   assert.deepEqual(
+    competitor.launch(structuredClone(launchRequest)),
+    { ...launch, created: false },
+  );
+  assert.equal(
+    competitor.launch(confirmedLaunchRequest(
+      prepareDistinctRun(competitor, "2"),
+    )).code,
+    "mutation_authority_unavailable",
+  );
+  assert.deepEqual(
     competitor.query({ run_id: launch.run_id }),
     owner.query({ run_id: launch.run_id }),
   );
@@ -1924,6 +2026,55 @@ test("a competing runtime inspects but cannot mutate regardless of lock age", as
   );
   assert.equal(rejection.code, "mutation_authority_unavailable");
   assert.equal(owner.query({ run_id: launch.run_id }).phase, "active");
+});
+
+test("exact adoption converts corrupt store reads into typed integrity rejection", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-exact-adoption-corrupt-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "owner"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const request = confirmedLaunchRequest(prepared);
+  const launch = runtime.launch(request);
+
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  database.prepare(`
+    UPDATE authority_streams SET fold_json = '{}'
+     WHERE stream_id = ?
+  `).run(launch.run_id);
+  database.close();
+
+  const rejection = runtime.launch(structuredClone(request));
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "authority_integrity_failure");
+  assert.equal(rejection.reason, "fold_mismatch");
+});
+
+test("exact adoption converts unavailable store reads into typed integrity rejection", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-exact-adoption-unavailable-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "owner"),
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const request = confirmedLaunchRequest(prepared);
+  runtime.launch(request);
+
+  const databasePath = join(authorityDirectory, "authority.sqlite");
+  await rm(databasePath);
+  await mkdir(databasePath);
+
+  const rejection = runtime.launch(structuredClone(request));
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.code, "authority_integrity_failure");
+  assert.ok(["corrupt_store", "store_unavailable"].includes(rejection.reason));
 });
 
 test("the advisory lock fences a competing operating-system process", async (t) => {
@@ -2272,6 +2423,44 @@ test("a rejected asynchronous effect is not receipted", async (t) => {
     invoke: async () => "retried",
   }), "retried");
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
+});
+
+test("RunAuthority durably records a valid provider observation without provider-specific error matching", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-provider-observation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    lifecycleKernel: effectLifecycle,
+  });
+  t.after(() => authority.close());
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const launch = launchDistinctRun(runtime, "0");
+  const receipt = runtime.command(
+    runtime.query({ run_id: launch.run_id }).legal_actions[0],
+  );
+  const [intent] = receipt.effect_intents;
+  const providerObservation = {
+    schema: "flow.test-provider-observation/v1",
+    code: "test_provider_failure",
+    reason: "provider response was unavailable",
+  };
+  await assert.rejects(
+    () => authority.invokeEffect(intent, {
+      invoke() {
+        throw Object.assign(new Error(providerObservation.reason), {
+          code: providerObservation.code,
+          provider_observation: providerObservation,
+        });
+      },
+    }),
+    /provider response was unavailable/,
+  );
+  const projection = authority.query(launch.run_id);
+  assert.deepEqual(
+    projection.effects[0].last_observation.provider_observation,
+    providerObservation,
+  );
 });
 
 test("concurrent dispatch reaches the effect Adapter only once", async (t) => {
@@ -2774,6 +2963,10 @@ test("an unresolved effect keeps reboot admission suspended", async (t) => {
   assert.equal(
     rebooted.command(action).code,
     "reboot_revalidation_failed",
+  );
+  assert.equal(
+    rebooted.command(action).authority_watermark,
+    rebooted.query({ run_id: launch.run_id }).watermark,
   );
   let adapterCalled = false;
   await assert.rejects(

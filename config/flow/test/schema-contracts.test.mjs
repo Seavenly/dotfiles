@@ -18,6 +18,12 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 test("reboot admission schemas compile in strict mode", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const names = [
+    "flow.required-authority.v1.schema.json",
+    "flow.authority-observation.v1.schema.json",
+    "flow.authority-fact.v1.schema.json",
+    "flow.required-authority-binding.v1.schema.json",
+    "flow.required-authority-revalidation.v1.schema.json",
+    "flow.rejection.v1.schema.json",
     "flow.time-fact.v1.schema.json",
     "flow.subject-generation.v1.schema.json",
     "flow.reboot-effect-recheck.v1.schema.json",
@@ -28,6 +34,36 @@ test("reboot admission schemas compile in strict mode", async () => {
 
   for (const schema of schemas) ajv.addSchema(schema);
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
+});
+
+test("authority observations require their binding observation input", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.authority-observation.v1.schema.json"),
+    "utf8",
+  ));
+  const validate = ajv.compile(schema);
+  const observation = {
+    schema: "flow.authority-observation/v1",
+    status: "available",
+    watermark: `sha256:${"a".repeat(64)}`,
+    observation_input: { fact: "route_snapshot" },
+  };
+  assert.equal(validate(observation), true, ajv.errorsText());
+  const missingInput = structuredClone(observation);
+  delete missingInput.observation_input;
+  assert.equal(validate(missingInput), false);
+  for (const alias of [
+    "authority_watermark",
+    "provider_watermark",
+    "provider_generation",
+  ]) {
+    const aliased = {
+      ...observation,
+      [alias]: alias.endsWith("generation") ? 1 : observation.watermark,
+    };
+    assert.equal(validate(aliased), false, alias);
+  }
 });
 
 test("Flow description schema accepts the current Drovr description shape", async () => {
@@ -93,6 +129,11 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     join(root, "schemas", "flow.rejection.v1.schema.json"),
     "utf8",
   ));
+  const authorityFactSchema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.authority-fact.v1.schema.json"),
+    "utf8",
+  ));
+  ajv.addSchema(authorityFactSchema);
   const scratch = await mkdtemp(join(tmpdir(), "flow-schema-contract-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const hermesRuns = join(scratch, "agent-flow", "runs");

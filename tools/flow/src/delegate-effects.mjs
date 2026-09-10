@@ -268,6 +268,22 @@ async function executeCancelledDelegate(intent, port, validators) {
 }
 
 async function executeDelegate(intent, port, validators) {
+  try {
+    return await executeDelegateStrict(intent, port, validators);
+  } catch (error) {
+    if (!isReviewCard(intent) || !REVIEW_OPERATIONAL_ERROR_CODES.has(error?.code)) {
+      throw error;
+    }
+    return settleReviewUnavailable({
+      intent,
+      port,
+      current: error?.projection ?? null,
+      reason: reviewOperationalReason(error),
+    });
+  }
+}
+
+async function executeDelegateStrict(intent, port, validators) {
   const callerKey = intent.attempt_id;
   const inputKey = `${callerKey}:input:1`;
   const discovered = await port.discover({
@@ -441,6 +457,34 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
       evidence_safety_binding: safetyReceipt.evidence_safety_binding,
     }),
   };
+  if (isReviewCard(intent) && reason !== null) {
+    const authorityTerminalDisposition = reviewTerminalDisposition({
+      status: "unavailable",
+      reason: reviewCoverageReason(reason),
+    });
+    const quarantineRecord = freezeCanonical({
+      schema: "flow.delegate-quarantine/v1",
+      ...commonRecord,
+      quarantine_reason: reason,
+      correlated_output: typeof output === "string" ? output : null,
+    });
+    return freezeCanonical({
+      schema: "flow.effect-receipt/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      outcome: "succeeded",
+      provider_receipt: {
+        schema: "flow.delegate-evidence/v1",
+        ...commonRecord,
+        validated_output: unavailableReviewOutput({
+          reason: authorityTerminalDisposition.reason,
+        }),
+        authority_terminal_disposition: authorityTerminalDisposition,
+        operational_failure: reason,
+        quarantine_record: quarantineRecord,
+      },
+    });
+  }
   const providerReceipt = freezeCanonical(reason
     ? {
         schema: "flow.delegate-quarantine/v1",
@@ -454,6 +498,12 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
         schema: "flow.delegate-evidence/v1",
         ...commonRecord,
         validated_output: output,
+        ...(isReviewCard(intent) ? {
+          authority_terminal_disposition: reviewTerminalDisposition({
+            status: "produced",
+            reason: null,
+          }),
+        } : {}),
       });
   return freezeCanonical({
     schema: "flow.effect-receipt/v1",
@@ -537,6 +587,96 @@ function delegateInputPrompt(delegateInput) {
     authority_materialized_evidence:
       delegateInput.authority_materialized_evidence,
   }));
+}
+
+function isReviewCard(intent) {
+  return typeof intent?.card_id === "string" &&
+    (intent.card_id.startsWith("review-lens-") || intent.card_id === "review-critic");
+}
+
+function reviewTerminalDisposition({ status, reason }) {
+  return freezeCanonical({
+    schema: "flow.review-terminal-disposition/v1",
+    authority: "RunAuthority",
+    status,
+    reason,
+  });
+}
+
+function reviewCoverageReason(reason) {
+  return reason;
+}
+
+function reviewOperationalReason(error) {
+  if (error?.code === "delegated_runtime_unresolved") {
+    const status = error.projection?.status;
+    if (status === "still_running" || status === "reconciling") return "bounded_timeout";
+    return "delegate_unavailable";
+  }
+  if (error?.code === "delegated_runtime_unavailable" ||
+      error?.code === "delegated_agent_port_unavailable") {
+    return "delegate_unavailable";
+  }
+  return "delegate_failure";
+}
+
+function unavailableReviewOutput({ reason }) {
+  return JSON.stringify({
+    schema: "flow.review-result/v1",
+    posture: "review_incomplete",
+    findings: [],
+    coverage: {
+      schema: "flow.review-coverage/v1",
+      status: reason === "bounded_timeout" ? "degraded" : "unavailable",
+      reason,
+    },
+    evidence: null,
+  });
+}
+
+async function settleReviewUnavailable({ intent, port, current, reason }) {
+  const terminalDisposition = reviewTerminalDisposition({
+    status: reason === "bounded_timeout" ? "degraded" : "unavailable",
+    reason,
+  });
+  let resourceDisposition;
+  try {
+    resourceDisposition = current?.turn?.id
+      ? await retireDelegateAgent(current, intent, port)
+      : {
+          schema: "flow.resource-handoff/v1",
+          resource: { type: "drovr_agent", id: intent.route_binding.agent_id },
+          durable_holder: "drovr.registry",
+          reason: "review_coverage_unavailable",
+          attempt_id: intent.attempt_id,
+        };
+  } catch {
+    resourceDisposition = {
+      schema: "flow.resource-handoff/v1",
+      resource: { type: "drovr_agent", id: intent.route_binding.agent_id },
+      durable_holder: "drovr.registry",
+      reason: "review_coverage_unavailable",
+      attempt_id: intent.attempt_id,
+    };
+  }
+  return freezeCanonical({
+    schema: "flow.effect-receipt/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    outcome: "succeeded",
+    provider_receipt: {
+      schema: "flow.delegate-evidence/v1",
+      attempt_id: intent.attempt_id,
+      card_id: intent.card_id,
+      turn_id: current?.turn?.id ?? null,
+      drovr_watermark: current?.watermark ?? null,
+      route_binding: intent.route_binding,
+      validator_receipts: [],
+      validated_output: unavailableReviewOutput({ reason }),
+      authority_terminal_disposition: terminalDisposition,
+      terminal_disposition: resourceDisposition,
+    },
+  });
 }
 
 async function settleTerminalDisposition({
@@ -675,3 +815,9 @@ function delegatedRuntimeError(projection) {
   error.projection = projection ?? null;
   return error;
 }
+
+const REVIEW_OPERATIONAL_ERROR_CODES = new Set([
+  "delegated_runtime_unresolved",
+  "delegated_runtime_unavailable",
+  "delegated_agent_port_unavailable",
+]);

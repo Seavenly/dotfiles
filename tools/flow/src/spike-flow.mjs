@@ -42,7 +42,7 @@ const SPIKE_PROMISED_OUTCOMES = Object.freeze([
   "research and synthesis remain distinct independently routed delegates",
 ]);
 const SPIKE_NEGATIVE_OUTCOME =
-  "no prototype, production implementation, review candidate, publication, or tracker completion";
+  "no prototype, production implementation or candidate, review candidate or approval, publication, tracker completion, or mutation authority";
 const SPIKE_TRUST_POSTURE = Object.freeze({
   schema: "flow.spike-trust-posture/v1",
   assurance: "lower",

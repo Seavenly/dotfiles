@@ -21,6 +21,7 @@ import {
   canonicalize,
   digest,
   freezeCanonical,
+  isPlainRecord,
 } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
 import {
@@ -78,6 +79,9 @@ import {
   workspaceEffectAuthorityIssue,
 } from "./work-authority.mjs";
 import {
+  isReviewTargetInvalidationCommand,
+  isReviewTargetRefreshCommand,
+  GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
   reviewRecordCandidateAuthorityIssue,
   reviewRecordSourceAuthorityIssue,
 } from "./review-flow.mjs";
@@ -90,8 +94,19 @@ import {
   snapshotBackupRestoreAdapter,
   reduceHostRecoveryEvent,
 } from "./backup-restore.mjs";
+import {
+  authorityBindingCatalogIdentity,
+  authorityFactFromIssue,
+  recheckAuthorityBindings,
+  validateDefinitionAuthorityBindings,
+} from "./authority-bindings.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const REVIEW_TARGET_MOVEMENT_SHAPES = Object.freeze([
+  "fingerprint_only",
+  "generation_only",
+  "combined",
+]);
 const EFFECT_INTENT_EVENT_TYPES = new Set([
   "effect_intent_recorded",
   "effect_intent_adopted",
@@ -104,6 +119,36 @@ const DEFERRED_EFFECT_EVENT_TYPES = new Set([
 ]);
 const require = createRequire(import.meta.url);
 let databaseConstructor = null;
+const authorityBindingCatalogs = new WeakMap();
+
+export function attachAuthorityBindingCatalogs(
+  runAuthority,
+  { authorities = new Map(), predefinedDefinitions = new Map() } = {},
+) {
+  if (runAuthority === null || typeof runAuthority !== "object") {
+    throw new TypeError("run authority is required for authority catalog binding");
+  }
+  if (!(authorities instanceof Map) || !(predefinedDefinitions instanceof Map)) {
+    throw new TypeError("authority catalogs must be Maps");
+  }
+  const snapshot = {
+    authorities: new Map(authorities),
+    predefinedDefinitions: new Map(predefinedDefinitions),
+  };
+  // The first catalog becomes the RunAuthority's immutable provider view.
+  // Same-identity attachment is a no-op; callbacks from later runtimes never
+  // replace the attached mechanism.
+  const identity = authorityBindingCatalogIdentity(snapshot);
+  const existing = authorityBindingCatalogs.get(runAuthority);
+  if (existing !== undefined) {
+    if (existing.identity !== identity) {
+      throw new TypeError("conflicting authority catalog attachment");
+    }
+    return undefined;
+  }
+  const attached = Object.freeze({ ...snapshot, identity });
+  authorityBindingCatalogs.set(runAuthority, attached);
+}
 
 export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {}) {
   const runs = new Map();
@@ -191,6 +236,23 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
   };
 
   const runAuthority = Object.freeze({
+    adoptExactLaunch(request = {}) {
+      if (hostProjection().restore?.active === true) return null;
+      const validation = validateLaunchRequest(request);
+      if (!validation.accepted) return null;
+      const runId = childLaunchLineage === null
+        ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(childLaunchLineage);
+      const existingRunId = childLaunchLineage === null
+        ? bundleRuns.get(validation.prepared.bundle_digest)
+        : null;
+      if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
+      if (childLaunchLineage !== null && runs.has(runId)) {
+        return launchReceipt(runs.get(runId), false);
+      }
+      return null;
+    },
+
     launch(request = {}) {
       if (hostProjection().restore?.active === true) {
         return hostMutationRejection("launch");
@@ -207,17 +269,26 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
       }
       const { prepared, closedFacts } = validation;
 
+      const runId = lineage === null
+        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(lineage);
       const existingRunId = lineage === null
         ? bundleRuns.get(prepared.bundle_digest)
         : null;
       if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
-
-      const runId = lineage === null
-        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
-        : deriveChildRunId(lineage);
       if (lineage !== null && runs.has(runId)) {
         return launchReceipt(runs.get(runId), false);
       }
+
+      const authorityIssue = launchAuthorityBindingIssue(runAuthority, prepared);
+      if (authorityIssue) {
+        return launchAuthorityBindingRejection(
+          prepared,
+          authorityIssue,
+          authorityWatermark(authorityEvents),
+        );
+      }
+
       const runOwnership = lineage === null
         ? topLevelRunOwnership()
         : childRunOwnership(lineage.parent_run_id);
@@ -484,6 +555,7 @@ export function createDurableRunAuthority({
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  reviewTargetObservationAdapter = null,
   workEvidenceAdapter = createFailClosedWorkEvidenceAdapter(),
   runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
 } = {}) {
@@ -550,6 +622,15 @@ export function createDurableRunAuthority({
   if (typeof workEvidenceAdapter?.validate !== "function") {
     throw new TypeError("durable run authority requires a Work evidence Adapter");
   }
+  if (reviewTargetObservationAdapter !== null &&
+      (typeof reviewTargetObservationAdapter?.observe !== "function" ||
+       !Array.isArray(reviewTargetObservationAdapter?.movement_shapes) ||
+       REVIEW_TARGET_MOVEMENT_SHAPES.some((shape) =>
+         !reviewTargetObservationAdapter.movement_shapes.includes(shape)))) {
+    throw new TypeError(
+      "durable run authority review target observation Adapter must observe all target movement shapes",
+    );
+  }
   if (typeof runOwnershipAdapter?.observe !== "function") {
     throw new TypeError("durable run authority requires a run ownership Adapter");
   }
@@ -568,7 +649,16 @@ export function createDurableRunAuthority({
     database,
     stream,
     rebootObservationAdapter,
+    () => authorityBindingCatalogs.get(runAuthority),
   );
+  const fenceRunWithoutAuthorityRevalidation = (database, stream) =>
+    fencedRunFold(
+      database,
+      stream,
+      rebootObservationAdapter,
+      () => authorityBindingCatalogs.get(runAuthority),
+      { revalidateAuthorities: false },
+    );
 
   const databasePath = join(authorityDirectory, "authority.sqlite");
   const lockPath = join(authorityDirectory, "authority.lock.sqlite");
@@ -791,6 +881,63 @@ export function createDurableRunAuthority({
     completeSameBootRecovery(runId) {
       sameBootRecoveryRunIds.delete(runId);
     },
+    adoptExactLaunch(request = {}) {
+      assertOpen();
+      // Exact adoption is intentionally read-only, including while another
+      // process owns the mutation lock. New launches take the fence below.
+      if (authoritySchemaCompatibility?.status === "incompatible" ||
+          !databaseExists(databasePath)) return null;
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath, { readOnly: true });
+        const compatibility = readAuthoritySchemaCompatibility(database);
+        if (compatibility.status !== "compatible") return null;
+        const hostRuns = readStream(database, "host:runs");
+        const admission = readStream(database, "host:admission");
+        if (!admission) {
+          throw new AuthorityIntegrityError(
+            "missing_stream",
+            "authority host stream is missing",
+          );
+        }
+        const host = durableHostProjection(database);
+        if (host.restore?.active === true) return null;
+        const validation = validateLaunchRequest(request);
+        if (!validation.accepted) return null;
+        const runId = childLaunchLineage === null
+          ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
+          : deriveChildRunId(childLaunchLineage);
+        const existing = readStream(database, runId);
+        if (!existing) {
+          if (hostRuns?.fold.runs.includes(runId)) {
+            throw new AuthorityIntegrityError(
+              "missing_stream",
+              "authority run stream is missing",
+            );
+          }
+          return null;
+        }
+        if (!hostRuns) {
+          throw new AuthorityIntegrityError(
+            "missing_stream",
+            "authority run index stream is missing",
+          );
+        }
+        return durableLaunchReceipt(
+          database,
+          existing,
+          false,
+          fenceRunWithoutAuthorityRevalidation,
+        );
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("launch", integrity.reason);
+      } finally {
+        database?.close();
+      }
+    },
+
     launch(request = {}) {
       const lineage = childLaunchLineage;
       assertOpen();
@@ -907,6 +1054,18 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
+          const authorityIssue = launchAuthorityBindingIssue(
+            runAuthority,
+            prepared,
+          );
+          if (authorityIssue) {
+            database.exec("ROLLBACK");
+            return durableLaunchAuthorityBindingRejection(
+              prepared,
+              databasePath,
+              authorityIssue,
+            );
+          }
           const admission = readStream(database, "host:admission").fold;
           if (admission.active_runs.length >= admission.declared_capacity) {
             database.exec("ROLLBACK");
@@ -1480,6 +1639,23 @@ export function createDurableRunAuthority({
           processIdentity,
         });
         const currentProjection = readStream(database, identity.streamId)?.fold ?? null;
+        let reviewAuthorityObservation = null;
+        if (isReviewTargetInvalidationCommand(command)) {
+          reviewAuthorityObservation = durableReviewTargetObservation(
+            database,
+            currentProjection,
+            command,
+            reviewTargetObservationAdapter,
+          );
+          if (reviewAuthorityObservation === null) {
+            return workRejection("command", "review_target_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+        } else if (isReviewTargetRefreshCommand(command)) {
+          reviewAuthorityObservation = currentProjection?.invalidation?.observation ?? null;
+        }
         if (currentProjection?.schema === "work.workspace-projection/v1" &&
             command.type === "workspace_claim") {
           let observation;
@@ -1571,7 +1747,12 @@ export function createDurableRunAuthority({
             ),
           });
         }
-        const structuralDecision = evaluateWorkCommand(database, identity, command);
+        const structuralDecision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+          reviewAuthorityObservation,
+        );
         if (structuralDecision.schema === "work.rejection/v1") {
           return structuralDecision;
         }
@@ -1611,6 +1792,7 @@ export function createDurableRunAuthority({
           database,
           identity,
           command,
+          reviewAuthorityObservation,
         );
         if (decision.schema === "work.rejection/v1") return decision;
         if (decision.replayed) {
@@ -1663,6 +1845,7 @@ export function createDurableRunAuthority({
             database,
             identity,
             command,
+            reviewAuthorityObservation,
           );
           if (committed.schema === "work.rejection/v1") {
             database.exec("ROLLBACK");
@@ -2210,14 +2393,16 @@ export function createDurableRunAuthority({
                     reviewCandidateReference.review_authority_watermark,
                 },
               }]),
-              ...(result?.outcome === "quarantined" ? [{
+              ...(result?.outcome === "quarantined" ||
+                result?.provider_receipt?.quarantine_record !== undefined ? [{
                 contract: "flow.run-event/v1",
                 payload: {
                   type: "delegate_output_quarantined",
                   effect_id: effectiveIntent.effect_id,
                   attempt_id: effectiveIntent.attempt_id,
                   card_id: effectiveIntent.card_id,
-                  quarantine_record: result.provider_receipt,
+                  quarantine_record: result.provider_receipt.quarantine_record ??
+                    result.provider_receipt,
                 },
               }] : []),
               ...deferredEvents.map((payload) => ({
@@ -2254,6 +2439,20 @@ export function createDurableRunAuthority({
         dispatch.resolve();
         return result;
       } catch (error) {
+        const providerObservation = durableProviderObservation(error);
+        if (providerObservation !== null) {
+          try {
+            appendEffectObservation(
+              database,
+              intent,
+              providerEffectErrorObservation(intent, providerObservation),
+            );
+          } catch {
+            // Preserve the provider failure. The original error remains the
+            // caller-visible result if durable observation publication is
+            // fenced, while successful publication survives a restart.
+          }
+        }
         dispatch.resolve();
         throw error;
       } finally {
@@ -2274,79 +2473,7 @@ export function createDurableRunAuthority({
       }
       const database = openAuthorityDatabase(databasePath);
       try {
-        assertDurableHostRestoreClear(
-          database,
-          "effect observations are fenced by the host restore barrier",
-        );
-        assertMutationFence(lockDatabase, database, {
-          authorityEpoch,
-          bootId,
-          processIdentity,
-        });
-        const stream = readStream(database, intent?.run_id);
-        const recorded = stream?.records.some(({ payload }) =>
-          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
-          isDeepStrictEqual(payload.intent, intent));
-        if (!recorded) {
-          throw new AuthorityFenceError(
-            "unrecorded_effect_intent",
-            "effect observation is not bound to a recorded intent",
-          );
-        }
-        assertEffectRunAdmitted(stream, bootId);
-        if (stream.records.some(({ payload }) =>
-          payload.type === "effect_receipt_recorded" &&
-          payload.effect_id === intent.effect_id)) {
-          throw new AuthorityFenceError(
-            "effect_already_recorded",
-            "effect already has a durable receipt",
-          );
-        }
-        if (!["active", "cancelled"].includes(stream.fold.phase)) {
-          throw new AuthorityFenceError(
-            "run_terminal",
-            "effect observations cannot mutate a settled terminal run",
-          );
-        }
-        const normalizedObservation = normalizeEffectObservation(
-          observation,
-          intent,
-        );
-        database.exec("BEGIN IMMEDIATE");
-        try {
-          assertAuthorityEpoch(database, {
-            authorityEpoch,
-            bootId,
-            processIdentity,
-          });
-          appendAuthorityEvents(database, {
-            streamId: intent.run_id,
-            streamKind: "run",
-            events: [{
-              contract: "flow.run-event/v1",
-              payload: {
-                type: "effect_observation_recorded",
-                effect_id: intent.effect_id,
-                observation: normalizedObservation,
-              },
-            }],
-            authorityEpoch,
-            bootId,
-            processIdentity,
-          });
-          database.exec("COMMIT");
-        } catch (error) {
-          if (database.isTransaction) database.exec("ROLLBACK");
-          throw error;
-        }
-        const projection = projectFencedRun(database, readStream(
-          database,
-          intent.run_id,
-        ), fenceRun);
-        for (const watcher of watchers.get(intent.run_id) ?? []) {
-          watcher.publish(projection);
-        }
-        return normalizedObservation;
+        return appendEffectObservation(database, intent, observation);
       } finally {
         database.close();
       }
@@ -2369,6 +2496,79 @@ export function createDurableRunAuthority({
 
   function assertOpen() {
     if (closed) throw new Error("durable run authority is closed");
+  }
+
+  function appendEffectObservation(database, intent, observation) {
+    assertDurableHostRestoreClear(
+      database,
+      "effect observations are fenced by the host restore barrier",
+    );
+    assertMutationFence(lockDatabase, database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    const stream = readStream(database, intent?.run_id);
+    const recorded = stream?.records.some(({ payload }) =>
+      EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+      isDeepStrictEqual(payload.intent, intent));
+    if (!recorded) {
+      throw new AuthorityFenceError(
+        "unrecorded_effect_intent",
+        "effect observation is not bound to a recorded intent",
+      );
+    }
+    assertEffectRunAdmitted(stream, bootId);
+    if (stream.records.some(({ payload }) =>
+      payload.type === "effect_receipt_recorded" &&
+      payload.effect_id === intent.effect_id)) {
+      throw new AuthorityFenceError(
+        "effect_already_recorded",
+        "effect already has a durable receipt",
+      );
+    }
+    if (!["active", "cancelled"].includes(stream.fold.phase)) {
+      throw new AuthorityFenceError(
+        "run_terminal",
+        "effect observations cannot mutate a settled terminal run",
+      );
+    }
+    const normalizedObservation = normalizeEffectObservation(observation, intent);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertAuthorityEpoch(database, {
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      appendAuthorityEvents(database, {
+        streamId: intent.run_id,
+        streamKind: "run",
+        events: [{
+          contract: "flow.run-event/v1",
+          payload: {
+            type: "effect_observation_recorded",
+            effect_id: intent.effect_id,
+            observation: normalizedObservation,
+          },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+    const projection = projectFencedRun(database, readStream(
+      database,
+      intent.run_id,
+    ), fenceRun);
+    for (const watcher of watchers.get(intent.run_id) ?? []) {
+      watcher.publish(projection);
+    }
+    return normalizedObservation;
   }
 
   function applySchemaTransitionCommand(command) {
@@ -2505,11 +2705,21 @@ export function createDurableRunAuthority({
       if (![
         "work.review-candidate-seal-command/v1",
         "work.review-record-command/v1",
+        "work.review-target-invalidation-command/v1",
+        "work.review-target-refresh-command/v1",
+        GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
       ].includes(command?.schema) ||
           command.contract !== "work.review/v1") {
         return workRejection("command", "invalid_review_command", { command });
       }
-      if (command.schema === "work.review-record-command/v1") {
+      if (command.schema === "work.review-record-command/v1" ||
+          command.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) {
+        return workCommand(command);
+      }
+      if (isReviewTargetInvalidationCommand(command)) {
+        return workCommand(command);
+      }
+      if (isReviewTargetRefreshCommand(command)) {
         return workCommand(command);
       }
       return workRejection(
@@ -2725,17 +2935,21 @@ function workCommandReceipt(command, projection, created) {
   });
 }
 
-function evaluateWorkCommand(database, identity, command) {
+function evaluateWorkCommand(database, identity, command, authorityObservation = null) {
   const current = readStream(database, identity.streamId)?.fold ?? null;
-  return decideWorkCommand(current, command);
+  return decideWorkCommand(current, command, { authorityObservation });
 }
 
 function isReviewRecordCommand(command) {
-  return command?.schema === "work.review-record-command/v1" &&
-    command.type === "review_record" && command.contract === "work.review/v1";
+  return ((command?.schema === "work.review-record-command/v1" &&
+    command.type === "review_record") ||
+    (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA &&
+      command.type === "github_review_record")) &&
+    command.contract === "work.review/v1";
 }
 
 function reviewCandidateCommandIssue(database, command) {
+  if (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) return null;
   const candidateIdentity = workStreamIdentity(
     "work.review/v1",
     command.candidate?.candidate_id,
@@ -2752,6 +2966,35 @@ function reviewSourceCommandIssue(database, command) {
     : null;
   const issue = reviewRecordSourceAuthorityIssue(command, stream?.fold ?? null);
   return issue ? { ...issue, projection: stream?.fold ?? null } : null;
+}
+
+function durableReviewTargetObservation(
+  database,
+  reviewProjection,
+  command,
+  adapter,
+) {
+  if (reviewProjection?.schema !== "flow.review-projection/v1") return null;
+  if (typeof adapter?.observe !== "function") return null;
+  try {
+    const candidateIdentity = workStreamIdentity(
+      "work.review/v1",
+      reviewProjection.candidate?.candidate_id,
+    );
+    const candidateProjection = candidateIdentity
+      ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+      : null;
+    const observation = adapter.observe({
+      command,
+      review: reviewProjection,
+      candidate: candidateProjection,
+    });
+    return observation === null || observation === undefined
+      ? null
+      : freezeCanonical(observation);
+  } catch {
+    return null;
+  }
 }
 
 function prepareHandoffPublication(
@@ -3800,7 +4043,12 @@ function invalidCommandRejection(fold, command) {
   });
 }
 
-function durableLaunchReceipt(database, stream, created, fenceRun) {
+function durableLaunchReceipt(
+  database,
+  stream,
+  created,
+  fenceRun,
+) {
   const fold = fenceRun(database, stream);
   return freezeCanonical({
     schema: "flow.launch-receipt/v1",
@@ -3813,14 +4061,25 @@ function durableLaunchReceipt(database, stream, created, fenceRun) {
   });
 }
 
-function fencedRunFold(database, stream, rebootObservationAdapter) {
+function fencedRunFold(
+  database,
+  stream,
+  rebootObservationAdapter,
+  authorityCatalogs = () => null,
+  { revalidateAuthorities = true } = {},
+) {
   const admission = readStream(database, "host:admission")?.fold;
   const hostRestoreBarrier = admission?.restore?.active === true;
   if (!admission) throw new Error("authority admission stream is missing");
   const suspendedAfterReboot = stream.fold.phase === "active" &&
     !hasCurrentBootAdmission(stream, admission.boot_id);
-  const revalidation = suspendedAfterReboot
-    ? rebootRevalidation(stream, rebootObservationAdapter, admission.boot_id)
+  const revalidation = suspendedAfterReboot && revalidateAuthorities
+    ? rebootRevalidation(
+        stream,
+        rebootObservationAdapter,
+        admission.boot_id,
+        authorityCatalogs(),
+      )
     : null;
   const watermark = digest({
     schema: "flow.fenced-run-watermark/v1",
@@ -3909,7 +4168,12 @@ function projectFencedRun(database, stream, fenceRun) {
   });
 }
 
-function rebootRevalidation(stream, adapter, currentBootId) {
+function rebootRevalidation(
+  stream,
+  adapter,
+  currentBootId,
+  authorityCatalogs = null,
+) {
   const prepared = stream.records[0].payload.prepared;
   const currentFacts = {
     resource_claims: stream.fold.resource_claims,
@@ -3920,7 +4184,7 @@ function rebootRevalidation(stream, adapter, currentBootId) {
     .filter(({ payload }) => payload.type === "effect_receipt_recorded")
     .map(({ payload }) => payload.effect_id));
   const reconstruction = reconstructRebootEffects(stream);
-  return buildRebootRevalidation({
+  const revalidation = buildRebootRevalidation({
     adapter,
     currentBootId,
     currentFacts,
@@ -3929,6 +4193,16 @@ function rebootRevalidation(stream, adapter, currentBootId) {
       intent !== null && typeof intent === "object" &&
       !receipts.has(intent.effect_id)),
     unresolvedEffectsValid: reconstruction.valid,
+  });
+  const bindingRevalidation = recheckAuthorityBindings(
+    prepared.required_authorities ?? [],
+    authorityCatalogs?.authorities,
+    { prepared, phase: "reboot" },
+  );
+  return freezeCanonical({
+    ...revalidation,
+    valid: revalidation.base_valid && bindingRevalidation.valid,
+    authority_bindings: bindingRevalidation,
   });
 }
 
@@ -3956,6 +4230,32 @@ function sameEffectIntentIdentity(left, right) {
   } catch {
     return false;
   }
+}
+
+function durableProviderObservation(error) {
+  const observation = error?.provider_observation;
+  if (!isPlainRecord(observation) ||
+      typeof observation.schema !== "string" ||
+      observation.schema.length === 0) {
+    return null;
+  }
+  try {
+    digest(observation);
+    return observation;
+  } catch {
+    return null;
+  }
+}
+
+function providerEffectErrorObservation(intent, providerObservation) {
+  return {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "indeterminate",
+    causation: null,
+    provider_observation: providerObservation,
+  };
 }
 
 function effectIntentIdentity(intent) {
@@ -4343,6 +4643,12 @@ function projectRunWithHostBarrier(projection, hostProjection) {
 
 function authorityIntegrityError(error) {
   if (error instanceof AuthorityIntegrityError) return error;
+  if (error?.code === "review_authority_integrity_failure") {
+    return new AuthorityIntegrityError(
+      error.reason ?? "review_corrupt_event",
+      error.message,
+    );
+  }
   if (error?.code !== "ERR_SQLITE_ERROR") return null;
   return new AuthorityIntegrityError(
     error.errcode === 26 ? "corrupt_store" : "store_unavailable",
@@ -4389,6 +4695,46 @@ function launchRejection(code, prepared, authorityEvents, reason = null) {
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
   });
+}
+
+function launchAuthorityBindingIssue(runAuthority, prepared) {
+  const catalogs = authorityBindingCatalogs.get(runAuthority);
+  return validateDefinitionAuthorityBindings(
+    prepared,
+    catalogs?.authorities,
+    catalogs?.predefinedDefinitions,
+  );
+}
+
+function launchAuthorityBindingRejection(prepared, issue, watermark) {
+  return createRejection({
+    operation: "launch",
+    code: issue.code,
+    reason: issue.reason,
+    bundleDigest: stringOrNull(prepared?.bundle_digest),
+    authorityWatermark: watermark ?? EMPTY_WATERMARK,
+    authorityWatermarkDomain: "host",
+    legalActions: issue.legal_actions ?? [],
+    authorityFact: authorityFactFromIssue(issue),
+  });
+}
+
+function durableLaunchAuthorityBindingRejection(prepared, databasePath, issue) {
+  let watermark = EMPTY_WATERMARK;
+  let database = null;
+  try {
+    if (databaseExists(databasePath)) {
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
+      watermark = durableHostProjection(database).watermark;
+    }
+    return launchAuthorityBindingRejection(prepared, issue, watermark);
+  } catch (error) {
+    const integrity = authorityIntegrityError(error);
+    if (!integrity) throw error;
+    return authorityIntegrityRejection("launch", integrity.reason);
+  } finally {
+    database?.close();
+  }
 }
 
 function hostCommandRejection(operation, code, reason, hostProjection) {

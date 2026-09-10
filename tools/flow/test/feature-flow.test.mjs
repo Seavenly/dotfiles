@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
   createFeatureDefinition,
@@ -16,6 +17,7 @@ import {
 import { validateFeatureRepairContract } from
   "../src/feature-repair-contract.mjs";
 import {
+  buildReviewTargetObservation,
   createReviewDefinition,
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
@@ -34,6 +36,10 @@ import { completedTurnProjection } from "../test-support/delegate-card.mjs";
 import {
   dynamicCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+import {
+  shippedAuthorityRegistrations,
+  shippedAuthorityStateFromFacts,
+} from "../test-support/authority-bindings.mjs";
 import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
 
@@ -57,6 +63,9 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   facts.limits.max_resources = 4;
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
     registeredOperations: Object.fromEntries(
       Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
         classification: "caller_idempotent",
@@ -87,6 +96,14 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   assert.equal(prepared.selection.inputs.mode, "verify");
   assert.equal(prepared.confirmation.schema, "flow.predefined-flow-confirmation/v1");
   assert.equal(prepared.trust_posture.evidence, "registered_operations_only");
+  assert.deepEqual(prepared.required_authorities.map(({ id }) => id), [
+    "contract:facts",
+    "generation:facts",
+    "resource:facts",
+    "route:facts",
+  ]);
+  assert.equal(prepared.required_authorities.every(({ observation }) =>
+    observation.status === "available" && observation.watermark.startsWith("sha256:")), true);
   assert.equal(
     prepared.trust_posture.delegation,
     "bounded_implementation_and_independent_critique_only",
@@ -918,7 +935,7 @@ test("feature/v1 admits serialized slice and completeness repairs with explicit 
         ),
       });
       t.after(() => runAuthority.close());
-      runtime = featurePreparationRuntime(runAuthority);
+      runtime = featurePreparationRuntime(runAuthority, facts);
     }
     const prepared = prepareFeatureSelection(inputs, facts, runtime);
     assert.equal(prepared.revision_templates[0].repair.kind, kind);
@@ -1114,6 +1131,28 @@ test("feature/v1 preserves chronological decline and expansion-decline outcomes"
   );
   assert.deepEqual(projection.revision_outcomes.map(({ legal_next_actions }) =>
     legal_next_actions), [[], []]);
+});
+
+test("feature/v1 requires registered authority providers", () => {
+  const inputs = featureInputs();
+  const facts = featureFactsForInputs(inputs);
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    registeredOperations: featurePreparationOperations(),
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+    },
+  });
+
+  assert.throws(
+    () => runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "feature/v1",
+      inputs,
+      explicit_facts: facts,
+    }),
+    (error) => error.reason === "required_authority_catalog_unavailable",
+  );
 });
 
 test("feature/v1 requires discriminating evidence at preparation", () => {
@@ -2336,6 +2375,106 @@ test("feature/v1 cancellation stops admission without sealing a candidate", asyn
   assert.deepEqual(cancelled.legal_actions, []);
 });
 
+test("feature/v1 rechecks current route, resource, and generation providers on absent launch", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {});
+  const cases = [
+    {
+      id: "route:facts",
+      observation: {
+        status: "stale",
+        watermark: digestValue("feature-route-drift"),
+      },
+    },
+    {
+      id: "resource:facts",
+      observation: {
+        status: "stale",
+        watermark: digestValue("feature-resource-drift"),
+      },
+    },
+    {
+      id: "generation:facts",
+      observation: {
+        status: "stale",
+        generation: 9,
+      },
+    },
+  ];
+
+  for (const [index, { id, observation }] of cases.entries()) {
+    const inputs = structuredClone(fixture.inputs);
+    inputs.brief.summary = `drifted feature ${index}`;
+    const prepared = fixture.runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "feature/v1",
+      inputs,
+      explicit_facts: fixture.facts,
+    });
+    const original = fixture.authorityState[id];
+    fixture.authorityState[id] = observation;
+    const rejection = fixture.runtime.launch(
+      confirmedPredefinedLaunchRequest(prepared),
+    );
+    fixture.authorityState[id] = original;
+
+    assert.equal(rejection.code, "required_authority_stale", id);
+    assert.equal(rejection.authority_fact.authority_id, id);
+    assert.deepEqual(fixture.runtime.query().runs, [fixture.runId]);
+  }
+});
+
+test("feature/v1 reboot admission rechecks the current shipped resource provider", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {});
+  fixture.runAuthority.close();
+  fixture.authorityState["resource:facts"] = {
+    status: "stale",
+    watermark: digestValue("feature-reboot-resource-drift"),
+  };
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity(
+      "boot-feature-reboot",
+      "feature-process-reboot",
+    ),
+    rebootObservationAdapter: {
+      observe({ prepared }) {
+        const observation = preparedObservation(prepared);
+        return {
+          ...observation,
+          time_facts: observation.time_facts.map((fact) =>
+            fact.kind === "boot" ? { ...fact, boot_id: "boot-feature-reboot" } : fact),
+        };
+      },
+    },
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebootedRuntime = createFlowRuntime({
+    runAuthority: rebootedAuthority,
+    registeredAuthorities: fixture.registeredAuthorities,
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+    },
+  });
+  const suspended = rebootedRuntime.query({ run_id: fixture.runId });
+  const action = suspended.legal_actions[0];
+  assert.equal(action.type, "reboot_admission");
+  assert.equal(action.revalidation.authority_bindings.valid, false);
+  assert.equal(
+    action.revalidation.authority_bindings.issues[0].authority_id,
+    "resource:facts",
+  );
+
+  const rejection = rebootedRuntime.command(action);
+  assert.equal(rejection.code, "required_authority_stale");
+  assert.equal(rejection.authority_fact.authority_id, "resource:facts");
+  assert.equal(suspended.admission, "suspended_after_reboot");
+});
+
 test("feature/v1 verify executes and seals one durable local candidate", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-feature-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -2345,6 +2484,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
       promotion: true,
     }),
+    reviewTargetObservationAdapter: featureReviewTargetObservationAdapter(),
     hostIdentityAdapter: fixedHostIdentity("boot-feature", "feature-process"),
   });
   t.after(() => runAuthority.close());
@@ -2414,6 +2554,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     (inputs.slices?.length ?? 0) * 3 + 5,
   );
   facts.limits.max_resources = 4;
+  const authorityState = shippedAuthorityStateFromFacts(facts);
+  const registeredAuthorities = shippedAuthorityRegistrations({
+    current: authorityState,
+  });
 
   let runtime;
   let verifyReceipt = null;
@@ -2462,6 +2606,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   };
   runtime = createFlowRuntime({
     runAuthority,
+    registeredAuthorities,
     delegatedAgentPort,
     delegateOutputValidators: {
       [DELEGATE_OUTPUT_VALIDATOR]: {
@@ -2548,8 +2693,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
         },
       },
     },
+    registeredAuthorities,
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
+      "review/v1": createReviewDefinition(),
     },
   });
   const prepared = runtime.prepare({
@@ -2748,6 +2895,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   );
   reviewFacts.limits.max_cards = 8;
   reviewFacts.limits.max_resources = 2;
+  Object.assign(authorityState, shippedAuthorityStateFromFacts(reviewFacts));
   const reviewPrompts = [];
   const reviewDelegatedAgentPort = {
     contract: "flow.delegated-agent-port/v1",
@@ -2790,9 +2938,13 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   };
   const reviewRuntime = createFlowRuntime({
     runAuthority,
+    registeredAuthorities,
     reviewAuthority: reviewAuthorityWithReceiptLoss,
     delegatedAgentPort: reviewDelegatedAgentPort,
-    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+      "review/v1": createReviewDefinition(),
+    },
   });
   const preparedReview = reviewRuntime.prepare({
     schema: "flow.predefined-flow-selection/v1",
@@ -2888,6 +3040,134 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   });
   assert.equal(afterConflict.watermark, stableWatermark);
   assert.equal(afterConflict.append_only_event_count, 1);
+
+  const invalidationA = {
+    schema: "work.review-target-invalidation-command/v1",
+    type: "review_target_invalidated",
+    contract: "work.review/v1",
+    subject_id: reviewId,
+    command_id: `review-target-invalidate:${reviewId}:sha256:${"d".repeat(64)}:5`,
+    expected_watermark: stableWatermark,
+    prior_candidate_fingerprint: reviewedCandidate.candidate_fingerprint,
+    prior_lifecycle_generation: reviewedCandidate.lifecycle_generation,
+    observed_candidate_fingerprint: `sha256:${"d".repeat(64)}`,
+    observed_lifecycle_generation: 5,
+    reason: "target_moved",
+  };
+  const invalidationB = {
+    ...invalidationA,
+    command_id: `review-target-invalidate:${reviewId}:sha256:${"e".repeat(64)}:6`,
+    observed_candidate_fingerprint: `sha256:${"e".repeat(64)}`,
+    observed_lifecycle_generation: 6,
+  };
+  const [invalidationReceiptA, invalidationReceiptB] = await Promise.all([
+    Promise.resolve().then(() => reviewRuntime.command(invalidationA)),
+    Promise.resolve().then(() => reviewRuntime.command(invalidationB)),
+  ]);
+  const invalidationReceipts = [invalidationReceiptA, invalidationReceiptB];
+  assert.equal(invalidationReceipts.filter(({ accepted }) => accepted === true).length, 1);
+  const staleReceipt = invalidationReceipts.find(({ accepted }) => accepted !== true);
+  assert.equal(staleReceipt.code, "stale_authority_watermark");
+  const staleReview = reviewRuntime.query({ review_id: reviewId });
+  assert.equal(staleReview.status, "stale");
+  assert.equal(staleReview.current, false);
+  assert.equal(staleReview.evidence_currency, "stale");
+  assert.deepEqual(staleReview.summary, reviewedCandidate.summary);
+  assert.deepEqual(staleReview.findings, reviewedCandidate.findings);
+  assert.deepEqual(staleReview.artifacts, reviewedCandidate.artifacts);
+  assert.equal(staleReview.artifacts.watermark, stableWatermark);
+  assert.equal(staleReview.artifacts.provenance.review_authority_watermark,
+    stableWatermark);
+  assert.deepEqual(staleReview.automated_evidence, reviewedCandidate.automated_evidence);
+  assert.equal(staleReview.append_only_event_count, 2);
+  assert.deepEqual(staleReview.legal_actions.map(({ type }) => type), [
+    "review_target_refresh",
+  ]);
+  assert.equal(staleReview.legal_actions[0].schema,
+    "work.review-target-refresh-command/v1");
+  assert.equal(staleReview.approval_eligible, false);
+  assert.equal(staleReview.submission_eligible, false);
+  assert.equal(staleReview.integration_eligible, false);
+  assert.equal(staleReview.merge_eligible, false);
+  assert.equal(staleReview.tracker_completion_eligible, false);
+  assert.equal(staleReview.remote_submission_authorized, false);
+  assert.equal(staleReceipt.authority_watermark, staleReview.authority_watermark);
+  assert.deepEqual(staleReceipt.legal_actions, staleReview.legal_actions);
+
+  const refreshCommand = staleReview.legal_actions[0];
+  const refreshReceipt = reviewRuntime.command(refreshCommand);
+  assert.equal(refreshReceipt.accepted, true);
+  assert.equal(refreshReceipt.created, true);
+  const acknowledgedReview = reviewRuntime.query({ review_id: reviewId });
+  assert.equal(acknowledgedReview.status, "stale");
+  assert.equal(acknowledgedReview.current, false);
+  assert.equal(acknowledgedReview.append_only_event_count, 3);
+  assert.deepEqual(acknowledgedReview.legal_actions, []);
+  assert.deepEqual(acknowledgedReview.summary, staleReview.summary);
+  assert.deepEqual(acknowledgedReview.artifacts, staleReview.artifacts);
+  assert.equal(acknowledgedReview.artifacts.watermark, stableWatermark);
+  assert.equal(acknowledgedReview.artifacts.provenance.review_authority_watermark,
+    stableWatermark);
+  assert.deepEqual(acknowledgedReview.automated_evidence, staleReview.automated_evidence);
+  assert.deepEqual(acknowledgedReview.refresh, {
+    schema: "flow.review-target-refresh/v1",
+    subject_id: reviewId,
+    prior_candidate_fingerprint: reviewedCandidate.candidate_fingerprint,
+    prior_lifecycle_generation: reviewedCandidate.lifecycle_generation,
+    observed_candidate_fingerprint: refreshCommand.observed_candidate_fingerprint,
+    observed_lifecycle_generation: refreshCommand.observed_lifecycle_generation,
+    observation: refreshCommand.authority_observation,
+  });
+  const replayRefresh = reviewRuntime.command(refreshCommand);
+  assert.equal(replayRefresh.accepted, true);
+  assert.equal(replayRefresh.created, false);
+  const staleRefresh = reviewRuntime.command({
+    ...refreshCommand,
+    command_id: `${refreshCommand.command_id}:stale-writer`,
+    observed_candidate_fingerprint: `sha256:${"f".repeat(64)}`,
+  });
+  assert.equal(staleRefresh.code, "stale_authority_watermark");
+
+  runAuthority.close();
+  const recoveredRunAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity("boot-review-recovered", "review-process"),
+  });
+  t.after(() => recoveredRunAuthority.close());
+  const recoveredReviewAuthority = getReviewAuthority({
+    runAuthority: recoveredRunAuthority,
+  });
+  const recovered = recoveredReviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: reviewId,
+  });
+  assert.deepEqual(recovered, acknowledgedReview);
+  const recoveredWatch = await recoveredReviewAuthority.watch({
+    subject_id: reviewId,
+  }).next();
+  assert.deepEqual(recoveredWatch.value, acknowledgedReview);
+});
+
+test("durable review target observation rejects a partial movement adapter at construction", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-observation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  assert.throws(
+    () => createDurableRunAuthority({
+      authorityDirectory,
+      reviewTargetObservationAdapter: {
+        movement_shapes: ["combined"],
+        observe() {
+          return null;
+        },
+      },
+      hostIdentityAdapter: fixedHostIdentity("boot-observation", "observation-process"),
+    }),
+    /all target movement shapes/u,
+  );
 });
 
 test("feature/v1 seal rejects invalid verification and publication evidence", async (t) => {
@@ -3615,6 +3895,10 @@ async function createFeatureFailureFixture(t, scenario) {
       },
     }));
   }
+  const authorityState = shippedAuthorityStateFromFacts(facts);
+  const registeredAuthorities = shippedAuthorityRegistrations({
+    current: authorityState,
+  });
 
   let verifyReceipt = null;
   let critiqueEvidence = null;
@@ -3666,6 +3950,7 @@ async function createFeatureFailureFixture(t, scenario) {
   };
   const runtime = createFlowRuntime({
     runAuthority,
+    registeredAuthorities,
     delegatedAgentPort,
     delegateOutputValidators: {
       [DELEGATE_OUTPUT_VALIDATOR]: {
@@ -3887,6 +4172,7 @@ async function createFeatureFailureFixture(t, scenario) {
         },
       },
     },
+    registeredAuthorities,
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
     },
@@ -3914,9 +4200,15 @@ async function createFeatureFailureFixture(t, scenario) {
   return {
     artifactAuthority,
     artifactDigest,
+    authorityDirectory,
+    authorityState,
     handoffAuthority,
+    inputs,
+    facts,
+    registeredAuthorities,
     reviewAuthority,
     runId: launch.run_id,
+    runAuthority,
     runtime,
     sealIntents,
     delegateDispatches() {
@@ -4337,6 +4629,22 @@ function digestValue(value) {
   return digest(value);
 }
 
+function featureReviewTargetObservationAdapter() {
+  return {
+    movement_shapes: ["fingerprint_only", "generation_only", "combined"],
+    observe({ command }) {
+      return buildReviewTargetObservation({
+        subjectId: command.subject_id,
+        candidateId: "candidate:feature",
+        candidateFingerprint: command.observed_candidate_fingerprint,
+        lifecycleGeneration: command.observed_lifecycle_generation,
+        authorityWatermark: digestValue("feature-review-target-observation"),
+        source: "named_mechanism_observation",
+      });
+    },
+  };
+}
+
 async function until(predicate) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
@@ -4397,7 +4705,10 @@ function prepareFeatureSelection(
   flowRuntime = undefined,
 ) {
   const facts = explicitFacts ?? featureFactsForInputs(inputs);
-  const runtime = flowRuntime ?? featurePreparationRuntime();
+  const runtime = flowRuntime ?? featurePreparationRuntime(
+    createInMemoryRunAuthority(),
+    facts,
+  );
   return runtime.prepare({
     schema: "flow.predefined-flow-selection/v1",
     definition: "feature/v1",
@@ -4406,7 +4717,10 @@ function prepareFeatureSelection(
   });
 }
 
-function featurePreparationRuntime(runAuthority = createInMemoryRunAuthority()) {
+function featurePreparationRuntime(
+  runAuthority = createInMemoryRunAuthority(),
+  explicitFacts = dynamicCheckpointProposal().explicit_facts,
+) {
   return createFlowRuntime({
     runAuthority,
     delegatedAgentPort: {
@@ -4448,10 +4762,28 @@ function featurePreparationRuntime(runAuthority = createInMemoryRunAuthority()) 
         },
       }]),
     ),
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(explicitFacts),
+    }),
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
     },
   });
+}
+
+function featurePreparationOperations() {
+  return Object.fromEntries(
+    Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
+      classification: "caller_idempotent",
+      ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
+        provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureTestReceipt,
+      } : {}),
+      invoke() {
+        throw new Error("feature operations are not invoked during preparation");
+      },
+    }]),
+  );
 }
 
 function featureFactsForInputs(inputs) {

@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 24,
+  "catalog_version": 28,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -51,10 +51,23 @@
         "authority_watermark_domain",
         "legal_actions"
       ],
+      "optional_fields": ["authority_fact"],
       "watermark_domains": {
         "host": "host_run_index_admission_and_authority_schema",
         "run": "run_lifecycle_stream_authority_epoch_and_authority_schema"
       }
+    },
+    "predefined_authority_bindings": {
+      "authority": "RunAuthority",
+      "declaration": "flow.required-authority/v1",
+      "observation": "flow.authority-observation/v1",
+      "binding": "flow.required-authority-binding/v1",
+      "revalidation": "flow.required-authority-revalidation/v1",
+      "registration": "flow.registered-authority/v1",
+      "provider_identity": "flow.registered-authority/v1",
+      "authority_fact": "flow.authority-fact/v1",
+      "resolution": "trusted_registered_catalog_only",
+      "callbacks": "forbidden_in_prepared_records"
     },
     "operation_execution": {
       "authority": "RunAuthority",
@@ -89,7 +102,7 @@
       "binding": "flow.evidence-safety-binding/v1",
       "catalog_view": "flow.evidence-safety-catalog/v1",
       "policy_id": "flow.evidence-safety-policy/v1",
-      "catalog_id": "flow.contract-catalog/v1@24",
+      "catalog_id": "flow.contract-catalog/v1@28",
       "allowed_uses": [
         "delegate_transfer",
         "artifact_acceptance",
@@ -176,6 +189,7 @@
       "authority": "RunAuthority",
       "command": "reboot_admission",
       "revalidation": "flow.reboot-revalidation/v1",
+      "authority_bindings": "flow.required-authority-revalidation/v1",
       "effect_rechecks": "flow.reboot-effect-recheck/v1",
       "time_facts": [
         "wall_clock",
@@ -411,7 +425,7 @@
       },
       "assurance": "lower",
       "publication": "explicit_resource_handoff_only_outside_quick_flow",
-      "negative_outcome": "no_prototype_or_publication_or_tracker_mutation"
+      "negative_outcome": "no prototype, production implementation or candidate, review candidate or approval, publication, tracker completion, or mutation authority"
     }
   },
   "delegated_agent_port": {
@@ -477,7 +491,9 @@
       "event": "work.review-event/v1",
       "commands": [
         "work.review-candidate-seal-command/v1",
-        "work.review-record-command/v1"
+        "work.review-record-command/v1",
+        "work.review-target-invalidation-command/v1",
+        "work.review-target-refresh-command/v1"
       ],
       "operation": "flow.operation/review-record/v1",
       "operation_registration_policy": "review_authority_owned_builtin_reserved",
@@ -504,6 +520,13 @@
       "candidate_reference": "flow.review-candidate-reference/v1",
       "materialized_evidence": "flow.authority-materialized-evidence/v1",
       "materialized_delegate_evidence": "flow.authority-materialized-delegate-evidence/v1",
+      "target_invalidation": "flow.review-target-invalidation/v1",
+      "target_refresh": "flow.review-target-refresh/v1",
+      "target_observation": "flow.review-target-observation/v1",
+      "coverage": "flow.review-coverage/v1",
+      "orientation": "flow.review-orientation/v1",
+      "diagram": "flow.review-diagram/v1",
+      "terminal_disposition": "flow.review-terminal-disposition/v1",
       "completion_authority": "automated_not_approval",
       "candidate_authority_watermark": "candidate_seal_watermark",
       "statuses": [
@@ -511,8 +534,43 @@
         "superseded",
         "abandoned"
       ],
+      "review_statuses": [
+        "automated_completed",
+        "stale"
+      ],
+      "review_current": "boolean",
+      "evidence_currency": [
+        "current",
+        "stale"
+      ],
+      "review_legal_actions": "refresh_when_stale",
       "identity": "candidate_fingerprint",
-      "legal_actions": "closed_after_seal"
+      "legal_actions": "closed_after_seal",
+      "github": {
+        "target": "flow.review-github-pull-request/v1",
+        "snapshot": "flow.github-pull-request-snapshot/v1",
+        "pending_operation": "flow.operation/github-review-pending/v1",
+        "pending_request": "flow.github-pending-review-request/v1",
+        "pending_draft": "flow.github-pending-review-draft/v1",
+        "receipt_validator": "flow.validator/github-review-receipt/v1",
+        "receipt": "flow.github-review-receipt/v1",
+        "observation_request": "flow.github-pull-request-observation-request/v1",
+        "observation": "flow.github-review-observation/v1",
+        "record_command": "work.github-review-record-command/v1",
+        "record": "flow.github-review-record/v1",
+        "projection": "flow.review-projection/v1",
+        "invalidation": "flow.github-review-invalidation/v1",
+        "effect_classification": "one_shot_uncertain",
+        "completion_authority": "pending_only_no_submission",
+        "allowed_remote_mutation": "create_one_unsubmitted_pending_review",
+        "forbidden_remote_mutations": [
+          "submit",
+          "approve",
+          "request_changes",
+          "delete",
+          "repost"
+        ]
+      }
     },
     "handoff": {
       "authority": "Work_domain_authorities_with_RunAuthority_finalization",
@@ -554,6 +612,15 @@
     "flow.predefined-definition/v1",
     "flow.predefined-flow-confirmation/v1",
     "flow.predefined-flow-confirmation-decision/v1",
+    "flow.required-authority/v1",
+    "flow.authority-observation/v1",
+    "flow.required-authority-binding/v1",
+    "flow.required-authority-revalidation/v1",
+    "flow.registered-authority/v1",
+    "flow.authority-fact/v1",
+    "flow.route-authority/v1",
+    "flow.resource-authority/v1",
+    "flow.contract-authority/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
@@ -628,6 +695,7 @@
     "flow.runtime-release/v1",
     "flow.checkpoint/confirmation/v1",
     "flow.validator/checkpoint-decision/v1",
+    "flow.checkpoint-binding/v1",
     "flow.resource-handoff/v1",
     "flow.resource-handoff-publication/v1",
     "flow.resource-handoff-projection/v1",
@@ -671,6 +739,8 @@
     "work.review-event/v1",
     "work.review-candidate-projection/v1",
     "work.review-record-command/v1",
+    "work.review-target-invalidation-command/v1",
+    "work.review-target-refresh-command/v1",
     "flow.definition/review/v1",
     "flow.operation/review-record/v1",
     "flow.review-request/v1",
@@ -684,6 +754,13 @@
     "flow.review-automated-evidence/v1",
     "flow.review-provenance/v1",
     "flow.review-artifacts/v1",
+    "flow.review-target-invalidation/v1",
+    "flow.review-target-refresh/v1",
+    "flow.review-target-observation/v1",
+    "flow.review-coverage/v1",
+    "flow.review-orientation/v1",
+    "flow.review-diagram/v1",
+    "flow.review-terminal-disposition/v1",
     "flow.review-artifact-json/v1",
     "flow.review-artifact-markdown/v1",
     "flow.review-artifact-html/v1",
@@ -694,6 +771,18 @@
     "flow.authority-materialized-evidence/v1",
     "flow.authority-materialized-delegate-evidence/v1",
     "flow.review-projection/v1",
+    "flow.review-github-pull-request/v1",
+    "flow.github-pull-request-snapshot/v1",
+    "flow.operation/github-review-pending/v1",
+    "flow.github-pending-review-request/v1",
+    "flow.github-pending-review-draft/v1",
+    "flow.validator/github-review-receipt/v1",
+    "flow.github-review-receipt/v1",
+    "flow.github-pull-request-observation-request/v1",
+    "flow.github-review-observation/v1",
+    "work.github-review-record-command/v1",
+    "flow.github-review-record/v1",
+    "flow.github-review-invalidation/v1",
     "flow.feature-discriminating-evidence/v1",
     "work.feature-verification-receipt/v1",
     "work.feature-critique-receipt/v1",

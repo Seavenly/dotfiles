@@ -55,6 +55,11 @@ const LAUNCH_CONFIRMATION_CONTRACTS = [
   "flow.dynamic-plan-confirmation-decision/v1",
   "flow.predefined-flow-confirmation-decision/v1",
 ];
+const CHECKPOINT_CONTRACTS = [
+  "flow.checkpoint/confirmation/v1",
+  "flow.validator/checkpoint-decision/v1",
+  "flow.checkpoint-binding/v1",
+];
 const PREDEFINED_FLOW = {
   selection: "flow.predefined-flow-selection/v1",
   definition: "flow.predefined-definition/v1",
@@ -92,8 +97,33 @@ const SPIKE_FLOW = {
   },
   assurance: "lower",
   publication: "explicit_resource_handoff_only_outside_quick_flow",
-  negative_outcome: "no_prototype_or_publication_or_tracker_mutation",
+  negative_outcome:
+    "no prototype, production implementation or candidate, review candidate or approval, publication, tracker completion, or mutation authority",
 };
+const PREDEFINED_AUTHORITY_BINDINGS = {
+  authority: "RunAuthority",
+  declaration: "flow.required-authority/v1",
+  observation: "flow.authority-observation/v1",
+  binding: "flow.required-authority-binding/v1",
+  revalidation: "flow.required-authority-revalidation/v1",
+  registration: "flow.registered-authority/v1",
+  provider_identity: "flow.registered-authority/v1",
+  authority_fact: "flow.authority-fact/v1",
+  resolution: "trusted_registered_catalog_only",
+  callbacks: "forbidden_in_prepared_records",
+};
+const PREDEFINED_AUTHORITY_CONTRACTS = [
+  PREDEFINED_AUTHORITY_BINDINGS.declaration,
+  PREDEFINED_AUTHORITY_BINDINGS.observation,
+  PREDEFINED_AUTHORITY_BINDINGS.binding,
+  PREDEFINED_AUTHORITY_BINDINGS.revalidation,
+  PREDEFINED_AUTHORITY_BINDINGS.registration,
+  PREDEFINED_AUTHORITY_BINDINGS.authority_fact,
+  "flow.route-authority/v1",
+  "flow.resource-authority/v1",
+  "flow.contract-authority/v1",
+  "flow.subject-generation/v1",
+];
 const REJECTION_FIELDS = [
   "schema",
   "operation",
@@ -106,6 +136,7 @@ const REJECTION_FIELDS = [
   "authority_watermark_domain",
   "legal_actions",
 ];
+const REJECTION_OPTIONAL_FIELDS = ["authority_fact"];
 const LEGACY_IMPORT_VALIDATIONS = [
   "digest",
   "schema",
@@ -239,6 +270,7 @@ const REBOOT_ADMISSION = {
   authority: "RunAuthority",
   command: "reboot_admission",
   revalidation: "flow.reboot-revalidation/v1",
+  authority_bindings: "flow.required-authority-revalidation/v1",
   effect_rechecks: "flow.reboot-effect-recheck/v1",
   time_facts: [
     "wall_clock",
@@ -358,7 +390,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@24",
+  catalog_id: "flow.contract-catalog/v1@28",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -388,6 +420,8 @@ const REVIEW_AUTHORITY = {
   commands: [
     "work.review-candidate-seal-command/v1",
     "work.review-record-command/v1",
+    "work.review-target-invalidation-command/v1",
+    "work.review-target-refresh-command/v1",
   ],
   operation: "flow.operation/review-record/v1",
   operation_registration_policy: "review_authority_owned_builtin_reserved",
@@ -415,12 +449,63 @@ const REVIEW_AUTHORITY = {
   materialized_evidence: "flow.authority-materialized-evidence/v1",
   materialized_delegate_evidence:
     "flow.authority-materialized-delegate-evidence/v1",
+  target_invalidation: "flow.review-target-invalidation/v1",
+  target_refresh: "flow.review-target-refresh/v1",
+  target_observation: "flow.review-target-observation/v1",
+  coverage: "flow.review-coverage/v1",
+  orientation: "flow.review-orientation/v1",
+  diagram: "flow.review-diagram/v1",
+  terminal_disposition: "flow.review-terminal-disposition/v1",
   completion_authority: "automated_not_approval",
   candidate_authority_watermark: "candidate_seal_watermark",
   statuses: ["sealed", "superseded", "abandoned"],
+  review_statuses: ["automated_completed", "stale"],
+  review_current: "boolean",
+  evidence_currency: ["current", "stale"],
+  review_legal_actions: "refresh_when_stale",
   identity: "candidate_fingerprint",
   legal_actions: "closed_after_seal",
+  github: {
+    target: "flow.review-github-pull-request/v1",
+    snapshot: "flow.github-pull-request-snapshot/v1",
+    pending_operation: "flow.operation/github-review-pending/v1",
+    pending_request: "flow.github-pending-review-request/v1",
+    pending_draft: "flow.github-pending-review-draft/v1",
+    receipt_validator: "flow.validator/github-review-receipt/v1",
+    receipt: "flow.github-review-receipt/v1",
+    observation_request: "flow.github-pull-request-observation-request/v1",
+    observation: "flow.github-review-observation/v1",
+    record_command: "work.github-review-record-command/v1",
+    record: "flow.github-review-record/v1",
+    projection: "flow.review-projection/v1",
+    invalidation: "flow.github-review-invalidation/v1",
+    effect_classification: "one_shot_uncertain",
+    completion_authority: "pending_only_no_submission",
+    allowed_remote_mutation: "create_one_unsubmitted_pending_review",
+    forbidden_remote_mutations: [
+      "submit",
+      "approve",
+      "request_changes",
+      "delete",
+      "repost",
+    ],
+  },
 };
+const GITHUB_REVIEW_CONTRACTS = [
+  REVIEW_AUTHORITY.github.target,
+  REVIEW_AUTHORITY.github.snapshot,
+  REVIEW_AUTHORITY.github.pending_operation,
+  REVIEW_AUTHORITY.github.pending_request,
+  REVIEW_AUTHORITY.github.pending_draft,
+  REVIEW_AUTHORITY.github.receipt_validator,
+  REVIEW_AUTHORITY.github.receipt,
+  REVIEW_AUTHORITY.github.observation_request,
+  REVIEW_AUTHORITY.github.observation,
+  REVIEW_AUTHORITY.github.record_command,
+  REVIEW_AUTHORITY.github.record,
+  REVIEW_AUTHORITY.github.projection,
+  REVIEW_AUTHORITY.github.invalidation,
+];
 const REVIEW_QUERY = {
   request: "flow.query/v1",
   projection: "flow.review-projection/v1",
@@ -448,6 +533,7 @@ export async function loadContractCatalog({
   const rejection = catalog.flow_runtime.rejection_contract;
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
+      !isExactSequence(rejection.optional_fields, REJECTION_OPTIONAL_FIELDS) ||
       rejection.watermark_domains?.host !==
         "host_run_index_admission_and_authority_schema" ||
       rejection.watermark_domains?.run !==
@@ -493,6 +579,17 @@ export async function loadContractCatalog({
         SPIKE_FLOW.evidence.input,
       ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("quick spike flow contracts are incomplete");
+  }
+  if (!CHECKPOINT_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("checkpoint contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.predefined_authority_bindings,
+    PREDEFINED_AUTHORITY_BINDINGS,
+  ) || !PREDEFINED_AUTHORITY_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("predefined authority binding contracts are incomplete");
   }
   if (!isDeepStrictEqual(catalog.authority_persistence, AUTHORITY_PERSISTENCE)) {
     throw new Error("contract catalog authority persistence is incomplete");
@@ -681,6 +778,14 @@ export async function loadContractCatalog({
     REVIEW_AUTHORITY.candidate_reference,
     REVIEW_AUTHORITY.materialized_evidence,
     REVIEW_AUTHORITY.materialized_delegate_evidence,
+    REVIEW_AUTHORITY.target_invalidation,
+    REVIEW_AUTHORITY.target_refresh,
+    REVIEW_AUTHORITY.target_observation,
+    REVIEW_AUTHORITY.coverage,
+    REVIEW_AUTHORITY.orientation,
+    REVIEW_AUTHORITY.diagram,
+    REVIEW_AUTHORITY.terminal_disposition,
+    ...GITHUB_REVIEW_CONTRACTS,
     "flow.feature-discriminating-evidence/v1",
     "work.feature-verification-receipt/v1",
     "work.feature-critique-receipt/v1",

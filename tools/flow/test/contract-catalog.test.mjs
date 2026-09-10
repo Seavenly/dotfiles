@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 24);
+  assert.equal(catalog.catalog_version, 28);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -64,7 +64,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     },
     assurance: "lower",
     publication: "explicit_resource_handoff_only_outside_quick_flow",
-    negative_outcome: "no_prototype_or_publication_or_tracker_mutation",
+    negative_outcome:
+      "no prototype, production implementation or candidate, review candidate or approval, publication, tracker completion, or mutation authority",
   });
   assert.deepEqual(catalog.flow_runtime.evidence_safety, {
     authority: "non_authoritative",
@@ -74,7 +75,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@24",
+    catalog_id: "flow.contract-catalog/v1@28",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -209,6 +210,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "authority_watermark_domain",
       "legal_actions",
     ],
+    optional_fields: ["authority_fact"],
     watermark_domains: {
       host: "host_run_index_admission_and_authority_schema",
       run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
@@ -220,6 +222,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.predefined-definition/v1",
     "flow.predefined-flow-confirmation/v1",
     "flow.predefined-flow-confirmation-decision/v1",
+    "flow.required-authority/v1",
+    "flow.authority-observation/v1",
+    "flow.required-authority-binding/v1",
+    "flow.required-authority-revalidation/v1",
+    "flow.registered-authority/v1",
     "flow.dynamic-plan-confirmation/v1",
     "flow.dynamic-plan-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
@@ -372,6 +379,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     authority: "RunAuthority",
     command: "reboot_admission",
     revalidation: "flow.reboot-revalidation/v1",
+    authority_bindings: "flow.required-authority-revalidation/v1",
     effect_rechecks: "flow.reboot-effect-recheck/v1",
     time_facts: [
       "wall_clock",
@@ -473,6 +481,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "work.review-event/v1",
     "work.review-candidate-projection/v1",
     "work.review-record-command/v1",
+    "work.review-target-refresh-command/v1",
     "flow.definition/review/v1",
     "flow.operation/review-record/v1",
     "flow.review-request/v1",
@@ -483,6 +492,13 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.review-record/v1",
     "flow.review-finding/v1",
     "flow.review-summary/v1",
+    "flow.review-target-invalidation/v1",
+    "flow.review-target-refresh/v1",
+    "flow.review-target-observation/v1",
+    "flow.review-coverage/v1",
+    "flow.review-orientation/v1",
+    "flow.review-diagram/v1",
+    "flow.review-terminal-disposition/v1",
     "flow.review-automated-evidence/v1",
     "flow.review-provenance/v1",
     "flow.review-artifacts/v1",
@@ -557,6 +573,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     commands: [
       "work.review-candidate-seal-command/v1",
       "work.review-record-command/v1",
+      "work.review-target-invalidation-command/v1",
+      "work.review-target-refresh-command/v1",
     ],
     operation: "flow.operation/review-record/v1",
     operation_registration_policy: "review_authority_owned_builtin_reserved",
@@ -584,11 +602,47 @@ test("the public catalog exposes the settled interface and forbids legacy import
     materialized_evidence: "flow.authority-materialized-evidence/v1",
     materialized_delegate_evidence:
       "flow.authority-materialized-delegate-evidence/v1",
+    target_invalidation: "flow.review-target-invalidation/v1",
+    target_refresh: "flow.review-target-refresh/v1",
+    target_observation: "flow.review-target-observation/v1",
+    coverage: "flow.review-coverage/v1",
+    orientation: "flow.review-orientation/v1",
+    diagram: "flow.review-diagram/v1",
+    terminal_disposition: "flow.review-terminal-disposition/v1",
     completion_authority: "automated_not_approval",
     candidate_authority_watermark: "candidate_seal_watermark",
     statuses: ["sealed", "superseded", "abandoned"],
+    review_statuses: ["automated_completed", "stale"],
+    review_current: "boolean",
+    evidence_currency: ["current", "stale"],
+    review_legal_actions: "refresh_when_stale",
     identity: "candidate_fingerprint",
     legal_actions: "closed_after_seal",
+    github: {
+      target: "flow.review-github-pull-request/v1",
+      snapshot: "flow.github-pull-request-snapshot/v1",
+      pending_operation: "flow.operation/github-review-pending/v1",
+      pending_request: "flow.github-pending-review-request/v1",
+      pending_draft: "flow.github-pending-review-draft/v1",
+      receipt_validator: "flow.validator/github-review-receipt/v1",
+      receipt: "flow.github-review-receipt/v1",
+      observation_request: "flow.github-pull-request-observation-request/v1",
+      observation: "flow.github-review-observation/v1",
+      record_command: "work.github-review-record-command/v1",
+      record: "flow.github-review-record/v1",
+      projection: "flow.review-projection/v1",
+      invalidation: "flow.github-review-invalidation/v1",
+      effect_classification: "one_shot_uncertain",
+      completion_authority: "pending_only_no_submission",
+      allowed_remote_mutation: "create_one_unsubmitted_pending_review",
+      forbidden_remote_mutations: [
+        "submit",
+        "approve",
+        "request_changes",
+        "delete",
+        "repost",
+      ],
+    },
   });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
     delegated_agent_description: {
@@ -701,6 +755,32 @@ test("the public catalog requires both prepare input contracts", async (t) => {
       featureContractPath,
     }),
     /prepare inputs are incomplete/,
+  );
+});
+
+test("the public catalog binds checkpoint contracts in its source and JSON", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-checkpoint-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  for (const contract of [
+    "flow.checkpoint/confirmation/v1",
+    "flow.validator/checkpoint-decision/v1",
+    "flow.checkpoint-binding/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
+  catalog.contracts = catalog.contracts.filter(
+    (contract) => contract !== "flow.checkpoint-binding/v1",
+  );
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /checkpoint contracts are incomplete/,
   );
 });
 
