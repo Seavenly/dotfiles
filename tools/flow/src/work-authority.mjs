@@ -6,8 +6,15 @@ import {
   idempotencyCommandDigest,
 } from "./canonical.mjs";
 import {
+  isReviewTargetInvalidationCommand,
+  isReviewTargetRefreshCommand,
+  buildReviewTargetInvalidationEvent,
+  buildReviewTargetRefreshEvent,
   projectReviewRecord,
+  reviewTargetInvalidationIssue,
+  reviewTargetRefreshIssue,
   reviewEventWatermark,
+  reviewAuthorityEventWatermark,
   reviewRecordWatermarkIdentity,
   validateReviewRecordCommand,
 } from "./review-flow.mjs";
@@ -82,7 +89,7 @@ export function buildHumanAuthorityBinding(command, action) {
   });
 }
 
-export function decideWorkCommand(current, command) {
+export function decideWorkCommand(current, command, { authorityObservation = null } = {}) {
   const repeated = repeatedWorkCommand(current, command);
   if (repeated !== null) return repeated;
   if (command?.schema === "work.workspace-register-command/v1" &&
@@ -96,6 +103,12 @@ export function decideWorkCommand(current, command) {
   if (command?.schema === "work.review-record-command/v1" &&
       command.type === "review_record") {
     return decideReviewRecord(current, command);
+  }
+  if (isReviewTargetInvalidationCommand(command)) {
+    return decideReviewTargetInvalidation(current, command, authorityObservation);
+  }
+  if (isReviewTargetRefreshCommand(command)) {
+    return decideReviewTargetRefresh(current, command, authorityObservation);
   }
   if (command?.schema === "work.workspace-claim-command/v1" &&
       command.type === "workspace_claim") {
@@ -181,6 +194,34 @@ function decideReviewRecord(current, command) {
         command_receipt: workIdempotencyReceipt(command),
       },
     },
+  };
+}
+
+function decideReviewTargetInvalidation(current, command, authorityObservation) {
+  const built = buildReviewTargetInvalidationEvent({
+    command,
+    current,
+    authorityObservation,
+  });
+  if (built.issue !== undefined) return reject(command, built.issue, current);
+  return {
+    accepted: true,
+    streamKind: "review",
+    event: built.event,
+  };
+}
+
+function decideReviewTargetRefresh(current, command, authorityObservation) {
+  const built = buildReviewTargetRefreshEvent({
+    command,
+    current,
+    authorityObservation,
+  });
+  if (built.issue !== undefined) return reject(command, built.issue, current);
+  return {
+    accepted: true,
+    streamKind: "review",
+    event: built.event,
   };
 }
 
@@ -378,16 +419,27 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
   if (streamKind === "review") {
     if (records[0]?.payload?.type === "review_recorded") {
       const recorded = records[0].payload;
-      return projectReviewRecord(
-        recorded.body,
-        recorded.watermark ?? watermark,
-        records.map(({ payload }) => payload),
-      );
+      try {
+        return projectReviewRecord(
+          recorded.body,
+          reviewAuthorityEventWatermark(records.map(({ payload }) => payload)),
+          records.map(({ payload }) => payload),
+        );
+      } catch (error) {
+        if (error?.code === "review_authority_integrity_failure") throw error;
+        throw reviewAuthorityIntegrityFailure(
+          "malformed_event",
+          error?.message ?? "review authority event is malformed",
+        );
+      }
     }
     const sealed = records[0]?.payload;
     if (sealed?.type !== "review_candidate_sealed" ||
         !canonicalValidReviewCandidate(subjectId, sealed.candidate)) {
-      throw new Error("review authority stream is missing a valid candidate seal");
+      throw reviewAuthorityIntegrityFailure(
+        "malformed_event",
+        "review authority stream is missing a valid candidate seal",
+      );
     }
     let status = "sealed";
     let candidate = sealed.candidate;
@@ -2205,6 +2257,13 @@ function validGitRetentionReceipt(receipt, workspace, publication) {
 
 function reject(command, code, current) {
   return workRejection("command", code, { command, current });
+}
+
+function reviewAuthorityIntegrityFailure(reason, message) {
+  const error = new Error(message);
+  error.code = "review_authority_integrity_failure";
+  error.reason = reason;
+  return error;
 }
 
 function isDigest(value) {

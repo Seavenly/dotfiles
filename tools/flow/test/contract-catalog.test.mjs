@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 22);
+  assert.equal(catalog.catalog_version, 23);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -49,7 +49,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@22",
+    catalog_id: "flow.contract-catalog/v1@23",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -448,6 +448,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "work.review-event/v1",
     "work.review-candidate-projection/v1",
     "work.review-record-command/v1",
+    "work.review-target-refresh-command/v1",
     "flow.definition/review/v1",
     "flow.operation/review-record/v1",
     "flow.review-request/v1",
@@ -458,6 +459,13 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.review-record/v1",
     "flow.review-finding/v1",
     "flow.review-summary/v1",
+    "flow.review-target-invalidation/v1",
+    "flow.review-target-refresh/v1",
+    "flow.review-target-observation/v1",
+    "flow.review-coverage/v1",
+    "flow.review-orientation/v1",
+    "flow.review-diagram/v1",
+    "flow.review-terminal-disposition/v1",
     "flow.review-automated-evidence/v1",
     "flow.review-provenance/v1",
     "flow.review-artifacts/v1",
@@ -520,6 +528,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     commands: [
       "work.review-candidate-seal-command/v1",
       "work.review-record-command/v1",
+      "work.review-target-invalidation-command/v1",
+      "work.review-target-refresh-command/v1",
     ],
     operation: "flow.operation/review-record/v1",
     operation_registration_policy: "review_authority_owned_builtin_reserved",
@@ -547,9 +557,20 @@ test("the public catalog exposes the settled interface and forbids legacy import
     materialized_evidence: "flow.authority-materialized-evidence/v1",
     materialized_delegate_evidence:
       "flow.authority-materialized-delegate-evidence/v1",
+    target_invalidation: "flow.review-target-invalidation/v1",
+    target_refresh: "flow.review-target-refresh/v1",
+    target_observation: "flow.review-target-observation/v1",
+    coverage: "flow.review-coverage/v1",
+    orientation: "flow.review-orientation/v1",
+    diagram: "flow.review-diagram/v1",
+    terminal_disposition: "flow.review-terminal-disposition/v1",
     completion_authority: "automated_not_approval",
     candidate_authority_watermark: "candidate_seal_watermark",
     statuses: ["sealed", "superseded", "abandoned"],
+    review_statuses: ["automated_completed", "stale"],
+    review_current: "boolean",
+    evidence_currency: ["current", "stale"],
+    review_legal_actions: "refresh_when_stale",
     identity: "candidate_fingerprint",
     legal_actions: "closed_after_seal",
   });

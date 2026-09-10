@@ -78,6 +78,8 @@ import {
   workspaceEffectAuthorityIssue,
 } from "./work-authority.mjs";
 import {
+  isReviewTargetInvalidationCommand,
+  isReviewTargetRefreshCommand,
   reviewRecordCandidateAuthorityIssue,
   reviewRecordSourceAuthorityIssue,
 } from "./review-flow.mjs";
@@ -92,6 +94,11 @@ import {
 } from "./backup-restore.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const REVIEW_TARGET_MOVEMENT_SHAPES = Object.freeze([
+  "fingerprint_only",
+  "generation_only",
+  "combined",
+]);
 const EFFECT_INTENT_EVENT_TYPES = new Set([
   "effect_intent_recorded",
   "effect_intent_adopted",
@@ -484,6 +491,7 @@ export function createDurableRunAuthority({
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  reviewTargetObservationAdapter = null,
   workEvidenceAdapter = createFailClosedWorkEvidenceAdapter(),
   runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
 } = {}) {
@@ -549,6 +557,15 @@ export function createDurableRunAuthority({
   }
   if (typeof workEvidenceAdapter?.validate !== "function") {
     throw new TypeError("durable run authority requires a Work evidence Adapter");
+  }
+  if (reviewTargetObservationAdapter !== null &&
+      (typeof reviewTargetObservationAdapter?.observe !== "function" ||
+       !Array.isArray(reviewTargetObservationAdapter?.movement_shapes) ||
+       REVIEW_TARGET_MOVEMENT_SHAPES.some((shape) =>
+         !reviewTargetObservationAdapter.movement_shapes.includes(shape)))) {
+    throw new TypeError(
+      "durable run authority review target observation Adapter must observe all target movement shapes",
+    );
   }
   if (typeof runOwnershipAdapter?.observe !== "function") {
     throw new TypeError("durable run authority requires a run ownership Adapter");
@@ -1480,6 +1497,23 @@ export function createDurableRunAuthority({
           processIdentity,
         });
         const currentProjection = readStream(database, identity.streamId)?.fold ?? null;
+        let reviewAuthorityObservation = null;
+        if (isReviewTargetInvalidationCommand(command)) {
+          reviewAuthorityObservation = durableReviewTargetObservation(
+            database,
+            currentProjection,
+            command,
+            reviewTargetObservationAdapter,
+          );
+          if (reviewAuthorityObservation === null) {
+            return workRejection("command", "review_target_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+        } else if (isReviewTargetRefreshCommand(command)) {
+          reviewAuthorityObservation = currentProjection?.invalidation?.observation ?? null;
+        }
         if (currentProjection?.schema === "work.workspace-projection/v1" &&
             command.type === "workspace_claim") {
           let observation;
@@ -1571,7 +1605,12 @@ export function createDurableRunAuthority({
             ),
           });
         }
-        const structuralDecision = evaluateWorkCommand(database, identity, command);
+        const structuralDecision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+          reviewAuthorityObservation,
+        );
         if (structuralDecision.schema === "work.rejection/v1") {
           return structuralDecision;
         }
@@ -1611,6 +1650,7 @@ export function createDurableRunAuthority({
           database,
           identity,
           command,
+          reviewAuthorityObservation,
         );
         if (decision.schema === "work.rejection/v1") return decision;
         if (decision.replayed) {
@@ -1663,6 +1703,7 @@ export function createDurableRunAuthority({
             database,
             identity,
             command,
+            reviewAuthorityObservation,
           );
           if (committed.schema === "work.rejection/v1") {
             database.exec("ROLLBACK");
@@ -2210,14 +2251,16 @@ export function createDurableRunAuthority({
                     reviewCandidateReference.review_authority_watermark,
                 },
               }]),
-              ...(result?.outcome === "quarantined" ? [{
+              ...(result?.outcome === "quarantined" ||
+                result?.provider_receipt?.quarantine_record !== undefined ? [{
                 contract: "flow.run-event/v1",
                 payload: {
                   type: "delegate_output_quarantined",
                   effect_id: effectiveIntent.effect_id,
                   attempt_id: effectiveIntent.attempt_id,
                   card_id: effectiveIntent.card_id,
-                  quarantine_record: result.provider_receipt,
+                  quarantine_record: result.provider_receipt.quarantine_record ??
+                    result.provider_receipt,
                 },
               }] : []),
               ...deferredEvents.map((payload) => ({
@@ -2505,11 +2548,19 @@ export function createDurableRunAuthority({
       if (![
         "work.review-candidate-seal-command/v1",
         "work.review-record-command/v1",
+        "work.review-target-invalidation-command/v1",
+        "work.review-target-refresh-command/v1",
       ].includes(command?.schema) ||
           command.contract !== "work.review/v1") {
         return workRejection("command", "invalid_review_command", { command });
       }
       if (command.schema === "work.review-record-command/v1") {
+        return workCommand(command);
+      }
+      if (isReviewTargetInvalidationCommand(command)) {
+        return workCommand(command);
+      }
+      if (isReviewTargetRefreshCommand(command)) {
         return workCommand(command);
       }
       return workRejection(
@@ -2725,9 +2776,9 @@ function workCommandReceipt(command, projection, created) {
   });
 }
 
-function evaluateWorkCommand(database, identity, command) {
+function evaluateWorkCommand(database, identity, command, authorityObservation = null) {
   const current = readStream(database, identity.streamId)?.fold ?? null;
-  return decideWorkCommand(current, command);
+  return decideWorkCommand(current, command, { authorityObservation });
 }
 
 function isReviewRecordCommand(command) {
@@ -2752,6 +2803,35 @@ function reviewSourceCommandIssue(database, command) {
     : null;
   const issue = reviewRecordSourceAuthorityIssue(command, stream?.fold ?? null);
   return issue ? { ...issue, projection: stream?.fold ?? null } : null;
+}
+
+function durableReviewTargetObservation(
+  database,
+  reviewProjection,
+  command,
+  adapter,
+) {
+  if (reviewProjection?.schema !== "flow.review-projection/v1") return null;
+  if (typeof adapter?.observe !== "function") return null;
+  try {
+    const candidateIdentity = workStreamIdentity(
+      "work.review/v1",
+      reviewProjection.candidate?.candidate_id,
+    );
+    const candidateProjection = candidateIdentity
+      ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+      : null;
+    const observation = adapter.observe({
+      command,
+      review: reviewProjection,
+      candidate: candidateProjection,
+    });
+    return observation === null || observation === undefined
+      ? null
+      : freezeCanonical(observation);
+  } catch {
+    return null;
+  }
 }
 
 function prepareHandoffPublication(
@@ -4336,6 +4416,12 @@ function projectRunWithHostBarrier(projection, hostProjection) {
 
 function authorityIntegrityError(error) {
   if (error instanceof AuthorityIntegrityError) return error;
+  if (error?.code === "review_authority_integrity_failure") {
+    return new AuthorityIntegrityError(
+      error.reason ?? "review_corrupt_event",
+      error.message,
+    );
+  }
   if (error?.code !== "ERR_SQLITE_ERROR") return null;
   return new AuthorityIntegrityError(
     error.errcode === 26 ? "corrupt_store" : "store_unavailable",

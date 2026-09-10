@@ -7,6 +7,11 @@ import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
 import {
   buildReviewSummary,
   normalizeReviewFindings,
+  normalizeReviewDiagrams,
+  normalizeReviewOrientation,
+  REVIEW_COVERAGE_REASON_MAX_LENGTH,
+  REVIEW_URGENCY_PRESETS,
+  normalizeReviewUrgencyFloor,
   parseReviewDelegateResult,
   renderReviewArtifacts,
   reviewValidationError,
@@ -24,6 +29,19 @@ export const REVIEW_OPERATION_REGISTRATION_POLICY =
 
 export const REVIEW_DELEGATE_OUTPUT_VALIDATOR =
   "flow.validator/review-result/v1";
+
+const REVIEW_TERMINAL_DISPOSITION_SCHEMA =
+  "flow.review-terminal-disposition/v1";
+const REVIEW_COVERAGE_STATUSES = Object.freeze([
+  "produced",
+  "degraded",
+  "unavailable",
+]);
+const REVIEW_COVERAGE_RANK = Object.freeze({
+  produced: 0,
+  degraded: 1,
+  unavailable: 2,
+});
 
 export const REVIEW_LENSES = Object.freeze([
   "security",
@@ -137,11 +155,39 @@ export function validateReviewInputs(inputs, explicitFacts) {
   if (!Number.isSafeInteger(findingCap) || findingCap < 1) {
     invalidReview("invalid_finding_cap", "review/v1 finding cap must be positive");
   }
+  const urgency = inputs.urgency ?? inputs.urgency_preset ?? "standard";
+  if (!Object.hasOwn(REVIEW_URGENCY_PRESETS, urgency)) {
+    invalidReview("invalid_review_urgency", "review/v1 urgency must be hotfix, fast, or standard");
+  }
+  let urgencyFloor;
+  try {
+    urgencyFloor = normalizeReviewUrgencyFloor(inputs.urgency_floor ?? urgency);
+  } catch (error) {
+    invalidReview(
+      "invalid_urgency_floor",
+      "review/v1 urgency_floor is not a recognized urgency tier or preset",
+    );
+  }
+  let orientation;
+  let diagrams;
+  try {
+    orientation = normalizeReviewOrientation(inputs.orientation);
+    diagrams = normalizeReviewDiagrams(inputs.diagrams);
+  } catch (error) {
+    invalidReview(
+      error.code ?? "malformed_review_supplement",
+      error.message,
+    );
+  }
   return freezeCanonical({
     target,
     lenses: [...inputs.lenses].sort(),
     delegation: bindings,
     finding_cap: findingCap,
+    urgency,
+    urgency_floor: urgencyFloor,
+    orientation,
+    diagrams,
   });
 }
 
@@ -230,7 +276,10 @@ export function reviewRecordSourceAuthorityIssue(command, projection) {
     lifecycle_generation: command.lifecycle_generation,
   }) || !isDeepEqualDigest(input?.lenses, command.summary?.enabled_lenses) ||
       !Number.isSafeInteger(input?.finding_cap) ||
-      input.finding_cap !== command.summary?.finding_cap) {
+      input.finding_cap !== command.summary?.finding_cap ||
+      input.urgency_floor !== command.summary?.urgency_floor ||
+      !isDeepEqualDigest(input.orientation ?? null, command.summary?.orientation) ||
+      !isDeepEqualDigest(input.diagrams ?? [], command.summary?.diagrams)) {
     return { code: "review_source_intent_mismatch", reason: "review target or declared review inputs differ from RunAuthority" };
   }
   const accepted = input.authority_materialized_evidence?.accepted_delegates;
@@ -239,13 +288,65 @@ export function reviewRecordSourceAuthorityIssue(command, projection) {
     return { code: "review_source_evidence_mismatch", reason: "review evidence is not authority-materialized" };
   }
   const lensResults = {};
-  for (const evidence of accepted) {
-    if (evidence.card_id === "review-critic") continue;
-    lensResults[evidence.card_id.replace(/^review-lens-/u, "")] =
-      evidence.evidence?.validated_output ?? evidence.evidence;
+  let criticResult;
+  const invalidDelegateEvidence = [];
+  try {
+    for (const evidence of accepted) {
+      if (evidence.card_id === "review-critic") continue;
+      try {
+        lensResults[evidence.card_id.replace(/^review-lens-/u, "")] =
+          materializeReviewDelegateResult(evidence);
+      } catch (error) {
+        const fallback = reviewEvidenceFallbackEntry(
+          command.evidence_validation,
+          evidence,
+          error,
+        );
+        if (fallback === null) {
+          return {
+            code: error?.code ?? "review_source_evidence_mismatch",
+            reason: "authority-materialized review evidence is malformed",
+          };
+        }
+        invalidDelegateEvidence.push(fallback);
+        lensResults[evidence.card_id.replace(/^review-lens-/u, "")] =
+          unavailableReviewDelegateResult();
+      }
+    }
+    const critic = accepted.find(({ card_id: id }) => id === "review-critic");
+    if (!critic) {
+      return { code: "review_source_evidence_mismatch", reason: "authority-materialized critic evidence is missing" };
+    }
+    try {
+      criticResult = materializeReviewDelegateResult(critic);
+    } catch (error) {
+      const fallback = reviewEvidenceFallbackEntry(
+        command.evidence_validation,
+        critic,
+        error,
+      );
+      if (fallback === null) {
+        return {
+          code: error?.code ?? "review_source_evidence_mismatch",
+          reason: "authority-materialized review evidence is malformed",
+        };
+      }
+      invalidDelegateEvidence.push(fallback);
+      criticResult = unavailableReviewDelegateResult();
+    }
+  } catch (error) {
+    return {
+      code: error?.code ?? "review_source_evidence_mismatch",
+      reason: "authority-materialized review evidence is malformed",
+    };
   }
-  const critic = accepted.find(({ card_id: id }) => id === "review-critic");
-  if (!critic) return { code: "review_source_evidence_mismatch", reason: "authority-materialized critic evidence is missing" };
+  const evidenceValidationIssue = reviewEvidenceValidationIssue(
+    command.evidence_validation,
+    invalidDelegateEvidence,
+  );
+  if (evidenceValidationIssue !== null) {
+    return evidenceValidationIssue;
+  }
   let expected;
   try {
     expected = buildReviewSummary({
@@ -254,9 +355,12 @@ export function reviewRecordSourceAuthorityIssue(command, projection) {
       lifecycleGeneration: command.lifecycle_generation,
       enabledLenses: input.lenses,
       lensResults,
-      criticResult: critic.evidence?.validated_output ?? critic.evidence,
+      criticResult,
       sourceAuthorityWatermark: effect.source_authority_watermark,
       findingCap: input.finding_cap,
+      urgencyFloor: input.urgency_floor,
+      orientation: input.orientation,
+      diagrams: input.diagrams,
     });
   } catch (error) {
     return {
@@ -270,6 +374,65 @@ export function reviewRecordSourceAuthorityIssue(command, projection) {
     return { code: "review_summary_mismatch", reason: "review summary is not recomputed from RunAuthority evidence" };
   }
   return null;
+}
+
+/**
+ * Replace delegate self-declared coverage with the terminal disposition
+ * materialized by RunAuthority. A normal successful settlement is explicitly
+ * produced; only an authority disposition may make a participant degraded or
+ * unavailable.
+ */
+export function materializeReviewDelegateResult(acceptedDelegate) {
+  const evidence = acceptedDelegate?.evidence;
+  const output = evidence?.validated_output ?? evidence;
+  const cardId = acceptedDelegate?.card_id;
+  const lens = typeof cardId === "string" && cardId.startsWith("review-lens-")
+    ? cardId.slice("review-lens-".length)
+    : null;
+  const value = parseReviewDelegateResult(output, {
+    lens,
+    role: lens === null ? "critic" : "lens",
+  });
+  const selfCoverage = materializedReviewCoverage(value.coverage ??
+    value.terminal_disposition, "delegate");
+  const disposition = evidence?.authority_terminal_disposition;
+  let authorityCoverage = null;
+  if (disposition !== undefined) {
+    if (!isRecord(disposition) ||
+        disposition.schema !== REVIEW_TERMINAL_DISPOSITION_SCHEMA ||
+        disposition.authority !== "RunAuthority" ||
+        !REVIEW_COVERAGE_STATUSES.includes(disposition.status) ||
+        disposition.status !== "produced" &&
+          !isSafeReviewReason(disposition.reason)) {
+      throw reviewValidationError(
+        "malformed_review_coverage",
+        "review terminal disposition is not authority materialized",
+      );
+    }
+    authorityCoverage = {
+      status: disposition.status,
+      reason: disposition.status === "produced" ? null : disposition.reason,
+    };
+  }
+  const effectiveCoverage = combineReviewCoverage(
+    selfCoverage,
+    authorityCoverage,
+    value.posture,
+  );
+  const posture = value.posture ??
+    (effectiveCoverage.status === "produced" ? "no_findings" : "review_incomplete");
+  return {
+    ...value,
+    posture: posture === "blocked"
+      ? "blocked"
+      : effectiveCoverage.status === "produced"
+        ? posture
+        : "review_incomplete",
+    coverage: {
+      schema: "flow.review-coverage/v1",
+      ...effectiveCoverage,
+    },
+  };
 }
 
 function reviewCandidateProjectionIssue(target, projection) {
@@ -366,6 +529,9 @@ function reviewCards(selection) {
       target: selection.target,
       lenses: selection.lenses,
       finding_cap: selection.finding_cap,
+      urgency_floor: selection.urgency_floor,
+      orientation: selection.orientation,
+      diagrams: selection.diagrams,
       delegate_evidence_card_ids: [
         ...selection.lenses.map((lens) => `review-lens-${lens}`),
         "review-critic",
@@ -469,6 +635,8 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
           new Set(card.inputs.lenses).size !== card.inputs.lenses.length ||
           !Number.isSafeInteger(card.inputs?.finding_cap) ||
           card.inputs.finding_cap < 1 ||
+          !isReviewUrgencyFloor(card.inputs?.urgency_floor) ||
+          !isReviewSupplements(card.inputs?.orientation, card.inputs?.diagrams) ||
           !Array.isArray(card.inputs?.delegate_evidence_card_ids) ||
           card.inputs.delegate_evidence_card_ids.length === 0 ||
           card.inputs.delegate_evidence_card_ids.some((cardId) =>
@@ -529,17 +697,51 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
         };
       }
       const lensResults = {};
+      const invalidDelegateEvidence = [];
       for (const evidence of materialized?.accepted_delegates ?? []) {
         if (evidence.card_id === "review-critic") continue;
         const lens = evidence.card_id.replace(/^review-lens-/u, "");
-        lensResults[lens] = evidence.evidence?.validated_output ?? evidence.evidence;
+        try {
+          lensResults[lens] = materializeReviewDelegateResult(evidence);
+        } catch {
+          const evidenceDigest = safeDigest(evidence);
+          if (evidenceDigest === null) {
+            throw reviewValidationError(
+              "review_source_evidence_mismatch",
+              "authority-materialized review evidence is not canonical",
+            );
+          }
+          invalidDelegateEvidence.push({
+            card_id: evidence.card_id,
+            evidence_digest: evidenceDigest,
+            reason: "independent_validation_failed",
+          });
+          lensResults[lens] = unavailableReviewDelegateResult();
+        }
       }
       const criticEvidence = materialized?.accepted_delegates?.find(({ card_id: id }) =>
         id === "review-critic");
       if (!criticEvidence) {
         throw reviewValidationError("incomplete_lens_join", "review critic evidence is missing");
       }
-      const criticResult = criticEvidence.evidence?.validated_output ?? criticEvidence.evidence;
+      let criticResult;
+      try {
+        criticResult = materializeReviewDelegateResult(criticEvidence);
+      } catch {
+        const evidenceDigest = safeDigest(criticEvidence);
+        if (evidenceDigest === null) {
+          throw reviewValidationError(
+            "review_source_evidence_mismatch",
+            "authority-materialized review evidence is not canonical",
+          );
+        }
+        invalidDelegateEvidence.push({
+          card_id: criticEvidence.card_id,
+          evidence_digest: evidenceDigest,
+          reason: "independent_validation_failed",
+        });
+        criticResult = unavailableReviewDelegateResult();
+      }
       const summary = buildReviewSummary({
         candidateFingerprint: target.candidate.candidate_fingerprint,
         candidateAuthorityWatermark: target.candidate_authority_watermark,
@@ -549,6 +751,9 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
         criticResult,
         sourceAuthorityWatermark: intent.source_authority_watermark,
         findingCap: input.finding_cap,
+        urgencyFloor: input.urgency_floor,
+        orientation: input.orientation,
+        diagrams: input.diagrams,
       });
       const eventBody = {
         schema: "flow.review-record/v1",
@@ -598,6 +803,11 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
         artifacts,
         source_authority_watermark: intent.source_authority_watermark,
         source_run_id: intent.run_id,
+        ...(invalidDelegateEvidence.length === 0 ? {} : {
+          evidence_validation: {
+            invalid_delegate_evidence: invalidDelegateEvidence,
+          },
+        }),
         operation_contract: intent.operation_contract,
         operation_effect_id: intent.effect_id,
         operation_attempt_id: intent.attempt_id,
@@ -641,7 +851,11 @@ export function createReviewOperationRegistration({ reviewAuthority } = {}) {
  * an in-memory FlowRuntime. Durable runtimes use the Work-domain authority
  * with the same command and projection contracts.
  */
-export function createInMemoryReviewAuthority({ candidateProjection = null, sourceEffectIntentReader = null } = {}) {
+export function createInMemoryReviewAuthority({
+  candidateProjection = null,
+  sourceEffectIntentReader = null,
+  targetObservationAdapter = null,
+} = {}) {
   const streams = new Map();
   const sealedCandidateProjection = candidateProjection?.schema ===
     "work.review-candidate-projection/v1"
@@ -664,12 +878,98 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
     schema: "work.review-authority/v1",
     command(command) {
       const subjectId = command?.subject_id;
+      const events = streams.get(subjectId) ?? [];
+      const current = queryProjection(subjectId);
+      const authorityObservation = isReviewTargetInvalidationCommand(command)
+        ? observeReviewTarget(command, current)
+        : null;
+      if (isReviewTargetInvalidationCommand(command)) {
+        const prior = events.find(({ command_receipt: receipt }) =>
+          receipt?.command_id === command.command_id);
+        if (prior !== undefined) {
+          try {
+            if (prior.command_receipt.command_digest === idempotencyCommandDigest(command)) {
+              return {
+                accepted: true,
+                replayed: true,
+                authority_watermark: current.watermark,
+              };
+            }
+          } catch {
+            // Fall through to the typed idempotency conflict.
+          }
+          return reviewRejection("idempotency_conflict", command, current);
+        }
+        const built = buildReviewTargetInvalidationEvent({
+          command,
+          current,
+          authorityObservation,
+        });
+        if (built.issue !== undefined) {
+          return reviewRejection(built.issue, command, current);
+        }
+        streams.set(subjectId, [
+          ...events,
+          {
+            ...built.event.payload,
+          },
+        ]);
+        return {
+          schema: "work.command-receipt/v1",
+          command_type: command.type,
+          contract: command.contract,
+          subject_id: subjectId,
+          authority_watermark: built.watermark,
+          accepted: true,
+          created: true,
+        };
+      }
+      if (isReviewTargetRefreshCommand(command)) {
+        const prior = events.find(({ command_receipt: receipt }) =>
+          receipt?.command_id === command.command_id);
+        if (prior !== undefined) {
+          try {
+            if (prior.command_receipt.command_digest === idempotencyCommandDigest(command)) {
+              return {
+                accepted: true,
+                replayed: true,
+                authority_watermark: current.watermark,
+              };
+            }
+          } catch {
+            // Fall through to the typed idempotency conflict.
+          }
+          return reviewRejection("idempotency_conflict", command, current);
+        }
+        const built = buildReviewTargetRefreshEvent({
+          command,
+          current,
+          authorityObservation: current.invalidation?.observation ?? null,
+        });
+        if (built.issue !== undefined) {
+          return reviewRejection(built.issue, command, current);
+        }
+        streams.set(subjectId, [
+          ...events,
+          {
+            ...built.event.payload,
+          },
+        ]);
+        return {
+          schema: "work.command-receipt/v1",
+          command_type: command.type,
+          contract: command.contract,
+          subject_id: subjectId,
+          authority_watermark: built.watermark,
+          accepted: true,
+          created: true,
+        };
+      }
       if (command?.schema !== "work.review-record-command/v1" ||
           command?.type !== "review_record" ||
           command?.contract !== "work.review/v1" || typeof subjectId !== "string") {
         return reviewRejection("invalid_review_command", command, null);
       }
-      const current = queryProjection(subjectId);
       const prior = streams.get(subjectId)?.find(({ type }) =>
         type === "review_recorded");
       let repeated = null;
@@ -798,7 +1098,8 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
     const events = streams.get(subjectId);
     if (!events) return emptyProjection(subjectId);
     const event = events[0];
-    return projectReviewRecord(event.body, event.watermark, events);
+    const watermark = reviewAuthorityEventWatermark(events);
+    return projectReviewRecord(event.body, watermark, events);
   }
 
   function queryCandidateProjection(subjectId) {
@@ -807,13 +1108,57 @@ export function createInMemoryReviewAuthority({ candidateProjection = null, sour
     }
     return sealedCandidateProjection;
   }
+
+  function observeReviewTarget(command, current) {
+    if (targetObservationAdapter === null) return null;
+    try {
+      const observation = typeof targetObservationAdapter === "function"
+        ? targetObservationAdapter({ command, review: current })
+        : targetObservationAdapter.observe({ command, review: current });
+      return observation === null || observation === undefined
+        ? null
+        : freezeCanonical(observation);
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function projectReviewRecord(body, watermark, events = []) {
+  const summary = isRecord(body?.summary) ? body.summary : {};
+  const invalidationEvent = events
+    .map((event) => event?.payload ?? event)
+    .find(({ type }) => type === "review_target_invalidated");
+  const invalidation = invalidationEvent?.invalidation ?? null;
+  const refreshEvent = events
+    .map((event) => event?.payload ?? event)
+    .find(({ type }) => type === "review_target_refresh_acknowledged");
+  const refresh = refreshEvent?.refresh ?? null;
+  const current = invalidation === null;
   const commandReceipts = events
-    .map((event) => event.command_receipt)
+    .map((event) => (event?.payload ?? event).command_receipt)
     .filter((receipt) => receipt !== undefined);
-  return freezeCanonical({
+  const refreshAction = invalidation === null || refresh !== null ? [] : [{
+    schema: "work.review-target-refresh-command/v1",
+    type: "review_target_refresh",
+    contract: "work.review/v1",
+    command_id: `review-target-refresh:${body.review_id}:${invalidation.observed_candidate_fingerprint}:${invalidation.observed_lifecycle_generation}`,
+    subject_id: body.review_id,
+    expected_watermark: watermark,
+    prior_candidate_fingerprint: invalidation.prior_candidate_fingerprint,
+    prior_lifecycle_generation: invalidation.prior_lifecycle_generation,
+    observed_candidate_fingerprint: invalidation.observed_candidate_fingerprint,
+    observed_lifecycle_generation: invalidation.observed_lifecycle_generation,
+    ...(invalidation.observation === undefined ? {} : {
+      authority_observation: invalidation.observation,
+    }),
+  }];
+  /*
+   * This command is the only legal post-invalidation acknowledgement. It
+   * records that the observed target facts were retained without making the
+   * stale review current or authorizing any downstream action.
+   */
+  const projection = {
     schema: "flow.review-projection/v1",
     contract: "work.review/v1",
     subject_id: body.review_id,
@@ -824,25 +1169,58 @@ export function projectReviewRecord(body, watermark, events = []) {
     candidate_authority_watermark: body.candidate_authority_watermark,
     lifecycle_generation: body.lifecycle_generation,
     ...(body.source_run_id === undefined ? {} : { source_run_id: body.source_run_id }),
-    operation_contract: body.operation_contract,
-    operation_effect_id: body.operation_effect_id,
-    operation_attempt_id: body.operation_attempt_id,
-    operation_idempotency_key: body.operation_idempotency_key,
-    candidate: body.candidate,
-    status: "automated_completed",
-    posture: body.summary.posture,
-    findings: body.summary.findings,
-    semantic_findings: body.summary.findings,
-    rendered_findings: body.summary.rendered_findings,
-    cap_reasons: body.summary.cap_reasons,
-    summary: body.summary,
-    automated_evidence: body.automated_evidence,
-    artifacts: body.artifacts,
+    ...(body.operation_contract === undefined ? {} : {
+      operation_contract: body.operation_contract,
+    }),
+    ...(body.operation_effect_id === undefined ? {} : {
+      operation_effect_id: body.operation_effect_id,
+    }),
+    ...(body.operation_attempt_id === undefined ? {} : {
+      operation_attempt_id: body.operation_attempt_id,
+    }),
+    ...(body.operation_idempotency_key === undefined ? {} : {
+      operation_idempotency_key: body.operation_idempotency_key,
+    }),
+    ...(body.candidate === undefined ? {} : { candidate: body.candidate }),
+    status: current ? "automated_completed" : "stale",
+    current,
+    evidence_currency: current ? "current" : "stale",
+    ...(invalidation === null ? {} : {
+      invalidation,
+      observed_candidate_fingerprint: invalidation.observed_candidate_fingerprint,
+      observed_lifecycle_generation: invalidation.observed_lifecycle_generation,
+    }),
+    ...(refresh === null ? {} : { refresh }),
+    ...(summary.posture === undefined ? {} : { posture: summary.posture }),
+    findings: summary.findings ?? [],
+    semantic_findings: summary.findings ?? [],
+    rendered_findings: summary.rendered_findings ?? [],
+    cap_reasons: summary.cap_reasons ?? [],
+    urgency_floor: summary.urgency_floor ?? "info",
+    orientation: summary.orientation ?? null,
+    diagrams: summary.diagrams ?? [],
+    ...(summary.coverage === undefined ? {} : { coverage: summary.coverage }),
+    ...(summary.merge_ready === undefined ? {} : { merge_ready: summary.merge_ready }),
+    ...(body.summary === undefined ? {} : { summary: body.summary }),
+    ...(body.automated_evidence === undefined ? {} : {
+      automated_evidence: body.automated_evidence,
+    }),
+    ...(body.artifacts === undefined ? {} : { artifacts: body.artifacts }),
     ...reviewCompletionAuthority(),
+    ...(current ? {} : {
+      approval: "ineligible",
+      approval_eligible: false,
+      submission_pending: false,
+      submission_eligible: false,
+      integration_eligible: false,
+      merge_eligible: false,
+      tracker_completion_eligible: false,
+    }),
     append_only_event_count: events.length,
     command_receipts: commandReceipts,
-    legal_actions: [],
-  });
+    legal_actions: refreshAction,
+  };
+  return freezeCanonical(projection);
 }
 
 export function validateReviewRecordCommand(command) {
@@ -883,10 +1261,13 @@ export function validateReviewRecordCommand(command) {
   }
   try {
     validateReviewSummary(command.summary, command.automated_evidence);
-    normalizeReviewFindings(command.summary.findings, { source: "authority" });
+    normalizeReviewFindings(command.summary.findings, {
+      source: "authority",
+      urgencyFloor: command.summary.urgency_floor,
+    });
     const renderedFindings = normalizeReviewFindings(
       command.summary.rendered_findings,
-      { source: "authority" },
+      { source: "authority", urgencyFloor: command.summary.urgency_floor },
     );
     const stableFindingIds = new Set(command.summary.findings.map(
       ({ finding_id: findingId }) => findingId,
@@ -939,6 +1320,13 @@ function validateReviewSummary(summary, automatedEvidence) {
       !isRecord(summary.critic_result) ||
       !isDigest(summary.candidate_authority_watermark) ||
       !Number.isSafeInteger(summary.finding_cap) || summary.finding_cap < 1 ||
+      !isReviewUrgencyFloor(summary.urgency_floor) ||
+      !isReviewSupplements(summary.orientation, summary.diagrams) ||
+      !isRecord(summary.coverage) ||
+      summary.coverage.schema !== "flow.review-coverage/v1" ||
+      typeof summary.coverage.complete !== "boolean" ||
+      !Array.isArray(summary.coverage.lenses) ||
+      summary.merge_ready !== false ||
       !["no_findings", "findings", "review_incomplete", "blocked"].includes(summary.posture)) {
     throw reviewValidationError("invalid_review_summary", "review summary is malformed");
   }
@@ -946,6 +1334,7 @@ function validateReviewSummary(summary, automatedEvidence) {
     const parsed = parseReviewDelegateResult(result, {
       lens: summary.enabled_lenses[index],
       role: "lens",
+      urgencyFloor: summary.urgency_floor,
     });
     if (!isDeepEqualDigest(parsed, result)) {
       throw reviewValidationError("invalid_review_summary", "lens result is not canonical");
@@ -954,6 +1343,7 @@ function validateReviewSummary(summary, automatedEvidence) {
   });
   const criticResult = parseReviewDelegateResult(summary.critic_result, {
     role: "critic",
+    urgencyFloor: summary.urgency_floor,
   });
   if (!isDeepEqualDigest(criticResult, summary.critic_result)) {
     throw reviewValidationError("invalid_review_summary", "critic result is not canonical");
@@ -973,10 +1363,10 @@ function validateReviewSummary(summary, automatedEvidence) {
       "automated evidence is not bound to the recorded delegate results",
     );
   }
-    const recomputed = buildReviewSummary({
-      candidateFingerprint: summary.candidate_fingerprint,
-      candidateAuthorityWatermark: summary.candidate_authority_watermark,
-      lifecycleGeneration: summary.lifecycle_generation,
+  const recomputed = buildReviewSummary({
+    candidateFingerprint: summary.candidate_fingerprint,
+    candidateAuthorityWatermark: summary.candidate_authority_watermark,
+    lifecycleGeneration: summary.lifecycle_generation,
     enabledLenses: summary.enabled_lenses,
     lensResults: Object.fromEntries(lensResults.map((result, index) => [
       summary.enabled_lenses[index], result,
@@ -984,10 +1374,16 @@ function validateReviewSummary(summary, automatedEvidence) {
     criticResult,
     sourceAuthorityWatermark: automatedEvidence.source_authority_watermark,
     findingCap: summary.finding_cap,
+    urgencyFloor: summary.urgency_floor,
+    orientation: summary.orientation,
+    diagrams: summary.diagrams,
   });
   if (!isDeepEqualDigest(recomputed.findings, summary.findings) ||
       !isDeepEqualDigest(recomputed.rendered_findings, summary.rendered_findings) ||
       recomputed.posture !== summary.posture ||
+      !isDeepEqualDigest(recomputed.coverage, summary.coverage) ||
+      recomputed.urgency_floor !== summary.urgency_floor ||
+      recomputed.merge_ready !== summary.merge_ready ||
       recomputed.finding_cap !== summary.finding_cap ||
       !isDeepEqualDigest(recomputed.cap_reasons, summary.cap_reasons) ||
       !isDeepEqualDigest(recomputed.automated_evidence, summary.automated_evidence)) {
@@ -1011,6 +1407,171 @@ function reviewRejection(code, command, current, operation = "command") {
     authority_watermark_domain: "review",
     legal_actions: current?.legal_actions ?? [],
   });
+}
+
+export function isReviewTargetInvalidationCommand(command) {
+  return command?.schema === "work.review-target-invalidation-command/v1" &&
+    command.type === "review_target_invalidated" &&
+    command.contract === "work.review/v1";
+}
+
+export function isReviewTargetRefreshCommand(command) {
+  return command?.schema === "work.review-target-refresh-command/v1" &&
+    command.type === "review_target_refresh" &&
+    command.contract === "work.review/v1";
+}
+
+export function reviewTargetInvalidationIssue(
+  command,
+  current,
+  authorityObservation = null,
+) {
+  if (current?.schema !== "flow.review-projection/v1") return "unknown_subject";
+  if (command.expected_watermark !== current.watermark) {
+    return "stale_authority_watermark";
+  }
+  if (current.current === false || current.status === "stale") {
+    return "review_already_invalidated";
+  }
+  if (command.subject_id !== current.subject_id ||
+      !isDigest(command.prior_candidate_fingerprint) ||
+      command.prior_candidate_fingerprint !== current.candidate_fingerprint ||
+      !Number.isSafeInteger(command.prior_lifecycle_generation) ||
+      command.prior_lifecycle_generation !== current.lifecycle_generation ||
+      !isDigest(command.observed_candidate_fingerprint) ||
+      !Number.isSafeInteger(command.observed_lifecycle_generation) ||
+      command.observed_lifecycle_generation < 1 ||
+      command.observed_candidate_fingerprint === command.prior_candidate_fingerprint &&
+        command.observed_lifecycle_generation === command.prior_lifecycle_generation ||
+      command.reason !== "target_moved" ||
+      command.command_id !==
+        `review-target-invalidate:${command.subject_id}:${command.observed_candidate_fingerprint}:${command.observed_lifecycle_generation}`) {
+    return "invalid_review_target_invalidation";
+  }
+  const observationIssue = reviewTargetObservationIssue(
+    command,
+    current,
+    authorityObservation,
+  );
+  if (observationIssue !== null) return observationIssue;
+  return null;
+}
+
+export function reviewTargetRefreshIssue(
+  command,
+  current,
+  authorityObservation = null,
+) {
+  if (current?.schema !== "flow.review-projection/v1") return "unknown_subject";
+  if (command.expected_watermark !== current.watermark) {
+    return "stale_authority_watermark";
+  }
+  const invalidation = current.invalidation;
+  if (current.current !== false || current.status !== "stale" ||
+      !isRecord(invalidation)) {
+    return "review_target_not_stale";
+  }
+  if (command.subject_id !== current.subject_id ||
+      command.prior_candidate_fingerprint !== invalidation.prior_candidate_fingerprint ||
+      command.prior_lifecycle_generation !== invalidation.prior_lifecycle_generation ||
+      command.observed_candidate_fingerprint !== invalidation.observed_candidate_fingerprint ||
+      command.observed_lifecycle_generation !== invalidation.observed_lifecycle_generation ||
+      command.command_id !==
+        `review-target-refresh:${command.subject_id}:${command.observed_candidate_fingerprint}:${command.observed_lifecycle_generation}`) {
+    return "invalid_review_target_refresh";
+  }
+  const observation = authorityObservation ?? invalidation.observation ?? null;
+  if (observation !== null && reviewTargetObservationIssue(
+    command,
+    current,
+    observation,
+  ) !== null) {
+    return "invalid_review_target_refresh";
+  }
+  if (observation === null) return "review_target_observation_unavailable";
+  return null;
+}
+
+export function buildReviewTargetObservation({
+  subjectId,
+  candidateId,
+  candidateFingerprint,
+  lifecycleGeneration,
+  authorityWatermark,
+  source = "named_mechanism_observation",
+}) {
+  const observation = {
+    schema: "flow.review-target-observation/v1",
+    subject_id: subjectId,
+    candidate_id: candidateId,
+    candidate_fingerprint: candidateFingerprint,
+    lifecycle_generation: lifecycleGeneration,
+    authority_watermark: authorityWatermark,
+    source,
+  };
+  const canonical = {
+    ...observation,
+    evidence_digest: digest(observation),
+  };
+  if (reviewTargetObservationShapeIssue(canonical) !== null) {
+    throw reviewValidationError(
+      "invalid_review_target_observation",
+      "review target observation is not canonical",
+    );
+  }
+  return freezeCanonical(canonical);
+}
+
+function isReviewUrgencyFloor(value) {
+  try {
+    return normalizeReviewUrgencyFloor(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+function isReviewSupplements(orientation, diagrams) {
+  try {
+    return isDeepEqualDigest(normalizeReviewOrientation(orientation), orientation) &&
+      isDeepEqualDigest(normalizeReviewDiagrams(diagrams), diagrams);
+  } catch {
+    return false;
+  }
+}
+
+function reviewTargetObservationIssue(command, current, observation) {
+  if (observation === null || observation === undefined) {
+    return "review_target_observation_unavailable";
+  }
+  const shapeIssue = reviewTargetObservationShapeIssue(observation);
+  if (shapeIssue !== null) return shapeIssue;
+  if (observation.subject_id !== current.subject_id ||
+      observation.candidate_id !== current.candidate?.candidate_id ||
+      observation.candidate_fingerprint !== command.observed_candidate_fingerprint ||
+      observation.lifecycle_generation !== command.observed_lifecycle_generation) {
+    return "review_target_observation_mismatch";
+  }
+  return null;
+}
+
+function reviewTargetObservationShapeIssue(observation) {
+  if (!isRecord(observation) ||
+      observation.schema !== "flow.review-target-observation/v1" ||
+      !nonEmpty(observation.subject_id) ||
+      !nonEmpty(observation.candidate_id) ||
+      !isDigest(observation.candidate_fingerprint) ||
+      !Number.isSafeInteger(observation.lifecycle_generation) ||
+      observation.lifecycle_generation < 1 ||
+      !isDigest(observation.authority_watermark) ||
+      !["candidate_projection", "named_mechanism_observation"].includes(observation.source) ||
+      !isDigest(observation.evidence_digest)) {
+    return "invalid_review_target_observation";
+  }
+  const { evidence_digest: _evidenceDigest, ...identity } = observation;
+  if (digest(identity) !== observation.evidence_digest) {
+    return "invalid_review_target_observation";
+  }
+  return null;
 }
 
 function oneShot(value) {
@@ -1038,6 +1599,158 @@ export function reviewEventWatermark({ previousWatermark, event }) {
   });
 }
 
+/**
+ * Build target movement events in one place so in-memory and SQLite
+ * ReviewAuthority implementations share the same validation, payload, and
+ * chained watermark semantics.
+ */
+export function buildReviewTargetInvalidationEvent({
+  command,
+  current,
+  authorityObservation = null,
+}) {
+  const issue = reviewTargetInvalidationIssue(
+    command,
+    current,
+    authorityObservation,
+  );
+  if (issue !== null) return { issue };
+  const invalidation = freezeCanonical({
+    schema: "flow.review-target-invalidation/v1",
+    subject_id: command.subject_id,
+    prior_candidate_fingerprint: command.prior_candidate_fingerprint,
+    prior_lifecycle_generation: command.prior_lifecycle_generation,
+    observed_candidate_fingerprint: command.observed_candidate_fingerprint,
+    observed_lifecycle_generation: command.observed_lifecycle_generation,
+    reason: command.reason,
+    ...(authorityObservation === null ? {} : {
+      observation: authorityObservation,
+    }),
+  });
+  const watermark = reviewEventWatermark({
+    previousWatermark: current.watermark,
+    event: invalidation,
+  });
+  return {
+    event: {
+      contract: "work.review-event/v1",
+      payload: {
+        type: "review_target_invalidated",
+        invalidation,
+        watermark,
+        command_receipt: {
+          schema: "work.idempotency-receipt/v1",
+          command_id: command.command_id,
+          command_digest: idempotencyCommandDigest(command),
+        },
+      },
+    },
+    watermark,
+  };
+}
+
+export function buildReviewTargetRefreshEvent({
+  command,
+  current,
+  authorityObservation = null,
+}) {
+  const resolvedObservation = authorityObservation ?? current?.invalidation?.observation ?? null;
+  const issue = reviewTargetRefreshIssue(
+    command,
+    current,
+    resolvedObservation,
+  );
+  if (issue !== null) return { issue };
+  const refresh = freezeCanonical({
+    schema: "flow.review-target-refresh/v1",
+    subject_id: command.subject_id,
+    prior_candidate_fingerprint: command.prior_candidate_fingerprint,
+    prior_lifecycle_generation: command.prior_lifecycle_generation,
+    observed_candidate_fingerprint: command.observed_candidate_fingerprint,
+    observed_lifecycle_generation: command.observed_lifecycle_generation,
+    ...(resolvedObservation === null ? {} : {
+      observation: resolvedObservation,
+    }),
+  });
+  const watermark = reviewEventWatermark({
+    previousWatermark: current.watermark,
+    event: refresh,
+  });
+  return {
+    event: {
+      contract: "work.review-event/v1",
+      payload: {
+        type: "review_target_refresh_acknowledged",
+        refresh,
+        watermark,
+        command_receipt: {
+          schema: "work.idempotency-receipt/v1",
+          command_id: command.command_id,
+          command_digest: idempotencyCommandDigest(command),
+        },
+      },
+    },
+    watermark,
+  };
+}
+
+export function reviewAuthorityEventWatermark(records) {
+  if (!Array.isArray(records)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review authority event records are not an array",
+    );
+  }
+  let previousWatermark = EMPTY_WATERMARK;
+  for (const payload of records) {
+    let event;
+    try {
+      event = reviewEventWatermarkIdentityForPayload(payload);
+    } catch (error) {
+      throw reviewAuthorityIntegrityError(
+        error.reason ?? "malformed_event",
+        error.message,
+      );
+    }
+    let expected;
+    try {
+      expected = reviewEventWatermark({ previousWatermark, event });
+    } catch (error) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        error.message,
+      );
+    }
+    if (payload?.watermark !== expected) {
+      throw reviewAuthorityIntegrityError(
+        "watermark_chain_conflict",
+        "review authority event watermark chain is invalid",
+      );
+    }
+    previousWatermark = expected;
+  }
+  return previousWatermark;
+}
+
+function reviewEventWatermarkIdentityForPayload(payload) {
+  if (payload?.type === "review_recorded") {
+    return reviewRecordWatermarkIdentity(payload.body);
+  }
+  if (payload?.type === "review_target_invalidated") return payload.invalidation;
+  if (payload?.type === "review_target_refresh_acknowledged") return payload.refresh;
+  throw reviewAuthorityIntegrityError(
+    "unknown_event",
+    "review authority event type is unknown",
+  );
+}
+
+function reviewAuthorityIntegrityError(reason, message) {
+  const error = new Error(message);
+  error.code = "review_authority_integrity_failure";
+  error.reason = reason;
+  return error;
+}
+
 export function reviewRecordWatermarkIdentity(body) {
   if (!isRecord(body)) return body;
   const { artifacts: _artifacts, ...identity } = body;
@@ -1057,6 +1770,131 @@ export function reviewCompletionAuthority() {
 
 function invalidReview(reason, message) {
   throw new PredefinedFlowValidationError(reason, message);
+}
+
+function materializedReviewCoverage(candidate, role) {
+  if (candidate !== undefined && candidate !== null && !isRecord(candidate)) {
+    throw reviewValidationError(
+      "malformed_review_coverage",
+      `${role} coverage must be a canonical record`,
+    );
+  }
+  const status = candidate?.status ?? candidate?.disposition ?? "produced";
+  const reason = candidate?.reason ?? candidate?.code ?? null;
+  if (!REVIEW_COVERAGE_STATUSES.includes(status) ||
+      status !== "produced" && !isSafeReviewReason(reason)) {
+    throw reviewValidationError(
+      "malformed_review_coverage",
+      `${role} coverage must be produced, degraded, or unavailable with a reason`,
+    );
+  }
+  return {
+    status,
+    reason: status === "produced" ? null : reason,
+  };
+}
+
+function combineReviewCoverage(delegateCoverage, authorityCoverage, posture) {
+  let self = delegateCoverage;
+  if (posture === "review_incomplete" && self.status === "produced") {
+    self = {
+      status: "degraded",
+      reason: "delegate_declared_review_incomplete",
+    };
+  }
+  const authority = authorityCoverage ?? { status: "produced", reason: null };
+  const status = REVIEW_COVERAGE_RANK[self.status] >=
+    REVIEW_COVERAGE_RANK[authority.status]
+    ? self.status
+    : authority.status;
+  const equalRankAuthorityWins = authorityCoverage !== null &&
+    REVIEW_COVERAGE_RANK[self.status] === REVIEW_COVERAGE_RANK[authority.status];
+  return {
+    status,
+    reason: status === "produced"
+      ? null
+      : equalRankAuthorityWins
+        ? authority.reason
+        : REVIEW_COVERAGE_RANK[self.status] >= REVIEW_COVERAGE_RANK[status]
+          ? self.reason
+          : authority.reason,
+  };
+}
+
+function unavailableReviewDelegateResult() {
+  return {
+    schema: "flow.review-result/v1",
+    posture: "review_incomplete",
+    findings: [],
+    coverage: {
+      schema: "flow.review-coverage/v1",
+      status: "unavailable",
+      reason: "independent_validation_failed",
+    },
+    evidence: null,
+    cap_reasons: [],
+  };
+}
+
+function reviewEvidenceFallbackEntry(validation, acceptedDelegate, error) {
+  if (!isRecord(validation) ||
+      !Array.isArray(validation.invalid_delegate_evidence)) return null;
+  const evidenceDigest = safeDigest(acceptedDelegate?.evidence);
+  if (evidenceDigest === null) return null;
+  const entry = validation.invalid_delegate_evidence.find((candidate) =>
+    candidate?.card_id === acceptedDelegate?.card_id &&
+    candidate?.evidence_digest === evidenceDigest &&
+    candidate?.reason === "independent_validation_failed");
+  if (entry === undefined || error?.code === undefined) return null;
+  return {
+    card_id: acceptedDelegate.card_id,
+    evidence_digest: evidenceDigest,
+    reason: "independent_validation_failed",
+  };
+}
+
+function reviewEvidenceValidationIssue(validation, actualEntries) {
+  if (actualEntries.length === 0) {
+    return validation === undefined
+      ? null
+      : { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is unexpected" };
+  }
+  if (!isRecord(validation) ||
+      !Array.isArray(validation.invalid_delegate_evidence)) {
+    return {
+      code: "review_source_evidence_mismatch",
+      reason: "malformed review evidence has no authority validation marker",
+    };
+  }
+  const expected = actualEntries
+    .map((entry) => `${entry.card_id}:${entry.evidence_digest}:${entry.reason}`)
+    .sort();
+  const observed = validation.invalid_delegate_evidence
+    .map((entry) => `${entry?.card_id}:${entry?.evidence_digest}:${entry?.reason}`)
+    .sort();
+  if (expected.length !== observed.length ||
+      expected.some((entry, index) => entry !== observed[index])) {
+    return {
+      code: "review_source_evidence_mismatch",
+      reason: "review evidence validation marker is not authority-bound",
+    };
+  }
+  return null;
+}
+
+function isSafeReviewReason(value) {
+  return typeof value === "string" && value.length > 0 &&
+    value.length <= REVIEW_COVERAGE_REASON_MAX_LENGTH &&
+    value === value.trim() && !/[\r\n\u2028\u2029`<>]/u.test(value) &&
+    !/^ {0,3}(?:#{1,6}(?:\s|$)|[-+*](?:\s|$)|>(?:\s|$)|~{3,}|\d+[.)](?:\s|$))/u.test(value);
+}
+
+function safeDigest(value) {
+  try {
+    return digest(value);
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value) {

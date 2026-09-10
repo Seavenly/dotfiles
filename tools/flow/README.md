@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v21 binds it to
-`flow.contract-catalog/v1@22`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v23 binds it to
+`flow.contract-catalog/v1@23`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -460,7 +460,35 @@ ReviewAuthority projections and `FlowRuntime` review queries/watchers expose
 the exact review watermark, append-only evidence, stable findings, posture,
 cap reasons, and deterministic JSON, Markdown, and HTML artifacts. Artifacts
 carry candidate, lifecycle, candidate-seal, source-authority, and exact
-registered-operation provenance.
+registered-operation provenance. Recorded artifact bytes, format digests, and
+provenance are immutable: later invalidation, refresh, projection rebuild, and
+restart change only the ReviewAuthority projection watermark and status. They
+never re-render or re-stamp the recorded artifact object.
+The selected urgency preset is deterministic: `hotfix` selects the `critical`
+floor, `fast` selects the `high` floor, and `standard` selects the `info` floor.
+The floor filters selected semantic and rendered findings; it never rewrites
+the native urgency or stable identity in authority-retained delegate evidence.
+Findings below the floor are retained in each canonical lens or critic result
+and produce an explicit `urgency_floor` cap reason with their omitted count and
+urgency tiers. Critical and high findings therefore cannot be hidden by a
+lower-priority floor. A rendered finding cap is applied after urgency
+selection, while uncapped semantic findings and deterministic cap reasons are
+retained.
+Each selected lens and the critic records a terminal coverage disposition of
+`produced`, `degraded`, or `unavailable`. Any degraded or unavailable
+disposition projects `review_incomplete` and never produces merge eligibility,
+even when findings are otherwise empty. Optional orientation markdown and
+bounded Mermaid diagrams are human-facing supplements only: they may be
+reproduced from the bound review request and appear in review artifacts, but
+are excluded from lens and critic inputs, automated evidence, finding identity,
+urgency, and cap decisions.
+RunAuthority materializes the terminal disposition for every selected lens and
+critic. Delegate self-report may make a participant less complete, but it can
+never upgrade an authority-materialized `degraded` or `unavailable` result to
+`produced`; a non-produced participant must retain a non-empty reason. Runtime
+timeouts, unavailable ports, invalid output, and incompatible dispatch identity
+produce a safe review-incomplete participant with no untrusted findings while
+their distinct quarantine reason remains in the operator/run audit.
 Public run projections, including operator and trust views, omit raw operation
 inputs. Authority-owned review recording reads its settled effect intent through
 a private, read-only RunAuthority attachment instead of exposing delegated
@@ -475,6 +503,30 @@ identity; later non-replay writes reject with `idempotency_conflict` and cannot
 append another event. Review completion is automated evidence only: approval,
 integration, merge, tracker completion, and remote review submission remain
 unauthorized and have no legal actions in the projection.
+If the observed candidate fingerprint or lifecycle generation changes, the
+exact `work.review-target-invalidation-command/v1` may append one target-moved
+event bound to the prior review identity, prior facts, observed facts, and
+expected review watermark. Either fact may change independently; rejecting
+only when neither changes preserves legitimate lifecycle-only and
+fingerprint-only movement. Invalidation preserves the complete prior review
+history and evidence but marks it stale and closes approval, submission,
+integration, merge, and tracker-completion eligibility. Its only recovery is
+the projected `work.review-target-refresh-command/v1`, which is submitted
+through `FlowRuntime.command` with the exact watermark and acknowledges the
+observed facts without making stale evidence current or launching a review.
+A refresh is idempotent, append-only, and leaves no further action; callers
+must prepare and launch a separate fresh review for the observed target.
+The movement observation is authority-derived, never a caller assertion. A
+durable RunAuthority must be constructed with a named
+`reviewTargetObservationAdapter` that declares and supports all three movement
+shapes - `fingerprint_only`, `generation_only`, and `combined`. Its observation
+must be a typed `flow.review-target-observation/v1` record containing the exact
+subject, observed candidate facts, authority evidence watermark, and named
+observation source. A partial adapter is rejected at construction; an absent
+adapter fails closed at the invalidation command with
+`review_target_observation_unavailable`. In-memory authorities use the same
+authority observation contract. Refresh reuses the recorded observation and
+does not grant lifecycle authority to the caller.
 
 ## Workspace, artifact, and resource handoff authority
 

@@ -34,11 +34,30 @@ import {
 import {
   createInMemoryReviewAuthority,
   createReviewOperationRegistration,
+  isReviewTargetInvalidationCommand,
+  isReviewTargetRefreshCommand,
   reviewCandidateAuthorityIssue,
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "./review-flow.mjs";
+import { parseReviewDelegateResult } from "./review-rendering.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
+
+export function validateReviewDelegateOutput(output, context = {}) {
+  try {
+    const lens = typeof context.card_id === "string" &&
+        context.card_id.startsWith("review-lens-")
+      ? context.card_id.slice("review-lens-".length)
+      : null;
+    parseReviewDelegateResult(output, {
+      lens,
+      role: lens === null ? "critic" : "lens",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function createFlowRuntime({
   planCompiler = compileDynamicPlan,
@@ -82,19 +101,12 @@ export function createFlowRuntime({
   const validatorInputs = delegateOutputValidators instanceof Map
     ? new Map(delegateOutputValidators)
     : { ...delegateOutputValidators };
-  if (!registeredOperationPresent(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR)) {
-    setRegisteredOperation(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR, {
-      validate(output) {
-        try {
-          const value = typeof output === "string" ? JSON.parse(output) : output;
-          return value?.schema === "flow.review-result/v1" &&
-            Array.isArray(value.findings);
-        } catch {
-          return false;
-        }
-      },
-    });
-  }
+  // This validator is part of the trusted review boundary. A caller may
+  // register validators for other contracts, but cannot replace the parser
+  // that decides whether review evidence is accepted.
+  setRegisteredOperation(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR, {
+    validate: validateReviewDelegateOutput,
+  });
   const delegateValidators = snapshotDelegateOutputValidators(validatorInputs);
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
@@ -249,6 +261,12 @@ export function createFlowRuntime({
         }
         return runAuthority.hostCommand(command);
       }
+      if (isReviewTargetInvalidationCommand(command)) {
+        return ownedReviewAuthority.command(command);
+      }
+      if (isReviewTargetRefreshCommand(command)) {
+        return ownedReviewAuthority.command(command);
+      }
       const before = typeof command?.run_id === "string"
         ? runAuthority.query(command.run_id)
         : null;
@@ -337,12 +355,6 @@ export function createFlowRuntime({
     subrunRegistration,
   );
   return runtime;
-}
-
-function registeredOperationPresent(registry, contract) {
-  return registry instanceof Map
-    ? registry.has(contract) && registry.get(contract) != null
-    : Object.hasOwn(registry ?? {}, contract) && registry[contract] != null;
 }
 
 function attachedReviewAuthority(runAuthority) {
