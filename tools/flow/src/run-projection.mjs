@@ -1,19 +1,31 @@
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
-import { effectClassPolicy } from "./operation-effects.mjs";
+import {
+  effectClassPolicy,
+  normalizeEffectObservation,
+  sanitizeHistoricalEffectReceiptEnvelope,
+  sanitizeEffectReceiptEnvelope,
+  sanitizeProviderEvidence,
+} from "./operation-effects.mjs";
+import { sanitizeProviderReceiptValue } from "./provider-receipt-sanitizers.mjs";
+import {
+  elapsedTimeBounds,
+  validateTimeFacts,
+} from "./reboot-facts.mjs";
 import {
   admitPlanRevision,
   revisionAdmissionStatus,
 } from "./plan-revision.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import { isTrackerProgressContract } from "./tracker-progress.mjs";
+import { foldRetryStates } from "./retry-state.mjs";
 import {
   buildRunViews,
   publicEffectProjection,
 } from "./projection-builder.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
-  const launchOwnership = run.events.find(({ type }) => type === "run_launched")
-    ?.run_ownership;
+  const launchEvent = run.events.find(({ type }) => type === "run_launched");
+  const launchOwnership = launchEvent?.run_ownership;
   if (launchOwnership === undefined &&
       run.prepared.explicit_facts.tracker_binding !== undefined) {
     throw new TypeError("tracker-bound run is missing authority-owned scope");
@@ -42,6 +54,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const effectReceipts = new Map();
   const effectReceiptIndexes = new Map();
   const effectInvocationIndexes = new Map();
+  const effectInvocationCounts = new Map();
   const effectObservations = new Map();
   let cancellationEvent = null;
   let cancellationIndex = -1;
@@ -57,11 +70,55 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       effectObservations.set(event.effect_id, event.observation);
     } else if (event.type === "effect_invocation_started") {
       effectInvocationIndexes.set(event.effect_id, eventIndex);
+      effectInvocationCounts.set(
+        event.effect_id,
+        (effectInvocationCounts.get(event.effect_id) ?? 0) + 1,
+      );
     } else if (event.type === "run_cancelled") {
       cancellationEvent = event;
       cancellationIndex = eventIndex;
     }
   }
+  const unsafeReceiptEffects = new Set();
+  for (const [effectId, receipt] of effectReceipts) {
+    const intent = effectIntents.get(effectId);
+    const sanitized = sanitizeHistoricalEffectReceiptEnvelope(receipt, intent);
+    if (sanitized === null) {
+      effectReceipts.delete(effectId);
+      unsafeReceiptEffects.add(effectId);
+    } else {
+      effectReceipts.set(effectId, sanitized);
+    }
+  }
+  for (const [effectId, observation] of effectObservations) {
+    const intent = effectIntents.get(effectId);
+    if (!intent) {
+      effectObservations.delete(effectId);
+      continue;
+    }
+    effectObservations.set(
+      effectId,
+      sanitizeHistoricalEffectObservation(observation, intent),
+    );
+  }
+  for (const effectId of unsafeReceiptEffects) {
+    if (effectObservations.has(effectId)) continue;
+    const intent = effectIntents.get(effectId);
+    effectObservations.set(effectId, {
+      schema: "flow.effect-observation/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      presence: "indeterminate",
+      causation: null,
+      provider_observation: {
+        schema: "flow.provider-observation/v1",
+        status: "invalid_output",
+        code: "invalid_effect_receipt",
+        reason: "invalid_effect_receipt",
+      },
+    });
+  }
+  const effectRetryStates = foldRetryStates(run.events);
   const completedOperations = new Set(run.events
     .filter(({ type }) => type === "operation_completed")
     .map(({ card_id: cardId }) => cardId));
@@ -100,7 +157,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     .map(({ card_id: cardId }) => cardId));
   const quarantinedDelegateOutputs = run.events
     .filter(({ type }) => type === "delegate_output_quarantined")
-    .map(({ type: _type, ...output }) => output);
+    .map(({ type: _type, ...output }) =>
+      sanitizeProviderReceiptValue(output, { root: false }));
   const unresolvedEffectIds = new Set([...effectIntents.keys()].filter(
     (effectId) => !effectReceipts.has(effectId),
   ));
@@ -332,6 +390,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     admission_resource_claims: admissionResourceClaims,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
   };
+  const retryAccounting = new Map([...effectIntents.values()]
+    .map((intent) => [
+      intent.effect_id,
+      operationRetryAccounting(
+        intent,
+        effectInvocationCounts,
+        effectRetryStates,
+      ),
+    ]));
   const checkpointActions = cards
     .filter(({ executor_kind: kind, status }) =>
       kind === "checkpoint" && status === "waiting_checkpoint")
@@ -481,6 +548,14 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       effectReceipts.has(intent.effect_id));
   const recoveryActions = [...effectIntents.values()]
     .filter((intent) => !effectReceipts.has(intent.effect_id))
+    .filter((intent) => {
+      const retry = retryAccounting.get(intent.effect_id);
+      const observationOnly = effectClassPolicy(intent.classification)
+        ?.requires_observation === true;
+      return retry === null || observationOnly ||
+        (retry.status !== "blocked" && retry.status !== "exhausted") ||
+        retry.reason === "retry_time_unavailable";
+    })
     .filter((intent) => phase !== "cancelled" ||
       intent.effect_kind === "delegate_cancellation" ||
       ((intent.effect_kind !== "delegate" ||
@@ -512,7 +587,11 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     ? recoveryActions
     : phase === "active"
     ? hasUnresolvedEffects
-      ? [...capabilityActions, ...recoveryActions, ...cancellationActions]
+      ? [
+          ...capabilityActions,
+          ...recoveryActions,
+          ...cancellationActions,
+        ]
       : [
         ...checkpointActions,
         ...capabilityActions,
@@ -635,6 +714,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     ...(intent.source_authority_watermark === undefined ? {} : {
       source_authority_watermark: intent.source_authority_watermark,
     }),
+    ...(retryAccounting.get(intent.effect_id) === null ? {} : {
+      retry: retryAccounting.get(intent.effect_id),
+    }),
     effect_kind: intent.effect_kind ?? "operation",
     idempotency_key: intent.idempotency_key,
     route_binding: intent.route_binding,
@@ -655,8 +737,16 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
            effectInvocationIndexes.get(intent.effect_id) > cancellationIndex)
         ? "abandoned"
       : effectObservations.has(intent.effect_id)
-        ? ["delegate", "delegate_cancellation"].includes(intent.effect_kind) &&
-          effectObservations.get(intent.effect_id).presence === "indeterminate"
+        ? effectObservations.get(intent.effect_id).provider_observation
+            ?.schema === "flow.registered-operation-execution-observation/v1" &&
+          effectObservations.get(intent.effect_id).provider_observation
+            ?.provider_observation_present !== true
+          ? effectObservations.get(intent.effect_id).provider_observation
+              ?.status === "uncertain_external_outcome"
+            ? effectClassPolicy(intent.classification).observed_unresolved_status
+            : "unresolved"
+          : ["delegate", "delegate_cancellation"].includes(intent.effect_kind) &&
+            effectObservations.get(intent.effect_id).presence === "indeterminate"
           ? "reconciling"
           : effectClassPolicy(intent.classification).observed_unresolved_status
         : "unresolved",
@@ -670,6 +760,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     attempt_id: intent.attempt_id,
     card_id: intent.card_id ?? null,
     effect_id: intent.effect_id,
+    ...(retryAccounting.get(intent.effect_id) === null ? {} : {
+      retry: retryAccounting.get(intent.effect_id),
+    }),
     status: isQuarantinedAfterCancellation(intent.effect_id)
       ? "abandoned"
       : effectReceipts.has(intent.effect_id) ? "completed" : "active",
@@ -780,6 +873,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     resource_dispositions: resourceDispositions,
     limits,
     elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
+    time_facts: launchEvent?.admission_time_facts ??
+      run.prepared.explicit_facts.time_facts,
     attempts,
     subruns,
     effects,
@@ -796,6 +891,34 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     effect_intents: [...effectIntents.values()],
     legal_actions: legalActions,
   });
+}
+
+function sanitizeHistoricalEffectObservation(observation, intent) {
+  if (observation === null || typeof observation !== "object" ||
+      Array.isArray(observation)) {
+    return {
+      schema: "flow.effect-observation/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      presence: "indeterminate",
+      causation: null,
+      provider_observation: {
+        schema: "flow.provider-observation/v1",
+        status: "invalid_output",
+        code: "invalid_effect_observation",
+        reason: "invalid_effect_observation",
+      },
+    };
+  }
+  return normalizeEffectObservation({
+    ...observation,
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+      provider_observation: sanitizeProviderEvidence(
+        observation.provider_observation,
+        intent,
+      ),
+  }, intent);
 }
 
 export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
@@ -852,6 +975,9 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     admission_resource_claims: fold.admission_resource_claims,
     resource_dispositions: fold.resource_dispositions,
     limits: fold.limits,
+    ...(fold.execution_time === undefined ? {} : {
+      execution_time: fold.execution_time,
+    }),
     attempts: fold.attempts,
     subruns: fold.subruns,
     effects: fold.effects.map(publicEffectProjection),
@@ -868,6 +994,189 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     legal_actions: fold.legal_actions,
     views,
   });
+}
+
+function operationRetryAccounting(intent, invocationCounts, retryStates) {
+  if (intent.effect_kind !== undefined && intent.effect_kind !== "operation") {
+    return null;
+  }
+  const maxAttempts = Number.isSafeInteger(intent.max_attempts) &&
+      intent.max_attempts >= 1
+    ? intent.max_attempts
+    : null;
+  if (maxAttempts === null) return null;
+  const consumedAttempts = invocationCounts.get(intent.effect_id) ?? 0;
+  const state = retryStates.get(intent.effect_id);
+  const status = consumedAttempts >= maxAttempts
+    ? "exhausted"
+    : state?.status ?? "ready";
+  return {
+    schema: "flow.operation-retry-projection/v1",
+    max_attempts: maxAttempts,
+    consumed_attempts: consumedAttempts,
+    remaining_attempts: Math.max(0, maxAttempts - consumedAttempts),
+    status,
+    ...(state?.not_before === undefined ? { not_before: null } : {
+      not_before: state.not_before,
+    }),
+    ...(state?.retry_after_ms === undefined ? {} : {
+      retry_after_ms: state.retry_after_ms,
+    }),
+    ...(state?.reason === undefined ? {} : { reason: state.reason }),
+  };
+}
+
+export function applyExecutionTimeObservation(
+  fold,
+  legalActions,
+  observation,
+  events = [],
+) {
+  const executionTime = projectExecutionTime(fold, observation, events);
+  const deadlineBlocksAdmission = ["exhausted", "uncertain", "unobserved"].includes(
+    executionTime.status,
+  );
+  const filteredActions = deadlineBlocksAdmission
+    ? legalActions.filter((action) => {
+      if (["operation_execute", "delegate_execute", "subrun_execute"].includes(
+        action.type,
+      )) return false;
+      if (action.type === "checkpoint_decision" &&
+          action.decision === "approve") return false;
+      if (action.type !== "recovery") return true;
+      const effect = fold.effects.find(({ effect_id: effectId }) =>
+        effectId === action.effect_id);
+      return effect?.effect_kind === "delegate_cancellation" ||
+        effectClassPolicy(effect?.classification)?.requires_observation === true;
+    })
+    : legalActions;
+  return { executionTime, legalActions: filteredActions };
+}
+
+function projectExecutionTime(fold, observation, events) {
+  const baselineFacts = fold.time_facts;
+  const base = {
+    schema: "flow.execution-time-projection/v1",
+    max_elapsed_seconds: fold.limits.max_elapsed_seconds,
+    wall_elapsed_seconds: null,
+    active_elapsed_seconds: null,
+  };
+  if (!validateTimeFacts(baselineFacts) || baselineFacts.length === 0) {
+    return { ...base, status: "unobserved", reason: "baseline_unavailable" };
+  }
+  const currentFacts = observation?.facts;
+  if (!validateTimeFacts(currentFacts) || currentFacts.length === 0) {
+    return { ...base, status: "uncertain", reason: "observation_unavailable" };
+  }
+  const wallBounds = elapsedTimeBounds(
+    baselineFacts,
+    currentFacts,
+    fold.elapsed_seconds,
+  );
+  if (wallBounds === null) {
+    return { ...base, status: "uncertain", reason: "time_fact_mismatch" };
+  }
+  const active = activeElapsedBounds(events, currentFacts);
+  const wallElapsed = publicElapsedBounds(wallBounds);
+  const activeElapsed = active.bounds === null
+    ? null
+    : publicElapsedBounds(active.bounds);
+  const limit = BigInt(fold.limits.max_elapsed_seconds) * wallBounds.unit;
+  const crossesLimit = wallBounds.upper > limit;
+  const exhausted = wallBounds.lower > limit;
+  const activeDeadline = [...fold.effect_intents]
+    .filter(({ max_active_seconds: max }) => Number.isSafeInteger(max) && max >= 0)
+    .reduce((state, intent) => {
+      const bounds = active.byEffect.get(intent.effect_id);
+      if (!bounds) {
+        if (active.uncertainEffects.has(intent.effect_id)) state.uncertain = true;
+        return state;
+      }
+      const activeLimit = BigInt(intent.max_active_seconds) * bounds.unit;
+      if (bounds.lower > activeLimit) state.exhausted = true;
+      else if (bounds.upper > activeLimit) state.uncertain = true;
+      return state;
+    }, { exhausted: false, uncertain: false });
+  const executionTimeDecision = active.uncertain
+    ? { status: "uncertain", reason: "active_time_uncertain" }
+    : activeDeadline.uncertain
+      ? { status: "uncertain", reason: "attempt_deadline_uncertain" }
+      : activeDeadline.exhausted
+        ? { status: "exhausted", reason: "attempt_deadline_exhausted" }
+        : exhausted
+          ? { status: "exhausted", reason: "wall_deadline_exhausted" }
+          : crossesLimit
+            ? { status: "uncertain", reason: "wall_deadline_uncertain" }
+            : { status: "within" };
+  return {
+    ...base,
+    ...executionTimeDecision,
+    wall_elapsed_seconds: wallElapsed,
+    active_elapsed_seconds: activeElapsed,
+  };
+}
+
+function activeElapsedBounds(events, currentFacts) {
+  let lower = 0n;
+  let upper = 0n;
+  let uncertain = false;
+  const uncertainEffects = new Set();
+  const byEffect = new Map();
+  for (const [index, event] of events.entries()) {
+    if (event.type !== "effect_invocation_started") continue;
+    if (!validateTimeFacts(event.time_facts) || event.time_facts.length === 0) {
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
+    const settled = events.slice(index + 1).find((candidate) =>
+      candidate.type === "run_cancelled" ||
+      candidate.effect_id === event.effect_id && [
+        "effect_receipt_recorded",
+        "effect_observation_recorded",
+      ].includes(candidate.type));
+    const endFacts = settled === undefined ? currentFacts : settled.time_facts;
+    if (!validateTimeFacts(endFacts) || endFacts.length === 0) {
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
+    const interval = elapsedTimeBounds(event.time_facts, endFacts, 0);
+    if (interval === null) {
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
+    const multiplier = interval.unit === 1_000n ? 1_000_000n : 1n;
+    lower += interval.lower * multiplier;
+    upper += interval.upper * multiplier;
+    const previous = byEffect.get(event.effect_id) ?? {
+      lower: 0n,
+      upper: 0n,
+      unit: 1_000_000_000n,
+    };
+    byEffect.set(event.effect_id, {
+      lower: previous.lower + interval.lower * multiplier,
+      upper: previous.upper + interval.upper * multiplier,
+      unit: 1_000_000_000n,
+    });
+  }
+  return {
+    bounds: { lower, upper, unit: 1_000_000_000n },
+    byEffect,
+    uncertain,
+    uncertainEffects,
+  };
+}
+
+function publicElapsedBounds(bounds) {
+  const maximum = BigInt(Number.MAX_SAFE_INTEGER);
+  if (bounds.lower > maximum * bounds.unit ||
+      bounds.upper > maximum * bounds.unit) return null;
+  return {
+    lower: Number(bounds.lower) / Number(bounds.unit),
+    upper: Number(bounds.upper) / Number(bounds.unit),
+  };
 }
 
 function trackerProgressActionIsCurrent({ activePlan, cards, operationId }) {

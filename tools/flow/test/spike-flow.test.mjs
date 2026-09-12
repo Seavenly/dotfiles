@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { canonicalize, digest } from "../src/canonical.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
@@ -28,7 +27,10 @@ import {
   rebindDescriptionDigest,
   supportedDescription,
 } from "../test-support/delegated-agent-description.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 
 test("spike/v1 quick preparation binds distinct non-mutating researcher and synthesizer routes", async () => {
   const researcher = await supportedDescription({

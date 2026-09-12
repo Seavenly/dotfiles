@@ -7,6 +7,9 @@ import { authorityRootsAreDisjoint } from "./authority-root.mjs";
 import {
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
 } from "./required-drovr-features.mjs";
+import {
+  EXECUTION_TIME_CATALOG_ACCOUNTING,
+} from "./execution-time-policy.mjs";
 import { isExactSequence } from "./validation.mjs";
 
 const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
@@ -390,7 +393,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@28",
+  catalog_id: "flow.contract-catalog/v1@29",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -605,6 +608,16 @@ export async function loadContractCatalog({
     OPERATION_EXECUTION.receipt_validator,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("registered operation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.execution_time_accounting,
+    EXECUTION_TIME_CATALOG_ACCOUNTING,
+  ) || ![
+    EXECUTION_TIME_CATALOG_ACCOUNTING.confirmation,
+    EXECUTION_TIME_CATALOG_ACCOUNTING.projection,
+    EXECUTION_TIME_CATALOG_ACCOUNTING.time_fact,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("execution time accounting contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.flow_runtime?.tracker_progress,

@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import {
@@ -19,7 +18,10 @@ import {
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 import { createSubrunRegistration } from "../src/subrun-effects.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { delegateCardProposal } from "../test-support/delegate-card.mjs";

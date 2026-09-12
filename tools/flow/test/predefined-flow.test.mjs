@@ -11,7 +11,6 @@ import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { PlanCompiler } from "../src/plan-compiler.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import { normalizeRequiredAuthorities } from "../src/authority-bindings.mjs";
@@ -20,7 +19,10 @@ import {
   dynamicCheckpointProposal,
   revisionBlockedCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 import {
   operationReceipt,
   registeredOperationProposal,
@@ -327,6 +329,13 @@ test("same-boot recovery repeats an unresolved predefined caller-idempotent effe
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-predefined-effect-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const attemptedKeys = [];
+  const retryableProposal = registeredOperationProposal();
+  const retryableOperation = retryableProposal.graph.cards.find(({ id }) =>
+    id === "record-outcome");
+  retryableOperation.limits = {
+    ...retryableOperation.limits,
+    max_attempts: 2,
+  };
   const firstAuthority = createDurableRunAuthority({
     authorityDirectory,
     hostIdentityAdapter: fixedHostIdentity("boot-predefined-effect", "process-a"),
@@ -349,7 +358,7 @@ test("same-boot recovery repeats an unresolved predefined caller-idempotent effe
         id: "operation/v1",
         contract: "flow.definition/operation/v1",
         compile({ explicit_facts }) {
-          const proposal = registeredOperationProposal();
+          const proposal = structuredClone(retryableProposal);
           proposal.explicit_facts = explicit_facts;
           return proposal;
         },
@@ -360,7 +369,7 @@ test("same-boot recovery repeats an unresolved predefined caller-idempotent effe
     schema: "flow.predefined-flow-selection/v1",
     definition: "operation/v1",
     inputs: {},
-    explicit_facts: registeredOperationProposal().explicit_facts,
+    explicit_facts: retryableProposal.explicit_facts,
   });
   const launch = firstRuntime.launch(confirmedPredefinedLaunchRequest(prepared));
   const waiting = firstRuntime.query({ run_id: launch.run_id });
@@ -385,7 +394,7 @@ test("same-boot recovery repeats an unresolved predefined caller-idempotent effe
         classification: "caller_idempotent",
         invoke(intent) {
           attemptedKeys.push(intent.idempotency_key);
-          return operationReceipt(intent, { adopted: true });
+          return operationReceipt(intent, { record: "adopted" });
         },
       },
     },

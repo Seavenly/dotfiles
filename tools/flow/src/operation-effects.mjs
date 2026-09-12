@@ -1,4 +1,16 @@
 import { digest } from "./canonical.mjs";
+import {
+  hasPositiveProviderEvidence,
+  hasRequiredProviderReceiptShape,
+  isProviderReceiptEvidence,
+  isCredentialShapedString,
+  sanitizeProviderReceipt as sanitizeProviderReceiptEnvelopeValue,
+  sanitizeProviderReceiptValue,
+} from "./provider-receipt-sanitizers.mjs";
+
+export {
+  sanitizeProviderReceiptEnvelopeValue as sanitizeProviderReceipt,
+};
 
 const POLICIES = {
   read_only: {
@@ -30,6 +42,43 @@ const POLICIES = {
     observed_unresolved_status: "uncertain",
   },
 };
+
+const REGISTERED_OPERATION_EXECUTION_OBSERVATION_SCHEMA =
+  "flow.registered-operation-execution-observation/v1";
+const EFFECT_RECEIPT_SCHEMA = "flow.effect-receipt/v1";
+const EFFECT_RECEIPT_OUTCOMES = new Set([
+  "not_created",
+  "quarantined",
+  "succeeded",
+]);
+export const RETRY_DELAY_OBSERVATION_SCHEMA =
+  "flow.retry-delay-observation/v1";
+export const MAX_RETRY_DELAY_MS = 86_400_000;
+
+
+const EXECUTION_STATUS_TAXONOMY = new Map([
+  ["provider_unavailable", ["provider_unavailable", "provider_unavailable"]],
+  ["operation_provider_unavailable", ["provider_unavailable", "provider_unavailable"]],
+  ["adapter_unavailable", ["operation_failure", "operation_failure"]],
+  ["unavailable", ["operation_failure", "operation_failure"]],
+  ["invalid_output", ["invalid_output", "invalid_output"]],
+  ["invalid_operation_output", ["invalid_output", "invalid_output"]],
+  ["invalid_effect_receipt", ["invalid_output", "invalid_effect_receipt"]],
+  ["invalid_provider_receipt", ["invalid_output", "invalid_provider_receipt"]],
+  ["still_running", ["still_running", "still_running"]],
+  ["operation_still_running", ["still_running", "still_running"]],
+  ["bounded_timeout", ["still_running", "still_running"]],
+  ["uncertain_external_outcome", ["uncertain_external_outcome", "uncertain_external_outcome"]],
+  ["uncertain", ["uncertain_external_outcome", "uncertain_external_outcome"]],
+  ["operation_uncertain", ["uncertain_external_outcome", "uncertain_external_outcome"]],
+  ["operation_failure", ["operation_failure", "operation_failure"]],
+]);
+const EXECUTION_PUBLIC_STATUSES = new Set(
+  [...EXECUTION_STATUS_TAXONOMY.values()].map(([status]) => status),
+);
+const EXECUTION_PUBLIC_DIAGNOSTIC_CODES = new Set(
+  [...EXECUTION_STATUS_TAXONOMY.values()].map(([, code]) => code),
+);
 
 export const EFFECT_CLASS_POLICIES = Object.freeze(Object.fromEntries(
   Object.entries(POLICIES).map(([classification, policy]) => [
@@ -68,6 +117,14 @@ export function snapshotRegisteredOperations(registrations) {
       observe: typeof registration.observe === "function"
         ? registration.observe.bind(registration)
         : registration.observe,
+      sanitizeProviderObservation:
+        typeof registration.sanitizeProviderObservation === "function"
+          ? registration.sanitizeProviderObservation.bind(registration)
+          : registration.sanitizeProviderObservation,
+      sanitizeProviderReceipt:
+        typeof registration.sanitizeProviderReceipt === "function"
+          ? registration.sanitizeProviderReceipt.bind(registration)
+          : registration.sanitizeProviderReceipt,
       validateCard: typeof registration.validateCard === "function"
         ? registration.validateCard.bind(registration)
         : registration.validateCard,
@@ -119,10 +176,10 @@ export function dispatchRegisteredEffect(
   void (async () => {
     if (recovery === "settle_cancelled") {
       if (!policy.requires_observation) return;
-      const observed = await registration.observe?.(intent);
-      const observation = await runAuthority.recordEffectObservation?.(
+      const observation = await observeRegisteredEffect(
         intent,
-        observed,
+        registration,
+        runAuthority,
       );
       const presence = validateEffectObservation(observation, intent);
       if (presence === "present") {
@@ -138,10 +195,10 @@ export function dispatchRegisteredEffect(
       return undefined;
     }
     if (recovery && policy.requires_observation) {
-      const observed = await registration.observe?.(intent);
-      const observation = await runAuthority.recordEffectObservation?.(
+      const observation = await observeRegisteredEffect(
         intent,
-        observed,
+        registration,
+        runAuthority,
       );
       const presence = validateEffectObservation(observation, intent);
       if (presence === "present") {
@@ -153,23 +210,449 @@ export function dispatchRegisteredEffect(
           intent.classification === "one_shot_uncertain") return;
       return runAuthority.invokeEffect(intent, {
         reconciliation: "invoke_absent",
+        operatorRecovery: true,
         async invoke(effectiveIntent) {
-          const receipt = await registration.invoke(effectiveIntent);
-          assertEffectReceipt(receipt, effectiveIntent);
-          assertProviderReceipt(receipt, effectiveIntent, registration);
-          return receipt;
+          return invokeRegisteredOperation(
+            effectiveIntent,
+            registration,
+          );
         },
       });
     }
     return runAuthority.invokeEffect(intent, {
+      operatorRecovery: recovery !== null,
       async invoke(effectiveIntent) {
-        const receipt = await registration.invoke(effectiveIntent);
-        assertEffectReceipt(receipt, effectiveIntent);
-        assertProviderReceipt(receipt, effectiveIntent, registration);
-        return receipt;
+        return invokeRegisteredOperation(effectiveIntent, registration);
       },
     });
   })().catch(() => {});
+}
+
+async function observeRegisteredEffect(intent, registration, runAuthority) {
+  try {
+    const observed = await registration.observe?.(intent);
+    return await runAuthority.recordEffectObservation?.(
+      intent,
+      sanitizeRegisteredObservation(observed, intent, registration),
+    );
+  } catch (error) {
+    try {
+      return await runAuthority.recordEffectObservation?.(
+        intent,
+        effectObservationForExecutionFailure(intent, error, registration),
+      );
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function sanitizeRegisteredObservation(observation, intent, registration) {
+  if (!isRecord(observation) ||
+      !Object.hasOwn(observation, "provider_observation")) {
+    return observation;
+  }
+  return {
+    ...observation,
+    provider_observation: safeProviderObservation(
+      observation.provider_observation,
+      registration,
+      intent,
+    ),
+  };
+}
+
+async function invokeRegisteredOperation(intent, registration) {
+  try {
+    const receipt = await registration.invoke(intent);
+    assertEffectReceipt(receipt, intent);
+    assertProviderReceipt(receipt, intent, registration);
+    return sanitizeRegisteredReceipt(receipt, intent, registration);
+  } catch (error) {
+    const observation = registeredOperationExecutionObservation(
+      intent,
+      error,
+      registration,
+      { postDispatch: true },
+    );
+    const wrapped = new Error("registered operation failed");
+    Object.defineProperty(wrapped, "provider_observation", {
+      configurable: false,
+      enumerable: false,
+      value: observation,
+      writable: false,
+    });
+    throw wrapped;
+  }
+}
+
+function sanitizeRegisteredReceipt(receipt, intent, registration) {
+  const sanitized = sanitizeEffectReceiptEnvelope(
+    receipt,
+    intent,
+    registration,
+  );
+  if (sanitized === null) {
+    const error = new Error("registered operation returned an unsafe provider receipt");
+    error.code = "invalid_provider_receipt";
+    throw error;
+  }
+  return sanitized;
+}
+
+function effectObservationForExecutionFailure(intent, error, registration) {
+  return {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "indeterminate",
+    causation: null,
+    provider_observation: registeredOperationExecutionObservation(
+      intent,
+      error,
+      registration,
+      { postDispatch: false },
+    ),
+  };
+}
+
+function registeredOperationExecutionObservation(
+  intent,
+  error,
+  registration,
+  { postDispatch = false } = {},
+) {
+  const status = executionObservationStatus(error, intent, { postDispatch });
+  const retry = retryDelayObservation(error);
+  const providerObservation = safeProviderObservation(
+    error?.provider_observation,
+    registration,
+    intent,
+  );
+  const publicProviderFields = publicProviderObservationFields(
+    providerObservation,
+  );
+  return {
+    schema: REGISTERED_OPERATION_EXECUTION_OBSERVATION_SCHEMA,
+    run_id: intent.run_id,
+    card_id: intent.card_id ?? null,
+    attempt_id: intent.attempt_id,
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    status,
+    diagnostic: {
+      code: safeDiagnosticCode(error?.code, status),
+      reason: status,
+      redacted: true,
+    },
+    ...publicProviderFields,
+    provider_observation_present: error?.provider_observation !== undefined &&
+      error?.provider_observation !== null,
+    ...(providerObservation === null ? {} : {
+      provider_detail: providerObservation,
+    }),
+    ...(retry === null ? {} : { retry }),
+  };
+}
+
+function publicProviderObservationFields(value) {
+  if (!isRecord(value)) return {};
+  const result = {};
+  if (safeProviderString(value.code)) result.code = value.code;
+  if (safeProviderString(value.provider_error_code)) {
+    result.provider_error_code = value.provider_error_code;
+  }
+  if (safeProviderString(value.reason)) result.reason = value.reason;
+  if (typeof value.complete === "boolean") result.complete = value.complete;
+  if (typeof value.found === "boolean") result.found = value.found;
+  if (safeProviderString(value.proof)) result.proof = value.proof;
+  if (safeProviderString(value.rejection_code)) {
+    result.rejection_code = value.rejection_code;
+  }
+  for (const key of ["matching_review_count", "pending_review_count"]) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) {
+      result[key] = value[key];
+    }
+  }
+  return result;
+}
+
+function safeProviderObservation(value, registration = null, intent = null) {
+  if (!isRecord(value)) return null;
+  if (typeof registration?.sanitizeProviderObservation === "function") {
+    try {
+      const sanitized = registration.sanitizeProviderObservation(value, intent);
+      return isRecord(sanitized) && canonicalValue(sanitized)
+        ? sanitizeProviderEvidence(sanitized, intent)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return sanitizeProviderObservation(value, intent);
+}
+
+function redactedHistoricalProviderReceipt(value) {
+  const sourceSchema = isRecord(value) &&
+    typeof value.schema === "string" &&
+    /^flow\.[A-Za-z0-9._/-]+\/v[0-9]+$/u.test(value.schema)
+    ? value.schema
+    : null;
+  return {
+    schema: "flow.provider-receipt-redacted/v1",
+    status: "redacted",
+    reason: "provider_receipt_redacted",
+    ...(sourceSchema === null ? {} : { original_schema: sourceSchema }),
+  };
+}
+
+function safeProviderReceipt(value, registration = null, intent = null) {
+  if (!isRecord(value)) return null;
+  if (typeof registration?.sanitizeProviderReceipt === "function") {
+    try {
+      const sanitized = registration.sanitizeProviderReceipt(value, intent);
+      return isRecord(sanitized) && canonicalValue(sanitized)
+        ? sanitizeProviderReceiptValue(sanitized)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return sanitizeProviderReceiptValue(value);
+}
+
+export function sanitizeEffectReceiptEnvelope(
+  value,
+  intent = null,
+  registration = null,
+) {
+  if (!isRecord(value) || value.schema !== EFFECT_RECEIPT_SCHEMA ||
+      !EFFECT_RECEIPT_OUTCOMES.has(value.outcome) ||
+      !Object.hasOwn(value, "provider_receipt") ||
+      intent !== null && (
+        value.effect_id !== intent.effect_id ||
+        value.idempotency_key !== intent.idempotency_key
+      )) {
+    return null;
+  }
+  const providerReceipt = safeProviderReceipt(
+    value.provider_receipt,
+    registration,
+    intent,
+  );
+  if (!hasRequiredProviderReceiptShape(
+    value.provider_receipt,
+    providerReceipt,
+    value.outcome,
+  ) || (!hasPositiveProviderEvidence(providerReceipt) &&
+      !(value.outcome === "not_created" &&
+        hasAffirmativeProviderObservation(providerReceipt, "absent")))) {
+    return null;
+  }
+  return {
+    schema: EFFECT_RECEIPT_SCHEMA,
+    effect_id: value.effect_id,
+    idempotency_key: value.idempotency_key,
+    outcome: value.outcome,
+    provider_receipt: providerReceipt,
+  };
+}
+
+export function sanitizeProviderObservation(value, intent = null) {
+  if (!isRecord(value)) return null;
+  return genericSafeProviderObservation(value, intent);
+}
+
+// One dispatcher keeps provider evidence consistent at authority write time,
+// reconciliation/adoption, and historical replay.  Receipt-shaped
+// observations retain their approved provider fields; ordinary observations
+// use the conservative status/evidence envelope below.
+export function sanitizeProviderEvidence(value, intent = null) {
+  if (!isRecord(value)) return null;
+  return isProviderReceiptEvidence(value)
+    ? sanitizeProviderReceiptValue(value)
+    : sanitizeProviderObservation(value, intent);
+}
+
+function genericSafeProviderObservation(value, intent = null) {
+  if (value?.schema === REGISTERED_OPERATION_EXECUTION_OBSERVATION_SCHEMA) {
+    return sanitizeRegisteredExecutionObservation(value, intent);
+  }
+  const safeKeys = new Set([
+    "authority_watermark",
+    "code",
+    "child_phase",
+    "child_run_id",
+    "child_watermark",
+    "complete",
+    "diagnostic",
+    "found",
+    "matching_review_count",
+    "pending_review_count",
+    "provider_error_code",
+    "proof",
+    "provider_id",
+    "record",
+    "rejection_code",
+    "reason",
+    "retry",
+    "schema",
+    "status",
+    "system",
+  ]);
+  const result = {};
+  for (const key of safeKeys) {
+    const candidate = value[key];
+    if (key === "schema" && typeof candidate === "string" &&
+        /^flow\.[A-Za-z0-9._/-]+\/v[0-9]+$/.test(candidate)) {
+      result[key] = candidate;
+    } else if (key === "diagnostic" && isRecord(candidate)) {
+      const diagnostic = {};
+      if (safeProviderString(candidate.code)) diagnostic.code = candidate.code;
+      if (safeProviderString(candidate.reason)) {
+        diagnostic.reason = candidate.reason;
+      }
+      if (typeof candidate.redacted === "boolean") {
+        diagnostic.redacted = candidate.redacted;
+      }
+      if (Object.keys(diagnostic).length > 0) result[key] = diagnostic;
+    } else if (key === "retry" && candidate !== undefined) {
+      result[key] = sanitizeRetryObservation(candidate);
+    } else if (["code", "provider_error_code", "reason"].includes(key) &&
+        safeProviderString(candidate)) {
+      result[key] = candidate;
+    } else if (["complete", "found"].includes(key) &&
+        typeof candidate === "boolean") {
+      result[key] = candidate;
+    } else if ([
+      "authority_watermark",
+      "child_run_id",
+      "child_phase",
+      "child_watermark",
+      "proof",
+      "provider_id",
+      "record",
+      "rejection_code",
+      "reason",
+      "status",
+      "system",
+    ].includes(key) && safeProviderString(candidate)) {
+      result[key] = candidate;
+    } else if (["matching_review_count", "pending_review_count"].includes(key) &&
+        Number.isSafeInteger(candidate) && candidate >= 0) {
+      result[key] = candidate;
+    }
+  }
+  return Object.keys(result).length === 0 ? null : result;
+}
+
+function sanitizeRegisteredExecutionObservation(value, intent) {
+  const status = EXECUTION_PUBLIC_STATUSES.has(value.status)
+    ? value.status
+    : "operation_failure";
+  const diagnostic = isRecord(value.diagnostic)
+    ? {
+        code: EXECUTION_PUBLIC_DIAGNOSTIC_CODES.has(value.diagnostic.code)
+          ? value.diagnostic.code
+          : status,
+        reason: status,
+        redacted: true,
+      }
+    : {
+        code: status,
+        reason: status,
+        redacted: true,
+      };
+  const result = {
+    schema: REGISTERED_OPERATION_EXECUTION_OBSERVATION_SCHEMA,
+    run_id: intent?.run_id ?? value.run_id ?? null,
+    card_id: intent?.card_id ?? value.card_id ?? null,
+    attempt_id: intent?.attempt_id ?? value.attempt_id ?? null,
+    effect_id: intent?.effect_id ?? value.effect_id ?? null,
+    idempotency_key: intent?.idempotency_key ?? value.idempotency_key ?? null,
+    status,
+    diagnostic,
+    ...publicProviderObservationFields(value),
+    provider_observation_present: value.provider_observation_present === true,
+    ...(value.provider_detail === undefined ? {} : {
+      provider_detail: sanitizeProviderObservation(value.provider_detail, intent),
+    }),
+    ...(value.retry === undefined ? {} : {
+      retry: sanitizeRetryObservation(value.retry),
+    }),
+  };
+  return result;
+}
+
+function sanitizeRetryObservation(value) {
+  if (!isRecord(value) || value.schema !== RETRY_DELAY_OBSERVATION_SCHEMA ||
+      !["bounded", "invalid"].includes(value.status)) {
+    return { schema: RETRY_DELAY_OBSERVATION_SCHEMA, status: "invalid" };
+  }
+  return value.status === "bounded" && Number.isSafeInteger(value.delay_ms) &&
+      value.delay_ms >= 0 && value.delay_ms <= MAX_RETRY_DELAY_MS
+    ? {
+        schema: RETRY_DELAY_OBSERVATION_SCHEMA,
+        status: "bounded",
+        delay_ms: value.delay_ms,
+      }
+    : { schema: RETRY_DELAY_OBSERVATION_SCHEMA, status: "invalid" };
+}
+
+function safeProviderString(value) {
+  return typeof value === "string" && value.length > 0 &&
+    !isCredentialShapedString(value);
+}
+
+function retryDelayObservation(error) {
+  const providerObservation = error?.provider_observation;
+  const candidate = error?.retry_after_ms ??
+    providerObservation?.retry_after_ms;
+  const hasCandidate = candidate !== undefined ||
+    Object.hasOwn(error ?? {}, "retry_after_ms") ||
+    Object.hasOwn(providerObservation ?? {}, "retry_after_ms");
+  if (!hasCandidate) return null;
+  if (Number.isSafeInteger(candidate) && candidate >= 0 &&
+      candidate <= MAX_RETRY_DELAY_MS) {
+    return {
+      schema: RETRY_DELAY_OBSERVATION_SCHEMA,
+      status: "bounded",
+      delay_ms: candidate,
+    };
+  }
+  return {
+    schema: RETRY_DELAY_OBSERVATION_SCHEMA,
+    status: "invalid",
+  };
+}
+
+function executionObservationStatus(error, intent, { postDispatch = false } = {}) {
+  const candidates = [
+    error?.execution_status,
+    error?.status,
+    error?.code,
+    error?.provider_observation?.status,
+  ];
+  for (const candidate of candidates) {
+    const status = EXECUTION_STATUS_TAXONOMY.get(candidate)?.[0];
+    if (status !== undefined) return status;
+  }
+  if (error?.execution_status !== undefined ||
+      error?.status !== undefined ||
+      error?.code !== undefined) {
+    return "operation_failure";
+  }
+  if (error?.provider_observation !== undefined) {
+    return "uncertain_external_outcome";
+  }
+  if (postDispatch && effectClassPolicy(intent?.classification)?.requires_observation) {
+    return "uncertain_external_outcome";
+  }
+  return "operation_failure";
+}
+
+function safeDiagnosticCode(code, fallback) {
+  return EXECUTION_STATUS_TAXONOMY.get(code)?.[1] ?? fallback;
 }
 
 export function normalizeEffectObservation(observation, intent) {
@@ -208,7 +691,7 @@ function observationPresence(observation, intent, { exact }) {
         "causation",
         "provider_observation",
       ]) || !canonicalValue(observation.causation) ||
-      !canonicalValue(observation.provider_observation)) {
+      !isRecord(observation.provider_observation)) {
     return "indeterminate";
   }
   if (observation.presence === "present" &&
@@ -218,17 +701,70 @@ function observationPresence(observation, intent, { exact }) {
       ) ||
        observation.causation?.effect_id !== intent.effect_id ||
        observation.causation?.idempotency_key !== intent.idempotency_key ||
-       !isRecord(observation.provider_observation) ||
-       Object.keys(observation.provider_observation).length === 0)) {
+       !hasObservationEvidence(observation.provider_observation, "present"))) {
     return "indeterminate";
   }
   if (observation.presence === "absent" &&
-      (!isRecord(observation.provider_observation) ||
-       Object.keys(observation.provider_observation).length === 0 ||
+      (!hasObservationEvidence(observation.provider_observation, "absent") ||
        observation.causation !== null)) {
     return "indeterminate";
   }
   return observation.presence;
+}
+
+function hasObservationEvidence(providerObservation, presence) {
+  if (!isRecord(providerObservation)) return false;
+  if (presence === "present") return hasPositiveProviderEvidence(providerObservation);
+  if (providerObservation.found === false) return true;
+  if (Number.isSafeInteger(providerObservation.matching_review_count) &&
+      providerObservation.matching_review_count === 0) return true;
+  return Object.entries(providerObservation)
+    .filter(([key]) => key !== "schema")
+    .some(([, value]) => {
+      if (value === null || value === undefined) return false;
+      if (typeof value === "string") return value.length > 0;
+      if (Array.isArray(value)) return value.some((candidate) =>
+        candidate !== null && candidate !== undefined &&
+        hasPositiveProviderEvidence(candidate));
+      if (isRecord(value)) return hasPositiveProviderEvidence(value);
+      if (typeof value === "number") {
+        return Number.isFinite(value) && value > 0;
+      }
+      return value === true;
+    });
+}
+
+export function hasAffirmativeProviderObservation(providerObservation, presence) {
+  return hasObservationEvidence(providerObservation, presence);
+}
+
+export function sanitizeHistoricalEffectReceiptEnvelope(value, intent = null) {
+  if (!isRecord(value) || value.schema !== EFFECT_RECEIPT_SCHEMA ||
+      !EFFECT_RECEIPT_OUTCOMES.has(value.outcome) ||
+      !Object.hasOwn(value, "provider_receipt") ||
+      intent !== null && (
+        value.effect_id !== intent.effect_id ||
+        value.idempotency_key !== intent.idempotency_key
+      )) {
+    return null;
+  }
+  const providerReceipt = sanitizeProviderEvidence(
+    value.provider_receipt,
+    intent,
+  );
+  const acceptable = providerReceipt !== null &&
+    (hasPositiveProviderEvidence(providerReceipt) ||
+      value.outcome === "not_created" &&
+        hasAffirmativeProviderObservation(providerReceipt, "absent"));
+  return {
+    schema: EFFECT_RECEIPT_SCHEMA,
+    effect_id: value.effect_id,
+    idempotency_key: value.idempotency_key,
+    outcome: value.outcome,
+    provider_receipt: acceptable
+      ? providerReceipt
+      : redactedHistoricalProviderReceipt(value.provider_receipt),
+  };
 }
 
 function canonicalValue(value) {

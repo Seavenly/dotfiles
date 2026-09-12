@@ -111,17 +111,37 @@ export function evaluateRebootTimeFacts({
   if (expectedFacts.length === 0 || observedFacts.length === 0) {
     return false;
   }
-  const expected = byKind(expectedFacts);
   const observed = byKind(observedFacts);
   if (currentBootId !== undefined &&
       observed.boot.boot_id !== currentBootId) {
     return false;
   }
+  const elapsed = elapsedTimeBounds(
+    expectedFacts,
+    observedFacts,
+    elapsedSeconds,
+  );
+  return elapsed !== null &&
+    elapsed.upper <= BigInt(maxElapsedSeconds) * elapsed.unit;
+}
+
+export function elapsedTimeBounds(
+  expectedFacts,
+  observedFacts,
+  baselineSeconds = 0,
+) {
+  if (!validateTimeFacts(expectedFacts) || expectedFacts.length === 0 ||
+      !validateTimeFacts(observedFacts) || observedFacts.length === 0 ||
+      !Number.isSafeInteger(baselineSeconds) || baselineSeconds < 0) {
+    return null;
+  }
+  const expected = byKind(expectedFacts);
+  const observed = byKind(observedFacts);
   if (expected.clock_source.identity !== observed.clock_source.identity ||
       expected.wall_clock.clock_source_id !== observed.wall_clock.clock_source_id ||
       expected.suspend_excluding_monotonic.clock_source_id !==
         observed.suspend_excluding_monotonic.clock_source_id) {
-    return false;
+    return null;
   }
 
   const sameBoot = expected.boot.boot_id === observed.boot.boot_id;
@@ -138,12 +158,20 @@ export function evaluateRebootTimeFacts({
   const observedUncertainty = sameBoot
     ? BigInt(observed.suspend_excluding_monotonic.uncertainty_ns)
     : BigInt(observed.wall_clock.uncertainty_ms);
-  const baseline = BigInt(elapsedSeconds) * unit;
+  const baseline = BigInt(baselineSeconds) * unit;
+  const nominal = baseline + observedValue - expectedValue;
   const lower = baseline + observedValue - observedUncertainty -
     expectedValue - expectedUncertainty;
   const upper = baseline + observedValue + observedUncertainty -
     expectedValue + expectedUncertainty;
-  return upper <= BigInt(maxElapsedSeconds) * unit && lower <= upper;
+  if (observedValue < expectedValue || nominal < 0n || upper < lower) {
+    return null;
+  }
+  return {
+    lower: lower < 0n ? 0n : lower,
+    upper: upper < 0n ? 0n : upper,
+    unit,
+  };
 }
 
 function byKind(facts) {

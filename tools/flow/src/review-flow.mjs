@@ -63,6 +63,22 @@ export const REVIEW_OPERATION_REGISTRATION_POLICY =
 export const REVIEW_DELEGATE_OUTPUT_VALIDATOR =
   "flow.validator/review-result/v1";
 
+const GITHUB_REVIEW_SAFE_OBSERVATION_CODES = new Set([
+  "github_review_adapter_incomplete",
+  "github_review_adapter_unavailable",
+  "github_review_checkpoint_draft_mismatch",
+  "github_review_creation_unavailable",
+  "github_review_listing_incomplete",
+  "github_review_listing_invalid",
+  "github_review_listing_unavailable",
+  "github_review_observation_incomplete",
+  "github_review_operation_intent_mismatch",
+  "github_review_receipt_ambiguous",
+  "github_review_receipt_unresolved",
+  "github_review_target_moved",
+  "github_review_target_observation_unavailable",
+]);
+
 const REVIEW_TERMINAL_DISPOSITION_SCHEMA =
   "flow.review-terminal-disposition/v1";
 const REVIEW_COVERAGE_STATUSES = Object.freeze([
@@ -75,6 +91,86 @@ const REVIEW_COVERAGE_RANK = Object.freeze({
   degraded: 1,
   unavailable: 2,
 });
+
+export function sanitizeGitHubReviewProviderObservation(value) {
+  if (!isRecord(value)) return null;
+  if (value.schema === GITHUB_REVIEW_PROVIDER_RECEIPT_SCHEMA) {
+    return sanitizeGitHubReviewProviderReceipt(value);
+  }
+  if (value.schema !== "flow.github-review-observation/v1") return null;
+  const result = { schema: value.schema };
+  if (GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.code)) {
+    result.code = value.code;
+  }
+  if (GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.provider_error_code)) {
+    result.provider_error_code = value.provider_error_code;
+  }
+  const safeReason = GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.code)
+    ? value.code
+    : GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.provider_error_code)
+      ? value.provider_error_code
+      : null;
+  if (safeReason !== null) result.reason = safeReason;
+  for (const key of ["pending_review_count", "matching_review_count"]) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) {
+      result[key] = value[key];
+    }
+  }
+  if (typeof value.complete === "boolean") result.complete = value.complete;
+  return result;
+}
+
+function sanitizeGitHubReviewProviderReceipt(value) {
+  const requiredStrings = [
+    "review_id",
+    "target_fingerprint",
+    "target_authority_watermark",
+    "draft_digest",
+    "effect_id",
+    "idempotency_key",
+    "marker",
+  ];
+  if (value.action !== "create_pending_review" ||
+      value.state !== "pending" ||
+      value.submitted !== false ||
+      requiredStrings.some((key) => !nonEmpty(value[key])) ||
+      !isRecord(value.repository) ||
+      !nonEmpty(value.repository.owner) ||
+      !nonEmpty(value.repository.name) ||
+      !Number.isSafeInteger(value.pull_request_number) ||
+      !nonEmpty(value.commit_id) ||
+      !isRecord(value.provider_review) ||
+      value.provider_review.state !== "pending" ||
+      value.provider_review.submitted !== false) {
+    return null;
+  }
+  return {
+    schema: GITHUB_REVIEW_PROVIDER_RECEIPT_SCHEMA,
+    action: "create_pending_review",
+    review_id: value.review_id,
+    target_fingerprint: value.target_fingerprint,
+    target_authority_watermark: value.target_authority_watermark,
+    draft_digest: value.draft_digest,
+    effect_id: value.effect_id,
+    idempotency_key: value.idempotency_key,
+    state: "pending",
+    submitted: false,
+    marker: value.marker,
+    repository: {
+      owner: value.repository.owner,
+      name: value.repository.name,
+    },
+    pull_request_number: value.pull_request_number,
+    commit_id: value.commit_id,
+    provider_review: {
+      review_id: nonEmpty(value.provider_review.review_id)
+        ? value.provider_review.review_id
+        : value.review_id,
+      state: "pending",
+      submitted: false,
+    },
+  };
+}
 
 export const REVIEW_LENSES = Object.freeze([
   "security",
@@ -1885,6 +1981,7 @@ export function createGitHubReviewOperationRegistration({
     async observe(intent) {
       return observeGitHubPendingReview({ provider, intent });
     },
+    sanitizeProviderObservation: sanitizeGitHubReviewProviderObservation,
   };
 }
 

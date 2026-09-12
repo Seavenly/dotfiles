@@ -1244,6 +1244,7 @@ function validateDelegateCard(card, proposal) {
     invalidPlan("invalid_delegate_recovery",
       `delegate recovery contract is invalid: ${card.id}`);
   }
+  validateActiveExecutionLimit(card, "delegate");
   if (card.validators.length < 1 || !card.validators.every((validator) =>
     facts.validator_contracts.includes(validator))) {
     invalidPlan("unsupported_delegate_validator",
@@ -1378,6 +1379,14 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
+  if (!Number.isSafeInteger(card.limits.max_attempts) ||
+      card.limits.max_attempts < 1) {
+    invalidPlan(
+      "invalid_operation_attempt_limit",
+      `operation attempt limit is invalid: ${card.id}`,
+    );
+  }
+  validateActiveExecutionLimit(card, "operation");
   if (isTrackerProgressContract(card.executor.contract)) {
     try {
       validateTrackerProgressBinding(proposal);
@@ -1525,6 +1534,18 @@ function sameCanonicalValue(left, right) {
   } catch {
     return false;
   }
+}
+
+function validateActiveExecutionLimit(card, executorKind) {
+  if (!Object.hasOwn(card.limits, "max_active_seconds") ||
+      Number.isSafeInteger(card.limits.max_active_seconds) &&
+      card.limits.max_active_seconds >= 0) {
+    return;
+  }
+  invalidPlan(
+    "invalid_active_execution_limit",
+    `${executorKind} active execution limit is invalid: ${card.id}`,
+  );
 }
 
 function invalidPlan(reason, message) {

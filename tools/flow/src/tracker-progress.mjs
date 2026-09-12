@@ -180,7 +180,9 @@ async function invokeTrackerProgress({ profile, port }, intent) {
       desiredBody,
     );
     if (observation.conflict) {
-      throw new Error(observation.conflict);
+      const error = new Error(observation.conflict);
+      error.code = "operation_failure";
+      throw error;
     }
     let comment;
     let mutation;
@@ -458,11 +460,23 @@ function providerReceipt({
   if (!validComment(comment) || comment.body !== body ||
       (mutation === "updated" &&
         String(comment.id) !== String(observedCommentId))) {
-    throw new TypeError(`${profile.name} returned an invalid progress comment receipt`);
+    const error = new TypeError(
+      `${profile.name} returned an invalid progress comment receipt`,
+    );
+    error.code = "invalid_provider_receipt";
+    throw error;
   }
+  const tracker = intent.tracker_binding.tracker;
   return freezeCanonical({
     system: profile.adapter,
-    tracker: trackerIdentity(intent.tracker_binding.tracker),
+    tracker: trackerIdentity(tracker),
+    ...(tracker.system === "github" ? {
+      owner: tracker.owner,
+      repository: tracker.repository,
+    } : {
+      project: tracker.project,
+    }),
+    issue_number: tracker.issue_number,
     comment_id: String(comment.id),
     mutation,
     owner_run_id: intent.run_id,

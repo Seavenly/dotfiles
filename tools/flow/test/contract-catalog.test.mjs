@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 28);
+  assert.equal(catalog.catalog_version, 29);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -75,7 +75,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@28",
+    catalog_id: "flow.contract-catalog/v1@29",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -412,6 +412,41 @@ test("the public catalog exposes the settled interface and forbids legacy import
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
+  assert.deepEqual(catalog.flow_runtime.execution_time_accounting, {
+    confirmation: "flow.execution-time-accounting/v1",
+    projection: "flow.execution-time-projection/v1",
+    time_fact: "flow.time-fact/v1",
+    wall_elapsed: {
+      includes: [
+        "accepted_baseline_to_current_observation",
+        "human_checkpoint_wait",
+        "passive_retained_wait",
+      ],
+      same_boot_source: "suspend_excluding_monotonic",
+      cross_boot_source: "wall_clock",
+    },
+    active_execution: {
+      definition: "sum_of_admitted_invocation_intervals",
+      excludes: ["human_checkpoint_wait", "passive_retained_wait"],
+    },
+    fresh_observation_boundaries: [
+      "admission",
+      "before_dispatch",
+      "receipt_or_failure",
+      "cancellation_or_settlement",
+      "timer_evaluation",
+    ],
+    uncertainty: {
+      representation: "lower_upper_bounds",
+      straddling_decision: "block_new_admission",
+      missing_or_invalid_fact: "block_new_admission",
+    },
+    authority: {
+      limits: "exact_confirmed_run_and_attempt_bounds",
+      expansion: "exact_human_checkpoint_or_revision_authority",
+      timer_ownership_transfer: "forbidden",
+    },
+  });
   assert.ok(catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
     "subrun_execute",
   ));

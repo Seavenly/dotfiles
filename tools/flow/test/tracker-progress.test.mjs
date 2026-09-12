@@ -19,14 +19,16 @@ import {
 } from "../src/jira-tracker-progress.mjs";
 import { observeCardBlock } from
   "../src/card-block-observation-adapter.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import {
   createTrackerProgressRegistrationBundle,
   TRACKER_PROGRESS_CONTRACT,
 } from "../src/tracker-progress.mjs";
 import { confirmedLaunchRequest } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 
 const TRACKER_PROVIDERS = ["github", "jira"];
 
@@ -141,6 +143,17 @@ for (const provider of TRACKER_PROVIDERS) {
     assert.equal(projection.tracker_progress.projected_watermark,
       projectedEffect.receipt.provider_receipt.authority_watermark);
     assert.equal(projectedEffect.receipt.provider_receipt.system, provider);
+    assert.equal(projectedEffect.receipt.provider_receipt.issue_number,
+      projection.tracker_progress.tracker.issue_number);
+    if (provider === "github") {
+      assert.equal(projectedEffect.receipt.provider_receipt.owner,
+        projection.tracker_progress.tracker.owner);
+      assert.equal(projectedEffect.receipt.provider_receipt.repository,
+        projection.tracker_progress.tracker.repository);
+    } else {
+      assert.equal(projectedEffect.receipt.provider_receipt.project,
+        projection.tracker_progress.tracker.project);
+    }
     assert.deepEqual(projection.tracker_progress.legal_next_actions, []);
   });
 }

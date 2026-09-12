@@ -13,8 +13,10 @@ import {
 } from "../src/authority-schema.mjs";
 import { createBackupManifest } from "../src/backup-restore.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 import {
   confirmedLaunchRequest,
   dynamicCheckpointProposal,

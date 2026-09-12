@@ -28,7 +28,11 @@ export function createSubrunRegistration({ getRuntime, runAuthority }) {
         launch_request: intent.operation_input.child_launch_request,
       });
       if (launch?.accepted === false || launch?.schema === "flow.rejection/v1") {
-        throw new Error(`child run launch rejected: ${launch?.code ?? "unknown"}`);
+        const error = new Error(
+          `child run launch rejected: ${launch?.code ?? "unknown"}`,
+        );
+        error.code = "operation_failure";
+        throw error;
       }
       const terminal = await waitForTerminal(getRuntime(), launch.run_id);
       return subrunReceipt(intent, terminal);

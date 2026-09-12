@@ -1,4 +1,7 @@
 import { freezeCanonical } from "./canonical.mjs";
+import {
+  EXECUTION_TIME_CONFIRMATION_ACCOUNTING,
+} from "./execution-time-policy.mjs";
 
 export function createPreparedBundle({
   kind,
@@ -52,6 +55,7 @@ export function createDynamicPlanConfirmation({
     requested_authority: requestedAuthority,
     explicit_facts: explicitFacts,
     revision_templates: revisionTemplates,
+    execution_time_accounting: EXECUTION_TIME_CONFIRMATION_ACCOUNTING,
   });
 }
 
@@ -83,5 +87,6 @@ export function createPredefinedFlowConfirmation({
     trust_posture: trustPosture,
     revision_templates: revisionTemplates,
     required_authorities: requiredAuthorities,
+    execution_time_accounting: EXECUTION_TIME_CONFIRMATION_ACCOUNTING,
   });
 }

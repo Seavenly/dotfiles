@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v28 binds it to
-`flow.contract-catalog/v1@28`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v29 binds it to
+`flow.contract-catalog/v1@29`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -53,8 +53,13 @@ filesystem, environment, process, transcript, cwd, or credential reads.
   validator contracts. Revision templates declare their own application cap,
   while the proposal declares card, per-revision card, revision, capability,
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
-  explicit preparation fact: revision admission checks a template's resulting
-  cap against that bound value and does not observe ambient wall-clock time.
+  explicit preparation fact used only to validate a revision template's
+  resulting cap; revision admission does not observe ambient wall-clock time.
+  Runtime wall and active execution deadlines are a separate authority policy:
+  bounded runs refresh typed execution-time facts at launch, effect admission,
+  and settlement boundaries. A missing, invalid, or uncertain time Adapter
+  fails closed with `execution_time_unavailable` or
+  `execution_deadline_uncertain` and does not admit new work.
   Catalog v15 adds Jira parity through the provider-neutral tracker progress
   Adapter contract while preserving the authority-bound GitHub mechanism.
   Catalog v14 adds declared managed-agent reuse, exact-attempt independent
@@ -212,7 +217,9 @@ filesystem, environment, process, transcript, cwd, or credential reads.
   While any effect is unresolved, completion-changing checkpoint, revision, and
   operation commands are serialized behind settlement; capability grants and
   exact recovery remain available. Adapter failures leave the effect unresolved
-  for recovery and are not separately classified in the current projection.
+  for recovery and are separately classified as typed operation failures with
+  sanitized diagnostics; provider outages retain their distinct provider
+  unavailable classification.
   A confirmed plan that requests `cancel` authority projects one exact
   watermarked cancellation action. Cancellation commits a terminal fence,
   abandons every incomplete attempt and card, releases host admission, and can
@@ -819,6 +826,13 @@ of presence or absence without affirmative provider evidence normalize to
 indeterminate and cannot authorize adoption or invocation; indeterminate
 provider diagnostics are retained while causation is cleared.
 
+Receipt-shaped provider observations use the same versioned receipt policy as
+durable provider receipts. Their observation-derived evidence is limited to
+`found`, `complete`, `proof`, `rejection_code`, `matching_review_count`, and
+`pending_review_count`; unknown fields and secret-shaped values are redacted or
+reject the write. The exact sanitized observation is reused for adoption,
+absence settlement, durable receipt writing, and historical replay.
+
 Same-boot process replacement increments the epoch, replays every active run,
 and automatically dispatches each exact outstanding recovery action before
 considering new work on that run. Read-only and caller-idempotent effects repeat
@@ -1015,12 +1029,17 @@ that rule with attempted Drovr-authored cards and terminal events.
 The managed sources under `config/flow/` are:
 
 - `contracts/catalog.v1.json` - public contract names, the five
-  `FlowRuntime` operations, authority ownership, and the reboot-admission
-  typed-fact and uncertainty policy. Any future import registration must name
+  `FlowRuntime` operations, authority ownership, the execution-time accounting
+  contract, and the reboot-admission typed-fact and uncertainty policy. The
+  current catalog identity is `flow.contract-catalog/v1@29`; a catalog change
+  must update this managed source and the source constants/tests that validate
+  its exact contents. Any future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
   bytes by digest, pass every required validation, and select only the catalog's
   positive `artifact_bytes` subject.
 - `schemas/flow.time-fact.v1.schema.json`,
+  `schemas/flow.execution-time-accounting.v1.schema.json`,
+  `schemas/flow.execution-time-projection.v1.schema.json`,
   `schemas/flow.subject-generation.v1.schema.json`,
   `schemas/flow.reboot-effect-recheck.v1.schema.json`, and
   `schemas/flow.reboot-revalidation.v1.schema.json` - typed reboot facts,

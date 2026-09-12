@@ -9,6 +9,7 @@ import {
   loadRequiredDrovrFeatures,
   RequiredDrovrFeatureContractError,
 } from "./required-drovr-features.mjs";
+import { isCredentialShapedString } from "./provider-receipt-sanitizers.mjs";
 const REQUIRED_PORT_OPERATIONS = [
   "describe",
   "dispatch",
@@ -429,7 +430,7 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
           authority_materialized_evidence:
             intent.delegate_input.authority_materialized_evidence ?? null,
         }) === true;
-      } catch {
+      } catch (error) {
         accepted = false;
       }
       const receipt = validatorReceipts.find(({ contract: receiptContract }) =>
@@ -516,8 +517,9 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
 
 async function safetyCheckDelegateOutput({ output, intent, validators, proof }) {
   const validatorReceipts = [];
-  let rejected = false;
-  let safe = true;
+  let rejected = typeof output === "string" &&
+    isCredentialShapedString(output);
+  let safe = !rejected;
   for (const contract of intent.delegate_validator_contracts ?? []) {
     const validator = validators.get(contract);
     if (typeof validator?.evidenceSafety !== "function" ||
