@@ -22,7 +22,7 @@ import {
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
-import { createDurableRunAuthority, createInMemoryRunAuthority } from
+import { createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
 import {
   getArtifactAuthority,
@@ -37,9 +37,14 @@ import {
   dynamicCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+} from
+  "../test-support/fixed-host-identity.mjs";
+import {
   shippedAuthorityRegistrations,
   shippedAuthorityStateFromFacts,
 } from "../test-support/authority-bindings.mjs";
+
 import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
 
@@ -1749,6 +1754,9 @@ test("feature/v1 rejects invalid test receipts before writer admission and recov
     mode: "test",
     testOnlyWithoutVerification: true,
     testReceiptMode: "unrelated",
+    maxAttemptsByCard: {
+      "feature-slice-behavior-test": 2,
+    },
     slices: [{
       schema: "flow.feature-slice/v1",
       id: "behavior",
@@ -2085,6 +2093,9 @@ test("feature/v1 test operation recovery reuses the current intent once", async 
     mode: "test",
     testOnlyWithoutVerification: true,
     testReceiptMode: "throw",
+    maxAttemptsByCard: {
+      "feature-slice-behavior-test": 2,
+    },
     slices: [{
       schema: "flow.feature-slice/v1",
       id: "behavior",
@@ -2936,6 +2947,19 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
       return reviewRetiredProjection(agentId, turnId);
     },
   };
+  const baseReviewDefinition = createReviewDefinition();
+  const retryableReviewDefinition = {
+    ...baseReviewDefinition,
+    compile(request) {
+      const proposal = baseReviewDefinition.compile(request);
+      const record = proposal.graph.cards.find(({ id }) => id === "review-record");
+      record.limits = {
+        ...record.limits,
+        max_attempts: 2,
+      };
+      return proposal;
+    },
+  };
   const reviewRuntime = createFlowRuntime({
     runAuthority,
     registeredAuthorities,
@@ -2943,7 +2967,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     delegatedAgentPort: reviewDelegatedAgentPort,
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
-      "review/v1": createReviewDefinition(),
+      "review/v1": retryableReviewDefinition,
     },
   });
   const preparedReview = reviewRuntime.prepare({
@@ -3255,6 +3279,9 @@ test("feature/v1 seal rejects invalid verification and publication evidence", as
 test("feature/v1 seal rollback keeps all authorities unpromoted and exposes exact recovery", async (t) => {
   let injected = true;
   const fixture = await createFeatureFailureFixture(t, {
+    maxAttemptsByCard: {
+      "feature-seal": 2,
+    },
     beforeHandoffCommit() {
       if (injected) {
         injected = false;
@@ -3979,7 +4006,7 @@ async function createFeatureFailureFixture(t, scenario) {
         invoke(intent) {
           testInvocations += 1;
           if (scenario.testReceiptMode === "missing") {
-            return operationReceipt(intent, null);
+            return undefined;
           }
           if (scenario.testReceiptMode === "throw" &&
               !scenario.testReceiptRecovered) {
@@ -4035,7 +4062,11 @@ async function createFeatureFailureFixture(t, scenario) {
           if (scenario.verifyReceiptMode === "absent") return undefined;
           if (intent.operation_input.phase === "slice_verify" &&
               scenario.sliceVerifyReceiptMode === "missing") {
-            return operationReceipt(intent, null);
+            return operationReceipt(intent, {
+              schema: "work.feature-verification-receipt/v1",
+              effect_id: intent.effect_id,
+              operation_contract: "flow.operation/feature-verify/v1",
+            });
           }
           if (scenario.verifyReceiptMode === "invalid") {
             return operationReceipt(intent, { schema: "invalid" });
@@ -4086,6 +4117,8 @@ async function createFeatureFailureFixture(t, scenario) {
           }
           if (sliceMode === "setup_only") {
             providerReceipt.schema = "work.feature-setup-receipt/v1";
+            providerReceipt.setup_id = "setup:feature-verify";
+            providerReceipt.evidence_role = "setup_only";
           }
           if (discriminatorMode === "missing_discriminator") {
             delete providerReceipt.discriminating_evidence;
@@ -4174,7 +4207,10 @@ async function createFeatureFailureFixture(t, scenario) {
     },
     registeredAuthorities,
     predefinedDefinitions: {
-      "feature/v1": createFeatureDefinition(),
+      "feature/v1": withExplicitCardAttemptCapacity(
+        createFeatureDefinition(),
+        scenario.maxAttemptsByCard,
+      ),
     },
   });
   const prepared = runtime.prepare({
@@ -4224,6 +4260,33 @@ async function createFeatureFailureFixture(t, scenario) {
       scenario.testReceiptMode = mode;
     },
     workspaceAuthority,
+  };
+}
+
+function withExplicitCardAttemptCapacity(definition, maxAttemptsByCard = {}) {
+  if (Object.keys(maxAttemptsByCard).length === 0) return definition;
+  return {
+    ...definition,
+    compile(request) {
+      const proposal = definition.compile(request);
+      return {
+        ...proposal,
+        graph: {
+          ...proposal.graph,
+          cards: proposal.graph.cards.map((card) => {
+            const maxAttempts = maxAttemptsByCard[card.id];
+            if (maxAttempts === undefined) return card;
+            return {
+              ...card,
+              limits: {
+                ...card.limits,
+                max_attempts: maxAttempts,
+              },
+            };
+          }),
+        },
+      };
+    },
   };
 }
 
@@ -4329,10 +4392,17 @@ async function driveUntilTestReceiptBlocked(fixture) {
 }
 
 async function settleFeatureEffect(runtime, runId, cardId) {
-  await until(() => runtime.query({ run_id: runId }).effects.some(
-    ({ card_id: effectCardId, status, invocation_started: invocationStarted }) =>
-      effectCardId === cardId && (status === "succeeded" || invocationStarted),
-  ));
+  await until(() => {
+    const projection = runtime.query({ run_id: runId });
+    const effect = projection.effects.find(({ card_id: effectCardId }) =>
+      effectCardId === cardId);
+    return effect !== undefined && (
+      effect.status === "succeeded" ||
+      effect.invocation_started ||
+      projection.legal_actions.some(({ type, effect_id: effectId }) =>
+        type === "recovery" && effectId === effect.effect_id)
+    );
+  });
   await new Promise((resolve) => setTimeout(resolve, 75));
 }
 

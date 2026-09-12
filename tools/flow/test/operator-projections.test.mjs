@@ -12,7 +12,6 @@ import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { createGitHubTrackerProgressOperation } from "../src/github-tracker-progress.mjs";
 import { buildRunViews } from "../src/projection-builder.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import { foldRun, projectRun, runWatermark } from "../src/run-projection.mjs";
@@ -21,7 +20,10 @@ import {
   dependencyCheckpointProposal,
   revisionBlockedCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 import { forbiddenLifecycleCommands } from "../test-support/forbidden-lifecycle-commands.mjs";
 import { withoutViewWatermarks } from "../test-support/projection-assertions.mjs";
 import {

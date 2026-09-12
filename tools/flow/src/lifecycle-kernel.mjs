@@ -111,13 +111,34 @@ export function decideLifecycle(fold, command) {
       projection_hints: ["operator", "graph"],
     };
   }
+  const executionDeadline = fold.execution_time?.status;
+  const attemptsAdmission = [
+    "operation_execute",
+    "delegate_execute",
+    "subrun_execute",
+  ].includes(command.type) || command.type === "checkpoint_decision" &&
+    command.decision === "approve";
+  if (attemptsAdmission &&
+      ["exhausted", "uncertain", "unobserved"].includes(executionDeadline)) {
+    return reject(
+      fold,
+      command,
+      executionDeadline === "uncertain"
+        ? "execution_deadline_uncertain"
+        : executionDeadline === "unobserved"
+          ? "execution_time_unavailable"
+          : "execution_deadline_exhausted",
+    );
+  }
   const hasUnresolvedEffects = fold.effects?.some(
     ({ status }) => !["quarantined", "succeeded"].includes(status),
   );
   // This one-operation slice serializes completion-changing commands behind
   // effect settlement. Revisit the allow-list before admitting sibling effects.
   if (hasUnresolvedEffects &&
-      !["capability_grant", "recovery"].includes(command.type)) {
+      !["capability_grant", "recovery", "terminal_disposition"].includes(
+        command.type,
+      )) {
     return reject(fold, command, "effect_settlement_required");
   }
   if (command.type === "capability_grant") {
@@ -460,6 +481,10 @@ function delegateDecision(fold, command, delegate) {
       attempt_id: attemptId,
       attempt_ordinal: ordinal,
       max_attempts: card.limits.max_attempts,
+      ...(Number.isSafeInteger(card.limits.max_active_seconds) &&
+        card.limits.max_active_seconds >= 0 ? {
+          max_active_seconds: card.limits.max_active_seconds,
+        } : {}),
       card_id: delegate.id,
       classification: "caller_idempotent",
       operation_contract: card.executor.contract,
@@ -539,6 +564,14 @@ function operationDecision(
       effect_id: identity.effect_id,
       idempotency_key: identity.idempotency_key,
       attempt_id: identity.attempt_id,
+      max_attempts: Number.isSafeInteger(operationCard.limits?.max_attempts) &&
+        operationCard.limits.max_attempts >= 1
+        ? operationCard.limits.max_attempts
+        : 1,
+      ...(Number.isSafeInteger(operationCard.limits?.max_active_seconds) &&
+        operationCard.limits.max_active_seconds >= 0 ? {
+          max_active_seconds: operationCard.limits.max_active_seconds,
+        } : {}),
       card_id: operation.id,
       classification: operationCard.executor.effect_classification,
       operation_contract: operationCard.executor.contract,

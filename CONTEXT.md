@@ -253,6 +253,25 @@ boot identity, or clock-source identity. Time facts carry their uncertainty and
 enter lifecycle policy only through deterministic lower and upper bounds.
 _Avoid_: Ambient clock read, elapsed-time guess
 
+**Execution observation**:
+A durable, typed observation captured at one RunAuthority execution boundary,
+binding the exact run, card, attempt, effect, and observed time or provider
+state without itself changing lifecycle authority.
+_Avoid_: Ambient status, adapter log, inferred completion
+
+**Execution-time accounting/deadline decision**:
+The RunAuthority calculation of wall elapsed and admitted active execution from
+exact accepted baselines, invocation intervals, settlement facts, and fresh
+typed time observations. It exposes lower and upper bounds and blocks new
+admission when exhaustion or uncertainty can affect the decision.
+_Avoid_: Timer callback, process uptime, best-effort timeout
+
+**Operational retry accounting**:
+The durable count of admitted operation invocations and recovery consumption
+against the exact confirmed attempt limit, including retry-not-before facts and
+the closed actions remaining when the budget is waiting, blocked, or exhausted.
+_Avoid_: Retry counter, loop guard, adapter-local attempt number
+
 **Subject generation**:
 The exact durable generation and fingerprint of a resource or authority subject
 that a prepared run binds and reboot admission rechecks. A changed or uncertain

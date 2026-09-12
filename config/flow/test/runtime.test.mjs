@@ -30,8 +30,10 @@ import {
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
 import { confirmedLaunchRequest } from
   "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from
-  "../../../tools/flow/test-support/fixed-host-identity.mjs";
+import {
+  fixedExecutionTimeAdapter,
+  fixedHostIdentity,
+} from "../../../tools/flow/test-support/fixed-host-identity.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
 
 test("query exposes the DelegatedAgentPort description without creating a run", async () => {
@@ -94,6 +96,7 @@ test("public runtime wires exact delegate execution through its composition root
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-runtime"),
+    timeObservationAdapter: fixedExecutionTimeAdapter({ bootId: "boot-a" }),
   });
   t.after(() => runAuthority.close());
   const description = await delegateDescription();

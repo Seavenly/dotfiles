@@ -25,8 +25,13 @@ import {
 } from "./canonical.mjs";
 import { decideLifecycle } from "./lifecycle-kernel.mjs";
 import {
+  MAX_RETRY_DELAY_MS,
+  RETRY_DELAY_OBSERVATION_SCHEMA,
   effectClassPolicy,
+  hasAffirmativeProviderObservation,
   normalizeEffectObservation,
+  sanitizeEffectReceiptEnvelope,
+  sanitizeProviderEvidence,
   validateEffectObservation,
 } from "./operation-effects.mjs";
 import { createHostAuthorityIdentityAdapter } from "./host-authority-identity.mjs";
@@ -44,7 +49,14 @@ import {
   buildRebootRevalidation,
   createFailClosedRebootObservationAdapter,
 } from "./reboot-revalidation.mjs";
-import { foldRun, projectRun, runWatermark } from "./run-projection.mjs";
+import { validateTimeFacts } from "./reboot-facts.mjs";
+import {
+  applyExecutionTimeObservation,
+  foldRun,
+  projectRun,
+  runWatermark,
+} from "./run-projection.mjs";
+import { foldRetryStates, retryStateIsDue } from "./retry-state.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import {
   AuthorityIntegrityError,
@@ -555,6 +567,8 @@ export function createDurableRunAuthority({
   lifecycleKernel = decideLifecycle,
   beforeCancellationCommit = () => {},
   rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  retryTimeAdapter = createFailClosedRetryTimeAdapter(),
+  timeObservationAdapter = createFailClosedExecutionTimeAdapter(),
   reviewTargetObservationAdapter = null,
   workEvidenceAdapter = createFailClosedWorkEvidenceAdapter(),
   runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
@@ -619,6 +633,16 @@ export function createDurableRunAuthority({
       "durable run authority requires a reboot observation Adapter",
     );
   }
+  if (typeof retryTimeAdapter?.observe !== "function") {
+    throw new TypeError(
+      "durable run authority requires a retry time observation Adapter",
+    );
+  }
+  if (typeof timeObservationAdapter?.observe !== "function") {
+    throw new TypeError(
+      "durable run authority requires an execution time observation Adapter",
+    );
+  }
   if (typeof workEvidenceAdapter?.validate !== "function") {
     throw new TypeError("durable run authority requires a Work evidence Adapter");
   }
@@ -650,6 +674,10 @@ export function createDurableRunAuthority({
     stream,
     rebootObservationAdapter,
     () => authorityBindingCatalogs.get(runAuthority),
+    {
+      retryTimeObservation: observeRetryTime(retryTimeAdapter),
+      executionTimeObservation: observeExecutionTime(timeObservationAdapter, bootId),
+    },
   );
   const fenceRunWithoutAuthorityRevalidation = (database, stream) =>
     fencedRunFold(
@@ -657,7 +685,11 @@ export function createDurableRunAuthority({
       stream,
       rebootObservationAdapter,
       () => authorityBindingCatalogs.get(runAuthority),
-      { revalidateAuthorities: false },
+      {
+        revalidateAuthorities: false,
+        retryTimeObservation: observeRetryTime(retryTimeAdapter),
+        executionTimeObservation: observeExecutionTime(timeObservationAdapter, bootId),
+      },
     );
 
   const databasePath = join(authorityDirectory, "authority.sqlite");
@@ -992,6 +1024,19 @@ export function createDurableRunAuthority({
         );
       }
       const { prepared, closedFacts } = validation;
+      const launchTimeObservation = observeExecutionTime(
+        timeObservationAdapter,
+        bootId,
+      );
+      if (preparedRequiresExecutionTime(prepared) &&
+          launchTimeObservation.status !== "observed") {
+        return durableLaunchRejection(
+          "execution_time_unavailable",
+          prepared,
+          databasePath,
+          "fresh typed execution time facts are required for bounded admission",
+        );
+      }
 
       const runId = lineage === null
         ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
@@ -1092,6 +1137,10 @@ export function createDurableRunAuthority({
                   plan_fingerprint: prepared.plan_fingerprint,
                   confirmation_digest: prepared.confirmation_digest,
                   closed_fact_observation_digest: digest(closedFacts),
+                  ...(() => {
+                    const facts = launchTimeObservation.facts;
+                    return facts === null ? {} : { admission_time_facts: facts };
+                  })(),
                   ...(lineage === null ? {} : { lineage }),
                   run_ownership: runOwnership,
                 },
@@ -1457,7 +1506,16 @@ export function createDurableRunAuthority({
             return freezeCanonical(currentDecision);
           }
           committedDecision = currentDecision;
-          const cancellationEvent = currentDecision.events.find(
+          const settlementTimeFacts = observeExecutionTime(
+            timeObservationAdapter,
+            bootId,
+          ).facts;
+          const decisionEvents = currentDecision.events.map((event) =>
+            ["run_cancelled", "run_admitted_after_reboot"].includes(event.type) &&
+              settlementTimeFacts !== null
+              ? { ...event, time_facts: settlementTimeFacts }
+              : event);
+          const cancellationEvent = decisionEvents.find(
             ({ type }) => type === "run_cancelled",
           );
           if (cancellationEvent) {
@@ -1468,9 +1526,9 @@ export function createDurableRunAuthority({
               resource_dispositions: cancellationEvent.resource_dispositions,
             });
           }
-          const deferredEvents = currentDecision.events.filter(({ type }) =>
+          const deferredEvents = decisionEvents.filter(({ type }) =>
             DEFERRED_EFFECT_EVENT_TYPES.has(type));
-          const immediateEvents = currentDecision.events.filter(({ type }) =>
+          const immediateEvents = decisionEvents.filter(({ type }) =>
             !DEFERRED_EFFECT_EVENT_TYPES.has(type));
           const effectIntents = currentDecision.effect_intents.map((intent) =>
             bindEffectIntent(intent, {
@@ -1488,7 +1546,7 @@ export function createDurableRunAuthority({
             streamKind: "run",
             events: [
               ...(effectIntents.length === 0
-                ? currentDecision.events
+                ? decisionEvents
                 : immediateEvents).map((payload) => ({
                 contract: "flow.run-event/v1",
                 payload,
@@ -2149,9 +2207,58 @@ export function createDurableRunAuthority({
             "cancelled effect settlement requires exact durable absence evidence",
           );
         }
+        const executionTimeObservation = observeExecutionTime(
+          timeObservationAdapter,
+          bootId,
+        );
+        const executionTime = applyExecutionTimeObservation(
+          stream.fold,
+          [],
+          executionTimeObservation,
+          runEventsFromRecords(stream.records),
+        ).executionTime;
+        const executionTimeFence = executionTimeAdmissionFence(executionTime);
+        if (!settleCancelled && intent.effect_kind !== "delegate_cancellation" &&
+            !["adopt_present", "settle_absent"].includes(reconciliation) &&
+            executionTimeFence !== null) {
+          throw executionTimeFence;
+        }
+        if (!["adopt_present", "settle_absent"].includes(reconciliation)) {
+          const retryFence = effectRetryAdmissionFence(
+            stream.records,
+            intent,
+            retryTimeAdapter,
+            {
+              operatorRecovery: adapter?.operatorRecovery === true,
+              onRetryEvent: (retryEvent) => appendEffectRetryEvent(
+                database,
+                intent,
+                retryEvent,
+              ),
+            },
+          );
+          if (retryFence !== null) throw retryFence;
+        }
         const previouslyInvoked = stream.records.some(({ payload }) =>
           payload.type === "effect_invocation_started" &&
           payload.effect_id === intent.effect_id);
+        if (reconciliation !== "adopt_present" &&
+            reconciliation !== "settle_absent" &&
+            (intent.effect_kind === undefined || intent.effect_kind === "operation")) {
+          const invocationCount = stream.records.filter(({ payload }) =>
+            payload.type === "effect_invocation_started" &&
+            payload.effect_id === intent.effect_id).length;
+          const maxAttempts = Number.isSafeInteger(intent.max_attempts) &&
+              intent.max_attempts >= 1
+            ? intent.max_attempts
+            : null;
+          if (maxAttempts !== null && invocationCount >= maxAttempts) {
+            throw new AuthorityFenceError(
+              "effect_retry_exhausted",
+              "registered operation retry budget is exhausted",
+            );
+          }
+        }
         let effectiveIntent = intent;
         const crossedBootBoundary = intent.authority_boot_id !== bootId;
         const effectPolicy = effectClassPolicy(intent.classification);
@@ -2195,20 +2302,41 @@ export function createDurableRunAuthority({
         });
         let result;
         if (reconciliation === "settle_absent") {
+          const providerReceipt = sanitizeProviderEvidence(
+            latestObservation?.provider_observation,
+            effectiveIntent,
+          );
+          if (!hasAffirmativeProviderObservation(providerReceipt, "absent")) {
+            throw new AuthorityFenceError(
+              "effect_absence_not_proven",
+              "cancelled effect settlement requires affirmative provider absence evidence",
+            );
+          }
           result = {
             schema: "flow.effect-receipt/v1",
             effect_id: effectiveIntent.effect_id,
             idempotency_key: effectiveIntent.idempotency_key,
             outcome: "not_created",
-            provider_receipt: latestObservation.provider_observation,
+            provider_receipt: providerReceipt,
           };
         } else if (reconciliation === "adopt_present") {
+          const providerReceipt = sanitizeProviderEvidence(
+            latestObservation?.provider_observation,
+            effectiveIntent,
+          );
+          if (providerReceipt === null ||
+              !hasAffirmativeProviderObservation(providerReceipt, "present")) {
+            throw new AuthorityFenceError(
+              "effect_presence_not_proven",
+              "effect adoption requires a positive sanitized provider receipt",
+            );
+          }
           result = {
             schema: "flow.effect-receipt/v1",
             effect_id: effectiveIntent.effect_id,
             idempotency_key: effectiveIntent.idempotency_key,
             outcome: "succeeded",
-            provider_receipt: latestObservation.provider_observation,
+            provider_receipt: providerReceipt,
           };
         } else {
           // This must remain the first await in invokeEffect. It lets command()
@@ -2228,33 +2356,81 @@ export function createDurableRunAuthority({
             );
           }
           assertDurableHostRestoreClear(database);
-          if (!settleCancelled ||
-              effectiveIntent.effect_kind === "delegate_cancellation") {
-            recordEffectInvocationStarted(database, effectiveIntent, {
-              authorityDirectory,
-              authorityEpoch,
-              bootId,
-              gitRetentionAdapter,
-              gitWorkspaceObservationAdapter,
-              processIdentity,
-            });
+          const recordsInvocationStart = !settleCancelled ||
+            effectiveIntent.effect_kind === "delegate_cancellation";
+          if (recordsInvocationStart) {
+            // beforeEffect is the last injected boundary before dispatch. It
+            // may advance time or invalidate an authority fence, so it must
+            // run before the final typed time observation and invocation
+            // start event. A post-start deadline fence would create a
+            // phantom attempt when it rejects before Adapter invocation.
             beforeEffect(effectiveIntent);
             assertDurableHostRestoreClear(
               database,
               "effect admission is fenced by the host restore barrier",
             );
+            assertMutationFence(lockDatabase, database, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            assertEffectWorkspaceAuthority(database, effectiveIntent);
+            const dispatchStream = readStream(database, effectiveIntent.run_id);
+            if (settleCancelled && dispatchStream.fold.phase !== "cancelled") {
+              throw new AuthorityFenceError(
+                "cancelled_settlement_not_actionable",
+                "delegate cancellation settlement requires cancelled authority",
+              );
+            }
+            if (!settleCancelled && dispatchStream.fold.phase !== "active") {
+              throw new AuthorityFenceError(
+                "attempt_disposed",
+                "terminal run authority fenced effect admission",
+              );
+            }
+            const finalExecutionTimeObservation = observeExecutionTime(
+              timeObservationAdapter,
+              bootId,
+            );
+            const finalExecutionTime = applyExecutionTimeObservation(
+              dispatchStream.fold,
+              [],
+              finalExecutionTimeObservation,
+              runEventsFromRecords(dispatchStream.records),
+            ).executionTime;
+            const finalExecutionTimeFence = executionTimeAdmissionFence(
+              finalExecutionTime,
+            );
+            if (!settleCancelled &&
+                effectiveIntent.effect_kind !== "delegate_cancellation" &&
+                finalExecutionTimeFence !== null) {
+              throw finalExecutionTimeFence;
+            }
+            recordEffectInvocationStarted(database, effectiveIntent, {
+              authorityDirectory,
+              authorityEpoch,
+              bootId,
+              executionTimeFacts: finalExecutionTimeObservation.facts,
+              gitRetentionAdapter,
+              gitWorkspaceObservationAdapter,
+              processIdentity,
+            });
+          } else {
+            assertDurableHostRestoreClear(
+              database,
+              "effect admission is fenced by the host restore barrier",
+            );
+            assertMutationFence(lockDatabase, database, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            assertEffectWorkspaceAuthority(database, effectiveIntent);
           }
-          assertDurableHostRestoreClear(
-            database,
-            "effect invocation is fenced by the host restore barrier",
+          result = sanitizeEffectReceipt(
+            await adapter.invoke(effectiveIntent),
+            effectiveIntent,
           );
-          assertMutationFence(lockDatabase, database, {
-            authorityEpoch,
-            bootId,
-            processIdentity,
-          });
-          assertEffectWorkspaceAuthority(database, effectiveIntent);
-          result = await adapter.invoke(effectiveIntent);
         }
         assertDurableHostRestoreClear(
           database,
@@ -2364,6 +2540,10 @@ export function createDurableRunAuthority({
                   type: "effect_receipt_recorded",
                   effect_id: effectiveIntent.effect_id,
                   idempotency_key: effectiveIntent.idempotency_key,
+                  ...(() => {
+                    const facts = observeExecutionTime(timeObservationAdapter, bootId).facts;
+                    return facts === null ? {} : { time_facts: facts };
+                  })(),
                   ...(result === undefined ? {} : { receipt: result }),
                 },
               },
@@ -2446,6 +2626,14 @@ export function createDurableRunAuthority({
               database,
               intent,
               providerEffectErrorObservation(intent, providerObservation),
+              {
+                retryEvent: durableRetryEvent(
+                  intent,
+                  providerObservation,
+                  retryTimeAdapter,
+                ),
+                executionTimeFacts: observeExecutionTime(timeObservationAdapter, bootId).facts,
+              },
             );
           } catch {
             // Preserve the provider failure. The original error remains the
@@ -2473,7 +2661,10 @@ export function createDurableRunAuthority({
       }
       const database = openAuthorityDatabase(databasePath);
       try {
-        return appendEffectObservation(database, intent, observation);
+        return appendEffectObservation(database, intent, observation, {
+          retryTimeAdapter,
+          executionTimeFacts: observeExecutionTime(timeObservationAdapter, bootId).facts,
+        });
       } finally {
         database.close();
       }
@@ -2498,7 +2689,16 @@ export function createDurableRunAuthority({
     if (closed) throw new Error("durable run authority is closed");
   }
 
-  function appendEffectObservation(database, intent, observation) {
+  function appendEffectObservation(
+    database,
+    intent,
+    observation,
+    {
+      retryEvent = null,
+      retryTimeAdapter = null,
+      executionTimeFacts = null,
+    } = {},
+  ) {
     assertDurableHostRestoreClear(
       database,
       "effect observations are fenced by the host restore barrier",
@@ -2533,7 +2733,21 @@ export function createDurableRunAuthority({
         "effect observations cannot mutate a settled terminal run",
       );
     }
-    const normalizedObservation = normalizeEffectObservation(observation, intent);
+    const normalizedObservation = normalizeEffectObservation(
+      sanitizeEffectObservation(observation, intent),
+      intent,
+    );
+    const priorRetryState = foldRetryStates(stream.records.map(({ payload }) =>
+      payload)).get(intent.effect_id) ?? null;
+    const durableObservationRetry = retryEvent ?? (
+      retryTimeAdapter === null
+        ? null
+        : durableRetryEvent(
+            intent,
+            normalizedObservation.provider_observation,
+            retryTimeAdapter,
+          )
+    );
     database.exec("BEGIN IMMEDIATE");
     try {
       assertAuthorityEpoch(database, {
@@ -2544,14 +2758,33 @@ export function createDurableRunAuthority({
       appendAuthorityEvents(database, {
         streamId: intent.run_id,
         streamKind: "run",
-        events: [{
-          contract: "flow.run-event/v1",
-          payload: {
-            type: "effect_observation_recorded",
-            effect_id: intent.effect_id,
-            observation: normalizedObservation,
+        events: [
+          {
+            contract: "flow.run-event/v1",
+            payload: {
+              type: "effect_observation_recorded",
+              effect_id: intent.effect_id,
+              observation: normalizedObservation,
+              ...(executionTimeFacts === null ? {} : {
+                time_facts: executionTimeFacts,
+              }),
+            },
           },
-        }],
+          ...(durableObservationRetry === null
+            ? priorRetryState === null ? [] : [{
+              contract: "flow.run-event/v1",
+              payload: {
+                type: "effect_retry_cleared",
+                effect_id: intent.effect_id,
+                attempt_id: intent.attempt_id,
+                reason: "fresh_provider_observation_without_retry_delay",
+              },
+            }]
+            : [{
+              contract: "flow.run-event/v1",
+              payload: durableObservationRetry,
+            }]),
+        ],
         authorityEpoch,
         bootId,
         processIdentity,
@@ -2569,6 +2802,48 @@ export function createDurableRunAuthority({
       watcher.publish(projection);
     }
     return normalizedObservation;
+  }
+
+  function appendEffectRetryEvent(database, intent, payload) {
+    assertDurableHostRestoreClear(
+      database,
+      "effect retry scheduling is fenced by the host restore barrier",
+    );
+    assertMutationFence(lockDatabase, database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertAuthorityEpoch(database, {
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      appendAuthorityEvents(database, {
+        streamId: intent.run_id,
+        streamKind: "run",
+        events: [{
+          contract: "flow.run-event/v1",
+          payload,
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+    const projection = projectFencedRun(database, readStream(
+      database,
+      intent.run_id,
+    ), fenceRun);
+    for (const watcher of watchers.get(intent.run_id) ?? []) {
+      watcher.publish(projection);
+    }
   }
 
   function applySchemaTransitionCommand(command) {
@@ -2817,6 +3092,94 @@ function deferredEffectDispatch() {
     resolve = resolvePromise;
   });
   return { settled, resolve };
+}
+
+function createFailClosedRetryTimeAdapter() {
+  return Object.freeze({
+    observe() {
+      return null;
+    },
+  });
+}
+
+function createFailClosedExecutionTimeAdapter() {
+  return Object.freeze({
+    observe() {
+      return null;
+    },
+  });
+}
+
+function preparedRequiresExecutionTime(prepared) {
+  const maxElapsedSeconds = prepared?.explicit_facts?.limits
+    ?.max_elapsed_seconds;
+  return (Number.isSafeInteger(maxElapsedSeconds) && maxElapsedSeconds >= 0) ||
+    prepared?.graph?.cards?.some(({ limits }) =>
+      Number.isSafeInteger(limits?.max_active_seconds) &&
+      limits.max_active_seconds >= 0) === true;
+}
+
+function observeExecutionTime(adapter, expectedBootId = undefined) {
+  try {
+    const observation = adapter.observe();
+    if (observation === null || observation === undefined) {
+      return { status: "invalid", facts: null };
+    }
+    if (!validateTimeFacts(observation) || observation.length === 0) {
+      return { status: "invalid", facts: null };
+    }
+    const observedBootId = observation.find(({ kind }) => kind === "boot")?.boot_id;
+    if (expectedBootId !== undefined && observedBootId !== expectedBootId) {
+      return { status: "invalid", facts: null };
+    }
+    return {
+      status: "observed",
+      facts: freezeCanonical(observation),
+    };
+  } catch {
+    return { status: "invalid", facts: null };
+  }
+}
+
+function executionTimeAdmissionFence(executionTime) {
+  if (!["exhausted", "uncertain", "unobserved"].includes(
+    executionTime?.status,
+  )) return null;
+  if (executionTime.status === "uncertain") {
+    return new AuthorityFenceError(
+      "execution_deadline_uncertain",
+      "execution time facts do not prove safe effect admission",
+    );
+  }
+  if (executionTime.status === "unobserved") {
+    return new AuthorityFenceError(
+      "execution_time_unavailable",
+      "fresh typed execution time facts are required for effect admission",
+    );
+  }
+  return new AuthorityFenceError(
+    "execution_deadline_exhausted",
+    "run execution deadline is exhausted",
+  );
+}
+
+function observeRetryTime(adapter) {
+  try {
+    const observation = adapter.observe();
+    if (observation?.schema !== "flow.time-fact/v1" ||
+        observation.kind !== "wall_clock" ||
+        Object.keys(observation).length !== 5 ||
+        !Number.isSafeInteger(observation.value_ms) ||
+        observation.value_ms < 0 ||
+        observation.uncertainty_ms !== 0 ||
+        typeof observation.clock_source_id !== "string" ||
+        observation.clock_source_id.length === 0) {
+      return null;
+    }
+    return freezeCanonical(observation);
+  } catch {
+    return null;
+  }
 }
 
 function readEffectRecoveryState(databasePath, intent) {
@@ -3812,6 +4175,7 @@ function recordEffectInvocationStarted(database, intent, {
   authorityDirectory,
   authorityEpoch,
   bootId,
+  executionTimeFacts = null,
   gitRetentionAdapter,
   gitWorkspaceObservationAdapter,
   processIdentity,
@@ -3944,6 +4308,9 @@ function recordEffectInvocationStarted(database, intent, {
           type: "effect_invocation_started",
           effect_id: intent.effect_id,
           authority_epoch: authorityEpoch,
+          ...(executionTimeFacts === null ? {} : {
+            time_facts: executionTimeFacts,
+          }),
         },
       }],
       authorityEpoch,
@@ -4066,7 +4433,11 @@ function fencedRunFold(
   stream,
   rebootObservationAdapter,
   authorityCatalogs = () => null,
-  { revalidateAuthorities = true } = {},
+  {
+    revalidateAuthorities = true,
+    retryTimeObservation = null,
+    executionTimeObservation = { status: "invalid", facts: null },
+  } = {},
 ) {
   const admission = readStream(database, "host:admission")?.fold;
   const hostRestoreBarrier = admission?.restore?.active === true;
@@ -4105,6 +4476,17 @@ function fencedRunFold(
         ...action,
         expected_watermark: watermark,
       }));
+  const executionProjection = applyExecutionTimeObservation(
+    stream.fold,
+    legalActions,
+    executionTimeObservation,
+    runEventsFromRecords(stream.records),
+  );
+  const retryProjection = applyRetryTimeObservation(
+    stream.fold,
+    executionProjection.legalActions,
+    retryTimeObservation,
+  );
   const trackerProgress = stream.fold.tracker_progress;
   const trackerEffectIds = new Set(stream.fold.effects
     .filter(({ card_id: cardId }) =>
@@ -4112,11 +4494,13 @@ function fencedRunFold(
     .map(({ effect_id: effectId }) => effectId));
   return freezeCanonical({
     ...stream.fold,
+    effects: retryProjection.effects,
+    attempts: retryProjection.attempts,
     watermark,
     revision_outcomes: (stream.fold.revision_outcomes ?? []).map((outcome) => ({
       ...outcome,
       authority_watermark: watermark,
-      legal_next_actions: legalActions.filter((action) =>
+      legal_next_actions: retryProjection.legalActions.filter((action) =>
         action.type === "revision_decision" &&
         action.template_id === outcome.template_id),
     })),
@@ -4129,17 +4513,51 @@ function fencedRunFold(
     authority_boot_id: admission.boot_id,
     stream_generation: stream.generation,
     ...(revalidation === null ? {} : { reboot_revalidation: revalidation }),
-    legal_actions: legalActions,
+    execution_time: executionProjection.executionTime,
+    legal_actions: retryProjection.legalActions,
     ...(trackerProgress === undefined ? {} : {
       tracker_progress: {
         ...trackerProgress,
         authority_watermark: watermark,
-        legal_next_actions: legalActions.filter((action) =>
+        legal_next_actions: retryProjection.legalActions.filter((action) =>
           action.card_id === trackerProgress.operation_card_id ||
           trackerEffectIds.has(action.effect_id)),
       },
     }),
   });
+}
+
+function applyRetryTimeObservation(fold, legalActions, currentTime) {
+  const effects = fold.effects.map((effect) => {
+    if (effect.retry?.status !== "waiting") return effect;
+    const due = retryStateIsDue(effect.retry, currentTime);
+    return {
+      ...effect,
+      retry: {
+        ...effect.retry,
+        status: due ? "ready" : "waiting",
+      },
+    };
+  });
+  const effectsById = new Map(effects.map((effect) => [effect.effect_id, effect]));
+  const waitingEffectIds = new Set(effects
+    .filter((effect) => effect.retry?.status === "waiting")
+    .filter((effect) => {
+      const sameClock = currentTime?.schema === "flow.time-fact/v1" &&
+        currentTime.clock_source_id === effect.retry.not_before?.clock_source_id;
+      const canReconcile = effectClassPolicy(effect.classification)
+        ?.requires_observation === true;
+      if (!sameClock && !canReconcile) return false;
+      return !(canReconcile && !sameClock && currentTime !== null);
+    })
+    .map(({ effect_id: effectId }) => effectId));
+  const filteredActions = legalActions.filter((action) =>
+    action.type !== "recovery" || !waitingEffectIds.has(action.effect_id));
+  const attempts = fold.attempts.map((attempt) => {
+    const retry = effectsById.get(attempt.effect_id)?.retry;
+    return retry === undefined ? attempt : { ...attempt, retry };
+  });
+  return { effects, attempts, legalActions: filteredActions };
 }
 
 function assertEffectRunAdmitted(stream, currentBootId) {
@@ -4247,6 +4665,123 @@ function durableProviderObservation(error) {
   }
 }
 
+function durableRetryEvent(intent, providerObservation, retryTimeAdapter) {
+  const retry = providerObservation?.retry;
+  if (retry?.schema !== RETRY_DELAY_OBSERVATION_SCHEMA) return null;
+  if (retry.status !== "bounded" ||
+      !Number.isSafeInteger(retry.delay_ms) ||
+      retry.delay_ms < 0 || retry.delay_ms > MAX_RETRY_DELAY_MS) {
+    return {
+      type: "effect_retry_blocked",
+      effect_id: intent.effect_id,
+      attempt_id: intent.attempt_id,
+      reason: "invalid_retry_delay",
+    };
+  }
+  const currentTime = observeRetryTime(retryTimeAdapter);
+  if (currentTime === null ||
+      currentTime.value_ms > Number.MAX_SAFE_INTEGER - retry.delay_ms) {
+    return {
+      type: "effect_retry_blocked",
+      effect_id: intent.effect_id,
+      attempt_id: intent.attempt_id,
+      reason: "retry_time_unavailable",
+      retry_after_ms: retry.delay_ms,
+    };
+  }
+  return {
+    type: "effect_retry_scheduled",
+    effect_id: intent.effect_id,
+    attempt_id: intent.attempt_id,
+    retry_after_ms: retry.delay_ms,
+    retry_not_before: {
+      schema: "flow.time-fact/v1",
+      kind: "wall_clock",
+      value_ms: currentTime.value_ms + retry.delay_ms,
+      uncertainty_ms: 0,
+      clock_source_id: currentTime.clock_source_id,
+    },
+  };
+}
+
+function effectRetryAdmissionFence(
+  records,
+  intent,
+  retryTimeAdapter,
+  { operatorRecovery = false, onRetryEvent = null } = {},
+) {
+  const retry = foldRetryStates(records.map(({ payload }) => payload))
+    .get(intent.effect_id) ?? null;
+  if (retry === null) return null;
+  const repeatSafe = effectClassPolicy(intent.classification)
+    ?.requires_observation !== true;
+  const scheduleOnCurrentClock = (currentTime) => {
+    if (!repeatSafe || !operatorRecovery ||
+        !Number.isSafeInteger(retry.retry_after_ms) ||
+        retry.retry_after_ms < 0 ||
+        currentTime.value_ms > Number.MAX_SAFE_INTEGER - retry.retry_after_ms) {
+      return null;
+    }
+    const retryEvent = {
+      type: "effect_retry_scheduled",
+      effect_id: intent.effect_id,
+      attempt_id: intent.attempt_id,
+      retry_after_ms: retry.retry_after_ms,
+      retry_not_before: {
+        schema: "flow.time-fact/v1",
+        kind: "wall_clock",
+        value_ms: currentTime.value_ms + retry.retry_after_ms,
+        uncertainty_ms: 0,
+        clock_source_id: currentTime.clock_source_id,
+      },
+    };
+    onRetryEvent?.(retryEvent);
+    const error = new AuthorityFenceError(
+      "effect_retry_not_due",
+      "effect retry delay was rebound to the current retry clock",
+    );
+    return error;
+  };
+  if (retry.status === "blocked") {
+    if (retry.reason === "retry_time_unavailable") {
+      const currentTime = observeRetryTime(retryTimeAdapter);
+      if (currentTime !== null) {
+        return scheduleOnCurrentClock(currentTime) ??
+          new AuthorityFenceError(
+            "retry_time_unavailable",
+            "fresh retry time facts are required for effect admission",
+          );
+      }
+    }
+    return new AuthorityFenceError(
+      "effect_retry_blocked",
+      retry.reason ?? "effect retry timing is blocked",
+    );
+  }
+  const currentTime = observeRetryTime(retryTimeAdapter);
+  if (currentTime === null) {
+    return new AuthorityFenceError(
+      "retry_time_unavailable",
+      "fresh retry time facts are required for effect admission",
+    );
+  }
+  if (!retryStateIsDue(retry, currentTime)) {
+    const crossClock = currentTime.clock_source_id !==
+      retry.not_before?.clock_source_id;
+    if (crossClock) {
+      return scheduleOnCurrentClock(currentTime) ?? new AuthorityFenceError(
+        "effect_retry_not_due",
+        "effect retry delay has not elapsed",
+      );
+    }
+    return new AuthorityFenceError(
+      "effect_retry_not_due",
+      "effect retry delay has not elapsed",
+    );
+  }
+  return null;
+}
+
 function providerEffectErrorObservation(intent, providerObservation) {
   return {
     schema: "flow.effect-observation/v1",
@@ -4256,6 +4791,47 @@ function providerEffectErrorObservation(intent, providerObservation) {
     causation: null,
     provider_observation: providerObservation,
   };
+}
+
+function sanitizeEffectObservation(observation, intent) {
+  if (!isPlainRecord(observation) ||
+      !Object.hasOwn(observation, "provider_observation")) {
+    return observation;
+  }
+  return {
+    ...observation,
+    provider_observation: sanitizeProviderEvidence(
+      observation.provider_observation,
+      intent,
+    ),
+  };
+}
+
+function sanitizeEffectReceipt(receipt, intent) {
+  const sanitized = sanitizeEffectReceiptEnvelope(receipt, intent);
+  const invocationOutcomeAllowed = sanitized?.outcome === "succeeded" ||
+    sanitized?.outcome === "quarantined" && intent.effect_kind === "delegate";
+  if (sanitized === null || !invocationOutcomeAllowed) {
+    throw invalidEffectReceiptError();
+  }
+  return sanitized;
+}
+
+function invalidEffectReceiptError() {
+  const error = new TypeError("effect adapter returned an invalid or unsafe receipt");
+  error.code = "invalid_effect_receipt";
+  Object.defineProperty(error, "provider_observation", {
+    configurable: false,
+    enumerable: false,
+    value: {
+      schema: "flow.provider-observation/v1",
+      status: "invalid_output",
+      code: "invalid_effect_receipt",
+      reason: "invalid_effect_receipt",
+    },
+    writable: false,
+  });
+  return error;
 }
 
 function effectIntentIdentity(intent) {
