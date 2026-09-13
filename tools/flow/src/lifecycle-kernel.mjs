@@ -1,4 +1,4 @@
-import { digest, freezeCanonical } from "./canonical.mjs";
+import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
 import { operationEffectIdentity } from "./effect-identity.mjs";
 import {
   admitPlanRevision,
@@ -11,6 +11,7 @@ import {
   featureCandidateViewFromCapture,
 } from "./candidate-finalization.mjs";
 import { declaredResultBindings } from "./result-bindings.mjs";
+import { validateDelegateEvidenceSafety } from "./evidence-safety.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
   "generic_setter",
@@ -124,13 +125,34 @@ export function decideLifecycle(fold, command) {
       projection_hints: ["operator", "graph"],
     };
   }
+  const executionDeadline = fold.execution_time?.status;
+  const attemptsAdmission = [
+    "operation_execute",
+    "delegate_execute",
+    "subrun_execute",
+  ].includes(command.type) || command.type === "checkpoint_decision" &&
+    command.decision === "approve";
+  if (attemptsAdmission &&
+      ["exhausted", "uncertain", "unobserved"].includes(executionDeadline)) {
+    return reject(
+      fold,
+      command,
+      executionDeadline === "uncertain"
+        ? "execution_deadline_uncertain"
+        : executionDeadline === "unobserved"
+          ? "execution_time_unavailable"
+          : "execution_deadline_exhausted",
+    );
+  }
   const hasUnresolvedEffects = fold.effects?.some(
     ({ status }) => !["quarantined", "succeeded"].includes(status),
   );
   // This one-operation slice serializes completion-changing commands behind
   // effect settlement. Revisit the allow-list before admitting sibling effects.
   if (hasUnresolvedEffects &&
-      !["capability_grant", "recovery"].includes(command.type)) {
+      !["capability_grant", "recovery", "terminal_disposition"].includes(
+        command.type,
+      )) {
     return reject(fold, command, "effect_settlement_required");
   }
   if (command.type === "capability_grant") {
@@ -482,11 +504,16 @@ function delegateDecision(fold, command, delegate) {
       attempt_id: attemptId,
       attempt_ordinal: ordinal,
       max_attempts: card.limits.max_attempts,
+      ...(Number.isSafeInteger(card.limits.max_active_seconds) &&
+        card.limits.max_active_seconds >= 0 ? {
+          max_active_seconds: card.limits.max_active_seconds,
+        } : {}),
       card_id: delegate.id,
       classification: "caller_idempotent",
       operation_contract: card.executor.contract,
       source_authority_watermark: fold.watermark,
       delegate_input: delegateInput,
+      delegate_output_schemas: card.outputs,
       delegate_validator_contracts: card.validators,
       managed_agent_binding: card.inputs.managed_agent ?? null,
       route_binding: routeBinding,
@@ -591,6 +618,14 @@ function operationDecision(
       effect_id: boundIdentity.effect_id,
       idempotency_key: boundIdentity.idempotency_key,
       attempt_id: boundIdentity.attempt_id,
+      max_attempts: Number.isSafeInteger(operationCard.limits?.max_attempts) &&
+        operationCard.limits.max_attempts >= 1
+        ? operationCard.limits.max_attempts
+        : 1,
+      ...(Number.isSafeInteger(operationCard.limits?.max_active_seconds) &&
+        operationCard.limits.max_active_seconds >= 0 ? {
+          max_active_seconds: operationCard.limits.max_active_seconds,
+        } : {}),
       card_id: operation.id,
       classification: operationCard.executor.effect_classification,
       operation_contract: operationCard.executor.contract,
@@ -733,7 +768,9 @@ function bindOperationIdentity(identity, operationInput) {
 
 function materializeAuthorityEvidence(fold, card) {
   const inputs = card?.inputs ?? {};
-  if (CALLER_MATERIALIZED_FIELDS.some((field) => Object.hasOwn(inputs, field))) {
+  if (Object.hasOwn(inputs, "authority_materialized_evidence") ||
+      Object.hasOwn(inputs, "predecessor_evidence") ||
+      CALLER_MATERIALIZED_FIELDS.some((field) => Object.hasOwn(inputs, field))) {
     return { code: "caller_materialized_evidence_forbidden", evidence: null };
   }
   const declared = declaredResultBindings(fold.active_plan, card?.id);
@@ -997,6 +1034,9 @@ function resolveDelegateEvidence(fold, cardId) {
   if (attempt?.status !== "accepted" || attempt.evidence === null) {
     return { code: "authority_evidence_missing", evidence: null };
   }
+  if (!delegateEvidenceSafetyValid(attempt.evidence)) {
+    return { code: "authority_evidence_safety_missing", evidence: null };
+  }
   const intent = fold.effect_intents.find(({ effect_id: effectId }) =>
     effectId === attempt.effect_id);
   if (!intent) return { code: "authority_evidence_missing", evidence: null };
@@ -1011,6 +1051,25 @@ function resolveDelegateEvidence(fold, cardId) {
       evidence: attempt.evidence,
     },
   };
+}
+
+function delegateEvidenceSafetyValid(providerReceipt) {
+  if (!isPlainRecord(providerReceipt) ||
+      providerReceipt.schema !== "flow.delegate-evidence/v1" ||
+      typeof providerReceipt.validated_output !== "string" ||
+      !isPlainRecord(providerReceipt.evidence_safety_receipt) ||
+      !isPlainRecord(providerReceipt.evidence_safety_binding)) {
+    return false;
+  }
+  const expected = validateDelegateEvidenceSafety(
+    providerReceipt.validated_output,
+    { classification: providerReceipt.evidence_safety_receipt.classification },
+  );
+  return expected.accepted === true &&
+    JSON.stringify(expected.receipt) ===
+      JSON.stringify(providerReceipt.evidence_safety_receipt) &&
+    JSON.stringify(expected.binding) ===
+      JSON.stringify(providerReceipt.evidence_safety_binding);
 }
 
 function resolveOperationEvidence(fold, cardId) {

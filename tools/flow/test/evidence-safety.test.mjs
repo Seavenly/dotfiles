@@ -12,6 +12,7 @@ import {
   bindResourceHandoffReceipt,
   createEvidenceSafetyRequest,
   getEvidenceSafetyCatalog,
+  validateDelegateEvidenceSafety,
   validateEvidenceSafety,
 } from "../src/evidence-safety.mjs";
 
@@ -1088,6 +1089,62 @@ test("short authorization assignments are rejected without blocking algorithm pr
     "Documentation explains token algorithms without a presented value.",
   ]) {
     assert.equal(validateEvidenceSafety(requestFor({ note })).accepted, true, note);
+  }
+});
+
+test("delegate evidence safety binds exact output and narrowly permits relative review locations", () => {
+  const relative = JSON.stringify({
+    schema: "flow.review-result/v1",
+    posture: "findings",
+    findings: [{
+      lens: "security",
+      urgency: "high",
+      classification: "blocking",
+      summary: "Review finding",
+      detail: "Review detail",
+      location: { path: "src/review.mjs", start_line: 4, end_line: 4 },
+    }],
+    evidence: { lens: "security" },
+  });
+  const accepted = validateDelegateEvidenceSafety(relative);
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.receipt.input_digest,
+    digest(JSON.parse(relative)));
+  assert.equal(accepted.binding.subject_digest,
+    digest(JSON.parse(relative)));
+
+  for (const output of [
+    JSON.stringify({
+      schema: "flow.review-result/v1",
+      posture: "findings",
+      findings: [{
+        lens: "security",
+        urgency: "high",
+        classification: "blocking",
+        summary: "Review finding",
+        detail: "Review detail",
+        location: {
+          path: "/home/nschott/private/worktree",
+          start_line: 4,
+        },
+      }],
+    }),
+    JSON.stringify({
+      schema: "flow.review-result/v1",
+      posture: "findings",
+      findings: [{
+        lens: "security",
+        urgency: "high",
+        classification: "blocking",
+        summary: "Review finding",
+        detail: "ghp_ABCDEFGH12345678",
+      }],
+    }),
+  ]) {
+    const rejected = validateDelegateEvidenceSafety(output);
+    assert.equal(rejected.accepted, false);
+    assert.ok(rejected.rejection?.code);
+    assert.equal(JSON.stringify(rejected).includes("private"), false);
   }
 });
 

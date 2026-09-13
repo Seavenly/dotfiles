@@ -10,6 +10,9 @@ import {
   validateEvidenceSafety,
 } from "./evidence-safety.mjs";
 import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
+import {
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+} from "./delegate-input-envelope.mjs";
 
 export const SPIKE_RESEARCH_OUTPUT_VALIDATOR =
   "flow.validator/spike-research-evidence/v1";
@@ -193,6 +196,7 @@ function compileSpikeSelection({ inputs, explicit_facts: explicitFacts }) {
     binding,
     dependencies,
     phase,
+    role,
     prompt,
     validator,
     evidenceCardIds,
@@ -213,6 +217,23 @@ function compileSpikeSelection({ inputs, explicit_facts: explicitFacts }) {
       ...(evidenceCardIds === undefined ? {} : {
         delegate_evidence_card_ids: evidenceCardIds,
       }),
+      task_inputs: {
+        schema: "flow.delegate-task-inputs/v1",
+        flow: "spike/v1",
+        role,
+        mode: selection.mode,
+        phase,
+        question: selection.question,
+      },
+      resource_references: [],
+      output_requirements: {
+        schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+        format: "canonical-json",
+        schemas: [phase === "research"
+          ? SPIKE_RESEARCH_EVIDENCE_SCHEMA
+          : SPIKE_REPORT_SCHEMA],
+        validator_contracts: [validator],
+      },
     },
     outputs: [phase === "research"
       ? SPIKE_RESEARCH_EVIDENCE_SCHEMA
@@ -226,6 +247,7 @@ function compileSpikeSelection({ inputs, explicit_facts: explicitFacts }) {
       binding: selection.delegation.researcher,
       dependencies: [],
       phase: "research",
+      role: "researcher",
       prompt: researchDelegatePrompt(selection.question),
       validator: SPIKE_RESEARCH_OUTPUT_VALIDATOR,
     }),
@@ -234,6 +256,7 @@ function compileSpikeSelection({ inputs, explicit_facts: explicitFacts }) {
       binding: selection.delegation.synthesizer,
       dependencies: ["spike-research"],
       phase: "synthesis",
+      role: "synthesizer",
       prompt: synthesisDelegatePrompt(selection.question),
       validator: SPIKE_REPORT_OUTPUT_VALIDATOR,
       evidenceCardIds: ["spike-research"],

@@ -21,9 +21,9 @@
     {
       "id": "public_contract_catalog",
       "path": "contracts/catalog.v1.json",
-      "sha256": "2fc1b03e5030e815bf47545bbf855c43f3aee3a099bf285f54cc4fcff5177cc2",
+      "sha256": "73dc8c9bb195b30c03ab25ba053826dacd3bb527775b9ba49d4b4f9a8d1f2488",
       "status": "passed",
-      "recorded_at": "2026-09-11T01:48:36Z"
+      "recorded_at": "2026-09-13T04:39:39Z"
     },
     {
       "id": "legacy_default_policy",
@@ -55,5 +55,5 @@
     "replacement_launch_enabled": false,
     "decided_at": "2026-07-30T23:06:09Z"
   },
-  "recorded_at": "2026-09-11T01:48:36Z"
+  "recorded_at": "2026-09-13T04:39:39Z"
 }

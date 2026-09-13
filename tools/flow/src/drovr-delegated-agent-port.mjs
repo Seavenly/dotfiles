@@ -21,6 +21,7 @@ import {
 import { retireAgent } from "../../drovr/src/lifecycle.mjs";
 
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
+import { digestDelegateInputBytes } from "./delegate-input-envelope.mjs";
 import {
   featureConformanceFindings,
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
@@ -315,8 +316,8 @@ export function createDrovrDelegatedAgentPort({
       if (!validKeyedRequest(
         request,
         "send",
-        ["turn_id", "input_key", "prompt"],
-      )) {
+        ["turn_id", "input_key", "prompt", "payload_sha256"],
+      ) || !payloadDigestMatches(request)) {
         return lifecycleBlock("send", "invalid_input_request", []);
       }
       return invokeLifecycle("send", async () => lifecycleTurnProjection(
@@ -670,6 +671,7 @@ function validDispatchRequest(request) {
       "caller_key",
       "input_key",
       "prompt",
+      "payload_sha256",
       "description",
     ]) ||
     request.description?.schema !== "drovr.delegated-agent-description/v1" ||
@@ -677,7 +679,7 @@ function validDispatchRequest(request) {
     !isDigest(request.description?.comparison_keys?.launch) ||
     !isDigest(request.description?.watermark?.content_sha256)
   ) return false;
-  return true;
+  return payloadDigestMatches(request);
 }
 
 function validKeyedRequest(request, operation, fields) {
@@ -686,10 +688,17 @@ function validKeyedRequest(request, operation, fields) {
     Object.keys(request).some((key) => !["schema", ...fields].includes(key))
   ) return false;
   return fields.every((field) =>
-    field === "timeout_ms" || field === "description"
+    field === "payload_sha256"
+      ? isDigest(request[field])
+      : field === "timeout_ms" || field === "description"
       ? Object.hasOwn(request, field)
       : nonEmptyString(request[field])
   );
+}
+
+function payloadDigestMatches(request) {
+  return typeof request?.prompt === "string" &&
+    request.payload_sha256 === digestDelegateInputBytes(request.prompt);
 }
 
 function descriptionContradiction(

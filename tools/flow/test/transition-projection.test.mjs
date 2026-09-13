@@ -138,6 +138,20 @@ test("transition query rejects a ledger without an explicit evidence array", asy
   );
 });
 
+test("transition query rejects catalog evidence with a stale ledger timestamp", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "catalog-timestamp");
+  const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.evidence.find(({ id }) => id === "public_contract_catalog")
+    .recorded_at = "2026-09-10T17:42:34Z";
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  await assert.rejects(
+    queryTransition({ configDirectory: copiedConfig, repositoryRoot }),
+    /catalog evidence timestamp must match the transition ledger timestamp/,
+  );
+});
+
 test("transition query rejects duplicate evidence identities", async (t) => {
   const { copiedConfig } = await copyTransitionConfig(t, "duplicate-evidence");
   const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");

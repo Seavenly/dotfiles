@@ -112,6 +112,11 @@ function assertPreparedBundle(prepared) {
       requested_authority: prepared.requested_authority,
       explicit_facts: prepared.explicit_facts,
       revision_templates: prepared.revision_templates,
+    }, {
+      // Predefined bundles carry the authority bindings that were prepared
+      // and digest-bound before confirmation. Dynamic callers have no such
+      // bindings and therefore keep the fail-closed resource policy.
+      allowUnboundResourceSelections: prepared.kind === "predefined",
     });
   } catch (error) {
     if (error instanceof DynamicPlanValidationError) {

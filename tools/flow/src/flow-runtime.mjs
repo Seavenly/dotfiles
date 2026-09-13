@@ -59,6 +59,7 @@ import {
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "./review-flow.mjs";
 import { parseReviewDelegateResult } from "./review-rendering.mjs";
+import { validateDelegateEvidenceSafety } from "./evidence-safety.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
 
@@ -150,6 +151,7 @@ export function createFlowRuntime({
   // that decides whether review evidence is accepted.
   setRegisteredOperation(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR, {
     validate: validateReviewDelegateOutput,
+    evidenceSafety: validateDelegateEvidenceSafety,
   });
   const trustedSpikeOutputValidators = createSpikeOutputValidators();
   setRegisteredOperation(

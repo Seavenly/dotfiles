@@ -5,17 +5,18 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest, idempotencyCommandDigest } from "../src/canonical.mjs";
+import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   createFlowRuntime,
   validateReviewDelegateOutput,
 } from "../src/flow-runtime.mjs";
 import { operationEffectIdentity } from "../src/effect-identity.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import {
   foldWorkStream,
+  getWorkspaceAuthority,
   getReviewAuthority,
   getRunEffectIntentReader,
 } from "../src/work-authority.mjs";
@@ -56,9 +57,27 @@ import {
 } from "../test-support/authority-bindings.mjs";
 import { supportedDescription } from "../test-support/delegated-agent-description.mjs";
 import { dynamicCheckpointProposal } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 
 const DIGEST = (byte) => `sha256:${byte.repeat(64)}`;
+
+function withReviewRecordRetryCapacity(definition) {
+  return {
+    ...definition,
+    compile(request) {
+      const proposal = definition.compile(request);
+      const record = proposal.graph.cards.find(({ id }) => id === "review-record");
+      record.limits = {
+        ...record.limits,
+        max_attempts: 2,
+      };
+      return proposal;
+    },
+  };
+}
 
 test("review/v1 rejects a minimal self-digest candidate before launch", () => {
   const candidate = minimalReviewCandidate();
@@ -599,13 +618,19 @@ test("an ambiguous GitHub receipt stays one-shot uncertain without reposting", a
   const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
   assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
   const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
-    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
-      cardId === "review-github-pending" && status === "unresolved"));
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId,
+      last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.status === "operation_failure"));
   assert.equal(forge.createCount, 1);
   const pendingEffect = uncertain.effects.find(({ card_id: cardId }) =>
     cardId === "review-github-pending");
   assert.equal(pendingEffect.receipt, null);
-  assert.equal(pendingEffect.last_observation, null);
+  assert.equal(pendingEffect.last_observation.presence, "indeterminate");
+  assert.equal(
+    pendingEffect.last_observation.provider_observation.status,
+    "operation_failure",
+  );
   assert.ok(uncertain.legal_actions.some(({ type }) => type === "recovery"));
   assert.ok(uncertain.legal_actions.some(({ type }) => type === "cancel"));
   assert.equal(
@@ -618,7 +643,8 @@ test("an ambiguous GitHub receipt stays one-shot uncertain without reposting", a
   const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
     projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
       cardId === "review-github-pending" &&
-      observation?.presence === "indeterminate"));
+      observation?.provider_observation?.code ===
+        "github_review_receipt_ambiguous"));
   const blockedEffect = blocked.effects.find(({ card_id: cardId }) =>
     cardId === "review-github-pending");
   assert.equal(blockedEffect.status, "uncertain");
@@ -919,8 +945,10 @@ test("GitHub target movement during recovery remains indeterminate without repos
   const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
   assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
   const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
-    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
-      cardId === "review-github-pending" && status === "unresolved"));
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId,
+      last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.status === "operation_failure"));
   assert.equal(forge.createCount, 1);
   moved = true;
   const recovery = uncertain.legal_actions.find(({ type }) => type === "recovery");
@@ -929,7 +957,8 @@ test("GitHub target movement during recovery remains indeterminate without repos
   const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
     projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
       cardId === "review-github-pending" &&
-      observation?.presence === "indeterminate"));
+      observation?.provider_observation?.code ===
+        "github_review_target_moved"));
   assert.equal(blocked.effects.find(({ card_id: cardId }) =>
     cardId === "review-github-pending").status, "uncertain");
   assert.equal(forge.createCount, 1);
@@ -956,8 +985,10 @@ test("GitHub target movement invalidates semantic review authority without losin
   const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
   assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
   const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
-    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
-      cardId === "review-github-pending" && status === "unresolved"));
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId,
+      last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.status === "operation_failure"));
   const subjectId = reviewSubjectId(target);
   const beforeMovement = runtime.query({ review_id: subjectId });
   moved = true;
@@ -1218,19 +1249,15 @@ test("delegate execution rejects caller-forged authority evidence", async (t) =>
     description: criticDescription,
     route: reviewRoute("agent:review-critic", criticDescription),
   };
-  const prepared = runtime.prepare({
-    schema: "flow.predefined-flow-selection/v1",
-    definition: "review-forged-evidence/v1",
-    inputs,
-    explicit_facts: reviewRuntimeFacts(),
-  });
-  const launch = runtime.launch(reviewLaunchRequest(prepared));
-  assert.ok(launch.run_id, JSON.stringify(launch));
-  const projection = runtime.query({ run_id: launch.run_id });
-  const execute = projection.legal_actions.find(({ type, card_id: cardId }) =>
-    type === "delegate_execute" && cardId === "review-lens-security");
-  const rejection = runtime.command(execute);
-  assert.equal(rejection.code, "caller_materialized_evidence_forbidden");
+  assert.throws(
+    () => runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "review-forged-evidence/v1",
+      inputs,
+      explicit_facts: reviewRuntimeFacts(),
+    }),
+    (error) => error?.reason === "caller_delegate_input_forbidden",
+  );
 });
 
 test("review/v1 prepares one exact local candidate with isolated lenses and a critic", () => {
@@ -1245,7 +1272,13 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
       "flow.validator/review-result/v1",
       "flow.validator/operation-receipt/v1",
     ],
-    resource_claims: [],
+    resource_claims: [{
+      kind: "workspace",
+      id: candidate.workspace.subject_id,
+      generation: candidate.workspace.generation,
+      mutation_epoch: candidate.workspace.mutation_epoch,
+      fingerprint: candidate.workspace.fingerprint,
+    }],
     time_facts: [],
     subject_generations: [],
     block_observations: [],
@@ -1292,7 +1325,7 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
       candidate_authority_watermark: DIGEST("c"),
       lifecycle_generation: 4,
     },
-    lenses: ["security", "correctness"],
+    lenses: ["correctness", "security"],
     delegation: {
       schema: "flow.review-delegation-bindings/v1",
       lenses: {
@@ -1336,6 +1369,72 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
     "review-lens-security",
   ]);
   assert.equal(cards.get("review-critic").inputs.finding_lens_join, "all_enabled");
+  for (const lens of ["security", "correctness"]) {
+    const card = cards.get(`review-lens-${lens}`);
+    assert.deepEqual(card.inputs.task_inputs, {
+      schema: "flow.delegate-task-inputs/v1",
+      flow: "review/v1",
+      role: "lens",
+      lens,
+      target: inputs.target,
+    });
+    assert.deepEqual(card.inputs.resource_references, [{
+      schema: "flow.delegate-execution-resource-selection/v1",
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: candidate.workspace.subject_id,
+      generation: candidate.workspace.generation,
+      mutation_epoch: candidate.workspace.mutation_epoch,
+      fingerprint: candidate.workspace.fingerprint,
+      access: "read_only",
+      authority_binding_id: "resource:facts",
+    }]);
+    assert.deepEqual(card.inputs.output_requirements, {
+      schema: "flow.delegate-output-requirements/v1",
+      format: "canonical-json",
+      schemas: ["flow.review-result/v1"],
+      validator_contracts: ["flow.validator/review-result/v1"],
+    });
+    assert.deepEqual(card.inputs.output_requirements.schemas, card.outputs);
+    assert.deepEqual(
+      card.inputs.output_requirements.validator_contracts,
+      card.validators,
+    );
+  }
+  assert.deepEqual(cards.get("review-critic").inputs.task_inputs, {
+    schema: "flow.delegate-task-inputs/v1",
+    flow: "review/v1",
+    role: "critic",
+    target: inputs.target,
+    lenses: ["correctness", "security"],
+  });
+  assert.deepEqual(cards.get("review-critic").inputs.resource_references, [{
+    schema: "flow.delegate-execution-resource-selection/v1",
+    kind: "workspace",
+    authority: "WorkspaceAuthority",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    fingerprint: candidate.workspace.fingerprint,
+    access: "read_only",
+    authority_binding_id: "resource:facts",
+  }]);
+  assert.deepEqual(cards.get("review-critic").inputs.output_requirements, {
+    schema: "flow.delegate-output-requirements/v1",
+    format: "canonical-json",
+    schemas: ["flow.review-result/v1"],
+    validator_contracts: ["flow.validator/review-result/v1"],
+  });
+  assert.deepEqual(
+    cards.get("review-critic").inputs.output_requirements.schemas,
+    cards.get("review-critic").outputs,
+  );
+  assert.deepEqual(
+    cards.get("review-critic").inputs.output_requirements.validator_contracts,
+    cards.get("review-critic").validators,
+  );
   assert.notEqual(
     cards.get("review-critic").route.agent_id,
     cards.get("review-lens-security").route.agent_id,
@@ -2481,9 +2580,15 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
+    gitWorkspaceObservationAdapter: reviewGitWorkspaceObservationAdapter(candidate),
     hostIdentityAdapter: fixedHostIdentity("review-validator-boot", "review-validator"),
   });
   t.after(() => runAuthority.close());
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  assert.equal(
+    workspaceAuthority.command(reviewWorkspaceRegistration(candidate)).accepted,
+    true,
+  );
   const reviewAuthority = createInMemoryReviewAuthority({
     candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
     sourceEffectIntentReader: getRunEffectIntentReader({ runAuthority }),
@@ -2568,7 +2673,10 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
     reviewAuthority,
     delegatedAgentPort,
     delegateOutputValidators: {
-      [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: { validate: () => true },
+      [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: {
+        validate: () => true,
+        evidenceSafety: validateDelegateEvidenceSafety,
+      },
     },
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(facts),
@@ -2583,6 +2691,15 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
   });
   const launch = runtime.launch(reviewLaunchRequest(prepared));
   assert.ok(launch.run_id, JSON.stringify(launch));
+  assert.equal(
+    workspaceAuthority.command(reviewWorkspaceClaim({
+      candidate,
+      holder: launch.run_id,
+      operations: ["review-lens-security", "review-critic"],
+      workspaceAuthority,
+    })).accepted,
+    true,
+  );
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const projection = runtime.query({ run_id: launch.run_id });
     if (projection.phase === "succeeded") break;
@@ -2972,13 +3089,19 @@ test("in-memory GitHub ReviewAuthority fails closed without a source intent read
 test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const candidate = reviewCandidate();
   const authority = createDurableRunAuthority({
     authorityDirectory,
+    gitWorkspaceObservationAdapter: reviewGitWorkspaceObservationAdapter(candidate),
     hostIdentityAdapter: fixedHostIdentity("review-boot", "review-process"),
   });
   t.after(() => authority.close());
 
-  const candidate = reviewCandidate();
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority: authority });
+  assert.equal(
+    workspaceAuthority.command(reviewWorkspaceRegistration(candidate)).accepted,
+    true,
+  );
   const descriptions = await Promise.all([
     supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-sol", "security"), {}),
     supportedDescription(reviewDescriptionRequest("claude", "haiku", "correctness"), {}),
@@ -3025,6 +3148,13 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
     "flow.validator/review-result/v1",
     "flow.validator/operation-receipt/v1",
   );
+  facts.resource_claims.push({
+    kind: "workspace",
+    id: candidate.workspace.subject_id,
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    fingerprint: candidate.workspace.fingerprint,
+  });
   facts.limits.max_cards = 10;
   facts.limits.max_resources = 2;
   const inputs = {
@@ -3190,7 +3320,9 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(facts),
     }),
-    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+    predefinedDefinitions: {
+      "review/v1": withReviewRecordRetryCapacity(createReviewDefinition()),
+    },
   });
   const prepared = runtime.prepare({
     schema: "flow.predefined-flow-selection/v1",
@@ -3290,30 +3422,74 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
       "agent:review-tests",
     ],
   );
-  assert.equal(prompts.filter((prompt) => prompt.includes("Authority-settled finding lens results:")).length, 1);
-  const findingLensPrompt = prompts.find((prompt) => prompt.includes("Authority-settled"));
-  assert.match(findingLensPrompt, /review-lens-security/);
-  assert.match(findingLensPrompt, /review-lens-correctness/);
-  const findingLensEvidence = JSON.parse(
-    findingLensPrompt.slice(findingLensPrompt.indexOf("{", findingLensPrompt.indexOf("Authority-settled"))),
-  );
+  const envelopes = dispatches.map(({ prompt }) => JSON.parse(prompt));
+  assert.equal(envelopes.every(({ schema }) =>
+    schema === "flow.delegate-input-envelope/v1"), true);
+  assert.deepEqual(envelopes.map(({ task_inputs: taskInputs }) =>
+    taskInputs.role).sort(), ["critic", "lens", "lens", "lens"]);
+  assert.deepEqual(envelopes.map(({ task_inputs: taskInputs }) =>
+    taskInputs.target), [inputs.target, inputs.target, inputs.target, inputs.target]);
+  assert.equal(envelopes.every(({ resource_references: references }) =>
+    references.length === 1), true);
+  for (const { resource_references: references } of envelopes) {
+    const [reference] = references;
+    assert.deepEqual({
+      schema: reference.schema,
+      kind: reference.kind,
+      authority: reference.authority,
+      contract: reference.contract,
+      subject_id: reference.subject_id,
+      generation: reference.generation,
+      mutation_epoch: reference.mutation_epoch,
+      fingerprint: reference.fingerprint,
+      access: reference.access,
+    }, {
+      schema: "flow.delegate-execution-resource-reference/v1",
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: "workspace:producer",
+      generation: 1,
+      mutation_epoch: 7,
+      fingerprint: candidate.workspace.fingerprint,
+      access: "read_only",
+    });
+    assert.equal(Object.hasOwn(reference, "authority_binding_id"), false);
+    assert.deepEqual({
+      schema: reference.authority_binding.schema,
+      id: reference.authority_binding.id,
+      contract: reference.authority_binding.contract,
+    }, {
+      schema: "flow.required-authority-binding/v1",
+      id: "resource:facts",
+      contract: "flow.resource-authority/v1",
+    });
+  }
+  const criticEnvelope = envelopes.find(({ task_inputs: taskInputs }) =>
+    taskInputs.role === "critic");
+  const findingLensEvidence = criticEnvelope.predecessor_evidence;
+  assert.ok(findingLensEvidence);
+  assert.deepEqual(findingLensEvidence.accepted_delegates.map(
+    ({ card_id: cardId }) => cardId,
+  ), [
+    "review-lens-correctness",
+    "review-lens-security",
+    "review-lens-tests",
+  ]);
   assert.equal(
     findingLensEvidence.schema,
     "flow.authority-materialized-delegate-evidence/v1",
   );
   assert.equal(Object.hasOwn(findingLensEvidence, "evidence_digest"), false);
-  const criticPrompt = prompts.find((prompt) => prompt.includes("Authority-settled"));
   const criticDispatch = dispatches.find(({ agent_id: agentId }) =>
     agentId === "agent:review-critic");
   assert.equal(Object.hasOwn(criticDispatch, "orientation"), false);
   assert.equal(Object.hasOwn(criticDispatch, "diagrams"), false);
-  assert.equal(criticDispatch.prompt.includes("The review starts at the authority boundary."), false);
-  assert.equal(criticDispatch.prompt.includes("review path"), false);
+  assert.equal(criticEnvelope.instructions.includes("The review starts at the authority boundary."), false);
+  assert.equal(criticEnvelope.instructions.includes("review path"), false);
   assert.equal(JSON.stringify(criticDispatch).includes("orientation"), false);
   assert.equal(JSON.stringify(criticDispatch).includes("diagrams"), false);
-  const materialized = JSON.parse(
-    criticPrompt.split("Authority-settled finding lens results:\n")[1],
-  );
+  const materialized = criticEnvelope.predecessor_evidence;
   assert.equal(JSON.stringify(materialized).includes("orientation"), false);
   assert.equal(JSON.stringify(materialized).includes("diagrams"), false);
   assert.equal(JSON.stringify(materialized).includes("The review starts at the authority boundary."), false);
@@ -3352,6 +3528,12 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   );
   const watched = await runtime.watch({ review_id: reviewId }).next();
   assert.equal(watched.value.watermark, review.watermark);
+
+  const release = workspaceAuthority.query({
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+  }).legal_actions.find(({ type }) => type === "workspace_claim_release");
+  assert.equal(release, undefined);
 
   lifecycleMismatch = true;
   const changedInputs = structuredClone(inputs);
@@ -4030,14 +4212,76 @@ function candidateAuthorityProjection(candidate, watermark) {
 
 function reviewRuntimeFacts() {
   const facts = structuredClone(dynamicCheckpointProposal().explicit_facts);
+  const workspace = reviewCandidate().workspace;
   facts.operation_contracts.push("flow.operation/review-record/v1");
   facts.validator_contracts.push(
     "flow.validator/review-result/v1",
     "flow.validator/operation-receipt/v1",
   );
+  facts.resource_claims.push({
+    kind: "workspace",
+    id: workspace.subject_id,
+    generation: workspace.generation,
+    mutation_epoch: workspace.mutation_epoch,
+    fingerprint: workspace.fingerprint,
+  });
   facts.limits.max_cards = 8;
   facts.limits.max_resources = 2;
   return facts;
+}
+
+function reviewGitWorkspaceObservationAdapter(candidate) {
+  return {
+    observe() {
+      return {
+        schema: "work.git-observation/v1",
+        git: structuredClone(candidate.git),
+      };
+    },
+  };
+}
+
+function reviewWorkspaceRegistration(candidate) {
+  return {
+    schema: "work.workspace-register-command/v1",
+    command_id: `workspace-register:review:${candidate.candidate_id}`,
+    type: "workspace_register",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    expected_generation: 0,
+    registration: {
+      repository: { canonical_id: "github.com/Seavenly/example" },
+      workspace: {
+        canonical_id: candidate.workspace.subject_id,
+        canonical_path: "/tmp/review-candidate",
+      },
+      git: structuredClone(candidate.git),
+      mutation_epoch: candidate.workspace.mutation_epoch,
+      disposition: "reviewer_owned",
+    },
+  };
+}
+
+function reviewWorkspaceClaim({ candidate, holder, operations, workspaceAuthority }) {
+  const current = workspaceAuthority.query({
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+  });
+  return {
+    schema: "work.workspace-claim-command/v1",
+    command_id: `workspace-claim:${holder}`,
+    type: "workspace_claim",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    expected_generation: current.generation,
+    expected_watermark: current.watermark,
+    expected_fingerprint: digest({ git: current.git }),
+    claim: {
+      claim_id: `claim:${holder}`,
+      holder,
+      operations,
+    },
+  };
 }
 
 function reviewLaunchRequest(prepared) {

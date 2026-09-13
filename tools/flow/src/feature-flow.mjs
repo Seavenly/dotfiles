@@ -26,6 +26,11 @@ export {
   createFeatureCaptureOperation,
   validateFeatureCaptureReceipt,
 };
+import {
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+} from "./delegate-input-envelope.mjs";
+import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
 
 // These contracts are intentionally registered operation contracts.  The
 // feature definition owns the order and inputs, while the host owns the
@@ -135,12 +140,24 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
             executor?.kind === "checkpoint"),
         ) ? ["checkpoint_decision"] : []),
       ],
-      capabilities: [],
+      capabilities: featureDelegateCapabilities(selection),
       mutations: featureOperationContracts(selection),
     },
     explicit_facts: explicitFacts,
     revision_templates: repairs.map(({ template }) => template),
   };
+}
+
+function featureDelegateCapabilities(selection) {
+  return [...new Set([
+    selection.delegation.apply,
+    selection.delegation.critique,
+  ].flatMap(({ description }) => {
+    const capability = description?.launch?.capability;
+    if (capability === undefined) return [];
+    const grants = flowGrantIdsForDrovrCapability(capability);
+    return grants ?? [];
+  }))].sort();
 }
 
 function featureOperationContracts(selection) {
@@ -215,6 +232,18 @@ function featureCardBuilders(selection, workspaceClaim) {
       description: binding.description,
       prompt: inputs.prompt,
       wait_timeout_ms: 300_000,
+      task_inputs: featureDelegateTaskInputs(inputs),
+      resource_references: featureDelegateResourceReferences(
+        id,
+        inputs,
+        workspaceClaim,
+      ),
+      output_requirements: {
+        schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+        format: "canonical-json",
+        schemas: outputs,
+        validator_contracts: [FEATURE_DELEGATE_OUTPUT_VALIDATOR],
+      },
     },
     outputs,
     success_criteria: ["delegate_observation:accepted"],
@@ -224,6 +253,33 @@ function featureCardBuilders(selection, workspaceClaim) {
     recovery: "discover_then_dispatch_exact",
   });
   return { delegate, operation };
+}
+
+function featureDelegateTaskInputs(inputs) {
+  return {
+    schema: "flow.delegate-task-inputs/v1",
+    flow: "feature/v1",
+    phase: inputs.phase,
+    mode: inputs.mode,
+    brief: inputs.brief,
+    ...(inputs.slice === undefined ? {} : { slice: inputs.slice }),
+  };
+}
+
+function featureDelegateResourceReferences(id, inputs, workspaceClaim) {
+  return [{
+    schema: DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+    kind: "workspace",
+    authority: "WorkspaceAuthority",
+    contract: "work.workspace/v1",
+    subject_id: workspaceClaim.id,
+    generation: workspaceClaim.generation,
+    mutation_epoch: workspaceClaim.mutation_epoch,
+    fingerprint: workspaceClaim.fingerprint,
+    access: inputs.phase === "apply" ? "mutation" : "read_only",
+    ...(inputs.phase === "apply" ? { operation: id } : {}),
+    authority_binding_id: "resource:facts",
+  }];
 }
 
 function legacyFeatureCards(selection, workspaceClaim) {

@@ -256,6 +256,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.tracker-progress-update/v1",
     "flow.tracker-progress-projection/v1",
     "flow.delegate-evidence/v1",
+    "flow.delegate-failure-observation/v1",
     "flow.child-run-identity/v1",
     "flow.child-run-lineage/v1",
     "flow.subrun/create-and-observe/v1",
@@ -337,6 +338,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     intent: "flow.effect-intent/v1",
     receipt: "flow.effect-receipt/v1",
     evidence: "flow.delegate-evidence/v1",
+    failure_observation: "flow.delegate-failure-observation/v1",
     quarantine_record: "flow.delegate-quarantine/v1",
     block: "flow.delegate-card-block/v1",
     disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
@@ -362,6 +364,19 @@ test("the public catalog exposes the settled interface and forbids legacy import
     terminal_disposition:
       "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
     exhausted_action: "terminal_disposition",
+    input_envelope: {
+      schema: "flow.delegate-input-envelope/v1",
+      task_inputs: "flow.delegate-task-inputs/v1",
+      resource_selection: "flow.delegate-execution-resource-selection/v1",
+      resource_references: "flow.delegate-execution-resource-reference/v1",
+      execution_authority: "flow.delegate-execution-authority/v1",
+      predecessor_evidence: "flow.delegate-predecessor-evidence/v1",
+      output_requirements: "flow.delegate-output-requirements/v1",
+      serialization: "canonical_json_utf8_exact_bytes",
+      payload_digest: "sha256_exact_transmitted_bytes",
+      identity: "attempt_input_key_sequence_envelope_digest",
+      ordered_steering: "same_envelope_correlation_contract",
+    },
   });
   assert.deepEqual(catalog.flow_runtime.subrun_execution, {
     authority: "RunAuthority",
@@ -412,6 +427,41 @@ test("the public catalog exposes the settled interface and forbids legacy import
   ]) {
     assert.equal(catalog.contracts.includes(contract), true, contract);
   }
+  assert.deepEqual(catalog.flow_runtime.execution_time_accounting, {
+    confirmation: "flow.execution-time-accounting/v1",
+    projection: "flow.execution-time-projection/v1",
+    time_fact: "flow.time-fact/v1",
+    wall_elapsed: {
+      includes: [
+        "accepted_baseline_to_current_observation",
+        "human_checkpoint_wait",
+        "passive_retained_wait",
+      ],
+      same_boot_source: "suspend_excluding_monotonic",
+      cross_boot_source: "wall_clock",
+    },
+    active_execution: {
+      definition: "sum_of_admitted_invocation_intervals",
+      excludes: ["human_checkpoint_wait", "passive_retained_wait"],
+    },
+    fresh_observation_boundaries: [
+      "admission",
+      "before_dispatch",
+      "receipt_or_failure",
+      "cancellation_or_settlement",
+      "timer_evaluation",
+    ],
+    uncertainty: {
+      representation: "lower_upper_bounds",
+      straddling_decision: "block_new_admission",
+      missing_or_invalid_fact: "block_new_admission",
+    },
+    authority: {
+      limits: "exact_confirmed_run_and_attempt_bounds",
+      expansion: "exact_human_checkpoint_or_revision_authority",
+      timer_ownership_transfer: "forbidden",
+    },
+  });
   assert.ok(catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
     "subrun_execute",
   ));
@@ -519,6 +569,12 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.spike-research-evidence/v1",
     "flow.spike-report/v1",
     "flow.delegate-input-envelope/v1",
+    "flow.delegate-task-inputs/v1",
+    "flow.delegate-execution-resource-selection/v1",
+    "flow.delegate-execution-resource-reference/v1",
+    "flow.delegate-execution-authority/v1",
+    "flow.delegate-predecessor-evidence/v1",
+    "flow.delegate-output-requirements/v1",
     "flow.validator/spike-research-evidence/v1",
     "flow.validator/spike-report/v1",
     "flow.review-projection/v1",

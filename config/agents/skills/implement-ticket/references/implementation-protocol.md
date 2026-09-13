@@ -19,9 +19,9 @@ code, tests, focused diagnosis, review, and review corrections.
 
 Apply this work allocation throughout the run:
 
-- Assign Luna Max reproduction and TDD, substantive implementation, correction
-  work, focused and full validation, self-review, and compact evidence
-  production.
+- Assign Luna Max reproduction and TDD, candidate edits, review-finding
+  investigation, semantic conflict resolution, focused and full validation,
+  self-review, and compact evidence production, including during integration.
 - Keep Sol responsible for issue and repository scope, authority, worktree and
   plan control, delegation, review-finding adjudication, targeted inspection of
   the actual final diff and repository state, exact-tree acceptance, and commit
@@ -66,10 +66,11 @@ does not express this explicit model requirement.
 
 The Sol lead must not treat a sub-agent's summary as proof. Inspect the actual
 diff and repository state, check reported test output, and independently decide
-whether each work packet and the complete ticket meet their contracts. Reserve
-direct Sol edits for small integration adjustments; delegate substantive
-implementation and correction work to Luna Max. Use the receipt to focus that
-inspection rather than to replace it.
+whether each work packet and the complete ticket meet their contracts. Delegate
+all candidate edits to Luna Max, including small integration adjustments and
+merge-conflict fixes. Sol may perform authorized Git operations and apply an
+unchanged Luna-authored patch; editing that patch is correction work for Luna.
+Use the receipt to focus inspection rather than to replace it.
 
 ## Worktree requirement
 
@@ -131,9 +132,11 @@ is ready only when it:
   review, correction loops, and final commit verification.
 - Avoids speculative work and covers the complete operator-visible outcome.
 
-The Sol lead must resolve gaps in this plan from the issue and repository
-evidence before delegating. If the evidence contains a genuine contradiction
-or missing decision that materially changes the result, stop and ask the user.
+Sol may delegate bounded, read-only reconnaissance to Luna Max to locate test
+seams, commands, and source evidence before approving implementation packets.
+Sol resolves planning decisions from that evidence. If it exposes a genuine
+contradiction or missing decision that materially changes the result, stop and
+ask the user.
 
 ## Delegate and iterate
 
@@ -150,6 +153,11 @@ Delegate each work packet to a Luna Max sub-agent. Every prompt must state:
   Sol lead explicitly authorizes that exact action.
 - That it must not spawn another writing agent or expand its ownership without
   approval from the Sol lead.
+
+Before substantive work, have Luna confirm the packet's workspace access and
+required tools/dependencies. Report an execution blocker immediately with the
+failed operation and candidate state; do not repeatedly retry or silently
+transfer implementation or full validation to Sol.
 
 Use parallel Luna Max agents only for independent, non-overlapping packets and
 within the available concurrency limit. Treat the working tree, index, `HEAD`,
@@ -229,10 +237,13 @@ Apply the code-review skill's two-axis rubric, but have the Sol lead launch both
 independent review agents directly so each launch explicitly records
 `gpt-5.6-luna` and `reasoning_effort: max`. Do not delegate the review-skill
 invocation to an agent that could choose unpinned reviewers. The Sol lead must
-inspect each finding against the source evidence, keep valid findings separate
-by axis, and delegate every valid in-scope correction to Luna Max. Override the
-review skill's default HEAD-only transport: pass the fixed-point commit and
-candidate tree OID to each reviewer and require each reviewer to inspect
+inspect each finding against the source evidence and keep findings separate by
+axis. When adjudication needs substantial tracing or reproduction, assign Luna
+a bounded investigation returning evidence and a proposed disposition; Sol
+decides the disposition before authorizing corrections. Delegate every valid
+in-scope correction to Luna Max. Override the review skill's default HEAD-only
+transport: pass the fixed-point commit and candidate tree OID to each reviewer
+and require each reviewer to inspect
 `git diff <fixed-point> <candidate-tree-oid>`, plus appropriate `git ls-tree`,
 `git show`, and file commands. Verify that this diff is non-empty and require
 each review receipt to report both object identities and its findings. Do not
@@ -332,13 +343,20 @@ behind.
   as both the ticket source and initial review fixed point.
 - A later "merge and close" follow-up resumes the preserved worktree and branch
   named in the completion report. Verify their paths, refs, commits, and clean
-  state before mutation. If that identity is unavailable or ambiguous, stop.
+  state before mutation. Reload this protocol and carry forward any subsequent
+  Drovr candidate identity, unresolved findings, and verification evidence.
+  If that identity is unavailable or ambiguous, stop. A later integration
+  request does not by itself resolve findings or validate changed content.
 - Before integration, fetch the remote-tracking ref again. If it moved, merge
-  the new remote SHA into the ticket branch without rebasing. Resolve only
-  interactions required by this ticket, then use the new remote SHA as the
-  review fixed point. Any changed ticket head requires the Sol final command
-  matrix, a new staged candidate tree receipt, and fresh two-axis review using
-  the new fixed point and candidate tree OID.
+  the new remote SHA into the ticket branch without rebasing. Sol delegates
+  semantic conflict resolution and integration-failure diagnosis to Luna Max
+  in the ticket worktree, scoped to interactions required by this ticket.
+  Use the new remote SHA as the review fixed point. Any changed ticket head
+  requires Luna to run the final command matrix and return a new staged
+  candidate tree receipt, followed by fresh two-axis review using the new fixed
+  point and candidate tree OID within the existing review budget. Sol verifies
+  those receipts before publication; passing tests alone do not replace review
+  of conflict-resolution edits.
 - During implementation, do not integrate, push, or close the issue.
 - If the user later says "merge and close," that explicitly authorizes:
   1. Verifying the fetched remote SHA is an ancestor of the exact reviewed

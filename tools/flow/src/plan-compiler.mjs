@@ -33,6 +33,8 @@ import {
 } from "./reboot-facts.mjs";
 import { validateFeatureRepairContract } from "./feature-repair-contract.mjs";
 import {
+  authorityGeneration,
+  authorityWatermark,
   normalizeRequiredAuthorities,
   prepareAuthorityBindings,
 } from "./authority-bindings.mjs";
@@ -41,6 +43,16 @@ import {
   normalizeResultBindingDelta,
   validateResultBindingDeclarations,
 } from "./result-bindings.mjs";
+import {
+  DELEGATE_RESOURCE_CONTRACTS,
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+  validateDelegateInputInstructions,
+  validateDelegateOutputSchemas,
+  validateDelegateOutputRequirements,
+  validateDelegateTaskInputs,
+} from "./delegate-input-envelope.mjs";
+import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
@@ -224,6 +236,7 @@ export function compilePredefinedFlowSelection(
   const proposal = normalizePredefinedProposal(generated, normalizedSelection);
   const validatedRevisionTemplates = validateDynamicPlan(proposal, {
     registeredOperations,
+    allowUnboundResourceSelections: true,
   });
 
   let requiredAuthorities;
@@ -246,6 +259,8 @@ export function compilePredefinedFlowSelection(
     }
     throw error;
   }
+
+  validatePreparedDelegateResourceBindings(proposal, requiredAuthorities);
 
   const graph = canonicalizeDynamicGraph(proposal.graph);
   const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
@@ -497,11 +512,45 @@ function invalidPredefined(reason, message, options) {
   throw new PredefinedFlowValidationError(reason, message, options);
 }
 
+function validatePreparedDelegateResourceBindings(proposal, bindings) {
+  const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
+  const cards = [
+    ...proposal.graph.cards,
+    ...(proposal.revision_templates ?? []).flatMap(({ changes }) =>
+      changes.add_cards ?? []),
+  ];
+  for (const card of cards) {
+    if (card.executor?.kind !== "delegate") continue;
+    for (const reference of card.inputs?.resource_references ?? []) {
+      const binding = bindingById.get(reference.authority_binding_id);
+      if (!binding || binding.contract !== "flow.resource-authority/v1" ||
+          binding.observation_input?.fact !== "resource_claims") {
+        invalidPredefined(
+          "invalid_delegate_resource_binding",
+          `delegate resource selection is not bound to resource facts: ${card.id}`,
+        );
+      }
+      if (![
+            "available",
+            "present",
+          ].includes(binding.observation?.status) ||
+          authorityWatermark(binding.observation) === null &&
+            authorityGeneration(binding.observation) === null) {
+        invalidPredefined(
+          "required_authority_stale",
+          `delegate resource facts are not an available prepared snapshot: ${card.id}`,
+        );
+      }
+    }
+  }
+}
+
 export function validateDynamicPlan(proposal, {
   registeredOperations = null,
   skipRevisionTemplates = false,
   supersededCardIds = [],
   replacementBindings = new Map(),
+  allowUnboundResourceSelections = false,
 } = {}) {
   if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {
     invalidPlan("invalid_proposal_contract", "dynamic plan proposal contract is invalid");
@@ -601,7 +650,7 @@ export function validateDynamicPlan(proposal, {
     } else if (card.executor.kind === "operation") {
       validateOperationCard(card, proposal, registeredOperations);
     } else if (card.executor.kind === "delegate") {
-      validateDelegateCard(card, proposal);
+      validateDelegateCard(card, proposal, { allowUnboundResourceSelections });
     } else if (card.executor.kind === "subrun") {
       validateSubrunCard(card, proposal, registeredOperations);
     } else {
@@ -638,6 +687,15 @@ export function validateDynamicPlan(proposal, {
       "dynamic plan subrun authority is incomplete",
     );
   }
+  if (!allowUnboundResourceSelections && proposal.graph.cards.some((card) =>
+      card.executor?.kind === "delegate" &&
+      Array.isArray(card.inputs?.resource_references) &&
+      card.inputs.resource_references.length > 0)) {
+    invalidPlan(
+      "dynamic_resource_bindings_unavailable",
+      "dynamic resource-bearing delegates require prepared authority bindings",
+    );
+  }
   assertAcyclic(proposal.graph.cards);
   validateResultBindingGraph(proposal.graph, supersededCardIds);
   validateBlockObservations(proposal);
@@ -646,6 +704,7 @@ export function validateDynamicPlan(proposal, {
     validatedRevisionTemplates = validateRevisionTemplates(
       proposal,
       registeredOperations,
+      { allowUnboundResourceSelections },
     );
     validateDeclaredRecoveryCapacity(proposal);
   }
@@ -965,7 +1024,11 @@ function validateBlockObservations(proposal) {
   }
 }
 
-function validateRevisionTemplates(proposal, registeredOperations) {
+function validateRevisionTemplates(
+  proposal,
+  registeredOperations,
+  { allowUnboundResourceSelections = false } = {},
+) {
   const templates = proposal.revision_templates === undefined
     ? []
     : proposal.revision_templates;
@@ -1042,7 +1105,9 @@ function validateRevisionTemplates(proposal, registeredOperations) {
         template = repairValidation.template;
       }
     }
-    validateRevisionChanges(proposal, template, registeredOperations);
+    validateRevisionChanges(proposal, template, registeredOperations, {
+      allowUnboundResourceSelections,
+    });
     validatedTemplates.push(template);
   }
   for (const id of referencedTemplates.keys()) {
@@ -1056,7 +1121,12 @@ function validateRevisionTemplates(proposal, registeredOperations) {
   return validatedTemplates;
 }
 
-function validateRevisionChanges(proposal, template, registeredOperations) {
+function validateRevisionChanges(
+  proposal,
+  template,
+  registeredOperations,
+  { allowUnboundResourceSelections = false } = {},
+) {
   const changes = template.changes;
   const fields = [
     "add_cards",
@@ -1229,6 +1299,7 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
     registeredOperations,
     skipRevisionTemplates: true,
     supersededCardIds: changes.supersede_cards,
+    allowUnboundResourceSelections,
     replacementBindings: new Map(changes.add_cards.map((card) => [
       card.replaces_card_id ?? card.inputs?.replaces_card_id,
       card.id,
@@ -1253,8 +1324,30 @@ function validateCheckpointCard(card, facts) {
   }
 }
 
-function validateDelegateCard(card, proposal) {
+function validateDelegateCard(
+  card,
+  proposal,
+  { allowUnboundResourceSelections = false } = {},
+) {
   const { explicit_facts: facts } = proposal;
+  if ([
+        "execution_authority",
+        "authority_materialized_evidence",
+        "predecessor_evidence",
+        "instructions",
+      ].some((field) => Object.hasOwn(card.inputs ?? {}, field)) ||
+      (Array.isArray(card.inputs?.resource_references) &&
+        card.inputs.resource_references.some((reference) =>
+          isPlainRecord(reference) &&
+          Object.hasOwn(reference, "authority_binding")))) {
+    invalidPlan(
+      "caller_delegate_input_forbidden",
+      `delegate input contains caller-selected authority material: ${card.id}`,
+    );
+  }
+  validateDelegateInputSelections(card, facts, {
+    requireCardClaimSubset: allowUnboundResourceSelections,
+  });
   const declaredEvidence = card.inputs?.delegate_evidence_card_ids ??
     card.inputs?.finding_lens_card_ids;
   if (declaredEvidence !== undefined &&
@@ -1303,6 +1396,16 @@ function validateDelegateCard(card, proposal) {
     invalidPlan("invalid_delegate_binding",
       `delegate launch binding is incomplete: ${card.id}`);
   }
+  try {
+    validateDelegateInputInstructions(card.inputs.prompt);
+  } catch (error) {
+    invalidPlan(
+      error?.reason === "unsafe_delegate_input"
+        ? "unsafe_delegate_input"
+        : "invalid_delegate_binding",
+      `delegate instructions are not transferable: ${card.id}`,
+    );
+  }
   if (card.route?.description_digest !== description.description_digest ||
       card.route?.launch_comparison_key !== description.comparison_keys.launch ||
       card.route?.configuration_watermark !==
@@ -1311,6 +1414,7 @@ function validateDelegateCard(card, proposal) {
     invalidPlan("invalid_delegate_route",
       `delegate route does not bind the exact description: ${card.id}`);
   }
+  validateDelegateCapability(card, proposal);
   validateDelegateFallback(card, description);
   validateDelegateSteering(card);
   if (!Number.isInteger(card.limits.max_attempts) ||
@@ -1319,11 +1423,216 @@ function validateDelegateCard(card, proposal) {
     invalidPlan("invalid_delegate_recovery",
       `delegate recovery contract is invalid: ${card.id}`);
   }
+  validateActiveExecutionLimit(card, "delegate");
   if (card.validators.length < 1 || !card.validators.every((validator) =>
     facts.validator_contracts.includes(validator))) {
     invalidPlan("unsupported_delegate_validator",
       `delegate validators are not declared: ${card.id}`);
   }
+  try {
+    validateDelegateOutputSchemas(card.outputs);
+  } catch {
+    invalidPlan(
+      "invalid_delegate_outputs",
+      `delegate output schemas are not exact: ${card.id}`,
+    );
+  }
+}
+
+function validateDelegateCapability(card, proposal) {
+  const capability = card.inputs?.description?.launch?.capability;
+  // Older registered descriptions may intentionally omit launch posture in
+  // preparation-only fixtures. Runtime authority derivation remains strict;
+  // when a posture is advertised, its Flow grant mapping is mandatory here.
+  if (capability === undefined) return;
+  const grantIds = flowGrantIdsForDrovrCapability(capability);
+  if (grantIds === null) {
+    invalidPlan(
+      "unsupported_delegate_capability",
+      `delegate capability has no Flow grant mapping: ${card.id}`,
+    );
+  }
+  const facts = proposal.explicit_facts;
+  const authorityCapabilities = proposal.requested_authority.capabilities;
+  const revisionCapabilities = (proposal.revision_templates ?? [])
+    .flatMap(({ changes }) => changes.capability_additions ?? [])
+    .filter((binding) => binding?.card_ids?.includes(card.id));
+  if (!grantIds.every((grantId) =>
+      facts.capability_envelopes.includes(grantId) &&
+      (authorityCapabilities.includes(grantId) ||
+       revisionCapabilities.some(({ capability }) => capability === grantId)))) {
+    invalidPlan(
+      "delegate_capability_unavailable",
+      `delegate capability is not accepted for its Flow card: ${card.id}`,
+    );
+  }
+}
+
+function validateDelegateInputSelections(
+  card,
+  facts,
+  { requireCardClaimSubset = false } = {},
+) {
+  const taskInputs = card.inputs?.task_inputs;
+  if (taskInputs !== undefined) {
+    try {
+      validateDelegateTaskInputs(taskInputs);
+    } catch {
+      invalidPlan(
+        "invalid_delegate_task_inputs",
+        `delegate task inputs are not transferable: ${card.id}`,
+      );
+    }
+  }
+  const outputRequirements = card.inputs?.output_requirements;
+  if (outputRequirements !== undefined) {
+    let normalizedRequirements;
+    try {
+      normalizedRequirements = validateDelegateOutputRequirements(
+        outputRequirements,
+      );
+    } catch {
+      invalidPlan(
+        "invalid_delegate_output_requirements",
+        `delegate output requirements are not exact: ${card.id}`,
+      );
+    }
+    const canonicalRequirements = {
+      schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+      format: "canonical-json",
+      schemas: [...card.outputs],
+      validator_contracts: [...card.validators],
+    };
+    if (!sameCanonicalValue(normalizedRequirements, canonicalRequirements)) {
+      invalidPlan(
+        "delegate_output_requirements_mismatch",
+        `delegate output requirements must equal card outputs and validators: ${card.id}`,
+      );
+    }
+  }
+  const references = card.inputs?.resource_references;
+  if (references === undefined) return;
+  if (!Array.isArray(references)) {
+    invalidPlan(
+      "invalid_delegate_resource_selection",
+      `delegate resource selections are not an array: ${card.id}`,
+    );
+  }
+  const seen = new Set();
+  for (const reference of references) {
+    if (!isPlainRecord(reference) ||
+        !hasExactKeys(reference, [
+          "schema",
+          "kind",
+          "authority",
+          "contract",
+          "subject_id",
+          "generation",
+          "mutation_epoch",
+          "fingerprint",
+          "access",
+          "operation",
+          "authority_binding_id",
+        ]) ||
+        reference.schema !== DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA ||
+        !["workspace", "artifact"].includes(reference.kind) ||
+        typeof reference.authority !== "string" || !reference.authority ||
+        typeof reference.contract !== "string" || !reference.contract ||
+        typeof reference.subject_id !== "string" || !reference.subject_id ||
+        !isDigest(reference.fingerprint) ||
+        !["read_only", "mutation"].includes(reference.access) ||
+        typeof reference.authority_binding_id !== "string" ||
+        !reference.authority_binding_id ||
+        (reference.generation !== undefined &&
+          (!Number.isSafeInteger(reference.generation) || reference.generation < 1)) ||
+        (reference.mutation_epoch !== undefined &&
+          (!Number.isSafeInteger(reference.mutation_epoch) ||
+            reference.mutation_epoch < 0)) ||
+        (reference.operation !== undefined &&
+          (typeof reference.operation !== "string" || !reference.operation))) {
+      invalidPlan(
+        "invalid_delegate_resource_selection",
+        `delegate resource selection is incomplete: ${card.id}`,
+      );
+    }
+    const expectedAuthority = {
+      workspace: "WorkspaceAuthority",
+      artifact: "ArtifactAuthority",
+    }[reference.kind];
+    if (expectedAuthority !== undefined &&
+        reference.authority !== expectedAuthority) {
+      invalidPlan(
+        "resource_authority_mismatch",
+        `delegate resource selection names the wrong owner: ${card.id}`,
+      );
+    }
+    if (reference.contract !== DELEGATE_RESOURCE_CONTRACTS[reference.kind]) {
+      invalidPlan(
+        "resource_contract_mismatch",
+        `delegate resource selection names the wrong contract: ${card.id}`,
+      );
+    }
+    if (reference.access === "mutation" && reference.operation !== card.id) {
+      invalidPlan(
+        "resource_operation_mismatch",
+        `mutation resource selection must bind its owning card: ${card.id}`,
+      );
+    }
+    if (reference.operation !== undefined && reference.operation !== card.id) {
+      invalidPlan(
+        "resource_operation_mismatch",
+        `delegate resource selection operation is not card-scoped: ${card.id}`,
+      );
+    }
+    const identity = digest({
+      kind: reference.kind,
+      subject_id: reference.subject_id,
+      generation: reference.generation ?? null,
+      mutation_epoch: reference.mutation_epoch ?? null,
+      fingerprint: reference.fingerprint,
+      authority_binding_id: reference.authority_binding_id,
+    });
+    if (seen.has(identity)) {
+      invalidPlan(
+        "duplicate_delegate_resource_selection",
+        `delegate resource selections must be unique: ${card.id}`,
+      );
+    }
+    seen.add(identity);
+    if (!facts.resource_claims.some((claim) =>
+      isPlainRecord(claim) &&
+      claim.kind === reference.kind &&
+      claim.id === reference.subject_id &&
+      claim.generation === reference.generation &&
+      claim.mutation_epoch === reference.mutation_epoch &&
+      claim.fingerprint === reference.fingerprint)) {
+      invalidPlan(
+        "undeclared_delegate_resource_selection",
+        `delegate resource selection is outside prepared facts: ${card.id}`,
+      );
+    }
+    if (requireCardClaimSubset && !card.resource_claims.some((claim) =>
+        isPlainRecord(claim) &&
+        claim.kind === reference.kind &&
+        claim.id === reference.subject_id &&
+        claim.generation === reference.generation &&
+        claim.mutation_epoch === reference.mutation_epoch &&
+        claim.fingerprint === reference.fingerprint &&
+        (claim.access === undefined || claim.access === reference.access) &&
+        (claim.operation === undefined || claim.operation === reference.operation))) {
+      invalidPlan(
+        "card_resource_selection_outside_claims",
+        `delegate resource selection is outside its card claims: ${card.id}`,
+      );
+    }
+  }
+}
+
+function hasExactKeys(value, keys) {
+  const allowed = new Set(keys);
+  const actual = Reflect.ownKeys(value);
+  return actual.length === Object.keys(value).length &&
+    actual.every((key) => typeof key === "string" && allowed.has(key));
 }
 
 function validateDelegateSteering(card) {
@@ -1453,6 +1762,14 @@ function validateOperationCard(card, proposal, registeredOperations) {
       `operation recovery does not match its effect class: ${card.id}`,
     );
   }
+  if (!Number.isSafeInteger(card.limits.max_attempts) ||
+      card.limits.max_attempts < 1) {
+    invalidPlan(
+      "invalid_operation_attempt_limit",
+      `operation attempt limit is invalid: ${card.id}`,
+    );
+  }
+  validateActiveExecutionLimit(card, "operation");
   if (isTrackerProgressContract(card.executor.contract)) {
     try {
       validateTrackerProgressBinding(proposal);
@@ -1621,6 +1938,18 @@ function sameCanonicalValue(left, right) {
   } catch {
     return false;
   }
+}
+
+function validateActiveExecutionLimit(card, executorKind) {
+  if (!Object.hasOwn(card.limits, "max_active_seconds") ||
+      Number.isSafeInteger(card.limits.max_active_seconds) &&
+      card.limits.max_active_seconds >= 0) {
+    return;
+  }
+  invalidPlan(
+    "invalid_active_execution_limit",
+    `${executorKind} active execution limit is invalid: ${card.id}`,
+  );
 }
 
 function invalidPlan(reason, message) {

@@ -4,12 +4,16 @@ import {
   confirmedLaunchRequest,
   dynamicCheckpointProposal,
 } from "./dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "./fixed-host-identity.mjs";
+import {
+  fixedExecutionTimeAdapter,
+  fixedHostIdentity,
+} from "./fixed-host-identity.mjs";
 
 const [authorityDirectory] = process.argv.slice(2);
 const authority = createDurableRunAuthority({
   authorityDirectory,
   hostIdentityAdapter: fixedHostIdentity("boot-a", "owner-process"),
+  timeObservationAdapter: fixedExecutionTimeAdapter({ bootId: "boot-a" }),
 });
 const runtime = createFlowRuntime({ runAuthority: authority });
 const prepared = runtime.prepare(dynamicCheckpointProposal());

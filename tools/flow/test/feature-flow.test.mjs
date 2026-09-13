@@ -9,6 +9,7 @@ import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
+import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
@@ -31,7 +32,7 @@ import {
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
-import { createDurableRunAuthority, createInMemoryRunAuthority } from
+import { createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
 import {
   getArtifactAuthority,
@@ -46,9 +47,14 @@ import {
   dynamicCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+} from
+  "../test-support/fixed-host-identity.mjs";
+import {
   shippedAuthorityRegistrations,
   shippedAuthorityStateFromFacts,
 } from "../test-support/authority-bindings.mjs";
+
 import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
 
@@ -176,6 +182,43 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     cards.get("feature-critique").route,
     inputs.delegation.critique.route,
   );
+  for (const [cardId, phase, access, outputSchema] of [
+    ["feature-apply", "apply", "mutation", "workspace_mutation_observation"],
+    ["feature-critique", "critique", "read_only", "critique_observation"],
+  ]) {
+    const card = cards.get(cardId);
+    assert.deepEqual(card.inputs.task_inputs, {
+      schema: "flow.delegate-task-inputs/v1",
+      flow: "feature/v1",
+      phase,
+      mode: inputs.mode,
+      brief: inputs.brief,
+    });
+    assert.deepEqual(card.inputs.resource_references, [{
+      schema: "flow.delegate-execution-resource-selection/v1",
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: inputs.workspace.subject_id,
+      generation: inputs.workspace.generation,
+      mutation_epoch: inputs.workspace.mutation_epoch,
+      fingerprint: inputs.workspace.fingerprint,
+      access,
+      ...(access === "mutation" ? { operation: cardId } : {}),
+      authority_binding_id: "resource:facts",
+    }]);
+    assert.deepEqual(card.inputs.output_requirements, {
+      schema: "flow.delegate-output-requirements/v1",
+      format: "canonical-json",
+      schemas: [outputSchema],
+      validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
+    });
+    assert.deepEqual(card.inputs.output_requirements.schemas, card.outputs);
+    assert.deepEqual(
+      card.inputs.output_requirements.validator_contracts,
+      card.validators,
+    );
+  }
   assert.equal(cards.get("feature-apply").inputs.wait_timeout_ms, 300_000);
   assert.equal(cards.get("feature-critique").inputs.wait_timeout_ms, 300_000);
   assert.equal(cards.get("feature-verify").inputs.receipt_owner,
@@ -564,8 +607,9 @@ test("dynamic result-binding declarations have canonical order", () => {
   };
   const reordered = structuredClone(proposal);
   reordered.graph.result_bindings.reverse();
-  const canonical = compileDynamicPlan(proposal);
-  const reorderedCanonical = compileDynamicPlan(reordered);
+  const compileOptions = { allowUnboundResourceSelections: true };
+  const canonical = compileDynamicPlan(proposal, compileOptions);
+  const reorderedCanonical = compileDynamicPlan(reordered, compileOptions);
   assert.equal(canonical.bundle_digest, reorderedCanonical.bundle_digest);
   assert.deepEqual(
     canonical.graph.result_bindings,
@@ -733,6 +777,11 @@ test("feature/v1 repairs preserve every authority-bearing card field", () => {
     const replacement = structuredClone(original);
     replacement.id = "feature-apply-repair";
     replacement.replaces_card_id = original.id;
+    replacement.inputs.resource_references =
+      replacement.inputs.resource_references?.map((reference) =>
+        reference.access === "mutation"
+          ? { ...reference, operation: replacement.id }
+          : reference);
     replacement.inputs.managed_agent.card_ids = [replacement.id];
     replacement.inputs.managed_agent.terminal_card_id = replacement.id;
     template.changes.add_cards = [replacement];
@@ -1501,7 +1550,7 @@ test("feature/v1 admits serialized slice and completeness repairs with explicit 
           role: "reviewer",
           model: "gpt-5.6",
           effort: "high",
-          capability: "read-only",
+          capability: "workspace-write",
         },
         caller_metadata: { owner: "feature-flow-serialized-repair" },
       }, {});
@@ -1540,6 +1589,13 @@ test("feature/v1 admits serialized slice and completeness repairs with explicit 
       replacement.dependencies = card.dependencies.map((id) =>
         replacements.get(id) ?? id);
       replacement.inputs = rebindFeatureCardInputs(replacement.inputs, replacements);
+      if (replacement.executor?.kind === "delegate") {
+        replacement.inputs.resource_references =
+          replacement.inputs.resource_references?.map((reference) =>
+            reference.access === "mutation"
+              ? { ...reference, operation: replacement.id }
+              : reference);
+      }
       if (replacement.inputs?.managed_agent) {
         replacement.inputs.managed_agent = rebindFeatureManagedAgent(
           replacement.inputs.managed_agent,
@@ -1667,7 +1723,7 @@ test("feature/v1 gates repair expansion behind an exact checkpoint", async (t) =
   assert.ok(revision);
   assert.equal(declinedFixture.runtime.command(revision).accepted, true);
   projection = declinedFixture.runtime.query({ run_id: declinedFixture.runId });
-  assert.deepEqual(projection.capabilities, []);
+  assert.deepEqual(projection.capabilities, ["repository:write"]);
   assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
     false);
   const checkpoint = projection.legal_actions.find(({ type }) =>
@@ -1684,7 +1740,7 @@ test("feature/v1 gates repair expansion behind an exact checkpoint", async (t) =
   assert.equal(stale.code, "stale_authority_watermark");
   assert.deepEqual(declinedFixture.runtime.query({
     run_id: declinedFixture.runId,
-  }).capabilities, []);
+  }).capabilities, ["repository:write"]);
   assert.equal(declinedFixture.runtime.command({
     ...checkpoint,
     decision: "decline",
@@ -1712,7 +1768,7 @@ test("feature/v1 gates repair expansion behind an exact checkpoint", async (t) =
   assert.equal(watchedDecline.value.revision_outcomes[0].status,
     "expansion_declined");
   await declinedWatch.return();
-  assert.deepEqual(projection.capabilities, []);
+  assert.deepEqual(projection.capabilities, ["repository:write"]);
   assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
     false);
   assert.equal(projection.legal_actions.some(({ type, card_id: cardId }) =>
@@ -1727,7 +1783,7 @@ test("feature/v1 gates repair expansion behind an exact checkpoint", async (t) =
     type === "revision_decision");
   assert.equal(acceptedFixture.runtime.command(revisionToAccept).accepted, true);
   projection = acceptedFixture.runtime.query({ run_id: acceptedFixture.runId });
-  assert.deepEqual(projection.capabilities, []);
+  assert.deepEqual(projection.capabilities, ["repository:write"]);
   assert.ok(projection.admission_capability_bindings.some(({ capability }) =>
     capability === "repository:write"));
   assert.equal(projection.resource_claims.some(({ id }) => id === "repair-output"),
@@ -2083,7 +2139,7 @@ test("feature/v1 rejects unreachable serialized safe baselines during preparatio
   }
 });
 
-test("workspace effect authority rejects an epoch-only stale claim", () => {
+test("workspace effect authority rejects stale and contradictory claim facts", () => {
   const git = exactGitFacts();
   const projection = {
     schema: "work.workspace-projection/v1",
@@ -2100,7 +2156,7 @@ test("workspace effect authority rejects an epoch-only stale claim", () => {
   const claim = {
     id: projection.subject_id,
     generation: projection.generation,
-    mutation_epoch: 7,
+    mutation_epoch: projection.mutation_epoch,
     fingerprint: digestValue({ git }),
   };
   const intent = {
@@ -2108,10 +2164,34 @@ test("workspace effect authority rejects an epoch-only stale claim", () => {
     card_id: "feature-apply",
   };
 
-  assert.equal(
-    workspaceEffectAuthorityIssue(projection, claim, intent),
-    "workspace_claim_stale",
-  );
+  for (const [label, changedProjection, changedClaim, expected] of [
+    ["generation", projection, { ...claim, generation: 2 },
+      "workspace_claim_stale"],
+    ["mutation epoch", projection, { ...claim, mutation_epoch: 7 },
+      "workspace_claim_stale"],
+    ["fingerprint", projection, {
+      ...claim,
+      fingerprint: `sha256:${"f".repeat(64)}`,
+    }, "workspace_claim_stale"],
+    ["holder", {
+      ...projection,
+      claims: [{ holder: "run:other", operations: ["feature-apply"] }],
+    }, claim, "workspace_claim_conflict"],
+    ["operation", {
+      ...projection,
+      claims: [{ holder: "run:feature", operations: ["feature-other"] }],
+    }, claim, "workspace_claim_conflict"],
+    ["taint", {
+      ...projection,
+      taint: { status: "tainted", reason: "manual" },
+    }, claim, "workspace_claim_tainted"],
+  ]) {
+    assert.equal(
+      workspaceEffectAuthorityIssue(changedProjection, changedClaim, intent),
+      expected,
+      label,
+    );
+  }
 });
 
 test("feature/v1 test-only selection needs no verify baseline", () => {
@@ -2431,6 +2511,9 @@ test("feature/v1 rejects invalid test receipts before writer admission and recov
     mode: "test",
     testOnlyWithoutVerification: true,
     testReceiptMode: "unrelated",
+    maxAttemptsByCard: {
+      "feature-slice-behavior-test": 2,
+    },
     slices: [{
       schema: "flow.feature-slice/v1",
       id: "behavior",
@@ -2791,7 +2874,7 @@ test("feature/v1 attributes mutation to the authority-owned apply card", async (
   const rejectedWorkspace = rejected.workspaceAuthority.query(workspaceQuery());
   assert.equal(rejectedEffect.card_id, "feature-apply");
   assert.equal(rejectedWorkspace.claims[0].holder, "run:competing-writer");
-  assert.equal(rejectedEffect.status, "unresolved");
+  assert.equal(rejectedEffect.status, "reconciling");
   assert.equal(rejected.delegateDispatches(), 0);
 });
 
@@ -2836,6 +2919,9 @@ test("feature/v1 test operation recovery reuses the current intent once", async 
     mode: "test",
     testOnlyWithoutVerification: true,
     testReceiptMode: "throw",
+    maxAttemptsByCard: {
+      "feature-slice-behavior-test": 2,
+    },
     slices: [{
       schema: "flow.feature-slice/v1",
       id: "behavior",
@@ -3178,7 +3264,7 @@ test("feature/v1 fences apply behind the exact workspace writer", async (t) => {
   const projection = fixture.runtime.query({ run_id: fixture.runId });
   const effect = projection.effects.find(({ card_id: cardId }) =>
     cardId === "feature-apply");
-  assert.equal(effect.status, "unresolved");
+  assert.equal(effect.status, "reconciling");
   assert.equal(fixture.delegateDispatches(), 0);
   const recovery = projection.legal_actions.find(({ type, effect_id: effectId }) =>
     type === "recovery" && effectId === effect.effect_id);
@@ -3342,7 +3428,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
       role: "reviewer",
       model: "gpt-5.6",
       effort: "high",
-      capability: "read-only",
+      capability: "workspace-write",
     },
     caller_metadata: { owner: "feature-flow" },
   }, {});
@@ -3383,6 +3469,8 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   facts.validator_contracts.push(FEATURE_CAPTURE_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_VERIFICATION_RECEIPT_VALIDATOR);
+  facts.capability_envelopes.push("repository:write");
+  facts.limits.max_capabilities = 1;
   facts.resource_claims.push({
     kind: "workspace",
     id: "workspace:producer",
@@ -3456,6 +3544,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
         validate(output) {
           return output.endsWith("accepted");
         },
+        evidenceSafety: validateDelegateEvidenceSafety,
       },
     },
     registeredOperations: {
@@ -3886,6 +3975,13 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     REVIEW_DELEGATE_OUTPUT_VALIDATOR,
     "flow.validator/operation-receipt/v1",
   );
+  reviewFacts.resource_claims.push({
+    kind: "workspace",
+    id: review.candidate.workspace.subject_id,
+    generation: review.candidate.workspace.generation,
+    mutation_epoch: review.candidate.workspace.mutation_epoch,
+    fingerprint: review.candidate.workspace.fingerprint,
+  });
   reviewFacts.limits.max_cards = 8;
   reviewFacts.limits.max_resources = 2;
   Object.assign(authorityState, shippedAuthorityStateFromFacts(reviewFacts));
@@ -3929,6 +4025,19 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
       return reviewRetiredProjection(agentId, turnId);
     },
   };
+  const baseReviewDefinition = createReviewDefinition();
+  const retryableReviewDefinition = {
+    ...baseReviewDefinition,
+    compile(request) {
+      const proposal = baseReviewDefinition.compile(request);
+      const record = proposal.graph.cards.find(({ id }) => id === "review-record");
+      record.limits = {
+        ...record.limits,
+        max_attempts: 2,
+      };
+      return proposal;
+    },
+  };
   const reviewRuntime = createFlowRuntime({
     runAuthority,
     registeredAuthorities,
@@ -3936,7 +4045,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     delegatedAgentPort: reviewDelegatedAgentPort,
     predefinedDefinitions: {
       "feature/v1": createFeatureDefinition(),
-      "review/v1": createReviewDefinition(),
+      "review/v1": retryableReviewDefinition,
     },
   });
   const preparedReview = reviewRuntime.prepare({
@@ -3949,6 +4058,19 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     confirmedPredefinedLaunchRequest(preparedReview),
   );
   assert.equal(reviewLaunch.created, true, JSON.stringify(reviewLaunch));
+  const reviewWorkspaceClaimReceipt = workspaceAuthority.command(workspaceClaim({
+    expectedGeneration: review.candidate.workspace.generation,
+    expectedWatermark: workspaceAuthority.query(workspaceQuery()).watermark,
+    expectedFingerprint: review.candidate.workspace.fingerprint,
+    holder: reviewLaunch.run_id,
+    operations: [
+      "review-lens-security",
+      "review-lens-correctness",
+      "review-critic",
+    ],
+  }));
+  assert.equal(reviewWorkspaceClaimReceipt.accepted, true,
+    JSON.stringify(reviewWorkspaceClaimReceipt));
   let recoverySeen = false;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const projection = reviewRuntime.query({ run_id: reviewLaunch.run_id });
@@ -3969,16 +4091,14 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.equal(completedReviewRun.phase, "succeeded");
   assert.equal(receiptLoss, false);
   assert.equal(recoverySeen, true);
-  assert.deepEqual(reviewPrompts.filter((prompt) =>
-    prompt.includes("Authority-settled finding lens results:")).length, 1);
-  assert.match(
-    reviewPrompts.find((prompt) => prompt.includes("Authority-settled")),
-    /review-lens-security/,
-  );
-  assert.match(
-    reviewPrompts.find((prompt) => prompt.includes("Authority-settled")),
-    /review-lens-correctness/,
-  );
+  const reviewEnvelopes = reviewPrompts.map((prompt) => JSON.parse(prompt));
+  assert.equal(reviewEnvelopes.filter(({ task_inputs: taskInputs }) =>
+    taskInputs.role === "critic").length, 1);
+  const criticEnvelope = reviewEnvelopes.find(({ task_inputs: taskInputs }) =>
+    taskInputs.role === "critic");
+  assert.deepEqual(criticEnvelope.predecessor_evidence.accepted_delegates.map(
+    ({ card_id: cardId }) => cardId,
+  ), ["review-lens-correctness", "review-lens-security"]);
   const sourceRecordEffect = completedReviewRun.effects.find(({ card_id: cardId }) =>
     cardId === "review-record");
   assert.equal(sourceRecordEffect.status, "succeeded");
@@ -4822,6 +4942,9 @@ test("feature/v1 seal rejects invalid verification and publication evidence", as
 test("feature/v1 seal rollback keeps all authorities unpromoted and exposes exact recovery", async (t) => {
   let injected = true;
   const fixture = await createFeatureFailureFixture(t, {
+    maxAttemptsByCard: {
+      "feature-seal": 2,
+    },
     beforeHandoffCommit() {
       if (injected) {
         injected = false;
@@ -5299,7 +5422,7 @@ async function createFeatureFailureFixture(t, scenario) {
       role: "reviewer",
       model: "gpt-5.6",
       effort: "high",
-      capability: "read-only",
+      capability: "workspace-write",
     },
     caller_metadata: { owner: "feature-flow-red" },
   }, {});
@@ -5563,7 +5686,9 @@ async function createFeatureFailureFixture(t, scenario) {
   if (scenario.repair === "scope") {
     facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
     facts.validator_contracts.push("flow.validator/card-block-observation/v1");
-    facts.capability_envelopes.push("repository:write");
+    if (!facts.capability_envelopes.includes("repository:write")) {
+      facts.capability_envelopes.push("repository:write");
+    }
     Object.assign(facts.limits, {
       max_revisions: 1,
       max_cards_per_revision: 2,
@@ -5643,6 +5768,7 @@ async function createFeatureFailureFixture(t, scenario) {
         validate(output) {
           return output.endsWith("accepted");
         },
+        evidenceSafety: validateDelegateEvidenceSafety,
       },
     },
     registeredOperations: {
@@ -5718,7 +5844,7 @@ async function createFeatureFailureFixture(t, scenario) {
         invoke(intent) {
           testInvocations += 1;
           if (scenario.testReceiptMode === "missing") {
-            return operationReceipt(intent, null);
+            return undefined;
           }
           if (scenario.testReceiptMode === "throw" &&
               !scenario.testReceiptRecovered) {
@@ -5776,7 +5902,11 @@ async function createFeatureFailureFixture(t, scenario) {
           if (scenario.verifyReceiptMode === "absent") return undefined;
           if (intent.operation_input.phase === "slice_verify" &&
               scenario.sliceVerifyReceiptMode === "missing") {
-            return operationReceipt(intent, null);
+            return operationReceipt(intent, {
+              schema: "work.feature-verification-receipt/v1",
+              effect_id: intent.effect_id,
+              operation_contract: "flow.operation/feature-verify/v1",
+            });
           }
           if (scenario.verifyReceiptMode === "invalid") {
             return operationReceipt(intent, { schema: "invalid" });
@@ -5830,6 +5960,8 @@ async function createFeatureFailureFixture(t, scenario) {
           }
           if (sliceMode === "setup_only") {
             providerReceipt.schema = "work.feature-setup-receipt/v1";
+            providerReceipt.setup_id = "setup:feature-verify";
+            providerReceipt.evidence_role = "setup_only";
           }
           if (discriminatorMode === "missing_discriminator") {
             delete providerReceipt.discriminating_evidence;
@@ -5931,9 +6063,12 @@ async function createFeatureFailureFixture(t, scenario) {
     },
     registeredAuthorities,
     predefinedDefinitions: {
-      "feature/v1": featureDefinitionWithCritiqueId(scenario.critiqueCardId, {
-        legacyNoResultBindings: scenario.legacyNoResultBindings === true,
-      }),
+      "feature/v1": withExplicitCardAttemptCapacity(
+        featureDefinitionWithCritiqueId(scenario.critiqueCardId, {
+          legacyNoResultBindings: scenario.legacyNoResultBindings === true,
+        }),
+        scenario.maxAttemptsByCard,
+      ),
     },
   });
   const prepared = runtime.prepare({
@@ -5998,6 +6133,33 @@ async function createFeatureFailureFixture(t, scenario) {
     },
     realGit,
     workspaceAuthority,
+  };
+}
+
+function withExplicitCardAttemptCapacity(definition, maxAttemptsByCard = {}) {
+  if (Object.keys(maxAttemptsByCard).length === 0) return definition;
+  return {
+    ...definition,
+    compile(request) {
+      const proposal = definition.compile(request);
+      return {
+        ...proposal,
+        graph: {
+          ...proposal.graph,
+          cards: proposal.graph.cards.map((card) => {
+            const maxAttempts = maxAttemptsByCard[card.id];
+            if (maxAttempts === undefined) return card;
+            return {
+              ...card,
+              limits: {
+                ...card.limits,
+                max_attempts: maxAttempts,
+              },
+            };
+          }),
+        },
+      };
+    },
   };
 }
 
@@ -6114,10 +6276,17 @@ async function driveUntilTestReceiptBlocked(fixture) {
 }
 
 async function settleFeatureEffect(runtime, runId, cardId) {
-  await until(() => runtime.query({ run_id: runId }).effects.some(
-    ({ card_id: effectCardId, status, invocation_started: invocationStarted }) =>
-      effectCardId === cardId && (status === "succeeded" || invocationStarted),
-  ));
+  await until(() => {
+    const projection = runtime.query({ run_id: runId });
+    const effect = projection.effects.find(({ card_id: effectCardId }) =>
+      effectCardId === cardId);
+    return effect !== undefined && (
+      effect.status === "succeeded" ||
+      effect.invocation_started ||
+      projection.legal_actions.some(({ type, effect_id: effectId }) =>
+        type === "recovery" && effectId === effect.effect_id)
+    );
+  });
   await new Promise((resolve) => setTimeout(resolve, 75));
 }
 
@@ -6326,6 +6495,7 @@ function workspaceQuery() {
 }
 
 function workspaceClaim({
+  expectedGeneration = 1,
   expectedWatermark,
   expectedFingerprint,
   holder,
@@ -6337,7 +6507,7 @@ function workspaceClaim({
     type: "workspace_claim",
     contract: "work.workspace/v1",
     subject_id: "workspace:producer",
-    expected_generation: 1,
+    expected_generation: expectedGeneration,
     expected_watermark: expectedWatermark,
     expected_fingerprint: expectedFingerprint,
     claim: {
@@ -6629,6 +6799,7 @@ function featurePreparationRuntime(
         validate() {
           return true;
         },
+        evidenceSafety: validateDelegateEvidenceSafety,
       },
     },
     registeredOperations: Object.fromEntries(
@@ -6701,6 +6872,11 @@ function featureFactsForInputs(inputs) {
   facts.validator_contracts.push(FEATURE_CAPTURE_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_VERIFICATION_RECEIPT_VALIDATOR);
+  if (["workspace-write", "auto"].includes(
+      inputs.delegation?.apply?.description?.launch?.capability)) {
+    facts.capability_envelopes.push("repository:write");
+    facts.limits.max_capabilities = Math.max(facts.limits.max_capabilities, 1);
+  }
   facts.resource_claims.push({
     kind: "workspace",
     id: inputs.workspace.subject_id,

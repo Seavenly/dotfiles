@@ -1,5 +1,4 @@
 import {
-  canonicalize,
   digest,
   freezeCanonical,
   isPlainRecord,
@@ -9,6 +8,23 @@ import {
   loadRequiredDrovrFeatures,
   RequiredDrovrFeatureContractError,
 } from "./required-drovr-features.mjs";
+import {
+  DELEGATE_RESOURCE_CONTRACTS,
+  DELEGATE_EXECUTION_AUTHORITY_SCHEMA,
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+  DelegateInputEnvelopeError,
+  materializeDelegateInputEnvelope,
+  serializeDelegateInputEnvelope,
+} from "./delegate-input-envelope.mjs";
+import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
+import {
+  DELEGATE_FAILURE_OBSERVATION_SCHEMA,
+} from "./provider-receipt-policies/delegate-drovr.mjs";
+import {
+  validateDelegateEvidenceSafety,
+} from "./evidence-safety.mjs";
+import { isCredentialShapedString } from "./provider-receipt-sanitizers.mjs";
 const REQUIRED_PORT_OPERATIONS = [
   "describe",
   "dispatch",
@@ -103,6 +119,10 @@ export function delegateCompatibilityIssue(
     typeof validators.get(contract)?.validate !== "function")) {
     return "unregistered_delegate_validator";
   }
+  if (card.validators.some((contract) =>
+    typeof validators.get(contract)?.evidenceSafety !== "function")) {
+    return "unregistered_delegate_evidence_safety";
+  }
   return null;
 }
 
@@ -142,8 +162,11 @@ export function dispatchDelegateEffect(
       );
     }
   }).catch(async (error) => {
-    if (error?.code !== "delegated_runtime_unresolved" ||
-        typeof runAuthority.recordEffectObservation !== "function") return;
+    if (typeof runAuthority.recordEffectObservation !== "function") return;
+    const providerObservation = error?.code === "delegated_runtime_unresolved"
+      ? error.projection ?? null
+      : delegateFailureObservation(error);
+    if (!isPlainRecord(providerObservation)) return;
     try {
       await runAuthority.recordEffectObservation(intent, {
         schema: "flow.effect-observation/v1",
@@ -151,12 +174,27 @@ export function dispatchDelegateEffect(
         idempotency_key: intent.idempotency_key,
         presence: "indeterminate",
         causation: null,
-        provider_observation: error.projection ?? null,
+        provider_observation: providerObservation,
       });
     } catch {
       // A concurrent settlement or terminal fence owns the newer truth.
     }
   });
+}
+
+function delegateFailureObservation(error) {
+  const code = typeof error?.reason === "string" &&
+      /^[a-z0-9_:-]+$/u.test(error.reason)
+    ? error.reason
+    : typeof error?.code === "string" && /^[a-z0-9_:-]+$/u.test(error.code)
+      ? error.code
+      : "delegate_effect_failed";
+  return {
+    schema: DELEGATE_FAILURE_OBSERVATION_SCHEMA,
+    code,
+    stage: "delegate_effect_materialization",
+    retryable: false,
+  };
 }
 
 async function executeDelegateCancellation(intent, port) {
@@ -285,7 +323,9 @@ async function executeDelegate(intent, port, validators) {
 
 async function executeDelegateStrict(intent, port, validators) {
   const callerKey = intent.attempt_id;
-  const inputKey = `${callerKey}:input:1`;
+  const orderedInputs = materializeDelegateWireInputs(intent);
+  const initialInput = orderedInputs[0];
+  const inputKey = initialInput.input_key;
   const discovered = await port.discover({
     schema: "flow.delegated-agent-discover-request/v1",
     caller_key: callerKey,
@@ -297,7 +337,8 @@ async function executeDelegateStrict(intent, port, validators) {
       agent_id: intent.route_binding.agent_id,
       caller_key: callerKey,
       input_key: inputKey,
-      prompt: delegateInputPrompt(intent.delegate_input),
+      prompt: initialInput.bytes,
+      payload_sha256: initialInput.payload_sha256,
       description: intent.delegate_input.description,
     });
   } else if (discovered.turn?.id) {
@@ -311,14 +352,28 @@ async function executeDelegateStrict(intent, port, validators) {
     throw delegatedRuntimeError(current);
   }
 
+  if (discovered.turn?.id) {
+    const adoptionConflict = adoptedDelegateIdentityConflict(
+      current,
+      intent,
+      orderedInputs,
+    );
+    if (adoptionConflict !== null) {
+      throw delegateIdentityConflict(current, adoptionConflict);
+    }
+  }
+
   if (current.status !== "completed" && current.turn?.status !== "completed") {
-    for (const steering of intent.delegate_input.steering ?? []) {
+    for (const [index, steering] of (intent.delegate_input.steering ?? [])
+      .entries()) {
       if (!current.turn?.id) throw delegatedRuntimeError(current);
+      const steeringInput = orderedInputs[index + 1];
       current = await port.send({
         schema: "flow.delegated-agent-send-request/v1",
         turn_id: current.turn.id,
-        input_key: `${callerKey}:steering:${steering.caller_id}`,
-        prompt: steering.prompt,
+        input_key: steeringInput.input_key,
+        prompt: steeringInput.bytes,
+        payload_sha256: steeringInput.payload_sha256,
       });
       if (["blocked", "reconciling", "unavailable"].includes(current.status)) {
         throw delegatedRuntimeError(current);
@@ -339,27 +394,67 @@ async function executeDelegateStrict(intent, port, validators) {
   }
   const receipt = await validateSettledDelegate({
     current,
-    inputKey,
     intent,
     validators,
+    orderedInputs,
   });
   return settleTerminalDisposition({ current, intent, port, receipt });
 }
 
-async function validateSettledDelegate({ current, inputKey, intent, validators }) {
+function adoptedDelegateIdentityConflict(current, intent, orderedInputs) {
+  const turn = current?.turn;
+  if (!turn?.id) return "missing_turn_identity";
+  if (current.delegation?.agent_id !== intent.route_binding.agent_id ||
+      turn.caller?.dispatch_key !== intent.attempt_id ||
+      turn.launch_binding?.comparison_key !==
+        intent.route_binding.launch_comparison_key ||
+      turn.launch_binding?.configuration_watermark !==
+        intent.route_binding.configuration_watermark ||
+      turn.launch_binding?.description_digest !==
+        intent.route_binding.description_digest) {
+    return "incompatible_dispatch_identity";
+  }
+  if (!Array.isArray(turn.inputs) || turn.inputs.length === 0) {
+    return "missing_initial_input";
+  }
+  if (turn.inputs.length > orderedInputs.length) {
+    return "unexpected_existing_input";
+  }
+  for (const [index, actual] of turn.inputs.entries()) {
+    const expected = orderedInputs[index];
+    if (actual?.sequence !== expected.sequence ||
+        actual.caller_key !== expected.input_key ||
+        actual.payload_sha256 !== expected.payload_sha256 ||
+        !["recorded", "submitted"].includes(actual.delivery?.status)) {
+      return index === 0
+        ? "incompatible_initial_input"
+        : "incompatible_steering_prefix";
+    }
+  }
+  return null;
+}
+
+function delegateIdentityConflict(projection, reason) {
+  const error = delegatedRuntimeError(projection);
+  error.code = "delegate_identity_conflict";
+  error.reason = reason;
+  return error;
+}
+
+async function validateSettledDelegate({
+  current,
+  intent,
+  validators,
+  orderedInputs,
+}) {
   const turn = current?.turn;
   const description = intent.delegate_input.description;
-  const expectedInputs = [{
-    sequence: 1,
-    caller_key: inputKey,
-    payload_sha256: digest(delegateInputPrompt(intent.delegate_input)),
+  const expectedInputs = orderedInputs.map((input) => ({
+    sequence: input.sequence,
+    caller_key: input.input_key,
+    payload_sha256: input.payload_sha256,
     delivery_proof: "exact_transcript_correlation",
-  }, ...(intent.delegate_input.steering ?? []).map((steering, index) => ({
-    sequence: index + 2,
-    caller_key: `${intent.attempt_id}:steering:${steering.caller_id}`,
-    payload_sha256: digest(steering.prompt),
-    delivery_proof: "exact_transcript_correlation",
-  }))];
+  }));
   const expectedDeliveredInputs = expectedInputs.map((input) => ({
     sequence: input.sequence,
     caller_key: input.caller_key,
@@ -429,7 +524,7 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
           authority_materialized_evidence:
             intent.delegate_input.authority_materialized_evidence ?? null,
         }) === true;
-      } catch {
+      } catch (error) {
         accepted = false;
       }
       const receipt = validatorReceipts.find(({ contract: receiptContract }) =>
@@ -443,7 +538,6 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
     }
   }
   if (safety.rejected) reason ??= "independent_validation_failed";
-
   const commonRecord = {
     attempt_id: intent.attempt_id,
     card_id: intent.card_id,
@@ -462,6 +556,16 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
       status: "unavailable",
       reason: reviewCoverageReason(reason),
     });
+    const unavailableOutput = unavailableReviewOutput({
+      reason: authorityTerminalDisposition.reason,
+    });
+    const unavailableSafety = validateDelegateEvidenceSafety(unavailableOutput);
+    if (!unavailableSafety.accepted) {
+      throw new DelegateInputEnvelopeError(
+        "unsafe_delegate_output",
+        "authority-generated review unavailable output failed evidence safety",
+      );
+    }
     const quarantineRecord = freezeCanonical({
       schema: "flow.delegate-quarantine/v1",
       ...commonRecord,
@@ -476,9 +580,9 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
       provider_receipt: {
         schema: "flow.delegate-evidence/v1",
         ...commonRecord,
-        validated_output: unavailableReviewOutput({
-          reason: authorityTerminalDisposition.reason,
-        }),
+        validated_output: unavailableOutput,
+        evidence_safety_receipt: unavailableSafety.receipt,
+        evidence_safety_binding: unavailableSafety.binding,
         authority_terminal_disposition: authorityTerminalDisposition,
         operational_failure: reason,
         quarantine_record: quarantineRecord,
@@ -516,12 +620,31 @@ async function validateSettledDelegate({ current, inputKey, intent, validators }
 
 async function safetyCheckDelegateOutput({ output, intent, validators, proof }) {
   const validatorReceipts = [];
-  let rejected = false;
-  let safe = true;
+  let rejected = typeof output !== "string" ||
+    isCredentialShapedString(output);
+  let safe = !rejected;
   for (const contract of intent.delegate_validator_contracts ?? []) {
     const validator = validators.get(contract);
-    if (typeof validator?.evidenceSafety !== "function" ||
-        typeof output !== "string") continue;
+    if (typeof validator?.evidenceSafety !== "function") {
+      rejected = true;
+      safe = false;
+      validatorReceipts.push({
+        contract,
+        accepted: false,
+        evidence_safety_accepted: false,
+        evidence_safety_rejection: "missing_evidence_safety",
+      });
+      continue;
+    }
+    if (typeof output !== "string") {
+      validatorReceipts.push({
+        contract,
+        accepted: false,
+        evidence_safety_accepted: false,
+        evidence_safety_rejection: "invalid_delegate_output",
+      });
+      continue;
+    }
 
     let result;
     try {
@@ -536,8 +659,10 @@ async function safetyCheckDelegateOutput({ output, intent, validators, proof }) 
     } catch {
       result = null;
     }
-    if (result?.accepted === true && isPlainRecord(result.receipt) &&
-        isPlainRecord(result.binding)) {
+    const verified = result?.accepted === true &&
+      isPlainRecord(result.receipt) && isPlainRecord(result.binding) &&
+      verifyDelegateEvidenceSafetyResult(output, result);
+    if (verified) {
       validatorReceipts.push({
         contract,
         accepted: false,
@@ -559,6 +684,15 @@ async function safetyCheckDelegateOutput({ output, intent, validators, proof }) 
   return { safe, rejected, validatorReceipts };
 }
 
+function verifyDelegateEvidenceSafetyResult(output, result) {
+  const expected = validateDelegateEvidenceSafety(output, {
+    classification: result?.receipt?.classification,
+  });
+  return expected.accepted &&
+    JSON.stringify(expected.receipt) === JSON.stringify(result.receipt) &&
+    JSON.stringify(expected.binding) === JSON.stringify(result.binding);
+}
+
 function redactedSafetyRejection(result) {
   const code = typeof result?.rejection?.code === "string" &&
       /^[a-z0-9_:-]+$/u.test(result.rejection.code)
@@ -573,20 +707,243 @@ function redactedSafetyRejection(result) {
   };
 }
 
-function delegateInputPrompt(delegateInput) {
-  if (delegateInput?.authority_materialized_evidence === undefined) {
-    return delegateInput?.prompt;
+function materializeDelegateWireInputs(intent) {
+  const callerKey = intent.attempt_id;
+  const delegateInput = intent.delegate_input ?? {};
+  const steering = delegateInput.steering ?? [];
+  return [
+    materializeDelegateWireInput(intent, {
+      inputKey: `${callerKey}:input:1`,
+      inputKind: "initial",
+      sequence: 1,
+      instructions: delegateInput.prompt,
+    }),
+    ...steering.map((input, index) => materializeDelegateWireInput(intent, {
+      inputKey: `${callerKey}:steering:${input.caller_id}`,
+      inputKind: "steering",
+      sequence: index + 2,
+      instructions: input.instructions ?? input.prompt,
+    })),
+  ];
+}
+
+function materializeDelegateWireInput(intent, {
+  inputKey,
+  inputKind,
+  sequence,
+  instructions,
+}) {
+  const delegateInput = intent.delegate_input ?? {};
+  if (Object.hasOwn(delegateInput, "execution_authority") ||
+      Object.hasOwn(delegateInput, "predecessor_evidence") ||
+      Object.hasOwn(delegateInput, "instructions")) {
+    throw new DelegateInputEnvelopeError(
+      "caller_delegate_input_forbidden",
+      "delegate execution authority, predecessor evidence, and instruction " +
+        "override are forbidden",
+    );
   }
-  if (delegateInput.authority_materialization !== "exact_digest_bound") {
-    return `${delegateInput.prompt}\n\nAuthority-settled finding lens results:\n${
-      JSON.stringify(delegateInput.authority_materialized_evidence)}`;
+  const description = delegateInput.description;
+  const executionAuthority = deriveDelegateExecutionAuthority(intent);
+  if (!Array.isArray(intent.delegate_output_schemas) ||
+      intent.delegate_output_schemas.length === 0 ||
+      !Array.isArray(intent.delegate_validator_contracts) ||
+      intent.delegate_validator_contracts.length === 0) {
+    throw new DelegateInputEnvelopeError(
+      "missing_output_requirements",
+      "RunAuthority must provide non-empty delegate output schemas and validators",
+    );
   }
-  return JSON.stringify(canonicalize({
-    schema: "flow.delegate-input-envelope/v1",
-    prompt: delegateInput.prompt,
-    authority_materialized_evidence:
-      delegateInput.authority_materialized_evidence,
-  }));
+  const envelope = materializeDelegateInputEnvelope({
+    attemptId: intent.attempt_id,
+    inputKey,
+    sequence,
+    inputKind,
+    instructions,
+    taskInputs: delegateInput.task_inputs ?? {
+      schema: "flow.delegate-task-inputs/v1",
+    },
+    resourceReferences: resolveDelegateResourceReferences(
+      delegateInput.resource_references ?? [],
+      intent,
+    ),
+    executionAuthority,
+    ...(delegateInput.authority_materialized_evidence === undefined
+      ? {}
+      : {
+          predecessorEvidence: delegateInput.authority_materialized_evidence,
+        }),
+    outputRequirements: {
+      schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+      format: "canonical-json",
+      schemas: intent.delegate_output_schemas,
+      validator_contracts: intent.delegate_validator_contracts,
+    },
+  });
+  const serialized = serializeDelegateInputEnvelope(envelope);
+  return {
+    envelope: serialized.envelope,
+    bytes: serialized.bytes,
+    payload_sha256: serialized.payload_sha256,
+    input_key: inputKey,
+    sequence,
+  };
+}
+
+function deriveDelegateExecutionAuthority(intent) {
+  const description = intent.delegate_input?.description;
+  const authority = description?.effective_authority;
+  const capability = description?.launch?.capability;
+  const effectiveDigest = description?.comparison_keys?.effective_authority;
+  const route = intent.route_binding;
+  const {
+    description_digest: _descriptionDigest,
+    legal_actions: _legalActions,
+    ...descriptionIdentity
+  } = description ?? {};
+  const {
+    description_digest: _digestWithActions,
+    ...descriptionIdentityWithActions
+  } = description ?? {};
+  const descriptionDigestMatches =
+    digest(descriptionIdentity) === description?.description_digest ||
+    digest(descriptionIdentityWithActions) === description?.description_digest;
+  if (!isPlainRecord(description) ||
+      !isPlainRecord(authority) ||
+      typeof capability !== "string" || capability.length === 0 ||
+      !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.watermark?.content_sha256) ||
+      !isDigest(effectiveDigest) ||
+      !descriptionDigestMatches ||
+      digest(authority) !== effectiveDigest ||
+      authority.capability !== capability ||
+      !isPlainRecord(route) ||
+      route.description_digest !== description.description_digest ||
+      route.launch_comparison_key !== description.comparison_keys.launch ||
+      route.configuration_watermark !== description.watermark.content_sha256) {
+    throw new DelegateInputEnvelopeError(
+      "invalid_execution_authority",
+      "delegate execution authority is not bound to the immutable route description",
+    );
+  }
+  const capabilityEnvelopes = Array.isArray(intent.capability_envelopes)
+    ? intent.capability_envelopes
+    : [];
+  if (capabilityEnvelopes.some((id) => typeof id !== "string" || !id) ||
+      new Set(capabilityEnvelopes).size !== capabilityEnvelopes.length) {
+    throw new DelegateInputEnvelopeError(
+      "invalid_execution_authority",
+      "RunAuthority capability facts are not a unique accepted set",
+    );
+  }
+  const requiredGrantIds = flowGrantIdsForDrovrCapability(capability);
+  if (requiredGrantIds === null) {
+    throw new DelegateInputEnvelopeError(
+      "unsupported_execution_capability",
+      "Drovr route capability has no finite Flow grant mapping",
+    );
+  }
+  const capabilityBindings = Array.isArray(intent.capability_bindings)
+    ? intent.capability_bindings
+    : [];
+  const acceptedGrantIds = requiredGrantIds.filter((grantId) =>
+    capabilityBindings.some((binding) =>
+      isPlainRecord(binding) && binding.capability === grantId &&
+      Array.isArray(binding.card_ids) &&
+      (binding.card_ids.includes(intent.card_id) ||
+       binding.card_ids.includes("*"))));
+  if (acceptedGrantIds.length !== requiredGrantIds.length) {
+    throw new DelegateInputEnvelopeError(
+      "unapproved_execution_capability",
+      "delegate route capability is not an accepted card-scoped Flow grant",
+    );
+  }
+  return {
+    schema: DELEGATE_EXECUTION_AUTHORITY_SCHEMA,
+    owner: "RunAuthority",
+    capability,
+    effective_authority_digest: effectiveDigest,
+    capability_envelope_ids: acceptedGrantIds,
+  };
+}
+
+function resolveDelegateResourceReferences(references, intent) {
+  if (!Array.isArray(references)) {
+    throw new DelegateInputEnvelopeError(
+      "invalid_resource_references",
+      "delegate resource references must be an array",
+    );
+  }
+  const bindings = Array.isArray(intent.required_authority_bindings)
+    ? intent.required_authority_bindings
+    : [];
+  return references.map((reference) => {
+    if (!isPlainRecord(reference) ||
+        reference.schema !== DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA ||
+        Object.hasOwn(reference, "authority_binding")) {
+      throw new DelegateInputEnvelopeError(
+        Object.hasOwn(reference ?? {}, "authority_binding")
+          ? "caller_resource_binding_forbidden"
+          : "invalid_resource_selection",
+        "delegate execution resources must select approved binding IDs",
+      );
+    }
+    const bindingId = reference.authority_binding_id;
+    const binding = bindings.find(({ id }) => id === bindingId);
+    if (binding === undefined) {
+      throw new DelegateInputEnvelopeError(
+        "required_authority_binding_missing",
+        "delegate execution resource binding is not RunAuthority-approved",
+      );
+    }
+    const expectedAuthority = {
+      workspace: "WorkspaceAuthority",
+      artifact: "ArtifactAuthority",
+    }[reference.kind];
+    if (expectedAuthority !== undefined &&
+        reference.authority !== expectedAuthority) {
+      throw new DelegateInputEnvelopeError(
+        "resource_authority_mismatch",
+        "delegate execution resource names the wrong owning authority",
+      );
+    }
+    if (reference.contract !== DELEGATE_RESOURCE_CONTRACTS[reference.kind] ||
+        reference.access === "mutation" && reference.operation !== intent.card_id ||
+        reference.operation !== undefined && reference.operation !== intent.card_id) {
+      throw new DelegateInputEnvelopeError(
+        "resource_binding_mismatch",
+        "delegate resource selection does not bind its exact contract and operation",
+      );
+    }
+    if (binding.contract !== "flow.resource-authority/v1" ||
+        !resourceSelectionMatchesClaim(reference, intent.resource_claims)) {
+      throw new DelegateInputEnvelopeError(
+        "resource_binding_mismatch",
+        "delegate resource selection does not match approved resource facts",
+      );
+    }
+    const { authority_binding_id: _bindingId, ...resolved } = reference;
+    return {
+      ...resolved,
+      schema: "flow.delegate-execution-resource-reference/v1",
+      authority_binding: binding,
+    };
+  });
+}
+
+function resourceSelectionMatchesClaim(reference, claims) {
+  return Array.isArray(claims) && claims.some((claim) =>
+    isPlainRecord(claim) &&
+    claim.kind === reference.kind &&
+    claim.id === reference.subject_id &&
+    claim.generation === reference.generation &&
+    claim.mutation_epoch === reference.mutation_epoch &&
+    claim.fingerprint === reference.fingerprint);
+}
+
+function isDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 function isReviewCard(intent) {
@@ -639,6 +996,14 @@ async function settleReviewUnavailable({ intent, port, current, reason }) {
     status: reason === "bounded_timeout" ? "degraded" : "unavailable",
     reason,
   });
+  const validatedOutput = unavailableReviewOutput({ reason });
+  const safety = validateDelegateEvidenceSafety(validatedOutput);
+  if (!safety.accepted) {
+    throw new DelegateInputEnvelopeError(
+      "unsafe_delegate_output",
+      "authority-generated review unavailable output failed evidence safety",
+    );
+  }
   let resourceDisposition;
   try {
     resourceDisposition = current?.turn?.id
@@ -672,7 +1037,9 @@ async function settleReviewUnavailable({ intent, port, current, reason }) {
       drovr_watermark: current?.watermark ?? null,
       route_binding: intent.route_binding,
       validator_receipts: [],
-      validated_output: unavailableReviewOutput({ reason }),
+      validated_output: validatedOutput,
+      evidence_safety_receipt: safety.receipt,
+      evidence_safety_binding: safety.binding,
       authority_terminal_disposition: terminalDisposition,
       terminal_disposition: resourceDisposition,
     },

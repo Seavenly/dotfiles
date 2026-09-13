@@ -12,7 +12,6 @@ import {
   createGitRetentionAdapter,
   createGitWorkspaceObservationAdapter,
 } from "../src/git-retention-adapter.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import {
   buildHumanAuthorityBinding,
   foldWorkStream,
@@ -30,6 +29,10 @@ import {
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+} from
+  "../test-support/fixed-host-identity.mjs";
 import { withoutViewWatermarks } from "../test-support/projection-assertions.mjs";
 
 const CLEANUP_OPERATION_CONTRACT = "flow.operation/resource-cleanup/v1";
@@ -706,14 +709,14 @@ test("FlowRuntime executes an exact eligible cleanup through its registered Adap
 
   const freshAction = workspaceAuthority.previewCleanup(workspaceQuery())
     .legal_actions[0];
-  const proposal = cleanupOperationProposal(freshAction);
+  const proposal = cleanupOperationProposal(freshAction, { maxAttempts: 2 });
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
   runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions[0]);
   await until(() => runtime.query({ run_id: launch.run_id }).effects.length === 1);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
-    "unresolved");
+    "reconciling");
   assert.equal(workspaceAuthority.query(workspaceQuery()).taint.reason,
     "resource_cleanup_in_flight");
   runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions
@@ -1868,12 +1871,16 @@ function claimProducerWorkspace(proposal) {
   proposal.explicit_facts.limits.max_resources += 1;
 }
 
-function cleanupOperationProposal(action) {
+function cleanupOperationProposal(action, { maxAttempts = 1 } = {}) {
   const proposal = registeredOperationProposal({
     checkpointBound: false,
     classification: "reconcilable",
   });
   const operation = proposal.graph.cards[0];
+  operation.limits = {
+    ...operation.limits,
+    max_attempts: maxAttempts,
+  };
   operation.executor.contract = CLEANUP_OPERATION_CONTRACT;
   operation.inputs = action.operation_input;
   operation.route = { adapter: "resource-cleanup" };

@@ -21,6 +21,10 @@ import { validateReviewCandidate } from "./review-candidate.mjs";
 import {
   SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
 } from "./authority-bindings.mjs";
+import {
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+} from "./delegate-input-envelope.mjs";
 
 export { validateReviewCandidate };
 
@@ -63,6 +67,22 @@ export const REVIEW_OPERATION_REGISTRATION_POLICY =
 export const REVIEW_DELEGATE_OUTPUT_VALIDATOR =
   "flow.validator/review-result/v1";
 
+const GITHUB_REVIEW_SAFE_OBSERVATION_CODES = new Set([
+  "github_review_adapter_incomplete",
+  "github_review_adapter_unavailable",
+  "github_review_checkpoint_draft_mismatch",
+  "github_review_creation_unavailable",
+  "github_review_listing_incomplete",
+  "github_review_listing_invalid",
+  "github_review_listing_unavailable",
+  "github_review_observation_incomplete",
+  "github_review_operation_intent_mismatch",
+  "github_review_receipt_ambiguous",
+  "github_review_receipt_unresolved",
+  "github_review_target_moved",
+  "github_review_target_observation_unavailable",
+]);
+
 const REVIEW_TERMINAL_DISPOSITION_SCHEMA =
   "flow.review-terminal-disposition/v1";
 const REVIEW_COVERAGE_STATUSES = Object.freeze([
@@ -75,6 +95,86 @@ const REVIEW_COVERAGE_RANK = Object.freeze({
   degraded: 1,
   unavailable: 2,
 });
+
+export function sanitizeGitHubReviewProviderObservation(value) {
+  if (!isRecord(value)) return null;
+  if (value.schema === GITHUB_REVIEW_PROVIDER_RECEIPT_SCHEMA) {
+    return sanitizeGitHubReviewProviderReceipt(value);
+  }
+  if (value.schema !== "flow.github-review-observation/v1") return null;
+  const result = { schema: value.schema };
+  if (GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.code)) {
+    result.code = value.code;
+  }
+  if (GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.provider_error_code)) {
+    result.provider_error_code = value.provider_error_code;
+  }
+  const safeReason = GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.code)
+    ? value.code
+    : GITHUB_REVIEW_SAFE_OBSERVATION_CODES.has(value.provider_error_code)
+      ? value.provider_error_code
+      : null;
+  if (safeReason !== null) result.reason = safeReason;
+  for (const key of ["pending_review_count", "matching_review_count"]) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) {
+      result[key] = value[key];
+    }
+  }
+  if (typeof value.complete === "boolean") result.complete = value.complete;
+  return result;
+}
+
+function sanitizeGitHubReviewProviderReceipt(value) {
+  const requiredStrings = [
+    "review_id",
+    "target_fingerprint",
+    "target_authority_watermark",
+    "draft_digest",
+    "effect_id",
+    "idempotency_key",
+    "marker",
+  ];
+  if (value.action !== "create_pending_review" ||
+      value.state !== "pending" ||
+      value.submitted !== false ||
+      requiredStrings.some((key) => !nonEmpty(value[key])) ||
+      !isRecord(value.repository) ||
+      !nonEmpty(value.repository.owner) ||
+      !nonEmpty(value.repository.name) ||
+      !Number.isSafeInteger(value.pull_request_number) ||
+      !nonEmpty(value.commit_id) ||
+      !isRecord(value.provider_review) ||
+      value.provider_review.state !== "pending" ||
+      value.provider_review.submitted !== false) {
+    return null;
+  }
+  return {
+    schema: GITHUB_REVIEW_PROVIDER_RECEIPT_SCHEMA,
+    action: "create_pending_review",
+    review_id: value.review_id,
+    target_fingerprint: value.target_fingerprint,
+    target_authority_watermark: value.target_authority_watermark,
+    draft_digest: value.draft_digest,
+    effect_id: value.effect_id,
+    idempotency_key: value.idempotency_key,
+    state: "pending",
+    submitted: false,
+    marker: value.marker,
+    repository: {
+      owner: value.repository.owner,
+      name: value.repository.name,
+    },
+    pull_request_number: value.pull_request_number,
+    commit_id: value.commit_id,
+    provider_review: {
+      review_id: nonEmpty(value.provider_review.review_id)
+        ? value.provider_review.review_id
+        : value.review_id,
+      state: "pending",
+      submitted: false,
+    },
+  };
+}
 
 export const REVIEW_LENSES = Object.freeze([
   "security",
@@ -221,6 +321,15 @@ export function validateReviewInputs(inputs, explicitFacts) {
     );
   }
   const bindings = validateDelegation(inputs.delegation, inputs.lenses, explicitFacts);
+  if (targetKind === "local" &&
+      (!Array.isArray(explicitFacts.resource_claims) ||
+       !explicitFacts.resource_claims.some((claim) =>
+         reviewWorkspaceClaimMatches(claim, target.candidate.workspace)))) {
+    invalidReview(
+      "missing_review_workspace_authority",
+      "local review requires the exact WorkspaceAuthority resource fact",
+    );
+  }
   const findingCap = inputs.finding_cap ?? inputs.limits?.max_findings ?? 100;
   if (!Number.isSafeInteger(findingCap) || findingCap < 1) {
     invalidReview("invalid_finding_cap", "review/v1 finding cap must be positive");
@@ -658,6 +767,7 @@ function validGitSha(value) {
 
 function reviewCards(selection) {
   const targetFingerprint = reviewTargetFingerprint(selection.target);
+  const workspaceClaim = reviewWorkspaceClaim(selection);
   const common = {
     outputs: ["flow.review-result/v1"],
     success_criteria: ["delegate_observation:accepted"],
@@ -665,7 +775,7 @@ function reviewCards(selection) {
     data_references: [targetFingerprint],
     evidence_references: [targetFingerprint],
     limits: { max_attempts: 1 },
-    resource_claims: [],
+    resource_claims: workspaceClaim === null ? [] : [workspaceClaim],
     recovery: "discover_then_dispatch_exact",
   };
   const lensCards = selection.lenses.map((lens) => {
@@ -681,6 +791,12 @@ function reviewCards(selection) {
         description: binding.description,
         wait_timeout_ms: 300_000,
         finding_lens: lens,
+        task_inputs: reviewDelegateTaskInputs(selection, {
+          lens,
+          role: "lens",
+        }),
+        resource_references: reviewResourceSelections(selection),
+        output_requirements: reviewDelegateOutputRequirements(),
       },
       route: binding.route,
       executor: {
@@ -700,6 +816,11 @@ function reviewCards(selection) {
       wait_timeout_ms: 300_000,
       finding_lens_join: "all_enabled",
       finding_lens_card_ids: selection.lenses.map((lens) => `review-lens-${lens}`).sort(),
+      task_inputs: reviewDelegateTaskInputs(selection, {
+        role: "critic",
+      }),
+      resource_references: reviewResourceSelections(selection),
+      output_requirements: reviewDelegateOutputRequirements(),
     },
     route: selection.delegation.critic.route,
     executor: {
@@ -799,6 +920,64 @@ function reviewCards(selection) {
     },
   };
   return [...lensCards, critic, record, checkpoint, pending];
+}
+
+function reviewDelegateTaskInputs(selection, { lens, role }) {
+  return {
+    schema: "flow.delegate-task-inputs/v1",
+    flow: "review/v1",
+    role,
+    ...(lens === undefined ? {} : { lens }),
+    ...(role === "critic" ? { lenses: [...selection.lenses] } : {}),
+    target: selection.target,
+  };
+}
+
+function reviewWorkspaceClaim(selection) {
+  if (selection.target_kind !== "local") return null;
+  const workspace = selection.target.candidate.workspace;
+  return {
+    kind: "workspace",
+    id: workspace.subject_id,
+    generation: workspace.generation,
+    mutation_epoch: workspace.mutation_epoch,
+    fingerprint: workspace.fingerprint,
+  };
+}
+
+function reviewWorkspaceClaimMatches(claim, workspace) {
+  return isRecord(claim) &&
+    claim.kind === "workspace" &&
+    claim.id === workspace.subject_id &&
+    claim.generation === workspace.generation &&
+    claim.mutation_epoch === workspace.mutation_epoch &&
+    claim.fingerprint === workspace.fingerprint;
+}
+
+function reviewResourceSelections(selection) {
+  const workspace = reviewWorkspaceClaim(selection);
+  if (workspace === null) return [];
+  return [{
+    schema: DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+    kind: "workspace",
+    authority: "WorkspaceAuthority",
+    contract: "work.workspace/v1",
+    subject_id: workspace.id,
+    generation: workspace.generation,
+    mutation_epoch: workspace.mutation_epoch,
+    fingerprint: workspace.fingerprint,
+    access: "read_only",
+    authority_binding_id: "resource:facts",
+  }];
+}
+
+function reviewDelegateOutputRequirements() {
+  return {
+    schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+    format: "canonical-json",
+    schemas: ["flow.review-result/v1"],
+    validator_contracts: [REVIEW_DELEGATE_OUTPUT_VALIDATOR],
+  };
 }
 
 function validateDelegation(delegation, lenses, explicitFacts) {
@@ -1885,6 +2064,7 @@ export function createGitHubReviewOperationRegistration({
     async observe(intent) {
       return observeGitHubPendingReview({ provider, intent });
     },
+    sanitizeProviderObservation: sanitizeGitHubReviewProviderObservation,
   };
 }
 

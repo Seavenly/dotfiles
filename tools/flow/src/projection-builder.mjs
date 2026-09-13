@@ -15,6 +15,8 @@ const TIMELINE_KINDS = new Map([
   ["effect_invocation_started", "effect"],
   ["effect_recovery_requested", "effect"],
   ["effect_observation_recorded", "effect"],
+  ["effect_retry_scheduled", "effect"],
+  ["effect_retry_blocked", "effect"],
   ["effect_receipt_recorded", "effect"],
   ["operation_completed", "attempt"],
   ["delegate_completed", "attempt"],

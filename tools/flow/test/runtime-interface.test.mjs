@@ -15,7 +15,6 @@ import {
   normalizeResultBindingRecord,
 } from "../src/result-bindings.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
@@ -29,7 +28,10 @@ import {
   revisionBlockedCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 import {
   operationReceipt,
   registeredOperationProposal,
@@ -2588,7 +2590,7 @@ test("launch rejects an incompatible prepared result-binding bundle", () => {
     createInMemoryRunAuthority(),
     (intent) => operationReceipt(intent, {
       schema: "test.result/v1",
-      value: "captured",
+      record: "captured",
     }),
   );
   const prepared = structuredClone(
@@ -2658,6 +2660,7 @@ test("consumer intents retain exact result bindings across durable recovery", as
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const proposal = resultBindingOperationProposal();
+  proposal.graph.cards[1].limits.max_attempts = 2;
   let firstConsumerIntent = null;
   let firstConsumerCalls = 0;
   const firstAuthority = createDurableRunAuthority({
@@ -2672,7 +2675,7 @@ test("consumer intents retain exact result bindings across durable recovery", as
     }
     return operationReceipt(intent, {
       schema: "test.result/v1",
-      value: "captured",
+      record: "captured",
     });
   });
   const prepared = firstRuntime.prepare(proposal);
@@ -2729,7 +2732,7 @@ test("consumer intents retain exact result bindings across durable recovery", as
       recoveredConsumerIntent = structuredClone(intent);
       return operationReceipt(intent, {
         schema: "test.consumer/v1",
-        value: "recovered",
+        record: "recovered",
       });
     }
     throw new Error("producer must not be re-invoked during consumer recovery");
@@ -2769,7 +2772,7 @@ test("accepted result-binding revisions settle declarations from the active plan
     authority,
     (intent) => operationReceipt(intent, {
       schema: "test.result/v1",
-      value: intent.card_id,
+      record: intent.card_id,
     }),
   );
   const prepared = runtime.prepare(resultBindingRevisionProposal());
@@ -2828,7 +2831,7 @@ test("zero-declaration consumers reject caller-materialized evidence", async (t)
     if (intent.card_id === "consume-outcome") consumerCalls += 1;
     return operationReceipt(intent, {
       schema: "test.consumer/v1",
-      value: "must-not-run",
+      record: "must-not-run",
     });
   });
   const proposal = resultBindingOperationProposal();
@@ -2889,7 +2892,7 @@ test("zero-declaration consumers reject every caller authority materialization f
         if (intent.card_id === "consume-outcome") consumerCalls += 1;
         return operationReceipt(intent, {
           schema: "test.consumer/v1",
-          value: "must-not-run",
+          record: "must-not-run",
         });
       });
       const proposal = resultBindingOperationProposal();
@@ -2977,7 +2980,9 @@ test("result binding consumers reject invalid or stale records before Adapter in
     {
       name: "missing producer result",
       expectedCode: "authority_result_missing",
-      providerReceipt: null,
+      mutateFold(fold) {
+        return { ...fold, result_bindings: [] };
+      },
     },
     {
       name: "undeclared dependency output",
@@ -3124,7 +3129,7 @@ test("result binding consumers reject invalid or stale records before Adapter in
           consumerCalls += 1;
           return operationReceipt(intent, {
             schema: "test.consumer/v1",
-            value: "must-not-run",
+            record: "must-not-run",
           });
         }
         producerCalls += 1;
@@ -3132,7 +3137,7 @@ test("result binding consumers reject invalid or stale records before Adapter in
           ? scenario.providerReceipt
           : {
             schema: "test.result/v1",
-            value: "captured",
+            record: "captured",
           };
         return operationReceipt(intent, providerReceipt);
       });
@@ -3190,7 +3195,7 @@ test("exact duplicate producer settlement is rejected without a second binding",
   const runtime = resultBindingRuntime(authority, (intent) =>
     operationReceipt(intent, {
       schema: "test.result/v1",
-      value: "captured",
+      record: "captured",
     }));
   const prepared = runtime.prepare(resultBindingOperationProposal());
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
@@ -3238,7 +3243,7 @@ test("late successful settlement after cancellation cannot capture a result bind
           producerInvocations += 1;
           return pending.then(() => operationReceipt(intent, {
             schema: "test.result/v1",
-            value: "late",
+            record: "late",
           }));
         },
       },
