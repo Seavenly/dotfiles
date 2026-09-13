@@ -9,6 +9,10 @@ import {
   delegateCompatibilityIssue,
   snapshotRequiredDrovrFeatures,
 } from "../src/delegate-effects.mjs";
+import {
+  DELEGATE_INPUT_ENVELOPE_SCHEMA,
+  digestDelegateInputBytes,
+} from "../src/delegate-input-envelope.mjs";
 import { observeCardBlock } from
   "../src/card-block-observation-adapter.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
@@ -112,6 +116,22 @@ test("FlowRuntime executes one exact delegate card from reserved authority", asy
   assert.equal(calls[0][1].caller_key, callerKey);
   assert.equal(calls[1][1].caller_key, callerKey);
   assert.equal(calls[1][1].input_key, `${callerKey}:input:1`);
+  const transmitted = JSON.parse(calls[1][1].prompt);
+  assert.equal(transmitted.schema, DELEGATE_INPUT_ENVELOPE_SCHEMA);
+  assert.deepEqual(transmitted.execution_authority, {
+    schema: "flow.delegate-execution-authority/v1",
+    owner: "RunAuthority",
+    capability: description.launch.capability,
+    effective_authority_digest:
+      description.comparison_keys.effective_authority,
+    capability_envelope_ids: [],
+  });
+  assert.deepEqual(transmitted.task_inputs, {
+    schema: "flow.delegate-task-inputs/v1",
+  });
+  assert.deepEqual(transmitted.resource_references, []);
+  assert.equal(calls[1][1].payload_sha256,
+    digestDelegateInputBytes(calls[1][1].prompt));
   assert.equal(projectionAtDiscovery.cards[1].status, "executing");
   assert.equal(projectionAtDiscovery.delegate_attempts[0].status, "reserved");
   const completed = runtime.query({ run_id: launch.run_id });
@@ -122,6 +142,266 @@ test("FlowRuntime executes one exact delegate card from reserved authority", asy
     .terminal_disposition.status, "retired");
   assert.deepEqual(completed.quarantined_delegate_outputs, []);
   assert.deepEqual(completed.legal_actions, []);
+});
+
+test("plan preparation rejects an unapproved route capability", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-authority", "process-authority"),
+  });
+  t.after(() => authority.close());
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "workspace-write",
+    },
+    caller_metadata: { owner: "unapproved-route-capability" },
+  }, {});
+  const dispatches = [];
+  const runtime = delegateRuntime(authority, {
+    async dispatch(request) {
+      dispatches.push(request);
+      return workingProjection(request);
+    },
+  });
+  assert.throws(
+    () => runtime.prepare(delegateCardProposal(description)),
+    (error) => error?.reason === "delegate_capability_unavailable",
+  );
+  assert.deepEqual(dispatches, []);
+});
+
+test("mapped Drovr capabilities transmit accepted Flow grant IDs", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-mapped-capability", "process-mapped-capability"),
+  });
+  t.after(() => authority.close());
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "workspace-write",
+    },
+    caller_metadata: { owner: "mapped-capability" },
+  }, {});
+  const proposal = delegateCardProposal(description);
+  proposal.requested_authority.capabilities.push("repository:write");
+  proposal.explicit_facts.capability_envelopes.push("repository:write");
+  proposal.explicit_facts.limits.max_capabilities = 1;
+  const dispatches = [];
+  const runtime = delegateRuntime(authority, {
+    async dispatch(request) {
+      dispatches.push(request);
+      return workingProjection(request);
+    },
+    async wait() {
+      return completedTurnProjection({
+        callerKey: runtime.query({ run_id: launch.run_id })
+          .delegate_attempts[0].caller_key,
+        description,
+        prompt: dispatches[0]?.prompt,
+      });
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+
+  assert.equal(dispatches.length, 1);
+  const envelope = JSON.parse(dispatches[0].prompt);
+  assert.deepEqual(envelope.execution_authority.capability_envelope_ids, [
+    "repository:write",
+  ]);
+});
+
+test("workspace-write cannot bypass a workspace claim by declaring read_only", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-read-only-label"),
+  });
+  t.after(() => authority.close());
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "workspace-write",
+    },
+    caller_metadata: { owner: "issue-81-workspace-label" },
+  }, {});
+  const proposal = delegateCardProposal(description);
+  const claim = {
+    kind: "workspace",
+    id: "workspace:label-check",
+    generation: 1,
+    mutation_epoch: 0,
+    fingerprint: `sha256:${"a".repeat(64)}`,
+  };
+  proposal.graph.cards[1].inputs.resource_references = [{
+    schema: "flow.delegate-execution-resource-selection/v1",
+    kind: "workspace",
+    authority: "WorkspaceAuthority",
+    contract: "work.workspace/v1",
+    subject_id: claim.id,
+    generation: claim.generation,
+    mutation_epoch: claim.mutation_epoch,
+    fingerprint: claim.fingerprint,
+    access: "read_only",
+    authority_binding_id: "resource:facts",
+  }];
+  proposal.graph.cards[1].resource_claims = [claim];
+  proposal.explicit_facts.resource_claims.push(claim);
+  proposal.explicit_facts.capability_envelopes.push("repository:write");
+  proposal.explicit_facts.limits.max_capabilities = 1;
+  proposal.explicit_facts.limits.max_resources = 1;
+  proposal.requested_authority.capabilities.push("repository:write");
+  const definition = {
+    schema: "flow.predefined-definition/v1",
+    id: "workspace-label/v1",
+    contract: "flow.definition/workspace-label/v1",
+    promised_outcomes: ["an exact fenced workspace outcome"],
+    negative_outcomes: ["no untracked workspace mutation"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "resource:facts",
+      contract: "flow.resource-authority/v1",
+      observation_input: { fact: "resource_claims" },
+    }],
+    compile() {
+      return proposal;
+    },
+  };
+  const registeredAuthorities = {
+    "resource:facts": {
+      schema: "flow.registered-authority/v1",
+      id: "resource:facts",
+      contract: "flow.resource-authority/v1",
+      provider_identity: {
+        schema: "flow.registered-authority/v1",
+        id: "provider:workspace-label",
+        version: "v1",
+      },
+      observe({ observation_input }) {
+        return {
+          schema: "flow.authority-observation/v1",
+          status: "available",
+          watermark: digest(proposal.explicit_facts.resource_claims),
+          observation_input,
+        };
+      },
+    },
+  };
+  let dispatches = 0;
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredAuthorities,
+    predefinedDefinitions: { "workspace-label/v1": definition },
+    delegatedAgentPort: {
+      contract: "flow.delegated-agent-port/v1",
+      ...completePortOperations(),
+      async discover() {
+        return absentDiscovery();
+      },
+      async dispatch(request) {
+        dispatches += 1;
+        return completedTurnProjection({
+          callerKey: request.caller_key,
+          description,
+          prompt: request.prompt,
+        });
+      },
+      async wait() {},
+    },
+    delegateOutputValidators: {
+      [DELEGATE_OUTPUT_VALIDATOR]: {
+        validate(output) {
+          return output === "accepted output";
+        },
+      },
+    },
+  });
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "workspace-label/v1",
+    inputs: {},
+    explicit_facts: proposal.explicit_facts,
+  });
+  const launch = runtime.launch({
+    prepared,
+    confirmation: {
+      schema: "flow.predefined-flow-confirmation-decision/v1",
+      decision: "accept",
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    },
+    closed_facts: {
+      schema: "flow.closed-fact-observation/v1",
+      bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts),
+    },
+  });
+  assert.equal(launch.created, true, JSON.stringify(launch));
+  const waiting = runtime.query({ run_id: launch.run_id });
+  runtime.command(waiting.legal_actions.find(({ decision }) =>
+    decision === "approve"));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "delegate_execute"));
+  await until(() => ["succeeded", "reconciling"].includes(
+    runtime.query({ run_id: launch.run_id }).effects[0]?.status,
+  ));
+
+  const effect = runtime.query({ run_id: launch.run_id }).effects[0];
+  assert.equal(dispatches, 0);
+  assert.equal(effect.last_observation.provider_observation.code,
+    "workspace_claim_missing");
+});
+
+test("an altered route description digest cannot reach delegate dispatch", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-altered-route", "process-altered-route"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  description.caller_metadata = { owner: "altered-after-description" };
+  const dispatches = [];
+  const runtime = delegateRuntime(authority, {
+    async dispatch(request) {
+      dispatches.push(request);
+      return workingProjection(request);
+    },
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(dispatches, []);
+  assert.equal(
+    runtime.query({ run_id: launch.run_id }).delegate_attempts[0].status,
+    "reconciling",
+  );
 });
 
 test("delegate recovery discovers the reserved attempt before dispatch", async (t) => {
@@ -144,7 +424,7 @@ test("delegate recovery discovers the reserved attempt before dispatch", async (
   approveAndExecute(firstRuntime, launch.run_id);
   await until(() => firstCalls.length === 1);
   const unresolved = firstRuntime.query({ run_id: launch.run_id });
-  assert.equal(unresolved.delegate_attempts[0].status, "reserved");
+  assert.equal(unresolved.delegate_attempts[0].status, "reconciling");
   firstAuthority.close();
 
   const recoveredAuthority = createDurableRunAuthority({
@@ -218,7 +498,7 @@ test("delegate recovery settles retirement before accepting output", async (t) =
   await until(() => retireCalls === 1);
 
   const unresolved = runtime.query({ run_id: launch.run_id });
-  assert.equal(unresolved.delegate_attempts[0].status, "reserved");
+  assert.equal(unresolved.delegate_attempts[0].status, "reconciling");
   runtime.command(unresolved.legal_actions.find(
     ({ type }) => type === "recovery",
   ));
@@ -242,19 +522,18 @@ test("bounded wait recovery preserves one live attempt without cancellation", as
   const calls = [];
   let discovery = 0;
   let waits = 0;
+  let dispatchRequest;
   const runtime = delegateRuntime(authority, {
     async discover(request) {
       calls.push("discover");
       discovery += 1;
       return discovery === 1
         ? absentDiscovery()
-        : workingProjection({
-            agent_id: "agent:delegate-review",
-            caller_key: request.caller_key,
-          });
+        : workingProjection(dispatchRequest);
     },
     async dispatch(request) {
       calls.push("dispatch");
+      dispatchRequest = request;
       return workingProjection(request);
     },
     async wait() {
@@ -1674,6 +1953,95 @@ test("a wrong discovered agent receives no steering input", async (t) => {
   assert.equal(sends, 0);
 });
 
+test("an adopted turn validates its initial payload before steering", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-adopted-input"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const proposal = delegateCardProposal(description);
+  proposal.graph.cards[1].inputs.steering = [{
+    schema: "flow.delegate-steering-input/v1",
+    caller_id: "security",
+    prompt: "inspect the exact security boundary",
+  }];
+  let sends = 0;
+  const runtime = delegateRuntime(authority, {
+    async discover(request) {
+      const projection = completedTurnProjection({
+        callerKey: request.caller_key,
+        description,
+        prompt: "tampered initial payload",
+      });
+      projection.operation = "discover";
+      projection.status = "working";
+      projection.turn.status = "working";
+      return projection;
+    },
+    async send() {
+      sends += 1;
+      return workingProjection({ agent_id: "agent:delegate-review" });
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects[0]
+    .status === "reconciling");
+
+  const effect = runtime.query({ run_id: launch.run_id }).effects[0];
+  assert.equal(sends, 0);
+  assert.equal(
+    effect.last_observation.provider_observation.code,
+    "incompatible_initial_input",
+  );
+});
+
+test("an adopted exact recorded input proceeds to wait reconciliation", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-adopted-recorded"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  let waits = 0;
+  const runtime = delegateRuntime(authority, {
+    async discover(request) {
+      const projection = completedTurnProjection({
+        callerKey: request.caller_key,
+        description,
+      });
+      projection.operation = "discover";
+      projection.status = "working";
+      projection.turn.status = "working";
+      delete projection.turn.result;
+      delete projection.turn.settlement_proof;
+      projection.turn.inputs[0].delivery.status = "recorded";
+      return projection;
+    },
+    async wait(request) {
+      waits += 1;
+      assert.equal(request.turn_id, "turn:delegate-review");
+      return stillWorkingProjection();
+    },
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects[0]
+    .status === "reconciling");
+
+  const effect = runtime.query({ run_id: launch.run_id }).effects[0];
+  assert.equal(waits, 1);
+  assert.equal(effect.last_observation.provider_observation.status,
+    "still_running");
+});
+
 test("a result from the wrong routed agent remains quarantined", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -1978,6 +2346,31 @@ function absentDiscovery() {
 }
 
 function workingProjection(request) {
+  const turn = {
+    id: "turn:delegate-review",
+    status: "working",
+    ...(request?.caller_key === undefined ? {} : {
+      caller: { dispatch_key: request.caller_key },
+    }),
+    ...(request?.description === undefined ? {} : {
+      launch_binding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: request.description.comparison_keys.launch,
+        configuration_watermark: request.description.watermark.content_sha256,
+        description_digest: request.description.description_digest,
+      },
+    }),
+    ...(request?.input_key === undefined || request?.payload_sha256 === undefined
+      ? {}
+      : {
+          inputs: [{
+            sequence: 1,
+            caller_key: request.input_key,
+            payload_sha256: request.payload_sha256,
+            delivery: { status: "submitted" },
+          }],
+        }),
+  };
   return {
     schema: "flow.delegated-agent-lifecycle-projection/v1",
     operation: "dispatch",
@@ -1988,7 +2381,7 @@ function workingProjection(request) {
       task_id: "task:delegate-review",
       group_id: "group:flow",
     },
-    turn: { id: "turn:delegate-review", status: "working" },
+    turn,
     legal_next_actions: ["wait_bounded"],
   };
 }

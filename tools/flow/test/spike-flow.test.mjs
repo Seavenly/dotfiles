@@ -97,6 +97,36 @@ test("spike/v1 quick preparation binds distinct non-mutating researcher and synt
   assert.deepEqual(prepared.graph.cards[1].inputs.delegate_evidence_card_ids, [
     "spike-research",
   ]);
+  for (const [card, role, phase, outputSchema] of [
+    [prepared.graph.cards[0], "researcher", "research", SPIKE_RESEARCH_EVIDENCE_SCHEMA],
+    [prepared.graph.cards[1], "synthesizer", "synthesis", SPIKE_REPORT_SCHEMA],
+  ]) {
+    assert.deepEqual(card.inputs.task_inputs, {
+      schema: "flow.delegate-task-inputs/v1",
+      flow: "spike/v1",
+      role,
+      mode: "quick",
+      phase,
+      question: {
+        schema: "flow.spike-question/v1",
+        id: "question:one",
+        text: "Which design should we choose?",
+        sources: [{
+          schema: "flow.spike-source/v1",
+          id: "source:one",
+          uri: "https://github.com/Seavenly/dotfiles/commit/8fa9d02504a18b4a01d015403b47c097fc99e5f3",
+          digest: `sha256:${"1".repeat(64)}`,
+        }],
+      },
+    });
+    assert.deepEqual(card.inputs.resource_references, []);
+    assert.deepEqual(card.inputs.output_requirements, {
+      schema: "flow.delegate-output-requirements/v1",
+      format: "canonical-json",
+      schemas: [outputSchema],
+      validator_contracts: [card.validators[0]],
+    });
+  }
   assert.notEqual(
     prepared.graph.cards[0].route.agent_id,
     prepared.graph.cards[1].route.agent_id,
@@ -186,7 +216,7 @@ test("RunAuthority materializes accepted researcher evidence into an exact synth
         const envelope = JSON.parse(request.prompt);
         assert.equal(envelope.schema, SPIKE_DELEGATE_INPUT_SCHEMA);
         assert.equal(Object.hasOwn(request, "authority_materialized_evidence"), false);
-        const materialized = envelope.authority_materialized_evidence;
+        const materialized = envelope.predecessor_evidence;
         const accepted = materialized.accepted_delegates[0];
         const acceptedResearch = JSON.parse(accepted.evidence.validated_output);
         output = JSON.stringify(createSpikeReport({
@@ -264,28 +294,32 @@ test("RunAuthority materializes accepted researcher evidence into an exact synth
   }
   assert.equal(completed?.phase, "succeeded");
   assert.equal(dispatches.length, 2);
-  assert.match(dispatches[0].prompt,
+  const researcherEnvelope = JSON.parse(dispatches[0].prompt);
+  assert.equal(researcherEnvelope.schema, SPIKE_DELEGATE_INPUT_SCHEMA);
+  assert.match(researcherEnvelope.instructions,
     /Research the confirmed question using only the immutable source references below\./u);
-  assert.match(dispatches[0].prompt,
+  assert.match(researcherEnvelope.instructions,
     /flow\.spike-research-evidence\/v1/u);
-  assert.match(dispatches[0].prompt,
+  assert.match(researcherEnvelope.instructions,
     /fields answer, assurance, citations, evidence_digest, findings, question_id, residual_gaps/u);
-  assert.match(dispatches[0].prompt, /assurance to lower/u);
-  assert.match(dispatches[0].prompt, /citations/u);
-  assert.match(dispatches[0].prompt, /findings/u);
-  assert.match(dispatches[0].prompt, /residual_gaps/u);
-  assert.match(dispatches[0].prompt,
+  assert.match(researcherEnvelope.instructions, /assurance to lower/u);
+  assert.match(researcherEnvelope.instructions, /citations/u);
+  assert.match(researcherEnvelope.instructions, /findings/u);
+  assert.match(researcherEnvelope.instructions, /residual_gaps/u);
+  assert.match(researcherEnvelope.instructions,
     /Do not claim unsupported authority \(network, filesystem, mutation\)\./u);
   const questionMarker = "Confirmed question and sources (canonical JSON): ";
   assert.equal(
-    dispatches[0].prompt.slice(
-      dispatches[0].prompt.indexOf(questionMarker) + questionMarker.length,
+    researcherEnvelope.instructions.slice(
+      researcherEnvelope.instructions.indexOf(questionMarker) + questionMarker.length,
     ),
     JSON.stringify(canonicalize(question)),
   );
-  assert.ok(dispatches[0].prompt.includes(question.sources[0].digest));
+  assert.deepEqual(researcherEnvelope.task_inputs.question, question);
+  assert.deepEqual(researcherEnvelope.resource_references, []);
+  assert.ok(researcherEnvelope.instructions.includes(question.sources[0].digest));
   const envelope = JSON.parse(dispatches[1].prompt);
-  const materialized = envelope.authority_materialized_evidence;
+  const materialized = envelope.predecessor_evidence;
   assert.equal(materialized.schema, "flow.authority-materialized-evidence/v1");
   assert.match(materialized.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
   const { evidence_digest: _ignored, ...materializedIdentity } = materialized;
@@ -295,27 +329,37 @@ test("RunAuthority materializes accepted researcher evidence into an exact synth
   assert.equal(accepted.evidence.schema, "flow.delegate-evidence/v1");
   assert.ok(accepted.evidence.evidence_safety_receipt);
   assert.ok(accepted.evidence.evidence_safety_binding);
-  assert.match(envelope.prompt,
+  assert.match(envelope.instructions,
     /Synthesize only the authority-materialized researcher evidence below\./u);
-  assert.match(envelope.prompt, /flow\.spike-report\/v1/u);
-  assert.match(envelope.prompt,
+  assert.match(envelope.instructions, /flow\.spike-report\/v1/u);
+  assert.match(envelope.instructions,
     /fields answer, assurance, citations, question_id, research_evidence_digest, residual_gaps/u);
-  assert.match(envelope.prompt, /assurance to lower/u);
-  assert.match(envelope.prompt, /nonempty residual_gaps/u);
-  assert.match(envelope.prompt,
+  assert.match(envelope.instructions, /assurance to lower/u);
+  assert.match(envelope.instructions, /nonempty residual_gaps/u);
+  assert.match(envelope.instructions,
     /research_evidence_digest must exactly equal the accepted researcher evidence digest\./u);
-  assert.match(envelope.prompt, /accepted immutable question sources/u);
-  assert.match(envelope.prompt, /no ambient transcript or data/u);
-  assert.match(envelope.prompt, /no unsupported authority/u);
-  assert.ok(envelope.prompt.includes(JSON.stringify(canonicalize(question))));
+  assert.match(envelope.instructions, /accepted immutable question sources/u);
+  assert.match(envelope.instructions, /no ambient transcript or data/u);
+  assert.match(envelope.instructions, /no unsupported authority/u);
+  assert.ok(envelope.instructions.includes(JSON.stringify(canonicalize(question))));
   assert.ok(JSON.stringify(envelope).includes(
     JSON.parse(accepted.evidence.validated_output).evidence_digest,
   ));
   assert.deepEqual(Object.keys(envelope).sort(), [
-    "authority_materialized_evidence",
-    "prompt",
+    "attempt_id",
+    "envelope_digest",
+    "execution_authority",
+    "input_key",
+    "input_kind",
+    "instructions",
+    "output_requirements",
+    "predecessor_evidence",
+    "resource_references",
     "schema",
+    "sequence",
+    "task_inputs",
   ]);
+  assert.equal(Object.hasOwn(envelope, "authority_materialized_evidence"), false);
   assert.equal(Object.hasOwn(envelope, "researcher_evidence"), false);
   const report = JSON.parse(completed.delegate_attempts.find(
     ({ card_id: cardId }) => cardId === "spike-synthesis",

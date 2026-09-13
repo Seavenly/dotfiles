@@ -36,6 +36,199 @@ test("reboot admission schemas compile in strict mode", async () => {
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
 });
 
+test("delegate input envelope schemas compile in strict mode", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const names = [
+    "flow.required-authority-binding.v1.schema.json",
+    "flow.authority-observation.v1.schema.json",
+    "flow.delegate-input-envelope.v1.schema.json",
+    "flow.delegate-task-inputs.v1.schema.json",
+    "flow.delegate-execution-resource-selection.v1.schema.json",
+    "flow.delegate-execution-resource-reference.v1.schema.json",
+    "flow.delegate-execution-authority.v1.schema.json",
+    "flow.delegate-predecessor-evidence.v1.schema.json",
+    "flow.delegate-output-requirements.v1.schema.json",
+  ];
+  const schemas = await Promise.all(names.map(async (name) =>
+    JSON.parse(await readFile(join(root, "schemas", name), "utf8"))));
+
+  for (const schema of schemas) ajv.addSchema(schema);
+  for (const schema of schemas) {
+    assert.equal(typeof ajv.getSchema(schema.$id), "function", schema.$id);
+  }
+
+  const validate = ajv.getSchema(
+    "https://dotfiles.local/schemas/flow.delegate-input-envelope.v1.schema.json",
+  );
+  const envelope = {
+    schema: "flow.delegate-input-envelope/v1",
+    attempt_id: "run:contract/card:delegate/attempt:1",
+    input_key: "run:contract/card:delegate/attempt:1:input:1",
+    sequence: 1,
+    input_kind: "initial",
+    instructions: "Inspect the selected task and return canonical JSON.",
+    task_inputs: {
+      schema: "flow.delegate-task-inputs/v1",
+      flow: "feature/v1",
+      phase: "critique",
+      brief_id: "brief:contract",
+    },
+    resource_references: [{
+      schema: "flow.delegate-execution-resource-reference/v1",
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: "workspace:contract",
+      generation: 4,
+      mutation_epoch: 9,
+      fingerprint: `sha256:${"a".repeat(64)}`,
+      access: "read_only",
+      authority_binding: {
+        schema: "flow.required-authority-binding/v1",
+        id: "resource:facts",
+        contract: "flow.resource-authority/v1",
+        provider_identity: {
+          schema: "flow.registered-authority/v1",
+          id: "authority:resource",
+          version: "v1",
+        },
+        observation_input: { fact: "resource_claims" },
+        observation: {
+          schema: "flow.authority-observation/v1",
+          status: "available",
+          watermark: `sha256:${"b".repeat(64)}`,
+          observation_input: { fact: "resource_claims" },
+        },
+      },
+    }],
+    execution_authority: {
+      schema: "flow.delegate-execution-authority/v1",
+      owner: "RunAuthority",
+      capability: "read-only",
+      effective_authority_digest: `sha256:${"c".repeat(64)}`,
+      capability_envelope_ids: ["read-only"],
+    },
+    predecessor_evidence: {
+      schema: "flow.authority-materialized-delegate-evidence/v1",
+      accepted_delegates: [],
+    },
+    output_requirements: {
+      schema: "flow.delegate-output-requirements/v1",
+      format: "canonical-json",
+      schemas: ["flow.review-result/v1"],
+      validator_contracts: ["flow.validator/review-result/v1"],
+    },
+    envelope_digest: `sha256:${"d".repeat(64)}`,
+  };
+  assert.equal(validate(envelope), true, ajv.errorsText(validate.errors));
+
+  const transmittedWithSelectionId = structuredClone(envelope);
+  delete transmittedWithSelectionId.resource_references[0].authority_binding;
+  transmittedWithSelectionId.resource_references[0].authority_binding_id =
+    "resource:facts";
+  assert.equal(validate(transmittedWithSelectionId), false);
+
+  const forbidden = structuredClone(envelope);
+  forbidden.task_inputs.working_directory = "/tmp/not-a-contract-input";
+  assert.equal(validate(forbidden), false);
+});
+
+test("predecessor evidence schema branches reject unknown fields", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.delegate-predecessor-evidence.v1.schema.json"),
+    "utf8",
+  ));
+  const validate = ajv.compile(schema);
+  const digestEvidence = {
+    schema: "flow.authority-materialized-evidence/v1",
+    evidence_digest: `sha256:${"a".repeat(64)}`,
+  };
+  const delegateEvidence = {
+    schema: "flow.authority-materialized-delegate-evidence/v1",
+    accepted_delegates: [],
+  };
+  const completeEvidence = {
+    schema: "flow.authority-materialized-evidence/v1",
+    accepted_delegates: [{
+      card_id: "feature-critique",
+      effect_id: "effect:critique",
+      attempt_id: "attempt:critique",
+      idempotency_key: "delegate:critique",
+      source_authority_watermark: `sha256:${"b".repeat(64)}`,
+      evidence: {
+        schema: "flow.delegate-evidence/v1",
+        validated_output: "{\"findings\":[]}",
+      },
+    }],
+    operation_receipts: [{
+      card_id: "feature-verify",
+      effect_id: "effect:verify",
+      attempt_id: "attempt:verify",
+      idempotency_key: "operation:verify",
+      source_authority_watermark: `sha256:${"c".repeat(64)}`,
+      receipt: {
+        schema: "flow.effect-receipt/v1",
+        effect_id: "effect:verify",
+        idempotency_key: "operation:verify",
+        outcome: "succeeded",
+        provider_receipt: { schema: "work.feature-verification-receipt/v1" },
+      },
+    }],
+    verify_receipt: {
+      schema: "flow.effect-receipt/v1",
+      effect_id: "effect:verify",
+      idempotency_key: "operation:verify",
+      outcome: "succeeded",
+      provider_receipt: { schema: "work.feature-verification-receipt/v1" },
+    },
+    evidence_digest: `sha256:${"d".repeat(64)}`,
+  };
+  assert.equal(validate(digestEvidence), true, ajv.errorsText(validate.errors));
+  assert.equal(validate(delegateEvidence), true, ajv.errorsText(validate.errors));
+  assert.equal(validate(completeEvidence), true, ajv.errorsText(validate.errors));
+  assert.equal(validate({ ...digestEvidence, transcript: "not evidence" }), false);
+  assert.equal(validate({ ...delegateEvidence, authority: "not evidence" }), false);
+  assert.equal(validate({ ...completeEvidence, mystery: true }), false);
+});
+
+test("delegate resource selection schema is plan-time ID-only", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const bindingSchema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.required-authority-binding.v1.schema.json"),
+    "utf8",
+  ));
+  const observationSchema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.authority-observation.v1.schema.json"),
+    "utf8",
+  ));
+  const schema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.delegate-execution-resource-selection.v1.schema.json"),
+    "utf8",
+  ));
+  ajv.addSchema(bindingSchema);
+  ajv.addSchema(observationSchema);
+  ajv.addSchema(schema);
+  const validate = ajv.getSchema(schema.$id);
+  const selection = {
+    schema: "flow.delegate-execution-resource-selection/v1",
+    kind: "workspace",
+    authority: "WorkspaceAuthority",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:contract",
+    generation: 4,
+    mutation_epoch: 9,
+    fingerprint: `sha256:${"a".repeat(64)}`,
+    access: "read_only",
+    authority_binding_id: "resource:facts",
+  };
+  assert.equal(validate(selection), true, ajv.errorsText(validate.errors));
+
+  const inlineBinding = structuredClone(selection);
+  inlineBinding.authority_binding = { id: "resource:facts" };
+  assert.equal(validate(inlineBinding), false);
+});
+
 test("authority observations require their binding observation input", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const schema = JSON.parse(await readFile(

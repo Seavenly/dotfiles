@@ -47,6 +47,50 @@ It does not create a replacement run or mutate Drovr delegated work. Until all
 required lifecycle features advertise `supported`, the projection is a typed
 compatibility block with repair and refresh as its only legal actions.
 
+## Delegate input compatibility
+
+Catalog v29 publishes one versioned input contract for every dynamic delegate
+card and shipped delegated role: feature apply and critique (including serialized slices), local
+and GitHub review lenses and critic, and quick-spike researcher and synthesizer
+all send `flow.delegate-input-envelope/v1`. Each envelope selects bounded
+`instructions`, minimal `task_inputs`, exact `resource_references`, any
+declared `predecessor_evidence`, and `output_requirements`.
+
+`resource_references` are execution access facts resolved through the owning
+authority. A prepared card carries the plan-time
+`flow.delegate-execution-resource-selection/v1` shape: an exact subject fact
+and `authority_binding_id`, with no inline binding. RunAuthority resolves that
+selection through its immutable `required_authority_bindings` and transmits
+only the resolved `flow.delegate-execution-resource-reference/v1` shape with
+the exact inline owning-authority binding. Workspace references use
+`WorkspaceAuthority`, and artifact references use `ArtifactAuthority`. A
+`resource_handoff` is not a delegate resource kind; handoff publication remains
+an explicit Work operation outside the delegate input envelope. These execution
+access facts are not transferable evidence and do not carry paths, credentials,
+capability secrets, the prepared bundle, or ambient transcripts.
+When a predecessor join is declared, `predecessor_evidence` is the exact
+RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
+the evidence-safety catalog identity is
+`flow.contract-catalog/v1@29`.
+
+Callers select instructions, minimal task-input IDs and facts, resource
+selection IDs, and output requirements. RunAuthority derives execution
+authority from the immutable exact route description's effective-authority
+digest and accepted capability facts, and derives predecessor evidence from
+the declared lifecycle join. The baseline `read-only` route is bound by the
+exact route effective-authority digest without a separate capability grant;
+other Drovr postures map to Flow grants (`on-approve` to `scope:approve`,
+`workspace-write` and `auto` to `repository:write`) and require that grant
+for the specific card; `unrestricted` has no finite Flow mapping and is
+rejected. The port
+transmits canonical JSON UTF-8 bytes and their SHA-256 digest. Initial input
+and ordered steering share the same attempt/input-key/sequence correlation,
+so retries and discovery cannot reuse a caller key for different bytes. Local
+review targets receive only their approved read-only `WorkspaceAuthority`
+reference. GitHub review targets select their exact remote snapshot and are
+resource-free with no ambient local workspace. Live mixed-harness
+qualification remains out of scope here and belongs to issue #44.
+
 The same configured port is the mechanism Adapter for confirmed delegate
 cards. A caller embedding `FlowRuntime` supplies the durable `RunAuthority` and
 registered independent output validators. Flow reserves the exact attempt and

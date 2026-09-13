@@ -91,6 +91,13 @@ One immutable executable node in an accepted finite flow run plan. Dependency
 edges determine readiness but never imply ambient data transfer.
 _Avoid_: Kanban card when discussing replacement authority
 
+**Delegate input envelope**:
+The versioned selection sent to one delegated turn: its instructions, task
+context, authority-owned execution resources, accepted predecessor evidence,
+and output requirements. Execution access and transferable evidence remain
+separate concerns.
+_Avoid_: Prepared bundle, ambient transcript, prompt-only input
+
 **Prepared run**:
 One immutable, content-addressed run bundle produced from a complete proposed
 plan and explicit identity-bearing facts without creating authoritative run

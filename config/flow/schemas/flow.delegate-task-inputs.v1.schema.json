@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-task-inputs.v1.schema.json",
+  "title": "flow.delegate-task-inputs/v1",
+  "description": "Caller-selected, role-specific task context. Recursive redaction and prepared-bundle exclusion remain runtime invariants.",
+  "type": "object",
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "flow.delegate-task-inputs/v1" }
+  },
+  "propertyNames": {
+    "not": {
+      "enum": [
+        "ambient_transcript",
+        "bundle",
+        "capability_secret",
+        "credentials",
+        "credential",
+        "cwd",
+        "environment",
+        "full_bundle",
+        "path",
+        "paths",
+        "prepared",
+        "prepared_bundle",
+        "transcript",
+        "working_directory",
+        "workspace_path"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

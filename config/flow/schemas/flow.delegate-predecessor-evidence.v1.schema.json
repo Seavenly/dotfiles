@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-predecessor-evidence.v1.schema.json",
+  "title": "flow.delegate-predecessor-evidence/v1",
+  "description": "RunAuthority-materialized predecessor evidence. This union deliberately carries evidence only, never execution resource authority.",
+  "$defs": {
+    "acceptedDelegate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "card_id",
+        "effect_id",
+        "attempt_id",
+        "idempotency_key",
+        "source_authority_watermark",
+        "evidence"
+      ],
+      "properties": {
+        "card_id": { "type": "string", "minLength": 1 },
+        "effect_id": { "type": "string", "minLength": 1 },
+        "attempt_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "source_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "evidence": { "type": "object" }
+      }
+    },
+    "operationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "card_id",
+        "effect_id",
+        "attempt_id",
+        "idempotency_key",
+        "source_authority_watermark",
+        "receipt"
+      ],
+      "properties": {
+        "card_id": { "type": "string", "minLength": 1 },
+        "effect_id": { "type": "string", "minLength": 1 },
+        "attempt_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "source_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "receipt": { "type": "object" }
+      }
+    },
+    "effectReceipt": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema", "evidence_digest"],
+      "properties": {
+        "schema": { "const": "flow.authority-materialized-evidence/v1" },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "accepted_delegates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/acceptedDelegate" }
+        },
+        "operation_receipts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/operationReceipt" }
+        },
+        "verify_receipt": { "$ref": "#/$defs/effectReceipt" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["schema", "accepted_delegates"],
+      "properties": {
+        "schema": {
+          "const": "flow.authority-materialized-delegate-evidence/v1"
+        },
+        "accepted_delegates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/acceptedDelegate" }
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

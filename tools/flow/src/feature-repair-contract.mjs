@@ -497,6 +497,13 @@ function comparableReplacementCard(card, managedAgent) {
   } else {
     inputs.managed_agent = managedAgent;
   }
+  if (card.executor?.kind === "delegate" &&
+      Array.isArray(inputs.resource_references)) {
+    inputs.resource_references = inputs.resource_references.map((reference) =>
+      reference.operation === card.id
+        ? { ...reference, operation: "$owning-card" }
+        : reference);
+  }
   comparable.inputs = inputs;
   return comparable;
 }

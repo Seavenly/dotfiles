@@ -465,6 +465,7 @@ function delegateDecision(fold, command, delegate) {
       operation_contract: card.executor.contract,
       source_authority_watermark: fold.watermark,
       delegate_input: delegateInput,
+      delegate_output_schemas: card.outputs,
       delegate_validator_contracts: card.validators,
       managed_agent_binding: card.inputs.managed_agent ?? null,
       route_binding: routeBinding,
@@ -564,7 +565,8 @@ function operationDecision(
 
 function materializeAuthorityEvidence(fold, card) {
   const inputs = card?.inputs ?? {};
-  if (Object.hasOwn(inputs, "authority_materialized_evidence")) {
+  if (Object.hasOwn(inputs, "authority_materialized_evidence") ||
+      Object.hasOwn(inputs, "predecessor_evidence")) {
     return { code: "caller_materialized_evidence_forbidden", evidence: null };
   }
   const delegateCardIds = inputs.delegate_evidence_card_ids ??

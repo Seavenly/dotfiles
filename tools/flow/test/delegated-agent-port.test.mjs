@@ -6,6 +6,7 @@ import {
   createDrovrDelegatedAgentPort as createProductionDrovrDelegatedAgentPort,
 } from "../src/drovr-delegated-agent-port.mjs";
 import { digest } from "../src/canonical.mjs";
+import { digestDelegateInputBytes } from "../src/delegate-input-envelope.mjs";
 import {
   rebindDescriptionDigest,
   repositoryDrovrDependencies,
@@ -232,6 +233,7 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
   const discovered = await port.discover({
@@ -243,6 +245,7 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "prioritize correctness",
+    payload_sha256: digestDelegateInputBytes("prioritize correctness"),
   });
   const observed = await port.observe({
     schema: "flow.delegated-agent-observe-request/v1",
@@ -303,6 +306,53 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
   assert.equal(calls[2][2].callerKey, "input:2");
 });
 
+test("DelegatedAgentPort requires an exact payload digest for dispatch and send", async () => {
+  const context = lifecycleContext();
+  const port = createDrovrDelegatedAgentPort({
+    async dispatchDrovr() {
+      return { ...context, dispatch_status: "dispatched" };
+    },
+    async sendDrovr() {
+      return { ...context, input_status: "submitted" };
+    },
+  });
+  const description = (await port.describe(request)).description;
+  const dispatchRequest = {
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: "agent:1",
+    caller_key: "run:payload/card:delegate/attempt:1",
+    input_key: "run:payload/card:delegate/attempt:1:input:1",
+    prompt: "inspect the candidate",
+    description,
+  };
+  const missingDispatch = await port.dispatch(dispatchRequest);
+  assert.equal(missingDispatch.status, "blocked");
+  assert.equal(missingDispatch.compatibility.code, "invalid_dispatch_request");
+  const wrongDispatch = await port.dispatch({
+    ...dispatchRequest,
+    payload_sha256: `sha256:${"0".repeat(64)}`,
+  });
+  assert.equal(wrongDispatch.status, "blocked");
+  assert.equal(wrongDispatch.compatibility.code, "invalid_dispatch_request");
+  const missingSend = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "run:payload/card:delegate/attempt:1:steering:next",
+    prompt: "prioritize correctness",
+  });
+  assert.equal(missingSend.status, "blocked");
+  assert.equal(missingSend.compatibility.code, "invalid_input_request");
+  const wrongSend = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "run:payload/card:delegate/attempt:1:steering:next",
+    prompt: "prioritize correctness",
+    payload_sha256: `sha256:${"0".repeat(64)}`,
+  });
+  assert.equal(wrongSend.status, "blocked");
+  assert.equal(wrongSend.compatibility.code, "invalid_input_request");
+});
+
 test("DelegatedAgentPort preserves a competing registry owner watermark and actions", async () => {
   const authorityWatermark = registryLockWatermark();
   const port = createDrovrDelegatedAgentPort({
@@ -328,6 +378,7 @@ test("DelegatedAgentPort preserves a competing registry owner watermark and acti
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
 
@@ -358,6 +409,7 @@ test("DelegatedAgentPort preserves owner-loss recovery evidence", async () => {
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "resume the exact operation",
+    payload_sha256: digestDelegateInputBytes("resume the exact operation"),
   });
 
   assert.equal(blocked.status, "blocked");
@@ -647,6 +699,7 @@ test("DelegatedAgentPort proves caller-key absence and fails conflicts closed", 
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "different",
+    payload_sha256: digestDelegateInputBytes("different"),
   });
   assert.equal(conflict.status, "blocked");
   assert.equal(conflict.compatibility.code, "caller_key_conflict");
@@ -735,6 +788,7 @@ for (const outcome of ["launch_binding_missing", "launch_binding_stale"]) {
       caller_key: "run:1/card:review/attempt:1",
       input_key: "input:1",
       prompt: "inspect the candidate",
+      payload_sha256: digestDelegateInputBytes("inspect the candidate"),
       description,
     });
 
@@ -772,6 +826,7 @@ test("DelegatedAgentPort keeps a fresh description conflict refreshable", async 
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
 
@@ -808,6 +863,7 @@ test("DelegatedAgentPort never recommends retirement without registry evidence",
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
 
@@ -839,6 +895,7 @@ test("DelegatedAgentPort closes legal actions around unproven delivery and agent
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "do not duplicate this input",
+    payload_sha256: digestDelegateInputBytes("do not duplicate this input"),
   });
   assert.equal(reconciling.status, "reconciling");
   assert.deepEqual(reconciling.legal_next_actions, [

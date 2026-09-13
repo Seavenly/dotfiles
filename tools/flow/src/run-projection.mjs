@@ -688,16 +688,25 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     .filter(({ effect_kind: kind }) => kind === "delegate")
     .map((intent) => {
       const receipt = effectReceipts.get(intent.effect_id);
+      const observation = effectObservations.get(intent.effect_id);
+      const hasTypedMaterializationFailure =
+        observation?.provider_observation?.schema ===
+        "flow.delegate-failure-observation/v1";
       return {
         attempt_id: intent.attempt_id,
         card_id: intent.card_id,
         effect_id: intent.effect_id,
         caller_key: intent.attempt_id,
         route_binding: intent.route_binding,
+        // A typed materialization failure is durable operator-facing truth;
+        // ordinary unresolved provider observations retain the historical
+        // reserved state until recovery proves what Drovr did.
         status: isQuarantinedAfterCancellation(intent.effect_id)
           ? "abandoned"
           : receipt
           ? receipt.outcome === "quarantined" ? "quarantined" : "accepted"
+          : hasTypedMaterializationFailure
+          ? "reconciling"
           : "reserved",
         validated_output: receipt?.outcome === "succeeded"
           ? receipt.provider_receipt.validated_output

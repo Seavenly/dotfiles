@@ -253,6 +253,19 @@ const DELEGATE_EXECUTION = {
   terminal_disposition:
     "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
   exhausted_action: "terminal_disposition",
+  input_envelope: {
+    schema: "flow.delegate-input-envelope/v1",
+    task_inputs: "flow.delegate-task-inputs/v1",
+    resource_selection: "flow.delegate-execution-resource-selection/v1",
+    resource_references: "flow.delegate-execution-resource-reference/v1",
+    execution_authority: "flow.delegate-execution-authority/v1",
+    predecessor_evidence: "flow.delegate-predecessor-evidence/v1",
+    output_requirements: "flow.delegate-output-requirements/v1",
+    serialization: "canonical_json_utf8_exact_bytes",
+    payload_digest: "sha256_exact_transmitted_bytes",
+    identity: "attempt_input_key_sequence_envelope_digest",
+    ordered_steering: "same_envelope_correlation_contract",
+  },
 };
 const SUBRUN_EXECUTION = {
   authority: "RunAuthority",
@@ -390,7 +403,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@28",
+  catalog_id: "flow.contract-catalog/v1@29",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -635,6 +648,13 @@ export async function loadContractCatalog({
     DELEGATE_EXECUTION.steering_input,
     DELEGATE_EXECUTION.cancellation_identity,
     DELEGATE_EXECUTION.cancellation_receipt,
+    DELEGATE_EXECUTION.input_envelope.schema,
+    DELEGATE_EXECUTION.input_envelope.task_inputs,
+    DELEGATE_EXECUTION.input_envelope.resource_selection,
+    DELEGATE_EXECUTION.input_envelope.resource_references,
+    DELEGATE_EXECUTION.input_envelope.execution_authority,
+    DELEGATE_EXECUTION.input_envelope.predecessor_evidence,
+    DELEGATE_EXECUTION.input_envelope.output_requirements,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("delegate execution contracts are incomplete");
   }

@@ -127,13 +127,23 @@ function validateLedger(ledger) {
   }
   if (!ledger.release?.id || !ledger.environment?.id ||
       !ledger.environment?.kind || !ledger.environment?.os ||
-      !ledger.environment?.architecture || !Number.isInteger(ledger.sequence)) {
+      !ledger.environment?.architecture || !Number.isInteger(ledger.sequence) ||
+      typeof ledger.recorded_at !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(ledger.recorded_at)) {
     throw new Error("transition ledger identity is incomplete");
   }
   if (!Array.isArray(ledger.evidence) || !Array.isArray(ledger.defects) ||
       !Array.isArray(ledger.exceptions)) {
     throw new Error(
       "transition ledger evidence, defects, and exceptions must be explicit arrays",
+    );
+  }
+  const catalogEvidence = ledger.evidence.find(({ id }) =>
+    id === "public_contract_catalog");
+  if (catalogEvidence !== undefined &&
+      catalogEvidence.recorded_at !== ledger.recorded_at) {
+    throw new Error(
+      "catalog evidence timestamp must match the transition ledger timestamp",
     );
   }
   const evidenceIdentities = new Set();

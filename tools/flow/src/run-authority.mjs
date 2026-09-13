@@ -97,9 +97,14 @@ import {
 import {
   authorityBindingCatalogIdentity,
   authorityFactFromIssue,
+  normalizeAuthorityBindings,
   recheckAuthorityBindings,
   validateDefinitionAuthorityBindings,
 } from "./authority-bindings.mjs";
+import {
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+} from "./delegate-input-envelope.mjs";
+import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const REVIEW_TARGET_MOVEMENT_SHAPES = Object.freeze([
@@ -1480,6 +1485,7 @@ export function createDurableRunAuthority({
               decision: currentDecision,
               deferredEvents,
               prepared: current.records[0].payload.prepared,
+              capabilityBindings: currentFold.capability_bindings,
               runOwnership: currentFold.run_ownership,
               runId: canonicalCommand.run_id,
             }));
@@ -3620,8 +3626,10 @@ function readStream(database, streamId) {
 }
 
 function assertEffectWorkspaceAuthority(database, intent) {
+  const readOnlyWorkspaceClaimIds = delegateReadOnlyWorkspaceClaimIds(intent);
   const workspaceClaims = (intent?.resource_claims ?? [])
-    .filter(({ kind }) => kind === "workspace");
+    .filter(({ kind, id }) => kind === "workspace" &&
+      !readOnlyWorkspaceClaimIds.has(id));
   const fullClaims = workspaceClaims.filter((claim) =>
     typeof claim.id === "string" && claim.id.length > 0 &&
     Number.isSafeInteger(claim.generation) && claim.generation >= 1 &&
@@ -3648,6 +3656,45 @@ function assertEffectWorkspaceAuthority(database, intent) {
       );
     }
   }
+}
+
+function delegateReadOnlyWorkspaceClaimIds(intent) {
+  if (intent?.effect_kind !== "delegate" ||
+      !Array.isArray(intent.delegate_input?.resource_references)) {
+    return new Set();
+  }
+  const bySubject = new Map();
+  for (const reference of intent.delegate_input.resource_references) {
+    if (reference?.kind !== "workspace" ||
+        typeof reference.subject_id !== "string") continue;
+    const accesses = bySubject.get(reference.subject_id) ?? [];
+    accesses.push(reference.access);
+    bySubject.set(reference.subject_id, accesses);
+  }
+  if (bySubject.size === 0) return new Set();
+  const capability = intent.delegate_input?.description?.launch?.capability;
+  const grantIds = flowGrantIdsForDrovrCapability(capability);
+  if (capability !== "read-only" || grantIds === null || grantIds.length !== 0) {
+    return new Set();
+  }
+  const capabilityBindings = intent.capability_bindings;
+  const mutatingGrantIds = new Set([
+    ...flowGrantIdsForDrovrCapability("workspace-write"),
+    ...flowGrantIdsForDrovrCapability("auto"),
+  ]);
+  if (!Array.isArray(capabilityBindings) || capabilityBindings.some((binding) =>
+      !isPlainRecord(binding) ||
+      !Array.isArray(binding.card_ids) ||
+      !binding.card_ids.every((cardId) => typeof cardId === "string") ||
+      ((binding.card_ids.includes(intent.card_id) ||
+        binding.card_ids.includes("*")) &&
+        mutatingGrantIds.has(binding.capability)))) {
+    return new Set();
+  }
+  return new Set([...bySubject.entries()]
+    .filter(([, accesses]) => accesses.length > 0 &&
+      accesses.every((access) => access === "read_only"))
+    .map(([subjectId]) => subjectId));
 }
 
 function replayStream(database, streamId, options) {
@@ -3678,11 +3725,15 @@ function bindEffectIntent(intent, {
   decision,
   deferredEvents,
   prepared,
+  capabilityBindings,
   runOwnership,
   runId,
 }) {
   const facts = prepared.explicit_facts;
   const resourceClaims = intent?.resource_claims;
+  if (intent?.effect_kind === "delegate") {
+    validateDelegateAuthorityBoundary(intent, prepared);
+  }
   if (intent?.schema !== "flow.effect-intent/v1" ||
       typeof intent.effect_id !== "string" || intent.effect_id.length === 0 ||
       typeof intent.idempotency_key !== "string" ||
@@ -3719,10 +3770,59 @@ function bindEffectIntent(intent, {
       tracker_binding: facts.tracker_binding,
       run_ownership: runOwnership,
     }),
+    ...(intent.effect_kind === "delegate" ? {
+      required_authority_bindings: prepared.required_authorities ?? [],
+      capability_bindings: capabilityBindings ?? [],
+    } : {}),
     resource_claims: resourceClaims,
     time_facts: facts.time_facts,
     subject_generations: facts.subject_generations,
   });
+}
+
+function validateDelegateAuthorityBoundary(intent, prepared) {
+  const input = intent.delegate_input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("delegate effect input is incomplete");
+  }
+  if (Object.hasOwn(input, "execution_authority") ||
+      Object.hasOwn(input, "predecessor_evidence")) {
+    throw new TypeError(
+      "delegate execution authority and predecessor evidence are authority-owned",
+    );
+  }
+  const approvedBindings = normalizeAuthorityBindings(
+    prepared.required_authorities ?? [],
+  );
+  const approvedIds = new Set(approvedBindings.map(({ id }) => id));
+  if (Object.hasOwn(intent, "required_authority_bindings") &&
+      digest(normalizeAuthorityBindings(intent.required_authority_bindings)) !==
+        digest(approvedBindings)) {
+    throw new TypeError(
+      "delegate required authority bindings do not match RunAuthority facts",
+    );
+  }
+  const references = input.resource_references;
+  if (references === undefined) return;
+  if (!Array.isArray(references)) {
+    throw new TypeError("delegate resource selections must be an array");
+  }
+  for (const reference of references) {
+    if (!reference || typeof reference !== "object" ||
+        Array.isArray(reference) ||
+        Object.hasOwn(reference, "authority_binding")) {
+      throw new TypeError(
+        "delegate resource bindings must be resolved by RunAuthority",
+      );
+    }
+    if (reference.schema !== DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA ||
+        typeof reference.authority_binding_id !== "string" ||
+        !approvedIds.has(reference.authority_binding_id)) {
+      throw new TypeError(
+        "delegate resource selection is outside RunAuthority bindings",
+      );
+    }
+  }
 }
 
 export function createTopLevelRunOwnershipAdapter() {
