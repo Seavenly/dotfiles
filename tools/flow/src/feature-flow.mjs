@@ -7,6 +7,25 @@ import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
 import {
   SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
 } from "./authority-bindings.mjs";
+import {
+  createResultBinding,
+  isResultBinding,
+} from "./result-bindings.mjs";
+import {
+  FEATURE_CAPTURE_OPERATION_CONTRACT,
+  FEATURE_CAPTURE_RECEIPT_SCHEMA,
+  FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+  createFeatureCaptureOperation,
+  validateFeatureCaptureReceipt,
+} from "./feature-capture.mjs";
+
+export {
+  FEATURE_CAPTURE_OPERATION_CONTRACT,
+  FEATURE_CAPTURE_RECEIPT_SCHEMA,
+  FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+  createFeatureCaptureOperation,
+  validateFeatureCaptureReceipt,
+};
 
 // These contracts are intentionally registered operation contracts.  The
 // feature definition owns the order and inputs, while the host owns the
@@ -14,6 +33,7 @@ import {
 export const FEATURE_OPERATION_CONTRACTS = Object.freeze({
   setup: "flow.operation/feature-setup/v1",
   test: "flow.operation/feature-test/v1",
+  capture: FEATURE_CAPTURE_OPERATION_CONTRACT,
   verify: "flow.operation/feature-verify/v1",
   seal: "flow.operation/feature-seal/v1",
 });
@@ -24,11 +44,25 @@ export const FEATURE_DELEGATE_OUTPUT_VALIDATOR =
 export const FEATURE_TEST_RECEIPT_VALIDATOR =
   "flow.validator/feature-test-receipt/v1";
 
+export const FEATURE_VERIFICATION_RECEIPT_VALIDATOR =
+  "flow.validator/feature-verification-receipt/v1";
+export const FEATURE_CAPTURE_POLICY_SCHEMA = "flow.feature-capture-policy/v1";
+
 const FEATURE_DEFINITION_SCHEMA = "flow.predefined-definition/v1";
 const FEATURE_SELECTION_MODE = new Set(["verify", "test", "mixed"]);
 const FEATURE_REPAIR_KINDS = new Set(Object.keys(FEATURE_REPAIR_CONTRACTS));
 const FEATURE_NEGATIVE_OUTCOME =
   "no review, integration, push, pull request, cleanup, or tracker completion";
+const FEATURE_OUTPUT_SCHEMAS = Object.freeze({
+  setup_receipt: "work.feature-setup-receipt/v1",
+  test_failure_receipt: "work.feature-test-receipt/v1",
+  workspace_mutation_observation: "flow.delegate-evidence/v1",
+  slice_verification_receipt: "work.feature-verification-receipt/v1",
+  verification_receipt: "work.feature-verification-receipt/v1",
+  candidate_capture_receipt: FEATURE_CAPTURE_RECEIPT_SCHEMA,
+  critique_observation: "flow.delegate-evidence/v1",
+  review_candidate_receipt: "flow.feature-seal-receipt/v1",
+});
 
 const PROMISED_OUTCOMES = Object.freeze([
   "one accepted brief becomes one immutable verified local review candidate",
@@ -70,7 +104,14 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
     fingerprint: selection.workspace.fingerprint,
   };
   const cards = featureCards(selection, workspaceClaim);
-  const repairs = validateFeatureRepairCards(selection, cards, explicitFacts.limits);
+  const resultBindings = featureResultBindings(cards);
+  validateFeatureResultBindings(cards, resultBindings);
+  const repairs = validateFeatureRepairCards(
+    selection,
+    cards,
+    explicitFacts.limits,
+    resultBindings,
+  );
 
   // A predefined compiler may only carry the selected facts through.  In
   // particular, it must not manufacture a generation, epoch, route, or
@@ -80,6 +121,7 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
     graph: {
       schema: "flow.run-plan/v1",
       cards,
+      result_bindings: resultBindings,
     },
     requested_authority: {
       commands: [
@@ -102,7 +144,8 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
 }
 
 function featureOperationContracts(selection) {
-  const contracts = [FEATURE_OPERATION_CONTRACTS.verify,
+  const contracts = [FEATURE_OPERATION_CONTRACTS.capture,
+    FEATURE_OPERATION_CONTRACTS.verify,
     FEATURE_OPERATION_CONTRACTS.seal];
   if (selection.setup !== null) contracts.unshift(FEATURE_OPERATION_CONTRACTS.setup);
   if (selection.slices.some(({ mode }) => mode === "test")) {
@@ -134,16 +177,30 @@ function featureCardBuilders(selection, workspaceClaim) {
       effect_classification: "caller_idempotent",
     },
   };
-  const operation = (id, contract, dependencies, inputs, outputs) => ({
+  const operation = (
+    id,
+    contract,
+    dependencies,
+    inputs,
+    outputs,
+    { resourceClaims = common.resource_claims } = {},
+  ) => ({
     ...common,
+    recovery: contract === FEATURE_OPERATION_CONTRACTS.capture
+      ? "reconcilable"
+      : common.recovery,
     id,
     executor: {
       ...common.executor,
       contract,
+      effect_classification: contract === FEATURE_OPERATION_CONTRACTS.capture
+        ? "reconcilable"
+        : common.executor.effect_classification,
     },
     dependencies,
     inputs,
     outputs,
+    resource_claims: resourceClaims,
   });
   const delegate = (id, dependencies, inputs, binding, outputs) => ({
     ...common,
@@ -177,6 +234,20 @@ function legacyFeatureCards(selection, workspaceClaim) {
     workspace: selection.workspace,
     ...featureSelectionInputs(selection),
   };
+  const capture = operation(
+    "feature-capture",
+    FEATURE_OPERATION_CONTRACTS.capture,
+    ["feature-apply"],
+    {
+      ...shared,
+      phase: "capture",
+      capture_policy: featureCapturePolicy(selection),
+      receipt_owner: "registered_operation",
+      provider_receipt_validator: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+    },
+    ["candidate_capture_receipt"],
+    { resourceClaims: [] },
+  );
   return [
     delegate(
       "feature-apply",
@@ -189,26 +260,31 @@ function legacyFeatureCards(selection, workspaceClaim) {
       selection.delegation.apply,
       ["workspace_mutation_observation"],
     ),
+    capture,
     operation(
       "feature-verify",
       FEATURE_OPERATION_CONTRACTS.verify,
-      ["feature-apply"],
+      ["feature-capture"],
       {
         ...shared,
         phase: "verify",
         receipt_owner: "registered_operation",
+        provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
         delegate_output_usage: "evidence_input_only",
         delegate_evidence_card_ids: ["feature-apply"],
+        operation_evidence_card_ids: ["feature-capture"],
       },
       ["verification_receipt"],
     ),
     delegate(
       "feature-critique",
-      ["feature-verify"],
+      ["feature-apply", "feature-capture", "feature-verify"],
       {
         ...shared,
         phase: "critique",
         prompt: "critique the changed behavior independently of implementation",
+        delegate_evidence_card_ids: ["feature-apply"],
+        operation_evidence_card_ids: ["feature-capture"],
       },
       selection.delegation.critique,
       ["critique_observation"],
@@ -220,13 +296,13 @@ function legacyFeatureCards(selection, workspaceClaim) {
       {
         ...shared,
         phase: "seal",
-        finalization: selection.finalization,
-        publication: selection.finalization.publication,
         negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
         receipt_owner: "registered_operation",
         delegate_output_usage: "evidence_input_only",
         delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
-        operation_evidence_card_ids: ["feature-verify"],
+        operation_evidence_card_ids: ["feature-capture", "feature-verify"],
+        capture_policy: featureCapturePolicy(selection),
+        ...featureFinalizationInputs(selection),
       },
       ["review_candidate_receipt"],
     ),
@@ -315,7 +391,7 @@ function serializedFeatureCards(selection, workspaceClaim) {
         slice,
         mutation_owner: applyId,
         prompt: "apply the accepted brief in the exact fenced workspace",
-        test_card_ids: testCardIds,
+        test_card_ids: [...testCardIds],
         managed_agent: applyManagedAgent,
       },
       selection.delegation.apply,
@@ -324,6 +400,24 @@ function serializedFeatureCards(selection, workspaceClaim) {
     cards.push(apply);
     applyCardIds.push(apply.id);
     dependency = apply.id;
+
+    const captureCard = operation(
+      `feature-capture-${slice.id}`,
+      FEATURE_OPERATION_CONTRACTS.capture,
+      [dependency],
+      {
+        ...shared,
+        phase: "slice_capture",
+        slice,
+        capture_policy: featureCapturePolicy(selection),
+        receipt_owner: "registered_operation",
+        provider_receipt_validator: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+      },
+      ["candidate_capture_receipt"],
+      { resourceClaims: [] },
+    );
+    cards.push(captureCard);
+    dependency = captureCard.id;
 
     const verifyCard = operation(
       `feature-slice-${slice.id}-verify`,
@@ -334,8 +428,12 @@ function serializedFeatureCards(selection, workspaceClaim) {
         phase: "slice_verify",
         slice,
         receipt_owner: "registered_operation",
+        provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
         delegate_evidence_card_ids: [...applyCardIds],
-        operation_evidence_card_ids: [...sliceTestCardIds],
+        operation_evidence_card_ids: [
+          ...sliceTestCardIds,
+          captureCard.id,
+        ],
         test_card_ids: [...sliceTestCardIds],
         mutation_owner: apply.id,
       },
@@ -346,6 +444,24 @@ function serializedFeatureCards(selection, workspaceClaim) {
     dependency = verifyCard.id;
   }
 
+  const aggregateCapture = operation(
+    "feature-capture",
+    FEATURE_OPERATION_CONTRACTS.capture,
+    [dependency],
+    {
+      ...shared,
+      phase: "capture",
+      capture_policy: featureCapturePolicy(selection),
+      receipt_owner: "registered_operation",
+      provider_receipt_validator: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+    },
+    ["candidate_capture_receipt"],
+    { resourceClaims: [] },
+  );
+  cards.push(aggregateCapture);
+  const aggregateCaptureCardId = aggregateCapture.id;
+  dependency = aggregateCaptureCardId;
+
   cards.push(operation(
     "feature-verify",
     FEATURE_OPERATION_CONTRACTS.verify,
@@ -354,11 +470,13 @@ function serializedFeatureCards(selection, workspaceClaim) {
       ...shared,
       phase: "verify",
       receipt_owner: "registered_operation",
-          delegate_output_usage: "evidence_input_only",
+      provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
+      delegate_output_usage: "evidence_input_only",
       delegate_evidence_card_ids: [...applyCardIds],
       operation_evidence_card_ids: [
         ...testCardIds,
         ...verificationCardIds,
+        aggregateCaptureCardId,
       ],
       evidence_role: "slice_aggregate",
     },
@@ -367,11 +485,13 @@ function serializedFeatureCards(selection, workspaceClaim) {
 
   cards.push(delegate(
     "feature-critique",
-    ["feature-verify"],
+    [...applyCardIds, aggregateCaptureCardId, "feature-verify"],
     {
       ...shared,
       phase: "critique",
       prompt: "critique the changed behavior independently of implementation",
+      delegate_evidence_card_ids: [...applyCardIds],
+      operation_evidence_card_ids: [aggregateCaptureCardId],
     },
     selection.delegation.critique,
     ["critique_observation"],
@@ -384,13 +504,14 @@ function serializedFeatureCards(selection, workspaceClaim) {
     {
       ...shared,
       phase: "seal",
-      finalization: selection.finalization,
-      publication: selection.finalization.publication,
+      capture_policy: featureCapturePolicy(selection),
+      ...featureFinalizationInputs(selection),
       negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
       receipt_owner: "registered_operation",
-          delegate_output_usage: "evidence_input_only",
+      delegate_output_usage: "evidence_input_only",
       delegate_evidence_card_ids: [...applyCardIds, "feature-critique"],
       operation_evidence_card_ids: [
+        aggregateCaptureCardId,
         ...testCardIds,
         ...verificationCardIds,
         "feature-verify",
@@ -433,6 +554,15 @@ function validateFeatureInputs(inputs, explicitFacts) {
     invalidFeature(
       "invalid_workspace_binding",
       "feature/v1 requires an exact generation-fenced workspace binding",
+    );
+  }
+  if (inputs.finalization === undefined &&
+      (!validFeatureGitFacts(workspace.git) ||
+       workspace.git.clean !== true ||
+       workspace.fingerprint !== digest({ git: workspace.git }))) {
+    invalidFeature(
+      "missing_starting_git_facts",
+      "feature/v1 identity-free preparation requires exact starting Git facts",
     );
   }
   const slices = validateFeatureSlices(inputs.slices, inputs.mode, inputs.brief);
@@ -509,6 +639,11 @@ function validateFeatureInputs(inputs, explicitFacts) {
   }
   const delegation = validateDelegationBindings(inputs.delegation, explicitFacts);
   const finalization = validateFeatureFinalization(inputs.finalization, workspace);
+  const capturePolicy = validateFeatureCapturePolicy(
+    inputs.capture_policy,
+    workspace,
+    finalization,
+  );
   const repairs = validateFeatureRepairs(inputs.repairs, inputs.brief, explicitFacts);
   const evidence = hasBaseline ? baseline : compensating;
   const normalized = {
@@ -528,7 +663,8 @@ function validateFeatureInputs(inputs, explicitFacts) {
     ...(testSelection === null ? {} : { test_selection: testSelection }),
     repairs,
     delegation,
-    finalization,
+    ...(capturePolicy === null ? {} : { capture_policy: capturePolicy }),
+    ...(finalization === null ? {} : { finalization }),
   };
   return freezeCanonical(normalized);
 }
@@ -640,12 +776,276 @@ function featureSelectionInputs(selection) {
   };
 }
 
-function validateFeatureRepairCards(selection, cards, limits) {
+function featureFinalizationInputs(selection) {
+  return selection.finalization === undefined
+    ? {}
+    : {
+        finalization: selection.finalization,
+        publication: selection.finalization.publication,
+      };
+}
+
+function featureCapturePolicy(selection) {
+  if (selection.capture_policy !== undefined) {
+    return selection.capture_policy;
+  }
+  const publication = selection.finalization?.publication;
+  return {
+    schema: FEATURE_CAPTURE_POLICY_SCHEMA,
+    starting_workspace: selection.workspace,
+    ...(selection.workspace.git === undefined ? {} : {
+      starting_git: selection.workspace.git,
+    }),
+    permitted_transformations: ["accepted_brief"],
+    validation_contract: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+    retention: publication?.retention ?? "local_candidate",
+    disposition: publication?.workspace?.disposition ?? "retained_for_handoff",
+    publication_policy: {
+      subject: publication?.subject ?? {
+        contract: "work.workspace/v1",
+        subject_id: selection.workspace.subject_id,
+      },
+      allowed_consumer_operations:
+        publication?.allowed_consumer_operations ?? ["read_workspace"],
+      consumer_operation_authority:
+        publication?.consumer_operation_authority ?? [{
+          operation: "read_workspace",
+          access: "read_only",
+        }],
+      authority_envelope: publication?.authority_envelope ?? {
+        capabilities: ["repository:read"],
+      },
+      cleanup_obligations: publication?.cleanup_obligations ?? [
+        "retain_artifact_bytes",
+      ],
+      intended_consumer: publication?.intended_consumer ?? null,
+    },
+  };
+}
+
+function validateFeatureCapturePolicy(rawPolicy, workspace, finalization) {
+  if (rawPolicy === undefined) return null;
+  if (finalization !== null) {
+    invalidFeature(
+      "capture_policy_legacy_conflict",
+      "feature/v1 capture policy is only an identity-free preparation input",
+    );
+  }
+  if (!isRecord(rawPolicy) ||
+      Object.keys(rawPolicy).sort().join(",") !==
+        "disposition,permitted_transformations,publication_policy,retention,schema,starting_git,starting_workspace,validation_contract" ||
+      rawPolicy.schema !== FEATURE_CAPTURE_POLICY_SCHEMA ||
+      !isRecord(rawPolicy.starting_workspace) ||
+      !hasExactKeys(rawPolicy.starting_workspace, [
+        "fingerprint",
+        "generation",
+        "git",
+        "mutation_epoch",
+        "schema",
+        "subject_id",
+      ]) ||
+      digest(rawPolicy.starting_workspace) !== digest(workspace) ||
+      !validFeatureGitFacts(rawPolicy.starting_git) ||
+      rawPolicy.starting_git.clean !== true ||
+      digest(rawPolicy.starting_git) !== digest(workspace.git) ||
+      !Array.isArray(rawPolicy.permitted_transformations) ||
+      rawPolicy.permitted_transformations.length !== 1 ||
+      rawPolicy.permitted_transformations[0] !== "accepted_brief" ||
+      rawPolicy.validation_contract !== FEATURE_CAPTURE_RECEIPT_VALIDATOR ||
+      typeof rawPolicy.retention !== "string" || rawPolicy.retention.length === 0 ||
+      typeof rawPolicy.disposition !== "string" || rawPolicy.disposition.length === 0 ||
+      !isRecord(rawPolicy.publication_policy) ||
+      Object.keys(rawPolicy.publication_policy).sort().join(",") !==
+        "allowed_consumer_operations,authority_envelope,cleanup_obligations,consumer_operation_authority,intended_consumer,subject" ||
+      !isRecord(rawPolicy.publication_policy.subject) ||
+      Object.keys(rawPolicy.publication_policy.subject).sort().join(",") !==
+        "contract,subject_id" ||
+      rawPolicy.publication_policy.subject.contract !== "work.workspace/v1" ||
+      rawPolicy.publication_policy.subject.subject_id !== workspace.subject_id ||
+      !Array.isArray(rawPolicy.publication_policy.allowed_consumer_operations) ||
+      rawPolicy.publication_policy.allowed_consumer_operations.length === 0 ||
+      new Set(rawPolicy.publication_policy.allowed_consumer_operations).size !==
+        rawPolicy.publication_policy.allowed_consumer_operations.length ||
+      !rawPolicy.publication_policy.allowed_consumer_operations.every((operation) =>
+        typeof operation === "string" && operation.length > 0) ||
+      !Array.isArray(rawPolicy.publication_policy.consumer_operation_authority) ||
+      rawPolicy.publication_policy.consumer_operation_authority.length !==
+        rawPolicy.publication_policy.allowed_consumer_operations.length ||
+      !isRecord(rawPolicy.publication_policy.authority_envelope) ||
+      !Array.isArray(rawPolicy.publication_policy.cleanup_obligations) ||
+      rawPolicy.publication_policy.cleanup_obligations.length === 0 ||
+      !rawPolicy.publication_policy.cleanup_obligations.every((obligation) =>
+        typeof obligation === "string" && obligation.length > 0) ||
+      rawPolicy.publication_policy.intended_consumer !== null &&
+        typeof rawPolicy.publication_policy.intended_consumer !== "string" ||
+      rawPolicy.publication_policy.consumer_operation_authority.some((entry) =>
+        !isRecord(entry) ||
+        Object.keys(entry).sort().join(",") !== "access,operation" ||
+        !rawPolicy.publication_policy.allowed_consumer_operations.includes(entry.operation) ||
+        !["read_only", "mutation"].includes(entry.access))) {
+    invalidFeature(
+      "invalid_feature_capture_policy",
+      "feature/v1 capture policy is not an exact identity-free preparation policy",
+    );
+  }
+  const operations = [...rawPolicy.publication_policy.allowed_consumer_operations]
+    .sort();
+  const authorityByOperation = new Map(
+    rawPolicy.publication_policy.consumer_operation_authority.map((entry) => [
+      entry.operation,
+      entry,
+    ]),
+  );
+  if (authorityByOperation.size !== operations.length ||
+      operations.some((operation) => !authorityByOperation.has(operation))) {
+    invalidFeature(
+      "invalid_feature_capture_policy",
+      "feature/v1 capture policy must bind each consumer operation exactly once",
+    );
+  }
+  return freezeCanonical({
+    schema: FEATURE_CAPTURE_POLICY_SCHEMA,
+    starting_workspace: workspace,
+    starting_git: rawPolicy.starting_git,
+    permitted_transformations: ["accepted_brief"],
+    validation_contract: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+    retention: rawPolicy.retention,
+    disposition: rawPolicy.disposition,
+    publication_policy: {
+      subject: rawPolicy.publication_policy.subject,
+      allowed_consumer_operations: operations,
+      consumer_operation_authority: operations.map((operation) =>
+        authorityByOperation.get(operation)),
+      authority_envelope: rawPolicy.publication_policy.authority_envelope,
+      cleanup_obligations: [...rawPolicy.publication_policy.cleanup_obligations],
+      intended_consumer: rawPolicy.publication_policy.intended_consumer,
+    },
+  });
+}
+
+function featureResultBindings(cards) {
+  const cardsById = new Map(cards.map((card) => [card.id, card]));
+  return cards.flatMap((consumer) => {
+    const producerCardIds = featureEvidenceCardIds(consumer);
+    return producerCardIds.map((producerCardId) => {
+      const producer = cardsById.get(producerCardId);
+      const outputContract = producer?.outputs.find((output) =>
+        FEATURE_OUTPUT_SCHEMAS[output] !== undefined);
+      if (outputContract === undefined) {
+        invalidFeature(
+          "invalid_feature_result_binding",
+          `feature/v1 evidence producer has no registered output: ${producerCardId}`,
+        );
+      }
+      return featureResultBinding(
+        consumer.id,
+        producerCardId,
+        outputContract,
+      );
+    });
+  }).sort((left, right) => {
+    const leftKey = `${left.consumer_card_id}\0${left.producer_card_id}`;
+    const rightKey = `${right.consumer_card_id}\0${right.producer_card_id}`;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
+function featureResultBinding(consumerCardId, producerCardId, outputContract) {
+  const expectedSchema = FEATURE_OUTPUT_SCHEMAS[outputContract];
+  if (expectedSchema === undefined) {
+    invalidFeature(
+      "unknown_feature_output_contract",
+      `feature/v1 output contract is not registered: ${outputContract}`,
+    );
+  }
+  return createResultBinding({
+    consumerCardId,
+    producerCardId,
+    outputContract,
+    expectedSchema,
+  });
+}
+
+function validateFeatureResultBindings(cards, bindings) {
+  const cardsById = new Map(cards.map((card) => [card.id, card]));
+  if (!Array.isArray(bindings)) {
+    invalidFeature(
+      "invalid_feature_result_bindings",
+      "feature/v1 result bindings must be a serialized list",
+    );
+  }
+  const bindingKeys = new Set();
+  for (const binding of bindings) {
+    if (!isResultBinding(binding)) {
+      invalidFeature(
+        "invalid_feature_result_binding",
+        "feature/v1 result binding is incomplete or not exact",
+      );
+    }
+    const consumer = cardsById.get(binding.consumer_card_id);
+    const producer = cardsById.get(binding.producer_card_id);
+    const key = `${binding.consumer_card_id}:${binding.producer_card_id}:` +
+      binding.output_contract;
+    if (consumer === undefined || producer === undefined ||
+        consumer.id === producer.id || bindingKeys.has(key) ||
+        !producer.outputs.includes(binding.output_contract) ||
+        FEATURE_OUTPUT_SCHEMAS[binding.output_contract] !==
+          binding.expected_schema ||
+        !featureEvidenceCardIds(consumer).includes(binding.producer_card_id) ||
+        !hasDependencyPath(cardsById, consumer.id, producer.id)) {
+      invalidFeature(
+        "invalid_feature_result_binding",
+        "feature/v1 result binding does not name an exact producer",
+      );
+    }
+    bindingKeys.add(key);
+  }
+  for (const card of cards) {
+    for (const producerCardId of featureEvidenceCardIds(card)) {
+      if (!bindings.some((binding) =>
+        binding.consumer_card_id === card.id &&
+        binding.producer_card_id === producerCardId)) {
+        invalidFeature(
+          "missing_feature_result_binding",
+          `feature/v1 evidence must name an explicit result binding: ${card.id}`,
+        );
+      }
+    }
+  }
+}
+
+function featureEvidenceCardIds(card) {
+  return [...new Set([
+    ...(card.inputs.delegate_evidence_card_ids ?? []),
+    ...(card.inputs.operation_evidence_card_ids ?? []),
+    ...(card.inputs.test_card_ids ?? []),
+  ])].sort();
+}
+
+function hasDependencyPath(cardsById, consumerCardId, producerCardId) {
+  const seen = new Set();
+  const visit = (cardId) => {
+    if (cardId === producerCardId) return true;
+    if (seen.has(cardId)) return false;
+    seen.add(cardId);
+    const card = cardsById.get(cardId);
+    return card !== undefined && card.dependencies.some(visit);
+  };
+  return visit(consumerCardId);
+}
+
+function validateFeatureRepairCards(
+  selection,
+  cards,
+  limits,
+  existingResultBindings,
+) {
   return selection.repairs.map((repairEntry) => {
     const result = validateFeatureRepairContract({
       repair: repairEntry.template.repair,
       template: repairEntry.template,
       existingCards: cards,
+      existingResultBindings,
       brief: selection.brief,
       limits,
       bindCheckpoint: true,
@@ -724,8 +1124,9 @@ function validateFeatureSlices(rawSlices, mode, brief) {
   });
   const hasTest = slices.some(({ mode: sliceMode }) => sliceMode === "test");
   const hasVerify = slices.some(({ mode: sliceMode }) => sliceMode === "verify");
-  if (mode === "test" && (!hasTest || hasVerify) || mode === "mixed" &&
-      (!hasTest || !hasVerify) || mode === "verify" && hasTest) {
+  if ((mode === "test" && (!hasTest || hasVerify)) ||
+      (mode === "mixed" && (!hasTest || !hasVerify)) ||
+      (mode === "verify" && hasTest)) {
     invalidFeature(
       "slice_mode_mismatch",
       "feature/v1 mode must match its serialized test-or-verify slices",
@@ -786,6 +1187,7 @@ function validateFeatureSetup(setup) {
 }
 
 function validateFeatureFinalization(finalization, selectedWorkspace) {
+  if (finalization === undefined) return null;
   if (!isRecord(finalization) ||
       Object.keys(finalization).sort().join(",") !==
         "candidate_id,publication,schema" ||
@@ -1013,6 +1415,105 @@ export function validateFeatureTestReceipt(receipt, intent, expectedWorkspace = 
     receipt.workspace.fingerprint === expected.fingerprint;
 }
 
+/**
+ * Validate one registered feature verification receipt before RunAuthority
+ * accepts it as a producer result. WorkAuthority performs the full
+ * cross-card evidence check at seal; this boundary rejects malformed or
+ * stale provider output before it can satisfy downstream bindings.
+ */
+export function validateFeatureVerificationReceipt(receipt, intent) {
+  const operationInput = intent?.operation_input;
+  const phase = operationInput?.phase;
+  const slice = phase === "slice_verify" ? operationInput.slice : null;
+  const expectedCriteria = slice?.acceptance ?? operationInput?.brief?.acceptance;
+  const testEvidence = slice?.mode === "test" ||
+    (phase === "verify" &&
+      operationInput?.verification?.baseline === undefined &&
+      operationInput?.verification?.compensating_assertion === undefined);
+  const selectedEvidence = testEvidence
+    ? operationInput?.test_selection
+    : operationInput?.verification?.baseline ??
+      operationInput?.verification?.compensating_assertion;
+  const expectedKind = testEvidence
+    ? "test_failure"
+    : operationInput?.verification?.baseline !== undefined
+      ? "safe_baseline"
+      : "compensating_assertion";
+  const workspace = receipt?.workspace;
+  const startingWorkspace = operationInput?.workspace;
+  const discriminating = receipt?.discriminating_evidence;
+  const receiptIdentity = isRecord(receipt)
+    ? (({ receipt_digest: _receiptDigest, self_digest: _selfDigest, ...identity }) =>
+        identity)(receipt)
+    : null;
+  const criteriaValid = Array.isArray(expectedCriteria) &&
+    Array.isArray(receipt?.acceptance_criteria) &&
+    receipt.acceptance_criteria.length === expectedCriteria.length &&
+    receipt.acceptance_criteria.every((criterionReceipt, index) =>
+      hasExactKeys(criterionReceipt, ["criterion", "evidence_digest", "verdict"]) &&
+      criterionReceipt.criterion === expectedCriteria[index] &&
+      criterionReceipt.verdict === "passed" &&
+      isDigest(criterionReceipt.evidence_digest));
+  const workspaceValid = (phase === "verify" || phase === "slice_verify") &&
+    isRecord(startingWorkspace) &&
+    hasExactKeys(workspace, [
+      "fingerprint",
+      "generation",
+      "git",
+      "mutation_epoch",
+      "subject_id",
+    ]) &&
+    workspace.subject_id === startingWorkspace.subject_id &&
+    workspace.generation === startingWorkspace.generation &&
+    workspace.mutation_epoch === startingWorkspace.mutation_epoch &&
+    validFeatureGitFacts(workspace.git) &&
+    workspace.git.clean === true &&
+    workspace.fingerprint === digest({ git: workspace.git }) &&
+    workspace.fingerprint !== startingWorkspace.fingerprint;
+  const discriminatorValid = isRecord(selectedEvidence) &&
+    isRecord(discriminating) &&
+    discriminating.schema === "flow.feature-discriminating-evidence/v1" &&
+    discriminating.kind === expectedKind &&
+    discriminating.selected_fingerprint === selectedEvidence.fingerprint &&
+    discriminating.post_mutation_fingerprint === workspace?.fingerprint &&
+    discriminating.distinguished === true &&
+    (expectedKind !== "test_failure" || Array.isArray(discriminating.test_failures)) &&
+    (expectedKind !== "compensating_assertion" ||
+      (discriminating.non_destructive === true &&
+        discriminating.satisfied === true &&
+        isDigest(discriminating.assertion_receipt_digest)));
+  return isRecord(receipt) &&
+    hasExactKeys(receipt, [
+      "acceptance_criteria",
+      "attempt_id",
+      "brief_id",
+      "discriminating_evidence",
+      "effect_id",
+      "idempotency_key",
+      "operation_contract",
+      "receipt_digest",
+      "schema",
+      "selected_evidence_fingerprint",
+      "self_digest",
+      "source_authority_watermark",
+      "workspace",
+    ]) &&
+    receipt.schema === "work.feature-verification-receipt/v1" &&
+    receipt.brief_id === operationInput?.brief?.id &&
+    receipt.operation_contract === FEATURE_OPERATION_CONTRACTS.verify &&
+    receipt.effect_id === intent?.effect_id &&
+    receipt.attempt_id === intent?.attempt_id &&
+    receipt.idempotency_key === intent?.idempotency_key &&
+    receipt.source_authority_watermark === intent?.source_authority_watermark &&
+    isDigest(receipt.source_authority_watermark) &&
+    receipt.selected_evidence_fingerprint === selectedEvidence?.fingerprint &&
+    criteriaValid && workspaceValid && discriminatorValid &&
+    isDigest(receipt.receipt_digest) &&
+    isDigest(receipt.self_digest) &&
+    receipt.receipt_digest === receipt.self_digest &&
+    digest(receiptIdentity) === receipt.receipt_digest;
+}
+
 function featureTestPreSliceWorkspace(intent) {
   const operationInput = intent?.operation_input;
   const selected = operationInput?.workspace;
@@ -1048,7 +1549,7 @@ function featureVerificationWorkspaceIdentity(workspace) {
 
 function featureTestWorkspaceIdentity(workspace) {
   if (!isRecord(workspace) ||
-      ![4, 5].includes(Object.keys(workspace).length) ||
+      ![4, 5, 6].includes(Object.keys(workspace).length) ||
       !Object.hasOwn(workspace, "subject_id") ||
       !Object.hasOwn(workspace, "generation") ||
       !Object.hasOwn(workspace, "mutation_epoch") ||
@@ -1058,7 +1559,10 @@ function featureTestWorkspaceIdentity(workspace) {
           .includes(key)) ||
       Object.hasOwn(workspace, "schema") &&
         workspace.schema !== "flow.feature-workspace-binding/v1" ||
-      Object.hasOwn(workspace, "git") && !isRecord(workspace.git) ||
+      Object.hasOwn(workspace, "git") &&
+        (!validFeatureGitFacts(workspace.git) ||
+         workspace.git.clean !== true ||
+         workspace.fingerprint !== digest({ git: workspace.git })) ||
       !isDeepFeatureTestWorkspace({
         subject_id: workspace.subject_id,
         generation: workspace.generation,

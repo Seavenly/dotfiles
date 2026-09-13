@@ -10,6 +10,7 @@ import {
   buildRunViews,
   publicEffectProjection,
 } from "./projection-builder.mjs";
+import { normalizeResultBindingRecord } from "./result-bindings.mjs";
 
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const launchOwnership = run.events.find(({ type }) => type === "run_launched")
@@ -43,6 +44,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const effectReceiptIndexes = new Map();
   const effectInvocationIndexes = new Map();
   const effectObservations = new Map();
+  const resultBindings = [];
   let cancellationEvent = null;
   let cancellationIndex = -1;
   for (const [eventIndex, event] of run.events.entries()) {
@@ -57,6 +59,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       effectObservations.set(event.effect_id, event.observation);
     } else if (event.type === "effect_invocation_started") {
       effectInvocationIndexes.set(event.effect_id, eventIndex);
+    } else if (event.type === "result_binding_recorded") {
+      resultBindings.push(normalizeResultBindingRecord(event.binding));
     } else if (event.type === "run_cancelled") {
       cancellationEvent = event;
       cancellationIndex = eventIndex;
@@ -789,6 +793,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       review_candidate_reference: reviewCandidateReference,
     }),
     resource_handoff_bindings: resourceHandoffBindings,
+    result_bindings: resultBindings,
     delegate_attempts: delegateAttempts,
     quarantined_delegate_outputs: quarantinedDelegateOutputs,
     revision_outcomes: revisionOutcomes,
@@ -863,6 +868,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     }),
     handoffs: fold.handoffs,
     resource_handoff_bindings: fold.resource_handoff_bindings,
+    result_bindings: fold.result_bindings,
     delegate_attempts: fold.delegate_attempts,
     quarantined_delegate_outputs: fold.quarantined_delegate_outputs,
     legal_actions: fold.legal_actions,

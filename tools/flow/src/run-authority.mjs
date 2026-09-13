@@ -100,6 +100,10 @@ import {
   recheckAuthorityBindings,
   validateDefinitionAuthorityBindings,
 } from "./authority-bindings.mjs";
+import {
+  createResultBindingRecord,
+  resultBindingDeclarationsForProducer,
+} from "./result-bindings.mjs";
 
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 const REVIEW_TARGET_MOVEMENT_SHAPES = Object.freeze([
@@ -2266,7 +2270,9 @@ export function createDurableRunAuthority({
           processIdentity,
         });
         const publicationRequest = effectiveIntent.operation_input?.publication;
-        if (publicationRequest !== undefined) {
+        const effectSucceeded = result?.outcome !== "quarantined";
+        if (publicationRequest !== undefined && effectSucceeded &&
+            !settleCancelled) {
           const retentionReceipt = result?.provider_receipt?.git_retention;
           const retentionObservation = gitRetentionAdapter.observe(retentionReceipt);
           if (retentionObservation?.available !== true ||
@@ -2286,7 +2292,6 @@ export function createDurableRunAuthority({
           const current = readStream(database, effectiveIntent.run_id);
           const unresolved = unresolvedEffectIds(current);
           unresolved.delete(effectiveIntent.effect_id);
-          const effectSucceeded = result?.outcome !== "quarantined";
           let deferredEvents = unresolved.size === 0 && effectSucceeded &&
               current.fold.phase === "active"
             ? pendingDeferredEvents(current, effectiveIntent)
@@ -2296,7 +2301,8 @@ export function createDurableRunAuthority({
             effectiveIntent,
             result,
           );
-          const publication = effectiveIntent.operation_input?.publication === undefined
+          const publication = effectiveIntent.operation_input?.publication === undefined ||
+              !effectSucceeded || settleCancelled || current.fold.phase !== "active"
             ? null
             : prepareHandoffPublication(
                 database,
@@ -2337,6 +2343,14 @@ export function createDurableRunAuthority({
               processIdentity,
             });
           }
+          const capturedResultBindings = effectSucceeded &&
+            !settleCancelled && current.fold.phase === "active"
+            ? captureResultBindings({
+              intent: effectiveIntent,
+              receipt: result,
+              activePlan: current.fold.active_plan,
+            })
+            : [];
           const deferredTerminalEvent = deferredEvents.find(({ type }) =>
             ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
           if (effectSucceeded && deferredTerminalEvent) {
@@ -2358,6 +2372,13 @@ export function createDurableRunAuthority({
             streamId: effectiveIntent.run_id,
             streamKind: "run",
             events: [
+              ...capturedResultBindings.map((binding) => ({
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "result_binding_recorded",
+                  binding,
+                },
+              })),
               {
                 contract: "flow.run-event/v1",
                 payload: {
@@ -3984,6 +4005,88 @@ function pendingDeferredEvents(stream, settlingIntent) {
     }
   }
   return events;
+}
+
+function captureResultBindings({ intent, receipt, activePlan }) {
+  if (receipt?.outcome !== "succeeded" ||
+      !isPlainRecord(receipt.provider_receipt)) return [];
+  const declarations = resultBindingDeclarationsForProducer(
+    activePlan,
+    intent.card_id,
+  );
+  if (declarations === null || declarations.length === 0) return [];
+  const declarationsByContract = new Map();
+  for (const declaration of declarations) {
+    const existing = declarationsByContract.get(declaration.output_contract);
+    if (existing !== undefined &&
+        existing.expected_schema !== declaration.expected_schema) {
+      throw resultBindingError(
+        "result_binding_declaration_conflict",
+        "producer output has conflicting expected schemas",
+      );
+    }
+    declarationsByContract.set(declaration.output_contract, declaration);
+  }
+  const content = receipt.provider_receipt;
+  const requiresObservedWorkspace = declarations.some((declaration) =>
+    declaration.expected_schema === "work.feature-capture-receipt/v1");
+  const workspace = resultWorkspaceFence(
+    content,
+    requiresObservedWorkspace ? [] : intent.resource_claims,
+  );
+  if (requiresObservedWorkspace && workspace === null) {
+    throw resultBindingError(
+      "result_binding_workspace_missing",
+      "feature capture requires the provider observed workspace fence",
+    );
+  }
+  const provenance = {
+    schema: "flow.result-provenance/v1",
+    run_id: intent.run_id,
+    effect_id: intent.effect_id,
+    attempt_id: intent.attempt_id,
+    idempotency_key: intent.idempotency_key,
+    source_authority_watermark: intent.source_authority_watermark,
+  };
+  return [...declarationsByContract.values()].map((declaration) => {
+    if (content.schema !== declaration.expected_schema) {
+      throw resultBindingError(
+        "result_binding_schema_mismatch",
+        "settled result schema does not match its declared output",
+      );
+    }
+    return createResultBindingRecord({
+      declaration,
+      content,
+      attemptId: intent.attempt_id,
+      provenance,
+      ...(workspace === null ? {} : {
+        producerGeneration: workspace.generation,
+        workspaceMutationEpoch: workspace.mutation_epoch,
+      }),
+    });
+  });
+}
+
+function resultWorkspaceFence(content, resourceClaims = []) {
+  const candidates = [
+    content.workspace,
+    content.review_candidate?.workspace,
+    content.candidate?.workspace,
+    resourceClaims.find(({ kind }) => kind === "workspace"),
+  ];
+  const workspace = candidates.find((candidate) =>
+    isPlainRecord(candidate) &&
+    Number.isSafeInteger(candidate.generation) && candidate.generation >= 1 &&
+    Number.isSafeInteger(candidate.mutation_epoch) &&
+      candidate.mutation_epoch >= 0);
+  return workspace === undefined ? null : workspace;
+}
+
+function resultBindingError(code, message) {
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
 }
 
 function settleSubrunTerminalEvents(events, intent, receipt) {

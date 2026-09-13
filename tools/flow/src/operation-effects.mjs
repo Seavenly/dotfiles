@@ -68,6 +68,9 @@ export function snapshotRegisteredOperations(registrations) {
       observe: typeof registration.observe === "function"
         ? registration.observe.bind(registration)
         : registration.observe,
+      reconcile: typeof registration.reconcile === "function"
+        ? registration.reconcile.bind(registration)
+        : registration.reconcile,
       validateCard: typeof registration.validateCard === "function"
         ? registration.validateCard.bind(registration)
         : registration.validateCard,
@@ -119,13 +122,14 @@ export function dispatchRegisteredEffect(
   void (async () => {
     if (recovery === "settle_cancelled") {
       if (!policy.requires_observation) return;
-      const observed = await registration.observe?.(intent);
+      const observed = await (registration.reconcile ?? registration.observe)?.(intent);
       const observation = await runAuthority.recordEffectObservation?.(
         intent,
         observed,
       );
       const presence = validateEffectObservation(observation, intent);
       if (presence === "present") {
+        assertProviderObservation(observation.provider_observation, intent, registration);
         return runAuthority.invokeEffect(intent, {
           reconciliation: "adopt_present",
         });
@@ -138,13 +142,14 @@ export function dispatchRegisteredEffect(
       return undefined;
     }
     if (recovery && policy.requires_observation) {
-      const observed = await registration.observe?.(intent);
+      const observed = await (registration.reconcile ?? registration.observe)?.(intent);
       const observation = await runAuthority.recordEffectObservation?.(
         intent,
         observed,
       );
       const presence = validateEffectObservation(observation, intent);
       if (presence === "present") {
+        assertProviderObservation(observation.provider_observation, intent, registration);
         return runAuthority.invokeEffect(intent, {
           reconciliation: "adopt_present",
         });
@@ -258,11 +263,19 @@ function assertEffectReceipt(receipt, intent) {
 }
 
 function assertProviderReceipt(receipt, intent, registration) {
+  assertProviderReceiptValue(receipt?.provider_receipt, intent, registration);
+}
+
+function assertProviderObservation(providerReceipt, intent, registration) {
+  assertProviderReceiptValue(providerReceipt, intent, registration);
+}
+
+function assertProviderReceiptValue(providerReceipt, intent, registration) {
   const validatorContract = intent.operation_input?.provider_receipt_validator;
   if (validatorContract === undefined) return;
   if (registration.provider_receipt_validator !== validatorContract ||
       typeof registration.validateReceipt !== "function" ||
-      registration.validateReceipt(receipt.provider_receipt, intent) !== true) {
+      registration.validateReceipt(providerReceipt, intent) !== true) {
     const error = new Error("registered operation provider receipt failed validation");
     error.code = "invalid_provider_receipt";
     throw error;

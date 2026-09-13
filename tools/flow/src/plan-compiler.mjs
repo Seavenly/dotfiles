@@ -36,6 +36,11 @@ import {
   normalizeRequiredAuthorities,
   prepareAuthorityBindings,
 } from "./authority-bindings.mjs";
+import {
+  applyResultBindingDelta,
+  normalizeResultBindingDelta,
+  validateResultBindingDeclarations,
+} from "./result-bindings.mjs";
 
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
@@ -78,7 +83,20 @@ export function applyRevisionGraphChanges(graph, changes) {
     const target = cards.find(({ id }) => id === to);
     target.dependencies = [...new Set([...target.dependencies, from])].sort();
   }
-  return { ...graph, cards };
+  const revised = { ...graph, cards };
+  if (Object.hasOwn(graph, "result_bindings")) {
+    revised.result_bindings = applyResultBindingDelta({
+      baseBindings: graph.result_bindings,
+      cards: graph.cards,
+      changes,
+      delta: changes.result_binding_changes,
+    });
+  } else if (Object.hasOwn(changes, "result_binding_changes")) {
+    throw new TypeError(
+      "result binding delta requires a base result binding declaration set",
+    );
+  }
+  return revised;
 }
 
 const CARD_BLOCK_FIELDS = [
@@ -99,11 +117,11 @@ export class DynamicPlanValidationError extends Error {
 }
 
 export function compileDynamicPlan(proposal, options = {}) {
-  validateDynamicPlan(proposal, options);
+  const validatedRevisionTemplates = validateDynamicPlan(proposal, options);
   const graph = canonicalizeDynamicGraph(proposal.graph);
   const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
   const revisionTemplates = canonicalizeRevisionTemplates(
-    proposal.revision_templates ?? [],
+    validatedRevisionTemplates ?? proposal.revision_templates ?? [],
   );
   const planFingerprint = digest(graph);
   const bundle = createPreparedBundle({
@@ -204,7 +222,9 @@ export function compilePredefinedFlowSelection(
   };
   const generated = runPredefinedCompiler(registration, context);
   const proposal = normalizePredefinedProposal(generated, normalizedSelection);
-  validateDynamicPlan(proposal, { registeredOperations });
+  const validatedRevisionTemplates = validateDynamicPlan(proposal, {
+    registeredOperations,
+  });
 
   let requiredAuthorities;
   try {
@@ -230,7 +250,7 @@ export function compilePredefinedFlowSelection(
   const graph = canonicalizeDynamicGraph(proposal.graph);
   const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
   const revisionTemplates = canonicalizeRevisionTemplates(
-    proposal.revision_templates ?? [],
+    validatedRevisionTemplates ?? proposal.revision_templates ?? [],
   );
   const planFingerprint = digest(graph);
   const confirmationFacts = predefinedConfirmationFacts(
@@ -619,10 +639,40 @@ export function validateDynamicPlan(proposal, {
     );
   }
   assertAcyclic(proposal.graph.cards);
+  validateResultBindingGraph(proposal.graph, supersededCardIds);
   validateBlockObservations(proposal);
+  let validatedRevisionTemplates = proposal.revision_templates ?? [];
   if (!skipRevisionTemplates) {
-    validateRevisionTemplates(proposal, registeredOperations);
+    validatedRevisionTemplates = validateRevisionTemplates(
+      proposal,
+      registeredOperations,
+    );
     validateDeclaredRecoveryCapacity(proposal);
+  }
+  return validatedRevisionTemplates;
+}
+
+function validateResultBindingGraph(graph, supersededCardIds = []) {
+  if (!Object.hasOwn(graph, "result_bindings")) {
+    if (Object.hasOwn(graph, "result_binding_changes")) {
+      invalidPlan(
+        "invalid_result_binding_delta",
+        "result binding delta requires graph declarations",
+      );
+    }
+    return;
+  }
+  try {
+    validateResultBindingDeclarations({
+      bindings: graph.result_bindings,
+      cards: graph.cards,
+      superseded: supersededCardIds,
+    });
+  } catch (error) {
+    invalidPlan(
+      "invalid_result_binding_declarations",
+      error?.message ?? "result binding declarations are invalid",
+    );
   }
 }
 
@@ -941,14 +991,15 @@ function validateRevisionTemplates(proposal, registeredOperations) {
     if (referencedTemplates.size > 0) {
       invalidPlan("unknown_revision_template", "card block names an unknown revision template");
     }
-    return;
+    return [];
   }
   if (!Number.isInteger(proposal.explicit_facts.limits.max_revisions) ||
       proposal.explicit_facts.limits.max_revisions < 1) {
     invalidPlan("invalid_revision_limit", "revision templates require a positive revision limit");
   }
+  const validatedTemplates = [];
   const ids = new Set();
-  for (const template of templates) {
+  for (let template of templates) {
     if (!isRecord(template) || template.schema !== "flow.plan-revision-template/v1" ||
         typeof template.id !== "string" || !template.id || ids.has(template.id) ||
         Object.keys(template).length < 5 || Object.keys(template).length > 6 ||
@@ -976,18 +1027,23 @@ function validateRevisionTemplates(proposal, registeredOperations) {
       invalidPlan("invalid_revision_trigger", `revision trigger is not declared: ${template.id}`);
     }
     if (template.repair !== undefined) {
-      validateFeatureRepairContract({
+      const repairValidation = validateFeatureRepairContract({
         repair: template.repair,
         template,
         existingCards: proposal.graph.cards,
+        existingResultBindings: proposal.graph.result_bindings ?? null,
         brief: proposal.graph.cards.find(({ id }) => id === binding.card_id)
           ?.inputs?.brief,
         limits: proposal.explicit_facts.limits,
         boundCardId: binding.card_id,
         fail: invalidPlan,
       });
+      if (repairValidation?.template !== undefined) {
+        template = repairValidation.template;
+      }
     }
     validateRevisionChanges(proposal, template, registeredOperations);
+    validatedTemplates.push(template);
   }
   for (const id of referencedTemplates.keys()) {
     if (!ids.has(id)) {
@@ -997,6 +1053,7 @@ function validateRevisionTemplates(proposal, registeredOperations) {
       );
     }
   }
+  return validatedTemplates;
 }
 
 function validateRevisionChanges(proposal, template, registeredOperations) {
@@ -1009,10 +1066,17 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
     "resource_additions",
     "limit_changes",
   ];
+  if (Object.hasOwn(proposal.graph, "result_bindings")) {
+    fields.push("result_binding_changes");
+  }
   if (!isRecord(changes) || Object.keys(changes).length !== fields.length ||
       !fields.every((field) => Object.hasOwn(changes, field)) ||
-      !fields.slice(0, -1).every((field) => Array.isArray(changes[field])) ||
-      !isRecord(changes.limit_changes)) {
+      !fields.filter((field) =>
+        !["limit_changes", "result_binding_changes"].includes(field),
+      ).every((field) => Array.isArray(changes[field])) ||
+      !isRecord(changes.limit_changes) ||
+      (Object.hasOwn(proposal.graph, "result_bindings") &&
+        !isRecord(changes.result_binding_changes))) {
     invalidPlan("invalid_revision_changes", `revision changes are incomplete: ${template.id}`);
   }
   const existingIds = new Set(proposal.graph.cards.map(({ id }) => id));
@@ -1087,7 +1151,18 @@ function validateRevisionChanges(proposal, template, registeredOperations) {
     }
     edgeIds.add(edgeId);
   }
-  const revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
+  let revisedGraph;
+  try {
+    revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
+  } catch (error) {
+    if (Object.hasOwn(proposal.graph, "result_bindings")) {
+      invalidPlan(
+        "invalid_result_binding_delta",
+        error?.message ?? "result binding declaration delta is invalid",
+      );
+    }
+    throw error;
+  }
   const revisedCards = revisedGraph.cards;
   if (hasActiveDependencyOnSuperseded(revisedCards, superseded)) {
     invalidPlan(
@@ -1465,6 +1540,11 @@ export function canonicalizeRevisionTemplates(templates) {
         }),
         resource_additions: [...template.changes.resource_additions]
           .sort((left, right) => digest(left) < digest(right) ? -1 : 1),
+        ...(Object.hasOwn(template.changes, "result_binding_changes") ? {
+          result_binding_changes: normalizeResultBindingDelta(
+            template.changes.result_binding_changes,
+          ),
+        } : {}),
       },
     }))
     .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
@@ -1479,7 +1559,23 @@ export function canonicalizeDynamicGraph(graph) {
         dependencies: [...new Set(card.dependencies)].sort(),
       }))
       .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    ...(Object.hasOwn(graph, "result_bindings") ? {
+      result_bindings: [...graph.result_bindings].sort((left, right) => {
+        const leftKey = resultBindingKey(left);
+        const rightKey = resultBindingKey(right);
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      }),
+    } : {}),
   });
+}
+
+function resultBindingKey(binding) {
+  return [
+    binding.consumer_card_id,
+    binding.producer_card_id,
+    binding.output_contract,
+    binding.expected_schema,
+  ].join("\0");
 }
 
 function assertAcyclic(cards) {

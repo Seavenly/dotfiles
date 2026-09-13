@@ -3,6 +3,7 @@ import {
   hasActiveDependencyOnSuperseded,
   hasDependencyCycle,
 } from "./plan-graph.mjs";
+import { applyResultBindingDelta } from "./result-bindings.mjs";
 
 // These are closed capacity decisions.  Every other admission failure is a
 // structural rejection and must never be rendered as if a cap were spent.
@@ -138,6 +139,18 @@ export function admitPlanRevision(state, template) {
       replacementBindings,
     ),
   };
+  if (Object.hasOwn(state.active_plan, "result_bindings")) {
+    const resultBindingChanges = {
+      ...changes,
+      supersede_cards: supersededCards,
+    };
+    activePlan.result_bindings = applyResultBindingDelta({
+      baseBindings: state.active_plan.result_bindings,
+      cards: state.active_plan.cards,
+      changes: resultBindingChanges,
+      delta: changes.result_binding_changes,
+    });
+  }
   return {
     ordinal: nextOrdinal,
     plan_fingerprint: digest(activePlan),

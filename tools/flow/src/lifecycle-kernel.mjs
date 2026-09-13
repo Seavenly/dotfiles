@@ -6,12 +6,25 @@ import {
 } from "./plan-revision.mjs";
 import { createRejection } from "./rejection.mjs";
 import { authorityFactFromIssue } from "./authority-bindings.mjs";
+import {
+  deriveFeatureFinalization,
+  featureCandidateViewFromCapture,
+} from "./candidate-finalization.mjs";
+import { declaredResultBindings } from "./result-bindings.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
   "generic_setter",
   "force_unlock",
   "generic_unblock",
   "timer_lease_takeover",
+]);
+const CALLER_MATERIALIZED_FIELDS = Object.freeze([
+  "authority_materialized_evidence",
+  "authority_materialized_candidate",
+  "authority_materialized_candidate_digest",
+  "authority_materialized_result_bindings",
+  "authority_materialized_result_bindings_digest",
+  "authority_materialized_critique_binding",
 ]);
 const CHECKPOINT_BINDING_SCHEMA = "flow.checkpoint-binding/v1";
 
@@ -430,7 +443,11 @@ function delegateDecision(fold, command, delegate) {
     : {
         ...baseDelegateInput,
         authority_materialized_evidence: materialized.evidence,
+        ...materializedResultBindingInput(materialized.bindings),
       };
+  const candidate = materializeFeatureCandidate(card, materialized.bindings);
+  if (candidate.code !== null) return reject(fold, command, candidate.code);
+  if (candidate.value !== null) Object.assign(delegateInput, candidate.value);
   const attemptId = `${fold.run_id}:${delegate.id}:attempt:${ordinal}`;
   const effectIdentity = digest({
     schema: "flow.delegate-effect-identity/v1",
@@ -440,6 +457,11 @@ function delegateDecision(fold, command, delegate) {
     route_binding: routeBinding,
     ...(materialized.evidence?.evidence_digest === undefined ? {} : {
       authority_evidence_digest: materialized.evidence.evidence_digest,
+    }),
+    ...(delegateInput.authority_materialized_candidate === undefined ? {} : {
+      authority_materialized_candidate_digest: digest(
+        delegateInput.authority_materialized_candidate,
+      ),
     }),
   });
   const completesRun = decisionCompletesRun(fold, {
@@ -509,12 +531,42 @@ function operationDecision(
   );
   const materialized = materializeAuthorityEvidence(fold, operationCard);
   if (materialized.code !== null) return reject(fold, command, materialized.code);
+  const critiqueBinding = materializeFeatureCritiqueBinding(
+    fold,
+    operationCard,
+    materialized.bindings,
+  );
+  if (critiqueBinding.code !== null) {
+    return reject(fold, command, critiqueBinding.code);
+  }
+  const operationInput = {
+    ...operationCard.inputs,
+    ...(materialized.evidence === null ? {} : {
+      authority_materialized_evidence: materialized.evidence,
+    }),
+    ...materializedResultBindingInput(materialized.bindings),
+    ...(critiqueBinding.value === null ? {} : {
+      authority_materialized_critique_binding: critiqueBinding.value,
+    }),
+    ...(checkpointBinding === null ? {} : {
+      checkpoint_binding: checkpointBinding,
+    }),
+  };
+  const candidate = materializeFeatureCandidate(operationCard, materialized.bindings);
+  if (candidate.code !== null) return reject(fold, command, candidate.code);
+  if (candidate.value !== null) Object.assign(operationInput, candidate.value);
+  const derived = deriveSealInput(fold, operationCard, materialized.bindings);
+  if (derived.code !== null) return reject(fold, command, derived.code);
+  if (derived.value !== null) {
+    Object.assign(operationInput, derived.value);
+  }
   const identity = operationEffectIdentity({
     runId: fold.run_id,
     cardId: operation.id,
     operationContract: operationCard.executor.contract,
   });
   if (identity === null) return reject(fold, command, "invalid_operation_identity");
+  const boundIdentity = bindOperationIdentity(identity, operationInput);
   const completedCardIds = [
     operation.id,
     ...immediateEvents
@@ -530,29 +582,21 @@ function operationDecision(
       {
         type: "operation_completed",
         card_id: operation.id,
-        attempt_id: identity.attempt_id,
+        attempt_id: boundIdentity.attempt_id,
       },
       ...(completesRun ? [{ type: "run_succeeded" }] : []),
     ],
     effect_intents: [{
       schema: "flow.effect-intent/v1",
-      effect_id: identity.effect_id,
-      idempotency_key: identity.idempotency_key,
-      attempt_id: identity.attempt_id,
+      effect_id: boundIdentity.effect_id,
+      idempotency_key: boundIdentity.idempotency_key,
+      attempt_id: boundIdentity.attempt_id,
       card_id: operation.id,
       classification: operationCard.executor.effect_classification,
       operation_contract: operationCard.executor.contract,
       card_identity: digest(operationCard),
       revision_ordinal: fold.current_revision.ordinal,
-      operation_input: {
-        ...operationCard.inputs,
-        ...(materialized.evidence === null ? {} : {
-          authority_materialized_evidence: materialized.evidence,
-        }),
-        ...(checkpointBinding === null ? {} : {
-          checkpoint_binding: checkpointBinding,
-        }),
-      },
+      operation_input: operationInput,
       source_authority_watermark: fold.watermark,
       route_binding: operationCard.route,
       resource_claims: operationCard.resource_claims,
@@ -562,10 +606,147 @@ function operationDecision(
   };
 }
 
+function deriveSealInput(fold, card, bindings) {
+  if (card?.executor?.contract !== "flow.operation/feature-seal/v1") {
+    return { code: null, value: null };
+  }
+  if (bindings === undefined) {
+    // Older recorded plans did not declare result bindings. Preserve their
+    // explicit finalization input so those runs remain replayable.
+    return { code: null, value: null };
+  }
+  const captureBinding = (bindings ?? []).find((binding) =>
+    binding.output_contract === "candidate_capture_receipt" &&
+    binding.expected_schema === "work.feature-capture-receipt/v1");
+  if (captureBinding === undefined) {
+    return { code: "feature_finalization_capture_missing", value: null };
+  }
+  const derived = deriveFeatureFinalization({
+    captureBinding,
+    capturePolicy: card.inputs.capture_policy,
+    selectedWorkspace: card.inputs.workspace,
+    legacyFinalization: card.inputs.finalization,
+  });
+  if (derived?.code !== undefined) return derived;
+  return {
+    code: null,
+    value: {
+      finalization: derived.finalization,
+      publication: derived.publication,
+      authority_materialized_candidate: derived.candidate,
+      authority_materialized_candidate_digest: digest(derived.candidate),
+      authority_materialized_finalization_digest: derived.finalization_digest,
+    },
+  };
+}
+
+function materializeFeatureCritiqueBinding(fold, card, bindings) {
+  if (card?.executor?.contract !== "flow.operation/feature-seal/v1" ||
+      bindings === undefined) {
+    return { code: null, value: null };
+  }
+  const critiqueCards = (card.inputs?.delegate_evidence_card_ids ?? [])
+    .map((cardId) => fold.active_plan.cards.find(({ id }) => id === cardId))
+    .filter((candidate) => candidate?.executor?.kind === "delegate" &&
+      candidate.inputs?.phase === "critique");
+  if (critiqueCards.length !== 1) {
+    return { code: "authority_critique_declaration_invalid", value: null };
+  }
+  const expectedCardId = critiqueCards[0].id;
+  const critiqueBindings = (bindings ?? []).filter((binding) =>
+    binding.producer_card_id === expectedCardId &&
+    binding.output_contract === "critique_observation" &&
+    binding.expected_schema === "flow.delegate-evidence/v1");
+  if (critiqueBindings.length !== 1) {
+    return { code: "authority_critique_declaration_invalid", value: null };
+  }
+  const [binding] = critiqueBindings;
+  return {
+    code: null,
+    value: freezeCanonical({
+      schema: "flow.authority-critique-binding/v1",
+      card_id: binding.producer_card_id,
+      role: "critique",
+      output_contract: binding.output_contract,
+      expected_schema: binding.expected_schema,
+      result_identity: binding.result_identity,
+      binding_digest: binding.binding_digest,
+    }),
+  };
+}
+
+function materializeFeatureCandidate(card, bindings) {
+  const isFeatureCritique = card?.executor?.kind === "delegate" &&
+    card?.inputs?.phase === "critique";
+  if (![
+    "flow.operation/feature-verify/v1",
+    "flow.operation/feature-seal/v1",
+  ].includes(card?.executor?.contract) && !isFeatureCritique) {
+    return { code: null, value: null };
+  }
+  if (bindings === undefined) return { code: null, value: null };
+  const captureBinding = (bindings ?? []).find((binding) =>
+    binding.output_contract === "candidate_capture_receipt" &&
+    binding.expected_schema === "work.feature-capture-receipt/v1");
+  if (captureBinding === undefined) {
+    return { code: "feature_candidate_capture_missing", value: null };
+  }
+  const candidate = featureCandidateViewFromCapture(captureBinding);
+  return candidate === null
+    ? { code: "feature_candidate_capture_invalid", value: null }
+    : {
+      code: null,
+      value: {
+        authority_materialized_candidate: candidate,
+        authority_materialized_candidate_digest: digest(candidate),
+      },
+    };
+}
+
+function bindOperationIdentity(identity, operationInput) {
+  const finalizationDigest = operationInput
+    ?.authority_materialized_finalization_digest;
+  const candidateDigest = operationInput
+    ?.authority_materialized_candidate_digest;
+  if (finalizationDigest === undefined && candidateDigest === undefined) {
+    return identity;
+  }
+  const bound = digest({
+    schema: "flow.feature-seal-effect-identity/v1",
+    base_effect_id: identity.effect_id,
+    base_idempotency_key: identity.idempotency_key,
+    ...(finalizationDigest === undefined ? {} : {
+      finalization: operationInput.finalization,
+      finalization_digest: finalizationDigest,
+    }),
+    ...(candidateDigest === undefined ? {} : {
+      candidate: operationInput.authority_materialized_candidate,
+      candidate_digest: candidateDigest,
+    }),
+  }).slice("sha256:".length);
+  return Object.freeze({
+    ...identity,
+    effect_id: `effect:${bound}`,
+    idempotency_key: `operation:${bound}`,
+  });
+}
+
 function materializeAuthorityEvidence(fold, card) {
   const inputs = card?.inputs ?? {};
-  if (Object.hasOwn(inputs, "authority_materialized_evidence")) {
+  if (CALLER_MATERIALIZED_FIELDS.some((field) => Object.hasOwn(inputs, field))) {
     return { code: "caller_materialized_evidence_forbidden", evidence: null };
+  }
+  const declared = declaredResultBindings(fold.active_plan, card?.id);
+  if (declared !== null) {
+    const hasEvidenceReferences = [
+      inputs.delegate_evidence_card_ids,
+      inputs.operation_evidence_card_ids,
+      inputs.test_card_ids,
+    ].some((references) => references !== undefined);
+    if (declared.length === 0 && !hasEvidenceReferences) {
+      return { code: null, evidence: null };
+    }
+    return materializeDeclaredResultBindings(fold, card, declared);
   }
   const delegateCardIds = inputs.delegate_evidence_card_ids ??
     inputs.finding_lens_card_ids;
@@ -620,6 +801,182 @@ function materializeAuthorityEvidence(fold, card) {
       ...evidence,
       evidence_digest: digest(evidence),
     }),
+  };
+}
+
+function materializedResultBindingInput(bindings) {
+  return bindings === undefined
+    ? {}
+    : {
+        authority_materialized_result_bindings: bindings,
+        authority_materialized_result_bindings_digest: digest(bindings),
+      };
+}
+
+function materializeDeclaredResultBindings(fold, card, declarations) {
+  const declaredProducerIds = new Set();
+  const evidenceProducerIds = new Set([
+    ...(card.inputs.delegate_evidence_card_ids ?? []),
+    ...(card.inputs.operation_evidence_card_ids ?? []),
+    ...(card.inputs.test_card_ids ?? []),
+  ]);
+  const records = fold.result_bindings ?? [];
+  const bindings = [];
+  for (const declaration of declarations) {
+    const declarationKey = `${declaration.producer_card_id}:` +
+      declaration.output_contract;
+    if (declaredProducerIds.has(declarationKey) ||
+        !evidenceProducerIds.has(declaration.producer_card_id)) {
+      return { code: "authority_result_declaration_invalid", evidence: null };
+    }
+    declaredProducerIds.add(declarationKey);
+    const producer = fold.active_plan.cards.find(({ id }) =>
+      id === declaration.producer_card_id);
+    if (!producer) {
+      return { code: "authority_result_wrong_producer", evidence: null };
+    }
+    if (!producer.outputs.includes(declaration.output_contract)) {
+      return { code: "authority_result_wrong_output", evidence: null };
+    }
+    const matches = records.filter((record) =>
+      record.producer_card_id === declaration.producer_card_id &&
+      record.output_contract === declaration.output_contract &&
+      record.expected_schema === declaration.expected_schema);
+    if (matches.length === 0) {
+      return { code: "authority_result_missing", evidence: null };
+    }
+    if (matches.length !== 1) {
+      return { code: "authority_result_ambiguous", evidence: null };
+    }
+    const record = matches[0];
+    if (record.observed_schema !== declaration.expected_schema) {
+      return { code: "authority_result_schema_mismatch", evidence: null };
+    }
+    if (fold.superseded_cards.includes(declaration.producer_card_id)) {
+      return { code: "authority_result_superseded", evidence: null };
+    }
+    const producerIntent = fold.effect_intents.find(({ effect_id: effectId }) =>
+      effectId === record.provenance.effect_id);
+    if (!producerIntent || producerIntent.card_id !== declaration.producer_card_id ||
+        producerIntent.attempt_id !== record.attempt_id ||
+        producerIntent.idempotency_key !== record.provenance.idempotency_key ||
+        producerIntent.source_authority_watermark !==
+          record.provenance.source_authority_watermark) {
+      return { code: "authority_result_stale", evidence: null };
+    }
+    const workspaceClaim = producer.resource_claims?.find(({ kind }) =>
+      kind === "workspace");
+    if (workspaceClaim !== undefined &&
+        (record.producer_generation !== workspaceClaim.generation ||
+         record.workspace_mutation_epoch !== workspaceClaim.mutation_epoch)) {
+      return { code: "authority_result_stale", evidence: null };
+    }
+    bindings.push(record);
+  }
+  for (const producerCardId of evidenceProducerIds) {
+    if (!declarations.some(({ producer_card_id: candidate }) =>
+      candidate === producerCardId)) {
+      return { code: "authority_result_undeclared", evidence: null };
+    }
+  }
+  const delegates = [];
+  const operations = [];
+  let verificationReceipt = null;
+  const operationOrder = new Map(
+    (card.inputs.operation_evidence_card_ids ?? [])
+      .map((cardId, index) => [cardId, index]),
+  );
+  const delegateOrder = new Map(
+    (card.inputs.delegate_evidence_card_ids ?? [])
+      .map((cardId, index) => [cardId, index]),
+  );
+  const testOrder = new Map(
+    (card.inputs.test_card_ids ?? [])
+      .map((cardId, index) => [cardId, index]),
+  );
+  const producerOrder = (binding) => {
+    const producer = fold.active_plan.cards.find(({ id }) =>
+      id === binding.producer_card_id);
+    const kind = producer?.executor?.kind;
+    if (kind === "operation") {
+      return [0, operationOrder.get(binding.producer_card_id) ??
+        testOrder.get(binding.producer_card_id) ?? Infinity];
+    }
+    if (kind === "delegate") {
+      return [1, delegateOrder.get(binding.producer_card_id) ?? Infinity];
+    }
+    return [2, Infinity];
+  };
+  const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+  const orderedBindings = [...bindings].sort((left, right) => {
+    const [leftKind, leftIndex] = producerOrder(left);
+    const [rightKind, rightIndex] = producerOrder(right);
+    if (leftKind !== rightKind) return leftKind - rightKind;
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+    for (const [leftValue, rightValue] of [
+      [left.producer_card_id, right.producer_card_id],
+      [left.output_contract, right.output_contract],
+      [left.expected_schema, right.expected_schema],
+      [left.attempt_id, right.attempt_id],
+      [left.result_identity, right.result_identity],
+      [left.binding_digest, right.binding_digest],
+    ]) {
+      const comparison = compareText(leftValue, rightValue);
+      if (comparison !== 0) return comparison;
+    }
+    return 0;
+  });
+  for (const binding of orderedBindings) {
+    const producer = fold.active_plan.cards.find(({ id }) =>
+      id === binding.producer_card_id);
+    const effect = fold.effects.find(({ effect_id: effectId }) =>
+      effectId === binding.provenance.effect_id);
+    if (producer.executor.kind === "delegate") {
+      delegates.push({
+        card_id: binding.producer_card_id,
+        effect_id: binding.provenance.effect_id,
+        attempt_id: binding.attempt_id,
+        idempotency_key: binding.provenance.idempotency_key,
+        source_authority_watermark: binding.provenance.source_authority_watermark,
+        evidence: binding.content,
+      });
+    } else if (producer.executor.kind === "operation") {
+      const entry = {
+        card_id: binding.producer_card_id,
+        effect_id: binding.provenance.effect_id,
+        attempt_id: binding.attempt_id,
+        idempotency_key: binding.provenance.idempotency_key,
+        source_authority_watermark: binding.provenance.source_authority_watermark,
+        receipt: effect?.receipt ?? null,
+      };
+      operations.push(entry);
+      if (binding.output_contract === "verification_receipt") {
+        verificationReceipt = entry.receipt;
+      }
+    } else {
+      return { code: "authority_result_wrong_kind", evidence: null };
+    }
+  }
+  const evidence = {
+    schema: "flow.authority-materialized-evidence/v1",
+    ...(delegates.length === 0 ? {} : { accepted_delegates: delegates }),
+    ...(operations.length === 0 ? {} : {
+      operation_receipts: operations,
+      ...(verificationReceipt === null && operations.length === 1
+        ? { verify_receipt: operations[0].receipt }
+        : {}),
+      ...(verificationReceipt === null ? {} : {
+        verify_receipt: verificationReceipt,
+      }),
+    }),
+  };
+  return {
+    code: null,
+    evidence: freezeCanonical({
+      ...evidence,
+      evidence_digest: digest(evidence),
+    }),
+    bindings: freezeCanonical(bindings),
   };
 }
 
@@ -748,7 +1105,7 @@ function validateCheckpointBinding(binding, checkpoint) {
         !["schema", "checkpoint_id", "draft", "draft_digest"].every((key) =>
           Object.hasOwn(binding, key)) ||
         binding.checkpoint_id !== checkpoint.id ||
-        requiredSchema !== undefined && binding.schema !== requiredSchema ||
+        (requiredSchema !== undefined && binding.schema !== requiredSchema) ||
         !isRecord(binding.draft) ||
         typeof binding.draft_digest !== "string" ||
         digest(binding.draft) !== binding.draft_digest) {

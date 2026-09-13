@@ -1,18 +1,27 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import {
   createFeatureDefinition,
+  FEATURE_CAPTURE_RECEIPT_VALIDATOR,
   FEATURE_TEST_RECEIPT_VALIDATOR,
+  FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
   FEATURE_OPERATION_CONTRACTS,
+  createFeatureCaptureOperation,
+  validateFeatureCaptureReceipt,
   validateFeatureTestReceipt,
+  validateFeatureVerificationReceipt,
 } from "../src/feature-flow.mjs";
 import { validateFeatureRepairContract } from
   "../src/feature-repair-contract.mjs";
@@ -51,7 +60,9 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_CAPTURE_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_VERIFICATION_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
     kind: "workspace",
     id: "workspace:producer",
@@ -68,10 +79,25 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     }),
     registeredOperations: Object.fromEntries(
       Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
-        classification: "caller_idempotent",
+        classification: contract === FEATURE_OPERATION_CONTRACTS.capture
+          ? "reconcilable"
+          : "caller_idempotent",
         ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
           provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
           validateReceipt: validateFeatureTestReceipt,
+        } : {}),
+        ...(contract === FEATURE_OPERATION_CONTRACTS.capture ? {
+          provider_receipt_validator: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+          validateReceipt: validateFeatureCaptureReceipt,
+        } : {}),
+        ...(contract === FEATURE_OPERATION_CONTRACTS.verify ? {
+          provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
+          validateReceipt: validateFeatureVerificationReceipt,
+        } : {}),
+        ...(contract === FEATURE_OPERATION_CONTRACTS.capture ? {
+          observe() {
+            return undefined;
+          },
         } : {}),
         invoke() {
           throw new Error("feature operations are not invoked during preparation");
@@ -111,6 +137,15 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
   assert.equal(cards.get("feature-apply").executor.kind, "delegate");
   assert.equal(cards.get("feature-critique").executor.kind, "delegate");
+  assert.deepEqual(cards.get("feature-critique").dependencies, [
+    "feature-apply",
+    "feature-capture",
+    "feature-verify",
+  ]);
+  assert.equal(cards.get("feature-capture").executor.kind, "operation");
+  assert.equal(cards.get("feature-capture").executor.contract,
+    FEATURE_OPERATION_CONTRACTS.capture);
+  assert.deepEqual(cards.get("feature-capture").resource_claims, []);
   assert.equal(cards.get("feature-verify").executor.kind, "operation");
   assert.equal(cards.get("feature-seal").executor.kind, "operation");
   assert.deepEqual(cards.get("feature-apply").validators, [
@@ -150,9 +185,22 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   assert.deepEqual(cards.get("feature-verify").inputs.delegate_evidence_card_ids, [
     "feature-apply",
   ]);
+  assert.deepEqual(cards.get("feature-verify").inputs.operation_evidence_card_ids, [
+    "feature-capture",
+  ]);
+  assert.deepEqual(cards.get("feature-critique").inputs.delegate_evidence_card_ids, [
+    "feature-apply",
+  ]);
+  assert.deepEqual(cards.get("feature-critique").inputs.operation_evidence_card_ids, [
+    "feature-capture",
+  ]);
   assert.deepEqual(cards.get("feature-seal").inputs.delegate_evidence_card_ids, [
     "feature-apply",
     "feature-critique",
+  ]);
+  assert.deepEqual(cards.get("feature-seal").inputs.operation_evidence_card_ids, [
+    "feature-capture",
+    "feature-verify",
   ]);
   assert.deepEqual(cards.get("feature-apply").outputs, [
     "workspace_mutation_observation",
@@ -189,8 +237,346 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   );
 });
 
+test("feature/v1 prepares and launches without future candidate identities", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-feature-prep-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-prep", "feature-prep"),
+  });
+  t.after(() => runAuthority.close());
+
+  const inputs = featureInputs();
+  delete inputs.finalization;
+  inputs.workspace.git = exactGitFacts();
+  inputs.delegation = {
+    ...inputs.delegation,
+    apply: featureDelegateBindingFromDescription(
+      "apply",
+      await supportedDescription({
+        schema: "drovr.delegated-agent-description-request/v1",
+        launch: {
+          harness: "codex",
+          role: "reviewer",
+          model: "gpt-5.6",
+          effort: "high",
+          capability: "read-only",
+        },
+        caller_metadata: { owner: "feature-flow-preparation" },
+      }, {}),
+    ),
+    critique: featureDelegateBindingFromDescription(
+      "critique",
+      await supportedDescription({
+        schema: "drovr.delegated-agent-description-request/v1",
+        launch: {
+          harness: "claude",
+          role: "reviewer",
+          model: "gpt-5.6",
+          effort: "high",
+          capability: "read-only",
+        },
+        caller_metadata: { owner: "feature-flow-preparation" },
+      }, {}),
+    ),
+  };
+  const facts = featureFactsForInputs(inputs);
+  const runtime = featurePreparationRuntime(
+    runAuthority,
+    facts,
+  );
+
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "feature/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+
+  const serialized = JSON.stringify(prepared);
+  assert.equal(prepared.selection.inputs.finalization, undefined);
+  assert.equal(serialized.includes('"candidate_id"'), false);
+  assert.equal(serialized.includes('"artifacts":'), false);
+  assert.equal(Object.hasOwn(prepared.selection.inputs, "patch"), false);
+  assert.deepEqual(prepared.graph.result_bindings.filter(({ consumer_card_id }) =>
+    consumer_card_id === "feature-verify"), [{
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-verify",
+      producer_card_id: "feature-apply",
+      output_contract: "workspace_mutation_observation",
+      expected_schema: "flow.delegate-evidence/v1",
+    }, {
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-verify",
+      producer_card_id: "feature-capture",
+      output_contract: "candidate_capture_receipt",
+      expected_schema: "work.feature-capture-receipt/v1",
+    }]);
+  assert.deepEqual(prepared.graph.result_bindings.filter(({ consumer_card_id }) =>
+    consumer_card_id === "feature-critique"), [{
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-critique",
+      producer_card_id: "feature-apply",
+      output_contract: "workspace_mutation_observation",
+      expected_schema: "flow.delegate-evidence/v1",
+    }, {
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-critique",
+      producer_card_id: "feature-capture",
+      output_contract: "candidate_capture_receipt",
+      expected_schema: "work.feature-capture-receipt/v1",
+    }]);
+  assert.deepEqual(prepared.graph.result_bindings.filter(({ consumer_card_id }) =>
+    consumer_card_id === "feature-seal"), [
+    {
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-seal",
+      producer_card_id: "feature-apply",
+      output_contract: "workspace_mutation_observation",
+      expected_schema: "flow.delegate-evidence/v1",
+    },
+    {
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-seal",
+      producer_card_id: "feature-capture",
+      output_contract: "candidate_capture_receipt",
+      expected_schema: "work.feature-capture-receipt/v1",
+    },
+    {
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-seal",
+      producer_card_id: "feature-critique",
+      output_contract: "critique_observation",
+      expected_schema: "flow.delegate-evidence/v1",
+    },
+    {
+      schema: "flow.result-binding/v1",
+      consumer_card_id: "feature-seal",
+      producer_card_id: "feature-verify",
+      output_contract: "verification_receipt",
+      expected_schema: "work.feature-verification-receipt/v1",
+    },
+  ]);
+
+  const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+  assert.equal(launch.created, true, JSON.stringify(launch));
+});
+
+test("feature/v1 carries the exact capture policy into seal finalization", () => {
+  const inputs = featureInputs();
+  inputs.finalization.publication.retention = "pinned_candidate";
+  inputs.finalization.publication.workspace.disposition = "retain_for_audit";
+  inputs.finalization.publication.subject = {
+    contract: "work.workspace/v1",
+    subject_id: inputs.workspace.subject_id,
+  };
+  inputs.finalization.publication.allowed_consumer_operations = [
+    "read_workspace",
+    "inspect_candidate",
+  ];
+  inputs.finalization.publication.consumer_operation_authority = [
+    { operation: "read_workspace", access: "read_only" },
+    { operation: "inspect_candidate", access: "read_only" },
+  ];
+  inputs.finalization.publication.authority_envelope = {
+    capabilities: ["repository:read", "candidate:inspect"],
+  };
+  inputs.finalization.publication.cleanup_obligations = [
+    "retain_artifact_bytes",
+    "retain_git_reference",
+  ];
+  inputs.finalization.publication.intended_consumer = "reviewer";
+  const prepared = prepareFeatureSelection(inputs);
+  const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
+
+  assert.deepEqual(
+    cards.get("feature-seal").inputs.capture_policy,
+    cards.get("feature-capture").inputs.capture_policy,
+  );
+  assert.equal(
+    cards.get("feature-seal").inputs.capture_policy.retention,
+    "pinned_candidate",
+  );
+  assert.equal(
+    cards.get("feature-seal").inputs.capture_policy.disposition,
+    "retain_for_audit",
+  );
+  assert.deepEqual(
+    cards.get("feature-seal").inputs.capture_policy.publication_policy,
+    {
+      subject: inputs.finalization.publication.subject,
+      allowed_consumer_operations:
+        inputs.finalization.publication.allowed_consumer_operations,
+      consumer_operation_authority:
+        inputs.finalization.publication.consumer_operation_authority,
+      authority_envelope: inputs.finalization.publication.authority_envelope,
+      cleanup_obligations: inputs.finalization.publication.cleanup_obligations,
+      intended_consumer: inputs.finalization.publication.intended_consumer,
+    },
+  );
+});
+
+test("feature/v1 identity-free preparation accepts an explicit capture policy", () => {
+  const inputs = featureInputs();
+  delete inputs.finalization;
+  inputs.workspace.git = exactGitFacts();
+  inputs.capture_policy = {
+    schema: "flow.feature-capture-policy/v1",
+    starting_workspace: structuredClone(inputs.workspace),
+    starting_git: structuredClone(inputs.workspace.git),
+    permitted_transformations: ["accepted_brief"],
+    validation_contract: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+    retention: "pinned_candidate",
+    disposition: "retain_for_audit",
+    publication_policy: {
+      subject: {
+        contract: "work.workspace/v1",
+        subject_id: inputs.workspace.subject_id,
+      },
+      allowed_consumer_operations: ["read_workspace", "inspect_candidate"],
+      consumer_operation_authority: [
+        { operation: "read_workspace", access: "read_only" },
+        { operation: "inspect_candidate", access: "read_only" },
+      ],
+      authority_envelope: {
+        capabilities: ["repository:read", "candidate:inspect"],
+      },
+      cleanup_obligations: ["retain_artifact_bytes", "retain_git_reference"],
+      intended_consumer: "reviewer",
+    },
+  };
+  const prepared = prepareFeatureSelection(inputs);
+  const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
+  const canonicalPolicy = structuredClone(inputs.capture_policy);
+  canonicalPolicy.publication_policy.allowed_consumer_operations = [
+    "inspect_candidate",
+    "read_workspace",
+  ];
+  canonicalPolicy.publication_policy.consumer_operation_authority = [
+    { operation: "inspect_candidate", access: "read_only" },
+    { operation: "read_workspace", access: "read_only" },
+  ];
+  assert.deepEqual(
+    cards.get("feature-capture").inputs.capture_policy,
+    canonicalPolicy,
+  );
+  assert.deepEqual(
+    cards.get("feature-seal").inputs.capture_policy,
+    canonicalPolicy,
+  );
+  assert.equal(JSON.stringify(prepared).includes("candidate_id"), false);
+  assert.equal(JSON.stringify(prepared).includes('"artifacts"'), false);
+
+  const malformed = structuredClone(inputs);
+  malformed.capture_policy.candidate_id = "candidate:future";
+  assert.throws(
+    () => prepareFeatureSelection(malformed),
+    /capture policy is not an exact identity-free preparation policy/,
+  );
+});
+
+test("feature/v1 identity-free custom policy derives the exact seal publication", async (t) => {
+  const policyInputs = featureInputs();
+  delete policyInputs.finalization;
+  policyInputs.workspace.git = exactGitFacts();
+  const policy = {
+    schema: "flow.feature-capture-policy/v1",
+    starting_workspace: structuredClone(policyInputs.workspace),
+    starting_git: structuredClone(policyInputs.workspace.git),
+    permitted_transformations: ["accepted_brief"],
+    validation_contract: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+    retention: "pinned_candidate",
+    disposition: "retain_for_audit",
+    publication_policy: {
+      subject: {
+        contract: "work.workspace/v1",
+        subject_id: policyInputs.workspace.subject_id,
+      },
+      allowed_consumer_operations: ["read_workspace", "inspect_candidate"],
+      consumer_operation_authority: [
+        { operation: "read_workspace", access: "read_only" },
+        { operation: "inspect_candidate", access: "read_only" },
+      ],
+      authority_envelope: {
+        capabilities: ["repository:read", "candidate:inspect"],
+      },
+      cleanup_obligations: ["retain_artifact_bytes", "retain_git_reference"],
+      intended_consumer: "reviewer",
+    },
+  };
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    capturePolicy: policy,
+  });
+  await driveFeatureToSeal(fixture);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  const seal = fixture.sealIntents.at(-1);
+  assert.equal(seal.operation_input.finalization.publication.retention,
+    policy.retention);
+  assert.equal(seal.operation_input.finalization.publication.workspace.disposition,
+    policy.disposition);
+  assert.deepEqual(
+    seal.operation_input.finalization.publication.subject,
+    policy.publication_policy.subject,
+  );
+  assert.deepEqual(
+    seal.operation_input.finalization.publication.allowed_consumer_operations,
+    ["inspect_candidate", "read_workspace"],
+  );
+  assert.deepEqual(
+    seal.operation_input.finalization.publication.consumer_operation_authority,
+    [
+      { operation: "inspect_candidate", access: "read_only" },
+      { operation: "read_workspace", access: "read_only" },
+    ],
+  );
+  assert.deepEqual(
+    seal.operation_input.finalization.publication.authority_envelope,
+    policy.publication_policy.authority_envelope,
+  );
+  assert.deepEqual(
+    seal.operation_input.finalization.publication.cleanup_obligations,
+    policy.publication_policy.cleanup_obligations,
+  );
+  assert.equal(seal.operation_input.finalization.publication.intended_consumer,
+    policy.publication_policy.intended_consumer);
+});
+
+test("feature/v1 identity-free preparation requires starting Git facts", () => {
+  const inputs = featureInputs();
+  delete inputs.finalization;
+  const facts = featureFactsForInputs(inputs);
+  assert.throws(
+    () => prepareFeatureSelection(inputs, facts),
+    (error) => error?.reason === "missing_starting_git_facts",
+  );
+});
+
+test("dynamic result-binding declarations have canonical order", () => {
+  const prepared = prepareFeatureSelection(featureInputs());
+  const proposal = {
+    schema: "flow.dynamic-plan-proposal/v1",
+    graph: structuredClone(prepared.graph),
+    requested_authority: structuredClone(prepared.requested_authority),
+    explicit_facts: structuredClone(prepared.explicit_facts),
+    revision_templates: [],
+  };
+  const reordered = structuredClone(proposal);
+  reordered.graph.result_bindings.reverse();
+  const canonical = compileDynamicPlan(proposal);
+  const reorderedCanonical = compileDynamicPlan(reordered);
+  assert.equal(canonical.bundle_digest, reorderedCanonical.bundle_digest);
+  assert.deepEqual(
+    canonical.graph.result_bindings,
+    reorderedCanonical.graph.result_bindings,
+  );
+});
+
 test("feature/v1 prepares an exact bounded critique repair template", () => {
   const inputs = featureInputs();
+  const base = prepareFeatureSelection(inputs);
+  const originalSeal = base.graph.cards.find(({ id }) => id === "feature-seal");
   const repairTemplateId = "feature-repair-critique";
   const trigger = {
     schema: "flow.revision-trigger/v1",
@@ -212,15 +598,16 @@ test("feature/v1 prepares an exact bounded critique repair template", () => {
       workspace: inputs.workspace,
       verification: normalizedFeatureVerificationInput(inputs),
       phase: "seal",
-      finalization: inputs.finalization,
-      publication: inputs.finalization.publication,
       negative_outcomes: [
         "no review, integration, push, pull request, cleanup, or tracker completion",
       ],
       receipt_owner: "registered_operation",
       delegate_output_usage: "evidence_input_only",
       delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
-      operation_evidence_card_ids: ["feature-verify"],
+      operation_evidence_card_ids: ["feature-capture", "feature-verify"],
+      capture_policy: structuredClone(originalSeal.inputs.capture_policy),
+      finalization: inputs.finalization,
+      publication: inputs.finalization.publication,
     },
     outputs: ["review_candidate_receipt"],
     success_criteria: ["registered_operation_receipt:succeeded"],
@@ -422,6 +809,90 @@ test("feature/v1 repairs preserve every authority-bearing card field", () => {
   }
 });
 
+test("feature/v1 repairs rebind every seal evidence reference by card identity", () => {
+  const inputs = featureInputs();
+  delete inputs.finalization;
+  inputs.workspace.git = exactGitFacts();
+  const base = prepareFeatureSelection(inputs);
+  const cardsById = new Map(base.graph.cards.map((card) => [card.id, card]));
+  const replace = (originalId, replacementId) => {
+    const replacement = structuredClone(cardsById.get(originalId));
+    replacement.id = replacementId;
+    replacement.replaces_card_id = originalId;
+    return replacement;
+  };
+  const capture = replace("feature-capture", "feature-capture-repair");
+  capture.dependencies = ["feature-apply"];
+  const verification = replace("feature-verify", "feature-verify-repair");
+  verification.dependencies = [capture.id];
+  verification.inputs.operation_evidence_card_ids = [capture.id];
+  const critique = replace("feature-critique", "feature-critique-repair");
+  critique.dependencies = ["feature-apply", capture.id, verification.id];
+  critique.inputs.delegate_evidence_card_ids = ["feature-apply"];
+  critique.inputs.operation_evidence_card_ids = [capture.id];
+  const seal = replace("feature-seal", "feature-seal-repair");
+  seal.dependencies = [critique.id, capture.id];
+  seal.inputs.delegate_evidence_card_ids = ["feature-apply", critique.id];
+  seal.inputs.operation_evidence_card_ids = [capture.id, verification.id];
+
+  const templateId = "feature-repair-rebound-evidence";
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "feature_replan_required",
+  };
+  const repair = {
+    schema: "flow.feature-repair/v1",
+    id: "repair:rebound-evidence",
+    kind: "critique",
+    card_id: "feature-seal",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["rebind every seal evidence producer exactly"],
+    scope_expansion: false,
+    checkpoint_id: null,
+  };
+  const template = {
+    schema: "flow.plan-revision-template/v1",
+    id: templateId,
+    trigger,
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [capture, verification, critique, seal],
+      add_edges: [],
+      supersede_cards: [
+        "feature-capture",
+        "feature-verify",
+        "feature-critique",
+        "feature-seal",
+      ],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  };
+
+  const validation = validateFeatureRepairContract({
+    repair,
+    template,
+    existingCards: base.graph.cards,
+    existingResultBindings: base.graph.result_bindings,
+    brief: inputs.brief,
+    fail(reason, message) {
+      throw new Error(`${reason}: ${message}`);
+    },
+  });
+  const reboundSeal = validation.template.changes.add_cards.find(({ id }) =>
+    id === seal.id);
+  assert.deepEqual(reboundSeal.inputs.operation_evidence_card_ids, [
+    capture.id,
+    verification.id,
+  ]);
+  assert.deepEqual(reboundSeal.inputs.delegate_evidence_card_ids, [
+    "feature-apply",
+    critique.id,
+  ]);
+});
+
 test("feature/v1 rejects an upstream repair that leaves the evidence closure without a replacement", () => {
   const inputs = featureInputs();
   const templateId = "feature-repair-upstream-empty";
@@ -542,6 +1013,147 @@ test("feature/v1 does not admit a seal repair that drops seal evidence", () => {
     () => prepareFeatureSelection(inputs, facts),
     /retain the feature seal evidence and finalization gate/,
   );
+});
+
+test("feature/v1 legacy seal repairs preserve operation evidence references", () => {
+  const inputs = featureInputs();
+  const base = prepareFeatureSelection(inputs);
+  const original = base.graph.cards.find(({ id }) => id === "feature-seal");
+  const replacement = structuredClone(original);
+  replacement.id = "feature-seal-legacy-repair";
+  replacement.replaces_card_id = original.id;
+  replacement.inputs.operation_evidence_card_ids = ["feature-capture"];
+  const repair = {
+    schema: "flow.feature-repair/v1",
+    id: "repair:legacy-seal-evidence",
+    kind: "critique",
+    card_id: original.id,
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["retain the legacy seal evidence closure"],
+    scope_expansion: false,
+    checkpoint_id: null,
+  };
+  const template = {
+    schema: "flow.plan-revision-template/v1",
+    id: "feature-repair-legacy-seal-evidence",
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: "feature_critique_repair_required",
+    },
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [replacement],
+      add_edges: [],
+      supersede_cards: [original.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  };
+
+  assert.throws(
+    () => validateFeatureRepairContract({
+      repair,
+      template,
+      existingCards: base.graph.cards,
+      brief: inputs.brief,
+      fail(reason, message) {
+        throw new Error(`${reason}: ${message}`);
+      },
+    }),
+    /authority-bearing|evidence|seal evidence/,
+  );
+});
+
+test("feature/v1 identity-free repair binds the replacement capture authority scope", () => {
+  const inputs = featureInputs();
+  delete inputs.finalization;
+  inputs.workspace.git = exactGitFacts();
+  const base = prepareFeatureSelection(inputs);
+  const originalCapture = base.graph.cards.find(({ id }) => id === "feature-capture");
+  const originalSeal = base.graph.cards.find(({ id }) => id === "feature-seal");
+  const repair = {
+    schema: "flow.feature-repair/v1",
+    id: "repair:capture-scope",
+    kind: "critique",
+    card_id: originalSeal.id,
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["capture the repaired candidate with the original scope"],
+    scope_expansion: false,
+    checkpoint_id: null,
+  };
+  const template = {
+    schema: "flow.plan-revision-template/v1",
+    id: "feature-repair-capture-scope",
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: "feature_critique_repair_required",
+    },
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [],
+      add_edges: [],
+      supersede_cards: [originalSeal.id, originalCapture.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+  };
+  const configure = (capture, seal) => {
+    capture.id = "feature-capture-repair";
+    capture.inputs.replaces_card_id = originalCapture.id;
+    capture.dependencies = ["feature-apply"];
+    seal.id = "feature-seal-repair";
+    seal.replaces_card_id = originalSeal.id;
+    seal.dependencies = ["feature-critique", capture.id];
+    seal.inputs.operation_evidence_card_ids = [capture.id, "feature-verify"];
+    template.changes.add_cards = [capture, seal];
+  };
+  const validate = () => validateFeatureRepairContract({
+    repair,
+    template,
+    existingCards: base.graph.cards,
+    brief: inputs.brief,
+    fail(reason, message) {
+      throw new Error(`${reason}: ${message}`);
+    },
+  });
+
+  const validCapture = structuredClone(originalCapture);
+  const validSeal = structuredClone(originalSeal);
+  configure(validCapture, validSeal);
+  validCapture.inputs.replaces_card_id = originalCapture.id;
+  assert.doesNotThrow(validate);
+
+  for (const [label, mutate] of [
+    ["starting workspace", (capture) => {
+      capture.inputs.capture_policy = structuredClone(capture.inputs.capture_policy);
+      capture.inputs.capture_policy.starting_workspace = {
+        ...capture.inputs.capture_policy.starting_workspace,
+        mutation_epoch: capture.inputs.capture_policy.starting_workspace.mutation_epoch + 1,
+      };
+    }],
+    ["validator", (capture) => {
+      delete capture.inputs.provider_receipt_validator;
+    }],
+    ["limits", (capture) => {
+      capture.limits = { ...capture.limits, max_attempts: 2 };
+    }],
+    ["resource claims", (capture) => {
+      capture.resource_claims = [{
+        kind: "artifact",
+        id: "unplanned-repair-artifact",
+      }];
+    }],
+  ]) {
+    const capture = structuredClone(originalCapture);
+    const seal = structuredClone(originalSeal);
+    configure(capture, seal);
+    mutate(capture);
+    assert.throws(validate, /authority|scope|capture|result binding/, label);
+  }
 });
 
 test("feature/v1 exposes a stale-safe repair action and recovers the blocked seal", async (t) => {
@@ -719,6 +1331,70 @@ test("feature/v1 derives expansion from added cards, resources, and limits inste
   assert.throws(
     () => prepareFeatureSelection(inputs, facts),
     /requires an exact scope checkpoint|scope expansion does not match/,
+  );
+});
+
+test("feature/v1 checkpoints an unrelated added capture card", () => {
+  const inputs = featureInputs();
+  const base = prepareFeatureSelection(inputs);
+  const seal = base.graph.cards.find(({ id }) => id === "feature-seal");
+  const repairCard = structuredClone(seal);
+  repairCard.id = "feature-seal-repair";
+  repairCard.replaces_card_id = "feature-seal";
+  repairCard.dependencies = ["feature-critique"];
+  const unrelatedCapture = structuredClone(base.graph.cards.find(({ id }) =>
+    id === "feature-capture"));
+  unrelatedCapture.id = "feature-capture-unrelated";
+  unrelatedCapture.dependencies = [];
+  const templateId = "feature-repair-unrelated-capture";
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "feature_replan_required",
+  };
+  inputs.repairs = [{
+    schema: "flow.feature-repair/v1",
+    id: "repair:unrelated-capture",
+    kind: "replan",
+    card_id: "feature-seal",
+    acceptance: [...inputs.brief.acceptance],
+    remaining_scope: ["checkpoint unrelated capture work"],
+    scope_expansion: false,
+    template: {
+      schema: "flow.plan-revision-template/v1",
+      id: templateId,
+      trigger,
+      limits: { max_applications: 1 },
+      changes: {
+        add_cards: [unrelatedCapture, repairCard],
+        add_edges: [{ from: "feature-critique", to: repairCard.id }],
+        supersede_cards: ["feature-seal"],
+        capability_additions: [],
+        resource_additions: [],
+        limit_changes: {},
+      },
+    },
+  }];
+  const facts = featureFactsForInputs(inputs);
+  facts.operation_contracts.push("flow.adapter/card-block-observation/v1");
+  facts.validator_contracts.push("flow.validator/card-block-observation/v1");
+  facts.limits.max_revisions = 1;
+  facts.limits.max_cards_per_revision = 2;
+  facts.block_observations.push(observeCardBlock({
+    card_id: "feature-seal",
+    block: {
+      schema: "flow.card-block/v1",
+      id: "feature-seal:unrelated-capture",
+      type: "plan_revision_required",
+      trigger,
+      required_capabilities: [],
+      revision_template_ids: [templateId],
+    },
+  }));
+
+  assert.throws(
+    () => prepareFeatureSelection(inputs, facts),
+    /scope expansion does not match|requires an exact scope checkpoint/,
   );
 });
 
@@ -1514,30 +2190,31 @@ test("feature/v1 serializes mixed slices and keeps setup out of evidence", () =>
     "feature-slice-behavior-test",
   ]);
   assert.deepEqual(cards.get("feature-slice-behavior-verify").dependencies, [
-    "feature-apply",
+    "feature-capture-behavior",
   ]);
   assert.deepEqual(
     cards.get("feature-slice-behavior-verify").inputs.operation_evidence_card_ids,
-    ["feature-slice-behavior-test"],
+    ["feature-slice-behavior-test", "feature-capture-behavior"],
   );
   assert.deepEqual(cards.get("feature-apply-configuration").dependencies, [
     "feature-apply",
     "feature-slice-behavior-verify",
   ]);
   assert.deepEqual(cards.get("feature-slice-configuration-verify").dependencies, [
-    "feature-apply-configuration",
+    "feature-capture-configuration",
   ]);
   assert.deepEqual(
     cards.get("feature-slice-configuration-verify").inputs.operation_evidence_card_ids,
-    [],
+    ["feature-capture-configuration"],
   );
   assert.deepEqual(cards.get("feature-verify").dependencies, [
-    "feature-slice-configuration-verify",
+    "feature-capture",
   ]);
   assert.deepEqual(cards.get("feature-verify").inputs.operation_evidence_card_ids, [
     "feature-slice-behavior-test",
     "feature-slice-behavior-verify",
     "feature-slice-configuration-verify",
+    "feature-capture",
   ]);
   assert.equal(
     cards.get("feature-verify").inputs.operation_evidence_card_ids.includes(
@@ -1578,10 +2255,10 @@ test("feature/v1 setup requires explicit slices and serializes verify setup", ()
     "feature-setup",
   ]);
   assert.deepEqual(cards.get("feature-slice-behavior-verify").dependencies, [
-    "feature-apply",
+    "feature-capture-behavior",
   ]);
   assert.deepEqual(cards.get("feature-verify").dependencies, [
-    "feature-slice-behavior-verify",
+    "feature-capture",
   ]);
 });
 
@@ -1651,16 +2328,19 @@ test("feature/v1 test mode proves failure before apply and seals a candidate", a
     "feature-setup",
     "feature-slice-behavior-test",
     "feature-apply",
+    "feature-capture-behavior",
     "feature-slice-behavior-verify",
+    "feature-capture",
     "feature-verify",
     "feature-critique",
     "feature-seal",
   ]);
   const completed = fixture.runtime.query({ run_id: fixture.runId });
   assert.equal(completed.phase, "succeeded");
+  const candidateId = completed.review_candidate_reference.candidate_id;
   assert.equal(fixture.reviewAuthority.query({
     contract: "work.review/v1",
-    subject_id: "candidate:feature",
+    subject_id: candidateId,
   }).status, "sealed");
   for (const action of completed.legal_actions) {
     assert.equal(action.expected_watermark, completed.watermark);
@@ -1698,7 +2378,9 @@ test("feature/v1 test-only mode seals from current intended-failure evidence", a
   assert.deepEqual(order, [
     "feature-slice-behavior-test",
     "feature-apply",
+    "feature-capture-behavior",
     "feature-slice-behavior-verify",
+    "feature-capture",
     "feature-verify",
     "feature-critique",
     "feature-seal",
@@ -1872,8 +2554,75 @@ test("feature/v1 mixed mode requires every slice verification receipt", async (t
   await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
   const projection = fixture.runtime.query({ run_id: fixture.runId });
   assert.equal(projection.phase, "active");
-  assert.equal(projection.effects.find(({ card_id: cardId }) =>
-    cardId === "feature-seal").status, "unresolved");
+  assert.equal(projection.effects.some(({ card_id: cardId }) =>
+    cardId === "feature-verify" || cardId === "feature-seal"), false);
+  assert.equal(projection.result_bindings.some(({ producer_card_id: cardId }) =>
+    cardId === "feature-slice-behavior-verify"), false);
+});
+
+test("feature/v1 identity-free mixed mode carries the canonical workspace binding through seal", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    mode: "mixed",
+    compensatingAssertion: true,
+    slices: [
+      {
+        schema: "flow.feature-slice/v1",
+        id: "behavior",
+        mode: "test",
+        acceptance: ["the changed behavior is observable"],
+        test: {
+          schema: "flow.feature-test-request/v1",
+          intended_failure: "the behavior is absent before implementation",
+          environment_fingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        schema: "flow.feature-slice/v1",
+        id: "configuration",
+        mode: "verify",
+        acceptance: ["the configuration remains declared"],
+      },
+    ],
+    briefAcceptance: [
+      "the changed behavior is observable",
+      "the configuration remains declared",
+    ],
+  });
+
+  const order = await driveSerializedFeatureToSeal(fixture);
+  assert.deepEqual(order, [
+    "feature-slice-behavior-test",
+    "feature-apply",
+    "feature-capture-behavior",
+    "feature-slice-behavior-verify",
+    "feature-apply-configuration",
+    "feature-capture-configuration",
+    "feature-slice-configuration-verify",
+    "feature-capture",
+    "feature-verify",
+    "feature-critique",
+    "feature-seal",
+  ]);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded", JSON.stringify({
+    phase: completed.phase,
+    effects: completed.effects.map(({ card_id: cardId, status, receipt }) => ({
+      card_id: cardId,
+      status,
+      code: receipt?.provider_receipt?.code,
+      reason: receipt?.provider_receipt?.reason,
+    })),
+    sealIntent: fixture.sealIntents.at(-1) === undefined ? null : {
+      operation_input_keys: Object.keys(fixture.sealIntents.at(-1).operation_input),
+      finalization_schema: fixture.sealIntents.at(-1).operation_input.finalization?.schema,
+      publication_retention: fixture.sealIntents.at(-1).operation_input.finalization?.publication?.retention,
+      candidate_id: fixture.sealIntents.at(-1).operation_input.authority_materialized_candidate?.candidate_id,
+      candidate_digest: fixture.sealIntents.at(-1).operation_input.authority_materialized_candidate_digest,
+    },
+    legal_actions: completed.legal_actions,
+  }));
+  assert.match(completed.review_candidate_reference.candidate_id, /^candidate:/);
 });
 
 test("feature/v1 slice verification rejects stale, foreign, or incomplete receipts", async (t) => {
@@ -1918,8 +2667,8 @@ test("feature/v1 slice verification rejects stale, foreign, or incomplete receip
       await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
       const projection = fixture.runtime.query({ run_id: fixture.runId });
       assert.equal(projection.phase, "active");
-      assert.equal(projection.effects.find(({ card_id: cardId }) =>
-        cardId === "feature-seal").status, "unresolved");
+      assert.equal(projection.effects.some(({ card_id: cardId }) =>
+        cardId === "feature-verify" || cardId === "feature-seal"), false);
     });
   }
 });
@@ -1965,8 +2714,8 @@ test("feature/v1 slice verification rejects malformed discriminators", async (t)
       await driveSerializedFeatureToSeal(fixture, { allowSealRefusal: true });
       const projection = fixture.runtime.query({ run_id: fixture.runId });
       assert.equal(projection.phase, "active");
-      assert.equal(projection.effects.find(({ card_id: cardId }) =>
-        cardId === "feature-seal").status, "unresolved");
+      assert.equal(projection.effects.some(({ card_id: cardId }) =>
+        cardId === "feature-verify" || cardId === "feature-seal"), false);
     });
   }
 });
@@ -2077,7 +2826,9 @@ test("feature/v1 rejects aggregate verification from a stale mutation epoch", as
   const projection = fixture.runtime.query({ run_id: fixture.runId });
   assert.equal(projection.phase, "active");
   assert.equal(projection.effects.find(({ card_id: cardId }) =>
-    cardId === "feature-seal").status, "unresolved");
+    cardId === "feature-verify").status, "unresolved");
+  assert.equal(projection.effects.some(({ card_id: cardId }) =>
+    cardId === "feature-seal"), false);
 });
 
 test("feature/v1 test operation recovery reuses the current intent once", async (t) => {
@@ -2167,9 +2918,12 @@ test("feature/v1 mixed slices serialize each writer and retain operation ownersh
   assert.deepEqual(order, [
     "feature-slice-behavior-test",
     "feature-apply",
+    "feature-capture-behavior",
     "feature-slice-behavior-verify",
     "feature-apply-configuration",
+    "feature-capture-configuration",
     "feature-slice-configuration-verify",
+    "feature-capture",
     "feature-verify",
     "feature-critique",
     "feature-seal",
@@ -2187,6 +2941,7 @@ test("feature/v1 mixed slices serialize each writer and retain operation ownersh
     seal.operation_input.authority_materialized_evidence.operation_receipts
       .map(({ card_id: cardId }) => cardId),
     [
+      "feature-capture",
       "feature-slice-behavior-test",
       "feature-slice-behavior-verify",
       "feature-slice-configuration-verify",
@@ -2214,6 +2969,90 @@ test("feature/v1 mixed slices serialize each writer and retain operation ownersh
       ({ criterion }) => criterion,
     ),
     ["the configuration remains declared"],
+  );
+});
+
+test("feature/v1 mixed evidence has deterministic materialization order", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    lifecycleKernel(fold, command) {
+      if (command.type === "operation_execute" &&
+          command.card_id === "feature-seal") {
+        const activePlan = structuredClone(fold.active_plan);
+        activePlan.result_bindings.reverse();
+        return decideLifecycle({ ...fold, active_plan: activePlan }, command);
+      }
+      return decideLifecycle(fold, command);
+    },
+  });
+
+  await driveFeatureToSeal(fixture);
+
+  const seal = fixture.sealIntents.at(-1);
+  assert.deepEqual(
+    seal.operation_input.authority_materialized_evidence.accepted_delegates
+      .map(({ card_id: cardId }) => cardId),
+    ["feature-apply", "feature-critique"],
+  );
+  assert.deepEqual(
+    seal.operation_input.authority_materialized_evidence.operation_receipts
+      .map(({ card_id: cardId }) => cardId),
+    ["feature-capture", "feature-verify"],
+  );
+});
+
+test("feature/v1 replacement critique binds and seals the captured candidate", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    critiqueCardId: "feature-critique-replacement",
+  });
+
+  await driveFeatureToSeal(fixture, {
+    critiqueCardId: "feature-critique-replacement",
+  });
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  const seal = fixture.sealIntents.at(-1);
+  const materialized = seal.operation_input.authority_materialized_evidence;
+  const critiqueEntry = materialized.accepted_delegates.find(({ card_id: cardId }) =>
+    cardId === "feature-critique-replacement");
+  assert.ok(critiqueEntry);
+  const review = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: completed.review_candidate_reference.candidate_id,
+  });
+  assert.equal(review.candidate.critique.delegate_evidence.card_id,
+    "feature-critique-replacement");
+  const authorityCritiqueBinding =
+    seal.operation_input.authority_materialized_critique_binding;
+  const critiqueResultBinding =
+    seal.operation_input.authority_materialized_result_bindings.find(
+      ({ producer_card_id: cardId }) => cardId === "feature-critique-replacement",
+    );
+  assert.equal(authorityCritiqueBinding.card_id,
+    "feature-critique-replacement");
+  assert.equal(authorityCritiqueBinding.role, "critique");
+  assert.equal(authorityCritiqueBinding.result_identity,
+    critiqueResultBinding.result_identity);
+  assert.equal(authorityCritiqueBinding.binding_digest,
+    critiqueResultBinding.binding_digest);
+  assert.equal(completed.review_candidate_reference.candidate_id,
+    seal.operation_input.authority_materialized_candidate.candidate_id);
+});
+
+test("feature/v1 seal rejects provider critique that selects apply evidence", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    forgeCritiqueAsApply: true,
+  });
+  await driveFeatureToSeal(fixture);
+  const projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.notEqual(projection.phase, "succeeded");
+  assert.deepEqual(projection.handoffs, []);
+  assert.equal(
+    fixture.reviewAuthority.query({
+      contract: "work.review/v1",
+      subject_id: "candidate:feature",
+    }).status,
+    undefined,
   );
 });
 
@@ -2541,7 +3380,9 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_CAPTURE_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_VERIFICATION_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
     kind: "workspace",
     id: "workspace:producer",
@@ -2549,10 +3390,12 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     mutation_epoch: 7,
     fingerprint: digestValue({ git: exactGitFacts() }),
   });
-  facts.limits.max_cards = Math.max(
-    8,
-    (inputs.slices?.length ?? 0) * 3 + 5,
+  const slices = inputs.slices ?? [];
+  const serializedCardCount = slices.reduce(
+    (count, slice) => count + 3 + (slice.mode === "test" ? 1 : 0),
+    4 + (inputs.setup === undefined ? 0 : 1),
   );
+  facts.limits.max_cards = Math.max(8, serializedCardCount);
   facts.limits.max_resources = 4;
   const authorityState = shippedAuthorityStateFromFacts(facts);
   const registeredAuthorities = shippedAuthorityRegistrations({
@@ -2561,6 +3404,8 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
 
   let runtime;
   let verifyReceipt = null;
+  let captureObserved = false;
+  let captureReceipt = null;
   let applyEvidence = null;
   let critiqueEvidence = null;
   let sealIntent = null;
@@ -2583,9 +3428,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
         callerKey: request.caller_key,
         description: request.description,
         output: `${role} accepted`,
-        prompt: role === "apply"
-          ? "apply the accepted brief in the exact fenced workspace"
-          : "critique the changed behavior independently of implementation",
+        prompt: request.prompt,
       });
       return workingProjection(request, turnId);
     },
@@ -2616,9 +3459,45 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
       },
     },
     registeredOperations: {
+      [FEATURE_OPERATION_CONTRACTS.capture]: createFeatureCaptureOperation({
+        observe(intent) {
+          captureObserved = true;
+          const artifact = {
+            artifact_schema: "example.candidate/v1",
+            digest: sha256(bytes),
+            size: bytes.length,
+          };
+          captureReceipt = featureCaptureReceipt(intent, inputs, {
+            git: promotedGitFacts(),
+            generation: 2,
+            mutationEpoch: 8,
+            artifacts: [artifact],
+          });
+          return {
+            receipt: captureReceipt,
+            artifacts: [{
+              artifact_schema: artifact.artifact_schema,
+              bytes,
+            }],
+          };
+        },
+        storeArtifacts({ intent, artifacts }) {
+          for (const artifact of artifacts) {
+            const stored = artifactAuthority.command(artifactRegistration(
+              artifact.bytes,
+              artifact.digest,
+              intent.run_id,
+            ));
+            if (stored.accepted !== true) return stored;
+          }
+          return { accepted: true };
+        },
+      }),
       [FEATURE_OPERATION_CONTRACTS.verify]: {
         schema: "flow.registered-operation/v1",
         classification: "caller_idempotent",
+        provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureVerificationReceipt,
         invoke(intent) {
           const providerReceipt = completeVerificationReceipt(intent, inputs);
           verifyReceipt = operationReceipt(intent, providerReceipt);
@@ -2650,7 +3529,8 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
           );
           const candidateIdentity = {
             schema: "work.review-candidate/v1",
-            candidate_id: finalization.candidate_id,
+            candidate_id: intent.operation_input.authority_materialized_candidate
+              ?.candidate_id ?? finalization.candidate_id,
             git: promotedGitFacts(),
             workspace: {
               contract: "work.workspace/v1",
@@ -2708,13 +3588,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   const preparedSeal = prepared.graph.cards.find(({ id }) =>
     id === "feature-seal");
   assert.deepEqual(preparedSeal.inputs.finalization, inputs.finalization);
+  assert.equal(captureObserved, false);
+  assert.equal(captureReceipt, null);
   const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
   assert.equal(launch.created, true, JSON.stringify(launch));
-  artifactAuthority.command(artifactRegistration(
-    bytes,
-    artifactDigest,
-    launch.run_id,
-  ));
   const registeredWorkspace = workspaceAuthority.query(workspaceQuery());
   assert.equal(workspaceAuthority.command(workspaceClaim({
     expectedWatermark: registeredWorkspace.watermark,
@@ -2737,13 +3614,63 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   applyEvidence = runtime.query({ run_id: launch.run_id }).delegate_attempts
     .find(({ card_id: cardId }) => cardId === "feature-apply").evidence;
 
-  executeCard(runtime, launch.run_id, "operation_execute", "feature-verify");
+  executeCard(runtime, launch.run_id, "operation_execute", "feature-capture");
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-capture" && status === "succeeded",
+  ));
+  assert.equal(captureObserved, true);
+  const resultBindings = runtime.query({ run_id: launch.run_id }).result_bindings;
+  const applyBinding = resultBindings
+    .find(({ producer_card_id: cardId }) => cardId === "feature-apply");
+  const captureBinding = resultBindings
+    .find(({ producer_card_id: cardId }) => cardId === "feature-capture");
+  assert.ok(applyBinding);
+  assert.ok(captureBinding);
+  assert.equal(captureBinding.content_digest, digest(captureReceipt));
+  assert.deepEqual(captureBinding.content.workspace.git, promotedGitFacts());
+
+  const verifyAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type, card_id: cardId }) =>
+      type === "operation_execute" && cardId === "feature-verify",
+  );
+  assert.ok(verifyAction);
+  const verifyCommand = runtime.command(verifyAction);
+  assert.equal(verifyCommand.accepted, true, JSON.stringify(verifyCommand));
+  const verifyIntent = verifyCommand.effect_intents.find(
+    ({ card_id: cardId }) => cardId === "feature-verify",
+  );
+  assert.deepEqual(
+    verifyIntent.operation_input.authority_materialized_result_bindings,
+    [applyBinding, captureBinding],
+  );
+  assert.equal(
+    verifyIntent.operation_input.authority_materialized_result_bindings_digest,
+    digest([applyBinding, captureBinding]),
+  );
   await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
     ({ card_id: cardId, status }) =>
       cardId === "feature-verify" && status === "succeeded",
   ));
 
-  executeCard(runtime, launch.run_id, "delegate_execute", "feature-critique");
+  const critiqueAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type, card_id: cardId }) =>
+      type === "delegate_execute" && cardId === "feature-critique",
+  );
+  assert.ok(critiqueAction);
+  const critiqueCommand = runtime.command(critiqueAction);
+  assert.equal(critiqueCommand.accepted, true, JSON.stringify(critiqueCommand));
+  const critiqueIntent = critiqueCommand.effect_intents.find(
+    ({ card_id: cardId }) => cardId === "feature-critique",
+  );
+  assert.deepEqual(
+    critiqueIntent.delegate_input.authority_materialized_result_bindings,
+    [applyBinding, captureBinding],
+  );
+  assert.equal(
+    critiqueIntent.delegate_input.authority_materialized_result_bindings_digest,
+    digest([applyBinding, captureBinding]),
+  );
   await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
     ({ card_id: cardId, status }) =>
       cardId === "feature-critique" && status === "succeeded",
@@ -2751,14 +3678,45 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   critiqueEvidence = runtime.query({ run_id: launch.run_id }).delegate_attempts
     .find(({ card_id: cardId }) => cardId === "feature-critique").evidence;
 
-  executeCard(runtime, launch.run_id, "operation_execute", "feature-seal");
+  const sealAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type, card_id: cardId }) =>
+      type === "operation_execute" && cardId === "feature-seal",
+  );
+  assert.ok(sealAction);
+  const sealCommand = runtime.command(sealAction);
+  assert.equal(sealCommand.accepted, true, JSON.stringify(sealCommand));
+  const committedSealIntent = sealCommand.effect_intents.find(
+    ({ card_id: cardId }) => cardId === "feature-seal",
+  );
+  assert.ok(committedSealIntent);
+  const sealBindings = prepared.graph.result_bindings
+    .filter(({ consumer_card_id: cardId }) => cardId === "feature-seal")
+    .map((declaration) => runtime.query({ run_id: launch.run_id })
+      .result_bindings.find((record) =>
+        record.producer_card_id === declaration.producer_card_id &&
+        record.output_contract === declaration.output_contract &&
+        record.expected_schema === declaration.expected_schema));
+  assert.ok(sealBindings.every((binding) => binding !== undefined));
+  assert.deepEqual(
+    committedSealIntent.operation_input.authority_materialized_result_bindings,
+    sealBindings,
+  );
+  assert.equal(
+    committedSealIntent.operation_input.authority_materialized_result_bindings_digest,
+    digest(sealBindings),
+  );
   await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
 
   const completed = runtime.query({ run_id: launch.run_id });
   assert.equal(completed.phase, "succeeded");
   const materialized = sealIntent?.operation_input
     ?.authority_materialized_evidence;
-  assert.deepEqual(sealIntent.operation_input.finalization, inputs.finalization);
+  const expectedCandidateId =
+    `candidate:${captureBinding.result_identity.slice("sha256:".length)}`;
+  assert.deepEqual(sealIntent.operation_input.finalization, {
+    ...inputs.finalization,
+    candidate_id: expectedCandidateId,
+  });
   assert.ok(materialized, "seal intent must materialize upstream authority evidence");
   assert.deepEqual(materialized.accepted_delegates.map(({ card_id: cardId }) =>
     cardId), ["feature-apply", "feature-critique"]);
@@ -2789,9 +3747,44 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.deepEqual(verifyEntry.receipt, verifyReceipt);
   assert.deepEqual(materialized.verify_receipt, verifyReceipt);
 
+  const capturedResults = completed.result_bindings;
+  assert.ok(Array.isArray(capturedResults));
+  const applyResult = capturedResults.find(({ producer_card_id: cardId }) =>
+    cardId === "feature-apply");
+  assert.deepEqual({
+    producer_card_id: applyResult.producer_card_id,
+    output_contract: applyResult.output_contract,
+    expected_schema: applyResult.expected_schema,
+    observed_schema: applyResult.observed_schema,
+    attempt_id: applyResult.attempt_id,
+    producer_generation: applyResult.producer_generation,
+    workspace_mutation_epoch: applyResult.workspace_mutation_epoch,
+    effect_id: applyResult.provenance.effect_id,
+    result_identity: applyResult.result_identity,
+    content_digest: applyResult.content_digest,
+  }, {
+    producer_card_id: "feature-apply",
+    output_contract: "workspace_mutation_observation",
+    expected_schema: "flow.delegate-evidence/v1",
+    observed_schema: "flow.delegate-evidence/v1",
+    attempt_id: applyResult.attempt_id,
+    producer_generation: 1,
+    workspace_mutation_epoch: 7,
+    effect_id: applyResult.provenance.effect_id,
+    result_identity: applyResult.result_identity,
+    content_digest: applyResult.content_digest,
+  });
+  assert.equal(applyResult.content_digest, digest(applyResult.content));
+  const {
+    binding_digest: _bindingDigest,
+    self_digest: _selfDigest,
+    ...bindingIdentity
+  } = applyResult;
+  assert.equal(applyResult.binding_digest, digest(bindingIdentity));
+
   const review = reviewAuthority.query({
     contract: "work.review/v1",
-    subject_id: "candidate:feature",
+    subject_id: expectedCandidateId,
   });
   assert.equal(review.status, "sealed");
   const workspace = workspaceAuthority.query(workspaceQuery());
@@ -2811,7 +3804,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   }).pins, [{ holder: "handoff", id: handoff.handoff_id }]);
   const reviewReference = {
     schema: "flow.review-candidate-reference/v1",
-    candidate_id: "candidate:feature",
+    candidate_id: expectedCandidateId,
     candidate_fingerprint: review.candidate_fingerprint,
     review_authority_watermark: review.watermark,
     authority_watermark: completed.watermark,
@@ -3065,7 +4058,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     Promise.resolve().then(() => reviewRuntime.command(invalidationB)),
   ]);
   const invalidationReceipts = [invalidationReceiptA, invalidationReceiptB];
-  assert.equal(invalidationReceipts.filter(({ accepted }) => accepted === true).length, 1);
+  assert.equal(
+    invalidationReceipts.filter(({ accepted }) => accepted === true).length,
+    1,
+  );
   const staleReceipt = invalidationReceipts.find(({ accepted }) => accepted !== true);
   assert.equal(staleReceipt.code, "stale_authority_watermark");
   const staleReview = reviewRuntime.query({ review_id: reviewId });
@@ -3150,6 +4146,577 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     subject_id: reviewId,
   }).next();
   assert.deepEqual(recoveredWatch.value, acknowledgedReview);
+});
+
+test("feature/v1 derives finalization from the captured candidate", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, { identityFree: true });
+  const { runId, runtime } = fixture;
+
+  executeCard(runtime, runId, "delegate_execute", "feature-apply");
+  await until(() => runtime.query({ run_id: runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+  executeCard(runtime, runId, "operation_execute", "feature-capture");
+  await until(() => runtime.query({ run_id: runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-capture" && status === "succeeded",
+  ));
+  executeCard(runtime, runId, "operation_execute", "feature-verify");
+  await until(() => runtime.query({ run_id: runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-verify" && status === "succeeded",
+  ));
+  executeCard(runtime, runId, "delegate_execute", "feature-critique");
+  await until(() => runtime.query({ run_id: runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-critique" && status === "succeeded",
+  ));
+
+  const sealAction = runtime.query({ run_id: runId }).legal_actions.find(
+    ({ type, card_id: cardId }) =>
+      type === "operation_execute" && cardId === "feature-seal",
+  );
+  assert.ok(sealAction);
+  const sealCommand = runtime.command(sealAction);
+  assert.equal(sealCommand.accepted, true, JSON.stringify(sealCommand));
+  const sealIntent = sealCommand.effect_intents.find(({ card_id: cardId }) =>
+    cardId === "feature-seal");
+  assert.equal(sealIntent.operation_input.finalization.schema,
+    "flow.feature-finalization-binding/v1");
+  assert.equal(sealIntent.operation_input.publication.schema,
+    "flow.resource-handoff-publication/v1");
+  await until(() => runtime.query({ run_id: runId }).phase === "succeeded");
+});
+
+test("feature/v1 derives candidate identity from captured bindings", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    callerCandidateId: "candidate:caller-supplied",
+  });
+  await driveFeatureToSeal(fixture);
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const capture = completed.result_bindings.find(({ producer_card_id: cardId }) =>
+    cardId === "feature-capture");
+  assert.ok(capture?.result_identity);
+  assert.equal(
+    completed.review_candidate_reference.candidate_id,
+    `candidate:${capture.result_identity.slice("sha256:".length)}`,
+  );
+  assert.notEqual(
+    completed.review_candidate_reference.candidate_id,
+    "candidate:caller-supplied",
+  );
+});
+
+test("legacy feature replay rejects critique receipts that select apply evidence", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    legacyNoResultBindings: true,
+    forgeCritiqueAsApply: true,
+  });
+
+  assert.equal(Object.hasOwn(fixture.prepared.graph, "result_bindings"), false);
+  await driveFeatureToSeal(fixture);
+
+  const projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.notEqual(projection.phase, "succeeded", JSON.stringify({
+    phase: projection.phase,
+    seal: projection.effects.find(({ card_id: cardId }) =>
+      cardId === "feature-seal"),
+  }));
+  assert.deepEqual(projection.handoffs, []);
+});
+
+test("legacy feature-critique receipts are accepted and replay unchanged", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    legacyNoResultBindings: true,
+  });
+  await driveFeatureToSeal(fixture);
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  const sealEffect = completed.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal");
+  assert.equal(
+    sealEffect.receipt.provider_receipt.review_candidate.critique
+      .delegate_evidence.card_id,
+    "feature-critique",
+  );
+  const beforeReplay = structuredClone(completed);
+  fixture.runAuthority.close();
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+      promotedGit: fixture.promotedGit(),
+    }),
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-red", "legacy-replay"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = createFlowRuntime({ runAuthority: recoveredAuthority });
+  const replayed = recoveredRuntime.query({ run_id: fixture.runId });
+
+  assert.equal(replayed.phase, "succeeded");
+  assert.deepEqual(replayed.cards, beforeReplay.cards);
+  assert.deepEqual(replayed.effects, beforeReplay.effects);
+  assert.equal(
+    replayed.review_candidate_reference.candidate_id,
+    beforeReplay.review_candidate_reference.candidate_id,
+  );
+});
+
+test("feature/v1 identity-free repair captures and consumes a fresh candidate", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    repair: "critique",
+  });
+  await driveFeatureToSeal(fixture, { allowSealRefusal: true });
+
+  let projection = fixture.runtime.query({ run_id: fixture.runId });
+  const revisionAction = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.ok(revisionAction);
+  assert.equal(fixture.runtime.command(revisionAction).accepted, true);
+  projection = fixture.runtime.query({ run_id: fixture.runId });
+
+  const captureAction = projection.legal_actions.find(({ type, card_id: cardId }) =>
+    type === "operation_execute" && cardId === "feature-capture-repair");
+  assert.ok(captureAction);
+  assert.equal(fixture.runtime.command(captureAction).accepted, true);
+  await settleFeatureEffect(fixture.runtime, fixture.runId, "feature-capture-repair");
+
+  projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.ok(Array.isArray(projection.active_plan.result_bindings),
+    JSON.stringify(projection.active_plan));
+  assert.ok(projection.active_plan.result_bindings.some(({ consumer_card_id: id }) =>
+    id === "feature-seal-repair"), JSON.stringify(projection.active_plan.result_bindings));
+  const captureBinding = projection.result_bindings.find(({ producer_card_id: id }) =>
+    id === "feature-capture-repair");
+  assert.ok(captureBinding);
+  const sealAction = projection.legal_actions.find(({ type, card_id: cardId }) =>
+    type === "operation_execute" && cardId === "feature-seal-repair");
+  assert.ok(sealAction);
+  assert.equal(fixture.runtime.command(sealAction).accepted, true);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(fixture.runtime.query({ run_id: fixture.runId }).phase,
+    "succeeded");
+  assert.equal(
+    fixture.runtime.query({ run_id: fixture.runId }).review_candidate_reference
+      .candidate_id,
+    `candidate:${captureBinding.result_identity.slice("sha256:".length)}`,
+  );
+});
+
+test("feature/v1 identity-free repair rejects remapping to a pre-repair capture", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    repair: "critique",
+  });
+  const inputs = structuredClone(fixture.inputs);
+  const repairCard = inputs.repairs[0].template.changes.add_cards
+    .find(({ id }) => id === "feature-seal-repair");
+  repairCard.inputs.operation_evidence_card_ids = [
+    "feature-capture",
+    "feature-verify",
+  ];
+
+  assert.throws(
+    () => fixture.runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "feature/v1",
+      inputs,
+      explicit_facts: fixture.facts,
+    }),
+    (error) => error?.reason === "feature_repair_result_binding",
+  );
+});
+
+test("feature/v1 identity-free seal repair preserves every operation evidence binding", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    repair: "critique",
+  });
+  const inputs = structuredClone(fixture.inputs);
+  const repairCard = inputs.repairs[0].template.changes.add_cards
+    .find(({ id }) => id === "feature-seal-repair");
+  repairCard.inputs.operation_evidence_card_ids = ["feature-capture-repair"];
+
+  assert.throws(
+    () => fixture.runtime.prepare({
+      schema: "flow.predefined-flow-selection/v1",
+      definition: "feature/v1",
+      inputs,
+      explicit_facts: fixture.facts,
+    }),
+    (error) => error?.reason === "feature_repair_result_binding",
+  );
+});
+
+test("feature/v1 captures and publishes a candidate from a real Git workspace", async (t) => {
+  const realGit = await createRealGitScenario(t);
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    realGit,
+  });
+  const preparedText = JSON.stringify(fixture.prepared);
+  assert.equal(preparedText.includes('"finalization"'), false);
+  assert.equal(preparedText.includes('"patch"'), false);
+  assert.equal(realGit.candidateGit, null);
+  assert.equal(realGit.captureCount, 0);
+
+  await driveFeatureToSeal(fixture);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  assert.equal(realGit.captureCount, 1);
+  assert.ok(realGit.candidateGit);
+  assert.deepEqual(realGit.candidateGit, realGitFactsSync(realGit.repositoryDirectory));
+  assert.equal(realGit.candidateGit.clean, true);
+  assert.equal(realGit.candidateGit.ref, "refs/heads/ticket/feature");
+  assert.equal(preparedText.includes(realGit.candidateGit.commit_sha), false);
+  assert.equal(preparedText.includes(realGit.candidateGit.tree_sha), false);
+
+  const captureBinding = completed.result_bindings.find(({ producer_card_id }) =>
+    producer_card_id === "feature-capture");
+  assert.ok(captureBinding);
+  assert.deepEqual(captureBinding.content.git, realGit.candidateGit);
+  assert.equal(captureBinding.content_digest, digest(captureBinding.content));
+  assert.equal(captureBinding.content.artifacts.length, 1);
+  const artifactDigest = fixture.currentArtifactDigest();
+  assert.equal(captureBinding.content.artifacts[0].digest, artifactDigest);
+  const storedBytes = await readFile(join(
+    fixture.authorityDirectory,
+    "artifacts",
+    artifactDigest.slice("sha256:".length),
+  ));
+  assert.deepEqual(storedBytes, realGit.candidateBytes);
+  assert.equal(sha256(storedBytes), artifactDigest);
+
+  const workspace = fixture.workspaceAuthority.query(workspaceQuery());
+  assert.equal(workspace.generation, 2);
+  assert.equal(workspace.mutation_epoch, 8);
+  assert.deepEqual(workspace.git, realGit.candidateGit);
+  assert.equal(workspace.disposition, "retained_for_handoff");
+  assert.equal(completed.handoffs.length, 1);
+  const handoff = fixture.handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: completed.handoffs[0].handoff_id,
+  });
+  assert.equal(handoff.status, "active");
+  assert.deepEqual(fixture.artifactAuthority.query({
+    contract: "work.artifact/v1",
+    subject_id: artifactDigest,
+  }).pins, [{ holder: "handoff", id: handoff.handoff_id }]);
+  assert.ok(completed.review_candidate_reference?.candidate_id);
+  assert.equal(fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: completed.review_candidate_reference.candidate_id,
+  }).status, "sealed");
+});
+
+test("feature/v1 rejects Git or artifact drift after capture", async (t) => {
+  for (const drift of ["git", "artifact"]) {
+    await t.test(`rejects ${drift} drift`, async (caseTest) => {
+      const realGit = await createRealGitScenario(caseTest);
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        identityFree: true,
+        realGit,
+      });
+      realGit.beforeSeal = ({ artifactDigest, authorityDirectory }) => {
+        if (drift === "git") {
+          writeFileSync(join(realGit.repositoryDirectory, "feature.txt"), "drift\n");
+          return;
+        }
+        writeFileSync(join(
+          authorityDirectory,
+          "artifacts",
+          artifactDigest.slice("sha256:".length),
+        ), Buffer.from("tampered artifact bytes\n"));
+      };
+
+      await driveFeatureToSeal(fixture);
+      const blocked = fixture.runtime.query({ run_id: fixture.runId });
+      const sealEffect = blocked.effects.find(({ card_id: cardId }) =>
+        cardId === "feature-seal");
+      assert.equal(blocked.phase, "active");
+      assert.equal(sealEffect.status, "unresolved");
+      assert.deepEqual(blocked.handoffs, []);
+      assert.equal(fixture.workspaceAuthority.query(workspaceQuery()).generation, 1);
+      assert.equal(realGit.captureCount, 1);
+      assert.equal(blocked.result_bindings.filter(({ producer_card_id }) =>
+        producer_card_id === "feature-capture").length, 1);
+      if (drift === "artifact") {
+        assert.notEqual(fixture.artifactAuthority.query({
+          contract: "work.artifact/v1",
+          subject_id: fixture.currentArtifactDigest(),
+        }).byte_availability, "available");
+      }
+    });
+  }
+});
+
+test("feature/v1 durable reopen preserves the exact real Git capture and seal", async (t) => {
+  const realGit = await createRealGitScenario(t);
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    realGit,
+  });
+  await driveFeatureToSeal(fixture);
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(completed.phase, "succeeded");
+  const sealEffect = completed.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-seal");
+  const originalSealIntent = fixture.sealIntents.at(-1);
+  assert.ok(originalSealIntent);
+
+  fixture.runAuthority.close();
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: realGitWorkspaceObservationAdapter(
+      realGit.repositoryDirectory,
+    ),
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-recovered", "feature-recovered"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recovered = recoveredAuthority.query(fixture.runId);
+  assert.deepEqual(recovered.result_bindings, completed.result_bindings);
+  assert.deepEqual(recovered.handoffs, completed.handoffs);
+  const recoveredIntent = getRunEffectIntentReader({
+    runAuthority: recoveredAuthority,
+  }).query(fixture.runId, sealEffect.effect_id);
+  assert.ok(recoveredIntent);
+  assert.deepEqual(
+    recoveredIntent.operation_input.authority_materialized_candidate,
+    originalSealIntent.operation_input.authority_materialized_candidate,
+  );
+  assert.equal(
+    recoveredIntent.operation_input.authority_materialized_candidate_digest,
+    originalSealIntent.operation_input.authority_materialized_candidate_digest,
+  );
+  assert.equal(recovered.handoffs.length, 1);
+  assert.deepEqual(getArtifactAuthority({ runAuthority: recoveredAuthority }).query({
+    contract: "work.artifact/v1",
+    subject_id: fixture.currentArtifactDigest(),
+  }).pins, [{ holder: "handoff", id: recovered.handoffs[0].handoff_id }]);
+});
+
+test("feature/v1 durable reopen after capture preserves the next exact action", async (t) => {
+  const realGit = await createRealGitScenario(t);
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    realGit,
+  });
+  executeCard(fixture.runtime, fixture.runId, "delegate_execute", "feature-apply");
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+  executeCard(fixture.runtime, fixture.runId, "operation_execute", "feature-capture");
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-capture" && status === "succeeded",
+  ));
+  const beforeReopen = fixture.runtime.query({ run_id: fixture.runId });
+  const captureBinding = beforeReopen.result_bindings.find(({ producer_card_id }) =>
+    producer_card_id === "feature-capture");
+  assert.ok(captureBinding);
+
+  fixture.runAuthority.close();
+  const recoveredAuthority = createDurableRunAuthority({
+    access: "inspect",
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: realGitWorkspaceObservationAdapter(
+      realGit.repositoryDirectory,
+    ),
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-capture-recovered", "feature-recovered"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recovered = recoveredAuthority.query(fixture.runId);
+  assert.deepEqual(recovered.result_bindings, beforeReopen.result_bindings);
+  assert.equal(recovered.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-capture").status, "succeeded");
+  assert.ok(recovered.legal_actions.some(({ type, card_id: cardId }) =>
+    type === "operation_execute" && cardId === "feature-verify"));
+  assert.deepEqual(getArtifactAuthority({ runAuthority: recoveredAuthority }).query({
+    contract: "work.artifact/v1",
+    subject_id: fixture.currentArtifactDigest(),
+  }).pins, [{ holder: "run", id: fixture.runId }]);
+  assert.equal(captureBinding.content.git.commit_sha, realGit.candidateGit.commit_sha);
+});
+
+test("feature/v1 recovers a crash before capture settlement without partial evidence", async (t) => {
+  let crashed = false;
+  const realGit = await createRealGitScenario(t);
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    realGit,
+    beforeEffect(intent) {
+      if (intent.operation_contract === FEATURE_OPERATION_CONTRACTS.capture &&
+          !crashed) {
+        crashed = true;
+        throw new Error("simulated crash before capture settlement");
+      }
+    },
+  });
+
+  executeCard(fixture.runtime, fixture.runId, "delegate_execute", "feature-apply");
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+  const captureAction = fixture.runtime.query({ run_id: fixture.runId }).legal_actions
+    .find(({ card_id: cardId }) => cardId === "feature-capture");
+  assert.ok(captureAction);
+  assert.equal(fixture.runtime.command(captureAction).accepted, true);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, invocation_started: invocationStarted, status }) =>
+      cardId === "feature-capture" && invocationStarted && status === "unresolved",
+  ));
+  const crashedProjection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(crashedProjection.result_bindings.some(({ producer_card_id: cardId }) =>
+    cardId === "feature-capture"), false);
+  assert.equal(crashedProjection.result_bindings.filter(({ producer_card_id: cardId }) =>
+    cardId === "feature-apply").length, 1);
+  const captureEffect = crashedProjection.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-capture");
+  const recovery = crashedProjection.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === captureEffect.effect_id);
+  assert.ok(recovery);
+
+  assert.equal(fixture.runtime.command(recovery).accepted, true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const recovered = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(realGit.captureCount, 0);
+  assert.equal(recovered.result_bindings.some(({ producer_card_id: cardId }) =>
+    cardId === "feature-capture"), false);
+  assert.equal(recovered.effects.filter(({ card_id: cardId }) =>
+    cardId === "feature-capture").length, 1);
+  assert.equal(recovered.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-capture").status, "reconciling");
+});
+
+test("feature/v1 adopts the exact capture after a crash before settlement", async (t) => {
+  const realGit = await createRealGitScenario(t);
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    realGit,
+    captureCrashAfterStorage: true,
+  });
+  executeCard(fixture.runtime, fixture.runId, "delegate_execute", "feature-apply");
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+  const captureAction = fixture.runtime.query({ run_id: fixture.runId }).legal_actions
+    .find(({ card_id: cardId }) => cardId === "feature-capture");
+  assert.ok(captureAction);
+  assert.equal(fixture.runtime.command(captureAction).accepted, true);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(realGit.captureCount, 1);
+
+  writeFileSync(join(realGit.repositoryDirectory, "feature.txt"), "ambient drift\n");
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: realGitWorkspaceObservationAdapter(
+      realGit.repositoryDirectory,
+    ),
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-red", "feature-recovered"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const freshCaptureOperation = createFeatureCaptureOperation({
+    observe() {
+      throw new Error("fresh recovery must not reinvoke capture");
+    },
+    reconcile() {
+      return fixture.captureReceipt();
+    },
+  });
+  const recoveredRuntime = createFlowRuntime({
+    runAuthority: recoveredAuthority,
+    registeredOperations: {
+      [FEATURE_OPERATION_CONTRACTS.capture]: freshCaptureOperation,
+    },
+    registeredAuthorities: fixture.registeredAuthorities,
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+    },
+  });
+  const crashed = recoveredRuntime.query({ run_id: fixture.runId });
+  const captureEffect = crashed.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-capture");
+  const recovery = crashed.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === captureEffect.effect_id);
+  assert.ok(recovery);
+  assert.equal(recoveredRuntime.command(recovery).accepted, true);
+  await until(() => recoveredRuntime.query({ run_id: fixture.runId }).result_bindings
+    .some(({ producer_card_id: cardId }) => cardId === "feature-capture"));
+
+  const recovered = recoveredRuntime.query({ run_id: fixture.runId });
+  const captureBinding = recovered.result_bindings.find(({ producer_card_id: cardId }) =>
+    cardId === "feature-capture");
+  assert.deepEqual(captureBinding.content.git, realGit.candidateGit);
+  assert.equal(realGit.captureCount, 1);
+});
+
+test("feature/v1 late capture after cancellation remains unusable evidence", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    capturePending: true,
+  });
+  executeCard(fixture.runtime, fixture.runId, "delegate_execute", "feature-apply");
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+  const captureAction = fixture.runtime.query({ run_id: fixture.runId }).legal_actions
+    .find(({ card_id: cardId }) => cardId === "feature-capture");
+  assert.ok(captureAction);
+  assert.equal(fixture.runtime.command(captureAction).accepted, true);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, invocation_started: invocationStarted, status }) =>
+      cardId === "feature-capture" && invocationStarted && status === "unresolved",
+  ));
+  const beforeCancel = fixture.runtime.query({ run_id: fixture.runId });
+  const cancel = beforeCancel.legal_actions.find(({ type }) => type === "cancel");
+  assert.ok(cancel);
+  assert.equal(fixture.runtime.command(cancel).accepted, true);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "cancelled");
+
+  fixture.releaseCapture();
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-capture" && status === "late_succeeded",
+  ));
+  const cancelled = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(cancelled.result_bindings.some(({ producer_card_id: cardId }) =>
+    cardId === "feature-capture"), false);
+});
+
+test("feature/v1 rejects a capture that does not advance the workspace fence", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    identityFree: true,
+    captureGeneration: 1,
+    captureMutationEpoch: 7,
+  });
+  executeCard(fixture.runtime, fixture.runId, "delegate_execute", "feature-apply");
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "feature-apply" && status === "succeeded",
+  ));
+  const captureAction = fixture.runtime.query({ run_id: fixture.runId }).legal_actions
+    .find(({ card_id: cardId }) => cardId === "feature-capture");
+  assert.ok(captureAction);
+  assert.equal(fixture.runtime.command(captureAction).accepted, true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const projection = fixture.runtime.query({ run_id: fixture.runId });
+  assert.equal(projection.result_bindings.some(({ producer_card_id: cardId }) =>
+    cardId === "feature-capture"), false);
+  assert.equal(projection.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-capture").status, "unresolved");
 });
 
 test("durable review target observation rejects a partial movement adapter at construction", async (t) => {
@@ -3301,13 +4868,14 @@ test("feature/v1 seal rollback keeps all authorities unpromoted and exposes exac
   );
   assert.equal(completed.effects.filter(({ card_id: cardId }) =>
     cardId === "feature-seal").length, 1);
+  const candidateId = completed.review_candidate_reference.candidate_id;
   assert.equal(fixture.reviewAuthority.query({
     contract: "work.review/v1",
-    subject_id: "candidate:feature",
+    subject_id: candidateId,
   }).status, "sealed");
   assert.equal(fixture.reviewAuthority.query({
     contract: "work.review/v1",
-    subject_id: "candidate:feature",
+    subject_id: candidateId,
   }).generation, 1);
   assert.equal(completed.handoffs.length, 1);
   assert.equal(fixture.handoffAuthority.query({
@@ -3392,6 +4960,47 @@ function featureDelegateBindingFromDescription(role, description) {
       launch_comparison_key: boundDescription.comparison_keys.launch,
     },
     validators: [DELEGATE_OUTPUT_VALIDATOR],
+  };
+}
+
+function featureCaptureReceipt(
+  intent,
+  inputs,
+  {
+    git = promotedGitFacts(),
+    generation = inputs.workspace.generation + 1,
+    mutationEpoch = inputs.workspace.mutation_epoch + 1,
+    artifacts = [],
+  } = {},
+) {
+  const capturedArtifacts = artifacts.map((artifact) => ({
+    ...artifact,
+    bytes_digest: artifact.bytes_digest ?? artifact.digest,
+  }));
+  const workspace = {
+    subject_id: inputs.workspace.subject_id,
+    generation,
+    mutation_epoch: mutationEpoch,
+    fingerprint: digestValue({ git }),
+    git,
+  };
+  const identity = {
+    schema: "work.feature-capture-receipt/v1",
+    operation_contract: FEATURE_OPERATION_CONTRACTS.capture,
+    outcome: "captured",
+    effect_id: intent.effect_id,
+    attempt_id: intent.attempt_id,
+    idempotency_key: intent.idempotency_key,
+    source_authority_watermark: intent.source_authority_watermark,
+    workspace,
+    git,
+    artifacts: capturedArtifacts,
+  };
+  const selfDigest = digestValue(identity);
+  return {
+    ...identity,
+    receipt_digest: selfDigest,
+    self_digest: selfDigest,
   };
 }
 
@@ -3482,6 +5091,7 @@ function completeVerificationReceipt(
         }),
         non_destructive: overrides.non_destructive ?? true,
         satisfied: overrides.satisfied ?? true,
+        distinguished: overrides.distinguished ?? true,
       };
   const identity = {
     schema: "work.feature-verification-receipt/v1",
@@ -3572,14 +5182,13 @@ function completeCritiqueReceipt(
   findings,
   overrides = {},
 ) {
-  const delegateEvidence = materialized?.accepted_delegates?.find(({ card_id: cardId }) =>
-    cardId === "feature-critique") ?? {
+  const delegateEvidence = materialized?.accepted_delegates?.at(-1) ?? {
     card_id: "feature-critique",
     evidence: critiqueEvidence,
   };
   const identity = {
     schema: "work.feature-critique-receipt/v1",
-    delegate_evidence: delegateEvidence,
+    delegate_evidence: overrides.delegate_evidence ?? delegateEvidence,
     findings: overrides.findings ?? findings,
     operation_contract: intent.operation_contract,
     effect_id: intent.effect_id,
@@ -3594,28 +5203,94 @@ function completeCritiqueReceipt(
   };
 }
 
+function featureDefinitionWithCritiqueId(
+  critiqueCardId,
+  { legacyNoResultBindings = false } = {},
+) {
+  const definition = createFeatureDefinition();
+  const replacementCritiqueCardId = critiqueCardId ?? "feature-critique";
+  if ((critiqueCardId === undefined || critiqueCardId === "feature-critique") &&
+      !legacyNoResultBindings) {
+    return definition;
+  }
+  return {
+    ...definition,
+    compile(selection) {
+      const proposal = definition.compile(selection);
+      const replaceId = (value) => value === "feature-critique"
+        ? replacementCritiqueCardId
+        : value;
+      const replaceList = (values) => Array.isArray(values)
+        ? values.map(replaceId)
+        : values;
+      const cards = proposal.graph.cards.map((card) => {
+        const inputs = { ...card.inputs };
+        for (const field of [
+          "delegate_evidence_card_ids",
+          "operation_evidence_card_ids",
+          "test_card_ids",
+        ]) {
+          if (Object.hasOwn(inputs, field)) {
+            inputs[field] = replaceList(inputs[field]);
+          }
+        }
+        return {
+          ...card,
+          id: replaceId(card.id),
+          dependencies: replaceList(card.dependencies),
+          inputs,
+        };
+      });
+      const resultBindings = proposal.graph.result_bindings?.map((binding) => ({
+        ...binding,
+        consumer_card_id: replaceId(binding.consumer_card_id),
+        producer_card_id: replaceId(binding.producer_card_id),
+      }));
+      const { result_bindings: _resultBindings, ...legacyGraph } = proposal.graph;
+      return {
+        ...proposal,
+        graph: {
+          ...(legacyNoResultBindings ? legacyGraph : proposal.graph),
+          cards,
+          ...(legacyNoResultBindings ? {} : { result_bindings: resultBindings }),
+        },
+      };
+    },
+  };
+}
+
 async function createFeatureFailureFixture(t, scenario) {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-feature-red-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
-  const promotedGit = scenario.publication?.promotedGit ?? promotedGitFacts();
+  const realGit = scenario.realGit ?? null;
+  const startingGit = realGit?.initialGit ?? exactGitFacts();
+  let promotedGit = scenario.publication?.promotedGit ?? promotedGitFacts();
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
+    beforeEffect: scenario.beforeEffect,
     beforeHandoffCommit: scenario.beforeHandoffCommit,
     gitRetentionAdapter: deterministicGitRetentionAdapter(),
-    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
-      promotion: true,
-      promotedGit,
-    }),
+    gitWorkspaceObservationAdapter: realGit === null
+      ? deterministicGitWorkspaceObservationAdapter({
+          promotion: true,
+          promotedGit,
+        })
+      : realGitWorkspaceObservationAdapter(realGit.repositoryDirectory),
     hostIdentityAdapter: fixedHostIdentity("boot-feature-red", "feature-process-red"),
+    lifecycleKernel: scenario.lifecycleKernel,
   });
   t.after(() => runAuthority.close());
   const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
   const artifactAuthority = getArtifactAuthority({ runAuthority });
   const reviewAuthority = getReviewAuthority({ runAuthority });
   const handoffAuthority = getResourceHandoffAuthority({ runAuthority });
-  const bytes = Buffer.from("feature red candidate bytes\n");
-  const artifactDigest = sha256(bytes);
-  workspaceAuthority.command(workspaceRegistration());
+  let bytes = scenario.identityFree
+    ? null
+    : Buffer.from("feature red candidate bytes\n");
+  let artifactDigest = bytes === null ? null : sha256(bytes);
+  workspaceAuthority.command(realGit === null
+    ? workspaceRegistration()
+    : workspaceRegistrationForRealGit(realGit, startingGit));
 
   const applyDescription = await supportedDescription({
     schema: "drovr.delegated-agent-description-request/v1",
@@ -3714,8 +5389,9 @@ async function createFeatureFailureFixture(t, scenario) {
   inputs.workspace = {
     ...inputs.workspace,
     subject_id: "workspace:producer",
-    fingerprint: digestValue({ git: exactGitFacts() }),
+    fingerprint: digestValue({ git: startingGit }),
   };
+  if (scenario.identityFree === true) inputs.workspace.git = startingGit;
   inputs.delegation = {
     ...inputs.delegation,
     apply: featureDelegateBindingFromDescription("apply", applyDescription),
@@ -3729,36 +5405,45 @@ async function createFeatureFailureFixture(t, scenario) {
     candidate_id: "candidate:feature",
     publication: handoffPublication(artifactDigest, scenario.publication),
   };
+  if (scenario.callerCandidateId !== undefined) {
+    inputs.finalization.candidate_id = scenario.callerCandidateId;
+  }
+  if (scenario.identityFree === true) delete inputs.finalization;
+  if (scenario.capturePolicy !== undefined) {
+    inputs.capture_policy = structuredClone(scenario.capturePolicy);
+  }
   if (scenario.repair === "critique") {
-    const repairCard = inputs.repairs[0].template.changes.add_cards[0];
-    repairCard.inputs = {
-      brief: inputs.brief,
-      mode: inputs.mode,
-      workspace: inputs.workspace,
-      verification: normalizedFeatureVerificationInput(inputs),
-      phase: "seal",
-      finalization: inputs.finalization,
-      publication: inputs.finalization.publication,
-      negative_outcomes: [
-        "no review, integration, push, pull request, cleanup, or tracker completion",
-      ],
-      receipt_owner: "registered_operation",
-      delegate_output_usage: "evidence_input_only",
-      delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
-      operation_evidence_card_ids: ["feature-verify"],
-    };
-    repairCard.evidence_references = [
-      `flow.feature-verification-request/v1:${inputs.verification.baseline.fingerprint}`,
-    ];
-    repairCard.resource_claims = [{
-      kind: "workspace",
-      id: inputs.workspace.subject_id,
-      generation: inputs.workspace.generation,
-      mutation_epoch: inputs.workspace.mutation_epoch,
-      fingerprint: inputs.workspace.fingerprint,
-    }];
+    const baseInputs = structuredClone(inputs);
+    delete baseInputs.repairs;
+    const baseSelection = prepareFeatureSelection(baseInputs);
+    const originalSeal = baseSelection.graph.cards.find(({ id }) =>
+      id === "feature-seal");
+    const originalCapture = baseSelection.graph.cards.find(({ id }) =>
+      id === "feature-capture");
+    const repairCard = structuredClone(originalSeal);
+    repairCard.id = "feature-seal-repair";
+    repairCard.replaces_card_id = "feature-seal";
+    repairCard.dependencies = ["feature-critique"];
+    inputs.repairs[0].template.changes.add_cards = [repairCard];
+    if (scenario.identityFree === true) {
+      const captureRepairCard = structuredClone(originalCapture);
+      captureRepairCard.id = "feature-capture-repair";
+      captureRepairCard.dependencies = ["feature-critique"];
+      inputs.repairs[0].template.changes.add_cards = [
+        captureRepairCard,
+        repairCard,
+      ];
+      repairCard.dependencies = ["feature-critique", captureRepairCard.id];
+      repairCard.inputs.operation_evidence_card_ids = [
+        captureRepairCard.id,
+        "feature-verify",
+      ];
+    }
   }
   if (scenario.repair === "scope") {
+    const baseSelection = prepareFeatureSelection(inputs);
+    const originalSeal = baseSelection.graph.cards.find(({ id }) =>
+      id === "feature-seal");
     const repairTemplateId = "feature-repair-scope";
     const trigger = {
       schema: "flow.revision-trigger/v1",
@@ -3806,7 +5491,8 @@ async function createFeatureFailureFixture(t, scenario) {
         receipt_owner: "registered_operation",
         delegate_output_usage: "evidence_input_only",
         delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
-        operation_evidence_card_ids: ["feature-verify"],
+        operation_evidence_card_ids: ["feature-capture", "feature-verify"],
+        capture_policy: structuredClone(originalSeal.inputs.capture_policy),
       },
     };
     inputs.repairs = [{
@@ -3860,7 +5546,7 @@ async function createFeatureFailureFixture(t, scenario) {
     facts.validator_contracts.push("flow.validator/card-block-observation/v1");
     Object.assign(facts.limits, {
       max_revisions: 1,
-      max_cards_per_revision: 1,
+      max_cards_per_revision: scenario.identityFree === true ? 2 : 1,
     });
     facts.block_observations.push(observeCardBlock({
       card_id: "feature-seal",
@@ -3901,9 +5587,11 @@ async function createFeatureFailureFixture(t, scenario) {
   });
 
   let verifyReceipt = null;
+  let captureReceipt = null;
   let critiqueEvidence = null;
   let delegateDispatches = 0;
   let testInvocations = 0;
+  let captureOperation = null;
   const sealIntents = [];
   const turnRecords = new Map();
   const delegatedAgentPort = {
@@ -3927,9 +5615,7 @@ async function createFeatureFailureFixture(t, scenario) {
         output: scenario.forgedDelegateSelfReport
           ? `${role} verification passed accepted`
           : `${role} accepted`,
-        prompt: role === "apply"
-          ? "apply the accepted brief in the exact fenced workspace"
-          : "critique the changed behavior independently of implementation",
+        prompt: request.prompt,
       });
       return workingProjection(request, turnId);
     },
@@ -3960,6 +5646,59 @@ async function createFeatureFailureFixture(t, scenario) {
       },
     },
     registeredOperations: {
+      [FEATURE_OPERATION_CONTRACTS.capture]: captureOperation = createFeatureCaptureOperation({
+        async observe(intent) {
+          if (scenario.capturePending === true) {
+            await new Promise((resolve) => {
+              scenario.releaseCapture = resolve;
+            });
+          }
+          if (realGit !== null) {
+            const captured = realGit.captureAfterLaunch();
+            promotedGit = captured.git;
+            bytes = captured.bytes;
+            artifactDigest = sha256(bytes);
+          }
+          if (bytes === null) {
+            bytes = Buffer.from("post-launch feature red candidate bytes\n");
+            artifactDigest = sha256(bytes);
+          }
+          const artifact = {
+            artifact_schema: "example.candidate/v1",
+            digest: artifactDigest,
+            size: bytes.length,
+          };
+          captureReceipt = featureCaptureReceipt(intent, inputs, {
+            git: promotedGit,
+            generation: scenario.captureGeneration ?? 2,
+            mutationEpoch: scenario.captureMutationEpoch ?? 8,
+            artifacts: [artifact],
+          });
+          return {
+            receipt: captureReceipt,
+            artifacts: [{
+              artifact_schema: artifact.artifact_schema,
+              bytes,
+            }],
+          };
+        },
+        storeArtifacts({ intent, artifacts }) {
+          for (const artifact of artifacts) {
+            const stored = artifactAuthority.command(artifactRegistration(
+              artifact.bytes,
+              artifact.digest,
+              intent.run_id,
+            ));
+            if (stored.accepted !== true) return stored;
+          }
+          if (scenario.captureCrashAfterStorage === true &&
+              scenario.captureCrashTriggered !== true) {
+            scenario.captureCrashTriggered = true;
+            runAuthority.close();
+          }
+          return { accepted: true };
+        },
+      }),
       [FEATURE_OPERATION_CONTRACTS.setup]: {
         schema: "flow.registered-operation/v1",
         classification: "caller_idempotent",
@@ -4031,6 +5770,8 @@ async function createFeatureFailureFixture(t, scenario) {
       [FEATURE_OPERATION_CONTRACTS.verify]: {
         schema: "flow.registered-operation/v1",
         classification: "caller_idempotent",
+        provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureVerificationReceipt,
         invoke(intent) {
           if (scenario.verifyReceiptMode === "absent") return undefined;
           if (intent.operation_input.phase === "slice_verify" &&
@@ -4063,6 +5804,9 @@ async function createFeatureFailureFixture(t, scenario) {
             inputs,
             {
               ...scenario.verification,
+              ...(realGit === null ? {} : {
+                workspace: featureWorkspaceSnapshot(inputs.workspace, promotedGit),
+              }),
               ...(sliceVerify && staleWorkspace === undefined ? {
                 workspace: featureWorkspaceSnapshot(
                   inputs.workspace,
@@ -4134,12 +5878,25 @@ async function createFeatureFailureFixture(t, scenario) {
             materialized,
             critiqueEvidence,
             scenario.critiqueFindings ?? [],
+            scenario.forgeCritiqueAsApply === true
+              ? {
+                  delegate_evidence: materialized?.accepted_delegates?.find(
+                    ({ card_id: cardId }) => cardId === "feature-apply",
+                  ),
+                }
+              : {},
           );
-          const candidateGit = publication.workspace.promoted_git;
-          const retention = gitRetentionReceipt(candidateGit);
+          const candidateView = intent.operation_input.authority_materialized_candidate;
+          realGit?.beforeSeal?.({
+            artifactDigest,
+            authorityDirectory,
+          });
+          const candidateGit = candidateView?.git ??
+            publication.workspace.promoted_git;
+          const retention = gitRetentionReceipt(candidateGit, realGit?.repositoryId);
           const candidateIdentity = {
             schema: "work.review-candidate/v1",
-            candidate_id: "candidate:feature",
+            candidate_id: candidateView?.candidate_id ?? "candidate:feature",
             git: candidateGit,
             workspace: {
               contract: "work.workspace/v1",
@@ -4150,7 +5907,7 @@ async function createFeatureFailureFixture(t, scenario) {
             },
             verification,
             critique,
-            artifacts: [{
+            artifacts: candidateView?.artifacts ?? [{
               digest: artifactDigest,
               generation: 1,
               artifact_schema: "example.candidate/v1",
@@ -4174,7 +5931,9 @@ async function createFeatureFailureFixture(t, scenario) {
     },
     registeredAuthorities,
     predefinedDefinitions: {
-      "feature/v1": createFeatureDefinition(),
+      "feature/v1": featureDefinitionWithCritiqueId(scenario.critiqueCardId, {
+        legacyNoResultBindings: scenario.legacyNoResultBindings === true,
+      }),
     },
   });
   const prepared = runtime.prepare({
@@ -4185,15 +5944,15 @@ async function createFeatureFailureFixture(t, scenario) {
   });
   const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
   assert.equal(launch.created, true, JSON.stringify(launch));
-  artifactAuthority.command(artifactRegistration(bytes, artifactDigest, launch.run_id));
   const registeredWorkspace = workspaceAuthority.query(workspaceQuery());
   const workspaceOperations = prepared.graph.cards
+    .concat(prepared.revision_templates.flatMap(({ changes }) => changes.add_cards))
     .filter(({ resource_claims: resourceClaims }) => resourceClaims.some(({ kind }) =>
       kind === "workspace"))
     .map(({ id }) => id);
   assert.equal(workspaceAuthority.command(workspaceClaim({
     expectedWatermark: registeredWorkspace.watermark,
-    expectedFingerprint: digestValue({ git: exactGitFacts() }),
+    expectedFingerprint: digestValue({ git: startingGit }),
     holder: scenario.workspaceClaimHolder ?? launch.run_id,
     operations: [...workspaceOperations, "handoff_publication"],
   })).accepted, true);
@@ -4202,6 +5961,8 @@ async function createFeatureFailureFixture(t, scenario) {
     artifactDigest,
     authorityDirectory,
     authorityState,
+    captureOperation,
+    prepared,
     handoffAuthority,
     inputs,
     facts,
@@ -4223,30 +5984,55 @@ async function createFeatureFailureFixture(t, scenario) {
     setTestReceiptMode(mode) {
       scenario.testReceiptMode = mode;
     },
+    captureReceipt() {
+      return captureReceipt;
+    },
+    releaseCapture() {
+      scenario.releaseCapture?.();
+    },
+    currentArtifactDigest() {
+      return artifactDigest;
+    },
+    promotedGit() {
+      return promotedGit;
+    },
+    realGit,
     workspaceAuthority,
   };
 }
 
-async function driveFeatureToSeal(fixture, { allowSealRefusal = false } = {}) {
+async function driveFeatureToSeal(fixture, {
+  allowSealRefusal = false,
+  critiqueCardId = "feature-critique",
+} = {}) {
   const { runId, runtime } = fixture;
   executeCard(runtime, runId, "delegate_execute", "feature-apply");
   await until(() => runtime.query({ run_id: runId }).effects.some(
     ({ card_id: cardId, status }) =>
       cardId === "feature-apply" && status === "succeeded",
   ));
+  const captureAction = runtime.query({ run_id: runId }).legal_actions.find(
+    ({ type, card_id: cardId }) =>
+      type === "operation_execute" && cardId === "feature-capture",
+  );
+  if (captureAction) {
+    const captureCommand = runtime.command(captureAction);
+    assert.equal(captureCommand.accepted, true, JSON.stringify(captureCommand));
+    await settleFeatureEffect(runtime, runId, "feature-capture");
+  }
   executeCard(runtime, runId, "operation_execute", "feature-verify");
   await settleFeatureEffect(runtime, runId, "feature-verify");
   let projection = runtime.query({ run_id: runId });
   if (projection.effects.find(({ card_id: cardId }) => cardId === "feature-verify")
     ?.status !== "succeeded") return;
-  executeCard(runtime, runId, "delegate_execute", "feature-critique");
+  executeCard(runtime, runId, "delegate_execute", critiqueCardId);
   await until(() => runtime.query({ run_id: runId }).effects.some(
     ({ card_id: cardId, status }) =>
-      cardId === "feature-critique" && status === "succeeded",
+      cardId === critiqueCardId && status === "succeeded",
   ));
   projection = runtime.query({ run_id: runId });
   fixture.critiqueEvidence = projection.delegate_attempts.find(
-    ({ card_id: cardId }) => cardId === "feature-critique",
+    ({ card_id: cardId }) => cardId === critiqueCardId,
   )?.evidence ?? null;
   fixture.setCritiqueEvidence(fixture.critiqueEvidence);
   const sealAction = projection.legal_actions.find(({ type, card_id: cardId }) =>
@@ -4282,17 +6068,16 @@ async function driveSerializedFeatureToSeal(
       JSON.stringify(projection.legal_actions)}`);
     assert.equal(action.expected_watermark, projection.watermark);
     const result = runtime.command(action);
-    assert.equal(result.accepted, true, JSON.stringify(result));
     order.push(action.card_id);
+    if (result.accepted !== true) return order;
     if (allowSealRefusal && action.card_id === "feature-seal") {
       await new Promise((resolve) => setTimeout(resolve, 150));
       return order;
     }
-    await until(() => runtime.query({ run_id: runId }).effects.some(
-      ({ card_id: cardId, status }) =>
-      cardId === action.card_id && status === "succeeded",
-    ));
+    await new Promise((resolve) => setTimeout(resolve, 150));
     const current = runtime.query({ run_id: runId });
+    if (current.effects.find(({ card_id: cardId }) => cardId === action.card_id)
+      ?.status !== "succeeded") return order;
     for (const legalAction of current.legal_actions) {
       assert.equal(legalAction.expected_watermark, current.watermark);
     }
@@ -4443,6 +6228,94 @@ function workspaceRegistration() {
       disposition: "producer_owned",
     },
   };
+}
+
+function workspaceRegistrationForRealGit(realGit, git) {
+  const registration = workspaceRegistration();
+  return {
+    ...registration,
+    registration: {
+      ...registration.registration,
+      repository: {
+        canonical_id: realGit.repositoryId,
+      },
+      workspace: {
+        ...registration.registration.workspace,
+        canonical_path: realGit.repositoryDirectory,
+      },
+      git,
+    },
+  };
+}
+
+async function createRealGitScenario(t) {
+  const repositoryDirectory = await mkdtemp(join(tmpdir(), "flow-real-git-"));
+  t.after(() => rm(repositoryDirectory, { recursive: true, force: true }));
+  runGitSync(repositoryDirectory, ["init", "--initial-branch", "ticket/feature"]);
+  runGitSync(repositoryDirectory, ["config", "user.email", "flow@example.invalid"]);
+  runGitSync(repositoryDirectory, ["config", "user.name", "Flow Test"]);
+  writeFileSync(join(repositoryDirectory, "feature.txt"), "before\n");
+  runGitSync(repositoryDirectory, ["add", "--", "feature.txt"]);
+  runGitSync(repositoryDirectory, ["commit", "--message", "initial"]);
+  const initialGit = realGitFactsSync(repositoryDirectory);
+  const scenario = {
+    repositoryDirectory,
+    repositoryId: `local:${repositoryDirectory}`,
+    initialGit,
+    candidateGit: null,
+    candidateBytes: null,
+    captureCount: 0,
+    captureAfterLaunch() {
+      assert.equal(this.captureCount, 0, "capture must settle exactly once");
+      this.captureCount += 1;
+      writeFileSync(join(repositoryDirectory, "feature.txt"), "after\n");
+      runGitSync(repositoryDirectory, ["add", "--", "feature.txt"]);
+      runGitSync(repositoryDirectory, ["commit", "--message", "candidate"]);
+      this.candidateBytes = Buffer.from("real feature candidate bytes\n");
+      this.candidateGit = realGitFactsSync(repositoryDirectory);
+      return {
+        git: this.candidateGit,
+        bytes: this.candidateBytes,
+      };
+    },
+  };
+  return scenario;
+}
+
+function realGitWorkspaceObservationAdapter(repositoryDirectory) {
+  return {
+    observe() {
+      return {
+        schema: "work.git-observation/v1",
+        git: realGitFactsSync(repositoryDirectory),
+      };
+    },
+  };
+}
+
+function realGitFactsSync(repositoryDirectory) {
+  const commitSha = runGitSync(repositoryDirectory, ["rev-parse", "HEAD"]);
+  const treeSha = runGitSync(repositoryDirectory, ["rev-parse", "HEAD^{tree}"]);
+  const ref = runGitSync(repositoryDirectory, ["symbolic-ref", "--quiet", "HEAD"]);
+  const status = runGitSync(repositoryDirectory, [
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+  ]);
+  return {
+    commit_sha: commitSha,
+    tree_sha: treeSha,
+    ref,
+    clean: status.length === 0,
+  };
+}
+
+function runGitSync(repositoryDirectory, args) {
+  return execFileSync("git", args, {
+    cwd: repositoryDirectory,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
 function workspaceQuery() {
@@ -4611,10 +6484,10 @@ function intermediateGitFacts() {
   };
 }
 
-function gitRetentionReceipt(git) {
+function gitRetentionReceipt(git, repositoryId = "github.com/Seavenly/example") {
   return {
     schema: "flow.git-retention-receipt/v1",
-    repository_id: "github.com/Seavenly/example",
+    repository_id: repositoryId,
     commit_sha: git.commit_sha,
     tree_sha: git.tree_sha,
     retention_ref: `refs/flow/review/${git.commit_sha}`,
@@ -4632,10 +6505,10 @@ function digestValue(value) {
 function featureReviewTargetObservationAdapter() {
   return {
     movement_shapes: ["fingerprint_only", "generation_only", "combined"],
-    observe({ command }) {
+    observe({ command, review }) {
       return buildReviewTargetObservation({
         subjectId: command.subject_id,
-        candidateId: "candidate:feature",
+        candidateId: review?.candidate?.candidate_id ?? "candidate:feature",
         candidateFingerprint: command.observed_candidate_fingerprint,
         lifecycleGeneration: command.observed_lifecycle_generation,
         authorityWatermark: digestValue("feature-review-target-observation"),
@@ -4721,6 +6594,14 @@ function featurePreparationRuntime(
   runAuthority = createInMemoryRunAuthority(),
   explicitFacts = dynamicCheckpointProposal().explicit_facts,
 ) {
+  const captureOperation = createFeatureCaptureOperation({
+    observe() {
+      return undefined;
+    },
+    storeArtifacts() {
+      return { accepted: true };
+    },
+  });
   return createFlowRuntime({
     runAuthority,
     delegatedAgentPort: {
@@ -4751,16 +6632,27 @@ function featurePreparationRuntime(
       },
     },
     registeredOperations: Object.fromEntries(
-      Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
-        classification: "caller_idempotent",
-        ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
-          provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
-          validateReceipt: validateFeatureTestReceipt,
-        } : {}),
-        invoke() {
-          throw new Error("feature operations are not invoked during preparation");
-        },
-      }]),
+      Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [
+        contract,
+        contract === FEATURE_OPERATION_CONTRACTS.capture
+          ? captureOperation
+          : {
+              classification: "caller_idempotent",
+              ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
+                provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
+                validateReceipt: validateFeatureTestReceipt,
+              } : {}),
+              ...(contract === FEATURE_OPERATION_CONTRACTS.verify ? {
+                provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
+                validateReceipt: validateFeatureVerificationReceipt,
+              } : {}),
+              invoke() {
+                throw new Error(
+                  "feature operations are not invoked during preparation",
+                );
+              },
+            },
+      ]),
     ),
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(explicitFacts),
@@ -4774,10 +6666,25 @@ function featurePreparationRuntime(
 function featurePreparationOperations() {
   return Object.fromEntries(
     Object.values(FEATURE_OPERATION_CONTRACTS).map((contract) => [contract, {
-      classification: "caller_idempotent",
+      classification: contract === FEATURE_OPERATION_CONTRACTS.capture
+        ? "reconcilable"
+        : "caller_idempotent",
       ...(contract === FEATURE_OPERATION_CONTRACTS.test ? {
         provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
         validateReceipt: validateFeatureTestReceipt,
+      } : {}),
+      ...(contract === FEATURE_OPERATION_CONTRACTS.capture ? {
+        provider_receipt_validator: FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureCaptureReceipt,
+      } : {}),
+      ...(contract === FEATURE_OPERATION_CONTRACTS.verify ? {
+        provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
+        validateReceipt: validateFeatureVerificationReceipt,
+      } : {}),
+      ...(contract === FEATURE_OPERATION_CONTRACTS.capture ? {
+        observe() {
+          return undefined;
+        },
       } : {}),
       invoke() {
         throw new Error("feature operations are not invoked during preparation");
@@ -4791,7 +6698,9 @@ function featureFactsForInputs(inputs) {
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
   facts.validator_contracts.push("flow.validator/operation-receipt/v1");
   facts.validator_contracts.push(DELEGATE_OUTPUT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_CAPTURE_RECEIPT_VALIDATOR);
   facts.validator_contracts.push(FEATURE_TEST_RECEIPT_VALIDATOR);
+  facts.validator_contracts.push(FEATURE_VERIFICATION_RECEIPT_VALIDATOR);
   facts.resource_claims.push({
     kind: "workspace",
     id: inputs.workspace.subject_id,
@@ -4799,10 +6708,12 @@ function featureFactsForInputs(inputs) {
     mutation_epoch: inputs.workspace.mutation_epoch,
     fingerprint: inputs.workspace.fingerprint,
   });
-  facts.limits.max_cards = Math.max(
-    8,
-    (inputs.slices?.length ?? 0) * 3 + 5,
+  const slices = inputs.slices ?? [];
+  const serializedCardCount = slices.reduce(
+    (count, slice) => count + 3 + (slice.mode === "test" ? 1 : 0),
+    4 + (inputs.setup === undefined ? 0 : 1),
   );
+  facts.limits.max_cards = Math.max(8, serializedCardCount);
   facts.limits.max_resources = 4;
   return facts;
 }

@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
 import { createBackupManifest } from "../src/backup-restore.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { revisionAdmissionStatus } from "../src/plan-revision.mjs";
-import { createInMemoryRunAuthority } from "../src/run-authority.mjs";
+import {
+  createResultBindingRecord,
+  normalizeResultBindingRecord,
+} from "../src/result-bindings.mjs";
+import {
+  createDurableRunAuthority,
+  createInMemoryRunAuthority,
+} from "../src/run-authority.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import {
   capabilityBlockedCheckpointProposal,
@@ -18,6 +29,12 @@ import {
   revisionBlockedCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  operationReceipt,
+  registeredOperationProposal,
+  TEST_OPERATION_CONTRACT,
+} from "../test-support/registered-operation.mjs";
 
 function completeReplacementAuthority(overrides = {}) {
   return {
@@ -2566,6 +2583,27 @@ test("launch rejects self-consistent explicit facts that are not canonical", () 
   assert.deepEqual(runtime.query().runs, []);
 });
 
+test("launch rejects an incompatible prepared result-binding bundle", () => {
+  const runtime = resultBindingRuntime(
+    createInMemoryRunAuthority(),
+    (intent) => operationReceipt(intent, {
+      schema: "test.result/v1",
+      value: "captured",
+    }),
+  );
+  const prepared = structuredClone(
+    runtime.prepare(resultBindingOperationProposal()),
+  );
+  prepared.graph.result_bindings[0].producer_card_id = "missing-producer";
+  rebindPreparedIdentity(prepared);
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "invalid_result_binding_declarations");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
 test("launch returns a typed rejection for a null request", () => {
   const runtime = createTestRuntime();
 
@@ -2581,6 +2619,660 @@ test("launch returns a typed rejection for a null request", () => {
     authority_watermark_domain: "host",
     legal_actions: [],
   });
+});
+
+test("recorded legacy runs without result bindings remain replayable", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-legacy-replay-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("legacy-replay-boot", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(dynamicCheckpointProposal());
+  assert.equal(Object.hasOwn(prepared.graph, "result_bindings"), false);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  const before = firstRuntime.query({ run_id: launch.run_id });
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("legacy-replay-boot", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = createFlowRuntime({ runAuthority: recoveredAuthority });
+  const replayed = recoveredRuntime.query({ run_id: launch.run_id });
+
+  assert.equal(replayed.plan_fingerprint, before.plan_fingerprint);
+  assert.deepEqual(replayed.cards, before.cards);
+  assert.deepEqual(replayed.result_bindings ?? [], []);
+  assert.deepEqual(
+    replayed.legal_actions.map(({ expected_watermark: _watermark, ...action }) => action),
+    before.legal_actions.map(({ expected_watermark: _watermark, ...action }) => action),
+  );
+  assert.ok(replayed.legal_actions.every(({ expected_watermark }) =>
+    expected_watermark === replayed.watermark));
+});
+
+test("consumer intents retain exact result bindings across durable recovery", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = resultBindingOperationProposal();
+  let firstConsumerIntent = null;
+  let firstConsumerCalls = 0;
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-result-binding", "process-a"),
+  });
+  const firstRuntime = resultBindingRuntime(firstAuthority, (intent) => {
+    if (intent.card_id === "consume-outcome") {
+      firstConsumerCalls += 1;
+      firstConsumerIntent = structuredClone(intent);
+      throw new Error("consumer receipt lost after invocation");
+    }
+    return operationReceipt(intent, {
+      schema: "test.result/v1",
+      value: "captured",
+    });
+  });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  let projection = firstRuntime.query({ run_id: launch.run_id });
+  const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "record-outcome");
+  assert.equal(firstRuntime.command(producerAction).accepted, true);
+  await until(() => firstRuntime.query({ run_id: launch.run_id }).result_bindings
+    .length === 1);
+  projection = firstRuntime.query({ run_id: launch.run_id });
+  const captured = projection.result_bindings[0];
+  assert.equal(captured.result_identity, digest({
+    schema: "flow.result-identity/v1",
+    producer_card_id: captured.producer_card_id,
+    output_contract: captured.output_contract,
+    expected_schema: captured.expected_schema,
+    observed_schema: captured.observed_schema,
+    attempt_id: captured.attempt_id,
+    provenance: captured.provenance,
+    content_digest: captured.content_digest,
+  }));
+  const consumerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "consume-outcome");
+  const consumerCommand = firstRuntime.command(consumerAction);
+  assert.equal(consumerCommand.accepted, true);
+  const committedIntent = consumerCommand.effect_intents.find(
+    ({ card_id: cardId }) => cardId === "consume-outcome",
+  );
+  assert.deepEqual(
+    committedIntent.operation_input.authority_materialized_result_bindings,
+    [captured],
+  );
+  assert.equal(
+    committedIntent.operation_input.authority_materialized_result_bindings_digest,
+    digest([captured]),
+  );
+  await until(() => firstConsumerCalls === 1);
+  const unresolved = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(unresolved.effects.find(({ card_id: cardId }) =>
+    cardId === "consume-outcome").status, "unresolved");
+  firstAuthority.close();
+
+  let recoveredConsumerIntent = null;
+  let recoveredConsumerCalls = 0;
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-result-binding", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = resultBindingRuntime(recoveredAuthority, (intent) => {
+    if (intent.card_id === "consume-outcome") {
+      recoveredConsumerCalls += 1;
+      recoveredConsumerIntent = structuredClone(intent);
+      return operationReceipt(intent, {
+        schema: "test.consumer/v1",
+        value: "recovered",
+      });
+    }
+    throw new Error("producer must not be re-invoked during consumer recovery");
+  });
+  projection = recoveredRuntime.query({ run_id: launch.run_id });
+  const recoveryAction = projection.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === unresolved.effects.find(({ card_id: cardId }) =>
+      cardId === "consume-outcome").effect_id);
+  assert.ok(recoveryAction);
+  const recoveryCommand = recoveredRuntime.command(recoveryAction);
+  assert.equal(recoveryCommand.accepted, true);
+  await until(() => recoveredConsumerCalls === 1);
+  await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  const recovered = recoveredRuntime.query({ run_id: launch.run_id });
+  assert.deepEqual(
+    recoveredConsumerIntent.operation_input.authority_materialized_result_bindings,
+    [captured],
+  );
+  assert.equal(
+    recoveredConsumerIntent.operation_input.authority_materialized_result_bindings_digest,
+    committedIntent.operation_input.authority_materialized_result_bindings_digest,
+  );
+  assert.equal(recovered.result_bindings.length, 1);
+  assert.deepEqual(recovered.result_bindings[0], captured);
+});
+
+test("accepted result-binding revisions settle declarations from the active plan", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-revision-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-revision", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = resultBindingRuntime(
+    authority,
+    (intent) => operationReceipt(intent, {
+      schema: "test.result/v1",
+      value: intent.card_id,
+    }),
+  );
+  const prepared = runtime.prepare(resultBindingRevisionProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(launch.created, true, JSON.stringify(launch));
+  let projection = runtime.query({ run_id: launch.run_id });
+  const revision = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.ok(revision);
+  assert.equal(runtime.command(revision).accepted, true);
+
+  projection = runtime.query({ run_id: launch.run_id });
+  const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "record-outcome-revised");
+  assert.ok(producerAction);
+  assert.equal(runtime.command(producerAction).accepted, true);
+  await until(() => runtime.query({ run_id: launch.run_id }).result_bindings
+    .some(({ producer_card_id: producerId }) =>
+      producerId === "record-outcome-revised"));
+
+  const captured = runtime.query({ run_id: launch.run_id }).result_bindings;
+  assert.deepEqual(captured.map(({ producer_card_id: producerId }) => producerId), [
+    "record-outcome-revised",
+  ]);
+});
+
+test("prepare returns a typed rejection for an invalid result-binding delta", () => {
+  const runtime = resultBindingRuntime(
+    createInMemoryRunAuthority(),
+    (intent) => operationReceipt(intent, { schema: "test.result/v1" }),
+  );
+  const proposal = resultBindingRevisionProposal();
+  proposal.revision_templates[0].changes.result_binding_changes.add[0]
+    .producer_card_id = "missing-producer";
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    (error) => {
+      assert.equal(error?.name, "DynamicPlanValidationError", JSON.stringify(error));
+      assert.equal(error?.reason, "invalid_result_binding_delta", JSON.stringify(error));
+      return true;
+    },
+  );
+});
+
+test("zero-declaration consumers reject caller-materialized evidence", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-zero-declaration-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-zero-declaration", "process-a"),
+  });
+  t.after(() => authority.close());
+  let consumerCalls = 0;
+  const runtime = resultBindingRuntime(authority, (intent) => {
+    if (intent.card_id === "consume-outcome") consumerCalls += 1;
+    return operationReceipt(intent, {
+      schema: "test.consumer/v1",
+      value: "must-not-run",
+    });
+  });
+  const proposal = resultBindingOperationProposal();
+  proposal.graph.result_bindings = [];
+  proposal.graph.cards[1].inputs = {
+    value: "consume",
+    authority_materialized_evidence: {
+      forged: true,
+    },
+  };
+  const prepared = runtime.prepare(proposal);
+  const preparedConsumer = prepared.graph.cards.find(({ id }) => id === "consume-outcome");
+  assert.equal(Object.hasOwn(preparedConsumer.inputs, "authority_materialized_evidence"), true);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  let projection = runtime.query({ run_id: launch.run_id });
+  const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "record-outcome");
+  assert.equal(runtime.command(producerAction).accepted, true);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "record-outcome" && status === "succeeded",
+  ));
+  projection = runtime.query({ run_id: launch.run_id });
+  const consumerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "consume-outcome");
+  assert.ok(consumerAction);
+  const before = projection;
+  const rejection = runtime.command(consumerAction);
+  assert.equal(rejection.code, "caller_materialized_evidence_forbidden");
+  assert.equal(consumerCalls, 0);
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }), before);
+});
+
+test("zero-declaration consumers reject every caller authority materialization field", async (t) => {
+  const fields = [
+    "authority_materialized_evidence",
+    "authority_materialized_candidate",
+    "authority_materialized_candidate_digest",
+    "authority_materialized_result_bindings",
+    "authority_materialized_result_bindings_digest",
+  ];
+  for (const field of fields) {
+    await t.test(field, async (caseContext) => {
+      const authorityDirectory = await mkdtemp(
+        join(tmpdir(), `flow-result-binding-${field}-`),
+      );
+      caseContext.after(() => rm(authorityDirectory, {
+        recursive: true,
+        force: true,
+      }));
+      const authority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity(`result-binding-${field}`, "process-a"),
+      });
+      caseContext.after(() => authority.close());
+      let consumerCalls = 0;
+      const runtime = resultBindingRuntime(authority, (intent) => {
+        if (intent.card_id === "consume-outcome") consumerCalls += 1;
+        return operationReceipt(intent, {
+          schema: "test.consumer/v1",
+          value: "must-not-run",
+        });
+      });
+      const proposal = resultBindingOperationProposal();
+      proposal.graph.result_bindings = [];
+      proposal.graph.cards[1].inputs = {
+        value: "consume",
+        [field]: field.endsWith("digest")
+          ? digest({ field })
+          : field.endsWith("bindings")
+            ? []
+            : { forged: true },
+      };
+      const prepared = runtime.prepare(proposal);
+      const launch = runtime.launch(confirmedLaunchRequest(prepared));
+      let projection = runtime.query({ run_id: launch.run_id });
+      const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "record-outcome");
+      assert.equal(runtime.command(producerAction).accepted, true);
+      await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+        ({ card_id: cardId, status }) =>
+          cardId === "record-outcome" && status === "succeeded",
+      ));
+      projection = runtime.query({ run_id: launch.run_id });
+      const consumerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "consume-outcome");
+      const before = projection;
+      const rejection = runtime.command(consumerAction);
+      assert.equal(rejection.code, "caller_materialized_evidence_forbidden");
+      assert.equal(consumerCalls, 0);
+      assert.deepEqual(runtime.query({ run_id: launch.run_id }), before);
+    });
+  }
+});
+
+test("durable result-binding normalization rejects a forged observed schema", () => {
+  const declaration = {
+    schema: "flow.result-binding/v1",
+    consumer_card_id: "consume-outcome",
+    producer_card_id: "record-outcome",
+    output_contract: "receipt",
+    expected_schema: "test.result/v1",
+  };
+  const provenance = {
+    schema: "flow.result-provenance/v1",
+    run_id: "run:result-schema",
+    effect_id: "effect:result-schema",
+    attempt_id: "run:result-schema:record-outcome:attempt:1",
+    idempotency_key: "operation:result-schema",
+    source_authority_watermark: digest({ schema: "test.watermark/v1" }),
+  };
+  const record = createResultBindingRecord({
+    declaration,
+    content: { schema: declaration.expected_schema, value: "captured" },
+    attemptId: provenance.attempt_id,
+    provenance,
+  });
+  const forged = structuredClone(record);
+  forged.observed_schema = "test.forged-result/v1";
+  forged.content.schema = forged.observed_schema;
+  forged.content_digest = digest(forged.content);
+  forged.result_identity = digest({
+    schema: "flow.result-identity/v1",
+    producer_card_id: forged.producer_card_id,
+    output_contract: forged.output_contract,
+    expected_schema: forged.expected_schema,
+    observed_schema: forged.observed_schema,
+    attempt_id: forged.attempt_id,
+    provenance: forged.provenance,
+    content_digest: forged.content_digest,
+  });
+  const identity = { ...forged };
+  delete identity.binding_digest;
+  delete identity.self_digest;
+  forged.binding_digest = digest(identity);
+  forged.self_digest = forged.binding_digest;
+
+  assert.throws(
+    () => normalizeResultBindingRecord(forged),
+    /result binding record is incomplete or not exact/,
+  );
+});
+
+test("result binding consumers reject invalid or stale records before Adapter invocation", async (t) => {
+  const cases = [
+    {
+      name: "missing producer result",
+      expectedCode: "authority_result_missing",
+      providerReceipt: null,
+    },
+    {
+      name: "undeclared dependency output",
+      expectedCode: "authority_result_undeclared",
+      configure(proposal) {
+        proposal.graph.cards[1].inputs.operation_evidence_card_ids.push(
+          "unlisted-output",
+        );
+      },
+    },
+    {
+      name: "conflicting declaration identity",
+      expectedCode: "authority_result_declaration_invalid",
+      configure(proposal) {
+        proposal.graph.result_bindings.push(
+          structuredClone(proposal.graph.result_bindings[0]),
+        );
+      },
+    },
+    {
+      name: "ambiguous producer records",
+      expectedCode: "authority_result_ambiguous",
+      mutateFold(fold, captured) {
+        return { ...fold, result_bindings: [captured, captured] };
+      },
+    },
+    {
+      name: "wrong producer",
+      expectedCode: "authority_result_wrong_producer",
+      configure(proposal) {
+        proposal.graph.result_bindings[0].producer_card_id =
+          "unknown-producer";
+        proposal.graph.cards[1].inputs.operation_evidence_card_ids = [
+          "unknown-producer",
+        ];
+      },
+    },
+    {
+      name: "wrong output contract",
+      expectedCode: "authority_result_wrong_output",
+      configure(proposal) {
+        proposal.graph.result_bindings[0].output_contract = "other-output";
+      },
+    },
+    {
+      name: "wrong observed schema",
+      expectedCode: "authority_result_schema_mismatch",
+      mutateFold(fold, captured) {
+        const wrongSchema = {
+          ...captured,
+          observed_schema: "test.wrong-result/v1",
+          content: {
+            ...captured.content,
+            schema: "test.wrong-result/v1",
+          },
+        };
+        return { ...fold, result_bindings: [wrongSchema] };
+      },
+    },
+    {
+      name: "stale producer generation",
+      expectedCode: "authority_result_stale",
+      staleFence: { generation: 2, mutationEpoch: 7 },
+    },
+    {
+      name: "stale workspace mutation epoch",
+      expectedCode: "authority_result_stale",
+      staleFence: { generation: 1, mutationEpoch: 8 },
+    },
+    {
+      name: "superseded producer",
+      expectedCode: "authority_result_superseded",
+      mutateFold(fold) {
+        return {
+          ...fold,
+          superseded_cards: [...fold.superseded_cards, "record-outcome"],
+        };
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (caseContext) => {
+      const authorityDirectory = await mkdtemp(
+        join(tmpdir(), "flow-result-binding-rejection-"),
+      );
+      caseContext.after(() => rm(authorityDirectory, {
+        recursive: true,
+        force: true,
+      }));
+      const proposal = resultBindingOperationProposal();
+      scenario.configure?.(proposal);
+      let captured = null;
+      let consumerCalls = 0;
+      let producerCalls = 0;
+      const lifecycleKernel = (fold, command) => {
+        let materializationFold = fold;
+        if (command.type === "operation_execute" &&
+            command.card_id === "consume-outcome") {
+          if (scenario.staleFence !== undefined) {
+            const workspaceClaim = {
+              kind: "workspace",
+              id: "workspace:result-binding",
+              generation: scenario.staleFence.generation,
+              mutation_epoch: scenario.staleFence.mutationEpoch,
+              fingerprint: digest({ schema: "test.workspace/v1" }),
+            };
+            const record = createResultBindingRecord({
+              declaration: proposal.graph.result_bindings[0],
+              content: captured.content,
+              attemptId: captured.attempt_id,
+              provenance: captured.provenance,
+              producerGeneration: 1,
+              workspaceMutationEpoch: 7,
+            });
+            materializationFold = {
+              ...fold,
+              active_plan: {
+                ...fold.active_plan,
+                cards: fold.active_plan.cards.map((card) =>
+                  card.id === "record-outcome"
+                    ? { ...card, resource_claims: [workspaceClaim] }
+                    : card),
+              },
+              result_bindings: [record],
+            };
+          } else if (scenario.mutateFold !== undefined) {
+            materializationFold = scenario.mutateFold(fold, captured);
+          }
+        }
+        return decideLifecycle(materializationFold, command);
+      };
+      const authority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity(
+          `result-binding-${scenario.name.replaceAll(" ", "-")}`,
+          "process-a",
+        ),
+        lifecycleKernel,
+      });
+      caseContext.after(() => authority.close());
+      const runtime = resultBindingRuntime(authority, (intent) => {
+        if (intent.card_id === "consume-outcome") {
+          consumerCalls += 1;
+          return operationReceipt(intent, {
+            schema: "test.consumer/v1",
+            value: "must-not-run",
+          });
+        }
+        producerCalls += 1;
+        const providerReceipt = Object.hasOwn(scenario, "providerReceipt")
+          ? scenario.providerReceipt
+          : {
+            schema: "test.result/v1",
+            value: "captured",
+          };
+        return operationReceipt(intent, providerReceipt);
+      });
+      if (scenario.configure !== undefined) {
+        const before = runtime.query();
+        assert.throws(
+          () => runtime.prepare(proposal),
+          (error) => error?.name === "DynamicPlanValidationError" &&
+            error.reason === "invalid_result_binding_declarations",
+        );
+        assert.deepEqual(runtime.query(), before);
+        assert.equal(consumerCalls, 0);
+        assert.equal(producerCalls, 0);
+        return;
+      }
+      const prepared = runtime.prepare(proposal);
+      const launch = runtime.launch(confirmedLaunchRequest(prepared));
+      let projection = runtime.query({ run_id: launch.run_id });
+      const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "record-outcome");
+      assert.ok(producerAction);
+      assert.equal(runtime.command(producerAction).accepted, true);
+      await until(() => {
+        projection = runtime.query({ run_id: launch.run_id });
+        return projection.effects.find(({ card_id: cardId }) =>
+          cardId === "record-outcome")?.status === "succeeded";
+      });
+      projection = runtime.query({ run_id: launch.run_id });
+      captured = projection.result_bindings[0] ?? null;
+      if (scenario.staleFence !== undefined ||
+          scenario.mutateFold !== undefined) {
+        assert.ok(captured);
+      }
+      const before = projection;
+      const consumerAction = before.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "consume-outcome");
+      assert.ok(consumerAction);
+      const rejection = runtime.command(consumerAction);
+      assert.equal(rejection.code, scenario.expectedCode);
+      assert.equal(consumerCalls, 0);
+      assert.equal(producerCalls, 1);
+      assert.deepEqual(runtime.query({ run_id: launch.run_id }), before);
+    });
+  }
+});
+
+test("exact duplicate producer settlement is rejected without a second binding", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-duplicate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-duplicate", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = resultBindingRuntime(authority, (intent) =>
+    operationReceipt(intent, {
+      schema: "test.result/v1",
+      value: "captured",
+    }));
+  const prepared = runtime.prepare(resultBindingOperationProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const producerAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ card_id: cardId }) => cardId === "record-outcome",
+  );
+  const producerCommand = runtime.command(producerAction);
+  const [producerIntent] = producerCommand.effect_intents;
+  await until(() => runtime.query({ run_id: launch.run_id }).result_bindings
+    .length === 1);
+  const before = runtime.query({ run_id: launch.run_id });
+  await assert.rejects(
+    () => authority.invokeEffect(producerIntent, {
+      invoke() {
+        throw new Error("duplicate settlement must not invoke Adapter");
+      },
+    }),
+    (error) => error.code === "effect_already_recorded",
+  );
+  const after = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(after.result_bindings, before.result_bindings);
+  assert.equal(after.result_bindings.length, 1);
+  assert.deepEqual(after.effects, before.effects);
+});
+
+test("late successful settlement after cancellation cannot capture a result binding", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-late-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-late", "process-a"),
+  });
+  t.after(() => authority.close());
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let producerInvocations = 0;
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke(intent) {
+          producerInvocations += 1;
+          return pending.then(() => operationReceipt(intent, {
+            schema: "test.result/v1",
+            value: "late",
+          }));
+        },
+      },
+    },
+  });
+  const proposal = resultBindingOperationProposal();
+  proposal.requested_authority.commands.push("cancel");
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const producerAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ card_id: cardId }) => cardId === "record-outcome",
+  );
+  const producerCommand = runtime.command(producerAction);
+  const [producerIntent] = producerCommand.effect_intents;
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, invocation_started: invocationStarted }) =>
+      cardId === "record-outcome" && invocationStarted,
+  ));
+  const beforeCancel = runtime.query({ run_id: launch.run_id });
+  const cancel = beforeCancel.legal_actions.find(({ type }) => type === "cancel");
+  assert.ok(cancel);
+  assert.equal(runtime.command(cancel).accepted, true);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "cancelled");
+
+  release();
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "record-outcome" && status === "late_succeeded",
+  ));
+  const late = runtime.query({ run_id: launch.run_id });
+  assert.equal(producerInvocations, 1);
+  assert.deepEqual(late.result_bindings, []);
+  assert.equal(late.cards.find(({ id }) => id === "consume-outcome").status,
+    "abandoned");
 });
 
 test("launch rejects unsigned fields on the prepared envelope", () => {
@@ -3068,6 +3760,121 @@ function createTestRuntime(options = {}) {
     ...options,
     runAuthority: createInMemoryRunAuthority(),
   });
+}
+
+function resultBindingOperationProposal() {
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  const producer = proposal.graph.cards[0];
+  const consumer = {
+    ...structuredClone(producer),
+    id: "consume-outcome",
+    dependencies: ["record-outcome"],
+    inputs: {
+      operation_evidence_card_ids: ["record-outcome"],
+      value: "consume",
+    },
+  };
+  proposal.graph.cards = [producer, consumer];
+  proposal.graph.result_bindings = [{
+    schema: "flow.result-binding/v1",
+    consumer_card_id: "consume-outcome",
+    producer_card_id: "record-outcome",
+    output_contract: "receipt",
+    expected_schema: "test.result/v1",
+  }];
+  proposal.explicit_facts.limits.max_cards = 2;
+  return proposal;
+}
+
+function resultBindingRevisionProposal() {
+  const proposal = resultBindingOperationProposal();
+  const producer = proposal.graph.cards[0];
+  const consumer = proposal.graph.cards[1];
+  const revisedProducer = {
+    ...structuredClone(producer),
+    id: "record-outcome-revised",
+    replaces_card_id: producer.id,
+  };
+  const revisedConsumer = {
+    ...structuredClone(consumer),
+    id: "consume-outcome-revised",
+    replaces_card_id: consumer.id,
+    dependencies: [revisedProducer.id],
+    inputs: {
+      ...structuredClone(consumer.inputs),
+      operation_evidence_card_ids: [revisedProducer.id],
+    },
+  };
+  const revisedDeclaration = {
+    ...structuredClone(proposal.graph.result_bindings[0]),
+    consumer_card_id: revisedConsumer.id,
+    producer_card_id: revisedProducer.id,
+  };
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "result_binding_revision_required",
+  };
+  proposal.requested_authority.commands.push("revision_decision");
+  proposal.explicit_facts.operation_contracts.push(
+    "flow.adapter/card-block-observation/v1",
+  );
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/card-block-observation/v1",
+  );
+  proposal.explicit_facts.limits.max_revisions = 1;
+  proposal.explicit_facts.limits.max_cards_per_revision = 2;
+  proposal.explicit_facts.block_observations.push(observeCardBlock({
+    card_id: producer.id,
+    block: {
+      schema: "flow.card-block/v1",
+      id: "record-outcome:revision",
+      type: "plan_revision_required",
+      trigger,
+      required_capabilities: [],
+      revision_template_ids: ["replace-result-binding-cards"],
+    },
+  }));
+  proposal.revision_templates = [{
+    schema: "flow.plan-revision-template/v1",
+    id: "replace-result-binding-cards",
+    trigger,
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [revisedProducer, revisedConsumer],
+      add_edges: [],
+      supersede_cards: [producer.id, consumer.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+      result_binding_changes: {
+        schema: "flow.result-binding-delta/v1",
+        add: [revisedDeclaration],
+        remove: [proposal.graph.result_bindings[0]],
+      },
+    },
+  }];
+  return proposal;
+}
+
+function resultBindingRuntime(runAuthority, invoke) {
+  return createFlowRuntime({
+    runAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke,
+      },
+    },
+  });
+}
+
+async function until(condition) {
+  for (let index = 0; index < 100; index += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("condition did not become true");
 }
 
 function assertEveryActiveProjectionIsActionable(proposal, path = [], seen = []) {

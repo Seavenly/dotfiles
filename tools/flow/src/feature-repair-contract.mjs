@@ -1,4 +1,9 @@
 import { digest, isPlainRecord } from "./canonical.mjs";
+import {
+  applyResultBindingDelta,
+  buildResultBindingDelta,
+  normalizeResultBindingDelta,
+} from "./result-bindings.mjs";
 
 const FEATURE_SEAL_CONTRACT = "flow.operation/feature-seal/v1";
 
@@ -48,6 +53,7 @@ export function validateFeatureRepairContract({
   limits = {},
   boundCardId = null,
   bindCheckpoint = false,
+  existingResultBindings = null,
   fail,
 }) {
   const invalid = (reason, message) => fail(reason, message);
@@ -222,6 +228,8 @@ export function validateFeatureRepairContract({
       repair,
       invalid,
       replacements,
+      changes,
+      [...cards, ...addedCards],
     );
   }
 
@@ -299,9 +307,58 @@ export function validateFeatureRepairContract({
     );
   }
   let boundTemplate = template;
+
+  // Bind the declaration delta before calculating a checkpoint digest. The
+  // checkpoint must attest to the complete revision template, including its
+  // exact producer/consumer replacements.
+  if (Array.isArray(existingResultBindings)) {
+    let resultBindingDelta = changes.result_binding_changes;
+    if (resultBindingDelta === undefined) {
+      try {
+        resultBindingDelta = buildResultBindingDelta({
+          baseBindings: existingResultBindings,
+          cards,
+          changes,
+        });
+      } catch (error) {
+        invalid(
+          "feature_repair_result_binding",
+          "feature repair " + repair.id +
+            " cannot derive its result binding delta: " +
+            (error?.message ?? "invalid declaration mapping"),
+        );
+      }
+    }
+    try {
+      resultBindingDelta = normalizeResultBindingDelta(resultBindingDelta);
+      applyResultBindingDelta({
+        baseBindings: existingResultBindings,
+        cards,
+        changes: { ...changes, result_binding_changes: resultBindingDelta },
+        delta: resultBindingDelta,
+      });
+    } catch (error) {
+      invalid(
+        "feature_repair_result_binding",
+        "feature repair " + repair.id +
+          " result binding delta is invalid: " +
+          (error?.message ?? "invalid declaration mapping"),
+      );
+    }
+    boundTemplate = {
+      ...boundTemplate,
+      changes: {
+        ...boundTemplate.changes,
+        result_binding_changes: resultBindingDelta,
+      },
+    };
+  }
+
   if (checkpoint) {
-    const expectedBinding = featureRepairCheckpointBinding(template);
-    const checkpointInputs = checkpoint.inputs ?? {};
+    const expectedBinding = featureRepairCheckpointBinding(boundTemplate);
+    const boundCards = boundTemplate.changes.add_cards ?? addedCards;
+    const boundCheckpoint = boundCards.find(({ id }) => id === checkpoint.id);
+    const checkpointInputs = boundCheckpoint?.inputs ?? {};
     if (checkpointInputs.repair_template_id === undefined &&
         checkpointInputs.repair_template_digest === undefined) {
       if (!bindCheckpoint) {
@@ -310,7 +367,7 @@ export function validateFeatureRepairContract({
           `feature repair ${repair.id} checkpoint is not bound to its exact template`,
         );
       }
-      const boundCards = addedCards.map((card) => card.id === checkpoint.id
+      const checkpointCards = boundCards.map((card) => card.id === checkpoint.id
         ? {
           ...card,
           inputs: {
@@ -321,10 +378,10 @@ export function validateFeatureRepairContract({
         }
         : card);
       boundTemplate = {
-        ...template,
-        changes: { ...changes, add_cards: boundCards },
+        ...boundTemplate,
+        changes: { ...boundTemplate.changes, add_cards: checkpointCards },
       };
-    } else if (checkpointInputs.repair_template_id !== template.id ||
+    } else if (checkpointInputs.repair_template_id !== boundTemplate.id ||
         checkpointInputs.repair_template_digest !== expectedBinding) {
       invalid(
         "feature_repair_checkpoint_binding",
@@ -390,7 +447,18 @@ export function featureRepairCheckpointBinding(template) {
 function deriveExpansion({ template, replacements, superseded, limits }) {
   const changes = template.changes;
   const replacementIds = new Set([...replacements.values()].map(({ id }) => id));
-  const extras = (changes.add_cards ?? []).filter(({ id }) => !replacementIds.has(id));
+  const replacementSealCaptureIds = new Set(
+    [...replacements.values()]
+      .filter(({ executor }) => executor?.contract === FEATURE_SEAL_CONTRACT)
+      .flatMap(({ inputs }) => inputs?.operation_evidence_card_ids ?? [])
+      .filter((id) => typeof id === "string"),
+  );
+  const requiredCaptureIds = new Set((changes.add_cards ?? [])
+    .filter((card) => isFeatureCaptureCard(card) &&
+      replacementSealCaptureIds.has(card.id))
+    .map(({ id }) => id));
+  const extras = (changes.add_cards ?? []).filter(({ id }) =>
+    !replacementIds.has(id) && !requiredCaptureIds.has(id));
   const originalResourceClaims = new Set(superseded.flatMap((card) =>
     (card.resource_claims ?? []).map((claim) => digest(claim))));
   const addedReplacementResources = [...replacements.values()].flatMap((card) =>
@@ -425,22 +493,84 @@ function deriveExpansion({ template, replacements, superseded, limits }) {
   };
 }
 
+function isFeatureCaptureCard(card) {
+  return card?.executor?.kind === "operation" &&
+    card.executor.contract === "flow.operation/feature-capture/v1" &&
+    card.outputs?.includes("candidate_capture_receipt");
+}
+
 function validatePreservedCard(
   original,
   replacement,
   repair,
   invalid,
   replacements = new Map(),
+  changes = {},
+  existingCards = [],
 ) {
   const reboundOriginal = rebindAuthorityReferences(original, replacements);
+  const legacyFinalization = reboundOriginal.inputs?.finalization !== undefined ||
+    reboundOriginal.inputs?.publication !== undefined;
+  // The identity-free seal deliberately changes its capture evidence when a
+  // repair runs after a new mutation. The exact replacement capture is
+  // checked below and by the result-binding delta; it must not be rejected as
+  // a changed legacy input here.
+  const requiredSealInputs = SEAL_INPUTS.filter((field) =>
+    ["finalization", "publication"].includes(field)
+      ? legacyFinalization
+      : field !== "operation_evidence_card_ids");
   if (original.executor?.contract === FEATURE_SEAL_CONTRACT &&
-      SEAL_INPUTS.some((field) =>
+      requiredSealInputs.some((field) =>
         replacement.inputs?.[field] === undefined ||
         digest(replacement.inputs[field]) !==
           digest(reboundOriginal.inputs?.[field]))) {
     invalid(
       "feature_repair_seal_gate",
       `feature repair for ${original.id} must retain the feature seal evidence and finalization gate`,
+    );
+  }
+  if (original.executor?.contract === FEATURE_SEAL_CONTRACT &&
+      !legacyFinalization) {
+    const originalEvidence = original.inputs?.operation_evidence_card_ids;
+    const replacementEvidence = replacement.inputs?.operation_evidence_card_ids;
+    const existingById = new Map(existingCards.map((card) => [card.id, card]));
+    const originalCaptureIds = new Set(
+      (originalEvidence ?? []).filter((id) =>
+        isFeatureCaptureCard(existingById.get(id))),
+    );
+    const addedCaptureIds = new Set((changes.add_cards ?? [])
+      .filter(isFeatureCaptureCard)
+      .map(({ id }) => id));
+    const replacementCaptureIds = (replacementEvidence ?? [])
+      .filter((id) => addedCaptureIds.has(id));
+    const replacementCaptureId = replacementCaptureIds.length === 1
+      ? replacementCaptureIds[0]
+      : null;
+    const reboundEvidence = reboundOriginal.inputs?.operation_evidence_card_ids;
+    const expectedEvidence = Array.isArray(reboundEvidence) &&
+      replacementCaptureId !== null
+      ? reboundEvidence.map((id) => originalCaptureIds.has(id)
+        ? replacementCaptureId
+        : id)
+      : null;
+    if (!Array.isArray(replacementEvidence) ||
+        expectedEvidence === null ||
+        digest(replacementEvidence) !== digest(expectedEvidence)) {
+      invalid(
+        "feature_repair_result_binding",
+        `feature repair ${repair.id} must preserve seal operation evidence while replacing its capture`,
+      );
+    }
+    validateIdentityFreeSealCapture(
+      replacement,
+      existingCards,
+      new Set(replacements.keys()),
+      repair,
+      invalid,
+      changes,
+      (original.inputs?.operation_evidence_card_ids ?? [])
+        .map((id) => existingCards.find((card) => card.id === id))
+        .filter(isFeatureCaptureCard),
     );
   }
   const originalManagedAgent = original.inputs?.managed_agent;
@@ -464,12 +594,102 @@ function validatePreservedCard(
       ? undefined
       : reboundOriginal.inputs.managed_agent,
   );
+  if (original.executor?.contract === FEATURE_SEAL_CONTRACT &&
+      !legacyFinalization) {
+    delete originalCard.inputs.operation_evidence_card_ids;
+    delete replacementCard.inputs.operation_evidence_card_ids;
+  }
   if (digest(originalCard) !== digest(replacementCard)) {
     invalid(
       "feature_repair_authority_gate",
       `feature repair ${repair.id} replacement ${replacement.id} changes route, limits, recovery, evidence, or authority inputs`,
     );
   }
+}
+
+function validateIdentityFreeSealCapture(
+  replacement,
+  existingCards,
+  supersededIds,
+  repair,
+  invalid,
+  changes = {},
+  originalCaptures = [],
+) {
+  const operationEvidence = replacement.inputs?.operation_evidence_card_ids;
+  const cards = Array.isArray(existingCards) ? existingCards : [];
+  const addedCards = Array.isArray(changes.add_cards) ? changes.add_cards : [];
+  const addedIds = new Set(addedCards.map(({ id }) => id));
+  const cardById = new Map(cards.map((card) => [card.id, card]));
+  const captureCards = (operationEvidence ?? [])
+    .map((id) => cardById.get(id))
+    .filter((card) => card?.executor?.contract ===
+      "flow.operation/feature-capture/v1" &&
+      card.outputs?.includes("candidate_capture_receipt"));
+  if (!Array.isArray(operationEvidence) || captureCards.length !== 1 ||
+      !addedIds.has(captureCards[0]?.id) ||
+      operationEvidence.some((id) => supersededIds.has(id))) {
+    invalid(
+      "feature_repair_result_binding",
+      `feature repair ${repair.id} must rebind the seal to one exact replacement capture`,
+    );
+  }
+  const capture = captureCards[0];
+  if (originalCaptures.length !== 1 ||
+      !sameCaptureAuthorityScope(originalCaptures[0], capture)) {
+    invalid(
+      "feature_repair_capture_scope",
+      `feature repair ${repair.id} replacement capture must preserve the original capture scope`,
+    );
+  }
+  const pathCards = new Map(
+    [...new Map([
+      ...cardById,
+      ...addedCards.map((card) => [card.id, card]),
+    ])].map(([id, card]) => [id, {
+      ...card,
+      dependencies: [
+        ...(card.dependencies ?? []),
+        ...(changes.add_edges ?? [])
+          .filter(({ to }) => to === id)
+          .map(({ from }) => from),
+      ],
+    }]),
+  );
+  if (!hasDependencyPath(pathCards, replacement.id, capture.id)) {
+    invalid(
+      "feature_repair_result_binding",
+      `feature repair ${repair.id} seal must depend on its replacement capture`,
+    );
+  }
+}
+
+function sameCaptureAuthorityScope(original, replacement) {
+  if (!isFeatureCaptureCard(original) || !isFeatureCaptureCard(replacement)) {
+    return false;
+  }
+  const comparable = (card) => {
+    const value = structuredClone(card);
+    delete value.id;
+    delete value.dependencies;
+    delete value.replaces_card_id;
+    if (isPlainRecord(value.inputs)) {
+      delete value.inputs.replaces_card_id;
+    }
+    return value;
+  };
+  return digest(comparable(original)) === digest(comparable(replacement));
+}
+
+function hasDependencyPath(cardsById, consumerId, producerId) {
+  const seen = new Set();
+  const visit = (cardId) => {
+    if (cardId === producerId) return true;
+    if (seen.has(cardId)) return false;
+    seen.add(cardId);
+    return (cardsById.get(cardId)?.dependencies ?? []).some(visit);
+  };
+  return visit(consumerId);
 }
 
 export function replacementTargetId(card) {

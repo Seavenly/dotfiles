@@ -30,14 +30,24 @@ const FEATURE_CONTRACTS = Object.freeze([
   "flow.feature-repair/v1",
   "flow.feature-repair-outcome/v1",
   "flow.feature-discriminating-evidence/v1",
+  "flow.result-binding/v1",
+  "flow.result-binding-record/v1",
+  "flow.result-provenance/v1",
+  "flow.result-identity/v1",
+  "flow.result-binding-delta/v1",
+  "flow.feature-capture-policy/v1",
   "flow.operation/feature-setup/v1",
   "flow.operation/feature-test/v1",
+  "flow.operation/feature-capture/v1",
   "flow.operation/feature-verify/v1",
   "flow.operation/feature-seal/v1",
   "work.feature-test-receipt/v1",
+  "work.feature-capture-receipt/v1",
   "work.feature-verification-receipt/v1",
   "work.feature-critique-receipt/v1",
   "flow.validator/feature-test-receipt/v1",
+  "flow.validator/feature-capture-receipt/v1",
+  "flow.feature-candidate-view/v1",
 ]);
 
 const FLOW_RUNTIME_OPERATIONS = [
@@ -390,7 +400,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@28",
+  catalog_id: "flow.contract-catalog/v1@29",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -408,6 +418,57 @@ const EVIDENCE_SAFETY = {
     artifact_acceptance: "receipt_only_non_authoritative_binding",
     resource_handoff_publication: "receipt_only_non_authoritative_binding",
   },
+};
+const RESULT_BINDINGS = {
+  authority: "RunAuthority",
+  declaration: "flow.result-binding/v1",
+  record: "flow.result-binding-record/v1",
+  provenance: "flow.result-provenance/v1",
+  identity: "flow.result-identity/v1",
+  revision_delta: "flow.result-binding-delta/v1",
+  plan_field: "result_bindings",
+  declaration_shape: "exact_producer_card_output_contract_expected_schema",
+  dependency_transfer: "declarations_only_no_data_transfer",
+  settlement: "accepted_active_successful_settlement_only",
+  storage: "append_only_authority_owned_result_history",
+  duplicate_settlement: "idempotent_exact_identity",
+  consumer_inputs: "exact_result_identity_and_content_digest_before_invocation",
+  replay: "adopt_exact_recorded_binding",
+  supersession: "stale_or_superseded_binding_fails_closed",
+};
+const FEATURE_CAPTURE = {
+  authority: "RunAuthority",
+  operation: "flow.operation/feature-capture/v1",
+  policy: "flow.feature-capture-policy/v1",
+  receipt: "work.feature-capture-receipt/v1",
+  validator: "flow.validator/feature-capture-receipt/v1",
+  candidate_view: "flow.feature-candidate-view/v1",
+  finalization: "flow.feature-finalization-binding/v1",
+  publication: "flow.resource-handoff-publication/v1",
+  sequence: ["mutation", "capture", "verification", "critique", "seal"],
+  observation: "provider_exact_post_mutation_workspace_git_and_artifact_fence",
+  preparation: "starting_workspace_policy_and_contract_references_only",
+  candidate_identity: [
+    "commit_sha",
+    "tree_sha",
+    "ref",
+    "clean",
+    "artifact_digest",
+    "artifact_size",
+  ],
+  artifact_storage: "authority_owned_artifact_bytes",
+  late_or_cancelled: "quarantined_evidence_never_usable",
+};
+const PLAN_REVISION_RESULT_BINDINGS = {
+  authority: "RunAuthority",
+  template_field: "result_binding_changes",
+  delta: "flow.result-binding-delta/v1",
+  application: "atomic_with_cards_edges_capabilities_resources_limits_supersession",
+  replacement: "explicit_producer_consumer_output_contract_and_schema_mapping",
+  unaffected: "preserve_unaffected_declarations",
+  history: "append_only_old_result_records",
+  superseded: "superseded_producers_and_bindings_are_unusable",
+  gated_or_declined: "active_declarations_unchanged",
 };
 const REVIEW_AUTHORITY = {
   authority: "ReviewAuthority",
@@ -605,6 +666,38 @@ export async function loadContractCatalog({
     OPERATION_EXECUTION.receipt_validator,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("registered operation contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.result_bindings,
+    RESULT_BINDINGS,
+  ) || ![
+    RESULT_BINDINGS.declaration,
+    RESULT_BINDINGS.record,
+    RESULT_BINDINGS.provenance,
+    RESULT_BINDINGS.identity,
+    RESULT_BINDINGS.revision_delta,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("result binding contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.feature_capture,
+    FEATURE_CAPTURE,
+  ) || ![
+    FEATURE_CAPTURE.operation,
+    FEATURE_CAPTURE.policy,
+    FEATURE_CAPTURE.receipt,
+    FEATURE_CAPTURE.validator,
+    FEATURE_CAPTURE.candidate_view,
+    FEATURE_CAPTURE.finalization,
+    FEATURE_CAPTURE.publication,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("feature capture contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.plan_revision_result_bindings,
+    PLAN_REVISION_RESULT_BINDINGS,
+  ) || !catalog.contracts.includes(PLAN_REVISION_RESULT_BINDINGS.delta)) {
+    throw new Error("plan revision result binding contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.flow_runtime?.tracker_progress,

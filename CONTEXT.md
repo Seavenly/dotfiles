@@ -179,11 +179,54 @@ Registered-operation evidence that binds either a safe baseline to a distinct
 post-mutation state or a compensating assertion to its satisfied receipt.
 _Avoid_: Delegate self-report, selected fingerprint alone
 
+**Result-binding declaration**:
+The exact prepared-plan relationship between one producer card, its output
+contract, its expected schema, and one consumer card. Dependency edges order
+cards but never transfer result data; a consumer receives only the
+authority-owned record selected by this declaration.
+_Avoid_: Dependency-only input, latest result, caller-shaped evidence
+
+**Result binding record**:
+The immutable RunAuthority record of an accepted active operation result. It
+binds the producer attempt, generation and mutation epoch when applicable,
+provenance, observed schema, content digest, result identity, and self digest.
+_Avoid_: Return value, mutable output cache
+
+**Feature capture receipt**:
+The strict `work.feature-capture-receipt/v1` observation of the post-mutation
+workspace, clean Git commit, tree, ref, and artifact byte descriptors. It is
+created by the registered capture operation after launch and before
+verification, critique, or sealing.
+_Avoid_: Prepared candidate identity, caller-supplied digest, static resource claim
+
+**Feature capture policy**:
+The versioned identity-free preparation binding for the selected starting
+workspace and clean Git facts, permitted transformations, receipt validator,
+retention, disposition, and exact publication consumer policy. It carries no
+future candidate, promoted Git, artifact, or patch identity; the finalization
+binding is derived only after the authority records a post-mutation capture.
+_Avoid_: Future candidate plan, caller-shaped publication, dependency-only policy
+
+**Feature candidate view**:
+The deterministic candidate projection derived from one exact feature capture
+binding. It carries the captured workspace and Git fence, artifact digests, and
+capture identities that verification, critique, and finalization consume.
+_Avoid_: Planned candidate, latest workspace, inferred finalization
+
+**Result-binding revision delta**:
+The explicit `flow.result-binding-delta/v1` add/remove declaration set applied
+atomically with a plan revision's cards, edges, capabilities, resources,
+limits, and supersession. Unaffected declarations remain unchanged, while
+superseded records stay in append-only history and cannot be consumed.
+_Avoid_: In-place evidence rewrite, implicit replacement, widened dependency
+
 **Feature finalization binding**:
-The selected candidate identity and exact handoff publication that cross-bind
-the workspace generation, mutation epoch, clean Git transition, artifacts, and
-retention before execution begins.
-_Avoid_: Latest workspace, publication assembled after verification
+The authority-derived candidate identity and exact handoff publication that
+cross-bind the captured workspace generation, mutation epoch, clean Git
+transition, artifacts, and retention before sealing. Preparation may bind the
+starting facts and publication policy, but the candidate identities come from
+the settled post-mutation capture.
+_Avoid_: Latest workspace, caller-provided candidate, publication assembled from a dependency edge
 
 **Feature verification receipt**:
 The registered verification operation's self-digest-bound verdicts and

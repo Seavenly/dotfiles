@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v28 binds it to
-`flow.contract-catalog/v1@28`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v29 binds it to
+`flow.contract-catalog/v1@29`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -32,6 +32,38 @@ Windows, UNC, URI, cwd, traversal, or encoded paths, authority-bearing
 capability material, and ambiguous or malformed encodings. Conceptual research
 prose and immutable public source URIs remain valid. The validator performs no
 filesystem, environment, process, transcript, cwd, or credential reads.
+
+## Result binding and feature capture
+
+The public catalog publishes `flow.result-binding/v1` declarations for every
+explicit producer and consumer evidence relationship. A declaration names the
+producer card, output contract, and expected schema; dependency edges order
+execution and never transfer data. Accepted active successful settlements are
+recorded by RunAuthority as immutable
+`flow.result-binding-record/v1` values with
+`flow.result-provenance/v1`, attempt, generation, mutation-epoch, content, and
+result identities. Consumer effect intents bind those exact result identities
+and content digests before Adapter invocation. Recovery and replay adopt the
+same records, while missing, ambiguous, stale, or superseded records fail
+closed.
+
+Feature preparation binds the starting workspace, permitted transformations,
+validation and retention policy, and exact result declarations. It does not
+bind a future commit, tree, artifact digest, or patch bytes. After launch, the
+registered `flow.operation/feature-capture/v1` observes the post-mutation
+workspace and returns `work.feature-capture-receipt/v1`, including exact clean
+Git identities and artifact byte digest and size evidence. The resulting
+`flow.feature-candidate-view/v1` is the sole candidate input for verification,
+critique, and `flow.feature-finalization-binding/v1`. Late or cancelled capture
+outputs remain quarantined evidence.
+
+Plan revisions carry an explicit `flow.result-binding-delta/v1` in
+`result_binding_changes`. The delta is applied atomically with graph changes
+and supersession, preserving unaffected declarations and append-only result
+history. New capture results are required for replacement evidence. Prepared
+bundles with result declarations must satisfy this catalog exactly and are
+rejected when incompatible. Plans and recorded runs without result bindings
+retain the supported legacy replay path.
 
 ## FlowRuntime
 
@@ -434,6 +466,15 @@ workspace fingerprint. Other serialized verify arrangements require the
 aggregate compensating assertion. Test-only slices may retain a safe baseline
 for the aggregate verification receipt.
 
+An identity-free selection may provide a versioned `capture_policy` using
+`flow.feature-capture-policy/v1`. It binds the selected starting workspace and
+clean Git facts, permitted transformations, receipt validator, retention and
+workspace disposition, plus the exact publication subject, consumer authority,
+cleanup obligations, and intended consumer. It contains no candidate, promoted
+commit or tree, artifact, or patch identity. A legacy selection with an
+explicit `flow.feature-finalization-binding/v1` keeps its publication policy;
+the identity-free policy input is rejected when both are supplied.
+
 The compiler carries test intent in a `test_selection` shaped as
 `flow.feature-test-selection/v1`; this is selection identity, not a registered
 test receipt. Registered test operations must independently return
@@ -467,6 +508,15 @@ verification evidence bound to the prior operation sequence. The workspace
 claim recheck fences generation, mutation epoch, and Git fingerprint
 immediately before every Adapter invocation. Independent apply and critique
 delegate routes and one exact finalization publication remain required.
+
+Each serialized feature path uses the sequence apply, capture, verify, critique,
+and seal. A test slice captures the post-mutation snapshot before its slice
+verification; mixed paths use one exact capture for each mutation slice and one
+terminal capture for aggregate verification and critique when that snapshot is
+the same candidate. Bounded repairs add a fresh capture card and explicitly
+rebind downstream declarations to it. Verification and critique therefore
+consume the actual captured candidate rather than a dependency edge or a
+caller-provided latest value.
 
 The seal operation receives only authority-materialized evidence selected by
 card identity. Success requires exact acceptance coverage with passed verdicts,
@@ -1014,9 +1064,9 @@ that rule with attempted Drovr-authored cards and terminal events.
 
 The managed sources under `config/flow/` are:
 
-- `contracts/catalog.v1.json` - public contract names, the five
-  `FlowRuntime` operations, authority ownership, and the reboot-admission
-  typed-fact and uncertainty policy. Any future import registration must name
+- `contracts/catalog.v1.json` - public contract names, result-binding and
+  feature-capture identities, the five `FlowRuntime` operations, authority
+  ownership, and the reboot-admission typed-fact and uncertainty policy. Any future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
   bytes by digest, pass every required validation, and select only the catalog's
   positive `artifact_bytes` subject.

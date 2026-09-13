@@ -155,6 +155,7 @@ function validReviewDiscriminatingEvidence(
   }
   return hasExactKeys(evidence, [
     "assertion_receipt_digest",
+    "distinguished",
     "kind",
     "non_destructive",
     "post_mutation_fingerprint",
@@ -166,6 +167,7 @@ function validReviewDiscriminatingEvidence(
     evidence.selected_fingerprint === selectedFingerprint &&
     evidence.post_mutation_fingerprint === postMutationFingerprint &&
     isDigest(evidence.assertion_receipt_digest) &&
+    evidence.distinguished === true &&
     evidence.non_destructive === true && evidence.satisfied === true;
 }
 
