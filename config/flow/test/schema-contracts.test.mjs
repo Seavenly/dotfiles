@@ -46,6 +46,7 @@ test("delegate input envelope schemas compile in strict mode", async () => {
     "flow.delegate-execution-resource-selection.v1.schema.json",
     "flow.delegate-execution-resource-reference.v1.schema.json",
     "flow.delegate-execution-authority.v1.schema.json",
+    "flow.delegate-failure-observation.v1.schema.json",
     "flow.delegate-predecessor-evidence.v1.schema.json",
     "flow.delegate-output-requirements.v1.schema.json",
   ];
@@ -133,6 +134,53 @@ test("delegate input envelope schemas compile in strict mode", async () => {
   assert.equal(validate(forbidden), false);
 });
 
+test("delegate task-input schema rejects forbidden aliases recursively", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schema = JSON.parse(await readFile(join(
+    root,
+    "schemas",
+    "flow.delegate-task-inputs.v1.schema.json",
+  ), "utf8"));
+  const validate = ajv.compile(schema);
+  for (const alias of [
+    "ambientTranscript",
+    "capability-secret",
+    "credentialStore",
+    "workspacePath",
+    "working-directory",
+    "fullBundle",
+    "preparedBundle",
+    "private-key",
+    "apiKey",
+    "access-key",
+  ]) {
+    const value = {
+      schema: "flow.delegate-task-inputs/v1",
+      nested: [{ [alias]: "forbidden" }],
+    };
+    assert.equal(validate(value), false, JSON.stringify(value));
+  }
+});
+
+test("delegate failure observation schema is strict and preserves operator fields", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const schema = JSON.parse(await readFile(join(
+    root,
+    "schemas",
+    "flow.delegate-failure-observation.v1.schema.json",
+  ), "utf8"));
+  const validate = ajv.compile(schema);
+  const valid = {
+    schema: "flow.delegate-failure-observation/v1",
+    code: "invalid_envelope",
+    stage: "delegate_effect_materialization",
+    retryable: false,
+  };
+  assert.equal(validate(valid), true, ajv.errorsText(validate.errors));
+  assert.equal(validate({ ...valid, unknown: "not-public" }), false);
+  assert.equal(validate({ ...valid, retryable: "false" }), false);
+});
+
 test("predecessor evidence schema branches reject unknown fields", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const schema = JSON.parse(await readFile(
@@ -159,6 +207,25 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
       evidence: {
         schema: "flow.delegate-evidence/v1",
         validated_output: "{\"findings\":[]}",
+        evidence_safety_receipt: {
+          schema: "flow.evidence-safety-receipt/v1",
+          policy_id: "flow.evidence-safety-policy/v1",
+          catalog_id: "flow.contract-catalog/v1@29",
+          classification: "delegate_evidence",
+          allowed_use: ["delegate_transfer"],
+          input_digest: `sha256:${"e".repeat(64)}`,
+          receipt_digest: `sha256:${"f".repeat(64)}`,
+          self_digest: `sha256:${"f".repeat(64)}`,
+        },
+        evidence_safety_binding: {
+          schema: "flow.evidence-safety-binding/v1",
+          boundary: "delegate_transfer",
+          receipt_digest: `sha256:${"f".repeat(64)}`,
+          input_digest: `sha256:${"e".repeat(64)}`,
+          subject_digest: `sha256:${"e".repeat(64)}`,
+          binding_digest: `sha256:${"a".repeat(64)}`,
+          self_digest: `sha256:${"a".repeat(64)}`,
+        },
       },
     }],
     operation_receipts: [{
@@ -187,6 +254,9 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
   assert.equal(validate(digestEvidence), true, ajv.errorsText(validate.errors));
   assert.equal(validate(delegateEvidence), true, ajv.errorsText(validate.errors));
   assert.equal(validate(completeEvidence), true, ajv.errorsText(validate.errors));
+  const missingSafety = structuredClone(completeEvidence);
+  delete missingSafety.accepted_delegates[0].evidence.evidence_safety_binding;
+  assert.equal(validate(missingSafety), false);
   assert.equal(validate({ ...digestEvidence, transcript: "not evidence" }), false);
   assert.equal(validate({ ...delegateEvidence, authority: "not evidence" }), false);
   assert.equal(validate({ ...completeEvidence, mystery: true }), false);

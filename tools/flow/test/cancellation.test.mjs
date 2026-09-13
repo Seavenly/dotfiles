@@ -5,7 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { confirmedLaunchRequest, dynamicCheckpointProposal } from
   "../test-support/dynamic-checkpoint.mjs";
 import {
@@ -13,6 +12,9 @@ import {
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+} from "../test-support/fixed-host-identity.mjs";
 
 test("cancellation irreversibly stops new admission", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-cancel-"));
@@ -199,6 +201,14 @@ test("a late operation result after cancellation remains quarantined evidence", 
     attempt_id: `${launch.run_id}:record-outcome:attempt:1`,
     card_id: "record-outcome",
     effect_id: executing.effects[0].effect_id,
+    retry: {
+      schema: "flow.operation-retry-projection/v1",
+      status: "exhausted",
+      consumed_attempts: 1,
+      max_attempts: 1,
+      remaining_attempts: 0,
+      not_before: null,
+    },
     status: "abandoned",
   }]);
   assert.equal(cancelled.effects[0].status, "unresolved");

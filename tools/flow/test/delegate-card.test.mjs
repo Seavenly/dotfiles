@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   delegateCompatibilityIssue,
   snapshotRequiredDrovrFeatures,
@@ -16,7 +17,6 @@ import {
 import { observeCardBlock } from
   "../src/card-block-observation-adapter.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import {
   capabilityBlockedDelegateProposal,
   completedTurnProjection,
@@ -27,8 +27,12 @@ import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
 import { confirmedLaunchRequest } from
   "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from
   "../test-support/fixed-host-identity.mjs";
+import { executionTimeFacts } from "../test-support/time-facts.mjs";
 
 test("FlowRuntime executes one exact delegate card from reserved authority", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
@@ -69,6 +73,7 @@ test("FlowRuntime executes one exact delegate card from reserved authority", asy
         validate(output) {
           return output === "accepted output";
         },
+        evidenceSafety: validateDelegateEvidenceSafety,
       },
     },
   });
@@ -118,6 +123,7 @@ test("FlowRuntime executes one exact delegate card from reserved authority", asy
   assert.equal(calls[1][1].input_key, `${callerKey}:input:1`);
   const transmitted = JSON.parse(calls[1][1].prompt);
   assert.equal(transmitted.schema, DELEGATE_INPUT_ENVELOPE_SCHEMA);
+  assert.equal(transmitted.instructions, "inspect the exact candidate");
   assert.deepEqual(transmitted.execution_authority, {
     schema: "flow.delegate-execution-authority/v1",
     owner: "RunAuthority",
@@ -140,6 +146,12 @@ test("FlowRuntime executes one exact delegate card from reserved authority", asy
     "accepted output");
   assert.equal(completed.delegate_attempts[0].evidence
     .terminal_disposition.status, "retired");
+  assert.equal(completed.delegate_attempts[0].evidence.drovr_watermark.schema,
+    "drovr.turn-authority-watermark/v1");
+  assert.ok(completed.delegate_attempts[0].evidence.evidence_safety_receipt);
+  assert.ok(completed.delegate_attempts[0].evidence.evidence_safety_binding);
+  assert.equal(completed.delegate_attempts[0].evidence.terminal_disposition
+    .watermark.schema, "drovr.agent-authority-watermark/v1");
   assert.deepEqual(completed.quarantined_delegate_outputs, []);
   assert.deepEqual(completed.legal_actions, []);
 });
@@ -336,6 +348,7 @@ test("workspace-write cannot bypass a workspace claim by declaring read_only", a
         validate(output) {
           return output === "accepted output";
         },
+        evidenceSafety: validateDelegateEvidenceSafety,
       },
     },
   });
@@ -454,6 +467,93 @@ test("delegate recovery discovers the reserved attempt before dispatch", async (
     `${launch.run_id}:delegate-review:attempt:1`);
   assert.equal(recoveredRuntime.query({ run_id: launch.run_id })
     .delegate_attempts[0].status, "accepted");
+});
+
+test("credential-shaped delegate output is quarantined before validated_output", async (t) => {
+  const credentialShapedOutput = ["sk", "live", "1234567890credential"].join("_");
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-credential-output"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const runtime = delegateRuntime(authority, {
+    async wait({ turn_id: turnId }) {
+      return completedTurnProjection({
+        callerKey: `${launch.run_id}:delegate-review:attempt:1`,
+        description,
+        turnId,
+        output: credentialShapedOutput,
+      });
+    },
+  }, () => true);
+  const prepared = runtime.prepare(delegateCardProposal(description));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ status }) => status === "quarantined",
+  ));
+  const projection = runtime.query({ run_id: launch.run_id });
+  const attempt = projection.delegate_attempts[0];
+  assert.equal(attempt.validated_output, null);
+  assert.equal(JSON.stringify(projection).includes(credentialShapedOutput),
+    false);
+  assert.equal(projection.quarantined_delegate_outputs.length, 1);
+});
+
+test("delegate launch rejects validators without evidence safety", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-missing-safety"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const runtime = delegateRuntime(authority, {}, () => true, {
+    evidenceSafety: null,
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(launch.code, "unregistered_delegate_evidence_safety");
+});
+
+test("delegate settlement rejects forged evidence safety receipt or binding", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-forged-safety"),
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  const runtime = delegateRuntime(authority, {
+    async wait({ turn_id: turnId }) {
+      return completedTurnProjection({
+        callerKey: `${launch.run_id}:delegate-review:attempt:1`,
+        description,
+        turnId,
+      });
+    },
+  }, () => true, {
+    evidenceSafety: () => ({
+      accepted: true,
+      receipt: {},
+      binding: {},
+    }),
+  });
+  const prepared = runtime.prepare(delegateCardProposal(description));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await until(() => runtime.query({ run_id: launch.run_id })
+    .delegate_attempts[0].status === "quarantined");
+
+  const attempt = runtime.query({ run_id: launch.run_id }).delegate_attempts[0];
+  assert.equal(attempt.validated_output, null);
 });
 
 test("delegate recovery settles retirement before accepting output", async (t) => {
@@ -576,6 +676,89 @@ test("bounded wait recovery preserves one live attempt without cancellation", as
   assert.equal(completed.delegate_attempts[0].attempt_id, attemptId);
   assert.equal(calls.filter((operation) => operation === "dispatch").length, 1);
   assert.equal(calls.includes("cancel"), false);
+});
+
+test("a hung delegate crossing its active deadline keeps ownership and exposes only cancel", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let wallValueMs = 1_700_000_000_000;
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    timeObservationAdapter: {
+      observe() {
+        return executionTimeFacts({ wallValueMs, bootId: "boot-a" });
+      },
+    },
+  });
+  t.after(() => authority.close());
+  const description = await compatibleDescription();
+  let discoveryCount = 0;
+  let waitStarted;
+  const waitEntered = new Promise((resolve) => { waitStarted = resolve; });
+  const cancellations = [];
+  const runtime = delegateRuntime(authority, {
+    async discover(request) {
+      discoveryCount += 1;
+      return discoveryCount === 1
+        ? absentDiscovery()
+        : workingProjection({
+            agent_id: "agent:delegate-review",
+            caller_key: request.caller_key,
+          });
+    },
+    async dispatch(request) {
+      return workingProjection(request);
+    },
+    async wait() {
+      waitStarted();
+      return new Promise(() => {});
+    },
+    async cancel(request) {
+      cancellations.push(request);
+      return cancelledTurnProjection(request.turn_id);
+    },
+  });
+  const proposal = delegateCardProposal(description, { maxAttempts: 2 });
+  const delegateCard = proposal.graph.cards.find(({ id }) => id === "delegate-review");
+  delegateCard.limits.max_active_seconds = 1;
+  const claim = { kind: "test-resource", id: "delegate-hung" };
+  delegateCard.resource_claims.push(claim);
+  proposal.explicit_facts.resource_claims.push(claim);
+  proposal.explicit_facts.limits.max_resources = 1;
+  proposal.explicit_facts.limits.max_elapsed_seconds = 30;
+  proposal.explicit_facts.time_facts = executionTimeFacts({
+    wallValueMs,
+    bootId: "boot-a",
+  });
+  proposal.requested_authority.commands.push("cancel");
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  approveAndExecute(runtime, launch.run_id);
+  await waitEntered;
+
+  wallValueMs += 2_000;
+  const expired = runtime.query({ run_id: launch.run_id });
+  assert.equal(expired.execution_time.status, "exhausted");
+  assert.equal(expired.execution_time.active_elapsed_seconds.upper >= 2, true);
+  assert.deepEqual(expired.legal_actions.map(({ type }) => type), ["cancel"]);
+  assert.equal(expired.effects[0].invocation_started, true);
+  assert.equal(expired.resource_dispositions[0].disposition, "held");
+  const originalOwnership = expired.run_ownership;
+  const originalCallerKey = expired.delegate_attempts[0].caller_key;
+
+  const cancellationReceipt = runtime.command(expired.legal_actions[0]);
+  assert.equal(cancellationReceipt.accepted, true, JSON.stringify(cancellationReceipt));
+  await until(() => cancellations.length === 1);
+  const cancelled = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(cancellations, [{
+    schema: "flow.delegated-agent-cancel-request/v1",
+    turn_id: "turn:delegate-review",
+  }]);
+  assert.deepEqual(cancelled.run_ownership, originalOwnership);
+  assert.equal(cancelled.delegate_attempts[0].caller_key, originalCallerKey);
+  assert.equal(cancelled.legal_actions.some(({ type }) =>
+    ["delegate_execute", "operation_execute"].includes(type)), false);
 });
 
 for (const status of ["needs_input", "cancelled"]) {
@@ -977,11 +1160,13 @@ test("settled output becomes evidence only after independent validation", async 
   assert.equal(projection.delegate_attempts[0].evidence, null);
   assert.equal(projection.quarantined_delegate_outputs[0]
     .quarantine_record.quarantine_reason, "independent_validation_failed");
-  assert.deepEqual(projection.quarantined_delegate_outputs[0]
-    .quarantine_record.validator_receipts, [{
-      contract: DELEGATE_OUTPUT_VALIDATOR,
-      accepted: false,
-    }]);
+  const validatorReceipt = projection.quarantined_delegate_outputs[0]
+    .quarantine_record.validator_receipts[0];
+  assert.equal(validatorReceipt.contract, DELEGATE_OUTPUT_VALIDATOR);
+  assert.equal(validatorReceipt.accepted, false);
+  assert.equal(validatorReceipt.evidence_safety_accepted, true);
+  assert.ok(validatorReceipt.evidence_safety_receipt);
+  assert.ok(validatorReceipt.evidence_safety_binding);
 });
 
 test("missing Drovr features block launch with typed compatibility", async (t) => {
@@ -1042,7 +1227,10 @@ test("incomplete DelegatedAgentPort blocks launch without degraded execution", a
       async wait() {},
     },
     delegateOutputValidators: {
-      [DELEGATE_OUTPUT_VALIDATOR]: { validate: () => true },
+      [DELEGATE_OUTPUT_VALIDATOR]: {
+        validate: () => true,
+        evidenceSafety: validateDelegateEvidenceSafety,
+      },
     },
   });
 
@@ -2419,6 +2607,7 @@ function delegateRuntime(
   authority,
   portOverrides,
   validate = (output) => output === "accepted output",
+  { evidenceSafety = validateDelegateEvidenceSafety } = {},
 ) {
   return createFlowRuntime({
     runAuthority: authority,
@@ -2439,6 +2628,7 @@ function delegateRuntime(
     delegateOutputValidators: {
       [DELEGATE_OUTPUT_VALIDATOR]: {
         validate,
+        evidenceSafety,
       },
     },
   });

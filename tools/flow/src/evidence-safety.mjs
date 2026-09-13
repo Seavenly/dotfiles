@@ -218,6 +218,51 @@ export function validateEvidenceSafety(request) {
 }
 
 /**
+ * Validate and bind one exact delegated output for the transferable evidence
+ * boundary. Semantic output validators remain separate from this policy, but
+ * every accepted output must carry an authentic receipt and binding for the
+ * same canonical subject.
+ */
+export function validateDelegateEvidenceSafety(output, {
+  classification = "delegate_evidence",
+} = {}) {
+  const subject = delegateEvidenceSubject(output);
+  let request;
+  try {
+    request = createEvidenceSafetyRequest({
+      classification,
+      allowed_use: ["delegate_transfer"],
+      input: subject,
+    });
+  } catch (error) {
+    return rejected(error?.reason ?? "invalid_input");
+  }
+  const validation = validateEvidenceSafety(request);
+  if (!validation.accepted) return validation;
+  const binding = bindDelegateEvidenceReceipt(validation.receipt, {
+    subject_digest: digest(subject),
+  });
+  if (!binding.accepted) return binding;
+  return {
+    accepted: true,
+    receipt: validation.receipt,
+    binding: binding.binding,
+  };
+}
+
+function delegateEvidenceSubject(output) {
+  if (typeof output !== "string") return output;
+  try {
+    const parsed = JSON.parse(output);
+    if (JSON.stringify(parsed) === output) return parsed;
+  } catch {
+    // Semantic output validation owns malformed-output handling. The safety
+    // scanner still classifies the exact non-JSON string below.
+  }
+  return output;
+}
+
+/**
  * Bind one accepted safety receipt to a non-authoritative boundary.  The
  * binder carries only immutable digest identities and cannot grant lifecycle,
  * publication, mutation, or capability authority.
@@ -504,13 +549,19 @@ function scanInput(input) {
     ancestors: new Set(),
   };
   try {
-    return scanValue(input, state, "input");
+    return scanValue(input, state, "input", null, []);
   } catch (error) {
     return canonicalFailure(error);
   }
 }
 
-function scanValue(value, state, keyName, inheritedLateKey = null) {
+function scanValue(
+  value,
+  state,
+  keyName,
+  inheritedLateKey = null,
+  keyPath = [],
+) {
   const activeLateKey = LATE_EVIDENCE_KEY.test(keyName)
     ? keyName
     : inheritedLateKey;
@@ -538,7 +589,13 @@ function scanValue(value, state, keyName, inheritedLateKey = null) {
         issue = "non_canonical_input";
         break;
       }
-      issue = scanValue(value[index], state, String(index), activeLateKey);
+      issue = scanValue(
+        value[index],
+        state,
+        String(index),
+        activeLateKey,
+        [...keyPath, String(index)],
+      );
     }
     if (!issue && Reflect.ownKeys(value).length !== value.length + 1) {
       issue = "unexpected_input_fields";
@@ -561,12 +618,18 @@ function scanValue(value, state, keyName, inheritedLateKey = null) {
         "object_key",
         (candidate) => {
           semanticKey = candidate;
-          return inspectKeyAndValue(candidate, child);
+          return inspectKeyAndValue(candidate, child, keyPath);
         },
         { base64MinimumLength: 4 },
       );
       if (issue) break;
-      issue = scanValue(child, state, semanticKey, activeLateKey);
+      issue = scanValue(
+        child,
+        state,
+        semanticKey,
+        activeLateKey,
+        [...keyPath, key],
+      );
       if (issue) break;
     }
     if (!issue && Reflect.ownKeys(value).length !== Object.keys(value).length) {
@@ -578,7 +641,7 @@ function scanValue(value, state, keyName, inheritedLateKey = null) {
   return issue;
 }
 
-function inspectKeyAndValue(key, value) {
+function inspectKeyAndValue(key, value, parentPath = []) {
   if (isLateResultKey(key) && hasSubstantiveLateResult(value)) {
     return "cancelled_or_late_evidence";
   }
@@ -606,11 +669,25 @@ function inspectKeyAndValue(key, value) {
     }
     return "credential_material";
   }
+  if (isApprovedReviewLocationPath(key, value, parentPath)) return null;
   if (AMBIENT_KEY.test(key) && typeof value === "string" &&
       !isPlaceholder(value) && !isConceptualProse(value)) {
     return "ambient_filesystem_path";
   }
   return null;
+}
+
+function isApprovedReviewLocationPath(key, value, parentPath) {
+  if (key !== "path" || typeof value !== "string" ||
+      parentPath.length < 3 || parentPath[0] !== "findings" ||
+      parentPath.at(-1) !== "location") return false;
+  if (typeof value !== "string" || value.length === 0 ||
+      value.length > 512 || value !== value.trim()) return false;
+  // Review locations are source-relative labels, never resolver inputs. A
+  // leading dot, slash, drive, tilde, or backslash would reintroduce ambient
+  // filesystem authority and remains rejected by the normal scanner.
+  return /^(?![./\\])(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/u.test(value) &&
+    !value.split("/").some((segment) => segment === "." || segment === "..");
 }
 
 function normalizeSemanticKey(key) {

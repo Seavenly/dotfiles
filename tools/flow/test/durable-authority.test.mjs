@@ -17,7 +17,6 @@ import {
   reduceHostRecoveryEvent,
 } from "../src/backup-restore.mjs";
 import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import {
   capabilityBlockedCheckpointProposal,
@@ -27,12 +26,17 @@ import {
   repeatedRevisionCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 import {
   operationReceipt,
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
+import { executionTimeFacts as rebootTimeFacts } from
+  "../test-support/time-facts.mjs";
 
 function completeReplacementAuthority(overrides = {}) {
   return {
@@ -897,7 +901,7 @@ test("durable effect receipt is fenced if restore activates after Adapter return
       invoke() {
         adapterCalls += 1;
         assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
-        return "provider-returned";
+        return operationReceipt(intent, { record: "provider-returned" });
       },
     }),
     (error) => error.code === "host_reconciliation_required",
@@ -955,7 +959,7 @@ test("durable async effect settlement is fenced when restore activates while pen
 
   const manifest = createBackupManifest(observation);
   assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
-  release("provider-returned");
+  release(operationReceipt(intent, { record: "provider-returned" }));
 
   await assert.rejects(
     () => pending,
@@ -2259,9 +2263,9 @@ test("only a complete durable effect intent is invoked and receipted", async (t)
     assert.notEqual(intent[field], undefined, field);
   }
 
-  assert.equal(await authority.invokeEffect(intent, {
-    invoke: () => "invoked",
-  }), "invoked");
+  assert.deepEqual(await authority.invokeEffect(intent, {
+    invoke: () => operationReceipt(intent, { record: "invoked" }),
+  }), operationReceipt(intent, { record: "invoked" }));
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
   assert.equal(runtime.query().admission.active_runs, 0);
   await assert.rejects(
@@ -2279,6 +2283,85 @@ test("only a complete durable effect intent is invoked and receipted", async (t)
     }),
     (error) => error.code === "effect_already_recorded",
   );
+});
+
+test("RunAuthority rejects malformed or non-positive invoked effect receipts", async (t) => {
+  const candidates = [
+    ["undefined", () => undefined],
+    ["string", () => "retried"],
+    ["null provider evidence", (intent) => ({
+      ...operationReceipt(intent),
+      provider_receipt: null,
+    })],
+    ["empty provider evidence", (intent) => ({
+      ...operationReceipt(intent),
+      provider_receipt: {},
+    })],
+    ["unknown-only provider evidence", (intent) => ({
+      ...operationReceipt(intent),
+      provider_receipt: { opaque: "provider-secret-canary" },
+    })],
+    ["array emptied by sanitization", (intent) => ({
+      ...operationReceipt(intent),
+      provider_receipt: ["sk_live_array_receipt_canary"],
+    })],
+    ["wrong schema", (intent) => ({
+      ...operationReceipt(intent),
+      schema: "flow.other-receipt/v1",
+    })],
+    ["missing identity", (intent) => {
+      const receipt = operationReceipt(intent);
+      delete receipt.effect_id;
+      return receipt;
+    }],
+    ["mismatched identity", (intent) => ({
+      ...operationReceipt(intent),
+      effect_id: `${intent.effect_id}:other`,
+    })],
+    ["negative outcome", (intent) => ({
+      ...operationReceipt(intent),
+      outcome: "not_created",
+    })],
+  ];
+
+  for (const [label, candidate] of candidates) {
+    await t.test(label, async (testContext) => {
+      const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-receipt-"));
+      testContext.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+      const authority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity("boot-a", `process-${label}`),
+        lifecycleKernel: effectLifecycle,
+      });
+      testContext.after(() => authority.close());
+      const runtime = createFlowRuntime({ runAuthority: authority });
+      const launch = launchDistinctRun(runtime, "7");
+      const commandReceipt = runtime.command(
+        runtime.query({ run_id: launch.run_id }).legal_actions[0],
+      );
+      const [intent] = commandReceipt.effect_intents;
+
+      await assert.rejects(
+        () => authority.invokeEffect(intent, {
+          invoke: () => candidate(intent),
+        }),
+        (error) => error.code === "invalid_effect_receipt",
+      );
+
+      const projection = authority.query(launch.run_id);
+      assert.equal(projection.effects[0].receipt, null);
+      assert.equal(projection.effects[0].status, "unresolved");
+      assert.equal(
+        projection.effects[0].last_observation.provider_observation.status,
+        "invalid_output",
+      );
+      assert.equal(
+        projection.effects[0].last_observation.provider_observation
+          .code,
+        "invalid_effect_receipt",
+      );
+    });
+  }
 });
 
 test("authority rejects kernel resource claims outside prepared facts", async (t) => {
@@ -2331,11 +2414,11 @@ test("deferred terminal events survive out-of-order multi-effect settlement", as
   });
 
   await authority.invokeEffect(second.effect_intents[0], {
-    invoke: () => "terminal-first",
+    invoke: (intent) => operationReceipt(intent, { record: "terminal-first" }),
   });
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "active");
   await authority.invokeEffect(first.effect_intents[0], {
-    invoke: () => "first-last",
+    invoke: (intent) => operationReceipt(intent, { record: "first-last" }),
   });
 
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
@@ -2419,9 +2502,9 @@ test("a rejected asynchronous effect is not receipted", async (t) => {
     }),
     /provider failed/,
   );
-  assert.equal(await authority.invokeEffect(intent, {
-    invoke: async () => "retried",
-  }), "retried");
+  assert.deepEqual(await authority.invokeEffect(intent, {
+    invoke: async () => operationReceipt(intent, { record: "retried" }),
+  }), operationReceipt(intent, { record: "retried" }));
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
 });
 
@@ -2493,8 +2576,8 @@ test("concurrent dispatch reaches the effect Adapter only once", async (t) => {
     }),
     (error) => error.code === "effect_dispatch_in_progress",
   );
-  settle("done");
-  assert.equal(await first, "done");
+  settle(operationReceipt(intent, { record: "done" }));
+  assert.deepEqual(await first, operationReceipt(intent, { record: "done" }));
   assert.equal(invocationCount, 1);
 });
 
@@ -2524,7 +2607,7 @@ test("same-authority recovery waits for the in-flight effect before retrying", a
     if (invocationCount === 1) {
       return new Promise((_, reject) => { rejectInitial = reject; });
     }
-    return "retried";
+    return operationReceipt(receivedIntent, { record: "retried" });
   };
   const initial = authority.invokeEffect(intent, { invoke });
   await until(() => typeof rejectInitial === "function");
@@ -2544,7 +2627,8 @@ test("same-authority recovery waits for the in-flight effect before retrying", a
   const retry = authority.invokeEffect(recoveryIntent, { invoke });
   rejectInitial(new Error("initial provider failure"));
   await assert.rejects(initial, /initial provider failure/);
-  assert.equal(await retry, "retried");
+  assert.deepEqual(await retry,
+    operationReceipt(recoveryIntent, { record: "retried" }));
 
   const completed = runtime.query({ run_id: launch.run_id });
   assert.equal(invocationCount, 2);
@@ -2600,11 +2684,12 @@ test("same-key recovery rejects an intent changed while dispatch is in flight", 
   const changed = authority.invokeEffect(changedIntent, {
     invoke() {
       invocationCount += 1;
-      return "must not run";
+      return operationReceipt(changedIntent, { record: "must not run" });
     },
   });
-  settleInitial("initial receipt");
-  assert.equal(await initial, "initial receipt");
+  settleInitial(operationReceipt(intent, { record: "initial receipt" }));
+  assert.deepEqual(await initial,
+    operationReceipt(intent, { record: "initial receipt" }));
   await assert.rejects(
     changed,
     (error) => error.code === "unrecorded_effect_intent",
@@ -2633,7 +2718,7 @@ test("settlement after lock release cannot write an effect receipt", async (t) =
 
   await Promise.resolve();
   authority.close();
-  settle("provider-settled");
+  settle(operationReceipt(intent, { record: "provider-settled" }));
   await assert.rejects(
     () => invocation,
     (error) => error.code === "stale_authority_epoch",
@@ -2644,9 +2729,9 @@ test("settlement after lock release cannot write an effect receipt", async (t) =
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
   });
   t.after(() => recovered.close());
-  assert.equal(await recovered.invokeEffect(intent, {
-    invoke: () => "reconciled",
-  }), "reconciled");
+  assert.deepEqual(await recovered.invokeEffect(intent, {
+    invoke: () => operationReceipt(intent, { record: "reconciled" }),
+  }), operationReceipt(intent, { record: "reconciled" }));
 });
 
 test("same-boot recovery adopts the exact outstanding effect", async (t) => {
@@ -2675,6 +2760,7 @@ test("same-boot recovery adopts the exact outstanding effect", async (t) => {
   await recoveredAuthority.invokeEffect(intent, {
     invoke(adopted) {
       invoked = adopted;
+      return operationReceipt(adopted);
     },
   });
 
@@ -3287,6 +3373,8 @@ async function runCrossBootRepeatExactRecovery(t, classification) {
     },
   };
   const proposal = registeredOperationProposal({ classification });
+  proposal.graph.cards.find(({ id }) => id === "record-outcome")
+    .limits.max_attempts = 3;
   proposal.explicit_facts.time_facts = rebootTimeFacts({
     wallValueMs: 1_700_000_000_000,
     wallUncertaintyMs: 0,
@@ -3482,39 +3570,4 @@ function withRebootBoot(observation, bootId) {
     time_facts: observation.time_facts.map((fact) =>
       fact.kind === "boot" ? { ...fact, boot_id: bootId } : fact),
   };
-}
-
-function rebootTimeFacts({
-  bootId,
-  monotonicUncertaintyNs,
-  monotonicValueNs,
-  wallUncertaintyMs,
-  wallValueMs,
-}) {
-  return [
-    {
-      schema: "flow.time-fact/v1",
-      kind: "wall_clock",
-      value_ms: wallValueMs,
-      uncertainty_ms: wallUncertaintyMs,
-      clock_source_id: "wall:host-a",
-    },
-    {
-      schema: "flow.time-fact/v1",
-      kind: "suspend_excluding_monotonic",
-      value_ns: monotonicValueNs,
-      uncertainty_ns: monotonicUncertaintyNs,
-      clock_source_id: "mono:host-a",
-    },
-    {
-      schema: "flow.time-fact/v1",
-      kind: "boot",
-      boot_id: bootId,
-    },
-    {
-      schema: "flow.time-fact/v1",
-      kind: "clock_source",
-      identity: "clockset:host-a:v1",
-    },
-  ];
 }

@@ -5,13 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest, idempotencyCommandDigest } from "../src/canonical.mjs";
+import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   createFlowRuntime,
   validateReviewDelegateOutput,
 } from "../src/flow-runtime.mjs";
 import { operationEffectIdentity } from "../src/effect-identity.mjs";
 import {
-  createDurableRunAuthority,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import {
@@ -57,9 +57,27 @@ import {
 } from "../test-support/authority-bindings.mjs";
 import { supportedDescription } from "../test-support/delegated-agent-description.mjs";
 import { dynamicCheckpointProposal } from "../test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from "../test-support/fixed-host-identity.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
 
 const DIGEST = (byte) => `sha256:${byte.repeat(64)}`;
+
+function withReviewRecordRetryCapacity(definition) {
+  return {
+    ...definition,
+    compile(request) {
+      const proposal = definition.compile(request);
+      const record = proposal.graph.cards.find(({ id }) => id === "review-record");
+      record.limits = {
+        ...record.limits,
+        max_attempts: 2,
+      };
+      return proposal;
+    },
+  };
+}
 
 test("review/v1 rejects a minimal self-digest candidate before launch", () => {
   const candidate = minimalReviewCandidate();
@@ -600,13 +618,19 @@ test("an ambiguous GitHub receipt stays one-shot uncertain without reposting", a
   const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
   assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
   const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
-    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
-      cardId === "review-github-pending" && status === "unresolved"));
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId,
+      last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.status === "operation_failure"));
   assert.equal(forge.createCount, 1);
   const pendingEffect = uncertain.effects.find(({ card_id: cardId }) =>
     cardId === "review-github-pending");
   assert.equal(pendingEffect.receipt, null);
-  assert.equal(pendingEffect.last_observation, null);
+  assert.equal(pendingEffect.last_observation.presence, "indeterminate");
+  assert.equal(
+    pendingEffect.last_observation.provider_observation.status,
+    "operation_failure",
+  );
   assert.ok(uncertain.legal_actions.some(({ type }) => type === "recovery"));
   assert.ok(uncertain.legal_actions.some(({ type }) => type === "cancel"));
   assert.equal(
@@ -619,7 +643,8 @@ test("an ambiguous GitHub receipt stays one-shot uncertain without reposting", a
   const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
     projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
       cardId === "review-github-pending" &&
-      observation?.presence === "indeterminate"));
+      observation?.provider_observation?.code ===
+        "github_review_receipt_ambiguous"));
   const blockedEffect = blocked.effects.find(({ card_id: cardId }) =>
     cardId === "review-github-pending");
   assert.equal(blockedEffect.status, "uncertain");
@@ -920,8 +945,10 @@ test("GitHub target movement during recovery remains indeterminate without repos
   const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
   assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
   const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
-    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
-      cardId === "review-github-pending" && status === "unresolved"));
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId,
+      last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.status === "operation_failure"));
   assert.equal(forge.createCount, 1);
   moved = true;
   const recovery = uncertain.legal_actions.find(({ type }) => type === "recovery");
@@ -930,7 +957,8 @@ test("GitHub target movement during recovery remains indeterminate without repos
   const blocked = await waitForProjection(runtime, launch.run_id, (projection) =>
     projection.effects?.some(({ card_id: cardId, last_observation: observation }) =>
       cardId === "review-github-pending" &&
-      observation?.presence === "indeterminate"));
+      observation?.provider_observation?.code ===
+        "github_review_target_moved"));
   assert.equal(blocked.effects.find(({ card_id: cardId }) =>
     cardId === "review-github-pending").status, "uncertain");
   assert.equal(forge.createCount, 1);
@@ -957,8 +985,10 @@ test("GitHub target movement invalidates semantic review authority without losin
   const checkpoint = await driveToAction(runtime, launch.run_id, "checkpoint_decision");
   assert.equal(runtime.command({ ...checkpoint, decision: "approve" }).accepted, true);
   const uncertain = await waitForProjection(runtime, launch.run_id, (projection) =>
-    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId, status }) =>
-      cardId === "review-github-pending" && status === "unresolved"));
+    forge.createCount === 1 && projection.effects?.some(({ card_id: cardId,
+      last_observation: observation }) =>
+      cardId === "review-github-pending" &&
+      observation?.provider_observation?.status === "operation_failure"));
   const subjectId = reviewSubjectId(target);
   const beforeMovement = runtime.query({ review_id: subjectId });
   moved = true;
@@ -1366,6 +1396,11 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
       schemas: ["flow.review-result/v1"],
       validator_contracts: ["flow.validator/review-result/v1"],
     });
+    assert.deepEqual(card.inputs.output_requirements.schemas, card.outputs);
+    assert.deepEqual(
+      card.inputs.output_requirements.validator_contracts,
+      card.validators,
+    );
   }
   assert.deepEqual(cards.get("review-critic").inputs.task_inputs, {
     schema: "flow.delegate-task-inputs/v1",
@@ -1392,6 +1427,14 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
     schemas: ["flow.review-result/v1"],
     validator_contracts: ["flow.validator/review-result/v1"],
   });
+  assert.deepEqual(
+    cards.get("review-critic").inputs.output_requirements.schemas,
+    cards.get("review-critic").outputs,
+  );
+  assert.deepEqual(
+    cards.get("review-critic").inputs.output_requirements.validator_contracts,
+    cards.get("review-critic").validators,
+  );
   assert.notEqual(
     cards.get("review-critic").route.agent_id,
     cards.get("review-lens-security").route.agent_id,
@@ -2630,7 +2673,10 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
     reviewAuthority,
     delegatedAgentPort,
     delegateOutputValidators: {
-      [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: { validate: () => true },
+      [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: {
+        validate: () => true,
+        evidenceSafety: validateDelegateEvidenceSafety,
+      },
     },
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(facts),
@@ -3274,7 +3320,9 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(facts),
     }),
-    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+    predefinedDefinitions: {
+      "review/v1": withReviewRecordRetryCapacity(createReviewDefinition()),
+    },
   });
   const prepared = runtime.prepare({
     schema: "flow.predefined-flow-selection/v1",

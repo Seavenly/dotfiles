@@ -9,25 +9,80 @@
     "schema": { "const": "flow.delegate-task-inputs/v1" }
   },
   "propertyNames": {
-    "not": {
-      "enum": [
-        "ambient_transcript",
-        "bundle",
-        "capability_secret",
-        "credentials",
-        "credential",
-        "cwd",
-        "environment",
-        "full_bundle",
-        "path",
-        "paths",
-        "prepared",
-        "prepared_bundle",
-        "transcript",
-        "working_directory",
-        "workspace_path"
+    "$ref": "#/$defs/transferable-property-name"
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/transferable-value"
+  },
+  "$defs": {
+    "transferable-property-name": {
+      "type": "string",
+      "not": {
+        "enum": [
+          "ambient_transcript",
+          "ambient-transcript",
+          "ambientTranscript",
+          "bundle",
+          "capability_secret",
+          "capability-secret",
+          "capabilitySecret",
+          "credentials",
+          "credential",
+          "credential-store",
+          "credentialStore",
+          "cwd",
+          "environment",
+          "full_bundle",
+          "full-bundle",
+          "fullBundle",
+          "path",
+          "paths",
+          "password",
+          "prepared",
+          "prepared_bundle",
+          "prepared-bundle",
+          "preparedBundle",
+          "private_key",
+          "private-key",
+          "privateKey",
+          "secret",
+          "token",
+          "transcript",
+          "working_directory",
+          "working-directory",
+          "workingDirectory",
+          "workspace_path",
+          "workspace-path",
+          "workspacePath",
+          "api_key",
+          "api-key",
+          "apiKey",
+          "access_key",
+          "access-key",
+          "accessKey"
+        ]
+      }
+    },
+    "transferable-value": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "null" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/transferable-value" }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/transferable-property-name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/transferable-value"
+          }
+        }
       ]
     }
-  },
-  "additionalProperties": true
+  }
 }

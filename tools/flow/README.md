@@ -53,7 +53,9 @@ areas:
 - `predecessor_evidence` - only when the card declares an upstream join, the
   exact RunAuthority-materialized evidence selected by that join; and
 - `output_requirements` - canonical JSON schemas and independent validator
-  contracts.
+  contracts. The card's `outputs` and `validators` arrays are authoritative;
+  when this selection is present, it must equal those declarations exactly and
+  is never an independent caller override.
 
 Execution resource references are access facts, not transferable evidence.
 They never contain a workspace path, credential, capability secret, prepared
@@ -61,10 +63,16 @@ bundle, or ambient transcript. Transferable predecessor evidence retains the
 issue-79 evidence-safety receipt and binding, and is kept distinct from the
 authority facts that grant execution access.
 
-Callers select instructions, minimal task-input IDs and facts, resource
-selection IDs, and output requirements. RunAuthority derives the transmitted
-execution authority from the immutable route's exact effective-authority
-digest plus its accepted capability facts, and injects predecessor evidence
+For a delegate card, `card.inputs.prompt` is the sole canonical source for the
+initial envelope's `instructions` value. `card.inputs.instructions` is not a
+supported alias or override: plan preparation rejects it, and the runtime
+materializer fails closed if it appears in a persisted intent. Steering keeps
+its separate prompt-only contract and cannot replace the initial prompt.
+
+Callers select the card's canonical prompt, minimal task-input IDs and facts,
+resource-selection IDs, and output requirements. RunAuthority derives the
+transmitted execution authority from the immutable route's exact
+effective-authority digest plus its accepted capability facts, and injects predecessor evidence
 only from its exact declared join. A baseline `read-only` route is bound by
 that effective-authority digest and needs no bearer capability grant. Other
 Drovr launch postures use the documented Flow grant mapping (`on-approve` to
@@ -110,8 +118,13 @@ ambient workspace path; local review targets alone receive a read-only
   validator contracts. Revision templates declare their own application cap,
   while the proposal declares card, per-revision card, revision, capability,
   resource, and elapsed-time caps. In this slice, `elapsed_seconds` is an
-  explicit preparation fact: revision admission checks a template's resulting
-  cap against that bound value and does not observe ambient wall-clock time.
+  explicit preparation fact used only to validate a revision template's
+  resulting cap; revision admission does not observe ambient wall-clock time.
+  Runtime wall and active execution deadlines are a separate authority policy:
+  bounded runs refresh typed execution-time facts at launch, effect admission,
+  and settlement boundaries. A missing, invalid, or uncertain time Adapter
+  fails closed with `execution_time_unavailable` or
+  `execution_deadline_uncertain` and does not admit new work.
   Catalog v15 adds Jira parity through the provider-neutral tracker progress
   Adapter contract while preserving the authority-bound GitHub mechanism.
   Catalog v14 adds declared managed-agent reuse, exact-attempt independent
@@ -270,7 +283,9 @@ ambient workspace path; local review targets alone receive a read-only
   While any effect is unresolved, completion-changing checkpoint, revision, and
   operation commands are serialized behind settlement; capability grants and
   exact recovery remain available. Adapter failures leave the effect unresolved
-  for recovery and are not separately classified in the current projection.
+  for recovery and are separately classified as typed operation failures with
+  sanitized diagnostics; provider outages retain their distinct provider
+  unavailable classification.
   A confirmed plan that requests `cancel` authority projects one exact
   watermarked cancellation action. Cancellation commits a terminal fence,
   abandons every incomplete attempt and card, releases host admission, and can
@@ -312,6 +327,12 @@ ambient workspace path; local review targets alone receive a read-only
   requires an exact agent-retirement receipt. Exhausting the cap projects one
   typed `terminal_disposition` decline action instead of stranding an active
   run.
+  Deterministic envelope/materialization failures use the strict
+  `flow.delegate-failure-observation/v1` operator observation, which preserves
+  only the stable `code`, `stage`, and boolean `retryable` fields through
+  durable persistence, replay, and public projections. The observation is
+  cataloged source contract data; malformed or unknown fields are rejected
+  rather than copied into diagnostics.
   A ready subrun card projects `subrun_execute`. Its reconcilable Adapter
   creates or adopts a child ID derived from the parent run, immutable card
   digest, and revision ordinal. The exact confirmed child launch is embedded
@@ -877,6 +898,13 @@ of presence or absence without affirmative provider evidence normalize to
 indeterminate and cannot authorize adoption or invocation; indeterminate
 provider diagnostics are retained while causation is cleared.
 
+Receipt-shaped provider observations use the same versioned receipt policy as
+durable provider receipts. Their observation-derived evidence is limited to
+`found`, `complete`, `proof`, `rejection_code`, `matching_review_count`, and
+`pending_review_count`; unknown fields and secret-shaped values are redacted or
+reject the write. The exact sanitized observation is reused for adoption,
+absence settlement, durable receipt writing, and historical replay.
+
 Same-boot process replacement increments the epoch, replays every active run,
 and automatically dispatches each exact outstanding recovery action before
 considering new work on that run. Read-only and caller-idempotent effects repeat
@@ -1073,8 +1101,11 @@ that rule with attempted Drovr-authored cards and terminal events.
 The managed sources under `config/flow/` are:
 
 - `contracts/catalog.v1.json` - public contract names, the five
-  `FlowRuntime` operations, authority ownership, and the reboot-admission
-  typed-fact and uncertainty policy. Any future import registration must name
+  `FlowRuntime` operations, authority ownership, the execution-time accounting
+  contract, and the reboot-admission typed-fact and uncertainty policy. The
+  current catalog identity is `flow.contract-catalog/v1@29`; a catalog change
+  must update this managed source and the source constants/tests that validate
+  its exact contents. Any future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
   bytes by digest, pass every required validation, and select only the catalog's
   positive `artifact_bytes` subject.
@@ -1082,9 +1113,12 @@ The managed sources under `config/flow/` are:
   `flow.delegate-task-inputs`, `flow.delegate-execution-resource-selection`,
   `flow.delegate-execution-resource-reference`,
   `flow.delegate-execution-authority`, `flow.delegate-predecessor-evidence`,
-  and `flow.delegate-output-requirements` companion schemas - the shared
+  `flow.delegate-failure-observation`, and `flow.delegate-output-requirements`
+  companion schemas - the shared
   canonical input contract used by feature, review, and quick-spike delegates.
 - `schemas/flow.time-fact.v1.schema.json`,
+  `schemas/flow.execution-time-accounting.v1.schema.json`,
+  `schemas/flow.execution-time-projection.v1.schema.json`,
   `schemas/flow.subject-generation.v1.schema.json`,
   `schemas/flow.reboot-effect-recheck.v1.schema.json`, and
   `schemas/flow.reboot-revalidation.v1.schema.json` - typed reboot facts,

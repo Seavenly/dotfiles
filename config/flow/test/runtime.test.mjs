@@ -30,9 +30,13 @@ import {
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
 import { confirmedLaunchRequest } from
   "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from
-  "../../../tools/flow/test-support/fixed-host-identity.mjs";
+import {
+  fixedExecutionTimeAdapter,
+  fixedHostIdentity,
+} from "../../../tools/flow/test-support/fixed-host-identity.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
+import { validateDelegateEvidenceSafety } from
+  "../../../tools/flow/src/evidence-safety.mjs";
 
 test("query exposes the DelegatedAgentPort description without creating a run", async () => {
   const projection = {
@@ -94,6 +98,7 @@ test("public runtime wires exact delegate execution through its composition root
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-runtime"),
+    timeObservationAdapter: fixedExecutionTimeAdapter({ bootId: "boot-a" }),
   });
   t.after(() => runAuthority.close());
   const description = await delegateDescription();
@@ -113,17 +118,21 @@ test("public runtime wires exact delegate execution through its composition root
   });
   const prepared = runtime.prepare(delegateCardProposal(description));
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(launch.schema, "flow.launch-receipt/v1");
   const checkpoint = runtime.query({ run_id: launch.run_id }).legal_actions
     .find(({ decision }) => decision === "approve");
+  assert.ok(checkpoint);
   runtime.command(checkpoint);
   const execute = runtime.query({ run_id: launch.run_id }).legal_actions
     .find(({ type }) => type === "delegate_execute");
+  assert.ok(execute);
 
   runtime.command(execute);
   await until(() => runtime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
 
   const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(runAuthority.query(launch.run_id).phase, "succeeded");
   assert.equal(completed.delegate_attempts[0].status, "accepted");
   assert.equal(callerKey, `${launch.run_id}:delegate-review:attempt:1`);
 });
@@ -949,6 +958,7 @@ function delegateValidators() {
       validate(output) {
         return output === "accepted output";
       },
+      evidenceSafety: validateDelegateEvidenceSafety,
     },
   };
 }

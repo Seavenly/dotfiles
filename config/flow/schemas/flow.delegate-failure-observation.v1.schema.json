@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-failure-observation.v1.schema.json",
+  "title": "flow.delegate-failure-observation/v1",
+  "description": "Redacted, typed operator observation for deterministic delegate materialization failures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "code", "stage", "retryable"],
+  "properties": {
+    "schema": { "const": "flow.delegate-failure-observation/v1" },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z0-9_:-]+$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "stage": {
+      "type": "string",
+      "const": "delegate_effect_materialization"
+    },
+    "retryable": { "type": "boolean" }
+  }
+}

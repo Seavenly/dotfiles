@@ -7,6 +7,9 @@ import { authorityRootsAreDisjoint } from "./authority-root.mjs";
 import {
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
 } from "./required-drovr-features.mjs";
+import {
+  EXECUTION_TIME_CATALOG_ACCOUNTING,
+} from "./execution-time-policy.mjs";
 import { isExactSequence } from "./validation.mjs";
 
 const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
@@ -228,6 +231,7 @@ const DELEGATE_EXECUTION = {
   intent: "flow.effect-intent/v1",
   receipt: "flow.effect-receipt/v1",
   evidence: "flow.delegate-evidence/v1",
+  failure_observation: "flow.delegate-failure-observation/v1",
   quarantine_record: "flow.delegate-quarantine/v1",
   block: "flow.delegate-card-block/v1",
   disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
@@ -620,6 +624,16 @@ export async function loadContractCatalog({
     throw new Error("registered operation contracts are incomplete");
   }
   if (!isDeepStrictEqual(
+    catalog.flow_runtime?.execution_time_accounting,
+    EXECUTION_TIME_CATALOG_ACCOUNTING,
+  ) || ![
+    EXECUTION_TIME_CATALOG_ACCOUNTING.confirmation,
+    EXECUTION_TIME_CATALOG_ACCOUNTING.projection,
+    EXECUTION_TIME_CATALOG_ACCOUNTING.time_fact,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("execution time accounting contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
     catalog.flow_runtime?.tracker_progress,
     TRACKER_PROGRESS,
   ) || ![
@@ -640,6 +654,7 @@ export async function loadContractCatalog({
     DELEGATE_EXECUTION.intent,
     DELEGATE_EXECUTION.receipt,
     DELEGATE_EXECUTION.evidence,
+    DELEGATE_EXECUTION.failure_observation,
     DELEGATE_EXECUTION.quarantine_record,
     DELEGATE_EXECUTION.block,
     DELEGATE_EXECUTION.disposition_policy,

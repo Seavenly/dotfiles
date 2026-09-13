@@ -18,6 +18,13 @@ import {
   serializeDelegateInputEnvelope,
 } from "./delegate-input-envelope.mjs";
 import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
+import {
+  DELEGATE_FAILURE_OBSERVATION_SCHEMA,
+} from "./provider-receipt-policies/delegate-drovr.mjs";
+import {
+  validateDelegateEvidenceSafety,
+} from "./evidence-safety.mjs";
+import { isCredentialShapedString } from "./provider-receipt-sanitizers.mjs";
 const REQUIRED_PORT_OPERATIONS = [
   "describe",
   "dispatch",
@@ -112,6 +119,10 @@ export function delegateCompatibilityIssue(
     typeof validators.get(contract)?.validate !== "function")) {
     return "unregistered_delegate_validator";
   }
+  if (card.validators.some((contract) =>
+    typeof validators.get(contract)?.evidenceSafety !== "function")) {
+    return "unregistered_delegate_evidence_safety";
+  }
   return null;
 }
 
@@ -179,7 +190,7 @@ function delegateFailureObservation(error) {
       ? error.code
       : "delegate_effect_failed";
   return {
-    schema: "flow.delegate-failure-observation/v1",
+    schema: DELEGATE_FAILURE_OBSERVATION_SCHEMA,
     code,
     stage: "delegate_effect_materialization",
     retryable: false,
@@ -513,7 +524,7 @@ async function validateSettledDelegate({
           authority_materialized_evidence:
             intent.delegate_input.authority_materialized_evidence ?? null,
         }) === true;
-      } catch {
+      } catch (error) {
         accepted = false;
       }
       const receipt = validatorReceipts.find(({ contract: receiptContract }) =>
@@ -545,6 +556,16 @@ async function validateSettledDelegate({
       status: "unavailable",
       reason: reviewCoverageReason(reason),
     });
+    const unavailableOutput = unavailableReviewOutput({
+      reason: authorityTerminalDisposition.reason,
+    });
+    const unavailableSafety = validateDelegateEvidenceSafety(unavailableOutput);
+    if (!unavailableSafety.accepted) {
+      throw new DelegateInputEnvelopeError(
+        "unsafe_delegate_output",
+        "authority-generated review unavailable output failed evidence safety",
+      );
+    }
     const quarantineRecord = freezeCanonical({
       schema: "flow.delegate-quarantine/v1",
       ...commonRecord,
@@ -559,9 +580,9 @@ async function validateSettledDelegate({
       provider_receipt: {
         schema: "flow.delegate-evidence/v1",
         ...commonRecord,
-        validated_output: unavailableReviewOutput({
-          reason: authorityTerminalDisposition.reason,
-        }),
+        validated_output: unavailableOutput,
+        evidence_safety_receipt: unavailableSafety.receipt,
+        evidence_safety_binding: unavailableSafety.binding,
         authority_terminal_disposition: authorityTerminalDisposition,
         operational_failure: reason,
         quarantine_record: quarantineRecord,
@@ -599,12 +620,31 @@ async function validateSettledDelegate({
 
 async function safetyCheckDelegateOutput({ output, intent, validators, proof }) {
   const validatorReceipts = [];
-  let rejected = false;
-  let safe = true;
+  let rejected = typeof output !== "string" ||
+    isCredentialShapedString(output);
+  let safe = !rejected;
   for (const contract of intent.delegate_validator_contracts ?? []) {
     const validator = validators.get(contract);
-    if (typeof validator?.evidenceSafety !== "function" ||
-        typeof output !== "string") continue;
+    if (typeof validator?.evidenceSafety !== "function") {
+      rejected = true;
+      safe = false;
+      validatorReceipts.push({
+        contract,
+        accepted: false,
+        evidence_safety_accepted: false,
+        evidence_safety_rejection: "missing_evidence_safety",
+      });
+      continue;
+    }
+    if (typeof output !== "string") {
+      validatorReceipts.push({
+        contract,
+        accepted: false,
+        evidence_safety_accepted: false,
+        evidence_safety_rejection: "invalid_delegate_output",
+      });
+      continue;
+    }
 
     let result;
     try {
@@ -619,8 +659,10 @@ async function safetyCheckDelegateOutput({ output, intent, validators, proof }) 
     } catch {
       result = null;
     }
-    if (result?.accepted === true && isPlainRecord(result.receipt) &&
-        isPlainRecord(result.binding)) {
+    const verified = result?.accepted === true &&
+      isPlainRecord(result.receipt) && isPlainRecord(result.binding) &&
+      verifyDelegateEvidenceSafetyResult(output, result);
+    if (verified) {
       validatorReceipts.push({
         contract,
         accepted: false,
@@ -640,6 +682,15 @@ async function safetyCheckDelegateOutput({ output, intent, validators, proof }) 
     });
   }
   return { safe, rejected, validatorReceipts };
+}
+
+function verifyDelegateEvidenceSafetyResult(output, result) {
+  const expected = validateDelegateEvidenceSafety(output, {
+    classification: result?.receipt?.classification,
+  });
+  return expected.accepted &&
+    JSON.stringify(expected.receipt) === JSON.stringify(result.receipt) &&
+    JSON.stringify(expected.binding) === JSON.stringify(result.binding);
 }
 
 function redactedSafetyRejection(result) {
@@ -665,7 +716,7 @@ function materializeDelegateWireInputs(intent) {
       inputKey: `${callerKey}:input:1`,
       inputKind: "initial",
       sequence: 1,
-      instructions: delegateInput.instructions ?? delegateInput.prompt,
+      instructions: delegateInput.prompt,
     }),
     ...steering.map((input, index) => materializeDelegateWireInput(intent, {
       inputKey: `${callerKey}:steering:${input.caller_id}`,
@@ -684,10 +735,12 @@ function materializeDelegateWireInput(intent, {
 }) {
   const delegateInput = intent.delegate_input ?? {};
   if (Object.hasOwn(delegateInput, "execution_authority") ||
-      Object.hasOwn(delegateInput, "predecessor_evidence")) {
+      Object.hasOwn(delegateInput, "predecessor_evidence") ||
+      Object.hasOwn(delegateInput, "instructions")) {
     throw new DelegateInputEnvelopeError(
       "caller_delegate_input_forbidden",
-      "delegate execution authority and predecessor evidence are authority-owned",
+      "delegate execution authority, predecessor evidence, and instruction " +
+        "override are forbidden",
     );
   }
   const description = delegateInput.description;
@@ -943,6 +996,14 @@ async function settleReviewUnavailable({ intent, port, current, reason }) {
     status: reason === "bounded_timeout" ? "degraded" : "unavailable",
     reason,
   });
+  const validatedOutput = unavailableReviewOutput({ reason });
+  const safety = validateDelegateEvidenceSafety(validatedOutput);
+  if (!safety.accepted) {
+    throw new DelegateInputEnvelopeError(
+      "unsafe_delegate_output",
+      "authority-generated review unavailable output failed evidence safety",
+    );
+  }
   let resourceDisposition;
   try {
     resourceDisposition = current?.turn?.id
@@ -976,7 +1037,9 @@ async function settleReviewUnavailable({ intent, port, current, reason }) {
       drovr_watermark: current?.watermark ?? null,
       route_binding: intent.route_binding,
       validator_receipts: [],
-      validated_output: unavailableReviewOutput({ reason }),
+      validated_output: validatedOutput,
+      evidence_safety_receipt: safety.receipt,
+      evidence_safety_binding: safety.binding,
       authority_terminal_disposition: terminalDisposition,
       terminal_disposition: resourceDisposition,
     },

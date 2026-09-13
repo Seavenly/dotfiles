@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
 import { normalizeAuthorityBindings } from "./authority-bindings.mjs";
+import {
+  createEvidenceSafetyRequest,
+  validateDelegateEvidenceSafety,
+  validateEvidenceSafety,
+} from "./evidence-safety.mjs";
 
 export const DELEGATE_INPUT_ENVELOPE_SCHEMA =
   "flow.delegate-input-envelope/v1";
@@ -61,6 +66,10 @@ const FORBIDDEN_KEYS = new Set([
   "working_directory",
   "transcript",
 ]);
+const AUTHORITY_WATERMARK_SCHEMAS = new Set([
+  "drovr.turn-authority-watermark/v1",
+  "drovr.agent-authority-watermark/v1",
+]);
 
 /**
  * Build the one transport value shared by every delegated Flow role.
@@ -98,6 +107,7 @@ export function materializeDelegateInputEnvelope({
     );
   }
   requireNonEmptyString(instructions, "instructions");
+  validateDelegateInputInstructions(instructions);
   validateDelegateTaskInputs(taskInputs);
   const resources = normalizeResourceReferences(resourceReferences);
   const authority = normalizeExecutionAuthority(executionAuthority, resources);
@@ -190,7 +200,72 @@ export function validateDelegateTaskInputs(taskInputs) {
     );
   }
   assertTransferableShape(taskInputs, "task_inputs");
+  validateDelegateTransferValue(taskInputs, "task_inputs");
   return taskInputs;
+}
+
+/** Validate the caller-selected instruction string at the transport seam. */
+export function validateDelegateInputInstructions(instructions) {
+  requireNonEmptyString(instructions, "instructions");
+  validateDelegateTransferValue(instructions, "instructions");
+  return instructions;
+}
+
+/**
+ * Apply the shared issue-79 policy to caller-selected delegate material.
+ * Rejections intentionally expose only the stable safety code; rejected input
+ * bytes and fragments must never be copied into a transport error.
+ */
+function validateDelegateTransferValue(value, field) {
+  let request;
+  try {
+    request = createEvidenceSafetyRequest({
+      classification: "delegate_evidence",
+      allowed_use: ["delegate_transfer"],
+      // Issue-79 treats a generic `id` key as potentially sensitive.  A
+      // delegate task-input schema explicitly carries ordinary domain IDs;
+      // scan those under a neutral structural key while still scanning every
+      // ID value for credentials, paths, and encodings.
+      input: field === "task_inputs"
+        ? projectDelegateTaskInputSafety(value)
+        : value,
+    });
+  } catch (error) {
+    throw new DelegateInputEnvelopeError(
+      "unsafe_delegate_input",
+      `delegate ${field} failed evidence safety: ${error?.reason ?? "invalid_input"}`,
+    );
+  }
+  const validation = validateEvidenceSafety(request);
+  if (!validation.accepted) {
+    throw new DelegateInputEnvelopeError(
+      "unsafe_delegate_input",
+      `delegate ${field} failed evidence safety: ${validation.rejection.code}`,
+    );
+  }
+}
+
+function projectDelegateTaskInputSafety(value) {
+  if (Array.isArray(value)) return value.map(projectDelegateTaskInputSafety);
+  if (!isPlainRecord(value)) return value;
+  const isAuthorityWatermark =
+    AUTHORITY_WATERMARK_SCHEMAS.has(value.schema);
+  const projected = {};
+  for (const [key, child] of Object.entries(value)) {
+    const projectedKey = key === "id"
+      ? "identifier"
+      : isAuthorityWatermark && key === "authority"
+      ? "authority_label"
+      : key;
+    if (Object.hasOwn(projected, projectedKey)) {
+      throw new DelegateInputEnvelopeError(
+        "unsafe_delegate_input",
+        "delegate task_inputs contain duplicate identifier fields",
+      );
+    }
+    projected[projectedKey] = projectDelegateTaskInputSafety(child);
+  }
+  return projected;
 }
 
 /** Validate the output schemas selected for a delegate card or envelope. */
@@ -580,12 +655,31 @@ function validateAcceptedDelegateEntries(entries) {
       !nonEmptyString(entry.attempt_id) ||
       !nonEmptyString(entry.idempotency_key) ||
       !isDigest(entry.source_authority_watermark) ||
-      !isPlainRecord(entry.evidence))) {
+      !isPlainRecord(entry.evidence) ||
+      !isDelegateEvidenceSafetyValid(entry.evidence))) {
     throw new DelegateInputEnvelopeError(
       "invalid_predecessor_evidence",
       "delegate predecessor evidence accepted delegates have invalid provenance",
     );
   }
+}
+
+function isDelegateEvidenceSafetyValid(providerReceipt) {
+  if (providerReceipt.schema !== "flow.delegate-evidence/v1" ||
+      typeof providerReceipt.validated_output !== "string" ||
+      !isPlainRecord(providerReceipt.evidence_safety_receipt) ||
+      !isPlainRecord(providerReceipt.evidence_safety_binding)) {
+    return false;
+  }
+  const expected = validateDelegateEvidenceSafety(
+    providerReceipt.validated_output,
+    { classification: providerReceipt.evidence_safety_receipt.classification },
+  );
+  return expected.accepted === true &&
+    JSON.stringify(expected.receipt) ===
+      JSON.stringify(providerReceipt.evidence_safety_receipt) &&
+    JSON.stringify(expected.binding) ===
+      JSON.stringify(providerReceipt.evidence_safety_binding);
 }
 
 function validateOperationReceiptEntries(entries) {
