@@ -38,6 +38,7 @@ import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
 import {
+  buildHumanAuthorityBinding,
   getArtifactAuthority,
   getResourceHandoffAuthority,
   getReviewAuthority,
@@ -47,6 +48,7 @@ import {
 } from "../src/work-authority.mjs";
 import { completedTurnProjection } from "../test-support/delegate-card.mjs";
 import {
+  confirmedLaunchRequest,
   dynamicCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
 import {
@@ -4122,9 +4124,11 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.equal(reviewWorkspaceClaimReceipt.accepted, true,
     JSON.stringify(reviewWorkspaceClaimReceipt));
   let recoverySeen = false;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  await until(() => {
     const projection = reviewRuntime.query({ run_id: reviewLaunch.run_id });
-    if (["failed", "succeeded", "cancelled"].includes(projection.phase)) break;
+    if (["failed", "succeeded", "cancelled"].includes(projection.phase)) {
+      return true;
+    }
     const action = projection.legal_actions?.find(({ type }) => [
       "checkpoint_decision",
       "delegate_execute",
@@ -4133,10 +4137,20 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     ].includes(type));
     if (action) {
       recoverySeen ||= action.type === "recovery";
-      reviewRuntime.command(action);
+      const receipt = reviewRuntime.command(action);
+      assert.equal(receipt.accepted, true, JSON.stringify(receipt));
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+    return false;
+  }, {
+    timeoutMs: 10_000,
+    onTimeout: () => {
+      const projection = reviewRuntime.query({ run_id: reviewLaunch.run_id });
+      return {
+        phase: projection.phase,
+        legal_actions: projection.legal_actions,
+      };
+    },
+  });
   const completedReviewRun = reviewRuntime.query({ run_id: reviewLaunch.run_id });
   assert.equal(completedReviewRun.phase, "succeeded");
   assert.equal(receiptLoss, false);
@@ -4316,6 +4330,331 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     subject_id: reviewId,
   }).next();
   assert.deepEqual(recoveredWatch.value, acknowledgedReview);
+});
+
+test("feature/v1 fences a sealed candidate after post-seal workspace movement", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    workEvidenceAdapter: featureWorkEvidenceAdapter(),
+  });
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  const before = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(before.status, "sealed");
+  assert.equal(before.workspace.mutation_epoch, 8);
+
+  const workspaceBefore = fixture.workspaceAuthority.query(workspaceQuery());
+  const taint = fixture.workspaceAuthority.command(featureWorkspaceTaint(
+    workspaceBefore,
+  ));
+  assert.equal(taint.accepted, true, JSON.stringify(taint));
+  const tainted = fixture.workspaceAuthority.query(workspaceQuery());
+  const reset = featureWorkspaceTaintDisposition(tainted, {
+    disposition: "destructive_reset",
+    evidence: {
+      schema: "work.taint-disposition-evidence/v1",
+      kind: "destructive_reset_receipt",
+      digest: `sha256:${"b".repeat(64)}`,
+    },
+  });
+  reset.replacement = {
+    generation: tainted.generation + 1,
+    mutation_epoch: tainted.mutation_epoch + 1,
+    git: exactGitFacts(),
+    disposition: "producer_owned",
+  };
+  reset.human_authority = featureHumanAuthority(
+    fixture.runtime,
+    reset,
+    "destructive_reset",
+  );
+  const resetReceipt = fixture.workspaceAuthority.command(reset);
+  assert.equal(resetReceipt.accepted, true, JSON.stringify(resetReceipt));
+
+  const movedWorkspace = fixture.workspaceAuthority.query(workspaceQuery());
+  assert.equal(movedWorkspace.mutation_epoch, 9);
+  assert.notEqual(movedWorkspace.watermark, workspaceBefore.watermark);
+  const moved = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(moved.status, "stale");
+  assert.equal(moved.current, false);
+  assert.equal(moved.workspace_authority_watermark, movedWorkspace.watermark);
+  assert.equal(moved.workspace_mutation_epoch, movedWorkspace.mutation_epoch);
+  assert.deepEqual(moved.blocking_reasons, ["workspace_mutation_epoch_moved"]);
+  assert.deepEqual(moved.legal_actions, []);
+  assert.equal(moved.candidate_fingerprint, before.candidate_fingerprint);
+  assert.deepEqual(moved.candidate, before.candidate);
+});
+
+test("feature/v1 blocks review currency for unresolved or dirty workspace state", async (t) => {
+  for (const reason of ["effect_outcome_uncertain", "workspace_dirty"]) {
+    await t.test(reason, async (caseTest) => {
+      const fixture = await createFeatureFailureFixture(caseTest, {
+        workEvidenceAdapter: featureWorkEvidenceAdapter(),
+      });
+      await driveFeatureToSeal(fixture);
+      await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+        "succeeded");
+      const completed = fixture.runtime.query({ run_id: fixture.runId });
+      const candidateId = completed.review_candidate_reference.candidate_id;
+      const workspace = fixture.workspaceAuthority.query(workspaceQuery());
+      const taint = fixture.workspaceAuthority.command(featureWorkspaceTaint(
+        workspace,
+        reason,
+      ));
+      assert.equal(taint.accepted, true, JSON.stringify(taint));
+      const currentWorkspace = fixture.workspaceAuthority.query(workspaceQuery());
+      const blocked = fixture.reviewAuthority.query({
+        contract: "work.review/v1",
+        subject_id: candidateId,
+      });
+      assert.equal(blocked.status, "blocked");
+      assert.equal(blocked.current, false);
+      assert.equal(blocked.workspace_authority_watermark, currentWorkspace.watermark);
+      assert.equal(blocked.workspace_mutation_epoch, currentWorkspace.mutation_epoch);
+      assert.deepEqual(blocked.blocking_reasons, [
+        reason === "effect_outcome_uncertain" ? "unresolved_effect" :
+          "workspace_dirty",
+      ]);
+      assert.deepEqual(blocked.legal_actions, []);
+    });
+  }
+});
+
+test("feature/v1 blocks review currency when retained artifact bytes disappear", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {});
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  const artifactPath = join(
+    fixture.authorityDirectory,
+    "artifacts",
+    fixture.currentArtifactDigest().slice("sha256:".length),
+  );
+  await rm(artifactPath);
+  const blocked = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.current, false);
+  assert.deepEqual(blocked.blocking_reasons, ["artifact_unavailable"]);
+  assert.equal(blocked.workspace_mutation_epoch, 8);
+  assert.deepEqual(blocked.legal_actions, []);
+});
+
+test("feature/v1 blocks review currency when exact Git retention disappears", async (t) => {
+  const retention = { available: true };
+  const fixture = await createFeatureFailureFixture(t, {
+    gitRetentionAdapter: {
+      observe(receipt) {
+        return {
+          schema: "flow.git-retention-observation/v1",
+          available: retention.available,
+          repository_id: receipt.repository_id,
+          commit_sha: retention.available ? receipt.commit_sha : null,
+          tree_sha: retention.available ? receipt.tree_sha : null,
+          retention_ref: receipt.retention_ref,
+        };
+      },
+    },
+  });
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  const current = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(current.status, "sealed");
+  assert.equal(current.current, true);
+
+  retention.available = false;
+  const missing = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(missing.status, "blocked");
+  assert.equal(missing.current, false);
+  assert.deepEqual(missing.blocking_reasons, ["git_retention_unavailable"]);
+  assert.deepEqual(missing.git_retention_observation, {
+    schema: "flow.git-retention-observation/v1",
+    available: false,
+    repository_id: current.candidate.git_retention.repository_id,
+    commit_sha: null,
+    tree_sha: null,
+    retention_ref: current.candidate.git_retention.retention_ref,
+  });
+  assert.equal(
+    missing.git_retention_observation_watermark,
+    digest(missing.git_retention_observation),
+  );
+  assert.deepEqual(missing.legal_actions, []);
+});
+
+test("feature/v1 fails closed when Git retention observation throws", async (t) => {
+  let throwOnObserve = false;
+  const fixture = await createFeatureFailureFixture(t, {
+    gitRetentionAdapter: {
+      observe(receipt) {
+        if (throwOnObserve) throw new Error("retention provider unavailable");
+        return {
+          schema: "flow.git-retention-observation/v1",
+          available: true,
+          repository_id: receipt.repository_id,
+          commit_sha: receipt.commit_sha,
+          tree_sha: receipt.tree_sha,
+          retention_ref: receipt.retention_ref,
+        };
+      },
+    },
+  });
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  const handoffId = completed.handoffs[0].handoff_id;
+  throwOnObserve = true;
+  assert.doesNotThrow(() => fixture.handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  }));
+  const handoff = fixture.handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  });
+  assert.equal(handoff.git_availability, "missing");
+  assert.deepEqual(handoff.legal_actions, []);
+
+  assert.doesNotThrow(() => fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  }));
+  const blocked = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.current, false);
+  assert.deepEqual(blocked.blocking_reasons, ["git_retention_unavailable"]);
+  assert.equal(blocked.git_retention_observation, null);
+  assert.deepEqual(blocked.legal_actions, []);
+});
+
+test("feature/v1 blocks review currency when Git retention identity mismatches", async (t) => {
+  const retention = { mode: "exact" };
+  const fixture = await createFeatureFailureFixture(t, {
+    gitRetentionAdapter: {
+      observe(receipt) {
+        return {
+          schema: "flow.git-retention-observation/v1",
+          available: true,
+          repository_id: receipt.repository_id,
+          commit_sha: retention.mode === "mismatch"
+            ? "f".repeat(40)
+            : receipt.commit_sha,
+          tree_sha: receipt.tree_sha,
+          retention_ref: receipt.retention_ref,
+        };
+      },
+    },
+  });
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  retention.mode = "mismatch";
+  const mismatched = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(mismatched.status, "blocked");
+  assert.equal(mismatched.current, false);
+  assert.deepEqual(mismatched.blocking_reasons, ["git_retention_mismatch"]);
+  assert.equal(mismatched.git_retention_observation.available, true);
+  assert.equal(mismatched.git_retention_observation.commit_sha, "f".repeat(40));
+  assert.equal(mismatched.git_retention_observation_watermark,
+    digest(mismatched.git_retention_observation));
+  assert.deepEqual(mismatched.legal_actions, []);
+});
+
+test("feature/v1 blocks review currency when the exact handoff is inactive", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    workEvidenceAdapter: {
+      validate({ command }) {
+        return command.evidence_validation;
+      },
+    },
+  });
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  const handoffId = completed.handoffs[0].handoff_id;
+  const active = fixture.handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  });
+  const evidence = {
+    schema: "flow.resource-handoff-disposition-evidence/v1",
+    kind: "cleanup_obligations_discharged",
+    digest: digest("handoff-retirement"),
+    cleanup_obligations: active.cleanup_obligations,
+  };
+  const retired = fixture.handoffAuthority.command({
+    schema: "flow.resource-handoff-disposition-command/v1",
+    command_id: `resource-handoff-retire:${handoffId}`,
+    type: "resource_handoff_disposition",
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+    expected_watermark: active.authority_watermark,
+    disposition: "retired",
+    evidence,
+    evidence_validation: {
+      schema: "flow.resource-handoff-disposition-validation/v1",
+      valid: true,
+      subject_id: handoffId,
+      handoff_digest: active.handoff_digest,
+      cleanup_obligations_digest: digest(active.cleanup_obligations),
+      evidence_digest: evidence.digest,
+    },
+  });
+  assert.equal(retired.accepted, true, JSON.stringify(retired));
+
+  const inactive = fixture.handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: handoffId,
+  });
+  assert.equal(inactive.status, "retired");
+  const blocked = fixture.reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.current, false);
+  assert.deepEqual(blocked.blocking_reasons, ["handoff_inactive"]);
+  assert.equal(blocked.handoff_authority_watermark, inactive.authority_watermark);
+  assert.equal(blocked.handoff_observation_watermark, inactive.watermark);
+  assert.deepEqual(blocked.legal_actions, []);
 });
 
 test("feature/v1 derives finalization from the captured candidate", async (t) => {
@@ -4714,6 +5053,121 @@ test("feature/v1 durable reopen after capture preserves the next exact action", 
     subject_id: fixture.currentArtifactDigest(),
   }).pins, [{ holder: "run", id: fixture.runId }]);
   assert.equal(captureBinding.content.git.commit_sha, realGit.candidateGit.commit_sha);
+});
+
+test("feature/v1 delegate dispatch crash retains the exact claim and recovery boundary", async (t) => {
+  let crashed = false;
+  const fixture = await createFeatureFailureFixture(t, {
+    beforeEffect(intent) {
+      if (intent.effect_kind === "delegate" &&
+          intent.card_id === "feature-apply" && !crashed) {
+        crashed = true;
+        fixture?.runAuthority?.close();
+      }
+    },
+  });
+  const { runId, runtime } = fixture;
+  const apply = runtime.query({ run_id: runId }).legal_actions.find(({ card_id: cardId }) =>
+    cardId === "feature-apply");
+  assert.ok(apply);
+  assert.equal(runtime.command(apply).accepted, true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-red", "feature-recovered"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredWorkspaceAuthority = getWorkspaceAuthority({
+    runAuthority: recoveredAuthority,
+  });
+  const recoveredRuntime = createFlowRuntime({
+    runAuthority: recoveredAuthority,
+    registeredAuthorities: fixture.registeredAuthorities,
+    predefinedDefinitions: {
+      "feature/v1": featureDefinitionWithCritiqueId(),
+    },
+  });
+  const recovered = recoveredRuntime.query({ run_id: runId });
+  const applyEffect = recovered.effects.find(({ card_id: cardId }) =>
+    cardId === "feature-apply");
+  assert.equal(recovered.phase, "active");
+  assert.deepEqual(recovered.handoffs, []);
+  assert.equal(applyEffect.status, "unresolved");
+  assert.equal(applyEffect.invocation_started, false);
+  assert.ok(recovered.legal_actions.some(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === applyEffect.effect_id),
+  JSON.stringify(recovered.legal_actions));
+  assert.equal(recoveredWorkspaceAuthority.query(workspaceQuery()).claims[0].holder, runId);
+});
+
+test("feature/v1 post-commit crash reopens the exact sealed candidate and handoff", async (t) => {
+  let crashed = false;
+  const committedCards = [];
+  const fixture = await createFeatureFailureFixture(t, {
+    afterEffectCommit({ card_id: cardId }) {
+      committedCards.push(cardId);
+      if (cardId === "feature-seal" && !crashed) {
+        crashed = true;
+        fixture?.runAuthority?.close();
+      }
+    },
+  });
+  const { runId, runtime } = fixture;
+  executeCard(runtime, runId, "delegate_execute", "feature-apply");
+  await until(() => runtime.query({ run_id: runId }).effects.some(({ card_id: cardId, status }) =>
+    cardId === "feature-apply" && status === "succeeded"));
+  executeCard(runtime, runId, "operation_execute", "feature-capture");
+  await settleFeatureEffect(runtime, runId, "feature-capture");
+  executeCard(runtime, runId, "operation_execute", "feature-verify");
+  await settleFeatureEffect(runtime, runId, "feature-verify");
+  executeCard(runtime, runId, "delegate_execute", "feature-critique");
+  await until(() => runtime.query({ run_id: runId }).effects.some(({ card_id: cardId, status }) =>
+    cardId === "feature-critique" && status === "succeeded"));
+  const beforeSeal = runtime.query({ run_id: runId });
+  const critique = beforeSeal.delegate_attempts.find(({ card_id: cardId }) =>
+    cardId === "feature-critique");
+  fixture.setCritiqueEvidence(critique.evidence);
+  const seal = beforeSeal.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "feature-seal");
+  assert.ok(seal);
+  assert.equal(runtime.command(seal).accepted, true);
+  await until(() => crashed);
+  assert.equal(crashed, true, JSON.stringify(committedCards));
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity("boot-feature-red", "feature-recovered"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = createFlowRuntime({ runAuthority: recoveredAuthority });
+  const recovered = recoveredRuntime.query({ run_id: runId });
+  assert.equal(recovered.phase, "succeeded");
+  assert.equal(recovered.handoffs.length, 1);
+  const handoffAuthority = getResourceHandoffAuthority({
+    runAuthority: recoveredAuthority,
+  });
+  const handoff = handoffAuthority.query({
+    contract: "flow.resource-handoff/v1",
+    subject_id: recovered.handoffs[0].handoff_id,
+  });
+  assert.equal(handoff.status, "active");
+  assert.deepEqual(getArtifactAuthority({ runAuthority: recoveredAuthority }).query({
+    contract: "work.artifact/v1",
+    subject_id: fixture.currentArtifactDigest(),
+  }).pins, [{ holder: "handoff", id: handoff.handoff_id }]);
+  assert.equal(getReviewAuthority({ runAuthority: recoveredAuthority }).query({
+    contract: "work.review/v1",
+    subject_id: recovered.review_candidate_reference.candidate_id,
+  }).status, "sealed");
 });
 
 test("feature/v1 recovers a crash before capture settlement without partial evidence", async (t) => {
@@ -5440,15 +5894,18 @@ async function createFeatureFailureFixture(t, scenario) {
   let promotedGit = scenario.publication?.promotedGit ?? promotedGitFacts();
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
+    afterEffectCommit: scenario.afterEffectCommit,
     beforeEffect: scenario.beforeEffect,
     beforeHandoffCommit: scenario.beforeHandoffCommit,
-    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitRetentionAdapter: scenario.gitRetentionAdapter ??
+      deterministicGitRetentionAdapter(),
     gitWorkspaceObservationAdapter: realGit === null
       ? deterministicGitWorkspaceObservationAdapter({
           promotion: true,
           promotedGit,
         })
       : realGitWorkspaceObservationAdapter(realGit.repositoryDirectory),
+    workEvidenceAdapter: scenario.workEvidenceAdapter,
     hostIdentityAdapter: fixedHostIdentity("boot-feature-red", "feature-process-red"),
     lifecycleKernel: scenario.lifecycleKernel,
   });
@@ -6544,6 +7001,81 @@ function workspaceQuery() {
   };
 }
 
+function featureWorkspaceTaint(projection, reason = "effect_outcome_uncertain") {
+  return {
+    schema: "work.workspace-taint-command/v1",
+    command_id: "workspace-taint:post-seal-movement",
+    type: "workspace_taint",
+    contract: "work.workspace/v1",
+    subject_id: projection.subject_id,
+    expected_watermark: projection.watermark,
+    taint: {
+      reason,
+      evidence_digest: `sha256:${"a".repeat(64)}`,
+    },
+  };
+}
+
+function featureWorkspaceTaintDisposition(projection, { disposition, evidence }) {
+  return {
+    schema: "work.workspace-taint-disposition-command/v1",
+    command_id: `workspace-taint-disposition:${disposition}:post-seal`,
+    type: "workspace_taint_disposition",
+    contract: "work.workspace/v1",
+    subject_id: projection.subject_id,
+    expected_watermark: projection.watermark,
+    disposition,
+    evidence,
+    human_authority: null,
+  };
+}
+
+function featureWorkEvidenceAdapter() {
+  return {
+    validate({ workspace, command }) {
+      return {
+        schema: "work.taint-disposition-validation/v1",
+        valid: true,
+        subject_id: workspace.subject_id,
+        taint_evidence_digest: workspace.taint?.evidence_digest ?? null,
+        disposition: command.disposition,
+        evidence_digest: command.evidence?.digest ?? null,
+      };
+    },
+  };
+}
+
+function featureHumanAuthority(runtime, command, action) {
+  const binding = buildHumanAuthorityBinding(command, action);
+  const proposal = dynamicCheckpointProposal();
+  proposal.explicit_facts.time_facts = proposal.explicit_facts.time_facts.map(
+    (fact) => fact.kind === "boot"
+      ? { ...fact, boot_id: "boot-feature-red" }
+      : fact,
+  );
+  proposal.graph.cards[0].inputs.human_authority = binding;
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(launch.created, true, JSON.stringify(launch));
+  const approval = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ decision }) => decision === "approve",
+  );
+  assert.ok(approval, JSON.stringify(runtime.query({ run_id: launch.run_id })));
+  assert.equal(runtime.command(approval).accepted, true);
+  const approved = runtime.query({ run_id: launch.run_id });
+  return {
+    schema: "work.human-authority/v1",
+    action,
+    command_id: command.command_id,
+    subject_id: command.subject_id,
+    expected_watermark: command.expected_watermark,
+    binding_digest: digest(binding),
+    run_id: launch.run_id,
+    checkpoint_id: "confirm-plan",
+    run_watermark: approved.watermark,
+  };
+}
+
 function workspaceClaim({
   expectedGeneration = 1,
   expectedWatermark,
@@ -6738,12 +7270,21 @@ function featureReviewTargetObservationAdapter() {
   };
 }
 
-async function until(predicate) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+async function until(predicate, {
+  timeoutMs = 1_000,
+  onTimeout,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
     if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      const details = onTimeout?.();
+      const suffix = details === undefined ? "" : `: ${JSON.stringify(details)}`;
+      assert.fail(`condition was not met before timeout${suffix}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(10, remainingMs)));
   }
-  assert.fail("condition was not met before timeout");
 }
 
 function featureInputs() {

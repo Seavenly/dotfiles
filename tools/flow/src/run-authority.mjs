@@ -94,6 +94,8 @@ import {
   isReviewTargetInvalidationCommand,
   isReviewTargetRefreshCommand,
   GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
+  projectReviewCandidateCurrency,
+  projectReviewCurrency,
   reviewRecordCandidateAuthorityIssue,
   reviewRecordSourceAuthorityIssue,
 } from "./review-flow.mjs";
@@ -563,6 +565,7 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
 export function createDurableRunAuthority({
   afterCancellationCommit = () => {},
   afterChildLaunchCommit = () => {},
+  afterEffectCommit = () => {},
   authorityDirectory,
   access = "mutate",
   afterSchemaTransitionCommit = () => {},
@@ -613,6 +616,11 @@ export function createDurableRunAuthority({
   if (typeof afterChildLaunchCommit !== "function") {
     throw new TypeError(
       "durable run authority child-launch hook must be a function",
+    );
+  }
+  if (typeof afterEffectCommit !== "function") {
+    throw new TypeError(
+      "durable run authority effect-commit hook must be a function",
     );
   }
   if (typeof afterCancellationCommit !== "function" ||
@@ -1887,7 +1895,12 @@ export function createDurableRunAuthority({
           return workCommandReceipt(command, currentProjection, false);
         }
         if (isReviewRecordCommand(command)) {
-          const candidateIssue = reviewCandidateCommandIssue(database, command);
+          const candidateIssue = reviewCandidateCommandIssue(
+            database,
+            command,
+            authorityDirectory,
+            gitRetentionAdapter,
+          );
           if (candidateIssue) {
             return workRejection("command", candidateIssue.code, {
               command,
@@ -1946,7 +1959,12 @@ export function createDurableRunAuthority({
             return workCommandReceipt(command, currentProjection, false);
           }
           if (isReviewRecordCommand(command)) {
-            const candidateIssue = reviewCandidateCommandIssue(database, command);
+            const candidateIssue = reviewCandidateCommandIssue(
+              database,
+              command,
+              authorityDirectory,
+              gitRetentionAdapter,
+            );
             if (candidateIssue) {
               database.exec("ROLLBACK");
               if (createdArtifactPath) unlinkSync(createdArtifactPath);
@@ -2542,6 +2560,7 @@ export function createDurableRunAuthority({
             throw new TypeError("Git retention was not independently observed");
           }
         }
+        let committedPublication = null;
         database.exec("BEGIN IMMEDIATE");
         try {
           assertAuthorityEpoch(database, {
@@ -2575,6 +2594,7 @@ export function createDurableRunAuthority({
                 receipt: result,
                 },
               );
+          committedPublication = publication;
           let reviewCandidateReference = null;
           if (publication !== null) {
             assertDurableHostRestoreClear(
@@ -2730,6 +2750,16 @@ export function createDurableRunAuthority({
           if (database.isTransaction) database.exec("ROLLBACK");
           throw error;
         }
+        afterEffectCommit({
+          schema: "flow.effect-commit-boundary/v1",
+          run_id: effectiveIntent.run_id,
+          effect_id: effectiveIntent.effect_id,
+          effect_kind: effectiveIntent.effect_kind,
+          card_id: effectiveIntent.card_id,
+          operation_contract: effectiveIntent.operation_contract,
+          publication: committedPublication?.handoff ?? null,
+          receipt: result,
+        });
         dispatch.resolve();
         return result;
       } catch (error) {
@@ -3362,6 +3392,61 @@ function queryWorkProjection(
       artifactBytesAvailable(authorityDirectory, projection) ? "available" : "missing",
     );
   }
+  if (projection.schema === "work.review-candidate-projection/v1") {
+    const artifacts = queryArtifactProjections(
+      database,
+      authorityDirectory,
+      projection.artifacts,
+      gitRetentionAdapter,
+    );
+    return projectReviewCandidateCurrency(
+      projection,
+      queryWorkspaceForReview(database, projection),
+      artifacts,
+      queryReviewCurrencyContext(
+        database,
+        authorityDirectory,
+        projection,
+        artifacts,
+        gitRetentionAdapter,
+      ),
+    );
+  }
+  if (projection.schema === "flow.review-projection/v1") {
+    if (projection.target_kind === "github") {
+      return projection;
+    }
+    const candidateIdentity = workStreamIdentity(
+      "work.review/v1",
+      projection.candidate?.candidate_id,
+    );
+    const candidateProjection = candidateIdentity
+      ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+      : null;
+    if (projection.current !== true &&
+        !["superseded", "abandoned"].includes(candidateProjection?.status)) {
+      return projection;
+    }
+    const artifacts = queryArtifactProjections(
+      database,
+      authorityDirectory,
+      projection.candidate?.artifacts,
+      gitRetentionAdapter,
+    );
+    return projectReviewCurrency(
+      projection,
+      queryWorkspaceForReview(database, projection),
+      artifacts,
+      queryReviewCurrencyContext(
+        database,
+        authorityDirectory,
+        projection.candidate,
+        artifacts,
+        gitRetentionAdapter,
+      ),
+      candidateProjection,
+    );
+  }
   if (projection.schema !== "flow.resource-handoff-projection/v1") {
     return projection;
   }
@@ -3370,18 +3455,12 @@ function queryWorkProjection(
     projection.associated_workspace.subject_id,
   );
   const workspace = readStream(database, workspaceIdentity.streamId)?.fold ?? null;
-  const artifacts = projection.artifacts.map(({ digest: artifactDigest }) => {
-    const artifactIdentity = workStreamIdentity("work.artifact/v1", artifactDigest);
-    const stream = readStream(database, artifactIdentity.streamId);
-    return stream
-      ? queryWorkProjection(
-          database,
-          authorityDirectory,
-          artifactIdentity,
-          gitRetentionAdapter,
-        )
-      : null;
-  });
+  const artifacts = queryArtifactProjections(
+    database,
+    authorityDirectory,
+    projection.artifacts,
+    gitRetentionAdapter,
+  );
   const consumerObservations = projection.legal_actions.map((action) => {
     const consumerStream = readStream(database, action.consumer_run_id);
     if (!consumerStream) {
@@ -3422,9 +3501,128 @@ function queryWorkProjection(
     currentProjection,
     workspace,
     artifacts,
-    gitRetentionAdapter.observe(projection.git_retention),
+    observeGitRetention(gitRetentionAdapter, projection.git_retention),
     consumerObservations,
   );
+}
+
+function queryWorkspaceForReview(database, projection) {
+  const subjectId = projection?.candidate?.workspace?.subject_id ??
+    projection?.workspace?.subject_id;
+  const identity = workStreamIdentity("work.workspace/v1", subjectId);
+  return identity ? readStream(database, identity.streamId)?.fold ?? null : null;
+}
+
+function queryArtifactProjections(
+  database,
+  authorityDirectory,
+  artifactReferences,
+  gitRetentionAdapter,
+) {
+  return (artifactReferences ?? []).map(({ digest: artifactDigest }) => {
+    const identity = workStreamIdentity("work.artifact/v1", artifactDigest);
+    const stream = identity ? readStream(database, identity.streamId) : null;
+    if (!stream) return null;
+    if (authorityDirectory === null) return stream.fold;
+    return queryWorkProjection(
+      database,
+      authorityDirectory,
+      identity,
+      gitRetentionAdapter,
+    );
+  });
+}
+
+function observeGitRetention(gitRetentionAdapter, receipt) {
+  if (!isPlainRecord(receipt) || typeof gitRetentionAdapter?.observe !== "function") {
+    return null;
+  }
+  try {
+    return gitRetentionAdapter.observe(receipt);
+  } catch {
+    return null;
+  }
+}
+
+function queryReviewCurrencyContext(
+  database,
+  authorityDirectory,
+  projection,
+  artifacts,
+  gitRetentionAdapter,
+) {
+  const context = {
+    git_retention_observation: observeGitRetention(
+      gitRetentionAdapter,
+      projection?.candidate?.git_retention ?? projection?.git_retention,
+    ),
+    handoff: null,
+    handoff_issue: null,
+  };
+  const artifactReferences = projection?.artifacts ?? [];
+  const handoffIds = [];
+  for (let index = 0; index < artifactReferences.length; index += 1) {
+    const pins = artifacts[index]?.pins?.filter(({ holder }) =>
+      holder === "handoff") ?? [];
+    if (pins.length === 0) {
+      context.handoff_issue = "artifact_handoff_pin_missing";
+      return context;
+    }
+    if (pins.length !== 1) {
+      context.handoff_issue = "artifact_handoff_pin_mismatch";
+      return context;
+    }
+    handoffIds.push(pins[0].id);
+  }
+  if (handoffIds.length === 0 || new Set(handoffIds).size !== 1) {
+    context.handoff_issue = "artifact_handoff_pin_mismatch";
+    return context;
+  }
+  const handoffIdentity = workStreamIdentity(
+    "flow.resource-handoff/v1",
+    handoffIds[0],
+  );
+  const handoffStream = handoffIdentity
+    ? readStream(database, handoffIdentity.streamId)
+    : null;
+  if (!handoffStream) {
+    context.handoff_issue = "handoff_unavailable";
+    return context;
+  }
+  const handoff = queryWorkProjection(
+    database,
+    authorityDirectory,
+    handoffIdentity,
+    gitRetentionAdapter,
+  );
+  context.handoff = handoff;
+  const candidateWorkspace = projection?.candidate?.workspace ?? projection?.workspace;
+  context.handoff_workspace_matches =
+    handoff?.associated_workspace?.subject_id === candidateWorkspace?.subject_id &&
+    handoff?.associated_workspace?.generation === candidateWorkspace?.generation &&
+    isDeepStrictEqual(handoff?.associated_workspace?.git, projection?.git) &&
+    handoff?.subject?.subject_id === candidateWorkspace?.subject_id &&
+    handoff?.subject?.generation === candidateWorkspace?.generation &&
+    handoff?.subject?.fingerprint === candidateWorkspace?.fingerprint;
+  context.handoff_artifacts_match = exactArtifactReferences(
+    handoff?.artifacts,
+    artifactReferences,
+  );
+  context.handoff_git_retention_matches = isDeepStrictEqual(
+    handoff?.git_retention,
+    projection?.candidate?.git_retention ?? projection?.git_retention,
+  );
+  return context;
+}
+
+function exactArtifactReferences(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+  const identity = (artifact) =>
+    `${artifact?.digest ?? ""}:${artifact?.generation ?? ""}`;
+  return left.map(identity).sort().join("\n") ===
+    right.map(identity).sort().join("\n");
 }
 
 function workCommandReceipt(command, projection, created) {
@@ -3452,14 +3650,40 @@ function isReviewRecordCommand(command) {
     command.contract === "work.review/v1";
 }
 
-function reviewCandidateCommandIssue(database, command) {
+function reviewCandidateCommandIssue(
+  database,
+  command,
+  authorityDirectory = null,
+  gitRetentionAdapter = createFailClosedGitRetentionAdapter(),
+) {
   if (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) return null;
   const candidateIdentity = workStreamIdentity(
     "work.review/v1",
     command.candidate?.candidate_id,
   );
   const candidateProjection = candidateIdentity
-    ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+    ? (() => {
+        const raw = readStream(database, candidateIdentity.streamId)?.fold ?? null;
+        if (raw?.schema !== "work.review-candidate-projection/v1") return raw;
+        const artifacts = queryArtifactProjections(
+          database,
+          authorityDirectory,
+          raw.artifacts,
+          gitRetentionAdapter,
+        );
+        return projectReviewCandidateCurrency(
+          raw,
+          queryWorkspaceForReview(database, raw),
+          artifacts,
+          queryReviewCurrencyContext(
+            database,
+            authorityDirectory,
+            raw,
+            artifacts,
+            gitRetentionAdapter,
+          ),
+        );
+      })()
     : null;
   return reviewRecordCandidateAuthorityIssue(command, candidateProjection);
 }
@@ -3488,10 +3712,15 @@ function durableReviewTargetObservation(
     const candidateProjection = candidateIdentity
       ? readStream(database, candidateIdentity.streamId)?.fold ?? null
       : null;
+    const workspace = queryWorkspaceForReview(
+      database,
+      candidateProjection ?? reviewProjection,
+    );
     const observation = adapter.observe({
       command,
       review: reviewProjection,
       candidate: candidateProjection,
+      workspace,
     });
     return observation === null || observation === undefined
       ? null

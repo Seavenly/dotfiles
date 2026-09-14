@@ -39,6 +39,7 @@ import {
   buildReviewTargetRefreshEvent,
   materializeReviewDelegateResult,
   projectReviewRecord,
+  projectReviewCurrency,
   GITHUB_REVIEW_OPERATION_CONTRACTS,
   GITHUB_REVIEW_TARGET_SCHEMA,
   githubPendingEffectIdentity,
@@ -455,6 +456,8 @@ test("durable FlowRuntime reopens the exact GitHub semantic review projection", 
   assert.deepEqual(afterReopen.remote_review, beforeClose.remote_review);
   assert.deepEqual(afterReopen.command_receipts, beforeClose.command_receipts);
   assert.deepEqual(afterReopen.artifacts, beforeClose.artifacts);
+  assert.equal(Object.hasOwn(afterReopen, "workspace_authority_watermark"), false);
+  assert.equal(Object.hasOwn(afterReopen, "blocking_reasons"), false);
   assert.deepEqual(afterReopen.legal_actions, []);
   const watched = await reopened.watch({ review_id: subjectId }).next();
   assert.equal(watched.value.watermark, beforeClose.watermark);
@@ -1850,6 +1853,121 @@ test("durable review fold maps malformed and replay-corrupt events to integrity 
   );
 });
 
+test("review candidate terminal compatibility events replay deterministically and fence recorded currency", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const sealed = {
+    type: "review_candidate_sealed",
+    candidate,
+    registration_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: "review-seal:candidate",
+      command_digest: DIGEST("s"),
+    },
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: "review-seal:candidate",
+      command_digest: DIGEST("s"),
+    },
+  };
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recorded = projectReviewRecord(body, command.artifacts.watermark, []);
+  const workspace = {
+    schema: "work.workspace-projection/v1",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    watermark: DIGEST("w"),
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    git: candidate.git,
+    taint: null,
+  };
+
+  for (const [eventType, status] of [
+    ["review_candidate_superseded", "superseded"],
+    ["review_candidate_abandoned", "abandoned"],
+  ]) {
+    const records = [
+      { payload: sealed },
+      {
+        payload: {
+          type: eventType,
+          candidate,
+          command_receipt: {
+            schema: "work.idempotency-receipt/v1",
+            command_id: `review-${status}:candidate`,
+            command_digest: DIGEST(status === "superseded" ? "u" : "a"),
+          },
+        },
+      },
+    ];
+    const physicalHead = DIGEST(status === "superseded" ? "p" : "q");
+    const folded = foldWorkStream(
+      "review",
+      candidate.candidate_id,
+      records,
+      physicalHead,
+    );
+    assert.equal(folded.status, status);
+    assert.deepEqual(
+      foldWorkStream("review", candidate.candidate_id, records, physicalHead),
+      folded,
+    );
+
+    const currency = projectReviewCurrency(
+      recorded,
+      workspace,
+      [],
+      null,
+      folded,
+    );
+    assert.equal(currency.status, "stale", status);
+    assert.equal(currency.current, false, status);
+    assert.equal(currency.candidate_lifecycle_status, status, status);
+    assert.deepEqual(currency.legal_actions, [], status);
+  }
+});
+
+test("review candidate replay rejects malformed terminal payloads with typed integrity failures", () => {
+  const candidate = reviewCandidate();
+  const sealed = {
+    type: "review_candidate_sealed",
+    candidate,
+  };
+  for (const payload of [
+    null,
+    { type: "review_candidate_superseded", candidate: null },
+    { type: "review_candidate_superseded", candidate: { schema: "malformed" } },
+  ]) {
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        candidate.candidate_id,
+        [{ payload: sealed }, { payload }],
+        DIGEST("f"),
+      ),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+    );
+  }
+});
+
 test("ReviewAuthority invalidates a recorded review when the target moves", async () => {
   const candidate = reviewCandidate();
   const command = reviewRecordCommand(candidate, 4);
@@ -2002,6 +2120,299 @@ test("ReviewAuthority invalidates a recorded review when the target moves", asyn
   });
   const watched = await runtime.watch({ review_id: reviewId }).next();
   assert.deepEqual(watched.value, acknowledged);
+});
+
+test("ReviewAuthority invalidates and refreshes review currency on mutation-epoch movement", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const reviewId = reviewSubjectId({ candidate, lifecycle_generation: 4 });
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+    targetObservationAdapter: {
+      observe({ command }) {
+        return buildReviewTargetObservation({
+          subjectId: command.subject_id,
+          candidateId: candidate.candidate_id,
+          candidateFingerprint: command.observed_candidate_fingerprint,
+          lifecycleGeneration: command.observed_lifecycle_generation,
+          mutationEpoch: command.observed_mutation_epoch,
+          authorityWatermark: DIGEST("9"),
+        });
+      },
+    },
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const before = runtime.query({ review_id: reviewId });
+  const movement = {
+    schema: "work.review-target-invalidation-command/v1",
+    type: "review_target_invalidated",
+    contract: "work.review/v1",
+    subject_id: reviewId,
+    command_id: `review-target-invalidate:${reviewId}:${candidate.candidate_fingerprint}:4:8`,
+    expected_watermark: before.watermark,
+    prior_candidate_fingerprint: candidate.candidate_fingerprint,
+    prior_lifecycle_generation: 4,
+    prior_mutation_epoch: candidate.workspace.mutation_epoch,
+    observed_candidate_fingerprint: candidate.candidate_fingerprint,
+    observed_lifecycle_generation: 4,
+    observed_mutation_epoch: 8,
+    reason: "target_moved",
+  };
+  const invalidated = runtime.command(movement);
+  assert.equal(invalidated.accepted, true, JSON.stringify(invalidated));
+  const stale = runtime.query({ review_id: reviewId });
+  assert.equal(stale.status, "stale");
+  assert.equal(stale.observed_mutation_epoch, 8);
+  assert.deepEqual(stale.legal_actions, [{
+    schema: "work.review-target-refresh-command/v1",
+    type: "review_target_refresh",
+    contract: "work.review/v1",
+    subject_id: reviewId,
+    command_id: `review-target-refresh:${reviewId}:${candidate.candidate_fingerprint}:4:8`,
+    expected_watermark: stale.watermark,
+    prior_candidate_fingerprint: candidate.candidate_fingerprint,
+    prior_lifecycle_generation: 4,
+    prior_mutation_epoch: candidate.workspace.mutation_epoch,
+    observed_candidate_fingerprint: candidate.candidate_fingerprint,
+    observed_lifecycle_generation: 4,
+    observed_mutation_epoch: 8,
+    authority_observation: stale.invalidation.observation,
+  }]);
+  const refreshed = runtime.command(stale.legal_actions[0]);
+  assert.equal(refreshed.accepted, true, JSON.stringify(refreshed));
+  const acknowledged = runtime.query({ review_id: reviewId });
+  assert.equal(acknowledged.status, "stale");
+  assert.equal(acknowledged.current, false);
+  assert.equal(acknowledged.observed_mutation_epoch, 8);
+  assert.deepEqual(acknowledged.legal_actions, []);
+  assert.deepEqual(acknowledged.summary, before.summary);
+  assert.deepEqual(acknowledged.artifacts, before.artifacts);
+});
+
+test("ReviewAuthority exposes a blocked candidate for uncertain retained bytes", () => {
+  const candidate = reviewCandidate();
+  const workspace = {
+    schema: "work.workspace-projection/v1",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    watermark: DIGEST("w"),
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    git: candidate.git,
+    taint: null,
+  };
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    workspaceProjection: workspace,
+    artifactProjections: [{
+      schema: "work.artifact-projection/v1",
+      status: "uncertain",
+      byte_availability: "available",
+    }],
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  const blocked = runtime.query({
+    contract: "work.review/v1",
+    subject_id: candidate.candidate_id,
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.current, false);
+  assert.equal(blocked.workspace_authority_watermark, workspace.watermark);
+  assert.equal(blocked.workspace_mutation_epoch, candidate.workspace.mutation_epoch);
+  assert.deepEqual(blocked.blocking_reasons, ["artifact_uncertain"]);
+  assert.deepEqual(blocked.legal_actions, []);
+});
+
+test("ReviewAuthority keeps terminal candidate lifecycle out of current currency", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const workspace = {
+    schema: "work.workspace-projection/v1",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    watermark: DIGEST("w"),
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    git: candidate.git,
+    taint: null,
+  };
+  for (const lifecycleStatus of ["superseded", "abandoned"]) {
+    const authority = createInMemoryReviewAuthority({
+      candidateProjection: {
+        ...candidateAuthorityProjection(candidate, DIGEST("c")),
+        status: lifecycleStatus,
+      },
+      sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
+      workspaceProjection: workspace,
+    });
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority(),
+      reviewAuthority: authority,
+    });
+    const rejected = authority.command(command);
+    assert.equal(rejected.code, "candidate_lifecycle_terminal", lifecycleStatus);
+    const terminal = runtime.query({
+      contract: "work.review/v1",
+      subject_id: candidate.candidate_id,
+    });
+    assert.equal(terminal.status, "stale", lifecycleStatus);
+    assert.equal(terminal.lifecycle_status, lifecycleStatus, lifecycleStatus);
+    assert.equal(terminal.current, false, lifecycleStatus);
+    assert.equal(terminal.evidence_currency, "stale", lifecycleStatus);
+    assert.deepEqual(terminal.blocking_reasons,
+      [`candidate_lifecycle_${lifecycleStatus}`], lifecycleStatus);
+    assert.deepEqual(terminal.legal_actions, [], lifecycleStatus);
+  }
+});
+
+test("FlowRuntime fences an existing local review after a terminal candidate transition without observations", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  for (const lifecycleStatus of ["superseded", "abandoned"]) {
+    let candidateProjection = candidateAuthorityProjection(candidate, DIGEST("c"));
+    const authority = createInMemoryReviewAuthority({
+      candidateProjection: () => candidateProjection,
+      sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
+    });
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority(),
+      reviewAuthority: authority,
+    });
+    assert.equal(authority.command(command).accepted, true, lifecycleStatus);
+    const reviewId = reviewSubjectId({ candidate, lifecycle_generation: 4 });
+    const sealed = runtime.query({ review_id: reviewId });
+    assert.equal(sealed.current, true, lifecycleStatus);
+
+    candidateProjection = {
+      ...candidateProjection,
+      status: lifecycleStatus,
+    };
+    const terminal = runtime.query({ review_id: reviewId });
+    assert.equal(terminal.status, "stale", lifecycleStatus);
+    assert.equal(terminal.current, false, lifecycleStatus);
+    assert.equal(terminal.candidate_lifecycle_status, lifecycleStatus, lifecycleStatus);
+    assert.deepEqual(terminal.blocking_reasons,
+      [`candidate_lifecycle_${lifecycleStatus}`], lifecycleStatus);
+    assert.deepEqual(terminal.legal_actions, [], lifecycleStatus);
+  }
+});
+
+test("ReviewAuthority fences an existing review when its candidate is terminal", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recorded = projectReviewRecord(body, command.artifacts.watermark, []);
+  const terminal = projectReviewCurrency(
+    recorded,
+    {
+      schema: "work.workspace-projection/v1",
+      contract: "work.workspace/v1",
+      subject_id: candidate.workspace.subject_id,
+      watermark: DIGEST("w"),
+      generation: candidate.workspace.generation,
+      mutation_epoch: candidate.workspace.mutation_epoch,
+      git: candidate.git,
+      taint: null,
+    },
+    [],
+    null,
+    {
+      ...candidateAuthorityProjection(candidate, DIGEST("c")),
+      status: "abandoned",
+    },
+  );
+  assert.equal(terminal.status, "stale");
+  assert.equal(terminal.current, false);
+  assert.equal(terminal.candidate_lifecycle_status, "abandoned");
+  assert.equal(terminal.evidence_currency, "stale");
+  assert.deepEqual(terminal.blocking_reasons, ["candidate_lifecycle_abandoned"]);
+  assert.deepEqual(terminal.legal_actions, []);
+});
+
+test("ReviewAuthority blocks candidate currency for exact handoff pin and observation failures", () => {
+  const candidate = reviewCandidate();
+  const workspace = {
+    schema: "work.workspace-projection/v1",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    watermark: DIGEST("w"),
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    git: candidate.git,
+    taint: null,
+  };
+  const artifacts = [{
+    schema: "work.artifact-projection/v1",
+    digest: candidate.artifacts[0].digest,
+    generation: candidate.artifacts[0].generation,
+    status: "retained",
+    byte_availability: "available",
+    pins: [],
+    watermark: DIGEST("a"),
+  }];
+  const retention = {
+    ...candidate.git_retention,
+    schema: "flow.git-retention-observation/v1",
+    available: true,
+  };
+  for (const [name, observations, expectedReason] of [
+    ["missing handoff pin", { git_retention_observation: retention,
+      handoff_issue: "artifact_handoff_pin_missing" }, "artifact_handoff_pin_missing"],
+    ["wrong handoff pin", { git_retention_observation: retention,
+      handoff_issue: "artifact_handoff_pin_mismatch" }, "artifact_handoff_pin_mismatch"],
+    ["uncertain handoff", { git_retention_observation: retention,
+      handoff: { status: "uncertain", authority_watermark: DIGEST("h"),
+        watermark: DIGEST("i") } }, "handoff_uncertain"],
+  ]) {
+    const authority = createInMemoryReviewAuthority({
+      candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+      workspaceProjection: workspace,
+      artifactProjections: artifacts,
+      currencyObservations: observations,
+    });
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority(),
+      reviewAuthority: authority,
+    });
+    const blocked = runtime.query({ review_id: candidate.candidate_id });
+    assert.equal(blocked.status, "blocked", name);
+    assert.equal(blocked.current, false, name);
+    assert.equal(blocked.watermark, DIGEST("c"), name);
+    assert.deepEqual(blocked.blocking_reasons, [expectedReason], name);
+    assert.deepEqual(blocked.artifact_authority_watermarks, [DIGEST("a")], name);
+    assert.equal(blocked.git_retention_observation_watermark, digest(retention), name);
+    assert.equal(blocked.handoff_authority_watermark,
+      expectedReason === "handoff_uncertain" ? DIGEST("h") : null, name);
+    assert.equal(blocked.handoff_observation_watermark,
+      expectedReason === "handoff_uncertain" ? DIGEST("i") : null, name);
+    assert.deepEqual(blocked.legal_actions, [], name);
+    const admission = authority.command(reviewRecordCommand(candidate, 4));
+    assert.equal(admission.code, "candidate_workspace_blocked", name);
+  }
 });
 
 test("ReviewAuthority accepts fingerprint-only and lifecycle-only target movement", () => {

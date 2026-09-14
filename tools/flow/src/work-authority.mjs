@@ -502,8 +502,21 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
     const commandReceipts = sealed.command_receipt
       ? [sealed.command_receipt]
       : [];
-    for (const { payload } of records.slice(1)) {
+    for (const record of records.slice(1)) {
+      const payload = record?.payload;
+      if (!isRecord(payload)) {
+        throw reviewAuthorityIntegrityFailure(
+          "malformed_event",
+          "review authority event payload is malformed",
+        );
+      }
       if (payload.type === "review_candidate_superseded") {
+        if (!canonicalValidReviewCandidate(subjectId, payload.candidate)) {
+          throw reviewAuthorityIntegrityFailure(
+            "malformed_event",
+            "review candidate superseded event candidate is malformed",
+          );
+        }
         status = "superseded";
         candidate = payload.candidate;
       } else if (payload.type === "review_candidate_abandoned") {
