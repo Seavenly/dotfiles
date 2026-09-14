@@ -61,10 +61,19 @@ The default production composition opens one durable `RunAuthority` under
 feature and review definitions, real Git/workspace and artifact operations,
 strict output validators, authority observers, and the configured
 `DelegatedAgentPort`. The autonomous runner consumes only current authority
-projections. It keeps delegate and operation capacities separate, does not
-count passive child-run observation against operation capacity, and never
-auto-admits a checkpoint, capability expansion, uncertain effect, or terminal
+projections. It keeps delegate and operation capacities separate, defaults
+each to one slot, and accepts positive bounds from 1 through 64 using
+`FLOW_RUNNER_DELEGATE_CAPACITY` / `FLOW_RUNNER_OPERATION_CAPACITY` or the
+explicit `runnerOptions` production constructor fields. It does not count
+passive child-run observation against operation capacity, and never auto-
+admits a checkpoint, capability expansion, uncertain effect, or terminal
 disposition.
+
+`flow status --json` includes the live runner status with capacity, active
+counts, and bounded sanitized error summaries. A detached owner also retains
+sanitized runner and transport diagnostics in the private `owner-errors.json`
+file under its authority directory; raw provider payloads and error messages
+are never written there.
 
 Clients do not own the authority lock. The host owner is fenced by its exact
 endpoint identity and survives client exit; competing clients can query and

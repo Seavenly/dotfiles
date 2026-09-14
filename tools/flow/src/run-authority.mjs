@@ -916,6 +916,13 @@ export function createDurableRunAuthority({
   }
 
   const authorityMethods = {
+    // This is deliberately a read-only fact. Callers cannot turn an inspect
+    // authority into a mutation authority by observing the host projection.
+    get mutationAuthority() {
+      return !closed && lockDatabase !== null &&
+        authoritySchemaCompatibility?.status === "compatible";
+    },
+
     hostCommand,
     pendingSameBootRecoveryRunIds() {
       return Object.freeze([...sameBootRecoveryRunIds].sort());
@@ -1592,6 +1599,15 @@ export function createDurableRunAuthority({
               bootId,
               processIdentity,
             });
+            appendTerminalWorkspaceClaimReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: canonicalCommand.run_id,
+              terminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
           }
           if (terminalEvent && terminalCommitsImmediately) {
             appendAuthorityEvents(database, {
@@ -1727,13 +1743,15 @@ export function createDurableRunAuthority({
           reviewAuthorityObservation = currentProjection?.invalidation?.observation ?? null;
         }
         if (currentProjection?.schema === "work.workspace-projection/v1" &&
-            command.type === "workspace_claim") {
+            ["workspace_claim", "workspace_observe"].includes(command.type)) {
           let observation;
           try {
             observation = gitWorkspaceObservationAdapter.observe({
               repository_id: currentProjection.repository.canonical_id,
               workspace_path: currentProjection.workspace.canonical_path,
-              ref: currentProjection.git.ref,
+              ref: command.type === "workspace_observe"
+                ? command.git_observation?.git?.ref
+                : currentProjection.git.ref,
             });
           } catch {
             return workRejection("command", "workspace_git_observation_unavailable", {
@@ -2605,6 +2623,15 @@ export function createDurableRunAuthority({
               bootId,
               processIdentity,
             });
+            appendTerminalWorkspaceClaimReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: effectiveIntent.run_id,
+              terminalEvent: deferredTerminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
           }
           assertDurableHostRestoreClear(
             database,
@@ -2995,6 +3022,7 @@ export function createDurableRunAuthority({
       if (![
         "work.workspace-register-command/v1",
         "work.workspace-claim-command/v1",
+        "work.workspace-observation-command/v1",
         "work.workspace-claim-release-command/v1",
         "work.workspace-taint-command/v1",
         "work.workspace-taint-disposition-command/v1",
@@ -3932,6 +3960,49 @@ function appendTerminalConsumerHandoffReleases(database, {
     .map(([handoffId]) => handoffId);
   for (const handoffId of handoffIds) {
     appendConsumerHandoffRelease(database, { handoffId, runId }, fence);
+  }
+}
+
+function appendTerminalWorkspaceClaimReleases(database, {
+  prepared,
+  runId,
+  terminalEvent,
+}, fence) {
+  const workspaceClaims = prepared?.explicit_facts?.resource_claims
+    ?.filter(({ kind }) => kind === "workspace") ?? [];
+  for (const claim of workspaceClaims) {
+    if (terminalEvent.type === "run_cancelled") {
+      const disposition = terminalEvent.resource_dispositions?.find((entry) =>
+        entry.claim?.kind === "workspace" &&
+        entry.claim.id === claim.id)?.disposition;
+      if (disposition !== "released") continue;
+    }
+    const identity = workStreamIdentity("work.workspace/v1", claim.id);
+    const workspace = identity === null
+      ? null
+      : readStream(database, identity.streamId)?.fold ?? null;
+    const currentClaim = workspace?.claims?.find(({ holder }) => holder === runId);
+    if (workspace === null || currentClaim === undefined ||
+        workspace.taint !== null ||
+        workspace.generation !== claim.generation ||
+        workspace.mutation_epoch !== claim.mutation_epoch ||
+        digest({ git: workspace.git }) !== claim.fingerprint) {
+      continue;
+    }
+    appendAuthorityEvents(database, {
+      streamId: identity.streamId,
+      streamKind: identity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_claim_released",
+          claim_id: currentClaim.claim_id,
+          holder: currentClaim.holder,
+          reason: terminalEvent.type,
+        },
+      }],
+      ...fence,
+    });
   }
 }
 

@@ -67,7 +67,7 @@ export function validReviewCandidate(subjectId, candidate) {
 
 function validReviewVerificationReceipt(receipt, candidateWorkspace, candidateGit) {
   const identity = stripReceiptDigests(receipt);
-  if (!hasExactKeys(receipt, [
+  const receiptKeys = [
     "acceptance_criteria",
     "attempt_id",
     "brief_id",
@@ -81,7 +81,11 @@ function validReviewVerificationReceipt(receipt, candidateWorkspace, candidateGi
     "self_digest",
     "source_authority_watermark",
     "workspace",
-  ]) ||
+    ...(isDigest(receipt?.independent_critique_digest)
+      ? ["independent_critique_digest"]
+      : []),
+  ];
+  if (!hasExactKeys(receipt, receiptKeys) ||
       receipt.schema !== "work.feature-verification-receipt/v1" ||
       !nonEmpty(receipt.brief_id) ||
       !nonEmpty(receipt.effect_id) ||

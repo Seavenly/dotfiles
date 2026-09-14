@@ -38,7 +38,11 @@ import {
   fixedExecutionTimeAdapter,
   fixedHostIdentity,
 } from "../../../tools/flow/test-support/fixed-host-identity.mjs";
-import { closeFlowRuntime, createFlowRuntime } from "../src/runtime.mjs";
+import {
+  closeFlowRuntime,
+  createFlowRuntime,
+  normalizeProductionRunnerOptions,
+} from "../src/runtime.mjs";
 import { validateDelegateEvidenceSafety } from
   "../../../tools/flow/src/evidence-safety.mjs";
 
@@ -59,6 +63,83 @@ test("short-lived default runtime does not retain a polling handle", async (t) =
   await execFile(process.execPath, ["--input-type=module", "-e", script], {
     timeout: 1_500,
   });
+});
+
+test("production runner capacity is bounded and exposed through a named query", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-runner-status-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_RUNNER_DELEGATE_CAPACITY: "3",
+    },
+    runnerOptions: { operationCapacity: 2 },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const status = await runtime.query({
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  });
+  assert.equal(status.schema, "flow.runtime-runner-status/v1");
+  assert.equal(status.delegates.capacity, 3);
+  assert.equal(status.operations.capacity, 2);
+
+  for (const value of [0, -1, 65, "nope", 1.5]) {
+    assert.throws(
+      () => createFlowRuntime({
+        env: {
+          HOME: scratch,
+          XDG_STATE_HOME: join(scratch, `invalid-${String(value)}`),
+          FLOW_RUNNER_DELEGATE_CAPACITY: String(value),
+        },
+        autonomous: false,
+      }),
+      /delegateCapacity.*integer between 1 and 64/u,
+    );
+  }
+});
+
+test("production runner capacity defaults, overrides, and rejects invalid values", async (t) => {
+  assert.deepEqual(normalizeProductionRunnerOptions({ env: {} }), {});
+  assert.deepEqual(normalizeProductionRunnerOptions({
+    env: {
+      FLOW_RUNNER_DELEGATE_CAPACITY: "3",
+      FLOW_RUNNER_OPERATION_CAPACITY: "4",
+    },
+    runnerOptions: { delegateCapacity: 5 },
+  }), {
+    delegateCapacity: 5,
+    operationCapacity: 4,
+  });
+
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-runner-default-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const status = await runtime.query({
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  });
+  assert.equal(status.delegates.capacity, 1);
+  assert.equal(status.operations.capacity, 1);
+
+  for (const [key, variable] of [
+    ["delegateCapacity", "FLOW_RUNNER_DELEGATE_CAPACITY"],
+    ["operationCapacity", "FLOW_RUNNER_OPERATION_CAPACITY"],
+  ]) {
+    for (const value of [0, 65, 1.5, "nope"]) {
+      assert.throws(
+        () => normalizeProductionRunnerOptions({
+          env: { [variable]: typeof value === "string" ? value : String(value) },
+        }),
+        new RegExp(`${key}.*integer between 1 and 64`),
+      );
+    }
+  }
 });
 
 test("awaited public authority watch keeps the process alive until it closes", async (t) => {

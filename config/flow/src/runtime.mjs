@@ -20,9 +20,16 @@ import {
   createProductionRunAuthority,
   releaseProductionRunAuthority,
   rememberRuntimeAuthority,
+  flowRuntimeMutationAuthority,
   statusFlowRuntime,
 } from "./production-runtime.mjs";
 import { createProductionComposition } from "./production-composition.mjs";
+
+const RUNNER_CAPACITY_LIMIT = 64;
+const RUNNER_CAPACITY_ENV = Object.freeze({
+  delegateCapacity: "FLOW_RUNNER_DELEGATE_CAPACITY",
+  operationCapacity: "FLOW_RUNNER_OPERATION_CAPACITY",
+});
 
 export function createFlowRuntime({
   env = process.env,
@@ -37,7 +44,19 @@ export function createFlowRuntime({
   authorityDirectory = undefined,
   authorityOptions = {},
   autonomous = undefined,
+  runnerOptions = undefined,
+  runnerErrorSink = undefined,
 } = {}) {
+  if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
+    throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
+  }
+  const resolvedRunnerOptions = normalizeProductionRunnerOptions({
+    env,
+    runnerOptions,
+  });
+  const coreRunnerOptions = runnerErrorSink === undefined
+    ? resolvedRunnerOptions
+    : { ...resolvedRunnerOptions, onError: runnerErrorSink };
   const adapter = legacyAdapter ?? new FilesystemLegacyCompatibilityAdapter({
     legacyRoots,
   });
@@ -79,7 +98,19 @@ export function createFlowRuntime({
       predefinedDefinitions: composition.definitions,
       registeredAuthorities: composition.authorities,
       autonomous: autonomous ?? ownsAuthority,
+      runnerOptions: coreRunnerOptions,
       registeredQueries: {
+        async autonomous_runner_status(request) {
+          assertAutonomousRunnerStatusQuery(request);
+          const status = statusFlowRuntime(runtime);
+          if (status === null) {
+            throw new FlowQueryRejected(
+              "autonomous FlowRuntime runner is unavailable",
+              { code: "runner_unavailable" },
+            );
+          }
+          return status;
+        },
         async delegated_agent_description(request) {
           assertDelegatedAgentDescriptionQuery(request);
           return delegationPort.describe({
@@ -194,7 +225,10 @@ export function closeFlowRuntime(runtime) {
   return closeOwnedFlowRuntime(runtime);
 }
 
-export { statusFlowRuntime };
+export {
+  flowRuntimeMutationAuthority,
+  statusFlowRuntime,
+};
 
 export class FlowQueryRejected extends Error {
   constructor(message, { code }) {
@@ -232,6 +266,59 @@ function assertDelegatedAgentDescriptionQuery(request) {
       code: "invalid_query",
     });
   }
+}
+
+function assertAutonomousRunnerStatusQuery(request) {
+  if (
+    request?.schema !== "flow.query/v1" ||
+    request.query !== "autonomous_runner_status" ||
+    Object.keys(request).length !== 2
+  ) {
+    throw new FlowQueryRejected("unsupported FlowRuntime query", {
+      code: "unsupported_query",
+    });
+  }
+}
+
+export function normalizeProductionRunnerOptions({
+  env = process.env,
+  runnerOptions = undefined,
+} = {}) {
+  if (runnerOptions !== undefined &&
+      (runnerOptions === null || typeof runnerOptions !== "object" ||
+       Array.isArray(runnerOptions))) {
+    throw new TypeError("production FlowRuntime runnerOptions must be an object");
+  }
+  const supplied = runnerOptions ?? {};
+  const unknown = Object.keys(supplied).filter((key) =>
+    !Object.hasOwn(RUNNER_CAPACITY_ENV, key) && supplied[key] !== undefined);
+  if (unknown.length > 0) {
+    throw new TypeError(
+      `unsupported production runner option: ${unknown[0]}`,
+    );
+  }
+  const options = {};
+  for (const [key, variable] of Object.entries(RUNNER_CAPACITY_ENV)) {
+    const value = supplied[key] !== undefined
+      ? supplied[key]
+      : env?.[variable];
+    if (value === undefined) continue;
+    options[key] = positiveRunnerCapacity(value, key, variable);
+  }
+  return Object.freeze(options);
+}
+
+function positiveRunnerCapacity(value, key, variable) {
+  const parsed = typeof value === "string" && /^\d+$/u.test(value)
+    ? Number(value)
+    : value;
+  if (!Number.isSafeInteger(parsed) || parsed < 1 ||
+      parsed > RUNNER_CAPACITY_LIMIT) {
+    throw new TypeError(
+      `${key} from ${variable} must be an integer between 1 and ${RUNNER_CAPACITY_LIMIT}`,
+    );
+  }
+  return parsed;
 }
 
 function defaultLegacyRoots(env) {

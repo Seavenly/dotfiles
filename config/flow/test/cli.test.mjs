@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli-command.mjs";
 import { closeFlowRuntime, createFlowRuntime } from "../src/runtime.mjs";
+import {
+  flowOwnerPaths,
+  startFlowOwner,
+  stopFlowOwner,
+} from "../src/owner-process.mjs";
 
 test("flow CLI exposes the watermarked legacy inventory query", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-cli-inventory-"));
@@ -178,4 +183,101 @@ test("flow CLI rejects incomplete arguments and classifies inventory failures", 
     authority_watermark_domain: "host",
     legal_actions: [],
   });
+});
+
+test("generic named-query rejection is stable with and without a live owner", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-cli-query-parity-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const authorityDirectory = join(scratch, "custom-authority");
+  const env = {
+    ...process.env,
+    HOME: scratch,
+    XDG_STATE_HOME: join(scratch, "state"),
+    FLOW_AUTHORITY_DIRECTORY: authorityDirectory,
+  };
+  const request = {
+    schema: "flow.query/v1",
+    query: "not_registered",
+  };
+  const args = ["query", "--input", JSON.stringify(request), "--json"];
+  const invoke = () => {
+    let stdout = "";
+    let stderr = "";
+    return runCli(args, {
+      env,
+      stdout: { write: (chunk) => { stdout += chunk; } },
+      stderr: { write: (chunk) => { stderr += chunk; } },
+    }).then((code) => ({
+      code,
+      stdout,
+      rejection: JSON.parse(stderr),
+    }));
+  };
+
+  const direct = await invoke();
+  assert.equal(direct.code, 2);
+  assert.equal(direct.stdout, "");
+  assert.equal(direct.rejection.code, "unsupported_query");
+  assert.equal(direct.rejection.reason, null);
+
+  const paths = flowOwnerPaths({ env });
+  try {
+    const started = await startFlowOwner({
+      env,
+      ...paths,
+      waitMs: 5_000,
+      pollMs: 10,
+    });
+    assert.equal(started.state, "running");
+    const live = await invoke();
+    assert.equal(live.code, 2);
+    assert.equal(live.stdout, "");
+    const withoutWatermark = ({ authority_watermark: _watermark, ...value }) => value;
+    assert.deepEqual(
+      withoutWatermark(live.rejection),
+      withoutWatermark(direct.rejection),
+    );
+    assert.match(live.rejection.authority_watermark, /^sha256:[0-9a-f]{64}$/u);
+  } finally {
+    await stopFlowOwner({
+      env,
+      ...paths,
+      force: true,
+      waitMs: 2_000,
+      pollMs: 10,
+    });
+  }
+});
+
+test("named-query inspection fallback uses FLOW_AUTHORITY_DIRECTORY exactly", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-cli-authority-root-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const stateHome = join(scratch, "state");
+  const authorityDirectory = join(scratch, "operator-authority");
+  const env = {
+    ...process.env,
+    HOME: scratch,
+    XDG_STATE_HOME: stateHome,
+    FLOW_AUTHORITY_DIRECTORY: authorityDirectory,
+  };
+  const paths = flowOwnerPaths({ env });
+  assert.equal(paths.authorityDirectory, authorityDirectory);
+
+  const bootstrap = createFlowRuntime({ env, autonomous: false });
+  closeFlowRuntime(bootstrap);
+
+  let stdout = "";
+  let stderr = "";
+  assert.equal(await runCli(["query", "legacy-inventory", "--json"], {
+    env,
+    stdout: { write: (chunk) => { stdout += chunk; } },
+    stderr: { write: (chunk) => { stderr += chunk; } },
+  }), 0);
+  assert.equal(stderr, "");
+  assert.equal(JSON.parse(stdout).schema,
+    "flow.legacy-compatibility-inventory/v1");
+  await access(join(authorityDirectory, "authority.sqlite"));
+  await assert.rejects(access(join(stateHome, "flow", "authority.sqlite")));
+  await assert.rejects(access(paths.endpointPath));
+  await assert.rejects(access(paths.socketPath));
 });

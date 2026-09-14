@@ -1101,6 +1101,157 @@ test("cancellation retains a quarantined mutation lease despite a released sibli
   }).consumer_pins.some(({ run_id: runId }) => runId === consumer.run_id), true);
 });
 
+test("WorkspaceAuthority records a clean external Git advance only while unclaimed", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-observe-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let observedGit = exactGitFacts();
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: {
+      observe() {
+        return {
+          schema: "work.git-observation/v1",
+          git: observedGit,
+        };
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("boot-observe", "observe-process"),
+  });
+  t.after(() => runAuthority.close());
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  assert.equal(workspaceAuthority.command(workspaceRegistration()).accepted, true);
+  const before = workspaceAuthority.query(workspaceQuery());
+  observedGit = {
+    ...observedGit,
+    commit_sha: "3".repeat(40),
+    tree_sha: "4".repeat(40),
+    ref: "refs/heads/ticket/advanced",
+  };
+  const receipt = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:advanced",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: before.watermark,
+    expected_generation: before.generation,
+    expected_mutation_epoch: before.mutation_epoch,
+    expected_fingerprint: digestValue({ git: before.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(receipt.accepted, true, JSON.stringify(receipt));
+  const after = workspaceAuthority.query(workspaceQuery());
+  assert.equal(after.generation, before.generation + 1);
+  assert.equal(after.mutation_epoch, before.mutation_epoch + 1);
+  assert.deepEqual(after.git, observedGit);
+  assert.equal(after.claims.length, 0);
+  assert.equal(after.taint, null);
+
+  const unchanged = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:unchanged",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: after.watermark,
+    expected_generation: after.generation,
+    expected_mutation_epoch: after.mutation_epoch,
+    expected_fingerprint: digestValue({ git: after.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(unchanged.code, "workspace_observation_unchanged");
+  assert.deepEqual(workspaceAuthority.query(workspaceQuery()), after);
+
+  const claimReceipt = workspaceAuthority.command(workspaceClaim({
+    expectedGeneration: after.generation,
+    expectedWatermark: after.watermark,
+    expectedFingerprint: digestValue({ git: after.git }),
+    commandId: "workspace-claim:observe-fence",
+    holder: "run:observe-fence",
+  }));
+  assert.equal(claimReceipt.accepted, true);
+  const claimedBeforeObservation = workspaceAuthority.query(workspaceQuery());
+  observedGit = {
+    ...observedGit,
+    commit_sha: "5".repeat(40),
+    tree_sha: "6".repeat(40),
+  };
+  const claimed = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:claimed",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: claimedBeforeObservation.watermark,
+    expected_generation: claimedBeforeObservation.generation,
+    expected_mutation_epoch: claimedBeforeObservation.mutation_epoch,
+    expected_fingerprint: digestValue({ git: claimedBeforeObservation.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(claimed.code, "workspace_already_claimed");
+
+  const releasedClaim = workspaceAuthority.query(workspaceQuery()).legal_actions
+    .find(({ type }) => type === "workspace_claim_release");
+  assert.equal(workspaceAuthority.command(releasedClaim).accepted, true);
+  const cleanBeforeDirtyObservation = workspaceAuthority.query(workspaceQuery());
+  observedGit = {
+    ...observedGit,
+    commit_sha: "7".repeat(40),
+    tree_sha: "8".repeat(40),
+    clean: false,
+  };
+  const dirty = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:dirty",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: cleanBeforeDirtyObservation.watermark,
+    expected_generation: cleanBeforeDirtyObservation.generation,
+    expected_mutation_epoch: cleanBeforeDirtyObservation.mutation_epoch,
+    expected_fingerprint: digestValue({ git: cleanBeforeDirtyObservation.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(dirty.code, "workspace_dirty");
+  assert.deepEqual(workspaceAuthority.query(workspaceQuery()),
+    cleanBeforeDirtyObservation);
+
+  assert.equal(workspaceAuthority.command(
+    workspaceTaint(cleanBeforeDirtyObservation.watermark),
+  ).accepted, true);
+  const taintedBeforeObservation = workspaceAuthority.query(workspaceQuery());
+  observedGit = { ...observedGit, clean: true };
+  const tainted = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:tainted",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: taintedBeforeObservation.watermark,
+    expected_generation: taintedBeforeObservation.generation,
+    expected_mutation_epoch: taintedBeforeObservation.mutation_epoch,
+    expected_fingerprint: digestValue({ git: taintedBeforeObservation.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(tainted.code, "workspace_tainted");
+});
+
 test("a later run pins and rechecks a retained handoff after the producer disappears", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-authority-"));
   const gitRoot = await mkdtemp(join(tmpdir(), "flow-git-retention-"));

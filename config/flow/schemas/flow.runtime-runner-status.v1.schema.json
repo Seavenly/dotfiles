@@ -63,11 +63,14 @@
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "message"],
+      "required": ["name", "message", "code"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "message": { "type": "string", "minLength": 1 },
-        "code": { "type": "string", "minLength": 1 }
+        "name": { "const": "Error" },
+        "message": { "enum": ["Autonomous runner error", "Flow transport error"] },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        }
       }
     }
   }

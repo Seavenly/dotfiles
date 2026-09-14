@@ -9,6 +9,15 @@
       "required": ["schema", "query"],
       "properties": {
         "schema": { "const": "flow.query/v1" },
+        "query": { "const": "autonomous_runner_status" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
         "query": { "const": "legacy_compatibility_inventory" }
       }
     },

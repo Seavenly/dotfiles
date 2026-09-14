@@ -78,6 +78,13 @@ client.
 One host owner holds the fenced durable `RunAuthority` and runs the autonomous
 projection driver. The owner endpoint records a process identity and the
 runtime status projection reports separate delegate and operation capacity.
+Both capacities default to one and may be set to positive values through 64
+with `FLOW_RUNNER_DELEGATE_CAPACITY` and
+`FLOW_RUNNER_OPERATION_CAPACITY`, or through the explicit production
+`runnerOptions` fields. `flow status --json` reports active counts and a
+bounded sanitized error summary; detached owners retain the same safe
+diagnostics in their private `owner-errors.json` sink.
+
 Clients may exit, reconnect, query, or watch while the owner continues an
 accepted run. Owner restart is same-boot recovery; a changed boot requires
 the per-run `reboot_admission` command. Host-manager sources and their

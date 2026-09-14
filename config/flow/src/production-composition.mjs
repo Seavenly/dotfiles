@@ -38,7 +38,9 @@ import { validateDelegateEvidenceSafety } from "../../../tools/flow/src/evidence
 import {
   createProductionFeatureOperations,
   prepareProductionFeatureLaunch,
+  materializedEvidenceDigest,
   validateFeatureCriterionEvidence,
+  validateFeatureCritiqueOutput,
 } from "./production-feature-operations.mjs";
 
 const PREPARATION_SCHEMA = "flow.feature-preparation-request/v1";
@@ -127,7 +129,7 @@ export function createProductionComposition({
     authorityOptions: productionAuthorityOptions,
     definitions: mergeRegistrations({
       defaults: {
-        "feature/v1": createFeatureDefinition(),
+        "feature/v1": createFeatureDefinition({ independentCritique: true }),
         "review/v1": createReviewDefinition(),
       },
       overrides: predefinedDefinitions,
@@ -162,6 +164,7 @@ export function createProductionComposition({
         timeAdapter: timeObservationAdapter,
         repositories,
         workspaceRepositories,
+        runAuthority: boundAuthority,
       });
       return compileSelection(prepared.selection);
     },
@@ -228,9 +231,9 @@ async function buildPreparationSelection({
   timeAdapter,
   repositories,
   workspaceRepositories,
+  runAuthority = null,
 }) {
-  if (!isRecord(request) ||
-      request.schema !== undefined && request.schema !== PREPARATION_SCHEMA) {
+  if (!isFeaturePreparationRequest(request)) {
     throw new ProductionPreparationError(
       "invalid_preparation_request",
       "feature preparation requires flow.feature-preparation-request/v1",
@@ -271,11 +274,52 @@ async function buildPreparationSelection({
     repository_id: repositoryId,
     canonical_path: repositoryPath,
   }).slice("sha256:".length)}`;
+  let liveWorkspace = currentWorkspaceProjection(
+    runAuthority,
+    workspaceSubjectId,
+  );
+  if (liveWorkspace !== null) {
+    if (liveWorkspace.workspace?.canonical_path !== repositoryPath ||
+        liveWorkspace.repository?.canonical_id !== repositoryId) {
+      throw new ProductionPreparationError(
+        "workspace_authority_conflict",
+        "WorkspaceAuthority subject does not match the repository",
+      );
+    }
+    if (liveWorkspace.disposition === "cleaned") {
+      throw new ProductionPreparationError(
+        "workspace_unavailable",
+        "WorkspaceAuthority subject has been cleaned",
+      );
+    }
+    if (!sameCanonicalValue(liveWorkspace.git, git)) {
+      if (liveWorkspace.claims.length > 0) {
+        throw new ProductionPreparationError(
+          "workspace_already_claimed",
+          "WorkspaceAuthority is claimed while repository Git facts changed",
+        );
+      }
+      if (liveWorkspace.taint !== null) {
+        throw new ProductionPreparationError(
+          "workspace_tainted",
+          "WorkspaceAuthority is tainted while repository Git facts changed",
+        );
+      }
+      liveWorkspace = reobserveWorkspaceFacts({
+        runAuthority,
+        workspace: liveWorkspace,
+        git,
+        subjectId: workspaceSubjectId,
+      });
+    }
+  }
+  const workspaceGeneration = liveWorkspace?.generation ?? 1;
+  const workspaceMutationEpoch = liveWorkspace?.mutation_epoch ?? 1;
   const workspace = freezeCanonical({
     schema: WORKSPACE_SCHEMA,
     subject_id: workspaceSubjectId,
-    generation: 1,
-    mutation_epoch: 1,
+    generation: workspaceGeneration,
+    mutation_epoch: workspaceMutationEpoch,
     fingerprint: digest({ git }),
     git,
   });
@@ -285,14 +329,8 @@ async function buildPreparationSelection({
     ref: git.ref,
   });
 
-  const mode = request.mode ?? "verify";
-  if (mode !== "verify") {
-    throw new ProductionPreparationError(
-      "unsupported_preparation_mode",
-      "production preparation currently supports verify mode only",
-    );
-  }
-  const routes = request.routes ?? request.delegation;
+  const mode = request.mode;
+  const routes = request.routes;
   const apply = await describedRoute({
     delegatedAgentPort,
     input: routes?.apply,
@@ -393,6 +431,101 @@ async function buildPreparationSelection({
       explicit_facts: explicitFacts,
     },
   };
+}
+
+function currentWorkspaceProjection(runAuthority, subjectId) {
+  if (runAuthority === null || typeof runAuthority !== "object") return null;
+  let authority;
+  try {
+    authority = getWorkspaceAuthority({ runAuthority });
+  } catch {
+    return null;
+  }
+  let projection;
+  try {
+    projection = authority.query({
+      contract: "work.workspace/v1",
+      subject_id: subjectId,
+    });
+  } catch (error) {
+    throw new ProductionPreparationError(
+      "workspace_authority_unavailable",
+      "WorkspaceAuthority could not provide the live workspace subject",
+      { cause: error },
+    );
+  }
+  if (projection?.schema === "work.rejection/v1" &&
+      projection.code === "unknown_subject") return null;
+  if (projection?.schema !== "work.workspace-projection/v1") {
+    throw new ProductionPreparationError(
+      "workspace_authority_unavailable",
+      "WorkspaceAuthority returned an invalid workspace subject",
+    );
+  }
+  return projection;
+}
+
+function reobserveWorkspaceFacts({
+  runAuthority,
+  workspace,
+  git,
+  subjectId,
+}) {
+  let authority;
+  try {
+    authority = getWorkspaceAuthority({ runAuthority });
+  } catch (error) {
+    throw new ProductionPreparationError(
+      "workspace_authority_unavailable",
+      "WorkspaceAuthority could not record the current Git facts",
+      { cause: error },
+    );
+  }
+  const command = {
+    schema: "work.workspace-observation-command/v1",
+    command_id: `workspace-observe:${subjectId}:${digest({ git })}`,
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: subjectId,
+    expected_watermark: workspace.watermark,
+    expected_generation: workspace.generation,
+    expected_mutation_epoch: workspace.mutation_epoch,
+    expected_fingerprint: digest({ git: workspace.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git,
+    },
+  };
+  const receipt = authority.command(command);
+  if (receipt?.accepted !== true) {
+    throw new ProductionPreparationError(
+      receipt?.code ?? "workspace_observation_rejected",
+      "WorkspaceAuthority rejected the current Git-facts observation",
+    );
+  }
+  const refreshed = authority.query({
+    contract: "work.workspace/v1",
+    subject_id: subjectId,
+  });
+  if (refreshed?.schema !== "work.workspace-projection/v1" ||
+      !sameCanonicalValue(refreshed.git, git) ||
+      refreshed.generation !== workspace.generation + 1 ||
+      refreshed.mutation_epoch !== workspace.mutation_epoch + 1 ||
+      refreshed.claims.length !== 0 || refreshed.taint !== null) {
+    throw new ProductionPreparationError(
+      "workspace_observation_unavailable",
+      "WorkspaceAuthority did not durably record the current Git facts",
+    );
+  }
+  return refreshed;
+}
+
+function sameCanonicalValue(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
 }
 
 function featureOperationRegistrations(productionOperations) {
@@ -618,6 +751,109 @@ function repositoryPathOf(repository) {
   return path;
 }
 
+function isFeaturePreparationRequest(request) {
+  if (!exactObject(request, [
+    "schema",
+    "brief",
+    "repository",
+    "mode",
+    "routes",
+    "verification",
+    "limits",
+  ], ["schema", "brief", "repository", "mode", "routes"])) {
+    return false;
+  }
+  return request.schema === PREPARATION_SCHEMA &&
+    validPreparationBrief(request.brief) &&
+    validPreparationRepository(request.repository) &&
+    request.mode === "verify" &&
+    validPreparationRoutes(request.routes) &&
+    (request.verification === undefined ||
+      validPreparationVerification(request.verification)) &&
+    (request.limits === undefined || validPreparationLimitsShape(request.limits));
+}
+
+function validPreparationBrief(brief) {
+  return exactObject(brief, ["schema", "id", "summary", "acceptance"], [
+    "schema",
+    "id",
+    "summary",
+    "acceptance",
+  ]) && brief.schema === BRIEF_SCHEMA &&
+    nonEmptyString(brief.id) && nonEmptyString(brief.summary) &&
+    Array.isArray(brief.acceptance) && brief.acceptance.length > 0 &&
+    brief.acceptance.every(nonEmptyString);
+}
+
+function validPreparationRepository(repository) {
+  if (nonEmptyString(repository)) return true;
+  return exactObject(repository, ["path"], ["path"]) &&
+    nonEmptyString(repository.path);
+}
+
+function validPreparationRoutes(routes) {
+  return exactObject(routes, ["apply", "critique"], ["apply", "critique"]) &&
+    validPreparationRoute(routes.apply) &&
+    validPreparationRoute(routes.critique);
+}
+
+function validPreparationRoute(route) {
+  if (!isRecord(route)) return false;
+  if (Object.hasOwn(route, "launch")) {
+    return exactObject(route, ["launch"], ["launch"]) &&
+      validPreparationLaunch(route.launch);
+  }
+  return validPreparationLaunch(route);
+}
+
+function validPreparationLaunch(launch) {
+  const allowed = ["harness", "role", "model", "effort", "capability"];
+  if (!exactObject(launch, allowed)) return false;
+  return (launch.harness === undefined || ["claude", "codex"].includes(launch.harness)) &&
+    (launch.role === undefined || nonEmptyString(launch.role)) &&
+    (launch.model === undefined || nonEmptyString(launch.model)) &&
+    (launch.effort === undefined || ["low", "medium", "high", "xhigh"].includes(launch.effort)) &&
+    (launch.capability === undefined || [
+      "read-only",
+      "on-approve",
+      "workspace-write",
+      "auto",
+      "unrestricted",
+    ].includes(launch.capability));
+}
+
+function validPreparationVerification(verification) {
+  if (!exactObject(verification, ["baseline"])) return false;
+  if (verification.baseline === undefined) return true;
+  return exactObject(verification.baseline, ["assertion"]) &&
+    (verification.baseline.assertion === undefined ||
+      nonEmptyString(verification.baseline.assertion));
+}
+
+function validPreparationLimitsShape(limits) {
+  if (!exactObject(limits, [
+    "max_cards",
+    "max_revisions",
+    "max_cards_per_revision",
+    "max_capabilities",
+    "max_resources",
+    "max_elapsed_seconds",
+  ])) return false;
+  return Object.values(limits).every((value) =>
+    Number.isSafeInteger(value) && value >= 0);
+}
+
+function exactObject(value, allowed, required = []) {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key)) &&
+    required.every((key) => Object.hasOwn(value, key));
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 function createTimeAdapter(hostIdentity) {
   // Boot identity changes across a restart, but the wall and monotonic
   // providers remain the same host clock sources. Keep their source identity
@@ -791,18 +1027,34 @@ function createWorkEvidenceAdapter() {
 function validateDelegateOutput(output, context = {}) {
   if (typeof output === "string") {
     if (output.trim().length === 0) return false;
-    if (context.card_id !== "feature-apply") return true;
+    if (![
+      "feature-apply",
+      "feature-critique",
+    ].includes(context.card_id)) return true;
     let parsed;
     try {
       parsed = JSON.parse(output);
     } catch {
       return false;
     }
-    return parsed?.schema === "flow.delegate-evidence/v1" &&
-      validateFeatureCriterionEvidence(
+    if (parsed?.schema !== "flow.delegate-evidence/v1") return false;
+    const expectedCriteria = context.delegate_input?.task_inputs?.brief?.acceptance;
+    if (context.card_id === "feature-apply") {
+      return validateFeatureCriterionEvidence(
         parsed.feature_evidence,
-        context.delegate_input?.task_inputs?.brief?.acceptance,
+        expectedCriteria,
       ) !== null;
+    }
+    const candidate = context.delegate_input?.authority_materialized_candidate;
+    const predecessorEvidence = context.authority_materialized_evidence ??
+      context.delegate_input?.authority_materialized_evidence;
+    return validateFeatureCritiqueOutput(output, {
+      taskInputs: context.delegate_input?.task_inputs,
+      expectedCriteria,
+      candidateDigest: isRecord(candidate) ? digest(candidate) : undefined,
+      predecessorEvidenceDigest: materializedEvidenceDigest(predecessorEvidence),
+      requireAuthorityBinding: true,
+    }) !== null;
   }
   if (!isRecord(output)) return false;
   try {

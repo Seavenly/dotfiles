@@ -2,6 +2,7 @@ import { appendFile, readFile } from "node:fs/promises";
 
 import {
   createFlowRuntime as createCoreFlowRuntime,
+  statusAutonomousFlowRuntime,
 } from "../../../tools/flow/src/flow-runtime.mjs";
 import {
   createDurableRunAuthority,
@@ -25,6 +26,7 @@ const BOOT_ID = "boot-public-owner-test";
  */
 export async function createFlowRuntime({
   authorityDirectory,
+  env = process.env,
 } = {}) {
   const authority = createDurableRunAuthority({
     authorityDirectory,
@@ -37,6 +39,19 @@ export async function createFlowRuntime({
   const runtime = createCoreFlowRuntime({
     runAuthority: authority,
     autonomous: true,
+    runnerOptions: {
+      ...(env.FLOW_RUNNER_DELEGATE_CAPACITY === undefined ? {} : {
+        delegateCapacity: Number(env.FLOW_RUNNER_DELEGATE_CAPACITY),
+      }),
+      ...(env.FLOW_RUNNER_OPERATION_CAPACITY === undefined ? {} : {
+        operationCapacity: Number(env.FLOW_RUNNER_OPERATION_CAPACITY),
+      }),
+    },
+    registeredQueries: {
+      autonomous_runner_status() {
+        return statusAutonomousFlowRuntime(runtime);
+      },
+    },
     registeredOperations: {
       [TEST_OPERATION_CONTRACT]: {
         classification: "caller_idempotent",
@@ -59,6 +74,7 @@ export async function createFlowRuntime({
   });
   return {
     ...runtime,
+    mutationAuthority: true,
     // The owner process calls this optional hook after stopping transport.
     close() {
       authority.close();

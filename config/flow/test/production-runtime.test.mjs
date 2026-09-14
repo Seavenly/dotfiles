@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { digest } from "../../../tools/flow/src/canonical.mjs";
+import {
+  digest,
+  freezeCanonical,
+} from "../../../tools/flow/src/canonical.mjs";
 import { validateRebootEffectRechecks } from "../../../tools/flow/src/reboot-effects.mjs";
 import { executionTimeFacts } from "../../../tools/flow/test-support/time-facts.mjs";
 import { completedTurnProjection } from
@@ -18,6 +21,8 @@ import {
   statusFlowRuntime,
 } from "../src/runtime.mjs";
 import { createProductionComposition } from "../src/production-composition.mjs";
+import { validateFeatureCritiqueOutput } from
+  "../src/production-feature-operations.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -381,6 +386,48 @@ test("ordinary feature preparation derives immutable facts from a brief and repo
   );
 });
 
+test("production preparation enforces the closed published request schema", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-preparation-schema-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "schema");
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const valid = preparationRequest(repository, "brief:closed-schema");
+  const missingSchema = structuredClone(valid);
+  delete missingSchema.schema;
+  const missingMode = structuredClone(valid);
+  delete missingMode.mode;
+  const missingRoutes = structuredClone(valid);
+  delete missingRoutes.routes;
+  const delegationAlias = structuredClone(valid);
+  delete delegationAlias.routes;
+  delegationAlias.delegation = valid.routes;
+  const unknownTopLevel = { ...valid, undocumented: true };
+  const unknownNested = structuredClone(valid);
+  unknownNested.routes.apply.launch.undocumented = true;
+
+  for (const [label, request] of [
+    ["schema", missingSchema],
+    ["mode", missingMode],
+    ["routes", missingRoutes],
+    ["delegation alias", delegationAlias],
+    ["top-level key", unknownTopLevel],
+    ["nested key", unknownNested],
+  ]) {
+    await assert.rejects(
+      runtime.prepare(request),
+      (error) => error?.code === "invalid_preparation_request",
+      label,
+    );
+  }
+  const prepared = await runtime.prepare(valid);
+  assert.equal(prepared.schema, "flow.prepared-run/v1");
+});
+
 test("concurrent production preparations keep authority observations selection-scoped", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-production-concurrent-"));
   const state = join(scratch, "state");
@@ -465,14 +512,22 @@ test("production feature runs a real Git mutation through a local candidate", as
   await initializeRepository(repository);
   const initialGit = await gitFacts(repository);
   let mutationCount = 0;
+  let candidateText = "after\n";
+  const retainedFinding = critiqueFinding(
+    "non_blocking",
+    "retained finding",
+    "the production seal must retain this exact finding",
+  );
   const turns = new Map();
   const delegatedAgentPort = productionDelegatedAgentPort({
     repository,
     turns,
     onApply() {
       mutationCount += 1;
-      return initializeCandidate(repository);
+      return initializeCandidate(repository, candidateText);
     },
+    criterionExpected: () => candidateText,
+    critiqueFindings: [retainedFinding],
   });
   const runtime = createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
@@ -545,6 +600,7 @@ test("production feature runs a real Git mutation through a local candidate", as
     verdict === "passed"));
   assert.equal(review.candidate.critique.delegate_evidence.card_id,
     "feature-critique");
+  assert.deepEqual(review.candidate.critique.findings, [retainedFinding]);
   assert.equal(review.candidate.git.clean, true);
   assert.notEqual(review.candidate.git.commit_sha, initialGit.commit_sha);
   assert.notEqual(review.candidate.git.tree_sha, initialGit.tree_sha);
@@ -553,6 +609,34 @@ test("production feature runs a real Git mutation through a local candidate", as
   assert.equal(completed.views.operator.legal_actions.some(({ type }) =>
     ["review", "integration", "push", "pull_request", "cleanup", "tracker"]
       .includes(type)), false);
+
+  candidateText = "after-again\n";
+  const secondPrepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:production-feature-second",
+  ));
+  assert.equal(secondPrepared.selection.inputs.workspace.generation, 2);
+  assert.equal(secondPrepared.selection.inputs.workspace.mutation_epoch >
+    prepared.selection.inputs.workspace.mutation_epoch, true);
+  const secondLaunch = runtime.launch(
+    confirmedPredefinedLaunchRequest(secondPrepared),
+  );
+  assert.equal(secondLaunch.schema, "flow.launch-receipt/v1", JSON.stringify(secondLaunch));
+  let secondLastProjection;
+  try {
+    await until(() => {
+      secondLastProjection = runtime.query({ run_id: secondLaunch.run_id });
+      return ["succeeded", "failed", "cancelled"].includes(
+        secondLastProjection.phase,
+      );
+    });
+  } catch (error) {
+    error.message += `\nsecond projection: ${JSON.stringify(secondLastProjection)}`;
+    throw error;
+  }
+  const secondCompleted = runtime.query({ run_id: secondLaunch.run_id });
+  assert.equal(secondCompleted.phase, "succeeded", JSON.stringify(secondCompleted));
+  assert.equal(mutationCount, 2);
 });
 
 test("production feature launch fails closed when an operation is missing", async (t) => {
@@ -647,6 +731,367 @@ test("production feature does not seal when apply criterion evidence disagrees w
   assert.equal(projection.handoffs.length, 0);
   assert.ok(projection.effects.some(({ last_observation: observation }) =>
     observation?.provider_observation?.diagnostic?.code === "operation_failure"));
+});
+
+test("production critique evidence is strict, independently bound, and ordered", () => {
+  const expectedCriteria = ["criterion:one", "criterion:two"];
+  const candidate = { schema: "flow.feature-candidate-view/v1", id: "candidate:one" };
+  const predecessor = {
+    schema: "flow.authority-materialized-evidence/v1",
+    evidence_digest: digest({ schema: "flow.authority-materialized-evidence/v1" }),
+  };
+  const { evidence_digest: _predecessorDigest, ...predecessorIdentity } = predecessor;
+  const predecessorEvidenceDigest = digest(predecessorIdentity);
+  const taskInputs = {
+    schema: "flow.delegate-task-inputs/v1",
+    flow: "feature/v1",
+    phase: "critique",
+    mode: "verify",
+    brief: {
+      schema: "flow.feature-brief/v1",
+      id: "brief:critique-contract",
+      summary: "critique contract",
+      acceptance: expectedCriteria,
+    },
+    candidate_digest: digest(candidate),
+    predecessor_evidence_digest: predecessorEvidenceDigest,
+  };
+  const candidateDigest = digest(candidate);
+  const firstFinding = critiqueFinding(
+    "non_blocking",
+    "one finding",
+    "the first finding is retained exactly",
+  );
+  const secondFinding = critiqueFinding(
+    "non_blocking",
+    "two finding",
+    "the second finding is retained exactly",
+  );
+  const findings = [firstFinding, secondFinding].sort((left, right) =>
+    left.finding_id.localeCompare(right.finding_id));
+  const criteria = expectedCriteria.map((criterion) => {
+    const evidence = {
+      kind: "git_file_equals",
+      target: "feature.txt",
+      expected: "after\n",
+    };
+    return {
+      criterion,
+      evidence,
+      evidence_digest: digest({ criterion, evidence, verdict: "passed" }),
+      verdict: "passed",
+    };
+  });
+  const valid = critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings,
+  });
+  const validate = (output, options = {}) => validateFeatureCritiqueOutput(
+    output,
+    {
+      taskInputs,
+      expectedCriteria,
+      candidateDigest,
+      predecessorEvidenceDigest,
+      requireAuthorityBinding: true,
+      ...options,
+    },
+  );
+
+  const accepted = validate(valid);
+  assert.deepEqual(accepted.findings, findings);
+  assert.equal(accepted.candidate_digest, candidateDigest);
+  assert.equal(accepted.predecessor_evidence_digest, predecessorEvidenceDigest);
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria: criteria.slice(0, 1),
+    findings,
+  })), null, "missing criterion must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria: criteria.map((entry, index) => index === 0
+      ? { ...entry, verdict: "failed" }
+      : entry),
+    findings,
+  })), null, "forged verdict must fail its evidence digest");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria: criteria.map((entry, index) => index === 0
+      ? {
+          ...entry,
+          evidence: { ...entry.evidence, expected: "forged\n" },
+        }
+      : entry),
+    findings,
+  })), null, "forged criterion evidence must fail its digest");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria: [criteria[1], criteria[0]],
+    findings,
+  })), null, "reordered criteria must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria: [criteria[0], criteria[0]],
+    findings,
+  })), null, "duplicate criterion evidence must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings: [findings[0], findings[0]],
+  })), null, "duplicate findings must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings: [...findings].reverse(),
+  })), null, "reordered findings must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings: [
+      {
+        ...findings[0],
+        detail: "forged finding detail",
+      },
+    ],
+  })), null, "forged finding evidence must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings: undefined,
+  })), null, "missing findings must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest: digest({ forged: true }),
+    criteria,
+    findings,
+  })), null, "forged predecessor binding must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest: digest({ forged: true }),
+    predecessorEvidenceDigest,
+    criteria,
+    findings,
+  })), null, "forged candidate binding must fail closed");
+  assert.equal(validate(valid, {
+    taskInputs: { ...taskInputs, mode: "test" },
+  }), null, "task input digest mismatch must fail closed");
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria: criteria.map((entry) => ({
+      ...entry,
+      evidence: { ...entry.evidence, expected: "x".repeat(1_048_577) },
+    })),
+    findings,
+  })), null, "oversized criterion evidence must fail closed");
+  const oversizedFinding = critiqueFinding(
+    "non_blocking",
+    "oversized",
+    "x".repeat(8 * 1024 + 1),
+  );
+  assert.equal(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings: [oversizedFinding],
+  })), null, "oversized finding must fail closed");
+  const blocking = critiqueFinding("blocking", "blocked", "must not seal");
+  assert.ok(validate(critiqueOutput({
+    taskInputs,
+    candidateDigest,
+    predecessorEvidenceDigest,
+    criteria,
+    findings: [blocking],
+  })), "blocking findings remain valid evidence for the seal gate");
+});
+
+test("production seal refuses an independently validated blocking critique", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-blocking-critique-"));
+  const state = join(scratch, "state");
+  const repository = join(scratch, "repository");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await initializeRepository(repository);
+  const turns = new Map();
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: state },
+    delegatedAgentPort: productionDelegatedAgentPort({
+      repository,
+      turns,
+      onApply: () => initializeCandidate(repository),
+      critiqueFindings: [critiqueFinding(
+        "blocking",
+        "unsafe behavior",
+        "the candidate must not be sealed",
+      )],
+    }),
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const prepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:blocking-critique",
+  ));
+  const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+  assert.equal(launch.schema, "flow.launch-receipt/v1", JSON.stringify(launch));
+  await until(() => {
+    const projection = runtime.query({ run_id: launch.run_id });
+    return projection.effects?.some(({ last_observation: observation }) =>
+      observation?.provider_observation?.diagnostic?.code === "operation_failure");
+  });
+  const projection = runtime.query({ run_id: launch.run_id });
+  assert.notEqual(projection.phase, "succeeded");
+  assert.equal(projection.handoffs.length, 0);
+});
+
+test("a failed production feature releases its workspace claim for a later run", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-reuse-after-decline-"));
+  const state = join(scratch, "state");
+  const repository = join(scratch, "repository");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await initializeRepository(repository);
+  let candidateText = "after-first\n";
+  let critiqueAvailable = false;
+  const turns = new Map();
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: state },
+    delegatedAgentPort: productionDelegatedAgentPort({
+      repository,
+      turns,
+      onApply: () => initializeCandidate(repository, candidateText),
+      criterionExpected: () => candidateText,
+      includeCritiqueEvidence: () => critiqueAvailable,
+    }),
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const firstPrepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:reuse-after-decline-first",
+  ));
+  const firstLaunch = runtime.launch(confirmedPredefinedLaunchRequest(firstPrepared));
+  assert.equal(firstLaunch.schema, "flow.launch-receipt/v1", JSON.stringify(firstLaunch));
+  await until(() => runtime.query({ run_id: firstLaunch.run_id }).legal_actions
+    ?.some(({ type }) => type === "terminal_disposition"));
+  const failed = runtime.query({ run_id: firstLaunch.run_id });
+  const terminal = failed.legal_actions.find(({ type }) => type ===
+    "terminal_disposition");
+  const terminalReceipt = runtime.command(terminal);
+  assert.equal(terminalReceipt.accepted, true, JSON.stringify(terminalReceipt));
+  assert.equal(terminalReceipt.effect_intents?.length ?? 0, 0);
+  assert.equal(runtime.query({ run_id: firstLaunch.run_id }).phase, "declined");
+
+  critiqueAvailable = true;
+  candidateText = "after-second\n";
+  const secondPrepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:reuse-after-decline-second",
+  ));
+  assert.equal(
+    secondPrepared.selection.inputs.workspace.generation,
+    firstPrepared.selection.inputs.workspace.generation + 1,
+  );
+  const secondLaunch = runtime.launch(
+    confirmedPredefinedLaunchRequest(secondPrepared),
+  );
+  assert.equal(secondLaunch.schema, "flow.launch-receipt/v1", JSON.stringify(secondLaunch));
+  await until(() => ["succeeded", "failed", "cancelled"].includes(
+    runtime.query({ run_id: secondLaunch.run_id }).phase,
+  ));
+  assert.equal(runtime.query({ run_id: secondLaunch.run_id }).phase, "succeeded");
+});
+
+test("a sealed production feature reobserves a clean external commit before a later run", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-reobserve-after-seal-"));
+  const state = join(scratch, "state");
+  const repository = join(scratch, "repository");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await initializeRepository(repository);
+  let candidateText = "after-first\n";
+  const turns = new Map();
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: state },
+    delegatedAgentPort: productionDelegatedAgentPort({
+      repository,
+      turns,
+      onApply: () => initializeCandidate(repository, candidateText),
+      criterionExpected: () => candidateText,
+    }),
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const firstPrepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:reobserve-after-seal-first",
+  ));
+  const firstLaunch = runtime.launch(
+    confirmedPredefinedLaunchRequest(firstPrepared),
+  );
+  assert.equal(firstLaunch.schema, "flow.launch-receipt/v1", JSON.stringify(firstLaunch));
+  await until(() => ["succeeded", "failed", "cancelled"].includes(
+    runtime.query({ run_id: firstLaunch.run_id }).phase,
+  ));
+  const firstCompleted = runtime.query({ run_id: firstLaunch.run_id });
+  assert.equal(firstCompleted.phase, "succeeded", JSON.stringify(firstCompleted));
+  const firstReview = runtime.query({
+    contract: "work.review/v1",
+    subject_id: firstCompleted.review_candidate_reference.candidate_id,
+  });
+  const promotedGeneration = firstReview.candidate.workspace.generation;
+  const promotedMutationEpoch = firstReview.candidate.workspace.mutation_epoch;
+
+  await writeFile(join(repository, "external.txt"), "external\n");
+  await execFile("git", ["-C", repository, "add", "external.txt"]);
+  await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "external clean advance"]);
+  const externalGit = await gitFacts(repository);
+  assert.equal(externalGit.clean, true);
+  assert.notEqual(externalGit.commit_sha, firstReview.candidate.git.commit_sha);
+
+  candidateText = "after-second\n";
+  const secondPrepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:reobserve-after-seal-second",
+  ));
+  assert.equal(
+    secondPrepared.selection.inputs.workspace.generation,
+    promotedGeneration + 1,
+  );
+  assert.equal(
+    secondPrepared.selection.inputs.workspace.mutation_epoch,
+    promotedMutationEpoch + 1,
+  );
+  assert.deepEqual(secondPrepared.selection.inputs.workspace.git, externalGit);
+
+  const secondLaunch = runtime.launch(
+    confirmedPredefinedLaunchRequest(secondPrepared),
+  );
+  assert.equal(secondLaunch.schema, "flow.launch-receipt/v1", JSON.stringify(secondLaunch));
+  await until(() => ["succeeded", "failed", "cancelled"].includes(
+    runtime.query({ run_id: secondLaunch.run_id }).phase,
+  ));
+  const secondCompleted = runtime.query({ run_id: secondLaunch.run_id });
+  assert.equal(secondCompleted.phase, "succeeded", JSON.stringify(secondCompleted));
 });
 
 test("production feature captures a candidate archive larger than one MiB", async (t) => {
@@ -1078,8 +1523,8 @@ async function initializeRepository(repository) {
   await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "initial"]);
 }
 
-async function initializeCandidate(repository) {
-  await writeFile(join(repository, "feature.txt"), "after\n");
+async function initializeCandidate(repository, content = "after\n") {
+  await writeFile(join(repository, "feature.txt"), content);
   await execFile("git", ["-C", repository, "add", "feature.txt"]);
   await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "candidate"]);
 }
@@ -1106,6 +1551,9 @@ function productionDelegatedAgentPort({
   waitForApply = null,
   includeCriterionEvidence = true,
   criterionExpected = "after\n",
+  includeCritiqueEvidence = true,
+  critiqueExpected = criterionExpected,
+  critiqueFindings = [],
 }) {
   return {
     contract: "flow.delegated-agent-port/v1",
@@ -1223,14 +1671,52 @@ function productionDelegatedAgentPort({
         outputValue.feature_evidence = {
           schema: "flow.feature-criterion-evidence/v1",
           criteria: criteria.map((criterion) => ({
-            criterion,
-            kind: "git_file_equals",
-            target: "feature.txt",
-            expected: criterionExpected,
+          criterion,
+          kind: "git_file_equals",
+          target: "feature.txt",
+          expected: typeof criterionExpected === "function"
+            ? criterionExpected(criterion)
+            : criterionExpected,
           })),
         };
       }
-      const output = JSON.stringify(outputValue);
+      const critiqueEnabled = typeof includeCritiqueEvidence === "function"
+        ? includeCritiqueEvidence(turn)
+        : includeCritiqueEvidence;
+      if (turn.request.description.launch.capability === "read-only" &&
+          critiqueEnabled) {
+        const envelope = parseDelegateEnvelope(turn.request.prompt);
+        const taskInputs = envelope?.task_inputs;
+        const criteria = taskInputs?.brief?.acceptance ?? [];
+        const critique = {
+          schema: "flow.feature-critique-output/v1",
+          candidate_digest: taskInputs.candidate_digest,
+          predecessor_evidence_digest: taskInputs.predecessor_evidence_digest,
+          task_inputs_digest: digest(taskInputs),
+          criteria: criteria.map((criterion) => {
+            const evidence = {
+              kind: "git_file_equals",
+              target: "feature.txt",
+              expected: typeof critiqueExpected === "function"
+                ? critiqueExpected(criterion)
+                : critiqueExpected,
+            };
+            return {
+              criterion,
+              evidence,
+              evidence_digest: digest({
+                criterion,
+                evidence,
+                verdict: "passed",
+              }),
+              verdict: "passed",
+            };
+          }),
+          findings: critiqueFindings,
+        };
+        outputValue.feature_critique = critique;
+      }
+      const output = JSON.stringify(freezeCanonical(outputValue));
       return completedTurnProjection({
         agentId: turn.request.agent_id,
         callerKey: turn.request.caller_key,
@@ -1282,6 +1768,36 @@ function parseDelegateEnvelope(prompt) {
   } catch {
     return null;
   }
+}
+
+function critiqueOutput({
+  taskInputs,
+  candidateDigest,
+  predecessorEvidenceDigest,
+  criteria,
+  findings,
+}) {
+  const featureCritique = {
+    schema: "flow.feature-critique-output/v1",
+    candidate_digest: candidateDigest,
+    predecessor_evidence_digest: predecessorEvidenceDigest,
+    task_inputs_digest: digest(taskInputs),
+    criteria,
+    ...(findings === undefined ? {} : { findings }),
+  };
+  return JSON.stringify(freezeCanonical({
+    schema: "flow.delegate-evidence/v1",
+    observation: "independent",
+    feature_critique: featureCritique,
+  }));
+}
+
+function critiqueFinding(classification, summary, detail) {
+  const identity = { classification, detail, summary };
+  return freezeCanonical({
+    ...identity,
+    finding_id: `finding:${digest(identity).slice("sha256:".length)}`,
+  });
 }
 
 async function until(predicate, timeout = 5000) {

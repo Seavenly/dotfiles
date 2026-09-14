@@ -12,6 +12,9 @@ import {
 } from "./candidate-finalization.mjs";
 import { declaredResultBindings } from "./result-bindings.mjs";
 import { validateDelegateEvidenceSafety } from "./evidence-safety.mjs";
+import {
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+} from "./feature-critique-contract.mjs";
 
 const FORBIDDEN_COMMANDS = new Set([
   "generic_setter",
@@ -26,6 +29,7 @@ const CALLER_MATERIALIZED_FIELDS = Object.freeze([
   "authority_materialized_result_bindings",
   "authority_materialized_result_bindings_digest",
   "authority_materialized_critique_binding",
+  "authority_materialized_critique_input",
 ]);
 const CHECKPOINT_BINDING_SCHEMA = "flow.checkpoint-binding/v1";
 
@@ -460,7 +464,7 @@ function delegateDecision(fold, command, delegate) {
   if (materialized.code !== null) {
     return reject(fold, command, materialized.code);
   }
-  const delegateInput = materialized.evidence === null
+  let delegateInput = materialized.evidence === null
     ? baseDelegateInput
     : {
         ...baseDelegateInput,
@@ -469,7 +473,24 @@ function delegateDecision(fold, command, delegate) {
       };
   const candidate = materializeFeatureCandidate(card, materialized.bindings);
   if (candidate.code !== null) return reject(fold, command, candidate.code);
-  if (candidate.value !== null) Object.assign(delegateInput, candidate.value);
+  if (candidate.value !== null) {
+    delegateInput = { ...delegateInput, ...candidate.value };
+  }
+  const critiqueInput = materializeFeatureCritiqueDelegateInput(
+    card,
+    materialized.evidence,
+    delegateInput,
+  );
+  if (critiqueInput.code !== null) return reject(fold, command, critiqueInput.code);
+  if (critiqueInput.value !== null) {
+    delegateInput = {
+      ...delegateInput,
+      task_inputs: {
+        ...delegateInput.task_inputs,
+        ...critiqueInput.value,
+      },
+    };
+  }
   const attemptId = `${fold.run_id}:${delegate.id}:attempt:${ordinal}`;
   const effectIdentity = digest({
     schema: "flow.delegate-effect-identity/v1",
@@ -582,6 +603,13 @@ function operationDecision(
   const candidate = materializeFeatureCandidate(operationCard, materialized.bindings);
   if (candidate.code !== null) return reject(fold, command, candidate.code);
   if (candidate.value !== null) Object.assign(operationInput, candidate.value);
+  const critiqueInput = materializeFeatureCritiqueOperationInput(
+    fold,
+    operationCard,
+    candidate.value,
+  );
+  if (critiqueInput.code !== null) return reject(fold, command, critiqueInput.code);
+  if (critiqueInput.value !== null) Object.assign(operationInput, critiqueInput.value);
   const derived = deriveSealInput(fold, operationCard, materialized.bindings);
   if (derived.code !== null) return reject(fold, command, derived.code);
   if (derived.value !== null) {
@@ -736,6 +764,96 @@ function materializeFeatureCandidate(card, bindings) {
         authority_materialized_candidate_digest: digest(candidate),
       },
     };
+}
+
+function materializeFeatureCritiqueDelegateInput(
+  card,
+  predecessorEvidence,
+  delegateInput,
+) {
+  if (card?.executor?.kind !== "delegate" ||
+      card?.inputs?.phase !== "critique" ||
+      card?.inputs?.independent_critique !== true) {
+    return { code: null, value: null };
+  }
+  const candidate = delegateInput?.authority_materialized_candidate;
+  const candidateDigest = delegateInput?.authority_materialized_candidate_digest;
+  const predecessorDigest = materializedEvidenceDigest(predecessorEvidence);
+  const taskInputs = delegateInput?.task_inputs;
+  if (!isPlainRecord(candidate) || !isDigest(candidateDigest) ||
+      digest(candidate) !== candidateDigest ||
+      !isPlainRecord(predecessorEvidence) || !isDigest(predecessorDigest) ||
+      materializedEvidenceDigest(predecessorEvidence) !== predecessorDigest ||
+      !isPlainRecord(taskInputs) ||
+      Object.hasOwn(taskInputs, "candidate_digest") ||
+      Object.hasOwn(taskInputs, "predecessor_evidence_digest")) {
+    return { code: "authority_critique_input_invalid", value: null };
+  }
+  return {
+    code: null,
+    value: {
+      candidate_digest: candidateDigest,
+      predecessor_evidence_digest: predecessorDigest,
+    },
+  };
+}
+
+function materializeFeatureCritiqueOperationInput(
+  fold,
+  card,
+  candidateValue,
+) {
+  if (card?.executor?.kind !== "operation" ||
+      card?.inputs?.independent_critique !== true ||
+      !["flow.operation/feature-verify/v1",
+        "flow.operation/feature-seal/v1"].includes(card.executor.contract)) {
+    return { code: null, value: null };
+  }
+  const critiqueCards = (card.inputs?.delegate_evidence_card_ids ?? [])
+    .map((cardId) => fold.active_plan.cards.find(({ id }) => id === cardId))
+    .filter((candidate) => candidate?.executor?.kind === "delegate" &&
+      candidate.inputs?.phase === "critique" &&
+      candidate.inputs?.independent_critique === true);
+  if (critiqueCards.length !== 1) {
+    return { code: "authority_critique_input_invalid", value: null };
+  }
+  const critiqueCardId = critiqueCards[0].id;
+  const critiqueIntents = fold.effect_intents.filter((intent) =>
+    intent.effect_kind === "delegate" && intent.card_id === critiqueCardId);
+  if (critiqueIntents.length !== 1) {
+    return { code: "authority_critique_input_invalid", value: null };
+  }
+  const critiqueDelegateInput = critiqueIntents[0].delegate_input;
+  const candidate = candidateValue?.authority_materialized_candidate;
+  const candidateDigest = candidateValue?.authority_materialized_candidate_digest;
+  const predecessorEvidence = critiqueDelegateInput?.authority_materialized_evidence;
+  const predecessorDigest = materializedEvidenceDigest(predecessorEvidence);
+  if (!isPlainRecord(candidate) || !isDigest(candidateDigest) ||
+      digest(candidate) !== candidateDigest ||
+      !isPlainRecord(predecessorEvidence) || !isDigest(predecessorDigest) ||
+      materializedEvidenceDigest(predecessorEvidence) !== predecessorDigest ||
+      critiqueDelegateInput.authority_materialized_candidate_digest !==
+        candidateDigest ||
+      critiqueDelegateInput.task_inputs?.candidate_digest !== candidateDigest ||
+      critiqueDelegateInput.task_inputs?.predecessor_evidence_digest !==
+        predecessorDigest) {
+    return { code: "authority_critique_input_invalid", value: null };
+  }
+  const identity = {
+    schema: AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+    card_id: critiqueCardId,
+    candidate_digest: candidateDigest,
+    predecessor_evidence_digest: predecessorDigest,
+  };
+  return {
+    code: null,
+    value: {
+      authority_materialized_critique_input: freezeCanonical({
+        ...identity,
+        binding_digest: digest(identity),
+      }),
+    },
+  };
 }
 
 function bindOperationIdentity(identity, operationInput) {
@@ -1178,6 +1296,22 @@ function validateCheckpointBinding(binding, checkpoint) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
+function materializedEvidenceDigest(value) {
+  if (!isPlainRecord(value) || !isDigest(value.evidence_digest)) return null;
+  const { evidence_digest: _evidenceDigest, ...identity } = value;
+  try {
+    return digest(identity) === value.evidence_digest
+      ? value.evidence_digest
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export const LifecycleKernel = Object.freeze({

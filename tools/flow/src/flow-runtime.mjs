@@ -485,7 +485,10 @@ export function createFlowRuntime({
     runAuthority,
     operationRegistry,
     subrunRegistration,
-    { allowOneShotRecovery: !autonomous },
+    {
+      allowIndeterminateRecovery: !autonomous,
+      allowOneShotRecovery: !autonomous,
+    },
   );
   if (autonomous) {
     const runner = createFlowRuntimeRunner({
@@ -888,7 +891,10 @@ function recoverOutstandingEffects(
   runAuthority,
   operationRegistry,
   subrunRegistration,
-  { allowOneShotRecovery = true } = {},
+  {
+    allowIndeterminateRecovery = true,
+    allowOneShotRecovery = true,
+  } = {},
 ) {
   if (typeof runAuthority.pendingSameBootRecoveryRunIds !== "function") return;
   const runIds = runAuthority.pendingSameBootRecoveryRunIds();
@@ -934,6 +940,10 @@ function recoverOutstandingEffects(
       }
       const effect = current.effects.find(({ effect_id: currentEffectId }) =>
         currentEffectId === effectId);
+      if (!allowIndeterminateRecovery &&
+          effect?.last_observation?.presence === "indeterminate") {
+        continue;
+      }
       if (!allowOneShotRecovery &&
           effect?.classification === "one_shot_uncertain") {
         continue;

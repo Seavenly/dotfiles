@@ -7,8 +7,10 @@ import {
 } from "../../../tools/flow/src/canonical.mjs";
 import {
   createFeatureCaptureOperation,
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   FEATURE_CAPTURE_RECEIPT_VALIDATOR,
   FEATURE_CRITERION_EVIDENCE_SCHEMA,
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
   FEATURE_OPERATION_CONTRACTS,
   FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
   validateFeatureCaptureReceipt,
@@ -20,9 +22,18 @@ import {
 } from "../../../tools/flow/src/work-authority.mjs";
 import { createRejection } from "../../../tools/flow/src/rejection.mjs";
 
+export {
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+};
+
 const CAPTURE_ARTIFACT_SCHEMA = "flow.feature-candidate-archive/v1";
 const CAPTURE_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 const CAPTURE_ARCHIVE_TIMEOUT_MS = 30_000;
+const FEATURE_CRITIQUE_MAX_BYTES = 128 * 1024;
+const FEATURE_CRITIQUE_MAX_FINDINGS = 64;
+const FEATURE_CRITIQUE_MAX_SUMMARY_BYTES = 4 * 1024;
+const FEATURE_CRITIQUE_MAX_DETAIL_BYTES = 8 * 1024;
 
 /**
  * Build the host-owned feature operation registrations.  This module only
@@ -703,7 +714,7 @@ function createVerificationOperation({
       if (criterionEvidence === null) {
         throw featureOperationError(
           "feature_verification_criterion_evidence_invalid",
-          "feature verification requires exact criterion evidence from apply",
+          "feature verification requires exact independent criterion evidence",
         );
       }
       const workspaceIdentity = {
@@ -762,6 +773,9 @@ function createVerificationOperation({
         brief_id: operationInput.brief.id,
         discriminating_evidence: discriminating,
         effect_id: intent.effect_id,
+        ...(criterionEvidence.source === "critique" ? {
+          independent_critique_digest: criterionEvidence.source_digest,
+        } : {}),
         idempotency_key: intent.idempotency_key,
         operation_contract: FEATURE_OPERATION_CONTRACTS.verify,
         selected_evidence_fingerprint: selectedEvidence.fingerprint,
@@ -806,10 +820,26 @@ function createSealOperation({ resolveWorkspace, gitRetentionAdapter }) {
           "feature seal requires authority-materialized candidate, verify, and critique evidence",
         );
       }
+      const critiqueOutput = parseCritiqueEvidence(
+        critiqueEvidence,
+        operationInput.brief?.acceptance,
+        operationInput.authority_materialized_critique_input,
+      );
+      if (critiqueOutput === null ||
+          verification.independent_critique_digest !==
+            critiqueOutput.digest ||
+          critiqueOutput.findings.some(({ classification }) =>
+            classification === "blocking") ||
+          critiqueOutput.criteria.some(({ verdict }) => verdict !== "passed")) {
+        throw featureOperationError(
+          "feature_seal_critique_invalid",
+          "feature seal requires an exact independent, non-blocking critique",
+        );
+      }
       const critiqueIdentity = {
         schema: "work.feature-critique-receipt/v1",
         delegate_evidence: critiqueEvidence,
-        findings: [],
+        findings: critiqueOutput.findings,
         operation_contract: intent.operation_contract,
         effect_id: intent.effect_id,
         idempotency_key: intent.idempotency_key,
@@ -853,10 +883,39 @@ function createSealOperation({ resolveWorkspace, gitRetentionAdapter }) {
 
 function featureCriterionEvidenceFromIntent(intent) {
   const operationInput = intent?.operation_input;
+  const independent = operationInput?.independent_critique === true;
   const accepted = operationInput?.authority_materialized_evidence
-    ?.accepted_delegates?.find(({ card_id: cardId }) => cardId === "feature-apply");
+    ?.accepted_delegates?.find(({ card_id: cardId }) => cardId ===
+      (independent ? "feature-critique" : "feature-apply"));
   const output = accepted?.evidence?.validated_output;
   if (typeof output !== "string") return null;
+  if (independent) {
+    if (!validCritiqueInputBinding(
+      operationInput?.authority_materialized_critique_input,
+      accepted.card_id,
+    )) return null;
+    const critique = validateFeatureCritiqueOutput(output, {
+      expectedCriteria: operationInput?.brief?.acceptance,
+      candidateDigest: operationInput?.authority_materialized_critique_input
+        ?.candidate_digest,
+      predecessorEvidenceDigest:
+        operationInput?.authority_materialized_critique_input
+          ?.predecessor_evidence_digest,
+      requireAuthorityBinding: true,
+    });
+    if (critique === null ||
+        critique.criteria.some(({ verdict }) => verdict !== "passed")) {
+      return null;
+    }
+    return {
+      criteria: critique.criteria.map(({ criterion, evidence }) => ({
+        criterion,
+        ...evidence,
+      })),
+      source: "critique",
+      source_digest: digest(critique),
+    };
+  }
   let parsed;
   try {
     parsed = JSON.parse(output);
@@ -867,6 +926,23 @@ function featureCriterionEvidenceFromIntent(intent) {
     parsed?.feature_evidence,
     operationInput?.brief?.acceptance,
   );
+}
+
+function parseCritiqueEvidence(accepted, expectedCriteria, critiqueInput) {
+  const output = accepted?.evidence?.validated_output;
+  if (typeof output !== "string") return null;
+  if (!validCritiqueInputBinding(critiqueInput, accepted?.card_id)) return null;
+  const critique = validateFeatureCritiqueOutput(output, {
+    expectedCriteria,
+    candidateDigest: critiqueInput?.candidate_digest,
+    predecessorEvidenceDigest: critiqueInput?.predecessor_evidence_digest,
+    requireAuthorityBinding: true,
+  });
+  if (critique === null) return null;
+  return {
+    ...critique,
+    digest: digest(critique),
+  };
 }
 
 export function validateFeatureCriterionEvidence(evidence, expectedCriteria) {
@@ -894,6 +970,186 @@ export function validateFeatureCriterionEvidence(evidence, expectedCriteria) {
   return criteria.some((entry) => entry === null)
     ? null
     : { schema: evidence.schema, criteria };
+}
+
+/**
+ * Validate the independent critique delegate's complete canonical output.
+ *
+ * The outer delegate envelope remains the registered result schema. The
+ * embedded critique is deliberately a small, closed contract so the seal
+ * operation can retain findings and criterion evidence without interpreting
+ * arbitrary prose or trusting apply's selected bytes. When taskInputs are
+ * supplied, the digest is checked against the exact task input object that
+ * was transmitted to the delegate. Independent critique input digests are
+ * carried both in that task input and in the result so registered operations
+ * can re-check the exact authority materialization before accepting verdicts.
+ */
+export function validateFeatureCritiqueOutput(
+  output,
+  {
+    taskInputs = undefined,
+    expectedCriteria = undefined,
+    candidateDigest = undefined,
+    predecessorEvidenceDigest = undefined,
+    requireAuthorityBinding = false,
+  } = {},
+) {
+  if (typeof output !== "string" ||
+      Buffer.byteLength(output, "utf8") > FEATURE_CRITIQUE_MAX_BYTES) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+    if (JSON.stringify(freezeCanonical(parsed)) !== output) return null;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) ||
+      Object.keys(parsed).sort().join(",") !==
+        "feature_critique,observation,schema" ||
+      parsed.schema !== "flow.delegate-evidence/v1" ||
+      typeof parsed.observation !== "string" ||
+      Buffer.byteLength(parsed.observation, "utf8") > 2 * 1024 ||
+      !isRecord(parsed.feature_critique)) {
+    return null;
+  }
+  const critique = parsed.feature_critique;
+  if (Object.keys(critique).sort().join(",") !==
+        "candidate_digest,criteria,findings,predecessor_evidence_digest,schema,task_inputs_digest" ||
+      critique.schema !== FEATURE_CRITIQUE_OUTPUT_SCHEMA ||
+      !isDigest(critique.candidate_digest) ||
+      !isDigest(critique.predecessor_evidence_digest) ||
+      !isDigest(critique.task_inputs_digest) ||
+      !Array.isArray(critique.criteria) ||
+      !Array.isArray(critique.findings) ||
+      critique.findings.length > FEATURE_CRITIQUE_MAX_FINDINGS) {
+    return null;
+  }
+  if (requireAuthorityBinding &&
+      (!isDigest(candidateDigest) || !isDigest(predecessorEvidenceDigest))) {
+    return null;
+  }
+  if (candidateDigest !== undefined &&
+      critique.candidate_digest !== candidateDigest) {
+    return null;
+  }
+  if (predecessorEvidenceDigest !== undefined &&
+      critique.predecessor_evidence_digest !== predecessorEvidenceDigest) {
+    return null;
+  }
+  if (taskInputs !== undefined) {
+    let taskInputDigest;
+    try {
+      taskInputDigest = digest(taskInputs);
+    } catch {
+      return null;
+    }
+    if (taskInputDigest !== critique.task_inputs_digest ||
+        taskInputs.candidate_digest !== critique.candidate_digest ||
+        taskInputs.predecessor_evidence_digest !==
+          critique.predecessor_evidence_digest) {
+      return null;
+    }
+  }
+  if (!Array.isArray(expectedCriteria) ||
+      critique.criteria.length !== expectedCriteria.length ||
+      critique.criteria.some((entry, index) => {
+        if (!isRecord(entry) ||
+            Object.keys(entry).sort().join(",") !==
+              "criterion,evidence,evidence_digest,verdict" ||
+            entry.criterion !== expectedCriteria[index] ||
+            !["passed", "failed"].includes(entry.verdict) ||
+            !isDigest(entry.evidence_digest) ||
+            !isRecord(entry.evidence)) return true;
+        const evidence = validateFeatureCriterionEvidence({
+          schema: FEATURE_CRITERION_EVIDENCE_SCHEMA,
+          criteria: [{
+            criterion: entry.criterion,
+            ...entry.evidence,
+          }],
+        }, [entry.criterion]);
+        return evidence === null ||
+          digest({
+            criterion: entry.criterion,
+            evidence: entry.evidence,
+            verdict: entry.verdict,
+          }) !==
+            entry.evidence_digest;
+      })) {
+    return null;
+  }
+  const findingIds = new Set();
+  let previousFindingId = null;
+  for (const finding of critique.findings) {
+    if (!validFeatureCritiqueFinding(finding) ||
+        findingIds.has(finding.finding_id) ||
+        previousFindingId !== null && finding.finding_id <= previousFindingId) {
+      return null;
+    }
+    findingIds.add(finding.finding_id);
+    previousFindingId = finding.finding_id;
+  }
+  return {
+    schema: critique.schema,
+    candidate_digest: critique.candidate_digest,
+    predecessor_evidence_digest: critique.predecessor_evidence_digest,
+    task_inputs_digest: critique.task_inputs_digest,
+    criteria: critique.criteria,
+    findings: critique.findings,
+  };
+}
+
+export function materializedEvidenceDigest(value) {
+  if (!isRecord(value) || !isDigest(value.evidence_digest)) return null;
+  const { evidence_digest: _evidenceDigest, ...identity } = value;
+  try {
+    return digest(identity) === value.evidence_digest
+      ? value.evidence_digest
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function validCritiqueInputBinding(binding, cardId) {
+  if (!isRecord(binding) ||
+      Object.keys(binding).sort().join(",") !==
+        "binding_digest,candidate_digest,card_id,predecessor_evidence_digest,schema" ||
+      binding.schema !== AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA ||
+      typeof cardId !== "string" ||
+      binding.card_id !== cardId ||
+      !isDigest(binding.candidate_digest) ||
+      !isDigest(binding.predecessor_evidence_digest) ||
+      !isDigest(binding.binding_digest)) return false;
+  const { binding_digest: _bindingDigest, ...identity } = binding;
+  try {
+    return digest(identity) === binding.binding_digest;
+  } catch {
+    return false;
+  }
+}
+
+function validFeatureCritiqueFinding(finding) {
+  if (!isRecord(finding) ||
+      Object.keys(finding).sort().join(",") !==
+        "classification,detail,finding_id,summary" ||
+      !["blocking", "non_blocking"].includes(finding.classification) ||
+      typeof finding.summary !== "string" ||
+      typeof finding.detail !== "string" ||
+      finding.summary.length === 0 || finding.detail.length === 0 ||
+      Buffer.byteLength(finding.summary, "utf8") >
+        FEATURE_CRITIQUE_MAX_SUMMARY_BYTES ||
+      Buffer.byteLength(finding.detail, "utf8") >
+        FEATURE_CRITIQUE_MAX_DETAIL_BYTES ||
+      !/^finding:[0-9a-f]{64}$/u.test(finding.finding_id)) {
+    return false;
+  }
+  return digest({
+    classification: finding.classification,
+    detail: finding.detail,
+    summary: finding.summary,
+  }) === `sha256:${finding.finding_id.slice("finding:".length)}`;
 }
 
 function assertCriterionEvidenceMatchesGit(workspace, git, evidence) {
@@ -1022,6 +1278,10 @@ function validGit(git) {
     /^[0-9a-f]{40,64}$/u.test(git.tree_sha ?? "") &&
     typeof git.ref === "string" && git.ref.length > 0 &&
     typeof git.clean === "boolean";
+}
+
+function isDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 function isRecord(value) {

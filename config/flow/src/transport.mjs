@@ -1,7 +1,9 @@
-import { mkdir, chmod, lstat, unlink } from "node:fs/promises";
-import { dirname } from "node:path";
+import { chmod, lstat, unlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
+
+import { ensureTrustedDirectoryTree } from "./trusted-directory.mjs";
 
 export const FLOW_RUNTIME_INTERFACE = "flow.runtime/v1";
 export const FLOW_TRANSPORT_REQUEST = "flow.transport-request/v1";
@@ -48,6 +50,7 @@ export function createFlowTransportServer({
   socketPath,
   runtime,
   maxFrameBytes = DEFAULT_MAX_FRAME_BYTES,
+  directoryStatReader = lstat,
   onError = () => {},
 } = {}) {
   assertSocketPath(socketPath);
@@ -56,10 +59,14 @@ export function createFlowTransportServer({
   if (typeof onError !== "function") {
     throw new TypeError("Flow transport onError must be a function");
   }
+  if (typeof directoryStatReader !== "function") {
+    throw new TypeError("Flow transport directoryStatReader must be a function");
+  }
 
   let server = null;
   let starting = null;
   let closing = false;
+  let activeSocketPath = socketPath;
   const connections = new Map();
   const returnedWatchers = new WeakMap();
 
@@ -106,8 +113,17 @@ export function createFlowTransportServer({
   return controller;
 
   async function listen() {
-    await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 });
-    await chmod(dirname(socketPath), 0o700);
+    const socketDirectoryPath = await ensureSocketDirectory(dirname(socketPath));
+    activeSocketPath = join(socketDirectoryPath, basename(socketPath));
+    try {
+      const existing = await lstat(activeSocketPath);
+      if (existing.isSymbolicLink()) {
+        throw transportError("socket_path_symlink");
+      }
+      throw transportError("socket_path_occupied");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
     const candidate = net.createServer((socket) => acceptConnection(socket));
     server = candidate;
     candidate.on("error", (error) => {
@@ -118,6 +134,7 @@ export function createFlowTransportServer({
       }
       report(error);
     });
+    let socketIdentity = null;
     await new Promise((resolve, reject) => {
       const onError = (error) => {
         candidate.off("listening", onListening);
@@ -129,19 +146,50 @@ export function createFlowTransportServer({
       };
       candidate.once("error", onError);
       candidate.once("listening", onListening);
-      candidate.listen(socketPath);
-    }).catch((error) => {
+      candidate.listen(activeSocketPath);
+    }).catch(async (error) => {
       if (server === candidate) server = null;
-      candidate.close();
+      await new Promise((resolve) => candidate.close(resolve));
       throw error;
     });
     try {
-      await chmod(socketPath, 0o600);
+      const bound = await lstat(activeSocketPath);
+      if (bound.isSymbolicLink() || !bound.isSocket()) {
+        throw transportError("socket_path_invalid");
+      }
+      socketIdentity = { dev: bound.dev, ino: bound.ino };
+      await chmod(activeSocketPath, 0o600);
     } catch (error) {
       await new Promise((resolve) => candidate.close(resolve));
       if (server === candidate) server = null;
+      await removeSocketIfPresent(activeSocketPath, socketIdentity).catch(() => {});
+      activeSocketPath = socketPath;
       throw error;
     }
+  }
+
+  async function ensureSocketDirectory(path) {
+    const resolved = await ensureTrustedDirectoryTree(path, {
+      code: "socket_directory",
+      statReader: directoryStatReader,
+      errorFactory: transportError,
+    });
+    const parent = resolved.info;
+    if (parent.isSymbolicLink() || !parent.isDirectory()) {
+      throw transportError("socket_directory_invalid");
+    }
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    if (uid !== null && parent.uid !== uid) {
+      throw transportError("socket_directory_owner");
+    }
+    await chmod(resolved.path, 0o700);
+    const tightened = await directoryStatReader(resolved.path);
+    if (tightened.isSymbolicLink() || !tightened.isDirectory() ||
+        uid !== null && tightened.uid !== uid ||
+        (tightened.mode & 0o777) !== 0o700) {
+      throw transportError("socket_directory_mode");
+    }
+    return resolved.path;
   }
 
   function acceptConnection(socket) {
@@ -726,10 +774,14 @@ function isSocketDisconnect(error) {
   return ["EPIPE", "ECONNRESET", "ERR_STREAM_DESTROYED"].includes(error?.code);
 }
 
-export async function removeSocketIfPresent(socketPath) {
+export async function removeSocketIfPresent(socketPath, expectedIdentity = null) {
   try {
     const info = await lstat(socketPath);
     if (!info.isSocket()) return false;
+    if (expectedIdentity !== null &&
+        (info.dev !== expectedIdentity.dev || info.ino !== expectedIdentity.ino)) {
+      return false;
+    }
     await unlink(socketPath);
     return true;
   } catch (error) {

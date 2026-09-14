@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
@@ -9,7 +10,10 @@ import {
   statusAutonomousFlowRuntime,
   stopAutonomousFlowRuntime,
 } from "../src/flow-runtime.mjs";
-import { createFlowRuntimeRunner } from "../src/flow-runtime-runner.mjs";
+import {
+  createFlowRuntimeRunner,
+  summarizeFlowRuntimeError,
+} from "../src/flow-runtime-runner.mjs";
 import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   SUBRUN_CONTRACT,
@@ -39,6 +43,21 @@ import {
 } from "../test-support/delegate-card.mjs";
 import { supportedDescription } from
   "../test-support/delegated-agent-description.mjs";
+
+test("runner error summaries expose only registered bounded codes", () => {
+  assert.equal(
+    summarizeFlowRuntimeError({ code: "provider_secret_token" }).code,
+    "runner_error",
+  );
+  assert.equal(
+    summarizeFlowRuntimeError({ code: "frame_too_large" }, "transport").code,
+    "frame_too_large",
+  );
+  assert.equal(
+    summarizeFlowRuntimeError({ code: "transport_secret_token" }, "transport").code,
+    "transport_error",
+  );
+});
 
 test("autonomous FlowRuntime advances a ready operation after launch", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-runner-"));
@@ -677,6 +696,614 @@ test("autonomous runner stop returns host and indexed run watchers", async () =>
   assert.deepEqual([...returned].sort(), ["host", "run:watch"]);
 });
 
+test("autonomous runner does not recover its own live dispatch but restart does", async () => {
+  const hostProjection = {
+    schema: "flow.run-index-projection/v1",
+    watermark: "sha256:host-live-dispatch",
+    runs: ["run:live-dispatch"],
+  };
+  const operation = {
+    type: "operation_execute",
+    run_id: "run:live-dispatch",
+    card_id: "operation",
+  };
+  const recovery = {
+    type: "recovery",
+    run_id: "run:live-dispatch",
+    effect_id: "effect:live-dispatch",
+    recovery: "repeat_exact",
+  };
+  const projection = {
+    schema: "flow.run-projection/v1",
+    run_id: "run:live-dispatch",
+    phase: "active",
+    admission: "admitted",
+    effects: [{
+      effect_id: "effect:live-dispatch",
+      effect_kind: "operation",
+      classification: "caller_idempotent",
+      operation_contract: "test.operation/v1",
+      status: "unresolved",
+      receipt: null,
+      last_observation: null,
+    }],
+    legal_actions: [operation],
+  };
+  const commands = [];
+  const watchers = new Set();
+  let live = false;
+  const runtime = {
+    query(request = {}) {
+      return request.run_id === undefined ? hostProjection : {
+        ...projection,
+        effects: live ? projection.effects : [],
+        legal_actions: live ? [recovery] : [operation],
+      };
+    },
+    command(action) {
+      commands.push(action.type);
+      if (action.type === "operation_execute") live = true;
+      return action.type === "operation_execute"
+        ? {
+            accepted: true,
+            effect_intents: [
+              {
+                run_id: "run:live-dispatch",
+                card_id: "operation",
+                effect_id: "effect:live-dispatch",
+              },
+              {
+                run_id: "run:live-dispatch",
+                card_id: "other-operation",
+                effect_id: "effect:unrelated",
+              },
+            ],
+          }
+        : { accepted: true };
+    },
+    watch(request = {}) {
+      let initial = true;
+      let resolvePending;
+      const watcher = {
+        [Symbol.asyncIterator]() { return this; },
+        next() {
+          if (initial) {
+            initial = false;
+            return Promise.resolve({
+              done: false,
+              value: request.host === true ? hostProjection : projection,
+            });
+          }
+          return new Promise((resolve) => { resolvePending = resolve; });
+        },
+        return() {
+          resolvePending?.({ done: true, value: undefined });
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      };
+      watchers.add(watcher);
+      return watcher;
+    },
+  };
+  const runAuthority = { query: () => hostProjection };
+  const first = createFlowRuntimeRunner({ runtime, runAuthority });
+  first.start();
+  await until(() => commands.length === 1);
+  first.wake();
+  await ticks(4);
+  assert.deepEqual(commands, ["operation_execute"]);
+  first.stop();
+
+  const second = createFlowRuntimeRunner({ runtime, runAuthority });
+  second.start();
+  await until(() => commands.length === 2);
+  assert.deepEqual(commands, ["operation_execute", "recovery"]);
+  second.stop();
+  assert.equal(watchers.size > 0, true);
+});
+
+test("autonomous runner retires exact execution dispatch keys after settlement",
+  async () => {
+    const hostProjection = {
+      schema: "flow.run-index-projection/v1",
+      watermark: "sha256:host-live-dispatch-retirement",
+      runs: ["run:live-dispatch-retirement"],
+    };
+    const operation = {
+      type: "operation_execute",
+      run_id: "run:live-dispatch-retirement",
+      card_id: "operation",
+    };
+    const recovery = {
+      type: "recovery",
+      run_id: "run:live-dispatch-retirement",
+      effect_id: "effect:live-dispatch-retirement",
+      recovery: "repeat_exact",
+    };
+    const commands = [];
+    let state = "ready";
+    let resolvePending;
+    const effect = (overrides = {}) => ({
+      effect_id: "effect:live-dispatch-retirement",
+      effect_kind: "operation",
+      classification: "caller_idempotent",
+      operation_contract: "test.operation/v1",
+      status: "unresolved",
+      receipt: null,
+      last_observation: null,
+      ...overrides,
+    });
+    const runtime = {
+      query(request = {}) {
+        if (request.run_id === undefined) return hostProjection;
+        if (state === "ready") {
+          return {
+            schema: "flow.run-projection/v1",
+            run_id: "run:live-dispatch-retirement",
+            phase: "active",
+            admission: "admitted",
+            effects: [],
+            legal_actions: [operation],
+          };
+        }
+        if (state === "unresolved") {
+          return {
+            schema: "flow.run-projection/v1",
+            run_id: "run:live-dispatch-retirement",
+            phase: "active",
+            admission: "admitted",
+            effects: [effect()],
+            legal_actions: [recovery],
+          };
+        }
+        if (state === "settled") {
+          return {
+            schema: "flow.run-projection/v1",
+            run_id: "run:live-dispatch-retirement",
+            phase: "active",
+            admission: "admitted",
+            effects: [effect({
+              status: "succeeded",
+              receipt: { outcome: "succeeded" },
+            })],
+            legal_actions: [recovery],
+          };
+        }
+        return {
+          schema: "flow.run-projection/v1",
+          run_id: "run:live-dispatch-retirement",
+          phase: "succeeded",
+          admission: "admitted",
+          effects: [effect({
+            status: "succeeded",
+            receipt: { outcome: "succeeded" },
+          })],
+          legal_actions: [],
+        };
+      },
+      command(action) {
+        commands.push(action.type);
+        if (action.type === "operation_execute") state = "unresolved";
+        if (action.type === "recovery") state = "done";
+        return action.type === "operation_execute"
+          ? {
+              accepted: true,
+              effect_intents: [{
+                run_id: "run:live-dispatch-retirement",
+                card_id: "operation",
+                effect_id: "effect:live-dispatch-retirement",
+              }],
+            }
+          : { accepted: true };
+      },
+      watch(request = {}) {
+        let initial = true;
+        const watcher = {
+          [Symbol.asyncIterator]() { return this; },
+          next() {
+            if (initial) {
+              initial = false;
+              return Promise.resolve({
+                done: false,
+                value: request.host === true
+                  ? hostProjection
+                  : runtime.query({ run_id: request.run_id }),
+              });
+            }
+            return new Promise((resolve) => { resolvePending = resolve; });
+          },
+          return() {
+            resolvePending?.({ done: true, value: undefined });
+            return Promise.resolve({ done: true, value: undefined });
+          },
+        };
+        return watcher;
+      },
+    };
+    const runner = createFlowRuntimeRunner({
+      runtime,
+      runAuthority: { query: () => hostProjection },
+    });
+    runner.start();
+    await until(() => commands.length === 1);
+    await ticks(4);
+    assert.deepEqual(commands, ["operation_execute"]);
+
+    state = "settled";
+    runner.wake();
+    await until(() => commands.length === 2);
+    assert.deepEqual(commands, ["operation_execute", "recovery"]);
+    runner.stop();
+  });
+
+test("autonomous runner stops on a caller-idempotent indeterminate effect",
+  async () => {
+    const hostProjection = {
+      schema: "flow.run-index-projection/v1",
+      watermark: "sha256:host-live-dispatch-indeterminate",
+      runs: ["run:live-dispatch-indeterminate"],
+    };
+    const operation = {
+      type: "operation_execute",
+      run_id: "run:live-dispatch-indeterminate",
+      card_id: "operation",
+    };
+    const recovery = {
+      type: "recovery",
+      run_id: "run:live-dispatch-indeterminate",
+      card_id: "operation",
+      effect_id: "effect:live-dispatch-indeterminate",
+      recovery: "repeat_exact",
+    };
+    const commands = [];
+    let state = "ready";
+    let resolvePending;
+    const effect = (overrides = {}) => ({
+      effect_id: "effect:live-dispatch-indeterminate",
+      effect_kind: "operation",
+      classification: "caller_idempotent",
+      operation_contract: "test.operation/v1",
+      status: "unresolved",
+      receipt: null,
+      last_observation: null,
+      ...overrides,
+    });
+    const runtime = {
+      query(request = {}) {
+        if (request.run_id === undefined) return hostProjection;
+        if (state === "ready") {
+          return {
+            schema: "flow.run-projection/v1",
+            run_id: "run:live-dispatch-indeterminate",
+            phase: "active",
+            admission: "admitted",
+            effects: [],
+            legal_actions: [operation],
+          };
+        }
+        if (state === "indeterminate") {
+          return {
+            schema: "flow.run-projection/v1",
+            run_id: "run:live-dispatch-indeterminate",
+            phase: "active",
+            admission: "admitted",
+            effects: [effect({
+              last_observation: { presence: "indeterminate" },
+            })],
+            legal_actions: [recovery],
+          };
+        }
+        return {
+          schema: "flow.run-projection/v1",
+          run_id: "run:live-dispatch-indeterminate",
+          phase: "succeeded",
+          admission: "admitted",
+          effects: [effect({
+            status: "succeeded",
+            receipt: { outcome: "succeeded" },
+          })],
+          legal_actions: [],
+        };
+      },
+      command(action) {
+        commands.push(action.type);
+        if (action.type === "operation_execute") state = "indeterminate";
+        if (action.type === "recovery") state = "done";
+        return action.type === "operation_execute"
+          ? {
+              accepted: true,
+              effect_intents: [{
+                run_id: "run:live-dispatch-indeterminate",
+                card_id: "operation",
+                effect_id: "effect:live-dispatch-indeterminate",
+              }],
+            }
+          : { accepted: true };
+      },
+      watch(request = {}) {
+        let initial = true;
+        const watcher = {
+          [Symbol.asyncIterator]() { return this; },
+          next() {
+            if (initial) {
+              initial = false;
+              return Promise.resolve({
+                done: false,
+                value: request.host === true
+                  ? hostProjection
+                  : runtime.query({ run_id: request.run_id }),
+              });
+            }
+            return new Promise((resolve) => { resolvePending = resolve; });
+          },
+          return() {
+            resolvePending?.({ done: true, value: undefined });
+            return Promise.resolve({ done: true, value: undefined });
+          },
+        };
+        return watcher;
+      },
+    };
+    const runner = createFlowRuntimeRunner({
+      runtime,
+      runAuthority: { query: () => hostProjection },
+    });
+    runner.start();
+    await until(() => commands.length === 1);
+    runner.wake();
+    await ticks(12);
+    assert.deepEqual(commands, ["operation_execute"],
+      "durable indeterminacy is an explicit stop for every effect class");
+    assert.equal(runner.status().pending_commands, 0);
+    runner.stop();
+  });
+
+test("durable autonomous runner tracks effect ids returned for an execution action",
+  async (t) => {
+    const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-runner-"));
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+    const authority = createFixedTimeDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-runner", "process-live-id"),
+    });
+    t.after(() => authority.close());
+
+    let invocationCount = 0;
+    let settle;
+    const runtime = createFlowRuntime({
+      autonomous: true,
+      runAuthority: authority,
+      registeredOperations: {
+        [TEST_OPERATION_CONTRACT]: {
+          classification: "caller_idempotent",
+          invoke(intent) {
+            invocationCount += 1;
+            return new Promise((resolve) => {
+              settle = () => resolve(operationReceipt(intent));
+            });
+          },
+        },
+      },
+    });
+    t.after(() => stopAutonomousFlowRuntime(runtime));
+
+    const proposal = registeredOperationProposal({
+      checkpointBound: false,
+    });
+    proposal.graph.cards[0].limits.max_attempts = 2;
+    const prepared = runtime.prepare(proposal);
+    const launch = runtime.launch(confirmedLaunchRequest(prepared));
+    assert.equal(launch.created, true);
+
+    await until(() => {
+      const projection = runtime.query({ run_id: launch.run_id });
+      return invocationCount === 1 && typeof settle === "function" &&
+        projection.effects.some(({ invocation_started: started }) => started);
+    });
+    assert.equal(runtime.query({ run_id: launch.run_id }).legal_actions.some(
+      ({ type }) => type === "recovery",
+    ), true);
+    await ticks(12);
+    assert.equal(invocationCount, 1,
+      "a same-runner watch update must not request recovery for its live effect");
+    assert.equal(statusAutonomousFlowRuntime(runtime).errors.count, 0);
+    const database = new DatabaseSync(
+      join(authorityDirectory, "authority.sqlite"),
+      { readOnly: true },
+    );
+    const recoveryEvents = database.prepare(`
+      SELECT COUNT(*) AS count
+        FROM authority_events
+       WHERE stream_id = ?
+         AND json_extract(payload_json, '$.type') =
+           'effect_recovery_requested'
+    `).get(launch.run_id);
+    database.close();
+    assert.equal(Number(recoveryEvents.count), 0);
+    assert.equal(
+      runtime.query({ run_id: launch.run_id }).effects[0].status,
+      "unresolved",
+    );
+
+    settle();
+    await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
+  });
+
+test("reconstructed durable runner recovers an unresolved exact effect", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-runner-restart-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createFixedTimeDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-runner", "process-first"),
+  });
+  t.after(() => firstAuthority.close());
+
+  let invocationCount = 0;
+  let initialEffectId;
+  const firstRuntime = createFlowRuntime({
+    autonomous: true,
+    runAuthority: firstAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke(intent) {
+          invocationCount += 1;
+          initialEffectId = intent.effect_id;
+          return new Promise(() => {});
+        },
+      },
+    },
+  });
+  t.after(() => stopAutonomousFlowRuntime(firstRuntime));
+
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  proposal.graph.cards[0].limits.max_attempts = 2;
+  const launch = firstRuntime.launch(confirmedLaunchRequest(
+    firstRuntime.prepare(proposal),
+  ));
+  assert.equal(launch.created, true);
+  await until(() => {
+    const projection = firstRuntime.query({ run_id: launch.run_id });
+    return invocationCount === 1 && projection.effects[0]?.invocation_started;
+  });
+  assert.equal(firstRuntime.query({ run_id: launch.run_id }).effects[0].status,
+    "unresolved");
+
+  stopAutonomousFlowRuntime(firstRuntime);
+  firstAuthority.close();
+  const beforeRestart = new DatabaseSync(
+    join(authorityDirectory, "authority.sqlite"),
+    { readOnly: true },
+  );
+  const recoveryBeforeRestart = beforeRestart.prepare(`
+    SELECT COUNT(*) AS count
+      FROM authority_events
+     WHERE stream_id = ?
+       AND json_extract(payload_json, '$.type') =
+         'effect_recovery_requested'
+  `).get(launch.run_id);
+  beforeRestart.close();
+  assert.equal(Number(recoveryBeforeRestart.count), 0);
+
+  const secondAuthority = createFixedTimeDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-runner", "process-second"),
+  });
+  t.after(() => secondAuthority.close());
+  const secondRuntime = createFlowRuntime({
+    autonomous: true,
+    runAuthority: secondAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke(intent) {
+          invocationCount += 1;
+          assert.equal(intent.effect_id, initialEffectId);
+          return operationReceipt(intent, { record: "recovered" });
+        },
+      },
+    },
+  });
+  t.after(() => stopAutonomousFlowRuntime(secondRuntime));
+
+  await until(() => secondRuntime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  assert.equal(invocationCount, 2);
+  const afterRestart = new DatabaseSync(
+    join(authorityDirectory, "authority.sqlite"),
+    { readOnly: true },
+  );
+  const recoveryAfterRestart = afterRestart.prepare(`
+    SELECT COUNT(*) AS count
+      FROM authority_events
+     WHERE stream_id = ?
+       AND json_extract(payload_json, '$.type') =
+         'effect_recovery_requested'
+  `).get(launch.run_id);
+  afterRestart.close();
+  assert.equal(Number(recoveryAfterRestart.count), 1);
+  assert.equal(statusAutonomousFlowRuntime(secondRuntime).errors.count, 0);
+});
+
+test("durable indeterminate registered effects stop across runner reconstruction",
+  async (t) => {
+    const authorityDirectory = await mkdtemp(
+      join(tmpdir(), "flow-runner-indeterminate-stop-"),
+    );
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+
+    let invocationCount = 0;
+    const registration = {
+      classification: "caller_idempotent",
+      invoke() {
+        invocationCount += 1;
+        const error = new Error("persistent provider rejection secret");
+        error.execution_status = "uncertain_external_outcome";
+        throw error;
+      },
+    };
+    const firstAuthority = createFixedTimeDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-runner", "process-first"),
+    });
+    t.after(() => firstAuthority.close());
+    const firstRuntime = createFlowRuntime({
+      autonomous: true,
+      runAuthority: firstAuthority,
+      registeredOperations: {
+        [TEST_OPERATION_CONTRACT]: registration,
+      },
+    });
+    t.after(() => stopAutonomousFlowRuntime(firstRuntime));
+
+    const proposal = registeredOperationProposal({ checkpointBound: false });
+    proposal.graph.cards[0].limits.max_attempts = 3;
+    const launch = firstRuntime.launch(confirmedLaunchRequest(
+      firstRuntime.prepare(proposal),
+    ));
+    await until(() => {
+      const effect = firstRuntime.query({ run_id: launch.run_id }).effects[0];
+      return invocationCount === 1 &&
+        effect?.last_observation?.presence === "indeterminate";
+    });
+    const firstProjection = firstRuntime.query({ run_id: launch.run_id });
+    assert.deepEqual(firstProjection.legal_actions.map(({ type }) => type), [
+      "recovery",
+    ]);
+    await ticks(24);
+    assert.equal(invocationCount, 1);
+    assert.equal(recoveryEventCount(authorityDirectory, launch.run_id), 0);
+    assert.equal(statusAutonomousFlowRuntime(firstRuntime).errors.count, 0);
+
+    stopAutonomousFlowRuntime(firstRuntime);
+    firstAuthority.close();
+    const secondAuthority = createFixedTimeDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-runner", "process-second"),
+    });
+    t.after(() => secondAuthority.close());
+    const secondRuntime = createFlowRuntime({
+      autonomous: true,
+      runAuthority: secondAuthority,
+      registeredOperations: {
+        [TEST_OPERATION_CONTRACT]: registration,
+      },
+    });
+    t.after(() => stopAutonomousFlowRuntime(secondRuntime));
+
+    await ticks(24);
+    const reconstructed = secondRuntime.query({ run_id: launch.run_id });
+    assert.equal(invocationCount, 1,
+      "reconstruction must preserve the explicit indeterminate stop");
+    assert.equal(reconstructed.effects[0].last_observation.presence,
+      "indeterminate");
+    assert.deepEqual(reconstructed.legal_actions.map(({ type }) => type), [
+      "recovery",
+    ]);
+    assert.equal(recoveryEventCount(authorityDirectory, launch.run_id), 0);
+    assert.equal(statusAutonomousFlowRuntime(secondRuntime).errors.count, 0);
+  });
+
 test("autonomous child progress is not blocked by its passive parent observation",
   async (t) => {
     const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-runner-"));
@@ -766,6 +1393,25 @@ function ticks(count) {
     };
     tick();
   });
+}
+
+function recoveryEventCount(authorityDirectory, runId) {
+  const database = new DatabaseSync(
+    join(authorityDirectory, "authority.sqlite"),
+    { readOnly: true },
+  );
+  try {
+    const result = database.prepare(`
+      SELECT COUNT(*) AS count
+        FROM authority_events
+       WHERE stream_id = ?
+         AND json_extract(payload_json, '$.type') =
+           'effect_recovery_requested'
+    `).get(runId);
+    return Number(result.count);
+  } finally {
+    database.close();
+  }
 }
 
 function indeterminateObservation(intent) {

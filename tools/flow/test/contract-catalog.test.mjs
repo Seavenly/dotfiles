@@ -70,6 +70,23 @@ test("the public catalog exposes the settled interface and forbids legacy import
     delegate_capacity: "separate",
     operation_capacity: "separate",
     subrun_capacity: "does_not_consume_operation_capacity",
+    defaults: {
+      delegate_capacity: 1,
+      operation_capacity: 1,
+    },
+    configuration: {
+      explicit_options: ["delegateCapacity", "operationCapacity"],
+      environment: [
+        "FLOW_RUNNER_DELEGATE_CAPACITY",
+        "FLOW_RUNNER_OPERATION_CAPACITY",
+      ],
+      maximum: 64,
+      validation: "positive_safe_integer",
+    },
+    error_reporting: {
+      status: "bounded_sanitized_summary",
+      detached_sink: "private_owner_error_log",
+    },
     explicit_stops: [
       "checkpoint",
       "capability_expansion",
@@ -560,6 +577,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
   for (const contract of [
     "work.workspace-authority/v1",
     "work.workspace-register-command/v1",
+    "work.workspace-observation-command/v1",
     "work.workspace-claim-command/v1",
     "work.workspace-claim-release-command/v1",
     "work.workspace-taint-command/v1",
@@ -758,6 +776,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     },
   });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
+    autonomous_runner_status: {
+      projection: "flow.runtime-runner-status/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
     delegated_agent_description: {
       projection: "flow.delegated-agent-description-projection/v1",
       rejection: "flow.rejection/v1",
@@ -791,6 +814,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
   });
   assert.ok(catalog.contracts.includes("flow.query/v1"));
   assert.ok(catalog.contracts.includes("flow.legacy-compatibility-inventory/v1"));
+  assert.ok(catalog.projections.includes("autonomous_runner_status"));
   assert.ok(catalog.projections.includes("legacy_compatibility_inventory"));
   assert.deepEqual(catalog.delegated_agent_port, {
     contract: "flow.delegated-agent-port/v1",
@@ -883,6 +907,26 @@ test("the public catalog publishes immutable result and capture contracts", asyn
     artifact_storage: "authority_owned_artifact_bytes",
     late_or_cancelled: "quarantined_evidence_never_usable",
   });
+  assert.deepEqual(catalog.flow_runtime.feature_critique, {
+    authority: "RunAuthority",
+    envelope: "flow.delegate-evidence/v1",
+    output: "flow.feature-critique-output/v1",
+    input_binding: "flow.authority-critique-input-binding/v1",
+    validator: "flow.validator/delegate-output-conformance/v1",
+    candidate_reference: "exact_authority_materialized_candidate_digest",
+    predecessor_reference:
+      "exact_authority_materialized_predecessor_evidence_digest",
+    task_inputs_digest: "sha256_canonical_json_utf8",
+    criterion_evidence_digest:
+      "sha256_canonical_json_utf8_criterion_evidence_verdict",
+    finding_id:
+      "finding_sha256_canonical_json_utf8_classification_detail_summary",
+    criterion_order: "brief_acceptance_order",
+    finding_order: "strict_ascending_finding_id_unique",
+    blocking_policy: "blocking_or_failed_criterion_prevents_seal",
+    non_blocking_policy: "retain_exactly",
+    graph_shapes: ["legacy", "serialized"],
+  });
   assert.deepEqual(catalog.flow_runtime.plan_revision_result_bindings, {
     authority: "RunAuthority",
     template_field: "result_binding_changes",
@@ -901,6 +945,8 @@ test("the public catalog publishes immutable result and capture contracts", asyn
     "flow.result-identity/v1",
     "flow.result-binding-delta/v1",
     "flow.feature-capture-policy/v1",
+    "flow.feature-critique-output/v1",
+    "flow.authority-critique-input-binding/v1",
     "flow.operation/feature-capture/v1",
     "work.feature-capture-receipt/v1",
     "flow.validator/feature-capture-receipt/v1",

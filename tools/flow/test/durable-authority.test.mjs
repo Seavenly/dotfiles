@@ -10,6 +10,7 @@ import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { canonicalize, digest } from "../src/canonical.mjs";
+import { getWorkspaceAuthority } from "../src/work-authority.mjs";
 import {
   createBackupManifest,
   initialBackupProjection,
@@ -2693,6 +2694,107 @@ test("deferred terminal events survive out-of-order multi-effect settlement", as
   assert.equal(Number(releases.count), 1);
 });
 
+test("deferred producer terminal settlement releases a workspace claim durably and exactly once", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-workspace-release-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+    gitWorkspaceObservationAdapter: durableWorkspaceObservationAdapter(),
+    lifecycleKernel: deferredWorkspaceDeclineLifecycle,
+  });
+  t.after(() => authority.close());
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority: authority });
+  const registrationReceipt = workspaceAuthority.command(durableWorkspaceRegistration());
+  assert.equal(registrationReceipt.accepted, true, JSON.stringify(registrationReceipt));
+  const registeredWorkspace = workspaceAuthority.query(durableWorkspaceQuery());
+  const workspaceClaim = {
+    kind: "workspace",
+    id: registeredWorkspace.subject_id,
+    generation: registeredWorkspace.generation,
+    mutation_epoch: registeredWorkspace.mutation_epoch,
+    fingerprint: digest({ git: registeredWorkspace.git }),
+  };
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  proposal.graph.cards[0].resource_claims.push(workspaceClaim);
+  proposal.explicit_facts.resource_claims.push(workspaceClaim);
+  proposal.explicit_facts.limits.max_resources += 1;
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        schema: "flow.registered-operation/v1",
+        classification: "caller_idempotent",
+        invoke: (intent) => operationReceipt(intent),
+      },
+    },
+  });
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const claimReceipt = workspaceAuthority.command({
+    schema: "work.workspace-claim-command/v1",
+    command_id: `workspace-claim:${launch.run_id}`,
+    type: "workspace_claim",
+    contract: "work.workspace/v1",
+    subject_id: registeredWorkspace.subject_id,
+    expected_generation: registeredWorkspace.generation,
+    expected_watermark: registeredWorkspace.watermark,
+    expected_fingerprint: digest({ git: registeredWorkspace.git }),
+    git_observation: registeredWorkspace.git_observation,
+    claim: {
+      claim_id: `claim:${launch.run_id}`,
+      holder: launch.run_id,
+      operations: ["record-outcome"],
+    },
+  });
+  assert.equal(claimReceipt.accepted, true, JSON.stringify(claimReceipt));
+
+  const action = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "operation_execute",
+  );
+  const commandReceipt = authority.command(action);
+  assert.equal(commandReceipt.accepted, true, JSON.stringify(commandReceipt));
+  const [intent] = commandReceipt.effect_intents;
+  assert.equal(workspaceAuthority.query(durableWorkspaceQuery()).claims.length, 1);
+  await authority.invokeEffect(intent, {
+    invoke: (effectIntent) => operationReceipt(effectIntent),
+  });
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "declined");
+  assert.deepEqual(workspaceAuthority.query(durableWorkspaceQuery()).claims, []);
+  await assert.rejects(
+    () => authority.invokeEffect(intent, { invoke: () => operationReceipt(intent) }),
+    (error) => error.code === "effect_already_recorded",
+  );
+
+  authority.close();
+  const reopenedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-b", "process-b"),
+    gitWorkspaceObservationAdapter: durableWorkspaceObservationAdapter(),
+    lifecycleKernel: deferredWorkspaceDeclineLifecycle,
+  });
+  t.after(() => reopenedAuthority.close());
+  const reopenedWorkspaceAuthority = getWorkspaceAuthority({
+    runAuthority: reopenedAuthority,
+  });
+  assert.deepEqual(reopenedWorkspaceAuthority.query(durableWorkspaceQuery()).claims, []);
+  reopenedAuthority.close();
+
+  const database = new DatabaseSync(
+    join(authorityDirectory, "authority.sqlite"),
+    { readOnly: true },
+  );
+  const releases = database.prepare(`
+    SELECT COUNT(*) AS count
+      FROM authority_events
+     WHERE stream_id = 'work:work.workspace/v1:workspace:producer'
+       AND json_extract(payload_json, '$.type') = 'workspace_claim_released'
+       AND json_extract(payload_json, '$.holder') = ?
+  `).get(launch.run_id);
+  database.close();
+  assert.equal(Number(releases.count), 1);
+});
+
 test("an inspecting effect runner cannot create or mutate authority", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -3768,6 +3870,65 @@ async function until(condition) {
     if (Date.now() >= deadline) throw new Error("condition was not met");
     await new Promise((resolve) => setImmediate(resolve));
   }
+}
+
+function durableWorkspaceRegistration() {
+  const git = durableWorkspaceGitFacts();
+  return {
+    schema: "work.workspace-register-command/v1",
+    command_id: "workspace-register:producer",
+    type: "workspace_register",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_generation: 0,
+    registration: {
+      repository: { canonical_id: "repository:producer" },
+      workspace: {
+        canonical_id: "workspace:producer",
+        canonical_path: "/tmp/producer-workspace",
+      },
+      git,
+      mutation_epoch: 1,
+      disposition: "producer_owned",
+    },
+    git_observation: { schema: "work.git-observation/v1", git },
+  };
+}
+
+function durableWorkspaceGitFacts() {
+  return {
+    commit_sha: "1".repeat(40),
+    tree_sha: "2".repeat(40),
+    ref: "refs/heads/producer",
+    clean: true,
+  };
+}
+
+function durableWorkspaceObservationAdapter() {
+  return {
+    observe() {
+      return {
+        schema: "work.git-observation/v1",
+        git: durableWorkspaceGitFacts(),
+      };
+    },
+  };
+}
+
+function durableWorkspaceQuery() {
+  return {
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+  };
+}
+
+function deferredWorkspaceDeclineLifecycle(fold, command) {
+  const decision = decideLifecycle(fold, command);
+  if (decision.schema === "flow.rejection/v1") return decision;
+  return {
+    ...decision,
+    events: [{ type: "run_declined" }],
+  };
 }
 
 function effectLifecycle(fold, command, classification = "caller_idempotent") {

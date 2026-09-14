@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import {
   chmod,
+  link,
   lstat,
-  mkdir,
   readFile,
   rename,
   unlink,
@@ -11,15 +11,23 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { createFlowRuntime, closeFlowRuntime } from "./runtime.mjs";
+import {
+  closeFlowRuntime,
+  createFlowRuntime,
+  flowRuntimeMutationAuthority,
+} from "./runtime.mjs";
 import {
   createFlowTransportServer,
   removeSocketIfPresent,
 } from "./transport.mjs";
+import { ensureTrustedDirectoryTree } from "./trusted-directory.mjs";
+import { summarizeFlowRuntimeError } from
+  "../../../tools/flow/src/flow-runtime-runner.mjs";
+import { normalizeProductionRunnerOptions } from "./runtime.mjs";
 
 export const FLOW_OWNER_ENDPOINT = "flow.owner-endpoint/v1";
 export const FLOW_OWNER_STATUS = "flow.owner-status/v1";
@@ -29,6 +37,12 @@ const DEFAULT_WAIT_MS = 10_000;
 const DEFAULT_POLL_MS = 25;
 const DEFAULT_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const INVALID_ENDPOINT = Object.freeze({ invalid_endpoint_record: true });
+const OWNER_ERROR_LOG_SCHEMA = "flow.owner-error-log/v1";
+const OWNER_ERROR_LOG_VERSION = 1;
+const OWNER_ERROR_LOG_NAME = "owner-errors.json";
+const MAX_OWNER_ERRORS = 16;
+const MAX_OWNER_ERROR_LOG_BYTES = 32 * 1024;
+const OWNER_ERROR_SOURCES = new Set(["lifecycle", "runner", "transport"]);
 
 /** Resolve the replacement authority root used by the owner process. */
 export function flowAuthorityDirectory(env = process.env) {
@@ -47,17 +61,60 @@ export function flowOwnerPaths({
   authorityDirectory = flowAuthorityDirectory(env),
   endpointPath = env.FLOW_OWNER_ENDPOINT_PATH ??
     join(authorityDirectory, "owner.json"),
-  socketPath = env.FLOW_SOCKET_PATH ?? env.FLOW_OWNER_SOCKET_PATH ??
-    defaultSocketPath(authorityDirectory),
+  socketPath = env.FLOW_SOCKET_PATH ?? env.FLOW_OWNER_SOCKET_PATH,
+  socketFallbackRoot = undefined,
+  socketFallbackBase = undefined,
+  operatorErrorPath = undefined,
   } = {}) {
   assertPath(authorityDirectory, "authorityDirectory");
   assertPath(endpointPath, "endpointPath");
-  assertPath(socketPath, "socketPath");
-  const effectiveSocketPath = boundedSocketPath(authorityDirectory, socketPath);
+  const resolvedOperatorErrorPath = operatorErrorPath ??
+    join(authorityDirectory, OWNER_ERROR_LOG_NAME);
+  assertPrivatePath(resolvedOperatorErrorPath, "operatorErrorPath");
+  if (dirname(resolvedOperatorErrorPath) !== authorityDirectory) {
+    throw ownerError("operatorErrorPath_mismatch");
+  }
+  const requestedSocketPath = socketPath ?? join(authorityDirectory, "owner.sock");
+  assertPath(requestedSocketPath, "socketPath");
+  const explicitFallback = socketFallbackRoot !== undefined;
+  const inheritedFallbackRoot = explicitFallback
+    ? socketFallbackRoot
+    : env.FLOW_OWNER_SOCKET_FALLBACK_ROOT;
+  const alreadyBoundFallback = typeof inheritedFallbackRoot === "string" &&
+    isBoundFallbackSocketPath(requestedSocketPath, inheritedFallbackRoot);
+  const fallback = explicitFallback
+    ? socketFallbackRoot !== null || Buffer.byteLength(requestedSocketPath) >= 100
+    : !alreadyBoundFallback &&
+      (typeof inheritedFallbackRoot === "string" ||
+        Buffer.byteLength(requestedSocketPath) >= 100);
+  const fallbackDetails = explicitFallback && socketFallbackRoot !== null &&
+      isBoundFallbackSocketPath(requestedSocketPath, socketFallbackRoot)
+    ? {
+        path: requestedSocketPath,
+        root: socketFallbackRoot,
+        base: socketFallbackBase ?? inheritedFallbackBase(env, socketFallbackRoot),
+      }
+    : alreadyBoundFallback
+      ? {
+          path: requestedSocketPath,
+          root: inheritedFallbackRoot,
+          base: inheritedFallbackBase(env, inheritedFallbackRoot),
+        }
+      : fallback
+        ? fallbackSocketPath(
+            authorityDirectory,
+            requestedSocketPath,
+            env,
+            inheritedFallbackRoot === null ? undefined : inheritedFallbackRoot,
+          )
+        : { path: requestedSocketPath, root: null, base: null };
   return Object.freeze({
     authorityDirectory,
     endpointPath,
-    socketPath: effectiveSocketPath,
+    socketPath: fallbackDetails.path,
+    socketFallbackRoot: fallbackDetails.root,
+    socketFallbackBase: fallbackDetails.base,
+    operatorErrorPath: resolvedOperatorErrorPath,
   });
 }
 
@@ -71,11 +128,16 @@ export function createFlowOwner({
   runtime = null,
   runtimeFactory = createFlowRuntime,
   runtimeOptions = {},
+  runnerOptions = undefined,
   authorityDirectory,
   endpointPath,
   socketPath,
+  socketFallbackRoot,
+  socketFallbackBase,
+  operatorErrorPath,
   maxFrameBytes = DEFAULT_MAX_FRAME_BYTES,
   processStartIdentityReader = readProcessStartIdentity,
+  directoryStatReader = lstat,
   onError = () => {},
 } = {}) {
   const paths = flowOwnerPaths({
@@ -83,6 +145,9 @@ export function createFlowOwner({
     authorityDirectory,
     endpointPath,
     socketPath,
+    socketFallbackRoot,
+    socketFallbackBase,
+    operatorErrorPath,
   });
   if (runtime !== null && (typeof runtime !== "object" || runtime === null)) {
     throw new TypeError("Flow owner runtime must be an object");
@@ -92,6 +157,9 @@ export function createFlowOwner({
   }
   if (typeof processStartIdentityReader !== "function") {
     throw new TypeError("Flow owner processStartIdentityReader must be a function");
+  }
+  if (typeof directoryStatReader !== "function") {
+    throw new TypeError("Flow owner directoryStatReader must be a function");
   }
   if (typeof onError !== "function") throw new TypeError("Flow owner onError must be a function");
 
@@ -105,6 +173,12 @@ export function createFlowOwner({
   let stopping = null;
   let startupError = null;
   let endpoint = null;
+  let socketIdentity = null;
+  let activeSocketPath = paths.socketPath;
+  let operatorErrorCount = 0;
+  let operatorErrorSuppressed = 0;
+  let operatorErrors = [];
+  let operatorErrorWrite = Promise.resolve();
 
   const owner = Object.freeze({
     async start() {
@@ -136,6 +210,7 @@ export function createFlowOwner({
         includeOwnerToken: true,
         started,
         startupError,
+        operatorErrors: currentOperatorErrors(),
         processStartIdentityReader,
       });
     },
@@ -157,8 +232,12 @@ export function createFlowOwner({
 
   async function startOwner() {
     startupError = null;
-    await mkdir(paths.authorityDirectory, { recursive: true, mode: 0o700 });
-    await chmod(paths.authorityDirectory, 0o700).catch(() => {});
+    await ensurePrivateDirectory(paths.authorityDirectory, {
+      code: "authority_directory",
+      rejectMode: false,
+      statReader: directoryStatReader,
+    });
+    await loadOperatorErrors();
     const existing = await statusFlowOwner({
       ...paths,
       cleanupStale: false,
@@ -170,38 +249,70 @@ export function createFlowOwner({
     if (existing.state === "unknown") {
       throw ownerError("owner_identity_unavailable");
     }
-    if (["stale", "invalid"].includes(existing.state)) {
-      await removeStaleOwnerFiles(paths, existing.endpoint);
+    if (existing.state === "invalid") {
+      throw ownerError("owner_invalid_endpoint");
     }
-    // A socket without a valid endpoint is never an authority identity.  It
-    // is safe to remove exactly this socket after the endpoint check above.
-    await removeSocketIfPresent(paths.socketPath);
     if (ownedRuntime === null) {
-      ownedRuntime = await runtimeFactory({
-        ...runtimeOptions,
-        env,
-        authorityDirectory: paths.authorityDirectory,
-      });
+      try {
+        ownedRuntime = await runtimeFactory({
+          ...runtimeOptions,
+          ...(runnerOptions === undefined ? {} : { runnerOptions }),
+          env,
+          authorityDirectory: paths.authorityDirectory,
+          runnerErrorSink: (error) => report(error, "runner"),
+        });
+      } catch (error) {
+        report(error, "runner");
+        await flushOperatorErrors();
+        throw error;
+      }
     }
-    transport = createFlowTransportServer({
-      socketPath: paths.socketPath,
-      runtime: ownedRuntime,
-      maxFrameBytes,
-      onError,
-    });
-    try {
-      await transport.start();
-      endpoint = makeEndpoint({ paths, ownerToken, processStartIdentity });
-      await writeEndpoint(paths.endpointPath, endpoint);
-      started = true;
-    } catch (error) {
-      startupError = summarizeOwnerError(error);
-      await transport.close().catch(() => {});
-      transport = null;
+    if (!holdsMutationAuthority(ownedRuntime)) {
       if (runtime === null && ownedRuntime !== null) {
         closeFlowRuntime(ownedRuntime);
         ownedRuntime = null;
       }
+      throw ownerError("mutation_authority_unavailable");
+    }
+    if (existing.state === "stale") {
+      const staleEndpoint = await readEndpoint(paths.endpointPath);
+      await removeStaleOwnerFiles(
+        paths,
+        staleEndpoint,
+        processStartIdentityReader,
+      );
+    }
+    const socketDirectoryPath = await ensureSocketDirectory(paths, {
+      statReader: directoryStatReader,
+    });
+    activeSocketPath = join(socketDirectoryPath, basename(paths.socketPath));
+    await assertSocketPathAvailable(activeSocketPath);
+    try {
+      transport = createFlowTransportServer({
+        socketPath: activeSocketPath,
+        runtime: ownedRuntime,
+        maxFrameBytes,
+        onError: (error) => report(error, "transport"),
+      });
+      await transport.start();
+      socketIdentity = await socketIdentityAt(activeSocketPath);
+      endpoint = makeEndpoint({ paths, ownerToken, processStartIdentity });
+      await writeEndpoint(paths.endpointPath, endpoint);
+      await flushOperatorErrors();
+      started = true;
+    } catch (error) {
+      startupError = summarizeOwnerError(error);
+      report(error, "transport");
+      if (transport !== null) await transport.close().catch(() => {});
+      transport = null;
+      await removeSocketIfPresent(activeSocketPath, socketIdentity).catch(() => {});
+      socketIdentity = null;
+      activeSocketPath = paths.socketPath;
+      if (runtime === null && ownedRuntime !== null) {
+        closeFlowRuntime(ownedRuntime);
+        ownedRuntime = null;
+      }
+      await flushOperatorErrors();
       throw error;
     }
   }
@@ -209,20 +320,40 @@ export function createFlowOwner({
   async function stopOwner() {
     if (!started && transport === null) {
       stopped = true;
+      await flushOperatorErrors();
       return ownerStatusFromEndpoint(endpoint, {
         paths,
         includeOwnerToken: true,
         started,
         startupError,
+        operatorErrors: currentOperatorErrors(),
         processStartIdentityReader,
       });
     }
     started = false;
     stopped = true;
+    if (!holdsMutationAuthority(ownedRuntime)) {
+      report(ownerError("mutation_authority_unavailable"));
+      return owner.status();
+    }
+    const ownedSocketIdentity = socketIdentity ??
+      await socketIdentityAt(activeSocketPath);
     if (transport !== null) {
       await transport.close().catch((error) => report(error));
       transport = null;
     }
+    const endpointRemoved = await removeEndpointIfOwned(
+      paths.endpointPath,
+      ownerToken,
+      endpoint,
+    );
+    if (endpointRemoved) {
+      await removeSocketIfPresent(activeSocketPath, ownedSocketIdentity)
+        .catch((error) => report(error));
+    }
+    socketIdentity = null;
+    activeSocketPath = paths.socketPath;
+    endpoint = null;
     if (ownedRuntime !== null && runtime === null) {
       try {
         const closedByComposition = closeFlowRuntime(ownedRuntime);
@@ -234,17 +365,75 @@ export function createFlowOwner({
       }
       ownedRuntime = null;
     }
-    await removeEndpointIfOwned(paths.endpointPath, ownerToken);
-    await removeSocketIfPresent(paths.socketPath).catch((error) => report(error));
-    endpoint = null;
+    await flushOperatorErrors();
     return owner.status();
   }
 
-  function report(error) {
+  function report(error, source = "lifecycle") {
+    const category = source === "transport" || source === "lifecycle"
+      ? source
+      : "runner";
+    const summary = {
+      source,
+      ...summarizeFlowRuntimeError(error, category),
+    };
+    operatorErrorCount += 1;
+    if (operatorErrors.length >= MAX_OWNER_ERRORS) operatorErrorSuppressed += 1;
+    operatorErrors = [...operatorErrors, summary].slice(-MAX_OWNER_ERRORS);
+    operatorErrorWrite = operatorErrorWrite
+      .catch(() => {})
+      .then(() => persistOperatorErrors())
+      .catch(() => {});
     try {
-      onError(error);
+      onError(safeErrorForCallback(summary));
     } catch {
       // Lifecycle cleanup must remain best effort and bounded.
+    }
+  }
+
+  function currentOperatorErrors() {
+    return {
+      count: operatorErrorCount,
+      suppressed: operatorErrorSuppressed,
+      last: operatorErrors.at(-1) ?? null,
+    };
+  }
+
+  async function loadOperatorErrors() {
+    const loaded = await readOperatorErrors(paths.operatorErrorPath);
+    if (loaded === null) return;
+    operatorErrorCount = loaded.count;
+    operatorErrorSuppressed = loaded.suppressed;
+    operatorErrors = loaded.entries;
+  }
+
+  async function flushOperatorErrors() {
+    await operatorErrorWrite.catch(() => {});
+  }
+
+  async function persistOperatorErrors() {
+    await ensurePrivateDirectory(paths.authorityDirectory, {
+      code: "authority_directory",
+      rejectMode: true,
+      statReader: directoryStatReader,
+    });
+    const temporary = `${paths.operatorErrorPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify({
+        schema: OWNER_ERROR_LOG_SCHEMA,
+        version: OWNER_ERROR_LOG_VERSION,
+        count: operatorErrorCount,
+        suppressed: operatorErrorSuppressed,
+        entries: operatorErrors,
+      })}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      await chmod(temporary, 0o600);
+      await rename(temporary, paths.operatorErrorPath);
+    } finally {
+      await unlink(temporary).catch(() => {});
     }
   }
 }
@@ -259,11 +448,14 @@ export async function startFlowOwner({
   authorityDirectory,
   endpointPath,
   socketPath,
+  socketFallbackRoot,
+  socketFallbackBase,
   ownerScript = fileURLToPath(import.meta.url),
   waitMs = DEFAULT_WAIT_MS,
   pollMs = DEFAULT_POLL_MS,
   maxFrameBytes = DEFAULT_MAX_FRAME_BYTES,
   ownerArgs = [],
+  runnerOptions = undefined,
   processStartIdentityReader = readProcessStartIdentity,
 } = {}) {
   if (typeof processStartIdentityReader !== "function") {
@@ -274,6 +466,12 @@ export async function startFlowOwner({
     authorityDirectory,
     endpointPath,
     socketPath,
+    socketFallbackRoot,
+    socketFallbackBase,
+  });
+  const resolvedRunnerOptions = normalizeProductionRunnerOptions({
+    env,
+    runnerOptions,
   });
   const existing = await statusFlowOwner({
     ...paths,
@@ -286,18 +484,29 @@ export async function startFlowOwner({
   if (existing.state === "unknown") {
     throw ownerError("owner_identity_unavailable");
   }
-  if (["stale", "invalid"].includes(existing.state)) {
-    await removeStaleOwnerFiles(paths, existing.endpoint);
+  if (existing.state === "invalid") {
+    throw ownerError("owner_invalid_endpoint");
   }
-  await removeSocketIfPresent(paths.socketPath);
   const childEnv = {
     ...env,
     FLOW_OWNER_PROCESS: "1",
     FLOW_AUTHORITY_DIRECTORY: paths.authorityDirectory,
     FLOW_OWNER_ENDPOINT_PATH: paths.endpointPath,
     FLOW_OWNER_SOCKET_PATH: paths.socketPath,
+    ...(paths.socketFallbackRoot === null ? {} : {
+      FLOW_OWNER_SOCKET_FALLBACK_ROOT: paths.socketFallbackRoot,
+    }),
     FLOW_OWNER_MAX_FRAME_BYTES: String(maxFrameBytes),
+    ...(resolvedRunnerOptions.delegateCapacity === undefined ? {} : {
+      FLOW_RUNNER_DELEGATE_CAPACITY: String(resolvedRunnerOptions.delegateCapacity),
+    }),
+    ...(resolvedRunnerOptions.operationCapacity === undefined ? {} : {
+      FLOW_RUNNER_OPERATION_CAPACITY: String(resolvedRunnerOptions.operationCapacity),
+    }),
   };
+  if (paths.socketFallbackRoot === null) {
+    delete childEnv.FLOW_OWNER_SOCKET_FALLBACK_ROOT;
+  }
   const child = spawn(process.execPath, [ownerScript, ...ownerArgs], {
     env: childEnv,
     detached: true,
@@ -307,9 +516,12 @@ export async function startFlowOwner({
   const ready = await waitForOwner(paths, {
     waitMs,
     pollMs,
+    tolerateStale: true,
+    child,
     processStartIdentityReader,
   });
   if (ready.state !== "running") {
+    if (childExited(child)) throw ownerError("owner_exited_during_start");
     throw ownerError(ready.state === "stale"
       ? "owner_exited_during_start"
       : "owner_start_timeout");
@@ -323,6 +535,8 @@ export async function statusFlowOwner({
   authorityDirectory,
   endpointPath,
   socketPath,
+  socketFallbackRoot,
+  socketFallbackBase,
   cleanupStale = false,
   processStartIdentityReader = readProcessStartIdentity,
 } = {}) {
@@ -334,27 +548,37 @@ export async function statusFlowOwner({
     authorityDirectory,
     endpointPath,
     socketPath,
+    socketFallbackRoot,
+    socketFallbackBase,
   });
   const endpoint = await readEndpoint(paths.endpointPath);
   if (endpoint === null) {
-    return statusProjection("stopped", { paths });
+    return statusWithOperatorErrors("stopped", { paths });
   }
   const issue = validateEndpoint(endpoint, paths);
   if (issue !== null) {
-    if (cleanupStale) await removeStaleOwnerFiles(paths, endpoint);
-    return statusProjection("invalid", { paths, endpoint, reason: issue });
+    return statusWithOperatorErrors("invalid", {
+      paths,
+      endpoint,
+      reason: issue,
+    });
   }
   const processState = inspectOwnerProcess(endpoint, processStartIdentityReader);
   if (processState !== "alive") {
-    if (cleanupStale) await removeStaleOwnerFiles(paths, endpoint);
-    return statusProjection(processState === "identity_unavailable" ? "unknown" : "stale", {
+    if (cleanupStale && ownerProcessAbsenceProven(processState)) {
+      await removeStaleOwnerFiles(paths, endpoint, processStartIdentityReader);
+    }
+    return statusWithOperatorErrors(
+      processState === "identity_unavailable" ? "unknown" : "stale",
+      {
       paths,
       endpoint,
       reason: processState,
-    });
+      },
+    );
   }
   const socketState = await pathExists(paths.socketPath);
-  return statusProjection(socketState ? "running" : "starting", {
+  return statusWithOperatorErrors(socketState ? "running" : "starting", {
     paths,
     endpoint,
   });
@@ -370,6 +594,8 @@ export async function stopFlowOwner({
   authorityDirectory,
   endpointPath,
   socketPath,
+  socketFallbackRoot,
+  socketFallbackBase,
   ownerToken = undefined,
   pid = undefined,
   processStartIdentity = undefined,
@@ -386,6 +612,8 @@ export async function stopFlowOwner({
     authorityDirectory,
     endpointPath,
     socketPath,
+    socketFallbackRoot,
+    socketFallbackBase,
   });
   const endpoint = await readEndpoint(paths.endpointPath);
   if (endpoint === null) return statusProjection("stopped", { paths });
@@ -412,7 +640,9 @@ export async function stopFlowOwner({
     });
   }
   if (state !== "alive") {
-    await removeStaleOwnerFiles(paths, endpoint);
+    if (ownerProcessAbsenceProven(state)) {
+      await removeStaleOwnerFiles(paths, endpoint, processStartIdentityReader);
+    }
     return statusProjection("stopped", {
       paths,
       endpoint,
@@ -426,7 +656,7 @@ export async function stopFlowOwner({
     processStartIdentityReader,
   });
   if (stopped) {
-    await removeStaleOwnerFiles(paths, endpoint);
+    await removeStaleOwnerFiles(paths, endpoint, processStartIdentityReader);
     return statusProjection("stopped", { paths, endpoint });
   }
   if (force && inspectOwnerProcess(endpoint, processStartIdentityReader) === "alive") {
@@ -437,7 +667,7 @@ export async function stopFlowOwner({
       processStartIdentityReader,
     });
     if (inspectOwnerProcess(endpoint, processStartIdentityReader) !== "alive") {
-      await removeStaleOwnerFiles(paths, endpoint);
+      await removeStaleOwnerFiles(paths, endpoint, processStartIdentityReader);
       return statusProjection("stopped", { paths, endpoint, forced: true });
     }
   }
@@ -454,9 +684,12 @@ export async function runFlowOwnerProcess({
   runtime = null,
   runtimeFactory = null,
   runtimeOptions = {},
+  runnerOptions = undefined,
   authorityDirectory,
   endpointPath,
   socketPath,
+  socketFallbackRoot,
+  socketFallbackBase,
   maxFrameBytes = Number.parseInt(
     env.FLOW_OWNER_MAX_FRAME_BYTES ?? String(DEFAULT_MAX_FRAME_BYTES),
     10,
@@ -470,9 +703,12 @@ export async function runFlowOwnerProcess({
     runtime,
     runtimeFactory: factory,
     runtimeOptions,
+    runnerOptions,
     authorityDirectory,
     endpointPath,
     socketPath,
+    socketFallbackRoot,
+    socketFallbackBase,
     maxFrameBytes,
     onError,
   });
@@ -585,8 +821,10 @@ function makeEndpoint({ paths, ownerToken, processStartIdentity }) {
 }
 
 async function writeEndpoint(endpointPath, endpoint) {
-  await mkdir(dirname(endpointPath), { recursive: true, mode: 0o700 });
-  await chmod(dirname(endpointPath), 0o700);
+  await ensurePrivateDirectory(dirname(endpointPath), {
+    code: "endpoint_directory",
+    rejectMode: false,
+  });
   const temporary = `${endpointPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, `${JSON.stringify(endpoint)}\n`, {
@@ -595,7 +833,7 @@ async function writeEndpoint(endpointPath, endpoint) {
       flag: "wx",
     });
     await chmod(temporary, 0o600);
-    await rename(temporary, endpointPath);
+    await link(temporary, endpointPath);
   } finally {
     await unlink(temporary).catch(() => {});
   }
@@ -683,7 +921,13 @@ function signalOwner(
 
 async function waitForOwner(
   paths,
-  { waitMs, pollMs, processStartIdentityReader = readProcessStartIdentity },
+  {
+    waitMs,
+    pollMs,
+    tolerateStale = false,
+    child = null,
+    processStartIdentityReader = readProcessStartIdentity,
+  },
 ) {
   const deadline = Date.now() + waitMs;
   while (Date.now() <= deadline) {
@@ -693,7 +937,11 @@ async function waitForOwner(
       processStartIdentityReader,
     });
     if (status.state === "running") return status;
-    if (["stale", "invalid", "unknown"].includes(status.state)) return status;
+    if (["invalid", "unknown"].includes(status.state) ||
+        status.state === "stale" && !tolerateStale) return status;
+    if (tolerateStale && childExited(child)) {
+      return status;
+    }
     await delay(pollMs);
   }
   return statusFlowOwner({
@@ -701,6 +949,12 @@ async function waitForOwner(
     cleanupStale: false,
     processStartIdentityReader,
   });
+}
+
+function childExited(child) {
+  return child !== null &&
+    (child.exitCode !== null && child.exitCode !== undefined ||
+      child.signalCode !== null && child.signalCode !== undefined);
 }
 
 async function waitForOwnerStop(
@@ -718,21 +972,155 @@ async function waitForOwnerStop(
   return inspectOwnerProcess(endpoint, processStartIdentityReader) !== "alive";
 }
 
-async function removeStaleOwnerFiles(paths, endpoint = null) {
-  if (endpoint?.socket_path !== undefined && endpoint.socket_path !== paths.socketPath) return;
+async function removeStaleOwnerFiles(
+  paths,
+  endpoint = null,
+  processStartIdentityReader = readProcessStartIdentity,
+) {
+  const current = await readEndpoint(paths.endpointPath);
+  if (endpoint === null || !sameEndpointRecord(endpoint, current) ||
+      validateEndpoint(current, paths) !== null ||
+      !ownerProcessAbsenceProven(
+        inspectOwnerProcess(current, processStartIdentityReader),
+      )) {
+    return false;
+  }
+  const socketIdentity = await socketIdentityAt(paths.socketPath);
+  const latest = await readEndpoint(paths.endpointPath);
+  if (!sameEndpointRecord(endpoint, latest)) return false;
   await unlink(paths.endpointPath).catch((error) => {
     if (error?.code !== "ENOENT") throw error;
   });
-  await removeSocketIfPresent(paths.socketPath);
+  await removeSocketIfPresent(paths.socketPath, socketIdentity);
+  return true;
 }
 
-async function removeEndpointIfOwned(endpointPath, ownerToken) {
+function ownerProcessAbsenceProven(state) {
+  // A live PID with a different start identity is a reused PID, not the
+  // owner described by this endpoint.  It may be cleaned up as stale, but it
+  // must never be signalled: signalOwner only accepts the exact "alive"
+  // state above.
+  return state === "absent" || state === "reused";
+}
+
+function holdsMutationAuthority(runtime) {
+  if (runtime?.mutationAuthority === true) return true;
+  try {
+    return flowRuntimeMutationAuthority(runtime) === true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSocketDirectory(paths, { statReader = lstat } = {}) {
+  if (paths.socketFallbackRoot !== null) {
+    if (paths.socketFallbackBase !== null) {
+      await ensurePrivateDirectory(paths.socketFallbackBase, {
+        code: "socket_runtime_directory",
+        rejectMode: true,
+        statReader,
+      });
+    }
+    await ensurePrivateDirectory(paths.socketFallbackRoot, {
+      code: "socket_directory",
+      rejectMode: true,
+      statReader,
+    });
+    const parent = dirname(paths.socketPath);
+    if (dirname(parent) !== paths.socketFallbackRoot) {
+      throw ownerError("socket_directory_mismatch");
+    }
+    return ensurePrivateDirectory(parent, {
+      code: "socket_directory",
+      rejectMode: true,
+      statReader,
+    });
+  }
+  return ensurePrivateDirectory(dirname(paths.socketPath), {
+    code: "socket_directory",
+    rejectMode: false,
+    statReader,
+  });
+}
+
+async function ensurePrivateDirectory(
+  path,
+  { code, rejectMode, statReader = lstat },
+) {
+  assertPrivatePath(path, `${code}_path`);
+  const resolved = await ensureDirectoryTree(path, code, statReader);
+  const info = resolved.info;
+  if (info.isSymbolicLink()) throw ownerError(`${code}_symlink`);
+  if (!info.isDirectory()) throw ownerError(`${code}_not_directory`);
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid !== null && info.uid !== uid) throw ownerError(`${code}_owner`);
+  if ((info.mode & 0o777) !== 0o700) {
+    if (rejectMode) throw ownerError(`${code}_mode`);
+    await chmod(resolved.path, 0o700);
+    const tightened = await statReader(resolved.path);
+    if (tightened.isSymbolicLink() ||
+        !tightened.isDirectory() ||
+        uid !== null && tightened.uid !== uid ||
+        (tightened.mode & 0o777) !== 0o700) {
+      throw ownerError(`${code}_mode`);
+    }
+  }
+  return resolved.path;
+}
+
+async function ensureDirectoryTree(path, code, statReader) {
+  return ensureTrustedDirectoryTree(path, {
+    code,
+    statReader,
+    errorFactory: ownerError,
+  });
+}
+
+async function assertSocketPathAvailable(socketPath) {
+  try {
+    const info = await lstat(socketPath);
+    if (info.isSymbolicLink()) throw ownerError("socket_path_symlink");
+    throw ownerError("socket_path_occupied");
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+async function removeEndpointIfOwned(
+  endpointPath,
+  ownerToken,
+  expectedEndpoint = null,
+) {
   const current = await readEndpoint(endpointPath);
-  if (current?.owner_token !== ownerToken) return false;
+  if (current?.owner_token !== ownerToken ||
+      expectedEndpoint !== null && !sameEndpointRecord(current, expectedEndpoint)) {
+    return false;
+  }
   await unlink(endpointPath).catch((error) => {
     if (error?.code !== "ENOENT") throw error;
   });
   return true;
+}
+
+async function socketIdentityAt(socketPath) {
+  try {
+    const info = await lstat(socketPath);
+    return info.isSocket() ? { dev: info.dev, ino: info.ino } : null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function sameEndpointRecord(left, right) {
+  if (left === null || right === null ||
+      typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] &&
+      left[key] === right[key]);
 }
 
 async function pathExists(path) {
@@ -744,6 +1132,20 @@ async function pathExists(path) {
   }
 }
 
+async function statusWithOperatorErrors(state, options) {
+  const projection = statusProjection(state, options);
+  const operatorErrors = await readOperatorErrors(options.paths.operatorErrorPath);
+  if (operatorErrors === null) return projection;
+  return {
+    ...projection,
+    operator_errors: {
+      count: operatorErrors.count,
+      suppressed: operatorErrors.suppressed,
+      last: operatorErrors.entries.at(-1) ?? null,
+    },
+  };
+}
+
 function statusProjection(state, {
   paths,
   endpoint = null,
@@ -753,6 +1155,7 @@ function statusProjection(state, {
   started = undefined,
   startupError = null,
   includeOwnerToken = false,
+  operatorErrors = null,
 } = {}) {
   const projection = {
     schema: FLOW_OWNER_STATUS,
@@ -775,6 +1178,9 @@ function statusProjection(state, {
   if (started === true && startupError !== null) {
     projection.startup_error = startupError;
   }
+  if (operatorErrors !== null) {
+    projection.operator_errors = operatorErrors;
+  }
   return projection;
 }
 
@@ -783,6 +1189,7 @@ function ownerStatusFromEndpoint(endpoint, {
   includeOwnerToken = false,
   started = undefined,
   startupError = null,
+  operatorErrors = null,
   processStartIdentityReader = readProcessStartIdentity,
 } = {}) {
   if (!endpoint) {
@@ -791,6 +1198,7 @@ function ownerStatusFromEndpoint(endpoint, {
       started,
       startupError,
       includeOwnerToken,
+      operatorErrors,
     });
   }
   const processState = inspectOwnerProcess(endpoint, processStartIdentityReader);
@@ -802,13 +1210,88 @@ function ownerStatusFromEndpoint(endpoint, {
     started,
     startupError,
     includeOwnerToken,
+    operatorErrors,
   });
 }
 
 function summarizeOwnerError(error) {
   return {
-    code: typeof error?.code === "string" ? error.code : "owner_start_failed",
+    code: summarizeFlowRuntimeError(error, "lifecycle").code,
   };
+}
+
+async function readOperatorErrors(path) {
+  if (typeof path !== "string") return null;
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    return invalidOperatorErrors();
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (info.isSymbolicLink() || !info.isFile() ||
+      uid !== null && info.uid !== uid ||
+      (info.mode & 0o777) !== 0o600 ||
+      info.size > MAX_OWNER_ERROR_LOG_BYTES) {
+    return invalidOperatorErrors();
+  }
+  let value;
+  try {
+    value = JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return invalidOperatorErrors();
+  }
+  if (value?.schema !== OWNER_ERROR_LOG_SCHEMA ||
+      value.version !== OWNER_ERROR_LOG_VERSION ||
+      !Number.isSafeInteger(value.count) || value.count < 0 ||
+      !Number.isSafeInteger(value.suppressed) || value.suppressed < 0 ||
+      !Array.isArray(value.entries) || value.entries.length > MAX_OWNER_ERRORS) {
+    return invalidOperatorErrors();
+  }
+  const entries = value.entries
+    .map(sanitizeOperatorError)
+    .filter((entry) => entry !== null);
+  if (entries.length !== value.entries.length) return invalidOperatorErrors();
+  return {
+    count: value.count,
+    suppressed: value.suppressed,
+    entries,
+  };
+}
+
+function sanitizeOperatorError(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      !OWNER_ERROR_SOURCES.has(value.source)) return null;
+  return {
+    source: value.source,
+    ...summarizeFlowRuntimeError(
+      { code: value.code },
+      value.source === "transport" ? "transport" : "runner",
+    ),
+  };
+}
+
+function invalidOperatorErrors() {
+  return {
+    count: 1,
+    suppressed: 0,
+    entries: [{
+      source: "lifecycle",
+      ...summarizeFlowRuntimeError(
+        { code: "operator_error_sink_invalid" },
+        "runner",
+      ),
+    }],
+  };
+}
+
+function safeErrorForCallback(summary) {
+  const error = new Error(summary.message);
+  error.name = summary.name;
+  error.code = summary.code;
+  error.source = summary.source;
+  return error;
 }
 
 function ownerError(code) {
@@ -823,37 +1306,96 @@ function assertPath(path, name) {
   }
 }
 
-function defaultSocketPath(authorityDirectory) {
-  const candidate = join(authorityDirectory, "owner.sock");
-  // AF_UNIX paths are commonly capped at 108 bytes.  Keep long disposable
-  // roots usable while retaining an unambiguous endpoint record.
-  if (Buffer.byteLength(candidate) < 100) return candidate;
-  return fallbackSocketPath(authorityDirectory, candidate);
+function assertPrivatePath(path, name) {
+  assertPath(path, name);
+  if (path.split(/[\\/]/u).some((segment) => segment === "." || segment === "..")) {
+    throw ownerError(`${name}_traversal`);
+  }
 }
 
-function boundedSocketPath(authorityDirectory, socketPath) {
-  if (Buffer.byteLength(socketPath) < 100) return socketPath;
-  return fallbackSocketPath(authorityDirectory, socketPath);
-}
-
-function fallbackSocketPath(authorityDirectory, requestedSocketPath) {
+function fallbackSocketPath(
+  authorityDirectory,
+  requestedSocketPath,
+  env,
+  inheritedRoot = undefined,
+) {
   const hash = createHash("sha256")
     .update(authorityDirectory)
     .update("\0")
     .update(requestedSocketPath)
     .digest("hex")
     .slice(0, 24);
-  const directory = join(socketFallbackRoot(), `flow-${hash}`);
+  const selected = inheritedRoot === undefined
+    ? socketFallbackRoot(env, hash)
+    : {
+        root: inheritedRoot,
+        base: validXdgRuntimeDirectory(env) &&
+            inheritedRoot === join(env.XDG_RUNTIME_DIR, "flow-sockets")
+          ? env.XDG_RUNTIME_DIR
+          : null,
+      };
+  const root = selected.root;
+  assertPrivatePath(root, "socketFallbackRoot");
+  const directory = join(root, `flow-${hash}`);
   const candidate = join(directory, "owner.sock");
-  if (Buffer.byteLength(candidate) < 100) return candidate;
-  // A custom TMPDIR can itself exceed the Unix socket limit. /tmp is present
-  // on the supported macOS and Ubuntu hosts and keeps the fallback bounded.
-  return join("/tmp", `flow-${hash}`, "owner.sock");
+  if (Buffer.byteLength(candidate) < 100) {
+    return { path: candidate, root, base: selected.base };
+  }
+  const boundedRoot = join(
+    "/tmp",
+    `flow-runtime-${typeof process.getuid === "function" ? process.getuid() : "user"}`,
+  );
+  const boundedPath = join(boundedRoot, `flow-${hash}`, "owner.sock");
+  if (Buffer.byteLength(boundedPath) >= 100) {
+    throw new TypeError("Flow owner socket path exceeds the Unix path limit");
+  }
+  return { path: boundedPath, root: boundedRoot, base: null };
 }
 
-function socketFallbackRoot() {
-  const candidate = join(tmpdir(), "flow-sockets");
-  return Buffer.byteLength(candidate) < 70 ? candidate : "/tmp";
+function socketFallbackRoot(env, hash) {
+  const runtimeDirectory = env.XDG_RUNTIME_DIR;
+  const preferred = validXdgRuntimeDirectory(env)
+    ? join(runtimeDirectory, "flow-sockets")
+    : join(
+      tmpdir(),
+      `flow-runtime-${typeof process.getuid === "function" ? process.getuid() : "user"}`,
+    );
+  const candidate = join(preferred, `flow-${hash}`, "owner.sock");
+  if (Buffer.byteLength(candidate) < 100) {
+    return {
+      root: preferred,
+      base: validXdgRuntimeDirectory(env) ? runtimeDirectory : null,
+    };
+  }
+  return {
+    root: join(
+      "/tmp",
+      `flow-runtime-${typeof process.getuid === "function" ? process.getuid() : "user"}`,
+    ),
+    base: null,
+  };
+}
+
+function validXdgRuntimeDirectory(env) {
+  return typeof env?.XDG_RUNTIME_DIR === "string" &&
+    isAbsolute(env.XDG_RUNTIME_DIR) &&
+    !env.XDG_RUNTIME_DIR.split(/[\\/]/u)
+      .some((segment) => segment === "." || segment === "..");
+}
+
+function isBoundFallbackSocketPath(socketPath, root) {
+  return typeof socketPath === "string" &&
+    typeof root === "string" &&
+    basename(socketPath) === "owner.sock" &&
+    /^flow-[0-9a-f]{24}$/u.test(basename(dirname(socketPath))) &&
+    dirname(dirname(socketPath)) === root;
+}
+
+function inheritedFallbackBase(env, root) {
+  return validXdgRuntimeDirectory(env) &&
+    root === join(env.XDG_RUNTIME_DIR, "flow-sockets")
+    ? env.XDG_RUNTIME_DIR
+    : null;
 }
 
 const isMain = process.argv[1] !== undefined &&

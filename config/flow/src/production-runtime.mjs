@@ -23,7 +23,7 @@ let nextOptionReferenceId = 1;
 export function productionAuthorityDirectory(env = process.env) {
   const home = env.HOME ?? homedir();
   const stateHome = env.XDG_STATE_HOME ?? join(home, ".local", "state");
-  return join(stateHome, "flow");
+  return env.FLOW_AUTHORITY_DIRECTORY ?? join(stateHome, "flow");
 }
 
 /**
@@ -114,6 +114,14 @@ export function closeOwnedFlowRuntime(runtime) {
 
 export function flowRuntimeAuthority(runtime) {
   return runtimeAuthorities.get(runtime)?.authority ?? null;
+}
+
+/**
+ * Return only whether this production runtime currently owns the durable
+ * mutation fence. The authority object and its database remain private.
+ */
+export function flowRuntimeMutationAuthority(runtime) {
+  return flowRuntimeAuthority(runtime)?.mutationAuthority === true;
 }
 
 export function statusFlowRuntime(runtime) {

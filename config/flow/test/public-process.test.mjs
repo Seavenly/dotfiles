@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -19,6 +31,7 @@ import {
 import {
   FLOW_RUNTIME_INTERFACE,
   FLOW_TRANSPORT_ERROR,
+  createFlowTransportServer,
   requestFrame,
   watchFlowTransport,
 } from "../src/transport.mjs";
@@ -204,9 +217,408 @@ test("competing clients can query and watch without acquiring owner authority", 
   assert.equal(after.process_identity, started.process_identity);
 });
 
+test("owner refuses to touch a socket without durable mutation authority", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const runtime = {
+    prepare: async () => ({}),
+    launch: async () => ({}),
+    command: async () => ({}),
+    query: async () => ({}),
+    watch: async () => oneObservationWatcher({}),
+  };
+  await assert.rejects(
+    createFlowOwner({ runtime, ...fixture.paths, env: fixture.env }).start(),
+    { code: "mutation_authority_unavailable" },
+  );
+  assert.equal(await exists(fixture.paths.socketPath), false);
+  assert.equal(await exists(fixture.paths.endpointPath), false);
+});
+
+test("owner preserves a live socket when its endpoint is missing", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  await mkdir(dirname(fixture.paths.socketPath), { recursive: true, mode: 0o700 });
+  const server = net.createServer();
+  await listenRawServer(server, fixture.paths.socketPath);
+  t.after(() => closeRawServer(server));
+
+  const owner = createFlowOwner({
+    runtime: authorizedRuntime({
+      prepare: async () => ({}),
+      launch: async () => ({}),
+      command: async () => ({}),
+      query: async () => ({}),
+      watch: async () => oneObservationWatcher({}),
+    }),
+    ...fixture.paths,
+    env: fixture.env,
+  });
+  await assert.rejects(owner.start(), { code: "socket_path_occupied" });
+  assert.equal((await lstat(fixture.paths.socketPath)).isSocket(), true);
+});
+
+test("detached startup reports a child socket failure without waiting for timeout", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+  await mkdir(dirname(fixture.paths.socketPath), { recursive: true, mode: 0o700 });
+  const server = net.createServer();
+  await listenRawServer(server, fixture.paths.socketPath);
+  t.after(() => closeRawServer(server));
+
+  await assert.rejects(
+    startFlowOwner({
+      env: fixture.env,
+      ...fixture.paths,
+      waitMs: 5_000,
+      pollMs: 10,
+    }),
+    { code: "owner_exited_during_start" },
+  );
+  assert.equal((await lstat(fixture.paths.socketPath)).isSocket(), true);
+});
+
+test("endpoint publication is exclusive and a competing owner cannot replace it", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const runtime = () => authorizedRuntime({
+    prepare: async () => ({}),
+    launch: async () => ({}),
+    command: async () => ({}),
+    query: async () => ({}),
+    watch: async () => oneObservationWatcher({}),
+  });
+  const owner = createFlowOwner({ runtime: runtime(), ...fixture.paths, env: fixture.env });
+  await owner.start();
+  t.after(() => owner.stop());
+  const before = await readFile(fixture.paths.endpointPath, "utf8");
+
+  const competing = createFlowOwner({
+    runtime: runtime(),
+    ...fixture.paths,
+    env: fixture.env,
+  });
+  await assert.rejects(competing.start(), { code: "owner_already_running" });
+  assert.equal(await readFile(fixture.paths.endpointPath, "utf8"), before);
+  assert.equal((await statusFlowOwner({ ...fixture.paths })).state, "running");
+});
+
+test("stale cleanup preserves an endpoint replaced during the identity check", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  await mkdir(fixture.paths.authorityDirectory, { recursive: true, mode: 0o700 });
+  const endpoint = {
+    schema: "flow.owner-endpoint/v1",
+    version: 1,
+    owner_token: "owner:stale-a",
+    pid: 99999999,
+    process_identity: "owner:stale-a",
+    process_start_identity: "dead-a",
+    authority_directory: fixture.paths.authorityDirectory,
+    endpoint_path: fixture.paths.endpointPath,
+    socket_path: fixture.paths.socketPath,
+    started_at: "2026-01-01T00:00:00.000Z",
+  };
+  const replacement = {
+    ...endpoint,
+    owner_token: "owner:replacement-b",
+    process_identity: "owner:replacement-b",
+    process_start_identity: "dead-b",
+  };
+  writeFileSync(fixture.paths.endpointPath, `${JSON.stringify(endpoint)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  let checked = false;
+  const status = await statusFlowOwner({
+    ...fixture.paths,
+    cleanupStale: true,
+    processStartIdentityReader: () => {
+      if (!checked) {
+        checked = true;
+        writeFileSync(
+          fixture.paths.endpointPath,
+          `${JSON.stringify(replacement)}\n`,
+          { encoding: "utf8", mode: 0o600 },
+        );
+      }
+      return null;
+    },
+  });
+  assert.equal(status.state, "stale");
+  assert.deepEqual(JSON.parse(await readFile(fixture.paths.endpointPath, "utf8")), replacement);
+});
+
+test("owner rejects a precreated symlink fallback directory", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const longRoot = join(fixture.env.HOME, "x".repeat(180));
+  const paths = flowOwnerPaths({
+    env: fixture.env,
+    authorityDirectory: longRoot,
+    endpointPath: join(longRoot, "owner.json"),
+    socketPath: join(longRoot, "owner.sock"),
+  });
+  const fallbackParent = dirname(paths.socketPath);
+  const attackerDirectory = join(fixture.env.HOME, "attacker");
+  await mkdir(attackerDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(dirname(fallbackParent), { recursive: true, mode: 0o700 });
+  await symlink(attackerDirectory, fallbackParent);
+  const runtime = authorizedRuntime({
+    prepare: async () => ({}),
+    launch: async () => ({}),
+    command: async () => ({}),
+    query: async () => ({}),
+    watch: async () => oneObservationWatcher({}),
+  });
+  await assert.rejects(
+    createFlowOwner({ runtime, ...paths, env: fixture.env }).start(),
+    { code: "socket_directory_symlink" },
+  );
+  assert.equal(await exists(join(attackerDirectory, "owner.sock")), false);
+});
+
+test("root-owned ancestor symlinks resolve for owner and transport", async (t) => {
+  // This disposable alias models macOS /var -> /private/var without changing
+  // a host-managed system path on Linux.
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const targetRoot = join(fixture.env.HOME, "private-var");
+  const systemAlias = join(fixture.env.HOME, "var");
+  await mkdir(targetRoot, { recursive: true, mode: 0o700 });
+  await symlink(targetRoot, systemAlias);
+  const directoryStatReader = async (path) => {
+    const info = await lstat(path);
+    if (path !== systemAlias) return info;
+    return new Proxy(info, {
+      get(target, property, receiver) {
+        if (property === "uid") return 0;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+  };
+  const authorityDirectory = join(fixture.env.HOME, "authority");
+  const paths = flowOwnerPaths({
+    env: fixture.env,
+    authorityDirectory,
+    endpointPath: join(authorityDirectory, "owner.json"),
+    socketPath: join(authorityDirectory, "owner.sock"),
+    socketFallbackRoot: join(systemAlias, "flow-runtime"),
+  });
+  const runtime = authorizedRuntime({
+    prepare: async () => ({}),
+    launch: async () => ({}),
+    command: async () => ({}),
+    query: async () => ({}),
+    watch: async () => oneObservationWatcher({}),
+  });
+  const owner = createFlowOwner({
+    runtime,
+    ...paths,
+    env: fixture.env,
+    directoryStatReader,
+  });
+  await owner.start();
+  t.after(() => owner.stop());
+  assert.equal((await lstat(join(targetRoot, "flow-runtime"))).isDirectory(), true);
+  assert.equal((await lstat(paths.socketPath)).isSocket(), true);
+
+  const transportSocketPath = join(systemAlias, "transport", "owner.sock");
+  const transport = createFlowTransportServer({
+    socketPath: transportSocketPath,
+    runtime,
+    directoryStatReader,
+  });
+  t.after(() => transport.close());
+  await transport.start();
+  assert.equal((await lstat(join(targetRoot, "transport", "owner.sock"))).isSocket(), true);
+});
+
+test("transport rejects a controlled socket leaf symlink", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  await mkdir(dirname(fixture.paths.socketPath), { recursive: true, mode: 0o700 });
+  const target = join(fixture.env.HOME, "socket-target");
+  await symlink(target, fixture.paths.socketPath);
+  const transport = createFlowTransportServer({
+    socketPath: fixture.paths.socketPath,
+    runtime: authorizedRuntime({
+      prepare: async () => ({}),
+      launch: async () => ({}),
+      command: async () => ({}),
+      query: async () => ({}),
+      watch: async () => oneObservationWatcher({}),
+    }),
+  });
+  await assert.rejects(transport.start(), { code: "socket_path_symlink" });
+  assert.equal((await lstat(fixture.paths.socketPath)).isSymbolicLink(), true);
+});
+
+test("fallback validates the XDG runtime root, ownership, mode, and traversal", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const runtimeDirectory = join(fixture.env.HOME, "xdg-runtime");
+  await mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
+  const authorityDirectory = join(fixture.env.HOME, `authority-${"a".repeat(150)}`);
+  const endpointPath = join(authorityDirectory, "owner.json");
+  const socketPath = join(authorityDirectory, "owner.sock");
+  const env = { ...fixture.env, XDG_RUNTIME_DIR: runtimeDirectory };
+  const paths = flowOwnerPaths({
+    env,
+    authorityDirectory,
+    endpointPath,
+    socketPath,
+  });
+  assert.equal(paths.socketFallbackBase, runtimeDirectory);
+  assert.equal(paths.socketFallbackRoot, join(runtimeDirectory, "flow-sockets"));
+  assert.ok(Buffer.byteLength(paths.socketPath) < 100);
+
+  const owner = createFlowOwner({
+    runtime: authorizedRuntime({
+      prepare: async () => ({}),
+      launch: async () => ({}),
+      command: async () => ({}),
+      query: async () => ({}),
+      watch: async () => oneObservationWatcher({}),
+    }),
+    ...paths,
+    env,
+  });
+  await owner.start();
+  t.after(() => owner.stop());
+  assert.equal((await stat(runtimeDirectory)).mode & 0o777, 0o700);
+  assert.equal((await stat(paths.socketFallbackRoot)).mode & 0o777, 0o700);
+  assert.equal((await stat(dirname(paths.socketPath))).mode & 0o777, 0o700);
+  assert.equal((await stat(paths.socketPath)).mode & 0o777, 0o600);
+
+  const modeRuntime = join(fixture.env.HOME, "xdg-mode");
+  await mkdir(modeRuntime, { recursive: true, mode: 0o700 });
+  await chmod(modeRuntime, 0o755);
+  const modeEnv = { ...fixture.env, XDG_RUNTIME_DIR: modeRuntime };
+  const modePaths = flowOwnerPaths({
+    env: modeEnv,
+    authorityDirectory: join(fixture.env.HOME, "mode-authority-" + "b".repeat(120)),
+    endpointPath: join(fixture.env.HOME, "mode-authority-owner.json"),
+    socketPath: join(fixture.env.HOME, `mode-${"c".repeat(180)}.sock`),
+  });
+  const modeOwner = createFlowOwner({
+    runtime: authorizedRuntime({
+      prepare: async () => ({}),
+      launch: async () => ({}),
+      command: async () => ({}),
+      query: async () => ({}),
+      watch: async () => oneObservationWatcher({}),
+    }),
+    ...modePaths,
+    env: modeEnv,
+  });
+  await assert.rejects(modeOwner.start(), { code: "socket_runtime_directory_mode" });
+
+  const ownerPaths = flowOwnerPaths({
+    env,
+    authorityDirectory: join(fixture.env.HOME, "owner-authority-" + "d".repeat(120)),
+    endpointPath: join(fixture.env.HOME, "owner-endpoint.json"),
+    socketPath: join(fixture.env.HOME, `owner-${"e".repeat(180)}.sock`),
+  });
+  await mkdir(ownerPaths.socketFallbackRoot, { recursive: true, mode: 0o700 });
+  const ownerStatReader = async (path) => {
+    const info = await lstat(path);
+    if (path !== ownerPaths.socketFallbackRoot) return info;
+    return new Proxy(info, {
+      get(target, property, receiver) {
+        return property === "uid"
+          ? (target.uid ?? 0) + 1
+          : Reflect.get(target, property, receiver);
+      },
+    });
+  };
+  const wrongOwner = createFlowOwner({
+    runtime: authorizedRuntime({
+      prepare: async () => ({}),
+      launch: async () => ({}),
+      command: async () => ({}),
+      query: async () => ({}),
+      watch: async () => oneObservationWatcher({}),
+    }),
+    ...ownerPaths,
+    env,
+    directoryStatReader: ownerStatReader,
+  });
+  await assert.rejects(wrongOwner.start(), { code: "socket_directory_owner" });
+
+  assert.throws(() => flowOwnerPaths({
+    env: {
+      ...fixture.env,
+      FLOW_OWNER_SOCKET_FALLBACK_ROOT: "/tmp/../attacker",
+    },
+    authorityDirectory: join(fixture.env.HOME, "traversal-authority"),
+    endpointPath: join(fixture.env.HOME, "traversal-endpoint.json"),
+    socketPath: join(fixture.env.HOME, "traversal.sock"),
+  }), { code: "socketFallbackRoot_traversal" });
+});
+
+test("fallback rejects a symlinked XDG runtime component before chmod", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const target = join(fixture.env.HOME, "real-runtime");
+  const linkPath = join(fixture.env.HOME, "runtime-link");
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  await symlink(target, linkPath);
+  const env = { ...fixture.env, XDG_RUNTIME_DIR: linkPath };
+  const paths = flowOwnerPaths({
+    env,
+    authorityDirectory: join(fixture.env.HOME, "symlink-authority-" + "f".repeat(120)),
+    endpointPath: join(fixture.env.HOME, "symlink-endpoint.json"),
+    socketPath: join(fixture.env.HOME, `symlink-${"g".repeat(180)}.sock`),
+  });
+  const owner = createFlowOwner({
+    runtime: authorizedRuntime({
+      prepare: async () => ({}),
+      launch: async () => ({}),
+      command: async () => ({}),
+      query: async () => ({}),
+      watch: async () => oneObservationWatcher({}),
+    }),
+    ...paths,
+    env,
+  });
+  await assert.rejects(owner.start(), { code: "socket_runtime_directory_symlink" });
+  assert.equal((await stat(target)).mode & 0o777, 0o700);
+});
+
+test("detached startup preserves the bounded fallback path across the child boundary", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const runtimeDirectory = join(fixture.env.HOME, "xdg-detached");
+  await mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
+  const authorityDirectory = join(fixture.env.HOME, `detached-${"h".repeat(150)}`);
+  const env = {
+    ...fixture.env,
+    XDG_RUNTIME_DIR: runtimeDirectory,
+    FLOW_OWNER_RUNTIME_MODULE: PUBLIC_OWNER_RUNTIME_MODULE,
+  };
+  const paths = flowOwnerPaths({
+    env,
+    authorityDirectory,
+    endpointPath: join(authorityDirectory, "owner.json"),
+    socketPath: join(authorityDirectory, "owner.sock"),
+  });
+  assert.ok(paths.socketFallbackRoot);
+  try {
+    const started = await startFlowOwner({
+      env,
+      ...paths,
+      waitMs: 5_000,
+      pollMs: 10,
+    });
+    assert.equal(started.state, "running");
+    assert.ok(Buffer.byteLength(started.socket_path) < 100);
+    assert.equal((await statusFlowOwner({ env, ...paths })).state, "running");
+  } finally {
+    await stopFlowOwner({
+      env,
+      ...paths,
+      force: true,
+      waitMs: 1_000,
+      pollMs: 10,
+    });
+  }
+});
+
 test("malformed, multiple, and oversized frames fail closed with bounded errors", async (t) => {
   const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
   const runtime = {
+    mutationAuthority: true,
     prepare: async () => ({}),
     launch: async () => ({}),
     command: async () => ({}),
@@ -368,6 +780,7 @@ test("public CLI sends all five FlowRuntime operations over one versioned transp
         request,
       });
     },
+    mutationAuthority: true,
   };
   const owner = createFlowOwner({ runtime, ...fixture.paths, env: fixture.env });
   await owner.start();
@@ -447,6 +860,7 @@ test("owner tightens pre-existing endpoint and socket parent permissions", async
   await mkdir(socketParent, { recursive: true, mode: 0o755 });
   const owner = createFlowOwner({
     runtime: {
+      mutationAuthority: true,
       prepare: async () => ({}),
       launch: async () => ({}),
       command: async () => ({}),
@@ -556,6 +970,125 @@ test("public lifecycle commands use disposable owner state", async (t) => {
   assert.equal(JSON.parse(stdout).state, "stopped");
 });
 
+test("detached owner forwards runner capacity and exposes it through flow status", async (t) => {
+  const fixture = await disposableOwnerFixture(t);
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+  fixture.env.FLOW_RUNNER_DELEGATE_CAPACITY = "3";
+  fixture.env.FLOW_RUNNER_OPERATION_CAPACITY = "2";
+
+  const started = await startDetachedFixture(fixture);
+  const client = createFlowClient({ socketPath: fixture.paths.socketPath });
+  const runner = await client.query({
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  });
+  assert.equal(runner.delegates.capacity, 3);
+  assert.equal(runner.operations.capacity, 2);
+
+  let stdout = "";
+  let stderr = "";
+  assert.equal(await runCli(["status", "--json"], {
+    env: fixture.env,
+    ownerOptions: fixture.paths,
+    stderr: { write: (chunk) => { stderr += chunk; } },
+    stdout: { write: (chunk) => { stdout += chunk; } },
+  }), 0);
+  assert.equal(stderr, "");
+  const status = JSON.parse(stdout);
+  assert.equal(status.state, "running");
+  assert.equal(status.runner.delegates.capacity, 3);
+  assert.equal(status.runner.operations.capacity, 2);
+
+  const stopped = await stopFlowOwner({
+    ...fixture.paths,
+    waitMs: 1_000,
+    pollMs: 10,
+    force: true,
+  });
+  assert.equal(stopped.state, "stopped");
+
+  const restarted = await startDetachedFixture(fixture, {
+    runnerOptions: { delegateCapacity: 4, operationCapacity: 5 },
+  });
+  const restartedRunner = await createFlowClient({
+    socketPath: fixture.paths.socketPath,
+  }).query({
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  });
+  assert.equal(restarted.state, "running");
+  assert.equal(restartedRunner.delegates.capacity, 4);
+  assert.equal(restartedRunner.operations.capacity, 5);
+});
+
+test("owner persists bounded private sanitized runner errors", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const secret = "token=owner-test-secret";
+  const callbacks = [];
+  const owner = createFlowOwner({
+    ...fixture.paths,
+    env: fixture.env,
+    runtimeFactory: async ({ runnerErrorSink }) => {
+      for (let index = 0; index < 24; index += 1) {
+        const error = new Error(`${secret}-${index}`);
+        error.code = "provider_secret_token";
+        runnerErrorSink(error);
+      }
+      return authorizedRuntime({
+        prepare: async () => ({}),
+        launch: async () => ({}),
+        command: async () => ({}),
+        query: async () => ({}),
+        watch: async () => oneObservationWatcher({}),
+      });
+    },
+    onError: (error) => callbacks.push(error),
+  });
+  await owner.start();
+  t.after(() => owner.stop());
+
+  await waitFor(async () => {
+    try {
+      return JSON.parse(await readFile(fixture.paths.operatorErrorPath, "utf8"))
+        .count === 24;
+    } catch {
+      return false;
+    }
+  });
+  const info = await stat(fixture.paths.operatorErrorPath);
+  const bytes = await readFile(fixture.paths.operatorErrorPath, "utf8");
+  const log = JSON.parse(bytes);
+  assert.equal(info.mode & 0o777, 0o600);
+  assert.ok(Buffer.byteLength(bytes) <= 32 * 1024);
+  assert.equal(log.count, 24);
+  assert.equal(log.suppressed, 8);
+  assert.equal(log.entries.length, 16);
+  assert.equal(log.entries.at(-1).code, "runner_error");
+  assert.equal(bytes.includes(secret), false);
+  assert.equal(bytes.includes("provider_secret_token"), false);
+  assert.equal(callbacks.length, 24);
+  assert.equal(callbacks.at(-1).message, "Autonomous runner error");
+  assert.equal(callbacks.at(-1).code, "runner_error");
+
+  const status = await statusFlowOwner({ ...fixture.paths });
+  assert.equal(status.operator_errors.count, 24);
+  assert.equal(status.operator_errors.suppressed, 8);
+  assert.equal(status.operator_errors.last.code, "runner_error");
+
+  let stdout = "";
+  let stderr = "";
+  assert.equal(await runCli(["status", "--json"], {
+    env: fixture.env,
+    ownerOptions: fixture.paths,
+    stderr: { write: (chunk) => { stderr += chunk; } },
+    stdout: { write: (chunk) => { stdout += chunk; } },
+  }), 0);
+  const cliStatus = JSON.parse(stdout);
+  assert.equal(stderr, "");
+  assert.equal(cliStatus.operator_errors.count, 24);
+  assert.equal(cliStatus.operator_errors.last.code, "runner_error");
+});
+
 test("process identity fallback supports /proc-less hosts and fences reused PIDs", async (t) => {
   assert.equal(readProcessStartIdentity(42, {
     readProc: () => { throw new Error("/proc unavailable"); },
@@ -565,6 +1098,7 @@ test("process identity fallback supports /proc-less hosts and fences reused PIDs
   const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
   const owner = createFlowOwner({
     runtime: {
+      mutationAuthority: true,
       prepare: async () => ({}),
       launch: async () => ({}),
       command: async () => ({}),
@@ -591,11 +1125,42 @@ test("process identity fallback supports /proc-less hosts and fences reused PIDs
   })).state, "unknown");
 });
 
+test("detached start replaces a reused-PID endpoint without signalling that PID", async (t) => {
+  const fixture = await disposableOwnerFixture(t);
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+  await mkdir(fixture.paths.authorityDirectory, { recursive: true, mode: 0o700 });
+  const staleEndpoint = {
+    schema: "flow.owner-endpoint/v1",
+    version: 1,
+    owner_token: "owner:reused-pid-stale",
+    pid: process.pid,
+    process_identity: "owner:reused-pid-stale",
+    process_start_identity: "definitely-not-this-process-start",
+    authority_directory: fixture.paths.authorityDirectory,
+    endpoint_path: fixture.paths.endpointPath,
+    socket_path: fixture.paths.socketPath,
+    started_at: "2026-01-01T00:00:00.000Z",
+  };
+  await writeFile(fixture.paths.endpointPath, `${JSON.stringify(staleEndpoint)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+
+  assert.equal((await statusFlowOwner({ ...fixture.paths })).state, "stale");
+  const started = await startDetachedFixture(fixture);
+  assert.equal(started.state, "running");
+  assert.notEqual(started.pid, process.pid);
+  const replacement = JSON.parse(await readFile(fixture.paths.endpointPath, "utf8"));
+  assert.notEqual(replacement.owner_token, staleEndpoint.owner_token);
+  assert.notEqual(replacement.pid, process.pid);
+});
+
 test("owner start fails closed when an existing PID identity cannot be read", async (t) => {
   const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
   const identity = "darwin-start-identity";
   const owner = createFlowOwner({
     runtime: {
+      mutationAuthority: true,
       prepare: async () => ({}),
       launch: async () => ({}),
       command: async () => ({}),
@@ -651,7 +1216,8 @@ test("a malformed endpoint is invalid rather than a stopped owner", async (t) =>
 
   const cleaned = await statusFlowOwner({ ...fixture.paths, cleanupStale: true });
   assert.equal(cleaned.state, "invalid");
-  assert.equal((await statusFlowOwner({ ...fixture.paths })).state, "stopped");
+  assert.equal(await exists(fixture.paths.endpointPath), true);
+  assert.equal((await statusFlowOwner({ ...fixture.paths })).state, "invalid");
 });
 
 test("watch carries watermarks and returns the server iterator on client disconnect", async (t) => {
@@ -686,6 +1252,7 @@ test("watch carries watermarks and returns the server iterator on client disconn
     },
   };
   const runtime = {
+    mutationAuthority: true,
     prepare: async () => ({}),
     launch: async () => ({}),
     command: async () => ({}),
@@ -747,6 +1314,19 @@ async function disposableOwnerFixture(t, { cleanupOwner = true } = {}) {
     await rm(scratch, { recursive: true, force: true });
   });
   return { env, paths };
+}
+
+function authorizedRuntime(runtime) {
+  return Object.freeze({ ...runtime, mutationAuthority: true });
+}
+
+async function exists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function startDetachedFixture(fixture, options = {}) {

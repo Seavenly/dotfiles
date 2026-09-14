@@ -11,6 +11,10 @@ import {
   EXECUTION_TIME_CATALOG_ACCOUNTING,
 } from "./execution-time-policy.mjs";
 import { isExactSequence } from "./validation.mjs";
+import {
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+} from "./feature-critique-contract.mjs";
 
 const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
 const REQUIRED_FEATURE_CONTRACT_FILENAME = "drovr-required-features.v1.json";
@@ -34,6 +38,8 @@ const FEATURE_CONTRACTS = Object.freeze([
   "flow.feature-repair-outcome/v1",
   "flow.feature-discriminating-evidence/v1",
   "flow.feature-criterion-evidence/v1",
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   "flow.result-binding/v1",
   "flow.result-binding-record/v1",
   "flow.result-provenance/v1",
@@ -45,6 +51,7 @@ const FEATURE_CONTRACTS = Object.freeze([
   "flow.operation/feature-capture/v1",
   "flow.operation/feature-verify/v1",
   "flow.operation/feature-seal/v1",
+  "flow.validator/delegate-output-conformance/v1",
   "work.feature-test-receipt/v1",
   "work.feature-capture-receipt/v1",
   "work.feature-verification-receipt/v1",
@@ -90,12 +97,34 @@ const PUBLIC_HOST_RUNNER = {
   delegate_capacity: "separate",
   operation_capacity: "separate",
   subrun_capacity: "does_not_consume_operation_capacity",
+  defaults: {
+    delegate_capacity: 1,
+    operation_capacity: 1,
+  },
+  configuration: {
+    explicit_options: ["delegateCapacity", "operationCapacity"],
+    environment: [
+      "FLOW_RUNNER_DELEGATE_CAPACITY",
+      "FLOW_RUNNER_OPERATION_CAPACITY",
+    ],
+    maximum: 64,
+    validation: "positive_safe_integer",
+  },
+  error_reporting: {
+    status: "bounded_sanitized_summary",
+    detached_sink: "private_owner_error_log",
+  },
   explicit_stops: [
     "checkpoint",
     "capability_expansion",
     "uncertain_effect",
     "terminal_disposition",
   ],
+};
+const AUTONOMOUS_RUNNER_QUERY = {
+  projection: "flow.runtime-runner-status/v1",
+  rejection: "flow.rejection/v1",
+  request: "flow.query/v1",
 };
 const PUBLIC_FEATURE_PREPARATION = {
   request: "flow.feature-preparation-request/v1",
@@ -468,6 +497,26 @@ const RESOURCE_SAFETY = {
   forbidden_selection: "latest",
   exact_human_authority: ["destructive_reset", "risk_acceptance"],
 };
+const WORKSPACE_AUTHORITY = {
+  authority: "WorkspaceAuthority",
+  interface: "work.workspace-authority/v1",
+  contract: "work.workspace/v1",
+  projection: "work.workspace-projection/v1",
+  commands: [
+    "work.workspace-register-command/v1",
+    "work.workspace-observation-command/v1",
+    "work.workspace-claim-command/v1",
+    "work.workspace-claim-release-command/v1",
+    "work.workspace-taint-command/v1",
+    "work.workspace-taint-disposition-command/v1",
+    "work.workspace-risk-acceptance-command/v1",
+  ],
+  git_observation: "work.git-observation/v1",
+  cleanup_preview: "work.workspace-cleanup-preview/v1",
+  cleanup_operation: "flow.operation/resource-cleanup/v1",
+  taint_evidence_validation: "work.taint-disposition-validation/v1",
+  human_authority_validation: "work.human-authority-validation/v1",
+};
 const EVIDENCE_SAFETY = {
   authority: "non_authoritative",
   validator: "flow.evidence-safety-request/v1",
@@ -535,6 +584,25 @@ const FEATURE_CAPTURE = {
   ],
   artifact_storage: "authority_owned_artifact_bytes",
   late_or_cancelled: "quarantined_evidence_never_usable",
+};
+const FEATURE_CRITIQUE = {
+  authority: "RunAuthority",
+  envelope: "flow.delegate-evidence/v1",
+  output: FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+  input_binding: AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  validator: "flow.validator/delegate-output-conformance/v1",
+  candidate_reference: "exact_authority_materialized_candidate_digest",
+  predecessor_reference:
+    "exact_authority_materialized_predecessor_evidence_digest",
+  task_inputs_digest: "sha256_canonical_json_utf8",
+  criterion_evidence_digest:
+    "sha256_canonical_json_utf8_criterion_evidence_verdict",
+  finding_id: "finding_sha256_canonical_json_utf8_classification_detail_summary",
+  criterion_order: "brief_acceptance_order",
+  finding_order: "strict_ascending_finding_id_unique",
+  blocking_policy: "blocking_or_failed_criterion_prevents_seal",
+  non_blocking_policy: "retain_exactly",
+  graph_shapes: ["legacy", "serialized"],
 };
 const PLAN_REVISION_RESULT_BINDINGS = {
   authority: "RunAuthority",
@@ -683,8 +751,14 @@ export async function loadContractCatalog({
   ) || !isDeepStrictEqual(
     catalog.flow_runtime?.feature_preparation,
     PUBLIC_FEATURE_PREPARATION,
-  ) || !PUBLIC_HOST_CONTRACTS.every((contract) =>
-    catalog.contracts.includes(contract))) {
+  ) || !isDeepStrictEqual(
+    catalog.flow_runtime?.operation_contracts?.query?.registered
+      ?.autonomous_runner_status,
+    AUTONOMOUS_RUNNER_QUERY,
+  ) || !Array.isArray(catalog.projections) ||
+      !catalog.projections.includes("autonomous_runner_status") ||
+      !PUBLIC_HOST_CONTRACTS.every((contract) =>
+        catalog.contracts.includes(contract))) {
     throw new Error("public host runtime contracts are incomplete");
   }
   const rejection = catalog.flow_runtime.rejection_contract;
@@ -785,6 +859,17 @@ export async function loadContractCatalog({
     FEATURE_CAPTURE.publication,
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("feature capture contracts are incomplete");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.feature_critique,
+    FEATURE_CRITIQUE,
+  ) || ![
+    FEATURE_CRITIQUE.envelope,
+    FEATURE_CRITIQUE.output,
+    FEATURE_CRITIQUE.input_binding,
+    FEATURE_CRITIQUE.validator,
+  ].every((contract) => catalog.contracts.includes(contract))) {
+    throw new Error("feature critique contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.flow_runtime?.plan_revision_result_bindings,
@@ -900,6 +985,13 @@ export async function loadContractCatalog({
   }
   if (!registeredQueriesArePublished(catalog)) {
     throw new Error("registered query contracts must be published");
+  }
+  if (!isDeepStrictEqual(
+    catalog.work_domain_interfaces?.workspace,
+    WORKSPACE_AUTHORITY,
+  ) || !WORKSPACE_AUTHORITY.commands.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("Work-domain workspace authority contracts are incomplete");
   }
   if (!isDeepStrictEqual(
     catalog.work_domain_interfaces?.resource_safety,

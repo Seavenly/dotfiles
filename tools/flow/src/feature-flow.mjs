@@ -31,6 +31,17 @@ import {
   DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
 } from "./delegate-input-envelope.mjs";
 import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
+import {
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+  FEATURE_CRITIQUE_PROMPT,
+} from "./feature-critique-contract.mjs";
+
+export {
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+  FEATURE_CRITIQUE_PROMPT,
+};
 
 // These contracts are intentionally registered operation contracts.  The
 // feature definition owns the order and inputs, while the host owns the
@@ -98,7 +109,10 @@ const FEATURE_APPLY_PROMPT =
  * selection Interface.  It emits a finite graph only; execution remains the
  * responsibility of registered operation adapters and RunAuthority.
  */
-export function createFeatureDefinition() {
+export function createFeatureDefinition({ independentCritique = false } = {}) {
+  if (typeof independentCritique !== "boolean") {
+    throw new TypeError("feature definition independentCritique must be boolean");
+  }
   return {
     schema: FEATURE_DEFINITION_SCHEMA,
     id: "feature/v1",
@@ -107,11 +121,16 @@ export function createFeatureDefinition() {
     negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
     trust_posture: { ...TRUST_POSTURE },
     required_authorities: SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
-    compile: compileFeatureSelection,
+    compile(selection) {
+      return compileFeatureSelection(selection, { independentCritique });
+    },
   };
 }
 
-function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
+function compileFeatureSelection(
+  { inputs, explicit_facts: explicitFacts },
+  { independentCritique = false } = {},
+) {
   const selection = validateFeatureInputs(inputs, explicitFacts);
   const workspaceClaim = {
     kind: "workspace",
@@ -120,7 +139,7 @@ function compileFeatureSelection({ inputs, explicit_facts: explicitFacts }) {
     mutation_epoch: selection.workspace.mutation_epoch,
     fingerprint: selection.workspace.fingerprint,
   };
-  const cards = featureCards(selection, workspaceClaim);
+  const cards = featureCards(selection, workspaceClaim, { independentCritique });
   const resultBindings = featureResultBindings(cards);
   validateFeatureResultBindings(cards, resultBindings);
   const repairs = validateFeatureRepairCards(
@@ -183,11 +202,11 @@ function featureOperationContracts(selection) {
   return contracts;
 }
 
-function featureCards(selection, workspaceClaim) {
+function featureCards(selection, workspaceClaim, options = {}) {
   if (selection.serialized_slices) {
-    return serializedFeatureCards(selection, workspaceClaim);
+    return serializedFeatureCards(selection, workspaceClaim, options);
   }
-  return legacyFeatureCards(selection, workspaceClaim);
+  return legacyFeatureCards(selection, workspaceClaim, options);
 }
 
 function featureCardBuilders(selection, workspaceClaim) {
@@ -294,7 +313,11 @@ function featureDelegateResourceReferences(id, inputs, workspaceClaim) {
   }];
 }
 
-function legacyFeatureCards(selection, workspaceClaim) {
+function legacyFeatureCards(
+  selection,
+  workspaceClaim,
+  { independentCritique = false } = {},
+) {
   const { delegate, operation } = featureCardBuilders(selection, workspaceClaim);
   const shared = {
     brief: selection.brief,
@@ -316,8 +339,7 @@ function legacyFeatureCards(selection, workspaceClaim) {
     ["candidate_capture_receipt"],
     { resourceClaims: [] },
   );
-  return [
-    delegate(
+  const apply = delegate(
       "feature-apply",
       [],
       {
@@ -327,57 +349,71 @@ function legacyFeatureCards(selection, workspaceClaim) {
       },
       selection.delegation.apply,
       FEATURE_APPLY_OUTPUTS,
-    ),
-    capture,
-    operation(
+    );
+  const critique = delegate(
+      "feature-critique",
+      independentCritique
+        ? ["feature-apply", "feature-capture"]
+        : ["feature-apply", "feature-capture", "feature-verify"],
+      {
+        ...shared,
+        phase: "critique",
+        prompt: FEATURE_CRITIQUE_PROMPT,
+        critique_output_schema: FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+        critique_input_binding_schema: AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+        ...(independentCritique ? { independent_critique: true } : {}),
+        delegate_evidence_card_ids: ["feature-apply"],
+        operation_evidence_card_ids: ["feature-capture"],
+      },
+      selection.delegation.critique,
+      ["critique_observation"],
+    );
+  const verify = operation(
       "feature-verify",
       FEATURE_OPERATION_CONTRACTS.verify,
-      ["feature-capture"],
+      independentCritique ? ["feature-critique"] : ["feature-capture"],
       {
         ...shared,
         phase: "verify",
         receipt_owner: "registered_operation",
         provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
         delegate_output_usage: "evidence_input_only",
-        delegate_evidence_card_ids: ["feature-apply"],
+        ...(independentCritique ? { independent_critique: true } : {}),
+        delegate_evidence_card_ids: [
+          independentCritique ? "feature-critique" : "feature-apply",
+        ],
         operation_evidence_card_ids: ["feature-capture"],
       },
       ["verification_receipt"],
-    ),
-    delegate(
-      "feature-critique",
-      ["feature-apply", "feature-capture", "feature-verify"],
-      {
-        ...shared,
-        phase: "critique",
-        prompt: "critique the changed behavior independently of implementation",
-        delegate_evidence_card_ids: ["feature-apply"],
-        operation_evidence_card_ids: ["feature-capture"],
-      },
-      selection.delegation.critique,
-      ["critique_observation"],
-    ),
-    operation(
+    );
+  const seal = operation(
       "feature-seal",
       FEATURE_OPERATION_CONTRACTS.seal,
-      ["feature-critique"],
+      independentCritique ? ["feature-verify"] : ["feature-critique"],
       {
         ...shared,
         phase: "seal",
         negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
         receipt_owner: "registered_operation",
         delegate_output_usage: "evidence_input_only",
+        ...(independentCritique ? { independent_critique: true } : {}),
         delegate_evidence_card_ids: ["feature-apply", "feature-critique"],
         operation_evidence_card_ids: ["feature-capture", "feature-verify"],
         capture_policy: featureCapturePolicy(selection),
         ...featureFinalizationInputs(selection),
       },
       ["review_candidate_receipt"],
-    ),
-  ];
+    );
+  return independentCritique
+    ? [apply, capture, critique, verify, seal]
+    : [apply, capture, verify, critique, seal];
 }
 
-function serializedFeatureCards(selection, workspaceClaim) {
+function serializedFeatureCards(
+  selection,
+  workspaceClaim,
+  { independentCritique = false } = {},
+) {
   const { delegate, operation } = featureCardBuilders(selection, workspaceClaim);
   const shared = {
     brief: selection.brief,
@@ -530,17 +566,41 @@ function serializedFeatureCards(selection, workspaceClaim) {
   const aggregateCaptureCardId = aggregateCapture.id;
   dependency = aggregateCaptureCardId;
 
+  const critique = delegate(
+    "feature-critique",
+    independentCritique
+      ? [...applyCardIds, aggregateCaptureCardId]
+      : [...applyCardIds, aggregateCaptureCardId, "feature-verify"],
+    {
+      ...shared,
+      phase: "critique",
+      prompt: FEATURE_CRITIQUE_PROMPT,
+      critique_output_schema: FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+      critique_input_binding_schema: AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+      ...(independentCritique ? { independent_critique: true } : {}),
+      delegate_evidence_card_ids: [...applyCardIds],
+      operation_evidence_card_ids: [aggregateCaptureCardId],
+    },
+    selection.delegation.critique,
+    ["critique_observation"],
+  );
+
+  if (independentCritique) cards.push(critique);
+
   cards.push(operation(
     "feature-verify",
     FEATURE_OPERATION_CONTRACTS.verify,
-    [dependency],
+    independentCritique ? [critique.id] : [dependency],
     {
       ...shared,
       phase: "verify",
       receipt_owner: "registered_operation",
       provider_receipt_validator: FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
       delegate_output_usage: "evidence_input_only",
-      delegate_evidence_card_ids: [...applyCardIds],
+      ...(independentCritique ? { independent_critique: true } : {}),
+      delegate_evidence_card_ids: independentCritique
+        ? [critique.id]
+        : [...applyCardIds],
       operation_evidence_card_ids: [
         ...testCardIds,
         ...verificationCardIds,
@@ -551,29 +611,18 @@ function serializedFeatureCards(selection, workspaceClaim) {
     ["verification_receipt"],
   ));
 
-  cards.push(delegate(
-    "feature-critique",
-    [...applyCardIds, aggregateCaptureCardId, "feature-verify"],
-    {
-      ...shared,
-      phase: "critique",
-      prompt: "critique the changed behavior independently of implementation",
-      delegate_evidence_card_ids: [...applyCardIds],
-      operation_evidence_card_ids: [aggregateCaptureCardId],
-    },
-    selection.delegation.critique,
-    ["critique_observation"],
-  ));
+  if (!independentCritique) cards.push(critique);
 
   cards.push(operation(
     "feature-seal",
     FEATURE_OPERATION_CONTRACTS.seal,
-    ["feature-critique"],
+    independentCritique ? ["feature-verify"] : ["feature-critique"],
     {
       ...shared,
       phase: "seal",
       capture_policy: featureCapturePolicy(selection),
       ...featureFinalizationInputs(selection),
+      ...(independentCritique ? { independent_critique: true } : {}),
       negative_outcomes: [FEATURE_NEGATIVE_OUTCOME],
       receipt_owner: "registered_operation",
       delegate_output_usage: "evidence_input_only",
@@ -1514,6 +1563,24 @@ export function validateFeatureVerificationReceipt(receipt, intent) {
     ? (({ receipt_digest: _receiptDigest, self_digest: _selfDigest, ...identity }) =>
         identity)(receipt)
     : null;
+  const receiptKeys = [
+    "acceptance_criteria",
+    "attempt_id",
+    "brief_id",
+    "discriminating_evidence",
+    "effect_id",
+    "idempotency_key",
+    "operation_contract",
+    "receipt_digest",
+    "schema",
+    "selected_evidence_fingerprint",
+    "self_digest",
+    "source_authority_watermark",
+    "workspace",
+    ...(operationInput?.independent_critique === true
+      ? ["independent_critique_digest"]
+      : []),
+  ];
   const criteriaValid = Array.isArray(expectedCriteria) &&
     Array.isArray(receipt?.acceptance_criteria) &&
     receipt.acceptance_criteria.length === expectedCriteria.length &&
@@ -1551,21 +1618,7 @@ export function validateFeatureVerificationReceipt(receipt, intent) {
         discriminating.satisfied === true &&
         isDigest(discriminating.assertion_receipt_digest)));
   return isRecord(receipt) &&
-    hasExactKeys(receipt, [
-      "acceptance_criteria",
-      "attempt_id",
-      "brief_id",
-      "discriminating_evidence",
-      "effect_id",
-      "idempotency_key",
-      "operation_contract",
-      "receipt_digest",
-      "schema",
-      "selected_evidence_fingerprint",
-      "self_digest",
-      "source_authority_watermark",
-      "workspace",
-    ]) &&
+    hasExactKeys(receipt, receiptKeys) &&
     receipt.schema === "work.feature-verification-receipt/v1" &&
     receipt.brief_id === operationInput?.brief?.id &&
     receipt.operation_contract === FEATURE_OPERATION_CONTRACTS.verify &&
@@ -1575,6 +1628,8 @@ export function validateFeatureVerificationReceipt(receipt, intent) {
     receipt.source_authority_watermark === intent?.source_authority_watermark &&
     isDigest(receipt.source_authority_watermark) &&
     receipt.selected_evidence_fingerprint === selectedEvidence?.fingerprint &&
+    (operationInput?.independent_critique !== true ||
+      isDigest(receipt.independent_critique_digest)) &&
     criteriaValid && workspaceValid && discriminatorValid &&
     isDigest(receipt.receipt_digest) &&
     isDigest(receipt.self_digest) &&

@@ -66,6 +66,23 @@
       "delegate_capacity": "separate",
       "operation_capacity": "separate",
       "subrun_capacity": "does_not_consume_operation_capacity",
+      "defaults": {
+        "delegate_capacity": 1,
+        "operation_capacity": 1
+      },
+      "configuration": {
+        "explicit_options": ["delegateCapacity", "operationCapacity"],
+        "environment": [
+          "FLOW_RUNNER_DELEGATE_CAPACITY",
+          "FLOW_RUNNER_OPERATION_CAPACITY"
+        ],
+        "maximum": 64,
+        "validation": "positive_safe_integer"
+      },
+      "error_reporting": {
+        "status": "bounded_sanitized_summary",
+        "detached_sink": "private_owner_error_log"
+      },
       "explicit_stops": [
         "checkpoint",
         "capability_expansion",
@@ -398,6 +415,11 @@
             "projection": "flow.legacy-compatibility-inventory/v1",
             "rejection": "flow.rejection/v1"
           },
+          "autonomous_runner_status": {
+            "request": "flow.query/v1",
+            "projection": "flow.runtime-runner-status/v1",
+            "rejection": "flow.rejection/v1"
+          },
           "backup": {
             "request": "flow.query/v1",
             "projection": "flow.backup-projection/v1",
@@ -543,6 +565,23 @@
       "artifact_storage": "authority_owned_artifact_bytes",
       "late_or_cancelled": "quarantined_evidence_never_usable"
     },
+    "feature_critique": {
+      "authority": "RunAuthority",
+      "envelope": "flow.delegate-evidence/v1",
+      "output": "flow.feature-critique-output/v1",
+      "input_binding": "flow.authority-critique-input-binding/v1",
+      "validator": "flow.validator/delegate-output-conformance/v1",
+      "candidate_reference": "exact_authority_materialized_candidate_digest",
+      "predecessor_reference": "exact_authority_materialized_predecessor_evidence_digest",
+      "task_inputs_digest": "sha256_canonical_json_utf8",
+      "criterion_evidence_digest": "sha256_canonical_json_utf8_criterion_evidence_verdict",
+      "finding_id": "finding_sha256_canonical_json_utf8_classification_detail_summary",
+      "criterion_order": "brief_acceptance_order",
+      "finding_order": "strict_ascending_finding_id_unique",
+      "blocking_policy": "blocking_or_failed_criterion_prevents_seal",
+      "non_blocking_policy": "retain_exactly",
+      "graph_shapes": ["legacy", "serialized"]
+    },
     "plan_revision_result_bindings": {
       "authority": "RunAuthority",
       "template_field": "result_binding_changes",
@@ -615,6 +654,7 @@
       "projection": "work.workspace-projection/v1",
       "commands": [
         "work.workspace-register-command/v1",
+        "work.workspace-observation-command/v1",
         "work.workspace-claim-command/v1",
         "work.workspace-claim-release-command/v1",
         "work.workspace-taint-command/v1",
@@ -878,6 +918,7 @@
     "flow.legal-next-action/v1",
     "work.workspace-authority/v1",
     "work.workspace-register-command/v1",
+    "work.workspace-observation-command/v1",
     "work.workspace-claim-command/v1",
     "work.workspace-claim-release-command/v1",
     "work.workspace-taint-command/v1",
@@ -950,6 +991,8 @@
     "flow.github-review-invalidation/v1",
     "flow.feature-discriminating-evidence/v1",
     "flow.feature-criterion-evidence/v1",
+    "flow.feature-critique-output/v1",
+    "flow.authority-critique-input-binding/v1",
     "work.feature-verification-receipt/v1",
     "work.feature-critique-receipt/v1",
     "flow.feature-brief/v1",
@@ -973,6 +1016,7 @@
     "flow.operation/feature-test/v1",
     "flow.operation/feature-verify/v1",
     "flow.operation/feature-seal/v1",
+    "flow.validator/delegate-output-conformance/v1",
     "work.feature-test-receipt/v1",
     "flow.validator/feature-test-receipt/v1",
     "work.idempotency-receipt/v1",
@@ -1126,6 +1170,7 @@
     "transition",
     "delegated_agent_description",
     "legacy_compatibility_inventory",
+    "autonomous_runner_status",
     "backup",
     "restore",
     "review",
