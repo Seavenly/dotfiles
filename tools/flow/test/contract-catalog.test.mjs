@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 29);
+  assert.equal(catalog.catalog_version, 31);
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -41,6 +41,53 @@ test("the public catalog exposes the settled interface and forbids legacy import
     catalog.flow_runtime.evidence_safety.catalog_id,
     EVIDENCE_SAFETY_CATALOG_ID,
   );
+  assert.deepEqual(catalog.flow_runtime.transport, {
+    interface: "flow.runtime/v1",
+    request: "flow.transport-request/v1",
+    response: "flow.transport-response/v1",
+    error: "flow.transport-error/v1",
+    framing: "newline_delimited_utf8_json",
+    max_frame_bytes: 4194304,
+    one_request_per_connection: true,
+    correlation: ["request_id", "operation"],
+    watch: "streamed_watermarked_responses",
+  });
+  assert.deepEqual(catalog.flow_runtime.owner, {
+    endpoint: "flow.owner-endpoint/v1",
+    status: "flow.owner-status/v1",
+    authority: "RunAuthority",
+    identity: ["owner_token", "pid", "process_start_identity"],
+    state_directory_mode: "0700",
+    endpoint_mode: "0600",
+    socket_mode: "0600",
+    stop: "identity_checked_before_each_signal",
+    clients: "disposable_transport_only",
+  });
+  assert.deepEqual(catalog.flow_runtime.runner, {
+    status: "flow.runtime-runner-status/v1",
+    authority: "RunAuthority",
+    driver: "authority_projected_commands_only",
+    delegate_capacity: "separate",
+    operation_capacity: "separate",
+    subrun_capacity: "does_not_consume_operation_capacity",
+    explicit_stops: [
+      "checkpoint",
+      "capability_expansion",
+      "uncertain_effect",
+      "terminal_disposition",
+    ],
+  });
+  assert.deepEqual(catalog.flow_runtime.feature_preparation, {
+    request: "flow.feature-preparation-request/v1",
+    brief: "flow.feature-brief/v1",
+    definition: "flow.definition/feature/v1",
+    selection: "flow.predefined-flow-selection/v1",
+    mode: "verify",
+    facts: "starting_clean_git_and_workspace_only",
+    future_identity: "forbidden",
+    callbacks: "forbidden",
+    patch_bytes: "forbidden",
+  });
   assert.deepEqual(catalog.predefined_flows["spike/v1"], {
     definition: "flow.definition/spike/v1",
     mode: "quick",
@@ -75,7 +122,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@29",
+    catalog_id: "flow.contract-catalog/v1@31",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -217,6 +264,16 @@ test("the public catalog exposes the settled interface and forbids legacy import
     },
   });
   for (const contract of [
+    "flow.runtime/v1",
+    "flow.transport-request/v1",
+    "flow.transport-response/v1",
+    "flow.transport-error/v1",
+    "flow.owner-endpoint/v1",
+    "flow.owner-status/v1",
+    "flow.runtime-runner-status/v1",
+    "flow.feature-preparation-request/v1",
+    "flow.definition/feature/v1",
+    "flow.feature-candidate-archive/v1",
     "flow.dynamic-plan-proposal/v1",
     "flow.predefined-flow-selection/v1",
     "flow.predefined-definition/v1",
@@ -808,6 +865,7 @@ test("the public catalog publishes immutable result and capture contracts", asyn
     policy: "flow.feature-capture-policy/v1",
     receipt: "work.feature-capture-receipt/v1",
     validator: "flow.validator/feature-capture-receipt/v1",
+    criterion_evidence: "flow.feature-criterion-evidence/v1",
     candidate_view: "flow.feature-candidate-view/v1",
     finalization: "flow.feature-finalization-binding/v1",
     publication: "flow.resource-handoff-publication/v1",

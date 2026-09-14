@@ -3,6 +3,7 @@ export function createProjectionWatcher({
   close,
   readProjection = null,
   pollInterval = 10,
+  unrefPollTimer = false,
 }) {
   const queue = [initialProjection];
   const waiters = [];
@@ -50,6 +51,7 @@ export function createProjectionWatcher({
       publishChanged(readProjection(), true);
       schedulePoll();
     }, pollInterval);
+    if (unrefPollTimer) pollTimer.unref?.();
   }
 
   function publishChanged(projection, suppressDuplicate) {

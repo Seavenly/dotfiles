@@ -436,6 +436,13 @@ _Avoid_: Updated time, cache version
 A host-local execution substrate that launches and observes durable agent harnesses without owning flow policy or scheduling.
 _Avoid_: Orchestrator, workflow engine
 
+**Flow owner**:
+The one host-local process that holds the fenced replacement `RunAuthority`,
+serves the public five-operation Interface, and drives authority-projected
+work. Its endpoint identity and durable state survive client exit, while
+clients remain disposable observers or callers.
+_Avoid_: Client process, scheduler, second lifecycle authority
+
 **Drovr qualification catalog**:
 The versioned source of known production-incident scenarios and the contracts
 used to qualify Drovr for supervised reusable-agent review cycles.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runCli } from "../src/cli-command.mjs";
-import { createFlowRuntime } from "../src/runtime.mjs";
+import { closeFlowRuntime, createFlowRuntime } from "../src/runtime.mjs";
 
 test("flow CLI exposes the watermarked legacy inventory query", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-cli-inventory-"));
@@ -19,12 +19,15 @@ test("flow CLI exposes the watermarked legacy inventory query", async (t) => {
   })}\n`);
   let stdout = "";
   let stderr = "";
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: stateHome },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
   const status = await runCli(
     ["query", "legacy-inventory", "--json"],
     {
-      runtime: createFlowRuntime({
-        env: { HOME: scratch, XDG_STATE_HOME: stateHome },
-      }),
+      runtime,
       stderr: { write: (chunk) => { stderr += chunk; } },
       stdout: { write: (chunk) => { stdout += chunk; } },
     },
@@ -60,6 +63,17 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
   await chmod(codex, 0o755);
   let stdout = "";
   let stderr = "";
+  const runtime = createFlowRuntime({
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      DROVR_CONFIG_DIR: join(import.meta.dirname, "../../drovr"),
+    },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
   const status = await runCli(
     [
       "query",
@@ -75,15 +89,7 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
       "--json",
     ],
     {
-      runtime: createFlowRuntime({
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          HOME: scratch,
-          XDG_STATE_HOME: join(scratch, "state"),
-          DROVR_CONFIG_DIR: join(import.meta.dirname, "../../drovr"),
-        },
-      }),
+      runtime,
       stderr: { write: (chunk) => { stderr += chunk; } },
       stdout: { write: (chunk) => { stdout += chunk; } },
     },

@@ -52,6 +52,8 @@ export const FEATURE_TEST_RECEIPT_VALIDATOR =
 export const FEATURE_VERIFICATION_RECEIPT_VALIDATOR =
   "flow.validator/feature-verification-receipt/v1";
 export const FEATURE_CAPTURE_POLICY_SCHEMA = "flow.feature-capture-policy/v1";
+export const FEATURE_CRITERION_EVIDENCE_SCHEMA =
+  "flow.feature-criterion-evidence/v1";
 
 const FEATURE_DEFINITION_SCHEMA = "flow.predefined-definition/v1";
 const FEATURE_SELECTION_MODE = new Set(["verify", "test", "mixed"]);
@@ -62,6 +64,7 @@ const FEATURE_OUTPUT_SCHEMAS = Object.freeze({
   setup_receipt: "work.feature-setup-receipt/v1",
   test_failure_receipt: "work.feature-test-receipt/v1",
   workspace_mutation_observation: "flow.delegate-evidence/v1",
+  feature_criterion_evidence: FEATURE_CRITERION_EVIDENCE_SCHEMA,
   slice_verification_receipt: "work.feature-verification-receipt/v1",
   verification_receipt: "work.feature-verification-receipt/v1",
   candidate_capture_receipt: FEATURE_CAPTURE_RECEIPT_SCHEMA,
@@ -80,6 +83,15 @@ const TRUST_POSTURE = Object.freeze({
   delegation: "bounded_implementation_and_independent_critique_only",
   publication: "local_review_candidate_only",
 });
+
+const FEATURE_APPLY_OUTPUTS = Object.freeze([
+  "workspace_mutation_observation",
+  "feature_criterion_evidence",
+]);
+const FEATURE_APPLY_PROMPT =
+  "apply the accepted brief in the exact fenced workspace; return " +
+  "feature_criterion_evidence/v1 with one Git-backed observation for every " +
+  "acceptance criterion";
 
 /**
  * Return the trusted feature/v1 definition used by FlowRuntime's predefined
@@ -311,10 +323,10 @@ function legacyFeatureCards(selection, workspaceClaim) {
       {
         ...shared,
         phase: "apply",
-        prompt: "apply the accepted brief in the exact fenced workspace",
+        prompt: FEATURE_APPLY_PROMPT,
       },
       selection.delegation.apply,
-      ["workspace_mutation_observation"],
+      FEATURE_APPLY_OUTPUTS,
     ),
     capture,
     operation(
@@ -446,12 +458,12 @@ function serializedFeatureCards(selection, workspaceClaim) {
         phase: "apply",
         slice,
         mutation_owner: applyId,
-        prompt: "apply the accepted brief in the exact fenced workspace",
+        prompt: FEATURE_APPLY_PROMPT,
         test_card_ids: [...testCardIds],
         managed_agent: applyManagedAgent,
       },
       selection.delegation.apply,
-      ["workspace_mutation_observation"],
+      FEATURE_APPLY_OUTPUTS,
     );
     cards.push(apply);
     applyCardIds.push(apply.id);

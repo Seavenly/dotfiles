@@ -33,6 +33,7 @@ const FEATURE_CONTRACTS = Object.freeze([
   "flow.feature-repair/v1",
   "flow.feature-repair-outcome/v1",
   "flow.feature-discriminating-evidence/v1",
+  "flow.feature-criterion-evidence/v1",
   "flow.result-binding/v1",
   "flow.result-binding-record/v1",
   "flow.result-provenance/v1",
@@ -60,6 +61,64 @@ const FLOW_RUNTIME_OPERATIONS = [
   "query",
   "watch",
 ];
+const PUBLIC_HOST_TRANSPORT = {
+  interface: "flow.runtime/v1",
+  request: "flow.transport-request/v1",
+  response: "flow.transport-response/v1",
+  error: "flow.transport-error/v1",
+  framing: "newline_delimited_utf8_json",
+  max_frame_bytes: 4194304,
+  one_request_per_connection: true,
+  correlation: ["request_id", "operation"],
+  watch: "streamed_watermarked_responses",
+};
+const PUBLIC_HOST_OWNER = {
+  endpoint: "flow.owner-endpoint/v1",
+  status: "flow.owner-status/v1",
+  authority: "RunAuthority",
+  identity: ["owner_token", "pid", "process_start_identity"],
+  state_directory_mode: "0700",
+  endpoint_mode: "0600",
+  socket_mode: "0600",
+  stop: "identity_checked_before_each_signal",
+  clients: "disposable_transport_only",
+};
+const PUBLIC_HOST_RUNNER = {
+  status: "flow.runtime-runner-status/v1",
+  authority: "RunAuthority",
+  driver: "authority_projected_commands_only",
+  delegate_capacity: "separate",
+  operation_capacity: "separate",
+  subrun_capacity: "does_not_consume_operation_capacity",
+  explicit_stops: [
+    "checkpoint",
+    "capability_expansion",
+    "uncertain_effect",
+    "terminal_disposition",
+  ],
+};
+const PUBLIC_FEATURE_PREPARATION = {
+  request: "flow.feature-preparation-request/v1",
+  brief: "flow.feature-brief/v1",
+  definition: "flow.definition/feature/v1",
+  selection: "flow.predefined-flow-selection/v1",
+  mode: "verify",
+  facts: "starting_clean_git_and_workspace_only",
+  future_identity: "forbidden",
+  callbacks: "forbidden",
+  patch_bytes: "forbidden",
+};
+const PUBLIC_HOST_CONTRACTS = Object.freeze([
+  PUBLIC_HOST_TRANSPORT.request,
+  PUBLIC_HOST_TRANSPORT.response,
+  PUBLIC_HOST_TRANSPORT.error,
+  PUBLIC_HOST_OWNER.endpoint,
+  PUBLIC_HOST_OWNER.status,
+  PUBLIC_HOST_RUNNER.status,
+  PUBLIC_FEATURE_PREPARATION.request,
+  PUBLIC_FEATURE_PREPARATION.definition,
+  "flow.feature-candidate-archive/v1",
+]);
 const PREPARE_INPUTS = [
   "flow.dynamic-plan-proposal/v1",
   "flow.predefined-flow-selection/v1",
@@ -417,7 +476,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@29",
+  catalog_id: "flow.contract-catalog/v1@31",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -459,6 +518,7 @@ const FEATURE_CAPTURE = {
   policy: "flow.feature-capture-policy/v1",
   receipt: "work.feature-capture-receipt/v1",
   validator: "flow.validator/feature-capture-receipt/v1",
+  criterion_evidence: "flow.feature-criterion-evidence/v1",
   candidate_view: "flow.feature-candidate-view/v1",
   finalization: "flow.feature-finalization-binding/v1",
   publication: "flow.resource-handoff-publication/v1",
@@ -608,6 +668,25 @@ export async function loadContractCatalog({
   if (!isExactSequence(catalog.flow_runtime?.operations, FLOW_RUNTIME_OPERATIONS)) {
     throw new Error("contract catalog must expose exactly the five FlowRuntime operations");
   }
+  if (!Array.isArray(catalog.contracts)) {
+    throw new Error("contract catalog contracts must be an explicit array");
+  }
+  if (!isDeepStrictEqual(
+    catalog.flow_runtime?.transport,
+    PUBLIC_HOST_TRANSPORT,
+  ) || !isDeepStrictEqual(
+    catalog.flow_runtime?.owner,
+    PUBLIC_HOST_OWNER,
+  ) || !isDeepStrictEqual(
+    catalog.flow_runtime?.runner,
+    PUBLIC_HOST_RUNNER,
+  ) || !isDeepStrictEqual(
+    catalog.flow_runtime?.feature_preparation,
+    PUBLIC_FEATURE_PREPARATION,
+  ) || !PUBLIC_HOST_CONTRACTS.every((contract) =>
+    catalog.contracts.includes(contract))) {
+    throw new Error("public host runtime contracts are incomplete");
+  }
   const rejection = catalog.flow_runtime.rejection_contract;
   if (rejection?.contract !== "flow.rejection/v1" ||
       !isExactSequence(rejection.fields, REJECTION_FIELDS) ||
@@ -618,9 +697,6 @@ export async function loadContractCatalog({
         "run_lifecycle_stream_authority_epoch_and_authority_schema" ||
       Object.keys(rejection.watermark_domains ?? {}).length !== 2) {
     throw new Error("contract catalog rejection contract is incomplete");
-  }
-  if (!Array.isArray(catalog.contracts)) {
-    throw new Error("contract catalog contracts must be an explicit array");
   }
   if (!isExactSequence(
     catalog.flow_runtime?.operation_contracts?.prepare?.input,

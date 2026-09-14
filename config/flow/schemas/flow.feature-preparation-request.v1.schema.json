@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.feature-preparation-request.v1.schema.json",
+  "title": "flow.feature-preparation-request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "brief", "repository", "mode", "routes"],
+  "properties": {
+    "schema": { "const": "flow.feature-preparation-request/v1" },
+    "brief": { "$ref": "#/$defs/brief" },
+    "repository": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "mode": { "const": "verify" },
+    "routes": { "$ref": "#/$defs/routes" },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "assertion": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_cards": { "type": "integer", "minimum": 0 },
+        "max_revisions": { "type": "integer", "minimum": 0 },
+        "max_cards_per_revision": { "type": "integer", "minimum": 0 },
+        "max_capabilities": { "type": "integer", "minimum": 0 },
+        "max_resources": { "type": "integer", "minimum": 0 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "summary", "acceptance"],
+      "properties": {
+        "schema": { "const": "flow.feature-brief/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apply", "critique"],
+      "properties": {
+        "apply": { "$ref": "#/$defs/route" },
+        "critique": { "$ref": "#/$defs/route" }
+      }
+    },
+    "route": {
+      "oneOf": [
+        { "$ref": "#/$defs/launch" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["launch"],
+          "properties": {
+            "launch": { "$ref": "#/$defs/launch" }
+          }
+        }
+      ]
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness": { "enum": ["claude", "codex"] },
+        "role": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+        "capability": {
+          "enum": [
+            "read-only",
+            "on-approve",
+            "workspace-write",
+            "auto",
+            "unrestricted"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -8,8 +8,8 @@ disabled, so this API does not authorize normal replacement launches.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v29 binds it to
-`flow.contract-catalog/v1@29`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v31 binds it to
+`flow.contract-catalog/v1@31`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -64,6 +64,27 @@ history. New capture results are required for replacement evidence. Prepared
 bundles with result declarations must satisfy this catalog exactly and are
 rejected when incompatible. Plans and recorded runs without result bindings
 retain the supported legacy replay path.
+
+## Public host owner and transport
+
+The public host composition lives under `config/flow/`. It exposes exactly
+the five `flow.runtime/v1` operations through a versioned newline-delimited
+JSON transport: `prepare`, `launch`, `command`, `query`, and `watch`. Request
+and response frames carry one bounded correlation identity, reject multiple or
+oversized frames, and preserve watch watermarks. The transport is a mechanism
+Adapter; it cannot acquire the durable lifecycle authority on behalf of a
+client.
+
+One host owner holds the fenced durable `RunAuthority` and runs the autonomous
+projection driver. The owner endpoint records a process identity and the
+runtime status projection reports separate delegate and operation capacity.
+Clients may exit, reconnect, query, or watch while the owner continues an
+accepted run. Owner restart is same-boot recovery; a changed boot requires
+the per-run `reboot_admission` command. Host-manager sources and their
+explicit opt-in procedures are maintained in
+[`config/flow/host/README.md`](../../config/flow/host/README.md). The ordinary
+dotfiles convergence exposes those sources but intentionally does not enable
+the replacement launch path.
 
 ## Delegate input envelope
 
@@ -1154,7 +1175,7 @@ The managed sources under `config/flow/` are:
   feature-capture identities, the five `FlowRuntime` operations, authority
   ownership, the execution-time accounting contract, and the reboot-admission
   typed-fact and uncertainty policy. The current catalog identity is
-  `flow.contract-catalog/v1@29`; a catalog change must update this managed
+  `flow.contract-catalog/v1@31`; a catalog change must update this managed
   source and the source constants/tests that validate its exact contents. Any
   future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
@@ -1167,6 +1188,15 @@ The managed sources under `config/flow/` are:
   `flow.delegate-failure-observation`, and `flow.delegate-output-requirements`
   companion schemas - the shared
   canonical input contract used by feature, review, and quick-spike delegates.
+- `schemas/flow.transport-request.v1.schema.json`,
+  `schemas/flow.transport-response.v1.schema.json`,
+  `schemas/flow.transport-error.v1.schema.json`,
+  `schemas/flow.owner-endpoint.v1.schema.json`,
+  `schemas/flow.owner-status.v1.schema.json`,
+  `schemas/flow.runtime-runner-status.v1.schema.json`,
+  `schemas/flow.feature-preparation-request.v1.schema.json`, and
+  `schemas/flow.feature-candidate-archive.v1.schema.json` - the public host
+  and ordinary-preparation payload contracts.
 - `schemas/flow.time-fact.v1.schema.json`,
   `schemas/flow.execution-time-accounting.v1.schema.json`,
   `schemas/flow.execution-time-projection.v1.schema.json`,

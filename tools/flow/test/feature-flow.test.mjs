@@ -182,9 +182,12 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     cards.get("feature-critique").route,
     inputs.delegation.critique.route,
   );
-  for (const [cardId, phase, access, outputSchema] of [
-    ["feature-apply", "apply", "mutation", "workspace_mutation_observation"],
-    ["feature-critique", "critique", "read_only", "critique_observation"],
+  for (const [cardId, phase, access, outputSchemas] of [
+    ["feature-apply", "apply", "mutation", [
+      "workspace_mutation_observation",
+      "feature_criterion_evidence",
+    ]],
+    ["feature-critique", "critique", "read_only", ["critique_observation"]],
   ]) {
     const card = cards.get(cardId);
     assert.deepEqual(card.inputs.task_inputs, {
@@ -210,7 +213,7 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     assert.deepEqual(card.inputs.output_requirements, {
       schema: "flow.delegate-output-requirements/v1",
       format: "canonical-json",
-      schemas: [outputSchema],
+      schemas: outputSchemas,
       validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
     });
     assert.deepEqual(card.inputs.output_requirements.schemas, card.outputs);
@@ -247,7 +250,10 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   ]);
   assert.deepEqual(cards.get("feature-apply").outputs, [
     "workspace_mutation_observation",
+    "feature_criterion_evidence",
   ]);
+  assert.match(cards.get("feature-apply").inputs.prompt,
+    /feature_criterion_evidence\/v1/u);
   assert.deepEqual(cards.get("feature-critique").outputs, [
     "critique_observation",
   ]);

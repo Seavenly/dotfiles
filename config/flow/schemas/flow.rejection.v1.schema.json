@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schema": { "const": "flow.rejection/v1" },
-    "operation": { "enum": ["launch", "command", "query", "watch"] },
+    "operation": { "enum": ["prepare", "launch", "command", "query", "watch"] },
     "code": { "type": "string", "minLength": 1 },
     "reason": { "type": ["string", "null"] },
     "command_type": { "type": ["string", "null"] },

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -12,11 +13,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   createDrovrDelegatedAgentPort,
 } from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
 import { createDurableRunAuthority } from
+  "../../../tools/flow/src/run-authority.mjs";
+import { createInMemoryRunAuthority } from
   "../../../tools/flow/src/run-authority.mjs";
 import {
   completedTurnProjection,
@@ -34,9 +38,174 @@ import {
   fixedExecutionTimeAdapter,
   fixedHostIdentity,
 } from "../../../tools/flow/test-support/fixed-host-identity.mjs";
-import { createFlowRuntime } from "../src/runtime.mjs";
+import { closeFlowRuntime, createFlowRuntime } from "../src/runtime.mjs";
 import { validateDelegateEvidenceSafety } from
   "../../../tools/flow/src/evidence-safety.mjs";
+
+const execFile = promisify(execFileCallback);
+
+test("short-lived default runtime does not retain a polling handle", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-liveness-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtimeModule = new URL("../src/runtime.mjs", import.meta.url).href;
+  const script = [
+    `const { createFlowRuntime } = await import(${JSON.stringify(runtimeModule)});`,
+    `createFlowRuntime({ env: ${JSON.stringify({
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+    })} });`,
+  ].join("\n");
+
+  await execFile(process.execPath, ["--input-type=module", "-e", script], {
+    timeout: 1_500,
+  });
+});
+
+test("awaited public authority watch keeps the process alive until it closes", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-watch-liveness-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtimeModule = new URL("../src/runtime.mjs", import.meta.url).href;
+  const authorityModule = new URL(
+    "../../../tools/flow/src/run-authority.mjs",
+    import.meta.url,
+  ).href;
+  const script = [
+    `const { createFlowRuntime } = await import(${JSON.stringify(runtimeModule)});`,
+    `const { createDurableRunAuthority } = await import(${JSON.stringify(authorityModule)});`,
+    `const authority = createDurableRunAuthority({ authorityDirectory: ${JSON.stringify(join(scratch, "state"))} });`,
+    `const runtime = createFlowRuntime({ runAuthority: authority, autonomous: false, delegatedAgentPort: { describe: async () => null } });`,
+    `const watcher = runtime.watch({ host: true });`,
+    `const initial = await watcher.next();`,
+    `if (initial.done) throw new Error("authority watch closed before its initial projection");`,
+    `const timer = setTimeout(() => authority.close(), 100);`,
+    `timer.unref();`,
+    `const closed = await watcher.next();`,
+    `if (!closed.done) throw new Error("authority watch did not close");`,
+  ].join("\n");
+
+  await execFile(process.execPath, ["--input-type=module", "-e", script], {
+    timeout: 2_000,
+  });
+});
+
+test("shared production runtimes retain one authority until the last close", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-sharing-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const options = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const runtimeA = createFlowRuntime(options);
+  const runtimeB = createFlowRuntime(options);
+
+  assert.equal(closeFlowRuntime(runtimeA), true);
+  assert.equal(closeFlowRuntime(runtimeA), false);
+  assert.doesNotThrow(() => runtimeB.query());
+  assert.equal(closeFlowRuntime(runtimeB), true);
+  assert.throws(() => runtimeB.query(), /durable run authority is closed/u);
+});
+
+test("shared production authority rejects incompatible options while retained", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-options-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const runtime = createFlowRuntime({
+    ...base,
+    authorityOptions: { declaredCapacity: 1 },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  assert.throws(
+    () => createFlowRuntime({
+      ...base,
+      authorityOptions: { declaredCapacity: 2 },
+    }),
+    (error) => error?.code === "authority_options_conflict",
+  );
+});
+
+test("shared production authority rejects distinct caller-supplied adapters", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-adapters-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const adapterFactories = {
+    rebootObservationAdapter: () => ({ observe() {} }),
+    gitWorkspaceObservationAdapter: () => ({ observe() {} }),
+    gitRetentionAdapter: () => ({ observe() {}, retain() {} }),
+  };
+
+  for (const [key, createAdapter] of Object.entries(adapterFactories)) {
+    const runtime = createFlowRuntime({
+      ...base,
+      authorityDirectory: join(scratch, key),
+      authorityOptions: { [key]: createAdapter() },
+    });
+    t.after(() => closeFlowRuntime(runtime));
+    assert.throws(
+      () => createFlowRuntime({
+        ...base,
+        authorityDirectory: join(scratch, key),
+        authorityOptions: { [key]: createAdapter() },
+      }),
+      (error) => error?.code === "authority_options_conflict",
+    );
+  }
+});
+
+test("failed production construction releases its authority lease", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+
+  assert.throws(
+    () => createFlowRuntime({
+      ...base,
+      registeredAuthorities: { invalid: {} },
+    }),
+    /registered authority/u,
+  );
+
+  const runtime = createFlowRuntime(base);
+  t.after(() => closeFlowRuntime(runtime));
+  assert.equal(closeFlowRuntime(runtime), true);
+  assert.throws(() => runtime.query(), /durable run authority is closed/u);
+});
+
+test("failed production construction releases an additional shared lease", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-shared-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const runtime = createFlowRuntime(base);
+  t.after(() => closeFlowRuntime(runtime));
+
+  assert.throws(
+    () => createFlowRuntime({
+      ...base,
+      registeredAuthorities: { invalid: {} },
+    }),
+    /registered authority/u,
+  );
+
+  assert.equal(closeFlowRuntime(runtime), true);
+  assert.throws(() => runtime.query(), /durable run authority is closed/u);
+});
 
 test("query exposes the DelegatedAgentPort description without creating a run", async () => {
   const projection = {
@@ -77,9 +246,11 @@ test("query exposes the DelegatedAgentPort description without creating a run", 
   assert.deepEqual(runtime.query(), before);
 });
 
-test("public runtime rejects delegate effects without durable authority", async () => {
+test("injected non-autonomous runtime rejects delegate effects without durable authority", async () => {
   const description = await delegateDescription();
   const runtime = createFlowRuntime({
+    autonomous: false,
+    runAuthority: createInMemoryRunAuthority(),
     delegatedAgentPort: delegatePort(),
     delegateOutputValidators: delegateValidators(),
   });
@@ -840,6 +1011,8 @@ test("query rejects unsupported contracts and never repairs missing evidence", a
   await mkdir(runDirectory, { recursive: true });
   await writeFile(join(runDirectory, "run.json"), "not-json\n");
   const runtime = createFlowRuntime({
+    autonomous: false,
+    runAuthority: createInMemoryRunAuthority(),
     legacyRoots: {
       claudeRuns: join(scratch, "absent-claude-runs"),
       hermesRuns,
@@ -874,6 +1047,8 @@ test("query rejects unsupported contracts and never repairs missing evidence", a
 
 test("registered query failures use the shared typed rejection contract", async () => {
   const runtime = createFlowRuntime({
+    autonomous: false,
+    runAuthority: createInMemoryRunAuthority(),
     legacyAdapter: {
       async observe() {
         throw new Error("retained authority unavailable");

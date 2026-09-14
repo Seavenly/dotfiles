@@ -60,8 +60,13 @@ import {
 } from "./review-flow.mjs";
 import { parseReviewDelegateResult } from "./review-rendering.mjs";
 import { validateDelegateEvidenceSafety } from "./evidence-safety.mjs";
+import {
+  createFlowRuntimeRunner,
+  FLOW_RUNTIME_BACKGROUND_WATCH,
+} from "./flow-runtime-runner.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
+const runtimeRunners = new WeakMap();
 
 export function validateReviewDelegateOutput(output, context = {}) {
   try {
@@ -92,6 +97,8 @@ export function createFlowRuntime({
   githubReviewAuthority = null,
   githubReviewForge = null,
   githubReviewAdapter = null,
+  autonomous = false,
+  runnerOptions = {},
 } = {}) {
   if (githubReviewAdapter !== null) {
     throw new TypeError(
@@ -432,6 +439,9 @@ export function createFlowRuntime({
     },
 
     watch(request = {}) {
+      const watchOptions = request?.[FLOW_RUNTIME_BACKGROUND_WATCH] === true
+        ? { unrefPollTimer: true }
+        : null;
       const reviewSubject = reviewRequestSubject(request);
       if (reviewSubject !== null) {
         const githubProjection = ownedGitHubReviewAuthority.query({
@@ -454,12 +464,20 @@ export function createFlowRuntime({
             }));
       }
       if (request?.host === true) {
-        return typeof runAuthority.watchHost === "function"
-          ? runAuthority.watchHost()
-          : runAuthority.watch(undefined);
+        if (typeof runAuthority.watchHost === "function") {
+          return watchOptions === null
+            ? runAuthority.watchHost()
+            : runAuthority.watchHost(watchOptions);
+        }
+        return watchOptions === null
+          ? runAuthority.watch(undefined)
+          : runAuthority.watch(undefined, watchOptions);
       }
       const runId = request?.run_id;
-      return decorateReviewRunWatcher(runAuthority.watch(runId));
+      const watcher = watchOptions === null
+        ? runAuthority.watch(runId)
+        : runAuthority.watch(runId, watchOptions);
+      return decorateReviewRunWatcher(watcher);
     },
   });
   recoverOutstandingEffects(
@@ -467,8 +485,34 @@ export function createFlowRuntime({
     runAuthority,
     operationRegistry,
     subrunRegistration,
+    { allowOneShotRecovery: !autonomous },
   );
+  if (autonomous) {
+    const runner = createFlowRuntimeRunner({
+      runtime,
+      runAuthority,
+      ...runnerOptions,
+    });
+    runtimeRunners.set(runtime, runner);
+    runner.start();
+  }
   return runtime;
+}
+
+export function createAutonomousFlowRuntime(options = {}) {
+  return createFlowRuntime({ ...options, autonomous: true });
+}
+
+export function startAutonomousFlowRuntime(runtime) {
+  return runtimeRunners.get(runtime)?.start() ?? null;
+}
+
+export function statusAutonomousFlowRuntime(runtime) {
+  return runtimeRunners.get(runtime)?.status() ?? null;
+}
+
+export function stopAutonomousFlowRuntime(runtime) {
+  return runtimeRunners.get(runtime)?.stop();
 }
 
 function decorateReviewRunProjection(projection) {
@@ -844,6 +888,7 @@ function recoverOutstandingEffects(
   runAuthority,
   operationRegistry,
   subrunRegistration,
+  { allowOneShotRecovery = true } = {},
 ) {
   if (typeof runAuthority.pendingSameBootRecoveryRunIds !== "function") return;
   const runIds = runAuthority.pendingSameBootRecoveryRunIds();
@@ -889,6 +934,10 @@ function recoverOutstandingEffects(
       }
       const effect = current.effects.find(({ effect_id: currentEffectId }) =>
         currentEffectId === effectId);
+      if (!allowOneShotRecovery &&
+          effect?.classification === "one_shot_uncertain") {
+        continue;
+      }
       const subrun = current.subruns.find(({ card_id: cardId }) =>
         cardId === effect?.card_id);
       if (effect?.operation_contract === SUBRUN_CONTRACT &&
