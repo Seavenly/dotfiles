@@ -1,6 +1,7 @@
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import {
   effectClassPolicy,
+  hasAffirmativeProviderObservation,
   normalizeEffectObservation,
   sanitizeHistoricalEffectReceiptEnvelope,
   sanitizeEffectReceiptEnvelope,
@@ -73,12 +74,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       effectReceiptIndexes.set(event.effect_id, eventIndex);
     } else if (event.type === "effect_observation_recorded") {
       effectObservations.set(event.effect_id, event.observation);
-    } else if (event.type === "effect_invocation_started") {
+    } else if (event.type === "effect_invocation_started" ||
+        event.type === "effect_invocation_resumed") {
       effectInvocationIndexes.set(event.effect_id, eventIndex);
-      effectInvocationCounts.set(
-        event.effect_id,
-        (effectInvocationCounts.get(event.effect_id) ?? 0) + 1,
-      );
+      if (event.type === "effect_invocation_started") {
+        effectInvocationCounts.set(
+          event.effect_id,
+          (effectInvocationCounts.get(event.effect_id) ?? 0) + 1,
+        );
+      }
     } else if (event.type === "result_binding_recorded") {
       resultBindings.push(normalizeResultBindingRecord(event.binding));
     } else if (event.type === "run_cancelled") {
@@ -1050,7 +1054,8 @@ export function applyExecutionTimeObservation(
   observation,
   events = [],
 ) {
-  const executionTime = projectExecutionTime(fold, observation, events);
+  const projected = projectExecutionTime(fold, observation, events);
+  const executionTime = projected.executionTime;
   const deadlineBlocksAdmission = ["exhausted", "uncertain", "unobserved"].includes(
     executionTime.status,
   );
@@ -1068,7 +1073,11 @@ export function applyExecutionTimeObservation(
         effectClassPolicy(effect?.classification)?.requires_observation === true;
     })
     : legalActions;
-  return { executionTime, legalActions: filteredActions };
+  return {
+    executionTime,
+    legalActions: filteredActions,
+    admission: projected.admission,
+  };
 }
 
 function projectExecutionTime(fold, observation, events) {
@@ -1080,11 +1089,25 @@ function projectExecutionTime(fold, observation, events) {
     active_elapsed_seconds: null,
   };
   if (!validateTimeFacts(baselineFacts) || baselineFacts.length === 0) {
-    return { ...base, status: "unobserved", reason: "baseline_unavailable" };
+    return {
+      executionTime: { ...base, status: "unobserved", reason: "baseline_unavailable" },
+      admission: {
+        wall: { status: "unobserved", reason: "baseline_unavailable" },
+        active: { status: "unobserved", reason: "baseline_unavailable" },
+        uncertain_active_effect_ids: [],
+      },
+    };
   }
   const currentFacts = observation?.facts;
   if (!validateTimeFacts(currentFacts) || currentFacts.length === 0) {
-    return { ...base, status: "uncertain", reason: "observation_unavailable" };
+    return {
+      executionTime: { ...base, status: "uncertain", reason: "observation_unavailable" },
+      admission: {
+        wall: { status: "uncertain", reason: "observation_unavailable" },
+        active: { status: "uncertain", reason: "observation_unavailable" },
+        uncertain_active_effect_ids: [],
+      },
+    };
   }
   const wallBounds = elapsedTimeBounds(
     baselineFacts,
@@ -1092,7 +1115,14 @@ function projectExecutionTime(fold, observation, events) {
     fold.elapsed_seconds,
   );
   if (wallBounds === null) {
-    return { ...base, status: "uncertain", reason: "time_fact_mismatch" };
+    return {
+      executionTime: { ...base, status: "uncertain", reason: "time_fact_mismatch" },
+      admission: {
+        wall: { status: "uncertain", reason: "time_fact_mismatch" },
+        active: { status: "uncertain", reason: "time_fact_mismatch" },
+        uncertain_active_effect_ids: [],
+      },
+    };
   }
   const active = activeElapsedBounds(events, currentFacts);
   const wallElapsed = publicElapsedBounds(wallBounds);
@@ -1106,31 +1136,43 @@ function projectExecutionTime(fold, observation, events) {
     .filter(({ max_active_seconds: max }) => Number.isSafeInteger(max) && max >= 0)
     .reduce((state, intent) => {
       const bounds = active.byEffect.get(intent.effect_id);
-      if (!bounds) {
-        if (active.uncertainEffects.has(intent.effect_id)) state.uncertain = true;
-        return state;
-      }
+      // An absent interval is accounted for by active.uncertain and its
+      // effect-id set. Do not also classify it as an attempt-deadline
+      // uncertainty: the special exact-absence recovery waiver may clear
+      // only that unknown-attempt accounting, never a known deadline.
+      if (!bounds) return state;
       const activeLimit = BigInt(intent.max_active_seconds) * bounds.unit;
       if (bounds.lower > activeLimit) state.exhausted = true;
       else if (bounds.upper > activeLimit) state.uncertain = true;
       return state;
     }, { exhausted: false, uncertain: false });
-  const executionTimeDecision = active.uncertain
-    ? { status: "uncertain", reason: "active_time_uncertain" }
+  const wallDecision = exhausted
+    ? { status: "exhausted", reason: "wall_deadline_exhausted" }
+    : crossesLimit
+      ? { status: "uncertain", reason: "wall_deadline_uncertain" }
+      : { status: "within" };
+  const activeDecision = activeDeadline.exhausted
+    ? { status: "exhausted", reason: "attempt_deadline_exhausted" }
     : activeDeadline.uncertain
       ? { status: "uncertain", reason: "attempt_deadline_uncertain" }
-      : activeDeadline.exhausted
-        ? { status: "exhausted", reason: "attempt_deadline_exhausted" }
-        : exhausted
-          ? { status: "exhausted", reason: "wall_deadline_exhausted" }
-          : crossesLimit
-            ? { status: "uncertain", reason: "wall_deadline_uncertain" }
-            : { status: "within" };
+      : active.uncertain
+        ? { status: "uncertain", reason: "active_time_uncertain" }
+        : { status: "within" };
+  const executionTimeDecision = activeDecision.status !== "within"
+    ? activeDecision
+    : wallDecision;
   return {
-    ...base,
-    ...executionTimeDecision,
-    wall_elapsed_seconds: wallElapsed,
-    active_elapsed_seconds: activeElapsed,
+    executionTime: {
+      ...base,
+      ...executionTimeDecision,
+      wall_elapsed_seconds: wallElapsed,
+      active_elapsed_seconds: activeElapsed,
+    },
+    admission: {
+      wall: wallDecision,
+      active: activeDecision,
+      uncertain_active_effect_ids: [...active.uncertainEffects],
+    },
   };
 }
 
@@ -1141,18 +1183,28 @@ function activeElapsedBounds(events, currentFacts) {
   const uncertainEffects = new Set();
   const byEffect = new Map();
   for (const [index, event] of events.entries()) {
-    if (event.type !== "effect_invocation_started") continue;
-    if (!validateTimeFacts(event.time_facts) || event.time_facts.length === 0) {
-      uncertain = true;
-      uncertainEffects.add(event.effect_id);
-      continue;
-    }
+    if (![
+      "effect_invocation_started",
+      "effect_invocation_resumed",
+    ].includes(event.type)) continue;
     const settled = events.slice(index + 1).find((candidate) =>
       candidate.type === "run_cancelled" ||
       candidate.effect_id === event.effect_id && [
         "effect_receipt_recorded",
         "effect_observation_recorded",
       ].includes(candidate.type));
+    if (!validateTimeFacts(event.time_facts) || event.time_facts.length === 0) {
+      if (event.type === "effect_invocation_started" &&
+          events.slice(index + 1).some((candidate, offset) =>
+            candidate.type === "effect_invocation_resumed" &&
+            candidate.effect_id === event.effect_id &&
+            validExactAbsenceBefore(events, index + 1 + offset, event.effect_id))) {
+        continue;
+      }
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
     const endFacts = settled === undefined ? currentFacts : settled.time_facts;
     if (!validateTimeFacts(endFacts) || endFacts.length === 0) {
       uncertain = true;
@@ -1185,6 +1237,18 @@ function activeElapsedBounds(events, currentFacts) {
     uncertain,
     uncertainEffects,
   };
+}
+
+function validExactAbsenceBefore(events, index, effectId) {
+  const observation = events.slice(0, index).reverse().find((candidate) =>
+    candidate.type === "effect_observation_recorded" &&
+    candidate.effect_id === effectId)?.observation;
+  return observation?.presence === "absent" &&
+    observation.causation === null &&
+    hasAffirmativeProviderObservation(
+      observation.provider_observation,
+      "absent",
+    );
 }
 
 function publicElapsedBounds(bounds) {

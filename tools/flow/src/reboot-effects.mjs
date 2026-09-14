@@ -41,7 +41,7 @@ export function validateRebootEffectRechecks(rechecks, unresolvedEffects) {
     if (!policy ||
         recheck.recovery !== policy.recovery ||
         recheck.observed_status !== policy.observed_unresolved_status ||
-        presence === "indeterminate" ||
+        presence === "indeterminate" && policy.requires_observation ||
         policy.requires_fresh_checkpoint && presence !== "present") {
       return false;
     }

@@ -63,6 +63,16 @@ run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
   "$root/config/flow/package-lock.json" \
   "$root/config/flow/contracts/drovr-required-features.v1.json" \
   "$root/config/flow/schemas/flow.query.v1.schema.json" \
+  "$root/config/flow/schemas/flow.transport-error.v1.schema.json" \
+  "$root/config/flow/schemas/flow.transport-request.v1.schema.json" \
+  "$root/config/flow/schemas/flow.transport-response.v1.schema.json" \
+  "$root/config/flow/schemas/flow.owner-endpoint.v1.schema.json" \
+  "$root/config/flow/schemas/flow.owner-status.v1.schema.json" \
+  "$root/config/flow/schemas/flow.runtime-runner-status.v1.schema.json" \
+  "$root/config/flow/schemas/flow.feature-preparation-request.v1.schema.json" \
+  "$root/config/flow/schemas/flow.feature-candidate-archive.v1.schema.json" \
+  "$root/config/flow/schemas/flow.feature-critique-output.v1.schema.json" \
+  "$root/config/flow/schemas/flow.authority-critique-input-binding.v1.schema.json" \
   "$root/config/flow/schemas/flow.reboot-effect-recheck.v1.schema.json" \
   "$root/config/flow/schemas/flow.reboot-revalidation.v1.schema.json" \
   "$root/config/flow/schemas/flow.authority-schema-compatibility.v1.schema.json" \

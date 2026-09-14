@@ -120,6 +120,10 @@ export function decideWorkCommand(current, command, { authorityObservation = nul
       command.type === "workspace_claim") {
     return decideWorkspaceClaim(current, command);
   }
+  if (command?.schema === "work.workspace-observation-command/v1" &&
+      command.type === "workspace_observe") {
+    return decideWorkspaceObservation(current, command);
+  }
   if (command?.schema === "work.workspace-claim-release-command/v1" &&
       command.type === "workspace_claim_release") {
     return decideWorkspaceClaimRelease(current, command);
@@ -304,6 +308,14 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
     let cleanupReceipt = null;
     for (const { payload } of records.slice(1)) {
       if (payload.type === "workspace_promoted") {
+        generation = payload.generation;
+        mutationEpoch = payload.mutation_epoch;
+        git = payload.git;
+        gitObservation = payload.git_observation;
+        disposition = payload.disposition;
+        claims = [];
+        taint = null;
+      } else if (payload.type === "workspace_reobserved") {
         generation = payload.generation;
         mutationEpoch = payload.mutation_epoch;
         git = payload.git;
@@ -758,45 +770,44 @@ function validateReviewCandidatePublicationBinding({
         binding.output_contract === "candidate_capture_receipt" &&
         binding.expected_schema === "work.feature-capture-receipt/v1")
     : undefined;
-  if (!validFeatureSealEvidence({
+  const featureSealEvidenceValid = validFeatureSealEvidence({
     candidate,
     effectReceipt,
     intent,
     publication,
-  })) {
+  });
+  if (!featureSealEvidenceValid) {
     throw new TypeError("review candidate evidence is not an exact feature seal");
   }
-  if (!canonicalValidReviewCandidate(candidate?.candidate_id, candidate) ||
-      finalization?.schema !== "flow.feature-finalization-binding/v1" ||
-      finalization.candidate_id !== candidate.candidate_id ||
-      !sameCanonicalValue(finalization.publication, publication) ||
-      !isDeepStrictEqual(candidate.git, promotedGit) ||
-      candidate.workspace?.contract !== "work.workspace/v1" ||
-      candidate.workspace?.subject_id !== publication.workspace?.subject_id ||
-      candidate.workspace?.generation !== publication.workspace?.promoted_generation ||
-      candidate.workspace?.mutation_epoch !==
-        publication.workspace?.promoted_mutation_epoch ||
-      candidate.workspace?.fingerprint !== digest({ git: promotedGit }) ||
-      !sameCanonicalValue(candidate.git_retention, retention) ||
-      !Array.isArray(candidateArtifacts) ||
-      candidateArtifacts.length !== artifacts.length ||
-      candidateArtifacts.some((artifact, index) =>
-        artifact?.digest !== artifacts[index]?.digest ||
-        artifact?.generation !== artifacts[index]?.generation ||
-        artifact?.artifact_schema !== artifacts[index]?.artifact_schema) ||
-      !isDeepStrictEqual(
-        candidate.git_retention,
-        providerReceipt?.git_retention,
-      ) ||
-      !validMaterializedCandidate({
-        candidate,
-        captureBinding,
-        materializedCandidate,
-      }) ||
-      !validGitFacts(promotedGit) ||
-      promotedGit.clean !== true ||
-      candidate.git?.clean !== true ||
-      workspace?.generation !== publication.workspace.expected_generation) {
+  const candidateBound = canonicalValidReviewCandidate(candidate?.candidate_id, candidate);
+  const finalizationBound = finalization?.schema === "flow.feature-finalization-binding/v1" &&
+    finalization.candidate_id === candidate?.candidate_id &&
+    sameCanonicalValue(finalization.publication, publication);
+  const workspaceBound = isDeepStrictEqual(candidate?.git, promotedGit) &&
+    candidate?.workspace?.contract === "work.workspace/v1" &&
+    candidate?.workspace?.subject_id === publication.workspace?.subject_id &&
+    candidate?.workspace?.generation === publication.workspace?.promoted_generation &&
+    candidate?.workspace?.mutation_epoch === publication.workspace?.promoted_mutation_epoch &&
+    candidate?.workspace?.fingerprint === digest({ git: promotedGit });
+  const retentionBound = sameCanonicalValue(candidate?.git_retention, retention) &&
+    isDeepStrictEqual(candidate?.git_retention, providerReceipt?.git_retention);
+  const artifactsBound = Array.isArray(candidateArtifacts) &&
+    candidateArtifacts.length === artifacts.length &&
+    !candidateArtifacts.some((artifact, index) =>
+      artifact?.digest !== artifacts[index]?.digest ||
+      artifact?.generation !== artifacts[index]?.generation ||
+      artifact?.artifact_schema !== artifacts[index]?.artifact_schema);
+  const materializedBound = validMaterializedCandidate({
+    candidate,
+    captureBinding,
+    materializedCandidate,
+  });
+  const gitBound = validGitFacts(promotedGit) && promotedGit.clean === true &&
+    candidate?.git?.clean === true;
+  const expectedGenerationBound = workspace?.generation ===
+    publication.workspace.expected_generation;
+  if (!(candidateBound && finalizationBound && workspaceBound && retentionBound &&
+      artifactsBound && materializedBound && gitBound && expectedGenerationBound)) {
     throw new TypeError("review candidate is not bound to the exact publication");
   }
 }
@@ -883,6 +894,24 @@ function validFeatureVerificationReceipt({
   const promotedGit = publication?.workspace?.promoted_git;
   const effectReceipt = verifyEntry?.receipt;
   const receiptIdentity = stripReceiptDigests(receipt);
+  const receiptKeys = [
+    "acceptance_criteria",
+    "attempt_id",
+    "brief_id",
+    "discriminating_evidence",
+    "effect_id",
+    "idempotency_key",
+    "operation_contract",
+    "receipt_digest",
+    "schema",
+    "selected_evidence_fingerprint",
+    "self_digest",
+    "source_authority_watermark",
+    "workspace",
+    ...(operationInput?.independent_critique === true
+      ? ["independent_critique_digest"]
+      : []),
+  ];
   const operationEvidenceExact = validFeatureOperationEvidenceSet(
     materialized,
     operationInput,
@@ -972,27 +1001,16 @@ function validFeatureVerificationReceipt({
     operationInput,
     evidence: testSelectionSelected ? receipt.discriminating_evidence : null,
   });
-  const valid = hasExactKeys(receipt, [
-    "acceptance_criteria",
-    "attempt_id",
-    "brief_id",
-    "discriminating_evidence",
-    "effect_id",
-    "idempotency_key",
-    "operation_contract",
-    "receipt_digest",
-    "schema",
-    "selected_evidence_fingerprint",
-    "self_digest",
-    "source_authority_watermark",
-    "workspace",
-  ]) && receipt.schema === "work.feature-verification-receipt/v1" &&
+  const valid = hasExactKeys(receipt, receiptKeys) &&
+    receipt.schema === "work.feature-verification-receipt/v1" &&
     receipt.brief_id === brief?.id &&
     receipt.operation_contract === "flow.operation/feature-verify/v1" &&
     nonEmpty(receipt.effect_id) &&
     nonEmpty(receipt.attempt_id) &&
     nonEmpty(receipt.idempotency_key) &&
     receipt.selected_evidence_fingerprint === expectedEvidence?.fingerprint &&
+    (operationInput?.independent_critique !== true ||
+      isDigest(receipt.independent_critique_digest)) &&
     selectedDiscriminatorValid &&
     testEvidenceValid &&
     operationEvidenceExact &&
@@ -2156,6 +2174,53 @@ function decideWorkspaceClaim(current, command) {
       payload: {
         type: "workspace_claimed",
         claim: command.claim,
+        command_receipt: workIdempotencyReceipt(command),
+      },
+    },
+  };
+}
+
+function decideWorkspaceObservation(current, command) {
+  if (current?.schema !== "work.workspace-projection/v1" ||
+      !nonEmpty(command.command_id) ||
+      command.expected_watermark !== current.watermark ||
+      command.expected_generation !== current.generation ||
+      command.expected_mutation_epoch !== current.mutation_epoch ||
+      command.expected_fingerprint !== digest({ git: current.git })) {
+    return reject(command, "stale_workspace_observation", current);
+  }
+  if (TERMINAL_WORKSPACE_DISPOSITIONS.has(current.disposition)) {
+    return reject(command, "workspace_disposed", current);
+  }
+  if (current.taint !== null) {
+    return reject(command, "workspace_tainted", current);
+  }
+  if (current.claims.length > 0) {
+    return reject(command, "workspace_already_claimed", current);
+  }
+  const observation = command.git_observation;
+  if (observation?.schema !== "work.git-observation/v1" ||
+      !validGitFacts(observation.git)) {
+    return reject(command, "invalid_workspace_observation", current);
+  }
+  if (observation.git.clean !== true) {
+    return reject(command, "workspace_dirty", current);
+  }
+  if (isDeepStrictEqual(observation.git, current.git)) {
+    return reject(command, "workspace_observation_unchanged", current);
+  }
+  return {
+    accepted: true,
+    streamKind: "workspace",
+    event: {
+      contract: "work.workspace-event/v1",
+      payload: {
+        type: "workspace_reobserved",
+        generation: current.generation + 1,
+        mutation_epoch: current.mutation_epoch + 1,
+        git: observation.git,
+        git_observation: observation,
+        disposition: current.disposition,
         command_receipt: workIdempotencyReceipt(command),
       },
     },

@@ -14,8 +14,11 @@ import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import {
+  AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   createFeatureDefinition,
   FEATURE_CAPTURE_RECEIPT_VALIDATOR,
+  FEATURE_CRITIQUE_OUTPUT_SCHEMA,
+  FEATURE_CRITIQUE_PROMPT,
   FEATURE_TEST_RECEIPT_VALIDATOR,
   FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
   FEATURE_OPERATION_CONTRACTS,
@@ -184,9 +187,37 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     cards.get("feature-critique").route,
     inputs.delegation.critique.route,
   );
-  for (const [cardId, phase, access, outputSchema] of [
-    ["feature-apply", "apply", "mutation", "workspace_mutation_observation"],
-    ["feature-critique", "critique", "read_only", "critique_observation"],
+  assert.equal(cards.get("feature-critique").inputs.prompt,
+    FEATURE_CRITIQUE_PROMPT);
+  assert.equal(cards.get("feature-critique").inputs.critique_output_schema,
+    FEATURE_CRITIQUE_OUTPUT_SCHEMA);
+  assert.equal(
+    cards.get("feature-critique").inputs.critique_input_binding_schema,
+    AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  );
+  for (const requirement of [
+    "flow.feature-critique-output/v1",
+    "candidate_digest",
+    "predecessor_evidence_digest",
+    "task_inputs_digest",
+    "brief.acceptance",
+    "evidence_digest",
+    "finding_id",
+    "non_blocking",
+    "sha256:<64 lowercase hex>",
+    "recursively sorts object keys",
+    "compact separators",
+    "UTF-8 bytes",
+  ]) {
+    assert.ok(cards.get("feature-critique").inputs.prompt.includes(requirement),
+      requirement);
+  }
+  for (const [cardId, phase, access, outputSchemas] of [
+    ["feature-apply", "apply", "mutation", [
+      "workspace_mutation_observation",
+      "feature_criterion_evidence",
+    ]],
+    ["feature-critique", "critique", "read_only", ["critique_observation"]],
   ]) {
     const card = cards.get(cardId);
     assert.deepEqual(card.inputs.task_inputs, {
@@ -212,7 +243,7 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
     assert.deepEqual(card.inputs.output_requirements, {
       schema: "flow.delegate-output-requirements/v1",
       format: "canonical-json",
-      schemas: [outputSchema],
+      schemas: outputSchemas,
       validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
     });
     assert.deepEqual(card.inputs.output_requirements.schemas, card.outputs);
@@ -249,7 +280,10 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
   ]);
   assert.deepEqual(cards.get("feature-apply").outputs, [
     "workspace_mutation_observation",
+    "feature_criterion_evidence",
   ]);
+  assert.match(cards.get("feature-apply").inputs.prompt,
+    /feature_criterion_evidence\/v1/u);
   assert.deepEqual(cards.get("feature-critique").outputs, [
     "critique_observation",
   ]);
@@ -433,6 +467,14 @@ test("feature/v1 carries the exact capture policy into seal finalization", () =>
   inputs.finalization.publication.intended_consumer = "reviewer";
   const prepared = prepareFeatureSelection(inputs);
   const cards = new Map(prepared.graph.cards.map((card) => [card.id, card]));
+  assert.equal(cards.get("feature-critique").inputs.prompt,
+    FEATURE_CRITIQUE_PROMPT);
+  assert.equal(cards.get("feature-critique").inputs.critique_output_schema,
+    FEATURE_CRITIQUE_OUTPUT_SCHEMA);
+  assert.equal(
+    cards.get("feature-critique").inputs.critique_input_binding_schema,
+    AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  );
 
   assert.deepEqual(
     cards.get("feature-seal").inputs.capture_policy,
@@ -2292,6 +2334,14 @@ test("feature/v1 serializes mixed slices and keeps setup out of evidence", () =>
   assert.deepEqual(cards.get("feature-verify").dependencies, [
     "feature-capture",
   ]);
+  assert.equal(cards.get("feature-critique").inputs.prompt,
+    FEATURE_CRITIQUE_PROMPT);
+  assert.equal(cards.get("feature-critique").inputs.critique_output_schema,
+    FEATURE_CRITIQUE_OUTPUT_SCHEMA);
+  assert.equal(
+    cards.get("feature-critique").inputs.critique_input_binding_schema,
+    AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
+  );
   assert.deepEqual(cards.get("feature-verify").inputs.operation_evidence_card_ids, [
     "feature-slice-behavior-test",
     "feature-slice-behavior-verify",

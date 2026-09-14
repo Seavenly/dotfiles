@@ -53,6 +53,7 @@ export const FEATURE_WORK_RECEIPT_SCHEMA_FIELDS = new Map([
     "brief_id",
     "discriminating_evidence",
     "effect_id",
+    "independent_critique_digest",
     "idempotency_key",
     "operation_contract",
     "receipt_digest",

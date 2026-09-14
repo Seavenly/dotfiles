@@ -15,9 +15,21 @@ import {
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
-test("reboot admission schemas compile in strict mode", async () => {
+test("public host and reboot admission schemas compile in strict mode", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const names = [
+    "flow.transport-error.v1.schema.json",
+    "flow.transport-request.v1.schema.json",
+    "flow.transport-response.v1.schema.json",
+    "flow.owner-endpoint.v1.schema.json",
+    "flow.owner-status.v1.schema.json",
+    "flow.runtime-runner-status.v1.schema.json",
+    "flow.query.v1.schema.json",
+    "flow.feature-preparation-request.v1.schema.json",
+    "flow.feature-candidate-archive.v1.schema.json",
+    "flow.feature-criterion-evidence.v1.schema.json",
+    "flow.feature-critique-output.v1.schema.json",
+    "flow.authority-critique-input-binding.v1.schema.json",
     "flow.required-authority.v1.schema.json",
     "flow.authority-observation.v1.schema.json",
     "flow.authority-fact.v1.schema.json",
@@ -34,6 +46,232 @@ test("reboot admission schemas compile in strict mode", async () => {
 
   for (const schema of schemas) ajv.addSchema(schema);
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
+});
+
+test("public host schemas accept exact frames, status, and ordinary preparation", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const names = [
+    "flow.transport-error.v1.schema.json",
+    "flow.transport-request.v1.schema.json",
+    "flow.transport-response.v1.schema.json",
+    "flow.owner-endpoint.v1.schema.json",
+    "flow.owner-status.v1.schema.json",
+    "flow.runtime-runner-status.v1.schema.json",
+    "flow.query.v1.schema.json",
+    "flow.feature-preparation-request.v1.schema.json",
+    "flow.feature-candidate-archive.v1.schema.json",
+    "flow.feature-criterion-evidence.v1.schema.json",
+    "flow.feature-critique-output.v1.schema.json",
+    "flow.authority-critique-input-binding.v1.schema.json",
+  ];
+  for (const name of names) {
+    ajv.addSchema(JSON.parse(await readFile(join(root, "schemas", name), "utf8")));
+  }
+  const digest = `sha256:${"a".repeat(64)}`;
+  const validate = (name, value) => ajv.getSchema(
+    `https://dotfiles.local/schemas/${name}.schema.json`,
+  )(value);
+
+  assert.equal(validate("flow.transport-request.v1", {
+    schema: "flow.transport-request/v1",
+    interface: "flow.runtime/v1",
+    version: 1,
+    request_id: "request:one",
+    operation: "query",
+    request: { run_id: "run:one" },
+  }), true);
+  assert.equal(validate("flow.transport-response.v1", {
+    schema: "flow.transport-response/v1",
+    interface: "flow.runtime/v1",
+    version: 1,
+    request_id: "request:one",
+    operation: "query",
+    ok: true,
+    done: true,
+    result: { schema: "flow.run-index-projection/v1", runs: [] },
+  }), true);
+  assert.equal(validate("flow.query.v1", {
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  }), true);
+  assert.equal(validate("flow.query.v1", {
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+    extra: "rejected",
+  }), false);
+  assert.equal(validate("flow.transport-response.v1", {
+    schema: "flow.transport-response/v1",
+    interface: "flow.runtime/v1",
+    version: 1,
+    request_id: null,
+    operation: null,
+    ok: false,
+    done: true,
+    error: {
+      schema: "flow.transport-error/v1",
+      version: 1,
+      code: "invalid_json",
+    },
+  }), true);
+  assert.equal(validate("flow.owner-endpoint.v1", {
+    schema: "flow.owner-endpoint/v1",
+    version: 1,
+    owner_token: "owner:one-token",
+    pid: 42,
+    process_identity: "owner:one-token",
+    process_start_identity: "42:one",
+    authority_directory: "/state/flow",
+    endpoint_path: "/state/flow/owner.json",
+    socket_path: "/state/flow/owner.sock",
+    started_at: "2026-09-14T00:00:00.000Z",
+  }), true);
+  assert.equal(validate("flow.owner-status.v1", {
+    schema: "flow.owner-status/v1",
+    version: 1,
+    state: "stopped",
+    endpoint_path: "/state/flow/owner.json",
+    socket_path: "/state/flow/owner.sock",
+    authority_directory: "/state/flow",
+    pid: null,
+    process_identity: null,
+    process_start_identity: null,
+    started_at: null,
+  }), true);
+  assert.equal(validate("flow.owner-status.v1", {
+    schema: "flow.owner-status/v1",
+    version: 1,
+    state: "unknown",
+    endpoint_path: "/state/flow/owner.json",
+    socket_path: "/state/flow/owner.sock",
+    authority_directory: "/state/flow",
+    pid: 42,
+    process_identity: "owner:one-token",
+    process_start_identity: "platform-identity-unavailable",
+    started_at: "2026-09-14T00:00:00.000Z",
+    reason: "identity_unavailable",
+  }), true);
+  assert.equal(validate("flow.owner-status.v1", {
+    schema: "flow.owner-status/v1",
+    version: 1,
+    state: "running",
+    endpoint_path: "/state/flow/owner.json",
+    socket_path: "/state/flow/owner.sock",
+    authority_directory: "/state/flow",
+    pid: 42,
+    process_identity: "owner:one-token",
+    process_start_identity: "42:one",
+    started_at: "2026-09-14T00:00:00.000Z",
+    operator_errors: {
+      count: 17,
+      suppressed: 1,
+      last: {
+        source: "transport",
+        name: "Error",
+        message: "Flow transport error",
+        code: "transport_error",
+      },
+    },
+  }), true);
+  assert.equal(validate("flow.runtime-runner-status.v1", {
+    schema: "flow.runtime-runner-status/v1",
+    state: "running",
+    runs: { active: 1, executing: 1, waiting: 0, suspended: 0, retained: 0 },
+    delegates: { active: 1, capacity: 1, available: 0 },
+    operations: { active: 0, capacity: 1, available: 1 },
+    pending_commands: 1,
+    errors: { count: 0, reported: 0, suppressed: 0, last: null },
+  }), true);
+  const preparation = {
+    schema: "flow.feature-preparation-request/v1",
+    brief: {
+      schema: "flow.feature-brief/v1",
+      id: "brief:one",
+      summary: "A bounded feature",
+      acceptance: ["the behavior is observable"],
+    },
+    repository: { path: "/work/repository" },
+    mode: "verify",
+    routes: {
+      apply: { launch: { harness: "codex", capability: "workspace-write" } },
+      critique: { launch: { harness: "claude", capability: "read-only" } },
+    },
+    limits: { max_elapsed_seconds: 600 },
+  };
+  assert.equal(validate("flow.feature-preparation-request.v1", preparation), true);
+  assert.equal(validate("flow.feature-candidate-archive.v1", {
+    artifact_schema: "flow.feature-candidate-archive/v1",
+    bytes_digest: digest,
+    digest,
+    size: 12,
+  }), true);
+  assert.equal(validate("flow.feature-criterion-evidence.v1", {
+    schema: "flow.feature-criterion-evidence/v1",
+    criteria: [{
+      criterion: "the changed behavior is observable",
+      expected: "after\n",
+      kind: "git_file_equals",
+      target: "feature.txt",
+    }],
+  }), true);
+  const critiqueDigest = `sha256:${"b".repeat(64)}`;
+  const critique = {
+    schema: "flow.delegate-evidence/v1",
+    observation: "independent critique",
+    feature_critique: {
+      schema: "flow.feature-critique-output/v1",
+      candidate_digest: critiqueDigest,
+      predecessor_evidence_digest: `sha256:${"c".repeat(64)}`,
+      task_inputs_digest: `sha256:${"d".repeat(64)}`,
+      criteria: [{
+        criterion: "the behavior is observable",
+        evidence: {
+          kind: "git_file_equals",
+          target: "feature.txt",
+          expected: "after\n",
+        },
+        evidence_digest: `sha256:${"e".repeat(64)}`,
+        verdict: "passed",
+      }],
+      findings: [],
+    },
+  };
+  assert.equal(validate("flow.feature-critique-output.v1", critique), true);
+  assert.equal(validate("flow.authority-critique-input-binding.v1", {
+    schema: "flow.authority-critique-input-binding/v1",
+    card_id: "feature-critique",
+    candidate_digest: critiqueDigest,
+    predecessor_evidence_digest: `sha256:${"c".repeat(64)}`,
+    binding_digest: `sha256:${"f".repeat(64)}`,
+  }), true);
+  assert.equal(validate("flow.authority-critique-input-binding.v1", {
+    schema: "flow.authority-critique-input-binding/v1",
+    card_id: "feature-critique",
+    candidate_digest: critiqueDigest,
+    predecessor_evidence_digest: `sha256:${"c".repeat(64)}`,
+    binding_digest: `sha256:${"f".repeat(64)}`,
+    forged: true,
+  }), false);
+
+  const forbidden = { ...preparation, future_output_hash: digest };
+  assert.equal(validate("flow.feature-preparation-request.v1", forbidden), false);
+  for (const field of ["schema", "mode", "routes"]) {
+    const missing = structuredClone(preparation);
+    delete missing[field];
+    assert.equal(validate("flow.feature-preparation-request.v1", missing), false);
+  }
+  const delegationAlias = structuredClone(preparation);
+  delete delegationAlias.routes;
+  delegationAlias.delegation = preparation.routes;
+  assert.equal(
+    validate("flow.feature-preparation-request.v1", delegationAlias),
+    false,
+  );
+  const unknownNested = structuredClone(preparation);
+  unknownNested.routes.apply.launch.undocumented = true;
+  assert.equal(
+    validate("flow.feature-preparation-request.v1", unknownNested),
+    false,
+  );
 });
 
 test("delegate input envelope schemas compile in strict mode", async () => {
@@ -210,7 +448,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@29",
+          catalog_id: "flow.contract-catalog/v1@31",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,

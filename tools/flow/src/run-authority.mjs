@@ -511,7 +511,7 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
       return hostProjection();
     },
 
-    watch(runId) {
+    watch(runId, { unrefPollTimer = false } = {}) {
       const run = runs.get(runId);
       if (!run) {
         return createOneShotWatcher(
@@ -529,6 +529,7 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
         runWatchers?.delete(watcher);
         if (runWatchers?.size === 0) watchers.delete(runId);
         },
+        unrefPollTimer,
       });
       const runWatchers = watchers.get(runId) ?? new Set();
       runWatchers.add(watcher);
@@ -536,10 +537,11 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
       return watcher;
     },
 
-    watchHost() {
+    watchHost({ unrefPollTimer = false } = {}) {
       const watcher = createProjectionWatcher({
         initialProjection: hostProjection(),
         close: () => hostWatchers.delete(watcher),
+        unrefPollTimer,
       });
       hostWatchers.add(watcher);
       return watcher;
@@ -922,6 +924,13 @@ export function createDurableRunAuthority({
   }
 
   const authorityMethods = {
+    // This is deliberately a read-only fact. Callers cannot turn an inspect
+    // authority into a mutation authority by observing the host projection.
+    get mutationAuthority() {
+      return !closed && lockDatabase !== null &&
+        authoritySchemaCompatibility?.status === "compatible";
+    },
+
     hostCommand,
     pendingSameBootRecoveryRunIds() {
       return Object.freeze([...sameBootRecoveryRunIds].sort());
@@ -1598,6 +1607,15 @@ export function createDurableRunAuthority({
               bootId,
               processIdentity,
             });
+            appendTerminalWorkspaceClaimReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: canonicalCommand.run_id,
+              terminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
           }
           if (terminalEvent && terminalCommitsImmediately) {
             appendAuthorityEvents(database, {
@@ -1733,13 +1751,15 @@ export function createDurableRunAuthority({
           reviewAuthorityObservation = currentProjection?.invalidation?.observation ?? null;
         }
         if (currentProjection?.schema === "work.workspace-projection/v1" &&
-            command.type === "workspace_claim") {
+            ["workspace_claim", "workspace_observe"].includes(command.type)) {
           let observation;
           try {
             observation = gitWorkspaceObservationAdapter.observe({
               repository_id: currentProjection.repository.canonical_id,
               workspace_path: currentProjection.workspace.canonical_path,
-              ref: currentProjection.git.ref,
+              ref: command.type === "workspace_observe"
+                ? command.git_observation?.git?.ref
+                : currentProjection.git.ref,
             });
           } catch {
             return workRejection("command", "workspace_git_observation_unavailable", {
@@ -2094,7 +2114,7 @@ export function createDurableRunAuthority({
       }
     },
 
-    watch(runId) {
+    watch(runId, { unrefPollTimer = false } = {}) {
       assertOpen();
       const initial = this.query(runId);
       if (initial.schema === "flow.rejection/v1") {
@@ -2103,6 +2123,7 @@ export function createDurableRunAuthority({
       const watcher = createProjectionWatcher({
         initialProjection: initial,
         readProjection: () => this.query(runId),
+        unrefPollTimer,
         close: () => {
           const runWatchers = watchers.get(runId);
           runWatchers?.delete(watcher);
@@ -2197,16 +2218,23 @@ export function createDurableRunAuthority({
         let latestObservation = null;
         let latestObservationIndex = -1;
         let latestInvocationIndex = -1;
+        let latestInvocation = null;
         stream.records.forEach(({ payload }, index) => {
           if (payload.type === "effect_observation_recorded" &&
               payload.effect_id === intent.effect_id) {
             latestObservation = payload.observation;
             latestObservationIndex = index;
-          } else if (payload.type === "effect_invocation_started" &&
+          } else if ((payload.type === "effect_invocation_started" ||
+              payload.type === "effect_invocation_resumed") &&
               payload.effect_id === intent.effect_id) {
             latestInvocationIndex = index;
+            latestInvocation = payload;
           }
         });
+        const resumesUnknownInvocation = reconciliation === "invoke_absent" &&
+          latestInvocation?.type === "effect_invocation_started" &&
+          (!validateTimeFacts(latestInvocation.time_facts) ||
+            latestInvocation.time_facts.length === 0);
         const observedPresence = validateEffectObservation(
           latestObservation,
           intent,
@@ -2239,19 +2267,23 @@ export function createDurableRunAuthority({
           timeObservationAdapter,
           bootId,
         );
-        const executionTime = applyExecutionTimeObservation(
+        const executionTimeProjection = applyExecutionTimeObservation(
           stream.fold,
           [],
           executionTimeObservation,
           runEventsFromRecords(stream.records),
-        ).executionTime;
-        const executionTimeFence = executionTimeAdmissionFence(executionTime);
+        );
+        const executionTimeFence = executionTimeAdmissionFence(
+          executionTimeProjection,
+          resumesUnknownInvocation ? intent.effect_id : null,
+        );
         if (!settleCancelled && intent.effect_kind !== "delegate_cancellation" &&
             !["adopt_present", "settle_absent"].includes(reconciliation) &&
             executionTimeFence !== null) {
           throw executionTimeFence;
         }
-        if (!["adopt_present", "settle_absent"].includes(reconciliation)) {
+        if (!["adopt_present", "settle_absent"].includes(reconciliation) &&
+            !resumesUnknownInvocation) {
           const retryFence = effectRetryAdmissionFence(
             stream.records,
             intent,
@@ -2272,6 +2304,7 @@ export function createDurableRunAuthority({
           payload.effect_id === intent.effect_id);
         if (reconciliation !== "adopt_present" &&
             reconciliation !== "settle_absent" &&
+            !resumesUnknownInvocation &&
             (intent.effect_kind === undefined || intent.effect_kind === "operation")) {
           const invocationCount = stream.records.filter(({ payload }) =>
             payload.type === "effect_invocation_started" &&
@@ -2384,9 +2417,10 @@ export function createDurableRunAuthority({
             );
           }
           assertDurableHostRestoreClear(database);
-          const recordsInvocationStart = !settleCancelled ||
-            effectiveIntent.effect_kind === "delegate_cancellation";
-          if (recordsInvocationStart) {
+          const recordsInvocationStart = !resumesUnknownInvocation &&
+            (!settleCancelled ||
+              effectiveIntent.effect_kind === "delegate_cancellation");
+          if (recordsInvocationStart || resumesUnknownInvocation) {
             // beforeEffect is the last injected boundary before dispatch. It
             // may advance time or invalidate an authority fence, so it must
             // run before the final typed time observation and invocation
@@ -2400,19 +2434,21 @@ export function createDurableRunAuthority({
               // control. Preserve that durable in-flight attempt so recovery
               // can reconcile the exact effect. A fence raised by the hook
               // itself still wins and leaves no phantom attempt behind.
-              try {
-                recordEffectInvocationStarted(database, effectiveIntent, {
-                  authorityDirectory,
-                  authorityEpoch,
-                  bootId,
-                  executionTimeFacts: null,
-                  gitRetentionAdapter,
-                  gitWorkspaceObservationAdapter,
-                  processIdentity,
-                });
-              } catch {
-                // The authority may have been closed or replaced by the
-                // crash hook. In that case the original fence is preserved.
+              if (recordsInvocationStart) {
+                try {
+                  recordEffectInvocationStarted(database, effectiveIntent, {
+                    authorityDirectory,
+                    authorityEpoch,
+                    bootId,
+                    executionTimeFacts: null,
+                    gitRetentionAdapter,
+                    gitWorkspaceObservationAdapter,
+                    processIdentity,
+                  });
+                } catch {
+                  // The authority may have been closed or replaced by the
+                  // crash hook. In that case the original fence is preserved.
+                }
               }
               throw error;
             }
@@ -2443,29 +2479,48 @@ export function createDurableRunAuthority({
               timeObservationAdapter,
               bootId,
             );
-            const finalExecutionTime = applyExecutionTimeObservation(
+            const finalExecutionTimeProjection = applyExecutionTimeObservation(
               dispatchStream.fold,
               [],
               finalExecutionTimeObservation,
               runEventsFromRecords(dispatchStream.records),
-            ).executionTime;
+            );
             const finalExecutionTimeFence = executionTimeAdmissionFence(
-              finalExecutionTime,
+              finalExecutionTimeProjection,
+              resumesUnknownInvocation ? effectiveIntent.effect_id : null,
             );
             if (!settleCancelled &&
                 effectiveIntent.effect_kind !== "delegate_cancellation" &&
                 finalExecutionTimeFence !== null) {
               throw finalExecutionTimeFence;
             }
-            recordEffectInvocationStarted(database, effectiveIntent, {
-              authorityDirectory,
-              authorityEpoch,
-              bootId,
-              executionTimeFacts: finalExecutionTimeObservation.facts,
-              gitRetentionAdapter,
-              gitWorkspaceObservationAdapter,
-              processIdentity,
-            });
+            if (recordsInvocationStart) {
+              recordEffectInvocationStarted(database, effectiveIntent, {
+                authorityDirectory,
+                authorityEpoch,
+                bootId,
+                executionTimeFacts: finalExecutionTimeObservation.facts,
+                gitRetentionAdapter,
+                gitWorkspaceObservationAdapter,
+                processIdentity,
+              });
+            } else {
+              if (finalExecutionTimeObservation.facts === null) {
+                throw new AuthorityFenceError(
+                  "execution_time_unavailable",
+                  "fresh typed execution time facts are required to resume an effect",
+                );
+              }
+              recordEffectInvocationResumed(database, effectiveIntent, {
+                authorityDirectory,
+                authorityEpoch,
+                bootId,
+                executionTimeFacts: finalExecutionTimeObservation.facts,
+                gitRetentionAdapter,
+                gitWorkspaceObservationAdapter,
+                processIdentity,
+              });
+            }
           } else {
             assertDurableHostRestoreClear(
               database,
@@ -2580,6 +2635,15 @@ export function createDurableRunAuthority({
             ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
           if (effectSucceeded && deferredTerminalEvent) {
             appendTerminalConsumerHandoffReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: effectiveIntent.run_id,
+              terminalEvent: deferredTerminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            appendTerminalWorkspaceClaimReleases(database, {
               prepared: current.records[0].payload.prepared,
               runId: effectiveIntent.run_id,
               terminalEvent: deferredTerminalEvent,
@@ -2988,6 +3052,7 @@ export function createDurableRunAuthority({
       if (![
         "work.workspace-register-command/v1",
         "work.workspace-claim-command/v1",
+        "work.workspace-observation-command/v1",
         "work.workspace-claim-release-command/v1",
         "work.workspace-taint-command/v1",
         "work.workspace-taint-disposition-command/v1",
@@ -3221,7 +3286,33 @@ function observeExecutionTime(adapter, expectedBootId = undefined) {
   }
 }
 
-function executionTimeAdmissionFence(executionTime) {
+function executionTimeAdmissionFence(
+  projection,
+  allowedUnknownActiveEffectId = null,
+) {
+  const executionTime = projection?.executionTime ?? projection;
+  const admission = projection?.executionTime === undefined
+    ? null
+    : projection.admission;
+  if (allowedUnknownActiveEffectId !== null && admission !== null) {
+    const wallFence = executionTimeDecisionFence(admission.wall);
+    if (wallFence !== null) return wallFence;
+    const activeFence = executionTimeDecisionFence(admission.active);
+    if (activeFence === null) return null;
+    const uncertainEffects = admission.uncertain_active_effect_ids;
+    if (admission.active?.status === "uncertain" &&
+        admission.active.reason === "active_time_uncertain" &&
+        Array.isArray(uncertainEffects) &&
+        uncertainEffects.length === 1 &&
+        uncertainEffects[0] === allowedUnknownActiveEffectId) {
+      return null;
+    }
+    return activeFence;
+  }
+  return executionTimeDecisionFence(executionTime);
+}
+
+function executionTimeDecisionFence(executionTime) {
   if (!["exhausted", "uncertain", "unobserved"].includes(
     executionTime?.status,
   )) return null;
@@ -4101,6 +4192,49 @@ function appendTerminalConsumerHandoffReleases(database, {
   }
 }
 
+function appendTerminalWorkspaceClaimReleases(database, {
+  prepared,
+  runId,
+  terminalEvent,
+}, fence) {
+  const workspaceClaims = prepared?.explicit_facts?.resource_claims
+    ?.filter(({ kind }) => kind === "workspace") ?? [];
+  for (const claim of workspaceClaims) {
+    if (terminalEvent.type === "run_cancelled") {
+      const disposition = terminalEvent.resource_dispositions?.find((entry) =>
+        entry.claim?.kind === "workspace" &&
+        entry.claim.id === claim.id)?.disposition;
+      if (disposition !== "released") continue;
+    }
+    const identity = workStreamIdentity("work.workspace/v1", claim.id);
+    const workspace = identity === null
+      ? null
+      : readStream(database, identity.streamId)?.fold ?? null;
+    const currentClaim = workspace?.claims?.find(({ holder }) => holder === runId);
+    if (workspace === null || currentClaim === undefined ||
+        workspace.taint !== null ||
+        workspace.generation !== claim.generation ||
+        workspace.mutation_epoch !== claim.mutation_epoch ||
+        digest({ git: workspace.git }) !== claim.fingerprint) {
+      continue;
+    }
+    appendAuthorityEvents(database, {
+      streamId: identity.streamId,
+      streamKind: identity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_claim_released",
+          claim_id: currentClaim.claim_id,
+          holder: currentClaim.holder,
+          reason: terminalEvent.type,
+        },
+      }],
+      ...fence,
+    });
+  }
+}
+
 function storeArtifactBytes(authorityDirectory, artifact, encodedBytes) {
   const bytes = Buffer.from(encodedBytes, "base64");
   if (bytes.toString("base64") !== encodedBytes || bytes.length !== artifact.size ||
@@ -4553,6 +4687,49 @@ function recordEffectInvocationStarted(database, intent, {
   gitWorkspaceObservationAdapter,
   processIdentity,
 }) {
+  recordEffectInvocationEvent(database, intent, {
+    authorityDirectory,
+    authorityEpoch,
+    bootId,
+    executionTimeFacts,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    processIdentity,
+    type: "effect_invocation_started",
+  });
+}
+
+function recordEffectInvocationResumed(database, intent, {
+  authorityDirectory,
+  authorityEpoch,
+  bootId,
+  executionTimeFacts,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  processIdentity,
+}) {
+  recordEffectInvocationEvent(database, intent, {
+    authorityDirectory,
+    authorityEpoch,
+    bootId,
+    executionTimeFacts,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    processIdentity,
+    type: "effect_invocation_resumed",
+  });
+}
+
+function recordEffectInvocationEvent(database, intent, {
+  authorityDirectory,
+  authorityEpoch,
+  bootId,
+  executionTimeFacts = null,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  processIdentity,
+  type,
+}) {
   const publication = intent.operation_input?.publication;
   let publicationAuthority = null;
   if (publication !== undefined) {
@@ -4678,7 +4855,7 @@ function recordEffectInvocationStarted(database, intent, {
       events: [{
         contract: "flow.run-event/v1",
         payload: {
-          type: "effect_invocation_started",
+          type,
           effect_id: intent.effect_id,
           authority_epoch: authorityEpoch,
           ...(executionTimeFacts === null ? {} : {

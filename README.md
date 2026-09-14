@@ -114,7 +114,34 @@ flow query legacy-inventory --json
 flow query delegated-agent --harness codex --capability read-only \
   --caller-metadata '{"owner":"preparation"}' --json
                                 inspect an exact non-mutating Drovr launch contract
+flow start --json                start the optional host-owned replacement runtime
+flow status --json               inspect owner, runner capacity, and errors
+flow stop --json                 stop the exact recorded owner
 ```
+
+The autonomous owner uses one delegate slot and one operation slot by default.
+Set `FLOW_RUNNER_DELEGATE_CAPACITY` and
+`FLOW_RUNNER_OPERATION_CAPACITY` to positive integers from 1 through 64 before
+`flow start` to override those bounds. The equivalent explicit production
+configuration is `createFlowRuntime({ runnerOptions: { delegateCapacity,
+operationCapacity } })`. `flow status --json` reports both capacities, active
+counts, and bounded error summaries; detached-owner diagnostics are retained
+in the private `owner-errors.json` file below the authority state directory.
+
+The public host-owned `FlowRuntime` exposes exactly five JSON operations. Each
+request is supplied with `--input` and may be serialized with `--json`:
+
+```sh
+flow prepare --input JSON --json   # prepare a closed feature request
+flow launch --input JSON --json    # launch one confirmed prepared run
+flow command --input JSON --json   # issue one typed run or host command
+flow query --input JSON --json     # read one named query or projection
+flow watch --input JSON --json     # stream watermarked observations
+```
+
+Preparation input must use the closed `flow.feature-preparation-request/v1`
+schema; launch, command, query, and watch inputs use their corresponding
+versioned request contracts.
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
 `recorder`, and `mise`. Normal upgrades fail fast, ignore Git state, and leave
@@ -161,9 +188,9 @@ future launcher remains responsible for enforcing that converged decision.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
-`tools/flow/src/evidence-safety.mjs`. Catalog v29 binds policy
+`tools/flow/src/evidence-safety.mjs`. Catalog v31 binds policy
 `flow.evidence-safety-policy/v1` to exact catalog identity
-`flow.contract-catalog/v1@29`; rejected evidence produces only typed redacted
+`flow.contract-catalog/v1@31`; rejected evidence produces only typed redacted
 codes and never reads ambient host state.
 
 The three implementations use disjoint authority roots, and existing runs
@@ -193,9 +220,19 @@ Destructive reset and risk acceptance require fresh exact human authority;
 Cancellation is irreversible: it stops new Adapter admission, abandons
 incomplete attempts, preserves completed evidence, and quarantines outstanding
 or late results without advancing dependencies.
+The public host owner and its optional macOS LaunchAgent and Ubuntu user-systemd
+templates are documented in
+[`config/flow/host/README.md`](config/flow/host/README.md). Normal convergence
+only makes those sources available below `~/.config/flow/host`; it never loads
+or enables either host manager, and the replacement selector remains disabled
+until the explicit opt-in decision in issue #43.
 The public contracts and guardrails are documented in
 [`tools/flow/README.md`](tools/flow/README.md) and
 [`ADR-0008`](docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md).
+
+User-owned symlink ancestors of the state or authority root are rejected for
+safety. Set `FLOW_AUTHORITY_DIRECTORY` to a real private directory owned by the
+current user (mode `0700`) to remedy that configuration error.
 
 ## Machine-local configuration
 

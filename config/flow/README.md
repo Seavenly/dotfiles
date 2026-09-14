@@ -47,9 +47,44 @@ It does not create a replacement run or mutate Drovr delegated work. Until all
 required lifecycle features advertise `supported`, the projection is a typed
 compatibility block with repair and refresh as its only legal actions.
 
+## Public host runtime
+
+The supported public surface is one versioned `flow.runtime/v1` Interface with
+exactly five operations: `prepare`, `launch`, `command`, `query`, and `watch`.
+The CLI sends each operation through the same bounded newline-delimited JSON
+transport. `flow start`, `flow status`, and `flow stop` manage the host owner;
+they are lifecycle commands around the five-operation Interface, not additional
+FlowRuntime operations.
+
+The default production composition opens one durable `RunAuthority` under
+`$XDG_STATE_HOME/flow` (or `~/.local/state/flow`), registers the shipped
+feature and review definitions, real Git/workspace and artifact operations,
+strict output validators, authority observers, and the configured
+`DelegatedAgentPort`. The autonomous runner consumes only current authority
+projections. It keeps delegate and operation capacities separate, defaults
+each to one slot, and accepts positive bounds from 1 through 64 using
+`FLOW_RUNNER_DELEGATE_CAPACITY` / `FLOW_RUNNER_OPERATION_CAPACITY` or the
+explicit `runnerOptions` production constructor fields. It does not count
+passive child-run observation against operation capacity, and never auto-
+admits a checkpoint, capability expansion, uncertain effect, or terminal
+disposition.
+
+`flow status --json` includes the live runner status with capacity, active
+counts, and bounded sanitized error summaries. A detached owner also retains
+sanitized runner and transport diagnostics in the private `owner-errors.json`
+file under its authority directory; raw provider payloads and error messages
+are never written there.
+
+Clients do not own the authority lock. The host owner is fenced by its exact
+endpoint identity and survives client exit; competing clients can query and
+watch through the private Unix socket. Same-boot owner restart replays the
+durable authority and reconciles outstanding effects. Reboot admission remains
+an explicit per-run command. For platform-manager templates and the explicit
+opt-in procedure, see [`host/README.md`](host/README.md).
+
 ## Delegate input compatibility
 
-Catalog v29 publishes one versioned input contract for every dynamic delegate
+Catalog v31 publishes one versioned input contract for every dynamic delegate
 card and shipped delegated role: feature apply and critique (including serialized slices), local
 and GitHub review lenses and critic, and quick-spike researcher and synthesizer
 all send `flow.delegate-input-envelope/v1`. Each envelope selects bounded
@@ -71,7 +106,7 @@ capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
 the evidence-safety catalog identity is
-`flow.contract-catalog/v1@29`.
+`flow.contract-catalog/v1@31`.
 
 Callers select instructions, minimal task-input IDs and facts, resource
 selection IDs, and output requirements. RunAuthority derives execution
@@ -120,3 +155,22 @@ closes the exact live turn, hands its agent back to the durable registry, and
 then permits quarantined delegate retirement settlement. A run terminating
 between declared managed cards retires its held agent before cancellation or
 decline completes; proven-absent turns hand cleanup to the durable registry.
+
+The public host payload contracts are maintained beside this inventory:
+
+- `schemas/flow.transport-request.v1.schema.json`,
+  `schemas/flow.transport-response.v1.schema.json`, and
+  `schemas/flow.transport-error.v1.schema.json` define the bounded five-
+  operation transport frames;
+- `schemas/flow.owner-endpoint.v1.schema.json`,
+  `schemas/flow.owner-status.v1.schema.json`, and
+  `schemas/flow.runtime-runner-status.v1.schema.json` define host identity and
+  autonomous capacity projections; and
+- `schemas/flow.feature-preparation-request.v1.schema.json` and
+  `schemas/flow.feature-candidate-archive.v1.schema.json` define the ordinary
+  feature preparation and captured archive descriptors.
+
+Host-manager definitions remain explicit opt-in sources under `host/`. Their
+installation and lifecycle procedure is documented in
+[`host/README.md`](host/README.md); normal dotfiles convergence does not load
+or enable them.

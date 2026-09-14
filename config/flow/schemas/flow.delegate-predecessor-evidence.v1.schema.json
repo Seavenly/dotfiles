@@ -69,7 +69,7 @@
       "properties": {
         "schema": { "const": "flow.evidence-safety-receipt/v1" },
         "policy_id": { "const": "flow.evidence-safety-policy/v1" },
-        "catalog_id": { "const": "flow.contract-catalog/v1@29" },
+        "catalog_id": { "const": "flow.contract-catalog/v1@31" },
         "classification": {
           "enum": [
             "research",
