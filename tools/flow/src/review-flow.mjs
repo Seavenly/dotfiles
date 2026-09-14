@@ -67,6 +67,41 @@ export const REVIEW_OPERATION_REGISTRATION_POLICY =
 export const REVIEW_DELEGATE_OUTPUT_VALIDATOR =
   "flow.validator/review-result/v1";
 
+export const REVIEW_CANDIDATE_CURRENCY_STATUSES = Object.freeze([
+  "sealed",
+  "stale",
+  "blocked",
+]);
+
+export const REVIEW_CANDIDATE_LIFECYCLE_STATUSES = Object.freeze([
+  "sealed",
+  "superseded",
+  "abandoned",
+]);
+
+export const REVIEW_CANDIDATE_CURRENCY_BLOCKING_REASONS = Object.freeze([
+  "workspace_authority_unavailable",
+  "workspace_mutation_epoch_moved",
+  "workspace_dirty",
+  "unresolved_effect",
+  "workspace_tainted",
+  "artifact_uncertain",
+  "artifact_unavailable",
+  "git_retention_unavailable",
+  "git_retention_mismatch",
+  "artifact_handoff_pin_missing",
+  "artifact_handoff_pin_mismatch",
+  "handoff_unavailable",
+  "handoff_inactive",
+  "handoff_uncertain",
+  "handoff_not_current",
+  "handoff_workspace_mismatch",
+  "handoff_artifact_mismatch",
+  "handoff_git_retention_mismatch",
+  "candidate_lifecycle_superseded",
+  "candidate_lifecycle_abandoned",
+]);
+
 const GITHUB_REVIEW_SAFE_OBSERVATION_CODES = new Set([
   "github_review_adapter_incomplete",
   "github_review_adapter_unavailable",
@@ -643,10 +678,34 @@ export function materializeReviewDelegateResult(acceptedDelegate) {
   };
 }
 
+function candidateLifecycleStatus(projection) {
+  const status = projection?.lifecycle_status ??
+    projection?.candidate_lifecycle_status ?? projection?.status;
+  return REVIEW_CANDIDATE_LIFECYCLE_STATUSES.includes(status)
+    ? status
+    : "sealed";
+}
+
+function terminalCandidateLifecycleProjection(projection) {
+  const lifecycleStatus = candidateLifecycleStatus(projection);
+  if (lifecycleStatus === "sealed") return projection;
+  return freezeCanonical({
+    ...projection,
+    status: "stale",
+    lifecycle_status: lifecycleStatus,
+    current: false,
+    evidence_currency: "stale",
+    blocking_reasons: [`candidate_lifecycle_${lifecycleStatus}`],
+    legal_actions: [],
+  });
+}
+
 function reviewCandidateProjectionIssue(target, projection) {
+  const lifecycleStatus = candidateLifecycleStatus(projection);
   if (projection?.schema !== "work.review-candidate-projection/v1" ||
       projection.contract !== "work.review/v1" ||
-      projection.status !== "sealed") {
+      !REVIEW_CANDIDATE_CURRENCY_STATUSES.includes(projection.status) &&
+        !REVIEW_CANDIDATE_LIFECYCLE_STATUSES.includes(projection.status)) {
     return {
       code: "candidate_authority_projection_missing",
       reason: "ReviewAuthority has no sealed exact candidate projection",
@@ -677,7 +736,269 @@ function reviewCandidateProjectionIssue(target, projection) {
       projection,
     };
   }
+  if (lifecycleStatus !== "sealed") {
+    return {
+      code: "candidate_lifecycle_terminal",
+      reason: `candidate lifecycle is ${lifecycleStatus} and cannot authorize review`,
+      projection,
+    };
+  }
+  if (projection.status === "stale") {
+    return {
+      code: "candidate_workspace_moved",
+      reason: "the candidate workspace mutation epoch is no longer current",
+      projection,
+    };
+  }
+  if (projection.status === "blocked") {
+    return {
+      code: "candidate_workspace_blocked",
+      reason: "the candidate workspace or artifact state is blocking review",
+      projection,
+    };
+  }
   return null;
+}
+
+/**
+ * Reconcile a sealed candidate against the current Work-domain subjects.
+ * Candidate and review streams retain their original evidence; this derived
+ * view only fences that evidence when the workspace or retained bytes have
+ * moved, become dirty, or become uncertain.
+ */
+export function projectReviewCandidateCurrency(
+  projection,
+  workspace,
+  artifacts = [],
+  observations = null,
+) {
+  if (projection?.schema !== "work.review-candidate-projection/v1") {
+    return projection;
+  }
+  const candidateWorkspace = projection.candidate?.workspace ?? projection.workspace;
+  const lifecycleStatus = candidateLifecycleStatus(projection);
+  const reasons = [];
+  if (lifecycleStatus !== "sealed") {
+    reasons.push(`candidate_lifecycle_${lifecycleStatus}`);
+  }
+  if (!isRecord(workspace) || workspace.schema !== "work.workspace-projection/v1") {
+    reasons.push("workspace_authority_unavailable");
+  } else {
+    const workspaceFingerprint = isRecord(workspace.git)
+      ? digest({ git: workspace.git })
+      : null;
+    if (workspaceFingerprint === null) {
+      reasons.push("workspace_authority_unavailable");
+    }
+    if (workspaceFingerprint !== null &&
+        (workspace.subject_id !== candidateWorkspace?.subject_id ||
+          workspace.generation !== candidateWorkspace?.generation ||
+          workspace.mutation_epoch !== candidateWorkspace?.mutation_epoch ||
+          workspaceFingerprint !== candidateWorkspace?.fingerprint)) {
+      reasons.push("workspace_mutation_epoch_moved");
+    }
+    if (workspace.git?.clean !== true) reasons.push("workspace_dirty");
+    if (workspace.taint !== null) {
+      reasons.push(workspace.taint?.reason === "effect_outcome_uncertain"
+        ? "unresolved_effect"
+        : workspace.taint?.reason === "workspace_dirty"
+          ? "workspace_dirty"
+          : "workspace_tainted");
+    }
+  }
+  for (const artifact of artifacts) {
+    if (!isRecord(artifact) || artifact.schema !== "work.artifact-projection/v1" ||
+        artifact.status === "uncertain") {
+      reasons.push("artifact_uncertain");
+    } else if (artifact.status === "collected" ||
+               artifact.byte_availability !== "available") {
+      reasons.push("artifact_unavailable");
+    }
+  }
+  const retentionObservation = observations?.git_retention_observation ?? null;
+  if (observations !== null) {
+    const retention = projection.candidate?.git_retention ?? projection.git_retention;
+    if (!isRecord(retentionObservation) ||
+        retentionObservation.schema !== "flow.git-retention-observation/v1" ||
+        retentionObservation.available !== true) {
+      reasons.push("git_retention_unavailable");
+    } else if (retentionObservation.repository_id !== retention?.repository_id ||
+        retentionObservation.commit_sha !== retention?.commit_sha ||
+        retentionObservation.tree_sha !== retention?.tree_sha ||
+        retentionObservation.retention_ref !== retention?.retention_ref) {
+      reasons.push("git_retention_mismatch");
+    }
+    const handoffIssue = observations.handoff_issue ?? null;
+    if (handoffIssue !== null) {
+      reasons.push(handoffIssue);
+    } else {
+      const handoff = observations.handoff;
+      const handoffReasonsBeforeStatus = reasons.length;
+      if (handoff?.status === "uncertain") {
+        reasons.push("handoff_uncertain");
+      } else if (handoff?.status !== "active") {
+        reasons.push("handoff_inactive");
+      }
+      if (observations.handoff_workspace_matches === false) {
+        reasons.push("handoff_workspace_mismatch");
+      }
+      if (observations.handoff_artifacts_match === false) {
+        reasons.push("handoff_artifact_mismatch");
+      }
+      if (observations.handoff_git_retention_matches === false) {
+        reasons.push("handoff_git_retention_mismatch");
+      }
+      // Handoff subject availability also reflects an unrelated consumer's
+      // mutation claim. Candidate currency has already compared the exact
+      // workspace identity above; only retained bytes and Git availability
+      // are currentness gates here.
+      if (handoff?.status === "active" &&
+          (handoff.byte_availability !== "available" ||
+           handoff.git_availability !== "available") &&
+          handoffReasonsBeforeStatus === 0 &&
+          reasons.length === handoffReasonsBeforeStatus) {
+        reasons.push("handoff_not_current");
+      }
+    }
+  }
+  const uniqueReasons = [...new Set(reasons)];
+  const moved = uniqueReasons.includes("workspace_mutation_epoch_moved");
+  const derivedStatus = moved ? "stale" : uniqueReasons.length > 0 ? "blocked" : "sealed";
+  const status = lifecycleStatus === "sealed" ? derivedStatus : "stale";
+  const current = lifecycleStatus === "sealed" && status === "sealed";
+  return freezeCanonical({
+    ...projection,
+    status,
+    current,
+    evidence_currency: current ? "current" : "stale",
+    ...(lifecycleStatus === "sealed" ? {} : {
+      lifecycle_status: lifecycleStatus,
+    }),
+    workspace_authority_watermark: workspace?.watermark ?? null,
+    workspace_generation: workspace?.generation ?? null,
+    workspace_mutation_epoch: workspace?.mutation_epoch ?? null,
+    workspace_fingerprint: isRecord(workspace?.git)
+      ? digest({ git: workspace.git })
+      : null,
+    ...(observations === null ? {} : {
+      artifact_authority_watermarks: artifacts.map((artifact) =>
+        artifact?.watermark ?? null),
+      git_retention_observation: retentionObservation,
+      git_retention_observation_watermark: retentionObservation === null
+        ? null
+        : digest(retentionObservation),
+      handoff_authority_watermark: observations.handoff?.authority_watermark ?? null,
+      handoff_observation_watermark: observations.handoff?.watermark ?? null,
+      handoff_status: observations.handoff?.status ?? null,
+    }),
+    blocking_reasons: uniqueReasons,
+    // A replacement candidate is required after movement. No command can
+    // safely invent its identity, so the stale/blocked projection is closed.
+    legal_actions: [],
+  });
+}
+
+/**
+ * Apply the same current-workspace fence to a recorded review projection.
+ * The review event and artifacts remain historical, while authorization is
+ * removed from the disposable projection until a fresh candidate is sealed.
+ */
+export function projectReviewCurrency(
+  projection,
+  workspace,
+  artifacts = [],
+  observations = null,
+  candidateLifecycleProjection = null,
+) {
+  const lifecycleStatus = candidateLifecycleStatus(
+    candidateLifecycleProjection ?? projection,
+  );
+  if (projection?.schema !== "flow.review-projection/v1" ||
+      projection.current !== true && lifecycleStatus === "sealed") return projection;
+  const candidateLifecycle = {
+    schema: "work.review-candidate-projection/v1",
+    contract: "work.review/v1",
+    candidate: projection.candidate,
+    workspace: projection.candidate?.workspace,
+    git_retention: projection.candidate?.git_retention,
+    status: lifecycleStatus,
+    ...(lifecycleStatus === "sealed" ? {} : {
+      lifecycle_status: lifecycleStatus,
+    }),
+    legal_actions: [],
+  };
+  const candidateProjection = lifecycleStatus !== "sealed" &&
+      workspace === null && observations === null
+    ? terminalCandidateLifecycleProjection(candidateLifecycle)
+    : projectReviewCandidateCurrency(
+      candidateLifecycle,
+      workspace,
+      artifacts,
+      observations,
+    );
+  if (candidateProjection.status === "sealed") {
+    return freezeCanonical({
+      ...projection,
+      ...(lifecycleStatus === "sealed" ? {} : {
+        candidate_lifecycle_status: lifecycleStatus,
+      }),
+      workspace_authority_watermark: candidateProjection.workspace_authority_watermark,
+      workspace_generation: candidateProjection.workspace_generation,
+      workspace_mutation_epoch: candidateProjection.workspace_mutation_epoch,
+      workspace_fingerprint: candidateProjection.workspace_fingerprint,
+      ...(observations === null ? {} : {
+        artifact_authority_watermarks:
+          candidateProjection.artifact_authority_watermarks,
+        git_retention_observation: candidateProjection.git_retention_observation,
+        git_retention_observation_watermark:
+          candidateProjection.git_retention_observation_watermark,
+        handoff_authority_watermark: candidateProjection.handoff_authority_watermark,
+        handoff_observation_watermark:
+          candidateProjection.handoff_observation_watermark,
+        handoff_status: candidateProjection.handoff_status,
+      }),
+      blocking_reasons: [],
+    });
+  }
+  return freezeCanonical({
+    ...projection,
+    ...(lifecycleStatus === "sealed" ? {} : {
+      candidate_lifecycle_status: lifecycleStatus,
+    }),
+    status: "stale",
+    current: false,
+    evidence_currency: "stale",
+    workspace_authority_watermark: candidateProjection.workspace_authority_watermark ?? null,
+    workspace_generation: candidateProjection.workspace_generation ?? null,
+    workspace_mutation_epoch: candidateProjection.workspace_mutation_epoch ?? null,
+    workspace_fingerprint: candidateProjection.workspace_fingerprint ?? null,
+    ...(observations === null ? {} : {
+      artifact_authority_watermarks:
+        candidateProjection.artifact_authority_watermarks,
+      git_retention_observation: candidateProjection.git_retention_observation,
+      git_retention_observation_watermark:
+        candidateProjection.git_retention_observation_watermark,
+      handoff_authority_watermark: candidateProjection.handoff_authority_watermark,
+      handoff_observation_watermark:
+        candidateProjection.handoff_observation_watermark,
+      handoff_status: candidateProjection.handoff_status,
+    }),
+    blocking_reasons: candidateProjection.blocking_reasons,
+    approval: "ineligible",
+    approval_eligible: false,
+    submission_pending: false,
+    submission_eligible: false,
+    integration_eligible: false,
+    integration_authorized: false,
+    merge_eligible: false,
+    merge_authorized: false,
+    tracker_completion_eligible: false,
+    tracker_completion_authorized: false,
+    remote_submission_authorized: false,
+    // Movement is handled by a new candidate run; this projection exposes no
+    // caller-shaped refresh that could authorize stale evidence.
+    legal_actions: [],
+  });
 }
 
 /**
@@ -2077,12 +2398,19 @@ export function createInMemoryReviewAuthority({
   candidateProjection = null,
   sourceEffectIntentReader = null,
   targetObservationAdapter = null,
+  workspaceProjection = null,
+  artifactProjections = [],
+  currencyObservations = null,
 } = {}) {
   const streams = new Map();
-  const sealedCandidateProjection = candidateProjection?.schema ===
-    "work.review-candidate-projection/v1"
-    ? freezeCanonical(candidateProjection)
-    : null;
+  const staticCandidateProjection = typeof candidateProjection === "function"
+    ? null
+    : candidateProjection?.schema === "work.review-candidate-projection/v1"
+      ? freezeCanonical(candidateProjection)
+      : null;
+  const candidateProjectionReader = typeof candidateProjection === "function"
+    ? candidateProjection
+    : () => staticCandidateProjection;
   const emptyProjection = (subjectId) => ({
     schema: "flow.rejection/v1",
     operation: "query",
@@ -2304,8 +2632,8 @@ export function createInMemoryReviewAuthority({
       if (request?.contract !== "work.review/v1" || typeof request.subject_id !== "string") {
         return reviewRejection("invalid_review_query", request, null, "query");
       }
-      if (sealedCandidateProjection?.subject_id === request.subject_id) {
-        return sealedCandidateProjection;
+      if (readSealedCandidateProjection()?.subject_id === request.subject_id) {
+        return currentCandidateProjection();
       }
       return queryProjection(request.subject_id);
     },
@@ -2321,14 +2649,73 @@ export function createInMemoryReviewAuthority({
     if (!events) return emptyProjection(subjectId);
     const event = events[0];
     const watermark = reviewAuthorityEventWatermark(events);
-    return projectReviewRecord(event.body, watermark, events);
+    const projection = projectReviewRecord(event.body, watermark, events);
+    // Preserve the legacy in-memory authority shape when no current Work
+    // observations were registered. Durable authorities opt into the fence
+    // by registering at least the workspace or artifact observation seam.
+    const hasArtifactObservation = typeof artifactProjections === "function" ||
+      Array.isArray(artifactProjections) && artifactProjections.length > 0;
+    const candidateProjection = readSealedCandidateProjection();
+    if (workspaceProjection === null && !hasArtifactObservation) {
+      return candidateLifecycleStatus(candidateProjection) === "sealed"
+        ? projection
+        : projectReviewCurrency(
+          projection,
+          null,
+          [],
+          null,
+          candidateProjection,
+        );
+    }
+    return projectReviewCurrency(
+      projection,
+      currentWorkspaceProjection(),
+      currentArtifactProjections(),
+      currencyObservations,
+      candidateProjection,
+    );
   }
 
   function queryCandidateProjection(subjectId) {
-    if (sealedCandidateProjection?.subject_id !== subjectId) {
+    const candidateProjection = readSealedCandidateProjection();
+    if (candidateProjection?.subject_id !== subjectId) {
       return emptyProjection(subjectId);
     }
-    return sealedCandidateProjection;
+    return currentCandidateProjection();
+  }
+
+  function currentCandidateProjection() {
+    const candidateProjection = readSealedCandidateProjection();
+    const hasArtifactObservation = typeof artifactProjections === "function" ||
+      Array.isArray(artifactProjections) && artifactProjections.length > 0;
+    if (workspaceProjection === null && !hasArtifactObservation) {
+      return terminalCandidateLifecycleProjection(candidateProjection);
+    }
+    return projectReviewCandidateCurrency(
+      candidateProjection,
+      currentWorkspaceProjection(),
+      currentArtifactProjections(),
+      currencyObservations,
+    );
+  }
+
+  function readSealedCandidateProjection() {
+    const projection = candidateProjectionReader();
+    return projection?.schema === "work.review-candidate-projection/v1"
+      ? freezeCanonical(projection)
+      : null;
+  }
+
+  function currentWorkspaceProjection() {
+    return typeof workspaceProjection === "function"
+      ? workspaceProjection()
+      : workspaceProjection;
+  }
+
+  function currentArtifactProjections() {
+    return typeof artifactProjections === "function"
+      ? artifactProjections()
+      : artifactProjections;
   }
 
   function observeReviewTarget(command, current) {
@@ -2565,13 +2952,24 @@ export function projectReviewRecord(body, watermark, events = []) {
     schema: "work.review-target-refresh-command/v1",
     type: "review_target_refresh",
     contract: "work.review/v1",
-    command_id: `review-target-refresh:${body.review_id}:${invalidation.observed_candidate_fingerprint}:${invalidation.observed_lifecycle_generation}`,
+    command_id: reviewTargetRefreshCommandId({
+      subjectId: body.review_id,
+      observedCandidateFingerprint: invalidation.observed_candidate_fingerprint,
+      observedLifecycleGeneration: invalidation.observed_lifecycle_generation,
+      observedMutationEpoch: invalidation.observed_mutation_epoch,
+    }),
     subject_id: body.review_id,
     expected_watermark: watermark,
     prior_candidate_fingerprint: invalidation.prior_candidate_fingerprint,
     prior_lifecycle_generation: invalidation.prior_lifecycle_generation,
     observed_candidate_fingerprint: invalidation.observed_candidate_fingerprint,
     observed_lifecycle_generation: invalidation.observed_lifecycle_generation,
+    ...(invalidation.prior_mutation_epoch === undefined ? {} : {
+      prior_mutation_epoch: invalidation.prior_mutation_epoch,
+    }),
+    ...(invalidation.observed_mutation_epoch === undefined ? {} : {
+      observed_mutation_epoch: invalidation.observed_mutation_epoch,
+    }),
     ...(invalidation.observation === undefined ? {} : {
       authority_observation: invalidation.observation,
     }),
@@ -2612,6 +3010,12 @@ export function projectReviewRecord(body, watermark, events = []) {
       invalidation,
       observed_candidate_fingerprint: invalidation.observed_candidate_fingerprint,
       observed_lifecycle_generation: invalidation.observed_lifecycle_generation,
+      ...(invalidation.prior_mutation_epoch === undefined ? {} : {
+        prior_mutation_epoch: invalidation.prior_mutation_epoch,
+      }),
+      ...(invalidation.observed_mutation_epoch === undefined ? {} : {
+        observed_mutation_epoch: invalidation.observed_mutation_epoch,
+      }),
     }),
     ...(refresh === null ? {} : { refresh }),
     ...(summary.posture === undefined ? {} : { posture: summary.posture }),
@@ -2949,6 +3353,21 @@ export function reviewTargetInvalidationIssue(
   if (current.current === false || current.status === "stale") {
     return "review_already_invalidated";
   }
+  const priorMutationEpoch = current.candidate?.workspace?.mutation_epoch;
+  const hasMutationEpoch = command.prior_mutation_epoch !== undefined ||
+    command.observed_mutation_epoch !== undefined;
+  const mutationEpochsValid = !hasMutationEpoch ||
+    Number.isSafeInteger(command.prior_mutation_epoch ?? priorMutationEpoch) &&
+      (command.prior_mutation_epoch ?? priorMutationEpoch) >= 1 &&
+    Number.isSafeInteger(command.observed_mutation_epoch) &&
+      command.observed_mutation_epoch >= 1 &&
+    (command.prior_mutation_epoch === undefined ||
+      command.prior_mutation_epoch === priorMutationEpoch);
+  const targetMoved = command.observed_candidate_fingerprint !==
+      command.prior_candidate_fingerprint ||
+    command.observed_lifecycle_generation !== command.prior_lifecycle_generation ||
+    hasMutationEpoch && command.observed_mutation_epoch !==
+      (command.prior_mutation_epoch ?? priorMutationEpoch);
   if (command.subject_id !== current.subject_id ||
       !isDigest(command.prior_candidate_fingerprint) ||
       command.prior_candidate_fingerprint !== current.candidate_fingerprint ||
@@ -2957,11 +3376,10 @@ export function reviewTargetInvalidationIssue(
       !isDigest(command.observed_candidate_fingerprint) ||
       !Number.isSafeInteger(command.observed_lifecycle_generation) ||
       command.observed_lifecycle_generation < 1 ||
-      command.observed_candidate_fingerprint === command.prior_candidate_fingerprint &&
-        command.observed_lifecycle_generation === command.prior_lifecycle_generation ||
+      !mutationEpochsValid ||
+      !targetMoved ||
       command.reason !== "target_moved" ||
-      command.command_id !==
-        `review-target-invalidate:${command.subject_id}:${command.observed_candidate_fingerprint}:${command.observed_lifecycle_generation}`) {
+      command.command_id !== reviewTargetInvalidationCommandId(command)) {
     return "invalid_review_target_invalidation";
   }
   const observationIssue = reviewTargetObservationIssue(
@@ -2992,8 +3410,14 @@ export function reviewTargetRefreshIssue(
       command.prior_lifecycle_generation !== invalidation.prior_lifecycle_generation ||
       command.observed_candidate_fingerprint !== invalidation.observed_candidate_fingerprint ||
       command.observed_lifecycle_generation !== invalidation.observed_lifecycle_generation ||
-      command.command_id !==
-        `review-target-refresh:${command.subject_id}:${command.observed_candidate_fingerprint}:${command.observed_lifecycle_generation}`) {
+      command.prior_mutation_epoch !== invalidation.prior_mutation_epoch ||
+      command.observed_mutation_epoch !== invalidation.observed_mutation_epoch ||
+      command.command_id !== reviewTargetRefreshCommandId({
+        subjectId: command.subject_id,
+        observedCandidateFingerprint: command.observed_candidate_fingerprint,
+        observedLifecycleGeneration: command.observed_lifecycle_generation,
+        observedMutationEpoch: command.observed_mutation_epoch,
+      })) {
     return "invalid_review_target_refresh";
   }
   const observation = authorityObservation ?? invalidation.observation ?? null;
@@ -3013,6 +3437,7 @@ export function buildReviewTargetObservation({
   candidateId,
   candidateFingerprint,
   lifecycleGeneration,
+  mutationEpoch,
   authorityWatermark,
   source = "named_mechanism_observation",
 }) {
@@ -3022,6 +3447,7 @@ export function buildReviewTargetObservation({
     candidate_id: candidateId,
     candidate_fingerprint: candidateFingerprint,
     lifecycle_generation: lifecycleGeneration,
+    ...(mutationEpoch === undefined ? {} : { mutation_epoch: mutationEpoch }),
     authority_watermark: authorityWatermark,
     source,
   };
@@ -3064,7 +3490,9 @@ function reviewTargetObservationIssue(command, current, observation) {
   if (observation.subject_id !== current.subject_id ||
       observation.candidate_id !== current.candidate?.candidate_id ||
       observation.candidate_fingerprint !== command.observed_candidate_fingerprint ||
-      observation.lifecycle_generation !== command.observed_lifecycle_generation) {
+      observation.lifecycle_generation !== command.observed_lifecycle_generation ||
+      command.observed_mutation_epoch !== undefined &&
+        observation.mutation_epoch !== command.observed_mutation_epoch) {
     return "review_target_observation_mismatch";
   }
   return null;
@@ -3078,6 +3506,9 @@ function reviewTargetObservationShapeIssue(observation) {
       !isDigest(observation.candidate_fingerprint) ||
       !Number.isSafeInteger(observation.lifecycle_generation) ||
       observation.lifecycle_generation < 1 ||
+      observation.mutation_epoch !== undefined &&
+        (!Number.isSafeInteger(observation.mutation_epoch) ||
+         observation.mutation_epoch < 1) ||
       !isDigest(observation.authority_watermark) ||
       !["candidate_projection", "named_mechanism_observation"].includes(observation.source) ||
       !isDigest(observation.evidence_digest)) {
@@ -3088,6 +3519,25 @@ function reviewTargetObservationShapeIssue(observation) {
     return "invalid_review_target_observation";
   }
   return null;
+}
+
+function reviewTargetInvalidationCommandId(command) {
+  const suffix = command.observed_mutation_epoch === undefined
+    ? ""
+    : `:${command.observed_mutation_epoch}`;
+  return `review-target-invalidate:${command.subject_id}:${command.observed_candidate_fingerprint}:${command.observed_lifecycle_generation}${suffix}`;
+}
+
+function reviewTargetRefreshCommandId({
+  subjectId,
+  observedCandidateFingerprint,
+  observedLifecycleGeneration,
+  observedMutationEpoch,
+}) {
+  const suffix = observedMutationEpoch === undefined
+    ? ""
+    : `:${observedMutationEpoch}`;
+  return `review-target-refresh:${subjectId}:${observedCandidateFingerprint}:${observedLifecycleGeneration}${suffix}`;
 }
 
 function oneShot(value) {
@@ -3140,6 +3590,12 @@ export function buildReviewTargetInvalidationEvent({
     prior_lifecycle_generation: command.prior_lifecycle_generation,
     observed_candidate_fingerprint: command.observed_candidate_fingerprint,
     observed_lifecycle_generation: command.observed_lifecycle_generation,
+    ...(command.prior_mutation_epoch === undefined ? {} : {
+      prior_mutation_epoch: command.prior_mutation_epoch,
+    }),
+    ...(command.observed_mutation_epoch === undefined ? {} : {
+      observed_mutation_epoch: command.observed_mutation_epoch,
+    }),
     reason: command.reason,
     ...(authorityObservation === null ? {} : {
       observation: authorityObservation,
@@ -3186,6 +3642,12 @@ export function buildReviewTargetRefreshEvent({
     prior_lifecycle_generation: command.prior_lifecycle_generation,
     observed_candidate_fingerprint: command.observed_candidate_fingerprint,
     observed_lifecycle_generation: command.observed_lifecycle_generation,
+    ...(command.prior_mutation_epoch === undefined ? {} : {
+      prior_mutation_epoch: command.prior_mutation_epoch,
+    }),
+    ...(command.observed_mutation_epoch === undefined ? {} : {
+      observed_mutation_epoch: command.observed_mutation_epoch,
+    }),
     ...(resolvedObservation === null ? {} : {
       observation: resolvedObservation,
     }),

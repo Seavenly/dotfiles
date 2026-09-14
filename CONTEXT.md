@@ -591,6 +591,19 @@ _Avoid_: Card, task
 A verified local branch plus immutable comparison points and review artifacts, ready for agent or human review but not yet delivered.
 _Avoid_: Pull request, review session
 
+Candidate currency is a derived authorization view, not a rewrite of the
+retained candidate or review record. It is `sealed` only when the exact
+workspace mutation epoch/fingerprint, clean and taint state, artifact bytes,
+Git retention, and artifact-pinned active handoff all reconcile. Workspace
+movement is `stale`; dirty, uncertain, missing, mismatched, or unresolved
+observations are `blocked`. The view preserves historical evidence, exposes
+the exact authority and observation watermarks plus deterministic blocking
+reasons, and closes candidate/review legal actions. A `superseded` or
+`abandoned` candidate lifecycle is terminal historical evidence and is exposed
+as stale currency with its lifecycle status and a closed action set. Replacement and recovery
+actions remain owned by the workspace, artifact, Git-retention, or handoff
+authority. GitHub review projections do not depend on local workspace currency.
+
 **Review manifest**:
 The durable identity, lifecycle generation, evidence history, and immutable Git
 comparison points for one review candidate.

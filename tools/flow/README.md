@@ -682,6 +682,20 @@ authority evidence. A registered review operation appends one immutable
 lifecycle generation bound independently. The ReviewAuthority-owned operation
 registration is reserved and cannot be replaced by caller code.
 
+The derived candidate-currency projection reports `sealed`, `stale`, or
+`blocked`. It rechecks the exact workspace mutation epoch and fingerprint,
+clean/taint state, retained artifact bytes, Git retention, and the exact
+artifact-pinned active handoff. Any movement or uncertainty keeps the original
+candidate and review evidence historical but removes authorization. Its
+`blocking_reasons` and authority watermarks identify the exact observed
+workspace, artifacts, Git retention, and handoff; candidate and review
+projections expose no recovery action because replacement and recovery belong
+to their owning authorities. GitHub review projections remain provider-owned
+and are not fenced by a local workspace observation.
+Terminal candidate lifecycles (`superseded` and `abandoned`) remain historical
+and are never re-derived as `sealed`; their derived currency is stale with a
+terminal lifecycle blocking reason and no legal actions.
+
 ReviewAuthority projections and `FlowRuntime` review queries/watchers expose
 the exact review watermark, append-only evidence, stable findings, posture,
 cap reasons, and deterministic JSON, Markdown, and HTML artifacts. Artifacts
