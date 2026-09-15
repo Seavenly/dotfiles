@@ -32,6 +32,7 @@ import { validateFeatureRepairContract } from
 import {
   buildReviewTargetObservation,
   createReviewDefinition,
+  REVIEW_HUMAN_COMMAND_SCHEMA,
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
@@ -3332,6 +3333,387 @@ test("feature/v1 seals with an explicit non-destructive compensating assertion",
   assert.equal(fixture.runtime.query({ run_id: fixture.runId }).phase, "succeeded");
 });
 
+test("durable ReviewAuthority accepts a human session command through FlowRuntime", async (t) => {
+  const fixture = await createFeatureFailureFixture(t, {
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  await driveFeatureToSeal(fixture);
+  await until(() => fixture.runtime.query({ run_id: fixture.runId }).phase ===
+    "succeeded");
+
+  const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const candidateId = completed.review_candidate_reference.candidate_id;
+  fixture.runAuthority.close();
+  const reviewRunAuthority = createDurableRunAuthority({
+    authorityDirectory: fixture.authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter({
+      promotion: true,
+    }),
+    hostIdentityAdapter: fixedHostIdentity("boot-durable-review", "review-process"),
+  });
+  t.after(() => reviewRunAuthority.close());
+  const reviewAuthority = getReviewAuthority({ runAuthority: reviewRunAuthority });
+  const candidateAuthority = reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  assert.equal(candidateAuthority.schema, "work.review-candidate-projection/v1");
+
+  const [securityDescription, criticDescription] = await Promise.all([
+    supportedDescription({
+      schema: "drovr.delegated-agent-description-request/v1",
+      launch: {
+        harness: "codex",
+        role: "reviewer",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        capability: "read-only",
+      },
+      caller_metadata: { owner: "durable-review-security" },
+    }, {}),
+    supportedDescription({
+      schema: "drovr.delegated-agent-description-request/v1",
+      launch: {
+        harness: "codex",
+        role: "reviewer",
+        model: "gpt-5.6-luna",
+        effort: "high",
+        capability: "read-only",
+      },
+      caller_metadata: { owner: "durable-review-critic" },
+    }, {}),
+  ]);
+  const route = (agentId, description) => ({
+    agent_id: agentId,
+    configuration_watermark: description.watermark.content_sha256,
+    description_digest: description.description_digest,
+    launch_comparison_key: description.comparison_keys.launch,
+  });
+  const target = {
+    schema: "flow.review-local-candidate/v1",
+    candidate: candidateAuthority.candidate,
+    candidate_fingerprint: candidateAuthority.candidate_fingerprint,
+    candidate_authority_watermark: candidateAuthority.watermark,
+    lifecycle_generation: 1,
+  };
+  const inputs = {
+    schema: "flow.review-request/v1",
+    target,
+    lenses: ["security"],
+    delegation: {
+      schema: "flow.review-delegation-bindings/v1",
+      lenses: {
+        security: {
+          description: securityDescription,
+          route: route("agent:durable-review-security", securityDescription),
+        },
+      },
+      critic: {
+        description: criticDescription,
+        route: route("agent:durable-review-critic", criticDescription),
+      },
+    },
+  };
+  const facts = structuredClone(fixture.facts);
+  facts.operation_contracts.push("flow.operation/review-record/v1");
+  facts.validator_contracts.push(
+    "flow.validator/review-result/v1",
+    "flow.validator/operation-receipt/v1",
+  );
+  facts.resource_claims.push({
+    kind: "workspace",
+    id: target.candidate.workspace.subject_id,
+    generation: target.candidate.workspace.generation,
+    mutation_epoch: target.candidate.workspace.mutation_epoch,
+    fingerprint: target.candidate.workspace.fingerprint,
+  });
+  facts.limits.max_cards = 8;
+  facts.limits.max_resources = 2;
+  const runtime = createFlowRuntime({
+    runAuthority: reviewRunAuthority,
+    registeredAuthorities: shippedAuthorityRegistrations({
+      current: shippedAuthorityStateFromFacts(facts),
+    }),
+    delegatedAgentPort: {
+      contract: "flow.delegated-agent-port/v1",
+      describe() {},
+      discover() {
+        return {
+          schema: "flow.delegated-agent-lifecycle-projection/v1",
+          operation: "discover",
+          status: "proven_absent",
+          watermark: null,
+          delegation: null,
+          turn: null,
+          legal_next_actions: ["dispatch"],
+        };
+      },
+      dispatch(request) {
+        const lens = request.agent_id.includes("critic") ? "critic" : "security";
+        return completedTurnProjection({
+          agentId: request.agent_id,
+          callerKey: request.caller_key,
+          description: request.description,
+          output: JSON.stringify({
+            schema: "flow.review-result/v1",
+            posture: "no_findings",
+            findings: [],
+            evidence: { lens },
+          }),
+          prompt: request.prompt,
+          turnId: `turn:${request.caller_key}`,
+        });
+      },
+      send() {},
+      observe() {},
+      cancel() {},
+      reconcile() {},
+      wait() {},
+      retire({ agent_id: agentId, turn_id: turnId }) {
+        return {
+          schema: "flow.delegated-agent-lifecycle-projection/v1",
+          operation: "retire",
+          status: "retired",
+          watermark: { schema: "drovr.agent-authority-watermark/v1", agent_id: agentId },
+          delegation: { agent_id: agentId },
+          turn: { id: turnId, status: "completed" },
+          legal_next_actions: [],
+        };
+      },
+    },
+    predefinedDefinitions: {
+      "feature/v1": createFeatureDefinition(),
+      "review/v1": createReviewDefinition(),
+    },
+  });
+  const prepared = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  });
+  const launch = runtime.launch({
+    prepared,
+    confirmation: {
+      schema: "flow.predefined-flow-confirmation-decision/v1",
+      decision: "accept",
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    },
+    closed_facts: {
+      schema: "flow.closed-fact-observation/v1",
+      bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts),
+    },
+  });
+  assert.equal(launch.created, true, JSON.stringify(launch));
+  const workspace = getWorkspaceAuthority({ runAuthority: reviewRunAuthority });
+  const workspaceBeforeClaim = workspace.query({
+    contract: "work.workspace/v1",
+    subject_id: target.candidate.workspace.subject_id,
+  });
+  assert.equal(workspace.command({
+    schema: "work.workspace-claim-command/v1",
+    command_id: `workspace-claim:${launch.run_id}`,
+    type: "workspace_claim",
+    contract: "work.workspace/v1",
+    subject_id: target.candidate.workspace.subject_id,
+    expected_generation: workspaceBeforeClaim.generation,
+    expected_watermark: workspaceBeforeClaim.watermark,
+    expected_fingerprint: digest({ git: workspaceBeforeClaim.git }),
+    claim: {
+      claim_id: `claim:${launch.run_id}`,
+      holder: launch.run_id,
+      operations: ["review-lens-security", "review-critic"],
+    },
+  }).accepted, true);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const projection = runtime.query({ run_id: launch.run_id });
+    if (projection.phase === "succeeded") break;
+    const action = projection.legal_actions.find(({ type }) =>
+      ["delegate_execute", "operation_execute", "recovery"].includes(type));
+    assert.ok(action, JSON.stringify(projection));
+    assert.equal(runtime.command(action).accepted, true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
+  const reviewId = `review:${target.candidate_fingerprint}:1`;
+  const review = runtime.query({ review_id: reviewId });
+  assert.equal(review.schema, "flow.review-projection/v1");
+  const start = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type: "review_session_start",
+    contract: "work.review/v1",
+    command_id: `review-session-start:${reviewId}`,
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: review.candidate_fingerprint,
+    candidate_fingerprint: review.candidate_fingerprint,
+    candidate_authority_watermark: review.candidate_authority_watermark,
+    lifecycle_generation: review.lifecycle_generation,
+    expected_watermark: review.watermark,
+    expected_generation: 0,
+    session_id: "tuicr-session:durable",
+  };
+  const receipt = runtime.command(start);
+  assert.equal(receipt.accepted, true, JSON.stringify(receipt));
+  const afterStart = runtime.query({ review_id: reviewId });
+  assert.equal(afterStart.session.session_id, start.session_id);
+  assert.equal(afterStart.review_authority_watermark, afterStart.watermark);
+  assert.equal(afterStart.session.review_authority_watermark,
+    afterStart.watermark);
+  for (const action of afterStart.legal_actions) {
+    assert.equal(Object.hasOwn(action, "input"), false);
+    if (action.operator_input !== undefined) {
+      assert.equal(action.operator_input.schema,
+        "flow.review-operator-input/v1");
+      assert.equal(action.operator_input.action, action.type);
+    }
+  }
+
+  const humanCommand = (type, commandId, fields = {}) => {
+    const current = runtime.query({ review_id: reviewId });
+    return {
+      schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+      type,
+      contract: "work.review/v1",
+      command_id: commandId,
+      subject_id: reviewId,
+      review_id: reviewId,
+      target_fingerprint: current.target_fingerprint,
+      candidate_fingerprint: current.candidate_fingerprint,
+      candidate_authority_watermark: current.candidate_authority_watermark,
+      lifecycle_generation: current.lifecycle_generation,
+      expected_watermark: current.watermark,
+      expected_generation: current.review_generation ?? 0,
+      session_id: current.session.session_id,
+      ...fields,
+    };
+  };
+
+  assert.equal(runtime.command(humanCommand(
+    "review_comment",
+    "durable-review-stale-comment",
+    {
+      comment_id: "durable-comment:stale",
+      body: "A command from before the session must be rejected.",
+      expected_watermark: review.watermark,
+      expected_generation: 0,
+    },
+  )).code, "stale_review_generation");
+  assert.equal(runtime.command(humanCommand(
+    "review_comment",
+    "durable-review-stale-watermark-comment",
+    {
+      comment_id: "durable-comment:stale-watermark",
+      body: "A command with an old ReviewAuthority watermark must be rejected.",
+      expected_watermark: review.watermark,
+      expected_generation: afterStart.review_generation,
+    },
+  )).code, "stale_authority_watermark");
+
+  const comment = humanCommand("review_comment", "durable-review-comment", {
+    comment_id: "durable-comment:1",
+    body: "The durable authority records this comment exactly once.",
+  });
+  assert.equal(runtime.command(comment).accepted, true);
+  assert.equal(runtime.command(humanCommand(
+    "review_comment",
+    "durable-review-comment-duplicate",
+    {
+      comment_id: comment.comment_id,
+      body: "The duplicate identity must be rejected.",
+    },
+  )).code, "review_comment_already_recorded");
+
+  const disposition = humanCommand(
+    "review_disposition",
+    "durable-review-disposition",
+    { disposition: "accept" },
+  );
+  assert.equal(runtime.command(disposition).accepted, true);
+  assert.equal(runtime.command(humanCommand(
+    "review_disposition",
+    "durable-review-disposition-duplicate",
+    { disposition: "dismiss" },
+  )).code, "review_disposition_already_recorded");
+
+  const integrationEvidence = {
+    schema: "flow.review-integration-evidence/v1",
+    candidate_fingerprint: review.candidate_fingerprint,
+    lifecycle_generation: review.lifecycle_generation,
+  };
+  assert.equal(runtime.command(humanCommand(
+    "review_integration",
+    "durable-review-integration-before-approval",
+    { evidence: integrationEvidence },
+  )).code, "review_approval_required");
+  assert.equal(runtime.command(humanCommand(
+    "review_approval",
+    "durable-review-revoke-before-approval",
+    { decision: "revoke" },
+  )).code, "review_approval_not_active");
+
+  assert.equal(runtime.command(humanCommand(
+    "review_approval",
+    "durable-review-approval",
+    { decision: "approve" },
+  )).accepted, true);
+  assert.equal(runtime.command(humanCommand(
+    "review_approval",
+    "durable-review-approval-duplicate",
+    { decision: "approve" },
+  )).code, "review_approval_already_granted");
+  assert.equal(runtime.command(humanCommand(
+    "review_approval",
+    "durable-review-revoke",
+    { decision: "revoke" },
+  )).accepted, true);
+  assert.equal(runtime.command(humanCommand(
+    "review_approval",
+    "durable-review-revoke-duplicate",
+    { decision: "revoke" },
+  )).code, "review_approval_not_active");
+  assert.equal(runtime.command(humanCommand(
+    "review_approval",
+    "durable-review-reapprove",
+    { decision: "approve" },
+  )).accepted, true);
+
+  assert.equal(runtime.command(humanCommand(
+    "review_integration",
+    "durable-review-integration",
+    { evidence: integrationEvidence },
+  )).accepted, true);
+  assert.equal(runtime.command(humanCommand(
+    "review_integration",
+    "durable-review-integration-duplicate",
+    { evidence: integrationEvidence },
+  )).code, "review_integration_already_recorded");
+
+  const copiedAction = runtime.query({ review_id: reviewId }).legal_actions
+    .find(({ type }) => type === "review_comment");
+  assert.ok(copiedAction);
+  const { operator_input: _operatorInput, ...copiedTemplate } = copiedAction;
+  const workspaceBeforeDrift = workspace.query({
+    contract: "work.workspace/v1",
+    subject_id: target.candidate.workspace.subject_id,
+  });
+  assert.equal(workspace.command(featureWorkspaceTaint(workspaceBeforeDrift)).accepted,
+    true);
+  const staleCopiedAction = {
+    ...copiedTemplate,
+    command_id: "durable-review-copied-after-workspace-drift",
+    comment_id: "durable-comment:after-workspace-drift",
+    body: "This copied action must not cross a fresh workspace fence.",
+  };
+  const rejectedAfterDrift = runtime.command(staleCopiedAction);
+  assert.equal(rejectedAfterDrift.code, "review_target_not_current");
+  assert.equal(runtime.query({ review_id: reviewId }).review_generation,
+    copiedAction.expected_generation);
+});
+
 test("feature/v1 cancellation stops admission without sealing a candidate", async (t) => {
   const fixture = await createFeatureFailureFixture(t, {});
   const before = fixture.runtime.query({ run_id: fixture.runId });
@@ -4190,7 +4572,25 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.equal(reviewedCandidate.schema, "flow.review-projection/v1");
   assert.equal(reviewedCandidate.append_only_event_count, 1);
   assert.equal(reviewedCandidate.findings.length, 2);
-  assert.equal(reviewedCandidate.legal_actions.length, 0);
+  assert.deepEqual(reviewedCandidate.legal_actions, [{
+    schema: "work.review-human-command/v1",
+    type: "review_session_start",
+    contract: "work.review/v1",
+    command_id: `review-session-start:${reviewedCandidate.subject_id}`,
+    subject_id: reviewedCandidate.subject_id,
+    review_id: reviewedCandidate.subject_id,
+    target_fingerprint: reviewedCandidate.candidate_fingerprint,
+    candidate_fingerprint: reviewedCandidate.candidate_fingerprint,
+    candidate_authority_watermark: reviewedCandidate.candidate_authority_watermark,
+    lifecycle_generation: reviewedCandidate.lifecycle_generation,
+    expected_watermark: reviewedCandidate.watermark,
+    expected_generation: 0,
+    operator_input: {
+      schema: "flow.review-operator-input/v1",
+      action: "review_session_start",
+      required: ["session_id"],
+    },
+  }]);
   assert.equal(reviewedCandidate.integration_authorized, false);
   assert.equal(reviewedCandidate.merge_authorized, false);
   assert.equal(reviewedCandidate.tracker_completion_authorized, false);
@@ -4223,20 +4623,41 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     type: "review_target_invalidated",
     contract: "work.review/v1",
     subject_id: reviewId,
-    command_id: `review-target-invalidate:${reviewId}:sha256:${"d".repeat(64)}:5`,
+    command_id: `review-target-invalidate:${reviewId}:sha256:${"d".repeat(64)}:5:9`,
     expected_watermark: stableWatermark,
     prior_candidate_fingerprint: reviewedCandidate.candidate_fingerprint,
     prior_lifecycle_generation: reviewedCandidate.lifecycle_generation,
+    prior_mutation_epoch: reviewedCandidate.candidate.workspace.mutation_epoch,
     observed_candidate_fingerprint: `sha256:${"d".repeat(64)}`,
     observed_lifecycle_generation: 5,
+    observed_mutation_epoch: reviewedCandidate.candidate.workspace.mutation_epoch + 1,
     reason: "target_moved",
   };
   const invalidationB = {
     ...invalidationA,
-    command_id: `review-target-invalidate:${reviewId}:sha256:${"e".repeat(64)}:6`,
+    command_id: `review-target-invalidate:${reviewId}:sha256:${"e".repeat(64)}:6:9`,
     observed_candidate_fingerprint: `sha256:${"e".repeat(64)}`,
     observed_lifecycle_generation: 6,
   };
+  const { prior_mutation_epoch: _priorMutationEpoch, ...withoutPriorMutationEpoch } =
+    invalidationA;
+  const { observed_mutation_epoch: _observedMutationEpoch, ...withoutObservedMutationEpoch } =
+    invalidationA;
+  withoutObservedMutationEpoch.command_id =
+    `review-target-invalidate:${reviewId}:sha256:${"d".repeat(64)}:5`;
+  for (const [label, incompleteInvalidation] of [
+    ["missing prior mutation epoch", withoutPriorMutationEpoch],
+    ["missing observed mutation epoch", withoutObservedMutationEpoch],
+  ]) {
+    assert.equal(reviewRuntime.command(incompleteInvalidation).code,
+      "invalid_review_target_invalidation", label);
+    assert.equal(reviewRuntime.query({ review_id: reviewId }).append_only_event_count,
+      1, label);
+  }
+  const extraInvalidation = { ...invalidationA, undocumented: true };
+  assert.equal(reviewRuntime.command(extraInvalidation).code,
+    "invalid_review_target_invalidation");
+  assert.equal(reviewRuntime.query({ review_id: reviewId }).append_only_event_count, 1);
   const [invalidationReceiptA, invalidationReceiptB] = await Promise.all([
     Promise.resolve().then(() => reviewRuntime.command(invalidationA)),
     Promise.resolve().then(() => reviewRuntime.command(invalidationB)),
@@ -4260,6 +4681,14 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     stableWatermark);
   assert.deepEqual(staleReview.automated_evidence, reviewedCandidate.automated_evidence);
   assert.equal(staleReview.append_only_event_count, 2);
+  assert.equal(
+    staleReview.prior_mutation_epoch,
+    reviewedCandidate.candidate.workspace.mutation_epoch,
+  );
+  assert.equal(
+    staleReview.observed_mutation_epoch,
+    reviewedCandidate.candidate.workspace.mutation_epoch + 1,
+  );
   assert.deepEqual(staleReview.legal_actions.map(({ type }) => type), [
     "review_target_refresh",
   ]);
@@ -4273,8 +4702,45 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.equal(staleReview.remote_submission_authorized, false);
   assert.equal(staleReceipt.authority_watermark, staleReview.authority_watermark);
   assert.deepEqual(staleReceipt.legal_actions, staleReview.legal_actions);
+  const staleInbox = reviewRuntime.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  const staleInboxItem = staleInbox.items.find(({ review_id: itemReviewId }) =>
+    itemReviewId === reviewId);
+  assert.ok(staleInboxItem);
+  assert.deepEqual(staleInboxItem.legal_actions, staleReview.legal_actions);
+  assert.equal(reviewRuntime.command({
+    ...staleInboxItem.legal_actions[0],
+    expected_watermark: stableWatermark,
+  }).code, "stale_authority_watermark");
 
   const refreshCommand = staleReview.legal_actions[0];
+  const { authority_observation: _authorityObservation, ...missingObservation } =
+    refreshCommand;
+  const malformedObservation = structuredClone(refreshCommand);
+  malformedObservation.authority_observation.candidate_fingerprint = 42;
+  const mismatchedObservation = {
+    ...refreshCommand,
+    authority_observation: buildReviewTargetObservation({
+      subjectId: refreshCommand.subject_id,
+      candidateId: review.candidate.candidate_id,
+      candidateFingerprint: refreshCommand.observed_candidate_fingerprint,
+      lifecycleGeneration: refreshCommand.observed_lifecycle_generation,
+      authorityWatermark: `sha256:${"f".repeat(64)}`,
+    }),
+  };
+  for (const [label, candidateRefreshCommand] of [
+    ["missing observation", missingObservation],
+    ["extra property", { ...refreshCommand, undocumented: true }],
+    ["malformed observation", malformedObservation],
+    ["mismatched observation", mismatchedObservation],
+  ]) {
+    assert.equal(reviewRuntime.command(candidateRefreshCommand).code,
+      "invalid_review_target_refresh", label);
+    assert.equal(reviewRuntime.query({ review_id: reviewId }).append_only_event_count,
+      2, label);
+  }
   const refreshReceipt = reviewRuntime.command(refreshCommand);
   assert.equal(refreshReceipt.accepted, true);
   assert.equal(refreshReceipt.created, true);
@@ -4294,8 +4760,10 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     subject_id: reviewId,
     prior_candidate_fingerprint: reviewedCandidate.candidate_fingerprint,
     prior_lifecycle_generation: reviewedCandidate.lifecycle_generation,
+    prior_mutation_epoch: reviewedCandidate.candidate.workspace.mutation_epoch,
     observed_candidate_fingerprint: refreshCommand.observed_candidate_fingerprint,
     observed_lifecycle_generation: refreshCommand.observed_lifecycle_generation,
+    observed_mutation_epoch: reviewedCandidate.candidate.workspace.mutation_epoch + 1,
     observation: refreshCommand.authority_observation,
   });
   const replayRefresh = reviewRuntime.command(refreshCommand);
@@ -6576,6 +7044,7 @@ async function createFeatureFailureFixture(t, scenario) {
         }),
         scenario.maxAttemptsByCard,
       ),
+      ...(scenario.predefinedDefinitions ?? {}),
     },
   });
   const prepared = runtime.prepare({
@@ -7263,6 +7732,9 @@ function featureReviewTargetObservationAdapter() {
         candidateId: review?.candidate?.candidate_id ?? "candidate:feature",
         candidateFingerprint: command.observed_candidate_fingerprint,
         lifecycleGeneration: command.observed_lifecycle_generation,
+        ...(command.observed_mutation_epoch === undefined ? {} : {
+          mutationEpoch: command.observed_mutation_epoch,
+        }),
         authorityWatermark: digestValue("feature-review-target-observation"),
         source: "named_mechanism_observation",
       });

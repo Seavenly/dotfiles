@@ -1,0 +1,1833 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.review-inbox-item.v1.schema.json",
+  "title": "flow.review-inbox-item/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "review_id",
+    "candidate_id",
+    "candidate_fingerprint",
+    "lifecycle_generation",
+    "candidate_authority_watermark",
+    "review_authority_watermark",
+    "candidate",
+    "review",
+    "status",
+    "current",
+    "legal_actions"
+  ],
+  "properties": {
+    "schema": { "const": "flow.review-inbox-item/v1" },
+    "review_id": { "type": ["string", "null"] },
+    "candidate_id": { "type": ["string", "null"] },
+    "candidate_fingerprint": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "lifecycle_generation": { "type": ["integer", "null"], "minimum": 1 },
+    "candidate_authority_watermark": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "review_authority_watermark": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "candidate": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/candidateProjection" }
+      ]
+    },
+    "review": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/reviewProjection" }
+      ]
+    },
+    "status": { "type": "string" },
+    "current": { "type": "boolean" },
+    "legal_actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reviewAction"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "current": { "const": true } },
+        "required": ["current"]
+      },
+      "then": {
+        "properties": {
+          "legal_actions": {
+            "type": "array",
+            "items": {
+              "$ref": "https://dotfiles.local/schemas/work.review-human-command.v1.schema.json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "current": { "const": false } },
+        "required": ["current"]
+      },
+      "then": {
+        "properties": {
+          "legal_actions": {
+            "oneOf": [
+              { "const": [] },
+              {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "https://dotfiles.local/schemas/work.review-target-refresh-command.v1.schema.json"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "review": {
+            "type": "object",
+            "properties": { "target_kind": { "const": "github" } },
+            "required": ["target_kind"]
+          }
+        },
+        "required": ["review"]
+      },
+      "then": {
+        "properties": {
+          "legal_actions": { "const": [] }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "blockingReason": {
+      "enum": [
+        "workspace_authority_unavailable",
+        "workspace_mutation_epoch_moved",
+        "workspace_dirty",
+        "unresolved_effect",
+        "workspace_tainted",
+        "artifact_uncertain",
+        "artifact_unavailable",
+        "git_retention_unavailable",
+        "git_retention_mismatch",
+        "artifact_handoff_pin_missing",
+        "artifact_handoff_pin_mismatch",
+        "handoff_unavailable",
+        "handoff_inactive",
+        "handoff_uncertain",
+        "handoff_not_current",
+        "handoff_workspace_mismatch",
+        "handoff_artifact_mismatch",
+        "handoff_git_retention_mismatch",
+        "candidate_lifecycle_superseded",
+        "candidate_lifecycle_abandoned",
+        "candidate_authority_projection_missing"
+      ]
+    },
+    "reviewAction": {
+      "oneOf": [
+        {
+          "$ref": "https://dotfiles.local/schemas/work.review-human-command.v1.schema.json"
+        },
+        {
+          "$ref": "https://dotfiles.local/schemas/work.review-target-refresh-command.v1.schema.json"
+        }
+      ]
+    },
+    "targetObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "subject_id",
+        "candidate_id",
+        "candidate_fingerprint",
+        "lifecycle_generation",
+        "authority_watermark",
+        "source",
+        "evidence_digest"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-target-observation/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source": {
+          "enum": ["candidate_projection", "named_mechanism_observation"]
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "targetInvalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "subject_id",
+        "prior_candidate_fingerprint",
+        "prior_lifecycle_generation",
+        "observed_candidate_fingerprint",
+        "observed_lifecycle_generation",
+        "reason",
+        "observation"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-target-invalidation/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "prior_candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "prior_lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "prior_mutation_epoch": { "type": "integer", "minimum": 1 },
+        "observed_candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "observed_lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "observed_mutation_epoch": { "type": "integer", "minimum": 1 },
+        "reason": { "const": "target_moved" },
+        "observation": { "$ref": "#/$defs/targetObservation" }
+      },
+      "dependentRequired": {
+        "prior_mutation_epoch": ["observed_mutation_epoch"],
+        "observed_mutation_epoch": ["prior_mutation_epoch"]
+      }
+    },
+    "targetRefresh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "subject_id",
+        "prior_candidate_fingerprint",
+        "prior_lifecycle_generation",
+        "observed_candidate_fingerprint",
+        "observed_lifecycle_generation",
+        "observation"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-target-refresh/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "prior_candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "prior_lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "prior_mutation_epoch": { "type": "integer", "minimum": 1 },
+        "observed_candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "observed_lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "observed_mutation_epoch": { "type": "integer", "minimum": 1 },
+        "observation": { "$ref": "#/$defs/targetObservation" }
+      },
+      "dependentRequired": {
+        "prior_mutation_epoch": ["observed_mutation_epoch"],
+        "observed_mutation_epoch": ["prior_mutation_epoch"]
+      }
+    },
+    "gitRetentionObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "available",
+        "repository_id",
+        "commit_sha",
+        "tree_sha",
+        "retention_ref"
+      ],
+      "properties": {
+        "schema": { "const": "flow.git-retention-observation/v1" },
+        "available": { "type": "boolean" },
+        "repository_id": { "type": ["string", "null"], "minLength": 1 },
+        "commit_sha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "tree_sha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "retention_ref": { "type": ["string", "null"], "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "available": { "const": true } } },
+          "then": {
+            "properties": {
+              "repository_id": { "type": "string", "minLength": 1 },
+              "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              "tree_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+              "retention_ref": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "verificationWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "generation",
+        "git",
+        "mutation_epoch",
+        "subject_id"
+      ],
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "generation": { "type": "integer", "minimum": 1 },
+        "git": { "$ref": "#/$defs/gitFacts" },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "subject_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "verificationCriterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion", "evidence_digest", "verdict"],
+      "properties": {
+        "criterion": { "type": "string", "minLength": 1 },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "verdict": { "const": "passed" }
+      }
+    },
+    "safeBaselineEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distinguished",
+        "kind",
+        "post_mutation_fingerprint",
+        "schema",
+        "selected_fingerprint"
+      ],
+      "properties": {
+        "distinguished": { "const": true },
+        "kind": { "const": "safe_baseline" },
+        "post_mutation_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "schema": { "const": "flow.feature-discriminating-evidence/v1" },
+        "selected_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "testFailureEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distinguished",
+        "kind",
+        "post_mutation_fingerprint",
+        "schema",
+        "selected_fingerprint",
+        "test_failures"
+      ],
+      "properties": {
+        "distinguished": { "const": true },
+        "kind": { "const": "test_failure" },
+        "post_mutation_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "schema": { "const": "flow.feature-discriminating-evidence/v1" },
+        "selected_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "test_failures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["card_id", "effect_id", "receipt_digest", "slice_id"],
+            "properties": {
+              "card_id": { "type": "string", "minLength": 1 },
+              "effect_id": { "type": "string", "minLength": 1 },
+              "receipt_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "slice_id": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "compensatingAssertionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertion_receipt_digest",
+        "distinguished",
+        "kind",
+        "non_destructive",
+        "post_mutation_fingerprint",
+        "satisfied",
+        "schema",
+        "selected_fingerprint"
+      ],
+      "properties": {
+        "assertion_receipt_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "distinguished": { "const": true },
+        "kind": { "const": "compensating_assertion" },
+        "non_destructive": { "const": true },
+        "post_mutation_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "satisfied": { "const": true },
+        "schema": { "const": "flow.feature-discriminating-evidence/v1" },
+        "selected_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "verificationDiscriminatingEvidence": {
+      "oneOf": [
+        { "$ref": "#/$defs/safeBaselineEvidence" },
+        { "$ref": "#/$defs/testFailureEvidence" },
+        { "$ref": "#/$defs/compensatingAssertionEvidence" }
+      ]
+    },
+    "verificationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptance_criteria",
+        "attempt_id",
+        "brief_id",
+        "discriminating_evidence",
+        "effect_id",
+        "idempotency_key",
+        "operation_contract",
+        "receipt_digest",
+        "schema",
+        "selected_evidence_fingerprint",
+        "self_digest",
+        "source_authority_watermark",
+        "workspace"
+      ],
+      "properties": {
+        "acceptance_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/verificationCriterion" }
+        },
+        "attempt_id": { "type": "string", "minLength": 1 },
+        "brief_id": { "type": "string", "minLength": 1 },
+        "discriminating_evidence": {
+          "$ref": "#/$defs/verificationDiscriminatingEvidence"
+        },
+        "effect_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "independent_critique_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "operation_contract": { "type": "string", "minLength": 1 },
+        "receipt_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "schema": { "const": "work.feature-verification-receipt/v1" },
+        "selected_evidence_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "self_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "workspace": { "$ref": "#/$defs/verificationWorkspace" }
+      }
+    },
+    "critiqueReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delegate_evidence",
+        "effect_id",
+        "findings",
+        "idempotency_key",
+        "operation_contract",
+        "receipt_digest",
+        "schema",
+        "self_digest",
+        "source_authority_watermark"
+      ],
+      "properties": {
+        "delegate_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempt_id",
+            "card_id",
+            "effect_id",
+            "evidence",
+            "idempotency_key",
+            "source_authority_watermark"
+          ],
+          "properties": {
+            "attempt_id": { "type": "string", "minLength": 1 },
+            "card_id": { "type": "string", "minLength": 1 },
+            "effect_id": { "type": "string", "minLength": 1 },
+            "evidence": {
+              "anyOf": [
+                { "type": "array" },
+                { "type": "boolean" },
+                { "type": "null" },
+                { "type": "number" },
+                { "type": "object" },
+                { "type": "string" }
+              ]
+            },
+            "idempotency_key": { "type": "string", "minLength": 1 },
+            "source_authority_watermark": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "effect_id": { "type": "string", "minLength": 1 },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "operation_contract": { "type": "string", "minLength": 1 },
+        "receipt_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "schema": { "const": "work.feature-critique-receipt/v1" },
+        "self_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "candidateProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "contract",
+        "subject_id",
+        "watermark",
+        "generation",
+        "status",
+        "current",
+        "evidence_currency",
+        "candidate_fingerprint",
+        "legal_actions"
+      ],
+      "properties": {
+        "schema": { "const": "work.review-candidate-projection/v1" },
+        "contract": { "const": "work.review/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "generation": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["sealed", "stale", "blocked"] },
+        "current": { "type": "boolean" },
+        "evidence_currency": { "enum": ["current", "stale"] },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "git": { "$ref": "#/$defs/gitFacts" },
+        "workspace": { "$ref": "#/$defs/workspaceBinding" },
+        "verification": { "$ref": "#/$defs/verificationReceipt" },
+        "critique": { "$ref": "#/$defs/critiqueReceipt" },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/candidateArtifact" }
+        },
+        "git_retention": { "$ref": "#/$defs/gitRetention" },
+        "candidate": { "$ref": "#/$defs/candidateReference" },
+        "registration_receipt": { "$ref": "#/$defs/commandReceipt" },
+        "command_receipts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/commandReceipt" }
+        },
+        "lifecycle_status": { "enum": ["sealed", "superseded", "abandoned"] },
+        "candidate_lifecycle_status": {
+          "enum": ["sealed", "superseded", "abandoned"]
+        },
+        "workspace_authority_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "workspace_generation": { "type": ["integer", "null"], "minimum": 1 },
+        "workspace_mutation_epoch": { "type": ["integer", "null"], "minimum": 1 },
+        "workspace_fingerprint": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "artifact_authority_watermarks": {
+          "type": "array",
+          "items": {
+            "type": ["string", "null"],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "git_retention_observation": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/gitRetentionObservation" }
+          ]
+        },
+        "git_retention_observation_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "handoff_authority_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "handoff_observation_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "handoff_status": { "type": ["string", "null"] },
+        "blocking_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/blockingReason" }
+        },
+        "legal_actions": { "const": [] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "current": { "const": true } },
+            "required": ["current"]
+          },
+          "then": {
+            "required": [
+              "generation",
+              "git",
+              "workspace",
+              "verification",
+              "critique",
+              "artifacts",
+              "git_retention",
+              "candidate",
+              "registration_receipt",
+              "command_receipts",
+              "blocking_reasons"
+            ],
+            "properties": {
+              "generation": {},
+              "git": {},
+              "workspace": {},
+              "verification": {},
+              "critique": {},
+              "artifacts": {},
+              "git_retention": {},
+              "candidate": {},
+              "registration_receipt": {},
+              "command_receipts": {},
+              "blocking_reasons": {},
+              "status": { "const": "sealed" },
+              "evidence_currency": { "const": "current" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "current": { "const": false } },
+            "required": ["current"]
+          },
+          "then": {
+            "required": [
+              "generation",
+              "git",
+              "workspace",
+              "verification",
+              "critique",
+              "artifacts",
+              "git_retention",
+              "candidate",
+              "registration_receipt",
+              "command_receipts",
+              "blocking_reasons"
+            ],
+            "properties": {
+              "generation": {},
+              "git": {},
+              "workspace": {},
+              "verification": {},
+              "critique": {},
+              "artifacts": {},
+              "git_retention": {},
+              "candidate": {},
+              "registration_receipt": {},
+              "command_receipts": {},
+              "blocking_reasons": {},
+              "status": { "enum": ["stale", "blocked"] },
+              "evidence_currency": { "const": "stale" }
+            }
+          }
+        }
+      ]
+    },
+    "reviewProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "contract",
+        "subject_id",
+        "watermark",
+        "authority_watermark",
+        "authority_watermark_domain",
+        "target_fingerprint",
+        "candidate_fingerprint",
+        "target_authority_watermark",
+        "candidate_authority_watermark",
+        "lifecycle_generation",
+        "status",
+        "current",
+        "evidence_currency",
+        "findings",
+        "semantic_findings",
+        "rendered_findings",
+        "cap_reasons",
+        "urgency_floor",
+        "orientation",
+        "diagrams",
+        "merge_ready",
+        "automated_completion",
+        "approval",
+        "integration_authorized",
+        "legal_actions"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-projection/v1" },
+        "contract": { "const": "work.review/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "authority_watermark_domain": { "const": "review" },
+        "target": { "$ref": "#/$defs/githubTarget" },
+        "target_kind": { "const": "github" },
+        "target_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "target_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "candidate_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "source_run_id": { "type": "string" },
+        "operation_contract": { "type": "string" },
+        "operation_effect_id": { "type": "string" },
+        "operation_attempt_id": { "type": "string" },
+        "operation_idempotency_key": { "type": "string" },
+        "candidate": { "$ref": "#/$defs/candidateReference" },
+        "status": { "enum": ["automated_completed", "stale"] },
+        "current": { "type": "boolean" },
+        "evidence_currency": { "enum": ["current", "stale"] },
+        "candidate_lifecycle_status": {
+          "enum": ["sealed", "superseded", "abandoned"]
+        },
+        "invalidation": { "$ref": "#/$defs/targetInvalidation" },
+        "refresh": { "$ref": "#/$defs/targetRefresh" },
+        "observed_candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "observed_lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "prior_mutation_epoch": { "type": "integer", "minimum": 1 },
+        "observed_mutation_epoch": { "type": "integer", "minimum": 1 },
+        "posture": {
+          "enum": ["no_findings", "findings", "review_incomplete", "blocked"]
+        },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "semantic_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "rendered_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "cap_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capReason" }
+        },
+        "urgency_floor": {
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "orientation": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/orientation" }
+          ]
+        },
+        "diagrams": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagram" }
+        },
+        "coverage": { "$ref": "#/$defs/summaryCoverage" },
+        "merge_ready": { "type": "boolean" },
+        "summary": {
+          "anyOf": [
+            { "$ref": "#/$defs/reviewSummary" },
+            { "$ref": "#/$defs/legacyReviewSummary" }
+          ]
+        },
+        "automated_evidence": { "$ref": "#/$defs/automatedEvidence" },
+        "artifacts": {
+          "anyOf": [
+            { "$ref": "#/$defs/reviewArtifacts" },
+            { "$ref": "#/$defs/legacyReviewArtifacts" }
+          ]
+        },
+        "remote_review": { "$ref": "#/$defs/remoteReview" },
+        "automated_completion": { "type": "boolean" },
+        "approval": {
+          "enum": ["not_requested", "approved", "revoked", "ineligible"]
+        },
+        "approval_eligible": { "type": "boolean" },
+        "approval_receipt": { "$ref": "#/$defs/approval" },
+        "submission_pending": { "type": "boolean" },
+        "submission_eligible": { "type": "boolean" },
+        "integration": { "$ref": "#/$defs/integration" },
+        "integration_eligible": { "type": "boolean" },
+        "integration_authorized": { "type": "boolean" },
+        "merge_eligible": { "type": "boolean" },
+        "merge_authorized": { "type": "boolean" },
+        "tracker_completion_eligible": { "type": "boolean" },
+        "tracker_completion_authorized": { "type": "boolean" },
+        "remote_submission_authorized": { "type": "boolean" },
+        "review_generation": { "type": "integer", "minimum": 0 },
+        "review_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "session": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/session" }
+          ]
+        },
+        "comments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/comment" }
+        },
+        "dispositions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/disposition" }
+        },
+        "supersession": { "$ref": "#/$defs/supersession" },
+        "human_status": { "const": "superseded" },
+        "workspace_authority_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "workspace_generation": { "type": ["integer", "null"], "minimum": 1 },
+        "workspace_mutation_epoch": { "type": ["integer", "null"], "minimum": 1 },
+        "workspace_fingerprint": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "artifact_authority_watermarks": {
+          "type": "array",
+          "items": {
+            "type": ["string", "null"],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "git_retention_observation": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/gitRetentionObservation" }
+          ]
+        },
+        "git_retention_observation_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "handoff_authority_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "handoff_observation_watermark": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "handoff_status": { "type": ["string", "null"] },
+        "blocking_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/blockingReason" }
+        },
+        "append_only_event_count": { "type": "integer", "minimum": 1 },
+        "command_receipts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/commandReceipt" }
+        },
+        "legal_actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewAction" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "target_kind": { "const": "github" } },
+            "required": ["target_kind"]
+          },
+          "then": {
+            "required": ["target"],
+            "properties": {
+              "target": { "$ref": "#/$defs/githubTarget" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "target": {} },
+            "required": ["target"]
+          },
+          "then": {
+            "required": ["target_kind"],
+            "properties": { "target_kind": { "const": "github" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "current": { "const": true } },
+            "required": ["current"]
+          },
+          "then": {
+            "required": [
+              "summary",
+              "automated_evidence",
+              "artifacts",
+              "posture"
+            ],
+            "properties": {
+              "summary": {},
+              "automated_evidence": {},
+              "artifacts": {},
+              "posture": {},
+              "status": { "const": "automated_completed" },
+              "evidence_currency": { "const": "current" },
+              "legal_actions": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://dotfiles.local/schemas/work.review-human-command.v1.schema.json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "target_kind": { "const": "github" } },
+            "required": ["target_kind"]
+          },
+          "then": {
+            "properties": {
+              "legal_actions": { "const": [] },
+              "approval": { "const": "not_requested" },
+              "integration_authorized": { "const": false },
+              "merge_authorized": { "const": false },
+              "tracker_completion_authorized": { "const": false },
+              "remote_submission_authorized": { "const": false }
+            },
+            "not": {
+              "anyOf": [
+                { "properties": { "candidate": {} }, "required": ["candidate"] },
+                { "properties": { "candidate_lifecycle_status": {} }, "required": ["candidate_lifecycle_status"] },
+                { "properties": { "workspace_authority_watermark": {} }, "required": ["workspace_authority_watermark"] },
+                { "properties": { "workspace_generation": {} }, "required": ["workspace_generation"] },
+                { "properties": { "workspace_mutation_epoch": {} }, "required": ["workspace_mutation_epoch"] },
+                { "properties": { "workspace_fingerprint": {} }, "required": ["workspace_fingerprint"] },
+                { "properties": { "artifact_authority_watermarks": {} }, "required": ["artifact_authority_watermarks"] },
+                { "properties": { "git_retention_observation": {} }, "required": ["git_retention_observation"] },
+                { "properties": { "git_retention_observation_watermark": {} }, "required": ["git_retention_observation_watermark"] },
+                { "properties": { "handoff_authority_watermark": {} }, "required": ["handoff_authority_watermark"] },
+                { "properties": { "handoff_observation_watermark": {} }, "required": ["handoff_observation_watermark"] },
+                { "properties": { "handoff_status": {} }, "required": ["handoff_status"] },
+                { "properties": { "blocking_reasons": {} }, "required": ["blocking_reasons"] },
+                { "properties": { "review_generation": {} }, "required": ["review_generation"] },
+                { "properties": { "review_authority_watermark": {} }, "required": ["review_authority_watermark"] },
+                { "properties": { "session": {} }, "required": ["session"] },
+                { "properties": { "comments": {} }, "required": ["comments"] },
+                { "properties": { "dispositions": {} }, "required": ["dispositions"] },
+                { "properties": { "approval_eligible": {} }, "required": ["approval_eligible"] },
+                { "properties": { "approval_receipt": {} }, "required": ["approval_receipt"] },
+                { "properties": { "submission_pending": {} }, "required": ["submission_pending"] },
+                { "properties": { "submission_eligible": {} }, "required": ["submission_eligible"] },
+                { "properties": { "integration": {} }, "required": ["integration"] },
+                { "properties": { "integration_eligible": {} }, "required": ["integration_eligible"] },
+                { "properties": { "merge_eligible": {} }, "required": ["merge_eligible"] },
+                { "properties": { "supersession": {} }, "required": ["supersession"] },
+                { "properties": { "human_status": {} }, "required": ["human_status"] },
+                { "properties": { "invalidation": {} }, "required": ["invalidation"] },
+                { "properties": { "refresh": {} }, "required": ["refresh"] },
+                { "properties": { "observed_candidate_fingerprint": {} }, "required": ["observed_candidate_fingerprint"] },
+                { "properties": { "observed_lifecycle_generation": {} }, "required": ["observed_lifecycle_generation"] },
+                { "properties": { "prior_mutation_epoch": {} }, "required": ["prior_mutation_epoch"] },
+                { "properties": { "observed_mutation_epoch": {} }, "required": ["observed_mutation_epoch"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "current": { "const": false } },
+            "required": ["current"]
+          },
+          "then": {
+            "required": [
+              "summary",
+              "automated_evidence",
+              "artifacts",
+              "posture"
+            ],
+            "properties": {
+              "summary": {},
+              "automated_evidence": {},
+              "artifacts": {},
+              "posture": {},
+              "status": { "const": "stale" },
+              "evidence_currency": { "const": "stale" },
+              "legal_actions": {
+                "oneOf": [
+                  { "const": [] },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "$ref": "https://dotfiles.local/schemas/work.review-target-refresh-command.v1.schema.json"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "review_generation": {} },
+            "required": ["review_generation"]
+          },
+          "then": {
+            "required": [
+              "review_authority_watermark",
+              "session",
+              "comments",
+              "dispositions"
+            ],
+            "properties": {
+              "review_authority_watermark": {},
+              "session": {},
+              "comments": {},
+              "dispositions": {}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "integration_authorized": { "const": true } },
+            "required": ["integration_authorized"]
+          },
+          "then": {
+            "required": ["integration"],
+            "properties": { "integration": {} }
+          }
+        },
+        {
+          "if": {
+            "not": { "required": ["target_kind"] }
+          },
+          "then": {
+            "required": [
+              "candidate",
+              "summary",
+              "automated_evidence",
+              "artifacts"
+            ],
+            "properties": {
+              "candidate": {},
+              "summary": {},
+              "automated_evidence": {},
+              "artifacts": {}
+            }
+          }
+        }
+      ]
+    },
+    "gitFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clean", "commit_sha", "ref", "tree_sha"],
+      "properties": {
+        "clean": { "type": "boolean" },
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "ref": { "type": "string", "minLength": 1 },
+        "tree_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+      }
+    },
+    "workspaceBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "fingerprint",
+        "generation",
+        "mutation_epoch",
+        "subject_id"
+      ],
+      "properties": {
+        "contract": { "const": "work.workspace/v1" },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "generation": { "type": "integer", "minimum": 1 },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "subject_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "candidateArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_schema", "digest", "generation"],
+      "properties": {
+        "artifact_schema": { "type": "string", "minLength": 1 },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "generation": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "gitRetention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit_sha",
+        "repository_id",
+        "retention_ref",
+        "schema",
+        "tree_sha"
+      ],
+      "properties": {
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "repository_id": { "type": "string", "minLength": 1 },
+        "retention_ref": { "type": "string", "minLength": 1 },
+        "schema": { "const": "flow.git-retention-receipt/v1" },
+        "tree_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+      }
+    },
+    "commandReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "command_id", "command_digest"],
+      "properties": {
+        "schema": { "const": "work.idempotency-receipt/v1" },
+        "command_id": { "type": "string", "minLength": 1 },
+        "command_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "candidateReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifacts",
+        "candidate_fingerprint",
+        "candidate_id",
+        "critique",
+        "git",
+        "git_retention",
+        "schema",
+        "verification",
+        "workspace"
+      ],
+      "properties": {
+        "schema": { "const": "work.review-candidate/v1" },
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "git": { "$ref": "#/$defs/gitFacts" },
+        "workspace": { "$ref": "#/$defs/workspaceBinding" },
+        "verification": { "$ref": "#/$defs/verificationReceipt" },
+        "critique": { "$ref": "#/$defs/critiqueReceipt" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/candidateArtifact" }
+        },
+        "git_retention": { "$ref": "#/$defs/gitRetention" }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "session_id",
+        "review_id",
+        "target_fingerprint",
+        "candidate_authority_watermark",
+        "lifecycle_generation",
+        "review_authority_watermark"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-session/v1" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "review_id": { "type": "string", "minLength": 1 },
+        "target_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "candidate_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "review_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "comment_id", "session_id", "body"],
+      "properties": {
+        "schema": { "const": "flow.review-comment/v1" },
+        "comment_id": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 16384 }
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "session_id", "disposition"],
+      "properties": {
+        "schema": { "const": "flow.review-disposition/v1" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "finding_id": { "type": "string", "minLength": 1 },
+        "disposition": {
+          "enum": ["accept", "request_changes", "dismiss", "defer"]
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "session_id", "decision"],
+      "properties": {
+        "schema": { "const": "flow.review-approval/v1" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "decision": { "enum": ["approve", "revoke"] }
+      }
+    },
+    "supersession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "session_id", "replacement"],
+      "properties": {
+        "schema": { "const": "flow.review-supersession/v1" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "replacement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_fingerprint", "lifecycle_generation"],
+          "properties": {
+            "candidate_fingerprint": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "lifecycle_generation": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "integrationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "candidate_fingerprint", "lifecycle_generation"],
+      "properties": {
+        "schema": { "const": "flow.review-integration-evidence/v1" },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "session_id", "evidence", "evidence_digest"],
+      "properties": {
+        "schema": { "const": "flow.review-integration/v1" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "evidence": { "$ref": "#/$defs/integrationEvidence" },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "findingLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "start_column": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "reviewFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "lens",
+        "urgency",
+        "classification",
+        "summary",
+        "detail",
+        "location",
+        "inline",
+        "finding_id",
+        "source"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-finding/v1" },
+        "lens": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "urgency": { "enum": ["critical", "high", "medium", "low", "info"] },
+        "classification": { "enum": ["blocking", "non_blocking"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "location": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/findingLocation" }
+          ]
+        },
+        "inline": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/findingLocation" }
+          ]
+        },
+        "finding_id": { "type": "string", "pattern": "^finding:[0-9a-f]{64}$" },
+        "source": { "type": "string", "minLength": 1 }
+      }
+    },
+    "capReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "count": { "type": "integer", "minimum": 0 },
+        "omitted_urgencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["critical", "high", "medium", "low", "info"] }
+        },
+        "overflow_urgencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["critical", "high", "medium", "low", "info"] }
+        }
+      }
+    },
+    "orientation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "markdown"],
+      "properties": {
+        "schema": { "const": "flow.review-orientation/v1" },
+        "markdown": { "type": "string", "minLength": 1, "maxLength": 20000 }
+      }
+    },
+    "diagram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "name", "source"],
+      "properties": {
+        "schema": { "const": "flow.review-diagram/v1" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "source": { "type": "string", "minLength": 1, "maxLength": 50000 }
+      }
+    },
+    "resultCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "status", "reason"],
+      "properties": {
+        "schema": { "const": "flow.review-coverage/v1" },
+        "status": { "enum": ["produced", "degraded", "unavailable"] },
+        "reason": { "type": ["string", "null"], "maxLength": 256 }
+      }
+    },
+    "reviewResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "posture", "findings", "coverage", "evidence", "cap_reasons"],
+      "properties": {
+        "schema": { "const": "flow.review-result/v1" },
+        "posture": {
+          "enum": ["no_findings", "findings", "review_incomplete", "blocked"]
+        },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "coverage": { "$ref": "#/$defs/resultCoverage" },
+        "evidence": {},
+        "cap_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capReason" }
+        }
+      }
+    },
+    "summaryCoverageEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "lens": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["produced", "degraded", "unavailable"] },
+        "reason": { "type": ["string", "null"], "maxLength": 256 }
+      }
+    },
+    "summaryCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "complete", "lenses", "critic"],
+      "properties": {
+        "schema": { "const": "flow.review-coverage/v1" },
+        "complete": { "type": "boolean" },
+        "lenses": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/summaryCoverageEntry" }
+        },
+        "critic": { "$ref": "#/$defs/summaryCoverageEntry" }
+      }
+    },
+    "automatedEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_authority_watermark",
+        "lens_evidence",
+        "critic_evidence_digest"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-automated-evidence/v1" },
+        "source_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lens_evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lens", "evidence_digest"],
+            "properties": {
+              "lens": { "type": "string", "minLength": 1 },
+              "evidence_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        "critic_evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "reviewSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "candidate_fingerprint",
+        "candidate_authority_watermark",
+        "lifecycle_generation",
+        "enabled_lenses",
+        "finding_cap",
+        "urgency_floor",
+        "orientation",
+        "diagrams",
+        "lens_results",
+        "critic_result",
+        "findings",
+        "rendered_findings",
+        "cap_reasons",
+        "posture",
+        "coverage",
+        "merge_ready",
+        "automated_evidence"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-summary/v1" },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "candidate_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "enabled_lenses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "finding_cap": { "type": "integer", "minimum": 1 },
+        "urgency_floor": {
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "orientation": {
+          "anyOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/orientation" }
+          ]
+        },
+        "diagrams": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagram" }
+        },
+        "lens_results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewResult" }
+        },
+        "critic_result": { "$ref": "#/$defs/reviewResult" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "rendered_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "cap_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capReason" }
+        },
+        "posture": {
+          "enum": ["no_findings", "findings", "review_incomplete", "blocked"]
+        },
+        "coverage": { "$ref": "#/$defs/summaryCoverage" },
+        "merge_ready": { "const": false },
+        "automated_evidence": { "$ref": "#/$defs/automatedEvidence" }
+      }
+    },
+    "reviewArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "watermark", "provenance", "formats", "digests"],
+      "properties": {
+        "schema": { "const": "flow.review-artifacts/v1" },
+        "watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "provenance": {
+          "$ref": "https://dotfiles.local/schemas/flow.review-provenance.v1.schema.json"
+        },
+        "formats": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["json", "markdown", "html"],
+          "properties": {
+            "json": { "type": "string" },
+            "markdown": { "type": "string" },
+            "html": { "type": "string" }
+          }
+        },
+        "digests": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["json", "markdown", "html"],
+          "properties": {
+            "json": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "markdown": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "html": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          }
+        }
+      }
+    },
+    "legacyReviewSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "candidate_fingerprint",
+        "candidate_authority_watermark",
+        "lifecycle_generation",
+        "enabled_lenses",
+        "finding_cap",
+        "urgency_floor",
+        "lens_results",
+        "critic_result",
+        "findings",
+        "rendered_findings",
+        "cap_reasons",
+        "posture",
+        "merge_ready",
+        "automated_evidence"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-summary/v1" },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "candidate_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "enabled_lenses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "finding_cap": { "type": "integer", "minimum": 1 },
+        "urgency_floor": {
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "lens_results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewResult" }
+        },
+        "critic_result": { "$ref": "#/$defs/reviewResult" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "rendered_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reviewFinding" }
+        },
+        "cap_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capReason" }
+        },
+        "posture": {
+          "enum": ["no_findings", "findings", "review_incomplete", "blocked"]
+        },
+        "merge_ready": { "const": false },
+        "automated_evidence": { "$ref": "#/$defs/automatedEvidence" }
+      }
+    },
+    "legacyReviewArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "watermark", "provenance", "formats", "digests"],
+      "properties": {
+        "schema": { "const": "flow.review-artifacts/v1" },
+        "watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation_contract"],
+          "properties": {
+            "operation_contract": { "type": "string", "minLength": 1 }
+          }
+        },
+        "formats": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["markdown"],
+          "properties": { "markdown": { "type": "string" } }
+        },
+        "digests": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["markdown"],
+          "properties": {
+            "markdown": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "remoteReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "status", "submitted", "target_fingerprint"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "submitted": { "type": "boolean" },
+        "target_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "githubRepository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "name"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "githubSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "repository",
+        "pull_request_number",
+        "state",
+        "base_sha",
+        "head_sha",
+        "diff_sha256"
+      ],
+      "properties": {
+        "schema": { "const": "flow.github-pull-request-snapshot/v1" },
+        "repository": { "$ref": "#/$defs/githubRepository" },
+        "pull_request_number": { "type": "integer", "minimum": 1 },
+        "state": { "const": "open" },
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "diff_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "githubTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "repository",
+        "pull_request_number",
+        "lifecycle_generation",
+        "target_authority_watermark",
+        "snapshot",
+        "snapshot_fingerprint"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-github-pull-request/v1" },
+        "repository": { "$ref": "#/$defs/githubRepository" },
+        "pull_request_number": { "type": "integer", "minimum": 1 },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "target_authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "snapshot": { "$ref": "#/$defs/githubSnapshot" },
+        "snapshot_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

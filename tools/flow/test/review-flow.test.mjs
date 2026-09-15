@@ -37,15 +37,23 @@ import {
   buildReviewTargetObservation,
   buildReviewTargetInvalidationEvent,
   buildReviewTargetRefreshEvent,
+  buildReviewHumanEvent,
   materializeReviewDelegateResult,
+  projectReviewInbox,
+  projectGitHubReviewRecord,
   projectReviewRecord,
   projectReviewCurrency,
+  reviewHumanCommandIssue,
+  REVIEW_HUMAN_COMMAND_SCHEMA,
+  REVIEW_INBOX_QUERY_CONTRACT,
+  REVIEW_INBOX_WATERMARK_SCHEMA,
   GITHUB_REVIEW_OPERATION_CONTRACTS,
   GITHUB_REVIEW_TARGET_SCHEMA,
   githubPendingEffectIdentity,
   reviewCompletionAuthority,
   reviewEventWatermark,
   reviewAuthorityEventWatermark,
+  validateReviewHumanEventRecords,
   reviewRecordWatermarkIdentity,
   reviewSubjectId,
   REVIEW_OPERATION_CONTRACTS,
@@ -64,6 +72,7 @@ import {
 } from "../test-support/fixed-host-identity.mjs";
 
 const DIGEST = (byte) => `sha256:${byte.repeat(64)}`;
+const EMPTY_WATERMARK = DIGEST("0");
 
 function withReviewRecordRetryCapacity(definition) {
   return {
@@ -1611,7 +1620,9 @@ test("ReviewAuthority replays exact records, fences target and lifecycle drift, 
     command_digest: idempotencyCommandDigest(command),
   }]);
   assert.equal(projection.automated_completion, true);
-  assert.deepEqual(projection.legal_actions, []);
+  assert.deepEqual(projection.legal_actions.map(({ type }) => type), [
+    "review_session_start",
+  ]);
   assert.deepEqual(
     projection.approval,
     "not_requested",
@@ -1662,6 +1673,849 @@ test("ReviewAuthority replays exact records, fences target and lifecycle drift, 
     summary: { ...command.summary, posture: "blocked" },
   });
   assert.equal(conflict.code, "idempotency_conflict");
+});
+
+test("public review actions start an exact expected-generation session", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const reviewId = record.subject_id;
+  const start = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type: "review_session_start",
+    contract: "work.review/v1",
+    command_id: `review-session-start:${reviewId}`,
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: record.candidate_fingerprint,
+    candidate_fingerprint: record.candidate_fingerprint,
+    candidate_authority_watermark: record.candidate_authority_watermark,
+    lifecycle_generation: record.lifecycle_generation,
+    expected_watermark: record.artifacts.watermark,
+    expected_generation: 0,
+    session_id: "tuicr-session:test",
+  };
+
+  const receipt = runtime.command(start);
+  assert.equal(receipt.accepted, true);
+  const projection = runtime.query({ review_id: reviewId });
+  assert.equal(projection.session.session_id, start.session_id);
+  assert.equal(projection.session.target_fingerprint, record.candidate_fingerprint);
+  assert.equal(projection.session.lifecycle_generation, record.lifecycle_generation);
+  assert.equal(projection.review_authority_watermark, projection.watermark);
+  assert.equal(projection.session.review_authority_watermark,
+    projection.watermark);
+  assert.equal(projection.review_generation, 1);
+  assert.equal(projection.approval, "not_requested");
+  assert.ok(projection.legal_actions.some(({ type }) => type === "review_comment"));
+
+  const inbox = runtime.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  assert.equal(inbox.contract, REVIEW_INBOX_QUERY_CONTRACT);
+  assert.equal(inbox.items[0].review_id, reviewId);
+  assert.equal(inbox.items[0].review.target_fingerprint, record.candidate_fingerprint);
+  assert.equal(inbox.items[0].review_authority_watermark,
+    inbox.items[0].review.watermark);
+  assert.equal(inbox.items[0].review_authority_watermark,
+    projection.watermark);
+});
+
+test("review comments, dispositions, approval, and integration are generation fenced", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const reviewId = record.subject_id;
+  let projection = runtime.query({ review_id: reviewId });
+  const base = (type, commandId) => ({
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type,
+    contract: "work.review/v1",
+    command_id: commandId,
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: record.candidate_fingerprint,
+    candidate_fingerprint: record.candidate_fingerprint,
+    candidate_authority_watermark: record.candidate_authority_watermark,
+    lifecycle_generation: record.lifecycle_generation,
+    expected_watermark: projection.watermark,
+    expected_generation: projection.review_generation ?? 0,
+    session_id: projection.session?.session_id,
+  });
+  const start = {
+    ...base("review_session_start", `review-session-start:${reviewId}`),
+    session_id: "tuicr-session:actions",
+  };
+  assert.equal(runtime.command(start).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+  const stale = {
+    ...base("review_comment", "review-comment:stale"),
+    session_id: start.session_id,
+    comment_id: "comment:stale",
+    body: "stale",
+    expected_generation: 0,
+    expected_watermark: record.artifacts.watermark,
+  };
+  assert.equal(runtime.command(stale).code, "stale_review_generation");
+
+  const comment = {
+    ...base("review_comment", "review-comment:1"),
+    session_id: start.session_id,
+    comment_id: "comment:1",
+    body: "Please retain the exact candidate evidence.",
+  };
+  assert.equal(runtime.command(comment).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+  assert.equal(projection.comments[0].comment_id, comment.comment_id);
+  const duplicateComment = {
+    ...base("review_comment", "review-comment:duplicate"),
+    session_id: start.session_id,
+    comment_id: comment.comment_id,
+    body: "The same comment identity cannot be recorded twice.",
+  };
+  assert.equal(runtime.command(duplicateComment).code,
+    "review_comment_already_recorded");
+
+  const disposition = {
+    ...base("review_disposition", "review-disposition:2"),
+    session_id: start.session_id,
+    disposition: "accept",
+    finding_id: projection.findings[0]?.finding_id,
+  };
+  assert.equal(runtime.command(disposition).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+  assert.equal(projection.dispositions[0].disposition, "accept");
+  const duplicateDisposition = {
+    ...base("review_disposition", "review-disposition:duplicate"),
+    session_id: start.session_id,
+    disposition: "dismiss",
+    finding_id: disposition.finding_id,
+  };
+  assert.equal(runtime.command(duplicateDisposition).code,
+    "review_disposition_already_recorded");
+
+  const integrationBeforeApproval = {
+    ...base("review_integration", "review-integration:before-approval"),
+    session_id: start.session_id,
+    evidence: {
+      schema: "flow.review-integration-evidence/v1",
+      candidate_fingerprint: record.candidate_fingerprint,
+      lifecycle_generation: record.lifecycle_generation,
+    },
+  };
+  assert.equal(runtime.command(integrationBeforeApproval).code,
+    "review_approval_required");
+
+  const approval = {
+    ...base("review_approval", "review-approval:3"),
+    session_id: start.session_id,
+    decision: "approve",
+  };
+  assert.equal(runtime.command(approval).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+  assert.equal(projection.approval, "approved");
+  assert.equal(projection.automated_completion, true);
+  const duplicateApproval = {
+    ...base("review_approval", "review-approval:duplicate"),
+    session_id: start.session_id,
+    decision: "approve",
+  };
+  assert.equal(runtime.command(duplicateApproval).code,
+    "review_approval_already_granted");
+  const revoke = {
+    ...base("review_approval", "review-approval:revoke"),
+    session_id: start.session_id,
+    decision: "revoke",
+  };
+  assert.equal(runtime.command(revoke).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+  assert.equal(projection.approval, "revoked");
+  const duplicateRevoke = {
+    ...base("review_approval", "review-approval:duplicate-revoke"),
+    session_id: start.session_id,
+    decision: "revoke",
+  };
+  assert.equal(runtime.command(duplicateRevoke).code,
+    "review_approval_not_active");
+  const reapprove = {
+    ...base("review_approval", "review-approval:reapprove"),
+    session_id: start.session_id,
+    decision: "approve",
+  };
+  assert.equal(runtime.command(reapprove).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+
+  const integration = {
+    ...base("review_integration", "review-integration:4"),
+    session_id: start.session_id,
+    evidence: {
+      schema: "flow.review-integration-evidence/v1",
+      candidate_fingerprint: record.candidate_fingerprint,
+      lifecycle_generation: record.lifecycle_generation,
+    },
+  };
+  assert.equal(runtime.command(integration).accepted, true);
+  projection = runtime.query({ review_id: reviewId });
+  assert.equal(projection.integration_authorized, true);
+  assert.equal(
+    projection.integration.evidence.candidate_fingerprint,
+    record.candidate_fingerprint,
+  );
+  assert.equal(projection.legal_actions.some(({ type }) => type === "review_approval"), false);
+  const postIntegrationEventCount = projection.append_only_event_count;
+  for (const [decision, commandId] of [
+    ["revoke", "review-approval:after-integration-revoke"],
+    ["approve", "review-approval:after-integration-reapprove"],
+  ]) {
+    assert.equal(runtime.command({
+      ...base("review_approval", commandId),
+      session_id: start.session_id,
+      decision,
+    }).code, "review_approval_after_integration");
+  }
+  assert.equal(
+    runtime.query({ review_id: reviewId }).append_only_event_count,
+    postIntegrationEventCount,
+  );
+  const repeatedIntegration = {
+    ...base("review_integration", "review-integration:duplicate"),
+    session_id: start.session_id,
+    evidence: integration.evidence,
+  };
+  assert.equal(runtime.command(repeatedIntegration).code,
+    "review_integration_already_recorded");
+  assert.equal(projection.legal_actions.some(({ type }) => type === "review_approval"), false);
+});
+
+test("review supersession remains terminal after integration across projection rebuilds", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordWatermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: reviewRecordWatermarkIdentity(body),
+  });
+  const recordPayload = {
+    type: "review_recorded",
+    body,
+    watermark: recordWatermark,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const materialize = (projection, type, values) => {
+    const action = projection.legal_actions.find(({ type: actionType }) =>
+      actionType === type);
+    assert.ok(action, `missing ${type} action`);
+    const { operator_input: _operatorInput, ...fields } = action;
+    return { ...fields, ...values };
+  };
+  const startCurrent = projectReviewRecord(body, recordWatermark, [recordPayload]);
+  const startCommand = materialize(startCurrent, "review_session_start", {
+    session_id: "session:supersession-terminal",
+  });
+  const startPayload = buildReviewHumanEvent({
+    command: startCommand,
+    current: startCurrent,
+  }).event.payload;
+  const startRecords = [recordPayload, startPayload];
+  const approvalCurrent = projectReviewRecord(
+    body,
+    startPayload.watermark,
+    startRecords,
+  );
+  const approvalPayload = buildReviewHumanEvent({
+    command: materialize(approvalCurrent, "review_approval", {
+      decision: "approve",
+    }),
+    current: approvalCurrent,
+  }).event.payload;
+  const approvalRecords = [...startRecords, approvalPayload];
+  const integrationCurrent = projectReviewRecord(
+    body,
+    approvalPayload.watermark,
+    approvalRecords,
+  );
+  const integrationPayload = buildReviewHumanEvent({
+    command: materialize(integrationCurrent, "review_integration", {
+      evidence: {
+        schema: "flow.review-integration-evidence/v1",
+        candidate_fingerprint: command.candidate_fingerprint,
+        lifecycle_generation: command.lifecycle_generation,
+      },
+    }),
+    current: integrationCurrent,
+  }).event.payload;
+  const integratedRecords = [...approvalRecords, integrationPayload];
+  const integrated = projectReviewRecord(
+    body,
+    integrationPayload.watermark,
+    integratedRecords,
+  );
+  assert.equal(integrated.integration_authorized, true);
+  for (const [decision, commandId] of [
+    ["revoke", "review-approval:replay-after-integration-revoke"],
+    ["approve", "review-approval:replay-after-integration-reapprove"],
+  ]) {
+    const replayCurrent = {
+      ...integrated,
+      integration: null,
+      integration_eligible: false,
+      integration_authorized: false,
+      approval: decision === "approve" ? "revoked" : "approved",
+    };
+    const replayBuild = buildReviewHumanEvent({
+      command: {
+        schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+        type: "review_approval",
+        contract: "work.review/v1",
+        command_id: commandId,
+        subject_id: command.subject_id,
+        review_id: command.subject_id,
+        target_fingerprint: integrated.target_fingerprint,
+        candidate_fingerprint: integrated.candidate_fingerprint,
+        candidate_authority_watermark: integrated.candidate_authority_watermark,
+        lifecycle_generation: integrated.lifecycle_generation,
+        expected_watermark: integrated.watermark,
+        expected_generation: integrated.review_generation,
+        session_id: integrated.session.session_id,
+        decision,
+      },
+      current: replayCurrent,
+    });
+    assert.equal(replayBuild.issue, undefined, JSON.stringify(replayBuild));
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        command.subject_id,
+        [
+          ...integratedRecords.map((payload) => ({ payload })),
+          { payload: replayBuild.event.payload },
+        ],
+        replayBuild.watermark,
+      ),
+      (error) => {
+        return error.code === "review_authority_integrity_failure" &&
+          error.reason === "malformed_event" &&
+          error.message === "review approval event is malformed";
+      },
+      `replay ${decision}`,
+    );
+  }
+  const observedCandidateFingerprint = DIGEST("d");
+  const observedLifecycleGeneration = 5;
+  const invalidationCommand = {
+    schema: "work.review-target-invalidation-command/v1",
+    type: "review_target_invalidated",
+    contract: "work.review/v1",
+    subject_id: command.subject_id,
+    command_id: `review-target-invalidate:${command.subject_id}:${observedCandidateFingerprint}:5`,
+    expected_watermark: integrated.watermark,
+    prior_candidate_fingerprint: command.candidate_fingerprint,
+    prior_lifecycle_generation: command.lifecycle_generation,
+    observed_candidate_fingerprint: observedCandidateFingerprint,
+    observed_lifecycle_generation: observedLifecycleGeneration,
+    reason: "target_moved",
+  };
+  const invalidationObservation = buildReviewTargetObservation({
+    subjectId: command.subject_id,
+    candidateId: candidate.candidate_id,
+    candidateFingerprint: observedCandidateFingerprint,
+    lifecycleGeneration: observedLifecycleGeneration,
+    authorityWatermark: DIGEST("a"),
+  });
+  const invalidationBuild = buildReviewTargetInvalidationEvent({
+    command: invalidationCommand,
+    current: integrated,
+    authorityObservation: invalidationObservation,
+  });
+  assert.equal(invalidationBuild.issue, undefined);
+  const invalidatedRecords = [
+    ...integratedRecords,
+    invalidationBuild.event.payload,
+  ];
+  const invalidatedDirect = projectReviewRecord(
+    body,
+    invalidationBuild.watermark,
+    invalidatedRecords,
+  );
+  const invalidatedReplay = foldWorkStream(
+    "review",
+    command.subject_id,
+    invalidatedRecords.map((payload) => ({ payload })),
+    invalidationBuild.watermark,
+  );
+  assert.deepEqual(invalidatedReplay, invalidatedDirect);
+  for (const projection of [invalidatedDirect, invalidatedReplay]) {
+    assert.equal(projection.status, "stale");
+    assert.equal(projection.current, false);
+    assert.equal(projection.evidence_currency, "stale");
+    assert.equal(projection.legal_actions.length, 1);
+    assert.equal(projection.legal_actions[0].type, "review_target_refresh");
+    assert.equal(projection.legal_actions[0].expected_watermark, projection.watermark);
+    for (const flag of [
+      "approval_eligible",
+      "integration_eligible",
+      "integration_authorized",
+      "submission_pending",
+      "submission_eligible",
+      "merge_eligible",
+      "merge_authorized",
+      "tracker_completion_eligible",
+      "tracker_completion_authorized",
+      "remote_submission_authorized",
+    ]) {
+      assert.equal(projection[flag], false, flag);
+    }
+  }
+  const supersessionBuild = buildReviewHumanEvent({
+    command: materialize(integrated, "review_supersession", {
+      replacement: {
+        candidate_fingerprint: DIGEST("e"),
+        lifecycle_generation: 5,
+      },
+    }),
+    current: integrated,
+  });
+  assert.equal(supersessionBuild.issue, undefined, JSON.stringify(supersessionBuild));
+  const supersessionPayload = supersessionBuild.event.payload;
+  const records = [...integratedRecords, supersessionPayload];
+  const direct = projectReviewRecord(body, supersessionPayload.watermark, records);
+  const rebuilt = foldWorkStream(
+    "review",
+    command.subject_id,
+    records.map((payload) => ({ payload })),
+    supersessionPayload.watermark,
+  );
+  assert.deepEqual(rebuilt, direct);
+  for (const projection of [direct, rebuilt]) {
+    assert.equal(projection.status, "stale");
+    assert.equal(projection.human_status, "superseded");
+    assert.equal(projection.current, false);
+    assert.equal(projection.evidence_currency, "stale");
+    assert.deepEqual(projection.legal_actions, []);
+    for (const flag of [
+      "approval_eligible",
+      "integration_eligible",
+      "integration_authorized",
+      "submission_pending",
+      "submission_eligible",
+      "merge_eligible",
+      "merge_authorized",
+      "tracker_completion_eligible",
+      "tracker_completion_authorized",
+      "remote_submission_authorized",
+    ]) {
+      assert.equal(projection[flag], false, flag);
+    }
+  }
+  const supersededInbox = projectReviewInbox({ reviews: [direct] });
+  assert.equal(supersededInbox.items[0].status, "stale");
+  assert.equal(supersededInbox.items[0].current, false);
+  assert.deepEqual(supersededInbox.items[0].legal_actions, []);
+  assert.equal(supersededInbox.items[0].review.status, "stale");
+  assert.equal(supersededInbox.items[0].review.human_status, "superseded");
+  const lateInvalidationCommand = {
+    ...invalidationCommand,
+    expected_watermark: supersessionPayload.watermark,
+  };
+  const lateInvalidationPayload = {
+    ...invalidationBuild.event.payload,
+    watermark: reviewEventWatermark({
+      previousWatermark: supersessionPayload.watermark,
+      event: invalidationBuild.event.payload.invalidation,
+    }),
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: lateInvalidationCommand.command_id,
+      command_digest: idempotencyCommandDigest(lateInvalidationCommand),
+    },
+  };
+  for (const replay of [
+    () => projectReviewRecord(body, lateInvalidationPayload.watermark, [
+      ...records,
+      lateInvalidationPayload,
+    ]),
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [
+        ...records.map((payload) => ({ payload })),
+        { payload: lateInvalidationPayload },
+      ],
+      lateInvalidationPayload.watermark,
+    ),
+  ]) {
+    assert.throws(
+      replay,
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+      "target invalidation after supersession is terminal",
+    );
+  }
+});
+
+test("ReviewAuthority rejects untyped or extra integration evidence", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const reviewId = record.subject_id;
+  const start = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type: "review_session_start",
+    contract: "work.review/v1",
+    command_id: `review-session-start:${reviewId}`,
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: record.candidate_fingerprint,
+    candidate_fingerprint: record.candidate_fingerprint,
+    candidate_authority_watermark: record.candidate_authority_watermark,
+    lifecycle_generation: record.lifecycle_generation,
+    expected_watermark: record.artifacts.watermark,
+    expected_generation: 0,
+    session_id: "tuicr-session:strict-evidence",
+  };
+  assert.equal(runtime.command(start).accepted, true);
+  let current = runtime.query({ review_id: reviewId });
+  const approval = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type: "review_approval",
+    contract: "work.review/v1",
+    command_id: "review-approval:strict-evidence",
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: current.target_fingerprint,
+    candidate_fingerprint: current.candidate_fingerprint,
+    candidate_authority_watermark: current.candidate_authority_watermark,
+    lifecycle_generation: current.lifecycle_generation,
+    expected_watermark: current.watermark,
+    expected_generation: current.review_generation,
+    session_id: current.session.session_id,
+    decision: "approve",
+  };
+  assert.equal(runtime.command(approval).accepted, true);
+  current = runtime.query({ review_id: reviewId });
+  const integration = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type: "review_integration",
+    contract: "work.review/v1",
+    command_id: "review-integration:strict-evidence",
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: current.target_fingerprint,
+    candidate_fingerprint: current.candidate_fingerprint,
+    candidate_authority_watermark: current.candidate_authority_watermark,
+    lifecycle_generation: current.lifecycle_generation,
+    expected_watermark: current.watermark,
+    expected_generation: current.review_generation,
+    session_id: current.session.session_id,
+    evidence: {
+      schema: "flow.review-integration-evidence/v1",
+      candidate_fingerprint: current.candidate_fingerprint,
+      lifecycle_generation: current.lifecycle_generation,
+      receipt: "caller-shaped-and-untyped",
+    },
+  };
+  assert.equal(runtime.command(integration).code, "invalid_review_integration");
+  current = runtime.query({ review_id: reviewId });
+  assert.equal(current.integration, undefined);
+  assert.equal(current.integration_authorized, false);
+});
+
+test("human review mutation admission rejects aliases, mixed forms, unknown props, and loose replacements", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const reviewId = record.subject_id;
+  const { operator_input: _operatorInput, ...startTemplate } = authority.query({
+    contract: "work.review/v1",
+    subject_id: reviewId,
+  }).legal_actions[0];
+  const start = {
+    ...startTemplate,
+    session_id: "session:strict-command",
+  };
+  const startReceipt = runtime.command(start);
+  assert.equal(startReceipt.accepted, true, JSON.stringify(startReceipt));
+  const current = runtime.query({ review_id: reviewId });
+  const commentTemplate = authority.query({
+    contract: "work.review/v1",
+    subject_id: reviewId,
+  }).legal_actions.find(({ type }) => type === "review_comment");
+  const invalidTemplate = {
+    ...commentTemplate,
+    command_id: "strict:invalid-operator-template",
+    operator_input: {
+      ...commentTemplate.operator_input,
+      required: ["session_id"],
+    },
+  };
+  assert.doesNotThrow(() => runtime.command(invalidTemplate));
+  assert.equal(runtime.command(invalidTemplate).code,
+    "invalid_review_human_command");
+  const base = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    contract: "work.review/v1",
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: current.target_fingerprint,
+    candidate_fingerprint: current.candidate_fingerprint,
+    candidate_authority_watermark: current.candidate_authority_watermark,
+    lifecycle_generation: current.lifecycle_generation,
+    expected_watermark: current.watermark,
+    expected_generation: current.review_generation,
+    session_id: current.session.session_id,
+  };
+  const invalid = [
+    {
+      ...base,
+      type: "review_comment",
+      command_id: "strict:unknown-property",
+      comment_id: "comment:strict",
+      body: "valid body",
+      undocumented: true,
+    },
+    {
+      ...base,
+      type: "review_disposition",
+      command_id: "strict:decision-alias",
+      decision: "accept",
+    },
+    {
+      ...base,
+      type: "review_supersession",
+      command_id: "strict:replacement-extra",
+      replacement: {
+        candidate_fingerprint: DIGEST("d"),
+        lifecycle_generation: 5,
+        undocumented: true,
+      },
+    },
+    {
+      ...base,
+      type: "review_integration",
+      command_id: "strict:mixed-integration",
+      evidence: {
+        schema: "flow.review-integration-evidence/v1",
+        candidate_fingerprint: current.candidate_fingerprint,
+        lifecycle_generation: current.lifecycle_generation,
+      },
+      integration_evidence: {
+        schema: "flow.review-integration-evidence/v1",
+        candidate_fingerprint: current.candidate_fingerprint,
+        lifecycle_generation: current.lifecycle_generation,
+      },
+    },
+  ];
+  for (const [index, command] of invalid.entries()) {
+    assert.equal(runtime.command(command).code,
+      index === 2 ? "invalid_review_supersession" : "invalid_review_human_command");
+  }
+  assert.equal(runtime.query({ review_id: reviewId }).append_only_event_count, 2);
+});
+
+test("direct local review subject queries expose the initial session action", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    reviewAuthority: authority,
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const subjectId = record.subject_id;
+  for (const request of [
+    { contract: "work.review/v1", subject_id: subjectId },
+    { review_id: subjectId },
+  ]) {
+    const projection = runtime.query(request);
+    assert.equal(projection.schema, "flow.review-projection/v1");
+    assert.deepEqual(projection.legal_actions.map(({ type }) => type), [
+      "review_session_start",
+    ]);
+    assert.equal(projection.legal_actions[0].expected_watermark, projection.watermark);
+    assert.equal(projection.legal_actions[0].expected_generation, 0);
+  }
+});
+
+test("review inbox watermark audits every candidate and review subject stream", () => {
+  const candidate = reviewCandidate();
+  const record = reviewRecordCommand(candidate, 4);
+  const candidateProjection = candidateAuthorityProjection(candidate, DIGEST("c"));
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection,
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
+  });
+  assert.equal(authority.command(record).accepted, true);
+  const review = authority.query({
+    contract: "work.review/v1",
+    subject_id: record.subject_id,
+  });
+  const empty = createInMemoryReviewAuthority().query({
+    contract: REVIEW_INBOX_QUERY_CONTRACT,
+  });
+  assert.equal(empty.watermark_schema, REVIEW_INBOX_WATERMARK_SCHEMA);
+  assert.deepEqual(empty.subject_watermarks, []);
+  assert.equal(empty.items.length, 0);
+  assert.equal(
+    empty.watermark,
+    digest({
+      schema: REVIEW_INBOX_WATERMARK_SCHEMA,
+      projection_digest: digest({
+        schema: "flow.review-inbox-visible-snapshot/v1",
+        items: [],
+      }),
+      subject_watermarks: [],
+    }),
+  );
+
+  const inbox = authority.query({ contract: REVIEW_INBOX_QUERY_CONTRACT });
+  assert.equal(inbox.watermark_schema, REVIEW_INBOX_WATERMARK_SCHEMA);
+  assert.deepEqual(inbox.subject_watermarks, [
+    {
+      stream_kind: "candidate",
+      stream_id: `work:work.review/v1:${candidateProjection.subject_id}`,
+      subject_id: candidateProjection.subject_id,
+      watermark: candidateProjection.watermark,
+    },
+    {
+      stream_kind: "review",
+      stream_id: `work:work.review/v1:${review.subject_id}`,
+      subject_id: review.subject_id,
+      watermark: review.watermark,
+    },
+  ]);
+  assert.equal(
+    inbox.watermark,
+    digest({
+      schema: REVIEW_INBOX_WATERMARK_SCHEMA,
+      projection_digest: digest({
+        schema: "flow.review-inbox-visible-snapshot/v1",
+        items: inbox.items,
+      }),
+      subject_watermarks: inbox.subject_watermarks,
+    }),
+  );
+  const rebuilt = authority.query({ contract: REVIEW_INBOX_QUERY_CONTRACT });
+  assert.deepEqual(rebuilt, inbox);
+});
+
+test("review inbox ordering uses canonical raw string order across rebuilds", () => {
+  const review = (subjectId, watermark) => ({
+    schema: "flow.review-projection/v1",
+    contract: "work.review/v1",
+    subject_id: subjectId,
+    watermark,
+    candidate_fingerprint: DIGEST("b"),
+    candidate_authority_watermark: DIGEST("c"),
+    lifecycle_generation: 1,
+    status: "automated_completed",
+    current: true,
+  });
+  const input = [
+    review("review:a", DIGEST("a")),
+    review("review:Z", DIGEST("b")),
+  ];
+  const inbox = projectReviewInbox({ reviews: input });
+  assert.deepEqual(inbox.items.map(({ review_id: reviewId }) => reviewId), [
+    "review:Z",
+    "review:a",
+  ]);
+  assert.deepEqual(inbox.subject_watermarks.map(({ subject_id: subjectId }) => subjectId), [
+    "review:Z",
+    "review:a",
+  ]);
+  const rebuilt = projectReviewInbox({ reviews: [...input].reverse() });
+  assert.deepEqual(rebuilt, inbox);
+  assert.equal(
+    inbox.watermark,
+    digest({
+      schema: REVIEW_INBOX_WATERMARK_SCHEMA,
+      projection_digest: digest({
+        schema: "flow.review-inbox-visible-snapshot/v1",
+        items: inbox.items,
+      }),
+      subject_watermarks: inbox.subject_watermarks,
+    }),
+  );
+});
+
+test("review inbox watermark changes when a fresh visible observation changes", () => {
+  const review = {
+    schema: "flow.review-projection/v1",
+    contract: "work.review/v1",
+    subject_id: "review:observation",
+    watermark: DIGEST("a"),
+    candidate_fingerprint: DIGEST("b"),
+    candidate_authority_watermark: DIGEST("c"),
+    lifecycle_generation: 1,
+    status: "automated_completed",
+    current: true,
+    evidence_currency: "current",
+    blocking_reasons: [],
+  };
+  const first = projectReviewInbox({ reviews: [review] });
+  const rebuilt = projectReviewInbox({ reviews: [structuredClone(review)] });
+  assert.deepEqual(rebuilt, first);
+  const changed = projectReviewInbox({
+    reviews: [{ ...review, blocking_reasons: ["workspace_dirty"] }],
+  });
+  assert.deepEqual(changed.subject_watermarks, first.subject_watermarks);
+  assert.notEqual(changed.watermark, first.watermark);
 });
 
 test("ReviewAuthority serializes same-watermark writers and preserves stale history", async () => {
@@ -1834,7 +2688,7 @@ test("durable review fold maps malformed and replay-corrupt events to integrity 
       watermark: DIGEST("a"),
     }]),
     (error) => error.code === "review_authority_integrity_failure" &&
-      error.reason === "watermark_chain_conflict",
+      error.reason === "malformed_event",
   );
   assert.throws(
     () => reviewAuthorityEventWatermark([{
@@ -1848,6 +2702,1159 @@ test("durable review fold maps malformed and replay-corrupt events to integrity 
     () => foldWorkStream("review", "review:corrupt", [{
       payload: { type: "review_event_from_the_future" },
     }], DIGEST("f")),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+});
+
+test("review replay validates the first recorded event body before its watermark", () => {
+  const command = reviewRecordCommand(reviewCandidate(), 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordPayload = {
+    type: "review_recorded",
+    body,
+    watermark: reviewEventWatermark({
+      previousWatermark: EMPTY_WATERMARK,
+      event: reviewRecordWatermarkIdentity(body),
+    }),
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  assert.doesNotThrow(() => reviewAuthorityEventWatermark([recordPayload]));
+
+  const tampered = structuredClone(recordPayload);
+  tampered.body.candidate_fingerprint = DIGEST("z");
+  tampered.watermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: reviewRecordWatermarkIdentity(tampered.body),
+  });
+  assert.throws(
+    () => reviewAuthorityEventWatermark([tampered]),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+});
+
+test("receipt-less legacy review records replay only with exact semantic and artifact bindings", () => {
+  const command = reviewRecordCommand(reviewCandidate(), 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const payload = {
+    type: "review_recorded",
+    body,
+    watermark: reviewEventWatermark({
+      previousWatermark: EMPTY_WATERMARK,
+      event: reviewRecordWatermarkIdentity(body),
+    }),
+  };
+  assert.doesNotThrow(() => reviewAuthorityEventWatermark([payload]));
+
+  for (const mutate of [
+    (tampered) => { tampered.body.summary.findings = []; },
+    (tampered) => { delete tampered.body.summary.merge_ready; },
+    (tampered) => { tampered.body.summary.merge_ready = true; },
+    (tampered) => { tampered.body.artifacts.formats.markdown = "tampered"; },
+    (tampered) => { tampered.body.artifacts.provenance.run_id = "run:tampered"; },
+    (tampered) => { tampered.body.artifacts.watermark = DIGEST("z"); },
+  ]) {
+    const tampered = structuredClone(payload);
+    mutate(tampered);
+    tampered.watermark = reviewEventWatermark({
+      previousWatermark: EMPTY_WATERMARK,
+      event: reviewRecordWatermarkIdentity(tampered.body),
+    });
+    assert.throws(
+      () => reviewAuthorityEventWatermark([tampered]),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+    );
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        command.subject_id,
+        [{ payload: tampered }],
+        tampered.watermark,
+      ),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+    );
+  }
+});
+
+test("GitHub review replay validates the first recorded event body before its watermark", () => {
+  const command = githubReviewRecordCommand(githubReviewTarget());
+  const body = {
+    schema: "flow.github-review-record/v1",
+    review_id: command.subject_id,
+    target: command.target,
+    target_fingerprint: command.target_fingerprint,
+    target_authority_watermark: command.target_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordPayload = {
+    type: "github_review_recorded",
+    body,
+    watermark: command.artifacts.watermark,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  assert.doesNotThrow(() => reviewAuthorityEventWatermark([recordPayload]));
+
+  const rebuilt = foldWorkStream(
+    "review",
+    command.subject_id,
+    [{ payload: recordPayload }],
+    DIGEST("f"),
+  );
+  assert.equal(rebuilt.watermark, recordPayload.watermark);
+  assert.equal(rebuilt.target_fingerprint, command.target_fingerprint);
+
+  const tampered = structuredClone(recordPayload);
+  tampered.body.target_fingerprint = DIGEST("z");
+  const { artifacts: _artifacts, ...identity } = tampered.body;
+  tampered.watermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: identity,
+  });
+  assert.throws(
+    () => reviewAuthorityEventWatermark([tampered]),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [{ payload: tampered }],
+      DIGEST("f"),
+    ),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+});
+
+test("GitHub review replay rejects every local transition after its initial record", () => {
+  const command = githubReviewRecordCommand(githubReviewTarget());
+  const body = {
+    schema: "flow.github-review-record/v1",
+    review_id: command.subject_id,
+    target: command.target,
+    target_fingerprint: command.target_fingerprint,
+    target_authority_watermark: command.target_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordPayload = {
+    type: "github_review_recorded",
+    body,
+    watermark: command.artifacts.watermark,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const humanEvent = buildReviewHumanEvent({
+    command: {
+      schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+      type: "review_session_start",
+      contract: "work.review/v1",
+      command_id: "github-replay-human-session-start",
+      subject_id: body.review_id,
+      review_id: body.review_id,
+      target_fingerprint: body.target_fingerprint,
+      candidate_fingerprint: body.target_fingerprint,
+      candidate_authority_watermark: body.target_authority_watermark,
+      lifecycle_generation: body.lifecycle_generation,
+      expected_watermark: recordPayload.watermark,
+      expected_generation: 0,
+      session_id: "session:github-replay",
+    },
+    current: {
+      schema: "flow.review-projection/v1",
+      subject_id: body.review_id,
+      watermark: recordPayload.watermark,
+      candidate_fingerprint: body.target_fingerprint,
+      candidate_authority_watermark: body.target_authority_watermark,
+      lifecycle_generation: body.lifecycle_generation,
+      current: true,
+      status: "automated_completed",
+      session: null,
+      review_generation: 0,
+    },
+  }).event.payload;
+  const invalidation = {
+    schema: "flow.review-target-invalidation/v1",
+    subject_id: body.review_id,
+    prior_candidate_fingerprint: body.target_fingerprint,
+    prior_lifecycle_generation: body.lifecycle_generation,
+    observed_candidate_fingerprint: DIGEST("f"),
+    observed_lifecycle_generation: body.lifecycle_generation + 1,
+    reason: "target_moved",
+  };
+  const invalidationPayload = {
+    type: "review_target_invalidated",
+    invalidation,
+    watermark: reviewEventWatermark({
+      previousWatermark: recordPayload.watermark,
+      event: invalidation,
+    }),
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: "github-replay-target-invalidation",
+      command_digest: DIGEST("1"),
+    },
+  };
+  const refresh = {
+    schema: "flow.review-target-refresh/v1",
+    subject_id: body.review_id,
+    prior_candidate_fingerprint: body.target_fingerprint,
+    prior_lifecycle_generation: body.lifecycle_generation,
+    observed_candidate_fingerprint: DIGEST("f"),
+    observed_lifecycle_generation: body.lifecycle_generation + 1,
+  };
+  const refreshPayload = {
+    type: "review_target_refresh_acknowledged",
+    refresh,
+    watermark: reviewEventWatermark({
+      previousWatermark: recordPayload.watermark,
+      event: refresh,
+    }),
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: "github-replay-target-refresh",
+      command_digest: DIGEST("2"),
+    },
+  };
+  const assertRejected = (payload, message) => {
+    const directRecords = [recordPayload, payload];
+    const durableRecords = directRecords.map((entry) => ({ payload: entry }));
+    const predicate = (error) =>
+      error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event" &&
+      error.message === message;
+    assert.throws(
+      () => validateReviewHumanEventRecords(directRecords),
+      predicate,
+      `${payload.type} direct validator`,
+    );
+    assert.throws(
+      () => reviewAuthorityEventWatermark(directRecords),
+      predicate,
+      `${payload.type} watermark validator`,
+    );
+    assert.throws(
+      () => projectGitHubReviewRecord(body, payload.watermark, directRecords),
+      predicate,
+      `${payload.type} GitHub projection`,
+    );
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        body.review_id,
+        durableRecords,
+        payload.watermark,
+      ),
+      predicate,
+      `${payload.type} durable fold`,
+    );
+  };
+  assertRejected(
+    humanEvent,
+    "GitHub review stream cannot accept local human events",
+  );
+  assertRejected(
+    invalidationPayload,
+    "GitHub review stream cannot accept local target invalidation events",
+  );
+  assertRejected(
+    refreshPayload,
+    "GitHub review stream cannot accept local target refresh events",
+  );
+});
+
+test("GitHub reviews stay automated in the inbox and reject local human actions", () => {
+  const target = githubReviewTarget();
+  const command = githubReviewRecordCommand(target);
+  const body = {
+    schema: "flow.github-review-record/v1",
+    review_id: command.subject_id,
+    target: command.target,
+    target_fingerprint: command.target_fingerprint,
+    target_authority_watermark: command.target_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordPayload = {
+    type: "github_review_recorded",
+    body,
+    watermark: command.artifacts.watermark,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const review = projectGitHubReviewRecord(body, recordPayload.watermark, [
+    recordPayload,
+  ]);
+  assert.equal(review.target_kind, "github");
+  assert.deepEqual(review.legal_actions, []);
+  const inbox = projectReviewInbox({ reviews: [review] });
+  assert.equal(inbox.items.length, 1);
+  assert.equal(inbox.items[0].review.target_kind, "github");
+  assert.deepEqual(inbox.items[0].legal_actions, []);
+  assert.deepEqual(inbox.items[0].review.legal_actions, []);
+
+  const base = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    contract: "work.review/v1",
+    subject_id: review.subject_id,
+    review_id: review.subject_id,
+    target_fingerprint: review.target_fingerprint,
+    candidate_fingerprint: review.candidate_fingerprint,
+    candidate_authority_watermark: review.candidate_authority_watermark,
+    lifecycle_generation: review.lifecycle_generation,
+    expected_watermark: review.watermark,
+    expected_generation: 0,
+  };
+  const commands = [
+    {
+      ...base,
+      type: "review_session_start",
+      command_id: "github-human-session-start",
+      session_id: "session:github-human",
+    },
+    {
+      ...base,
+      type: "review_comment",
+      command_id: "github-human-comment",
+      session_id: "session:github-human",
+      operator_input: {
+        schema: "flow.review-operator-input/v1",
+        action: "review_comment",
+        required: ["comment_id", "body"],
+      },
+    },
+    {
+      ...base,
+      type: "review_disposition",
+      command_id: "github-human-disposition",
+      session_id: "session:github-human",
+      operator_input: {
+        schema: "flow.review-operator-input/v1",
+        action: "review_disposition",
+        required: ["disposition"],
+        optional: ["finding_id"],
+        allowed_dispositions: ["accept", "request_changes", "dismiss", "defer"],
+      },
+    },
+    {
+      ...base,
+      type: "review_approval",
+      command_id: "github-human-approval",
+      session_id: "session:github-human",
+      decision: "approve",
+    },
+    {
+      ...base,
+      type: "review_supersession",
+      command_id: "github-human-supersession",
+      session_id: "session:github-human",
+      operator_input: {
+        schema: "flow.review-operator-input/v1",
+        action: "review_supersession",
+        required: ["replacement"],
+        replacement: {
+          required: ["candidate_fingerprint", "lifecycle_generation"],
+        },
+      },
+    },
+    {
+      ...base,
+      type: "review_integration",
+      command_id: "github-human-integration",
+      session_id: "session:github-human",
+      operator_input: {
+        schema: "flow.review-operator-input/v1",
+        action: "review_integration",
+        required: ["evidence"],
+        evidence_schema: "flow.review-integration-evidence/v1",
+      },
+    },
+  ];
+  for (const humanCommand of commands) {
+    assert.equal(
+      reviewHumanCommandIssue(humanCommand, review),
+      "review_target_not_local",
+      humanCommand.type,
+    );
+    const rejected = buildReviewHumanEvent({
+      command: humanCommand,
+      current: review,
+    });
+    assert.equal(rejected.issue, "review_target_not_local", humanCommand.type);
+  }
+});
+
+test("review replay requires exactly one validated initial record before transitions", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordPayload = {
+    type: "review_recorded",
+    body,
+    watermark: reviewEventWatermark({
+      previousWatermark: EMPTY_WATERMARK,
+      event: reviewRecordWatermarkIdentity(body),
+    }),
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const recorded = projectReviewRecord(body, recordPayload.watermark, [recordPayload]);
+  const startAction = recorded.legal_actions.find(({ type }) =>
+    type === "review_session_start");
+  assert.ok(startAction);
+  const { operator_input: _operatorInput, ...startFields } = startAction;
+  const startPayload = buildReviewHumanEvent({
+    command: {
+      ...startFields,
+      session_id: "session:record-first",
+    },
+    current: recorded,
+  }).event.payload;
+  assert.doesNotThrow(() => validateReviewHumanEventRecords([recordPayload]));
+  assert.doesNotThrow(() => validateReviewHumanEventRecords([
+    recordPayload,
+    startPayload,
+  ]));
+
+  const assertIntegrity = (records, label) => {
+    assert.throws(
+      () => validateReviewHumanEventRecords(records),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+      label,
+    );
+    assert.throws(
+      () => reviewAuthorityEventWatermark(records),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+      `${label} watermark`,
+    );
+  };
+  assertIntegrity([], "empty replay");
+  assertIntegrity([startPayload], "human-first replay");
+  assertIntegrity([{
+    type: "review_target_invalidated",
+    invalidation: {},
+    watermark: DIGEST("a"),
+    command_receipt: {},
+  }], "target-first replay");
+  assertIntegrity([{
+    type: "review_target_refresh_acknowledged",
+    refresh: {},
+    watermark: DIGEST("a"),
+    command_receipt: {},
+  }], "missing-record replay");
+});
+
+test("review target transition replay validates envelopes, ordering, and receipt bindings", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordPayload = {
+    type: "review_recorded",
+    body,
+    watermark: reviewEventWatermark({
+      previousWatermark: EMPTY_WATERMARK,
+      event: reviewRecordWatermarkIdentity(body),
+    }),
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const recordedRecords = [{ payload: recordPayload }];
+  const recorded = foldWorkStream(
+    "review",
+    command.subject_id,
+    recordedRecords,
+    recordPayload.watermark,
+  );
+  const observedCandidateFingerprint = DIGEST("d");
+  const observedLifecycleGeneration = 5;
+  const observation = buildReviewTargetObservation({
+    subjectId: command.subject_id,
+    candidateId: candidate.candidate_id,
+    candidateFingerprint: observedCandidateFingerprint,
+    lifecycleGeneration: observedLifecycleGeneration,
+    authorityWatermark: DIGEST("a"),
+  });
+  const invalidationCommand = {
+    schema: "work.review-target-invalidation-command/v1",
+    type: "review_target_invalidated",
+    contract: "work.review/v1",
+    subject_id: command.subject_id,
+    command_id: `review-target-invalidate:${command.subject_id}:${observedCandidateFingerprint}:5`,
+    expected_watermark: recorded.watermark,
+    prior_candidate_fingerprint: command.candidate_fingerprint,
+    prior_lifecycle_generation: command.lifecycle_generation,
+    observed_candidate_fingerprint: observedCandidateFingerprint,
+    observed_lifecycle_generation: observedLifecycleGeneration,
+    reason: "target_moved",
+  };
+  const invalidation = buildReviewTargetInvalidationEvent({
+    command: invalidationCommand,
+    current: recorded,
+    authorityObservation: observation,
+  });
+  assert.equal(invalidation.issue, undefined);
+  const invalidationPayload = invalidation.event.payload;
+  const staleRecords = [
+    ...recordedRecords,
+    { payload: invalidationPayload },
+  ];
+  const stale = foldWorkStream(
+    "review",
+    command.subject_id,
+    staleRecords,
+    invalidation.watermark,
+  );
+  const refresh = buildReviewTargetRefreshEvent({
+    command: stale.legal_actions[0],
+    current: stale,
+    authorityObservation: observation,
+  });
+  assert.equal(refresh.issue, undefined);
+  const refreshPayload = refresh.event.payload;
+  const validRecords = [...staleRecords, { payload: refreshPayload }];
+  const rebuilt = foldWorkStream(
+    "review",
+    command.subject_id,
+    validRecords,
+    refresh.watermark,
+  );
+  assert.deepEqual(
+    projectReviewRecord(body, refresh.watermark, validRecords.map(({ payload }) => payload)),
+    rebuilt,
+  );
+
+  const assertIntegrity = (records, label) => {
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        command.subject_id,
+        records,
+        DIGEST("f"),
+      ),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+      label,
+    );
+  };
+
+  const recomputedTamperedInvalidation = structuredClone(invalidationPayload);
+  recomputedTamperedInvalidation.invalidation.prior_candidate_fingerprint = DIGEST("f");
+  recomputedTamperedInvalidation.watermark = reviewEventWatermark({
+    previousWatermark: recordPayload.watermark,
+    event: recomputedTamperedInvalidation.invalidation,
+  });
+  assertIntegrity(
+    [...recordedRecords, { payload: recomputedTamperedInvalidation }],
+    "recomputed invalidation watermark cannot hide cross-field tampering",
+  );
+
+  const malformedInvalidation = structuredClone(invalidationPayload);
+  malformedInvalidation.invalidation.observation = {
+    ...malformedInvalidation.invalidation.observation,
+    candidate_fingerprint: 42,
+  };
+  assertIntegrity(
+    [...recordedRecords, { payload: malformedInvalidation }],
+    "malformed invalidation observation",
+  );
+
+  const extraObservationInvalidation = structuredClone(invalidationPayload);
+  const extraObservation = {
+    ...extraObservationInvalidation.invalidation.observation,
+    undocumented: true,
+  };
+  const { evidence_digest: _extraEvidenceDigest, ...extraObservationIdentity } =
+    extraObservation;
+  extraObservationInvalidation.invalidation.observation = {
+    ...extraObservation,
+    evidence_digest: digest(extraObservationIdentity),
+  };
+  extraObservationInvalidation.watermark = reviewEventWatermark({
+    previousWatermark: recordPayload.watermark,
+    event: extraObservationInvalidation.invalidation,
+  });
+  assertIntegrity(
+    [...recordedRecords, { payload: extraObservationInvalidation }],
+    "extra target observation property",
+  );
+
+  const pairedNoOpEpoch = candidate.workspace.mutation_epoch;
+  const pairedNoOpObservation = buildReviewTargetObservation({
+    subjectId: command.subject_id,
+    candidateId: candidate.candidate_id,
+    candidateFingerprint: command.candidate_fingerprint,
+    lifecycleGeneration: command.lifecycle_generation,
+    mutationEpoch: pairedNoOpEpoch,
+    authorityWatermark: DIGEST("e"),
+  });
+  const pairedNoOpCommand = {
+    schema: "work.review-target-invalidation-command/v1",
+    type: "review_target_invalidated",
+    contract: "work.review/v1",
+    command_id: `review-target-invalidate:${command.subject_id}:${command.candidate_fingerprint}:${command.lifecycle_generation}:${pairedNoOpEpoch}`,
+    subject_id: command.subject_id,
+    expected_watermark: recordPayload.watermark,
+    prior_candidate_fingerprint: command.candidate_fingerprint,
+    prior_lifecycle_generation: command.lifecycle_generation,
+    prior_mutation_epoch: pairedNoOpEpoch,
+    observed_candidate_fingerprint: command.candidate_fingerprint,
+    observed_lifecycle_generation: command.lifecycle_generation,
+    observed_mutation_epoch: pairedNoOpEpoch,
+    reason: "target_moved",
+  };
+  const pairedNoOpInvalidation = {
+    type: "review_target_invalidated",
+    invalidation: {
+      schema: "flow.review-target-invalidation/v1",
+      subject_id: command.subject_id,
+      prior_candidate_fingerprint: command.candidate_fingerprint,
+      prior_lifecycle_generation: command.lifecycle_generation,
+      prior_mutation_epoch: pairedNoOpEpoch,
+      observed_candidate_fingerprint: command.candidate_fingerprint,
+      observed_lifecycle_generation: command.lifecycle_generation,
+      observed_mutation_epoch: pairedNoOpEpoch,
+      reason: "target_moved",
+      observation: pairedNoOpObservation,
+    },
+    watermark: null,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: pairedNoOpCommand.command_id,
+      command_digest: idempotencyCommandDigest(pairedNoOpCommand),
+    },
+  };
+  pairedNoOpInvalidation.watermark = reviewEventWatermark({
+    previousWatermark: recordPayload.watermark,
+    event: pairedNoOpInvalidation.invalidation,
+  });
+  assertIntegrity(
+    [...recordedRecords, { payload: pairedNoOpInvalidation }],
+    "recomputed watermark cannot admit a paired-epoch no-op invalidation",
+  );
+
+  const refreshBeforeInvalidation = structuredClone(refreshPayload);
+  refreshBeforeInvalidation.watermark = reviewEventWatermark({
+    previousWatermark: recordPayload.watermark,
+    event: refreshBeforeInvalidation.refresh,
+  });
+  assertIntegrity(
+    [...recordedRecords, { payload: refreshBeforeInvalidation }],
+    "refresh before invalidation",
+  );
+
+  const duplicateRefresh = structuredClone(refreshPayload);
+  duplicateRefresh.watermark = reviewEventWatermark({
+    previousWatermark: refreshPayload.watermark,
+    event: duplicateRefresh.refresh,
+  });
+  assertIntegrity(
+    [...validRecords, { payload: duplicateRefresh }],
+    "duplicate refresh",
+  );
+
+  const duplicateInvalidation = structuredClone(invalidationPayload);
+  duplicateInvalidation.watermark = reviewEventWatermark({
+    previousWatermark: invalidationPayload.watermark,
+    event: duplicateInvalidation.invalidation,
+  });
+  assertIntegrity(
+    [...staleRecords, { payload: duplicateInvalidation }],
+    "duplicate invalidation",
+  );
+});
+
+test("human review replay validates every nested event shape before folding", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordWatermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: reviewRecordWatermarkIdentity(body),
+  });
+  const recordPayload = {
+    type: "review_recorded",
+    body,
+    watermark: recordWatermark,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const recorded = foldWorkStream(
+    "review",
+    command.subject_id,
+    [{ payload: recordPayload }],
+    recordWatermark,
+  );
+  const start = recorded.legal_actions.find(({ type }) =>
+    type === "review_session_start");
+  assert.ok(start);
+  const { operator_input: _operatorInput, ...startFields } = start;
+  const startPayload = buildReviewHumanEvent({
+    command: { ...startFields, session_id: "session:malformed-replay" },
+    current: recorded,
+  }).event.payload;
+  const withStart = foldWorkStream(
+    "review",
+    command.subject_id,
+    [{ payload: recordPayload }, { payload: startPayload }],
+    startPayload.watermark,
+  );
+  const commandFromAction = (projection, type, values) => {
+    const action = projection.legal_actions.find(({ type: actionType }) =>
+      actionType === type);
+    assert.ok(action, `missing ${type} action`);
+    const { operator_input: _operatorInput, ...materialized } = action;
+    return { ...materialized, ...values };
+  };
+  const approvalCommand = commandFromAction(withStart, "review_approval", {
+    decision: "approve",
+  });
+  const approvalPayload = buildReviewHumanEvent({
+    command: approvalCommand,
+    current: withStart,
+  }).event.payload;
+  const approved = foldWorkStream(
+    "review",
+    command.subject_id,
+    [{ payload: recordPayload }, { payload: startPayload }, { payload: approvalPayload }],
+    approvalPayload.watermark,
+  );
+  const integrationCommand = commandFromAction(approved, "review_integration", {
+    evidence: {
+      schema: "flow.review-integration-evidence/v1",
+      candidate_fingerprint: command.candidate_fingerprint,
+      lifecycle_generation: command.lifecycle_generation,
+    },
+  });
+  const nestedEvents = [
+    {
+      type: "review_comment",
+      prior: [{ payload: recordPayload }, { payload: startPayload }],
+      payload: buildReviewHumanEvent({
+        command: commandFromAction(withStart, "review_comment", {
+          comment_id: "comment:replay",
+          body: "A persisted comment.",
+        }),
+        current: withStart,
+      }).event.payload,
+      mutate: (event) => { event.comment.extra = true; },
+      message: "review comment event is malformed",
+    },
+    {
+      type: "review_disposition",
+      prior: [{ payload: recordPayload }, { payload: startPayload }],
+      payload: buildReviewHumanEvent({
+        command: commandFromAction(withStart, "review_disposition", {
+          disposition: "accept",
+        }),
+        current: withStart,
+      }).event.payload,
+      mutate: (event) => { event.disposition.disposition = "forged"; },
+      message: "review disposition event is malformed",
+    },
+    {
+      type: "review_approval",
+      prior: [{ payload: recordPayload }, { payload: startPayload }],
+      payload: approvalPayload,
+      mutate: (event) => { event.approval.decision = "forged"; },
+      message: "review approval event is malformed",
+    },
+    {
+      type: "review_supersession",
+      prior: [{ payload: recordPayload }, { payload: startPayload }],
+      payload: buildReviewHumanEvent({
+        command: commandFromAction(withStart, "review_supersession", {
+          replacement: {
+            candidate_fingerprint: DIGEST("d"),
+            lifecycle_generation: 5,
+          },
+        }),
+        current: withStart,
+      }).event.payload,
+      mutate: (event) => { event.supersession.replacement.extra = true; },
+      message: "review supersession event is malformed",
+    },
+    {
+      type: "review_integration",
+      prior: [
+        { payload: recordPayload },
+        { payload: startPayload },
+        { payload: approvalPayload },
+      ],
+      payload: buildReviewHumanEvent({
+        command: integrationCommand,
+        current: approved,
+      }).event.payload,
+      mutate: (event) => { event.integration.evidence.receipt = "forged"; },
+      message: "review integration event is malformed",
+    },
+  ];
+  for (const { type, prior, payload: validPayload, mutate, message } of nestedEvents) {
+    const payload = structuredClone(validPayload);
+    const nestedKey = typeToField(type);
+    const originalEnvelope = structuredClone(payload.event);
+    delete originalEnvelope[nestedKey];
+    const originalNested = structuredClone(payload.event[nestedKey]);
+    mutate(payload.event);
+    const mutatedEnvelope = structuredClone(payload.event);
+    delete mutatedEnvelope[nestedKey];
+    assert.deepEqual(mutatedEnvelope, originalEnvelope, `${type} changed its envelope`);
+    assert.notDeepEqual(payload.event[nestedKey], originalNested, `${type} was not mutated`);
+    payload.watermark = reviewEventWatermark({
+      previousWatermark: prior.at(-1).payload.watermark,
+      event: payload.event,
+    });
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        command.subject_id,
+        [...prior, { payload }],
+        payload.watermark,
+      ),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event" &&
+        error.message === message,
+      type,
+    );
+  }
+
+  const malformedStart = structuredClone(startPayload);
+  malformedStart.event.review_generation = 3;
+  malformedStart.watermark = reviewEventWatermark({
+    previousWatermark: recordWatermark,
+    event: malformedStart.event,
+  });
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [{ payload: recordPayload }, { payload: malformedStart }],
+      malformedStart.watermark,
+    ),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+
+  const malformedReceipt = structuredClone(startPayload);
+  malformedReceipt.command_receipt = {
+    schema: "work.idempotency-receipt/v1",
+    command_id: "malformed-receipt",
+    command_digest: "not-a-digest",
+  };
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [{ payload: recordPayload }, { payload: malformedReceipt }],
+      malformedReceipt.watermark,
+    ),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+});
+
+test("human review replay binds each event to the prior watermark and generation", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const body = {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+  const recordWatermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: reviewRecordWatermarkIdentity(body),
+  });
+  const recordPayload = {
+    type: "review_recorded",
+    body,
+    watermark: recordWatermark,
+    command_receipt: {
+      schema: "work.idempotency-receipt/v1",
+      command_id: command.command_id,
+      command_digest: idempotencyCommandDigest(command),
+    },
+  };
+  const recorded = foldWorkStream(
+    "review",
+    command.subject_id,
+    [{ payload: recordPayload }],
+    recordWatermark,
+  );
+  const startTemplate = recorded.legal_actions[0];
+  const { operator_input: _operatorInput, ...startFields } = startTemplate;
+  const startPayload = buildReviewHumanEvent({
+    command: { ...startFields, session_id: "session:replay-binding" },
+    current: recorded,
+  }).event.payload;
+  assert.equal(Object.hasOwn(startPayload.event, "accepted_command"), true);
+  const records = [{ payload: recordPayload }, { payload: startPayload }];
+
+  for (const field of ["expected_watermark", "expected_generation"]) {
+    const tampered = structuredClone(startPayload);
+    tampered.event[field] = field === "expected_watermark"
+      ? DIGEST("tampered")
+      : 99;
+    tampered.watermark = reviewEventWatermark({
+      previousWatermark: recordWatermark,
+      event: tampered.event,
+    });
+    assert.throws(
+      () => foldWorkStream(
+        "review",
+        command.subject_id,
+        [{ payload: recordPayload }, { payload: tampered }],
+        tampered.watermark,
+      ),
+      (error) => error.code === "review_authority_integrity_failure" &&
+        error.reason === "malformed_event",
+      field,
+    );
+  }
+
+  const withStart = foldWorkStream(
+    "review",
+    command.subject_id,
+    records,
+    startPayload.watermark,
+  );
+  const coordinatedForgery = structuredClone(startPayload);
+  const coordinatedCommand = {
+    ...startFields,
+    command_id: "review-session-start:coordinated-forgery",
+    session_id: "session:replay-binding",
+  };
+  coordinatedForgery.command_receipt = {
+    schema: "work.idempotency-receipt/v1",
+    command_id: coordinatedCommand.command_id,
+    command_digest: idempotencyCommandDigest(coordinatedCommand),
+  };
+  coordinatedForgery.event.command_receipt_digest = digest({
+    schema: "flow.review-command-receipt-identity/v1",
+    command_id: coordinatedForgery.command_receipt.command_id,
+    command_digest: coordinatedForgery.command_receipt.command_digest,
+  });
+  coordinatedForgery.watermark = reviewEventWatermark({
+    previousWatermark: recordWatermark,
+    event: coordinatedForgery.event,
+  });
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [{ payload: recordPayload }, { payload: coordinatedForgery }],
+      coordinatedForgery.watermark,
+    ),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+  const forgedReceipt = structuredClone(startPayload);
+  forgedReceipt.command_receipt.command_id = "review-session-start:forged";
+  forgedReceipt.command_receipt.command_digest = idempotencyCommandDigest({
+    ...startFields,
+    command_id: forgedReceipt.command_receipt.command_id,
+    session_id: "session:replay-binding",
+  });
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [{ payload: recordPayload }, { payload: forgedReceipt }],
+      forgedReceipt.watermark,
+    ),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+
+  const forgedReceiptDigest = structuredClone(startPayload);
+  forgedReceiptDigest.event.command_receipt_digest = DIGEST("tampered");
+  forgedReceiptDigest.watermark = reviewEventWatermark({
+    previousWatermark: recordWatermark,
+    event: forgedReceiptDigest.event,
+  });
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [{ payload: recordPayload }, { payload: forgedReceiptDigest }],
+      forgedReceiptDigest.watermark,
+    ),
+    (error) => error.code === "review_authority_integrity_failure" &&
+      error.reason === "malformed_event",
+  );
+
+  const commentTemplate = withStart.legal_actions.find(({ type }) =>
+    type === "review_comment");
+  const {
+    operator_input: _commentOperatorInput,
+    ...commentFields
+  } = commentTemplate;
+  const builtCommentPayload = buildReviewHumanEvent({
+    command: {
+      ...commentFields,
+      comment_id: "comment:empty-persisted",
+      body: "A valid persisted comment.",
+    },
+    current: withStart,
+  }).event.payload;
+  const commentPayload = structuredClone(builtCommentPayload);
+  commentPayload.event.comment.body = "";
+  commentPayload.watermark = reviewEventWatermark({
+    previousWatermark: startPayload.watermark,
+    event: commentPayload.event,
+  });
+  assert.throws(
+    () => foldWorkStream(
+      "review",
+      command.subject_id,
+      [...records, { payload: commentPayload }],
+      commentPayload.watermark,
+    ),
     (error) => error.code === "review_authority_integrity_failure" &&
       error.reason === "malformed_event",
   );
@@ -2035,6 +4042,67 @@ test("ReviewAuthority invalidates a recorded review when the target moves", asyn
     forgedObservationAuthority.command(invalidation).code,
     "review_target_observation_mismatch",
   );
+  const extraObservationAuthority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
+    targetObservationAdapter: {
+      observe({ command: observedCommand }) {
+        const observation = buildReviewTargetObservation({
+          subjectId: observedCommand.subject_id,
+          candidateId: candidate.candidate_id,
+          candidateFingerprint: observedCommand.observed_candidate_fingerprint,
+          lifecycleGeneration: observedCommand.observed_lifecycle_generation,
+          authorityWatermark: DIGEST("9"),
+        });
+        const { evidence_digest: _evidenceDigest, ...identity } = observation;
+        const extraIdentity = { ...identity, undocumented: true };
+        return {
+          ...extraIdentity,
+          evidence_digest: digest(extraIdentity),
+        };
+      },
+    },
+  });
+  assert.equal(extraObservationAuthority.command(command).accepted, true);
+  assert.equal(
+    extraObservationAuthority.command(invalidation).code,
+    "invalid_review_target_observation",
+  );
+  assert.equal(
+    extraObservationAuthority.query({
+      contract: "work.review/v1",
+      subject_id: reviewId,
+    }).append_only_event_count,
+    1,
+  );
+  const mutationObservationAuthority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: sourceEffectIntentReaderFor(command),
+    targetObservationAdapter: {
+      observe({ command: observedCommand }) {
+        return buildReviewTargetObservation({
+          subjectId: observedCommand.subject_id,
+          candidateId: candidate.candidate_id,
+          candidateFingerprint: observedCommand.observed_candidate_fingerprint,
+          lifecycleGeneration: observedCommand.observed_lifecycle_generation,
+          mutationEpoch: candidate.workspace.mutation_epoch + 1,
+          authorityWatermark: DIGEST("9"),
+        });
+      },
+    },
+  });
+  assert.equal(mutationObservationAuthority.command(command).accepted, true);
+  assert.equal(
+    mutationObservationAuthority.command(invalidation).code,
+    "review_target_observation_mismatch",
+  );
+  assert.equal(
+    mutationObservationAuthority.query({
+      contract: "work.review/v1",
+      subject_id: reviewId,
+    }).append_only_event_count,
+    1,
+  );
 
   const malformed = authority.command({
     ...invalidation,
@@ -2045,6 +4113,19 @@ test("ReviewAuthority invalidates a recorded review when the target moves", asyn
   assert.equal(
     authority.query({ contract: "work.review/v1", subject_id: reviewId }).watermark,
     before.watermark,
+  );
+  const extraInvalidation = {
+    ...invalidation,
+    undocumented: true,
+  };
+  assert.equal(
+    authority.command(extraInvalidation).code,
+    "invalid_review_target_invalidation",
+  );
+  assert.equal(
+    authority.query({ contract: "work.review/v1", subject_id: reviewId })
+      .append_only_event_count,
+    1,
   );
 
   const receipt = runtime.command(invalidation);
@@ -2079,6 +4160,16 @@ test("ReviewAuthority invalidates a recorded review when the target moves", asyn
   assert.equal(stale.tracker_completion_authorized, false);
   assert.equal(stale.append_only_event_count, 2);
   assert.equal(stale.command_receipts.length, 2);
+  const inbox = runtime.query({ schema: "flow.query/v1", query: "review_inbox" });
+  const inboxItem = inbox.items.find(({ review_id: itemReviewId }) =>
+    itemReviewId === reviewId);
+  assert.ok(inboxItem);
+  assert.deepEqual(inboxItem.legal_actions, stale.legal_actions);
+  const staleRefresh = {
+    ...stale.legal_actions[0],
+    expected_watermark: before.watermark,
+  };
+  assert.equal(runtime.command(staleRefresh).code, "stale_authority_watermark");
   assert.deepEqual(stale.legal_actions, [{
     schema: "work.review-target-refresh-command/v1",
     type: "review_target_refresh",
@@ -2092,6 +4183,33 @@ test("ReviewAuthority invalidates a recorded review when the target moves", asyn
     observed_lifecycle_generation: 5,
     authority_observation: stale.invalidation.observation,
   }]);
+  const { authority_observation: _authorityObservation, ...missingObservation } =
+    stale.legal_actions[0];
+  const malformedObservation = structuredClone(stale.legal_actions[0]);
+  malformedObservation.authority_observation.candidate_fingerprint = 42;
+  const staleObservation = buildReviewTargetObservation({
+    subjectId: reviewId,
+    candidateId: candidate.candidate_id,
+    candidateFingerprint: observedCandidateFingerprint,
+    lifecycleGeneration: 5,
+    authorityWatermark: DIGEST("f"),
+  });
+  const mismatchedObservation = {
+    ...stale.legal_actions[0],
+    authority_observation: staleObservation,
+  };
+  const refreshEventCount = stale.append_only_event_count;
+  for (const [label, refreshCommand] of [
+    ["missing observation", missingObservation],
+    ["extra property", { ...stale.legal_actions[0], undocumented: true }],
+    ["malformed observation", malformedObservation],
+    ["mismatched observation", mismatchedObservation],
+  ]) {
+    assert.equal(runtime.command(refreshCommand).code,
+      "invalid_review_target_refresh", label);
+    assert.equal(runtime.query({ review_id: reviewId }).append_only_event_count,
+      refreshEventCount, label);
+  }
   const refreshReceipt = runtime.command(stale.legal_actions[0]);
   assert.equal(refreshReceipt.accepted, true);
   assert.equal(refreshReceipt.created, true);
@@ -2126,6 +4244,7 @@ test("ReviewAuthority invalidates and refreshes review currency on mutation-epoc
   const candidate = reviewCandidate();
   const record = reviewRecordCommand(candidate, 4);
   const reviewId = reviewSubjectId({ candidate, lifecycle_generation: 4 });
+  let omitObservedMutationEpoch = false;
   const authority = createInMemoryReviewAuthority({
     candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
     sourceEffectIntentReader: sourceEffectIntentReaderFor(record),
@@ -2136,7 +4255,9 @@ test("ReviewAuthority invalidates and refreshes review currency on mutation-epoc
           candidateId: candidate.candidate_id,
           candidateFingerprint: command.observed_candidate_fingerprint,
           lifecycleGeneration: command.observed_lifecycle_generation,
-          mutationEpoch: command.observed_mutation_epoch,
+          ...(omitObservedMutationEpoch ? {} : {
+            mutationEpoch: command.observed_mutation_epoch,
+          }),
           authorityWatermark: DIGEST("9"),
         });
       },
@@ -2163,6 +4284,37 @@ test("ReviewAuthority invalidates and refreshes review currency on mutation-epoc
     observed_mutation_epoch: 8,
     reason: "target_moved",
   };
+  const { prior_mutation_epoch: _priorMutationEpoch, ...withoutPriorMutationEpoch } =
+    movement;
+  const { observed_mutation_epoch: _observedMutationEpoch, ...withoutObservedMutationEpoch } =
+    movement;
+  withoutObservedMutationEpoch.command_id =
+    `review-target-invalidate:${reviewId}:${candidate.candidate_fingerprint}:4`;
+  for (const incomplete of [
+    withoutPriorMutationEpoch,
+    withoutObservedMutationEpoch,
+  ]) {
+    assert.equal(
+      authority.command(incomplete).code,
+      "invalid_review_target_invalidation",
+    );
+    assert.equal(
+      authority.query({ contract: "work.review/v1", subject_id: reviewId })
+        .append_only_event_count,
+      1,
+    );
+  }
+  omitObservedMutationEpoch = true;
+  assert.equal(
+    authority.command(movement).code,
+    "review_target_observation_mismatch",
+  );
+  assert.equal(
+    authority.query({ contract: "work.review/v1", subject_id: reviewId })
+      .append_only_event_count,
+    1,
+  );
+  omitObservedMutationEpoch = false;
   const invalidated = runtime.command(movement);
   assert.equal(invalidated.accepted, true, JSON.stringify(invalidated));
   const stale = runtime.query({ review_id: reviewId });
@@ -2183,6 +4335,16 @@ test("ReviewAuthority invalidates and refreshes review currency on mutation-epoc
     observed_mutation_epoch: 8,
     authority_observation: stale.invalidation.observation,
   }]);
+  const { prior_mutation_epoch: _refreshPriorMutationEpoch, ...refreshWithoutPrior } =
+    stale.legal_actions[0];
+  const { observed_mutation_epoch: _refreshObservedMutationEpoch, ...refreshWithoutObserved } =
+    stale.legal_actions[0];
+  refreshWithoutObserved.command_id =
+    `review-target-refresh:${reviewId}:${candidate.candidate_fingerprint}:4`;
+  for (const incomplete of [refreshWithoutPrior, refreshWithoutObserved]) {
+    assert.equal(runtime.command(incomplete).code, "invalid_review_target_refresh");
+    assert.equal(runtime.query({ review_id: reviewId }).append_only_event_count, 2);
+  }
   const refreshed = runtime.command(stale.legal_actions[0]);
   assert.equal(refreshed.accepted, true, JSON.stringify(refreshed));
   const acknowledged = runtime.query({ review_id: reviewId });
@@ -3147,21 +5309,45 @@ test("review projection preserves legacy recorded artifacts across later event f
     schema: "flow.review-artifacts/v1",
     watermark: DIGEST("a"),
     formats: { markdown: "legacy recorded markdown" },
-    digests: { markdown: DIGEST("b") },
+    digests: { markdown: digest("legacy recorded markdown") },
     provenance: { operation_contract: "flow.operation/review-record/v1" },
   };
   const body = {
-    ...command,
+    schema: "flow.review-record/v1",
     review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
     summary: legacySummary,
+    automated_evidence: command.automated_evidence,
     artifacts: legacyArtifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
   };
-  const projection = projectReviewRecord(body, DIGEST("f"), [
-    { type: "review_recorded", body, watermark: DIGEST("f") },
+  const recordWatermark = reviewEventWatermark({
+    previousWatermark: EMPTY_WATERMARK,
+    event: reviewRecordWatermarkIdentity(body),
+  });
+  legacyArtifacts.watermark = recordWatermark;
+  body.artifacts = legacyArtifacts;
+  const projection = projectReviewRecord(body, recordWatermark, [
+    { type: "review_recorded", body, watermark: recordWatermark },
   ]);
+  const rebuilt = foldWorkStream(
+    "review",
+    command.subject_id,
+    [{ payload: { type: "review_recorded", body, watermark: recordWatermark } }],
+    recordWatermark,
+  );
+  assert.deepEqual(rebuilt, projection);
   assert.deepEqual(projection.artifacts, legacyArtifacts);
-  assert.equal(projection.watermark, DIGEST("f"));
-  assert.notEqual(projection.artifacts.watermark, projection.watermark);
+  assert.equal(projection.watermark, recordWatermark);
+  assert.equal(projection.artifacts.watermark, projection.watermark);
   assert.equal(projection.coverage, undefined);
   assert.deepEqual(projection.summary, legacySummary);
 });
@@ -3819,7 +6005,9 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   });
   assert.equal(review.posture, "review_incomplete");
   assert.equal(review.merge_ready, false);
-  assert.deepEqual(review.legal_actions, []);
+  assert.deepEqual(review.legal_actions.map(({ type }) => type), [
+    "review_session_start",
+  ]);
   assert.equal(review.integration_authorized, false);
   assert.equal(review.merge_authorized, false);
   assert.equal(review.tracker_completion_authorized, false);
@@ -4735,4 +6923,12 @@ function reviewRoute(agentId, description) {
   };
 }
 
-const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+function typeToField(type) {
+  return {
+    review_comment: "comment",
+    review_disposition: "disposition",
+    review_approval: "approval",
+    review_supersession: "supersession",
+    review_integration: "integration",
+  }[type];
+}

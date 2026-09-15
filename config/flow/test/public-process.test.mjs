@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import net from "node:net";
 import { writeFileSync } from "node:fs";
 import {
@@ -37,6 +37,10 @@ import {
 } from "../src/transport.mjs";
 import { confirmedLaunchRequest } from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
 import { registeredOperationProposal } from "../../../tools/flow/test-support/registered-operation.mjs";
+import {
+  initializePublicReviewRepository,
+  seedPublicReview,
+} from "../test-support/public-review-seed.mjs";
 
 const PUBLIC_OWNER_RUNTIME_MODULE = resolve(
   import.meta.dirname,
@@ -77,6 +81,317 @@ test("client process exit does not stop the detached owner or its autonomous run
   const client = createFlowClient({ socketPath: fixture.paths.socketPath });
   await waitFor(async () => (await client.query({ run_id: launch.run_id })).phase === "succeeded");
   assert.equal((await statusFlowOwner({ ...fixture.paths })).state, "running");
+});
+
+test("public host rebuilds the review inbox after the producing client exits", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { production: true });
+  const seeded = await seedPublicReview({
+    authorityDirectory: fixture.paths.authorityDirectory,
+    env: fixture.env,
+    repository: fixture.repository,
+  });
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+  await startDetachedFixture(fixture);
+
+  const reconnected = createFlowClient({ socketPath: fixture.paths.socketPath });
+  const inbox = await reconnected.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  assert.equal(inbox.schema, "flow.review-inbox-projection/v1");
+  assert.equal(inbox.items.length, 1);
+  const [item] = inbox.items;
+  assert.equal(item.review_id, seeded.review.subject_id);
+  assert.equal(item.candidate_id, seeded.candidate.subject_id);
+  assert.equal(item.candidate_fingerprint, seeded.candidate.candidate_fingerprint);
+  assert.equal(item.lifecycle_generation, seeded.review.lifecycle_generation);
+  assert.equal(item.candidate_authority_watermark, seeded.review.candidate_authority_watermark);
+  assert.equal(item.review_authority_watermark, seeded.review.watermark);
+  assert.equal(item.review.status, "automated_completed");
+  assert.equal(item.review.current, true);
+
+  const inboxWatcher = reconnected.watch({
+    schema: "flow.watch/v1",
+    query: "review_inbox",
+  });
+  const inboxObservation = await inboxWatcher.next();
+  assert.equal(inboxObservation.done, false);
+  assert.deepEqual(inboxObservation.value, inbox);
+  await inboxWatcher.return();
+
+  const authorityBeforeBoundary = await reconnected.query({});
+  const seededFeatureAfterReconnect = await reconnected.query({
+    run_id: seeded.feature.run_id,
+  });
+  const featureWatermark = seededFeatureAfterReconnect.watermark;
+  const inboxBeforeBoundary = await reconnected.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  const gitBeforeBoundary = gitObservation(fixture.repository);
+  const unsupportedCommands = [
+    {
+      name: "schedule",
+      command: {
+        schema: "flow.command/v1",
+        type: "schedule",
+        run_id: seeded.feature.run_id,
+        expected_watermark: featureWatermark,
+      },
+    },
+    {
+      name: "lifecycle",
+      command: {
+        schema: "flow.command/v1",
+        type: "cancel",
+        run_id: seeded.feature.run_id,
+        expected_watermark: featureWatermark,
+      },
+    },
+    {
+      name: "seal",
+      command: {
+        schema: "work.review-candidate-seal-command/v1",
+        type: "review_candidate_seal",
+        contract: "work.review/v1",
+        subject_id: seeded.candidate.subject_id,
+        expected_generation: 0,
+        candidate: seeded.candidate.candidate,
+        run_id: seeded.feature.run_id,
+        expected_watermark: featureWatermark,
+      },
+    },
+    {
+      name: "git integration",
+      command: {
+        schema: "flow.command/v1",
+        type: "git_integrate",
+        run_id: seeded.feature.run_id,
+        expected_watermark: featureWatermark,
+      },
+    },
+  ];
+  const unsupportedCodes = {
+    schedule: "run_terminal",
+    lifecycle: "run_terminal",
+    seal: "invalid_command",
+    "git integration": "run_terminal",
+  };
+  for (const { name, command } of unsupportedCommands) {
+    const rejection = await reconnected.command(command);
+    assert.equal(rejection.schema, "flow.rejection/v1", name);
+    assert.equal(rejection.accepted, undefined, name);
+    assert.equal(rejection.code, unsupportedCodes[name], name);
+  }
+  assert.deepEqual(await reconnected.query({}), authorityBeforeBoundary);
+  assert.deepEqual(await reconnected.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  }), inboxBeforeBoundary);
+  assert.deepEqual(gitObservation(fixture.repository), gitBeforeBoundary);
+
+  const sessionStart = item.legal_actions.find(({ type }) =>
+    type === "review_session_start");
+  assert.ok(sessionStart);
+  const sessionId = `session:${item.review_id}:operator`;
+  const sessionReceipt = await reconnected.command(materializeReviewAction(
+    sessionStart,
+    { session_id: sessionId },
+  ));
+  assert.equal(sessionReceipt.accepted, true);
+
+  const beforeStaleSession = await reconnected.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  const staleSession = await reconnected.command(materializeReviewAction(
+    {
+      ...sessionStart,
+      command_id: `${sessionStart.command_id}:stale-replay`,
+    },
+    { session_id: sessionId },
+  ));
+  assert.equal(staleSession.schema, "work.rejection/v1");
+  assert.equal(staleSession.accepted, undefined);
+  assert.equal(staleSession.code, "stale_review_generation");
+
+  let review = await reconnected.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  assert.deepEqual(review, beforeStaleSession);
+  assert.equal(review.review_generation, 1);
+  assert.equal(review.session.session_id, sessionId);
+  const comment = review.legal_actions.find(({ type }) =>
+    type === "review_comment");
+  assert.ok(comment);
+  assert.equal((await reconnected.command(materializeReviewAction(comment, {
+    comment_id: "comment:public-host",
+    body: "The retained candidate is ready for operator review.",
+  }))).accepted, true);
+
+  review = await reconnected.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  const disposition = review.legal_actions.find(({ type }) =>
+    type === "review_disposition");
+  assert.ok(disposition);
+  assert.equal((await reconnected.command(materializeReviewAction(disposition, {
+    disposition: "accept",
+  }))).accepted, true);
+
+  review = await reconnected.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  const approval = review.legal_actions.find(({ type, decision }) =>
+    type === "review_approval" && decision === "approve");
+  assert.ok(approval);
+  assert.equal((await reconnected.command(materializeReviewAction(approval, {
+    decision: "approve",
+  }))).accepted, true);
+
+  review = await reconnected.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  const integration = review.legal_actions.find(({ type }) =>
+    type === "review_integration");
+  assert.ok(integration);
+  const integrationEvidence = {
+    schema: "flow.review-integration-evidence/v1",
+    candidate_fingerprint: review.candidate_fingerprint,
+    lifecycle_generation: review.lifecycle_generation,
+  };
+  assert.equal((await reconnected.command(materializeReviewAction(integration, {
+    evidence: integrationEvidence,
+  }))).accepted, true);
+
+  const completed = await reconnected.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  assert.equal(completed.review_generation, 5);
+  assert.equal(completed.approval, "approved");
+  assert.equal(completed.integration.evidence_digest !== undefined, true);
+  assert.equal(completed.integration_eligible, true);
+  assert.equal(completed.integration_authorized, true);
+  assert.deepEqual(completed.legal_actions.map(({ type }) => type), [
+    "review_comment",
+    "review_disposition",
+    "review_supersession",
+  ]);
+  assert.ok(completed.legal_actions.every((action) =>
+    action.expected_watermark === completed.watermark &&
+    action.expected_generation === completed.review_generation));
+  assert.deepEqual(gitObservation(fixture.repository), gitBeforeBoundary);
+
+  const beforeReopen = await reconnected.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  await stopFlowOwner({ ...fixture.paths, force: true, waitMs: 1_000 });
+  await startDetachedFixture(fixture);
+  const afterReopen = await createFlowClient({
+    socketPath: fixture.paths.socketPath,
+  }).query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  assert.deepEqual(afterReopen, beforeReopen);
+});
+
+test("public host supersedes a production review and rejects stale follow-up actions", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { production: true });
+  const seeded = await seedPublicReview({
+    authorityDirectory: fixture.paths.authorityDirectory,
+    env: fixture.env,
+    repository: fixture.repository,
+  });
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+  await startDetachedFixture(fixture);
+
+  const client = createFlowClient({ socketPath: fixture.paths.socketPath });
+  const inbox = await client.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  const [item] = inbox.items;
+  assert.equal(item.review_id, seeded.review.subject_id);
+
+  const sessionStart = materializeReviewAction(
+    item.legal_actions.find(({ type }) => type === "review_session_start"),
+    { session_id: "session:public-supersession" },
+  );
+  assert.ok(sessionStart);
+  assert.equal((await client.command(sessionStart)).accepted, true);
+
+  const reviewAfterSession = await client.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  const supersessionTemplate = reviewAfterSession.legal_actions.find(({ type }) =>
+    type === "review_supersession");
+  const staleCommentTemplate = reviewAfterSession.legal_actions.find(({ type }) =>
+    type === "review_comment");
+  assert.ok(supersessionTemplate);
+  assert.ok(staleCommentTemplate);
+
+  const supersession = materializeReviewAction(supersessionTemplate, {
+    replacement: {
+      candidate_fingerprint: `sha256:${"b".repeat(64)}`,
+      lifecycle_generation: 1,
+    },
+  });
+  assert.equal((await client.command(supersession)).accepted, true);
+
+  const terminal = await client.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  });
+  assert.equal(terminal.review_generation, 2);
+  assert.equal(terminal.human_status, "superseded");
+  assert.equal(terminal.current, false);
+  assert.equal(terminal.evidence_currency, "stale");
+  assert.equal(terminal.approval, "ineligible");
+  assert.equal(terminal.integration_eligible, false);
+  assert.deepEqual(terminal.legal_actions, []);
+  assert.deepEqual(terminal.supersession.replacement, supersession.replacement);
+
+  const staleComment = materializeReviewAction(staleCommentTemplate, {
+    comment_id: "comment:stale-after-supersession",
+    body: "This action was projected before supersession.",
+  });
+  const staleRejection = await client.command(staleComment);
+  assert.equal(staleRejection.schema, "work.rejection/v1");
+  assert.equal(staleRejection.code, "stale_review_generation");
+  assert.equal(staleRejection.accepted, undefined);
+  assert.deepEqual(await client.query({
+    contract: "work.review/v1",
+    subject_id: item.review_id,
+  }), terminal);
+
+  const terminalInbox = await client.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  const terminalItem = terminalInbox.items.find(({ review_id: reviewId }) =>
+    reviewId === item.review_id);
+  assert.ok(terminalItem);
+  assert.equal(terminalItem.current, false);
+  assert.equal(terminalItem.review.human_status, "superseded");
+  assert.deepEqual(terminalItem.legal_actions, []);
+
+  await stopFlowOwner({ ...fixture.paths, force: true, waitMs: 1_000 });
+  await startDetachedFixture(fixture);
+  const rebuilt = await createFlowClient({
+    socketPath: fixture.paths.socketPath,
+  }).query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+  assert.deepEqual(rebuilt, terminalInbox);
 });
 
 test("detached owner progresses a multi-card dynamic run after explicit checkpoint admission", async (t) => {
@@ -1285,9 +1600,13 @@ test("watch carries watermarks and returns the server iterator on client disconn
   assert.equal(returnCalls, 1);
 });
 
-async function disposableOwnerFixture(t, { cleanupOwner = true } = {}) {
+async function disposableOwnerFixture(
+  t,
+  { cleanupOwner = true, production = false } = {},
+) {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-process-"));
   const state = join(scratch, "state");
+  const repository = join(scratch, "repository");
   const paths = flowOwnerPaths({
     env: { HOME: scratch, XDG_STATE_HOME: state },
     authorityDirectory: join(state, "flow"),
@@ -1301,7 +1620,13 @@ async function disposableOwnerFixture(t, { cleanupOwner = true } = {}) {
     FLOW_AUTHORITY_DIRECTORY: paths.authorityDirectory,
     FLOW_OWNER_ENDPOINT_PATH: paths.endpointPath,
     FLOW_OWNER_SOCKET_PATH: paths.socketPath,
+    ...(production ? { FLOW_PUBLIC_REPOSITORY: repository } : {}),
   };
+  if (production) {
+    await mkdir(repository, { recursive: true, mode: 0o700 });
+    await writeFile(join(repository, "feature.txt"), "before\n");
+    await initializePublicReviewRepository(repository);
+  }
   t.after(async () => {
     if (!cleanupOwner) {
       await rm(scratch, { recursive: true, force: true });
@@ -1313,7 +1638,7 @@ async function disposableOwnerFixture(t, { cleanupOwner = true } = {}) {
     }
     await rm(scratch, { recursive: true, force: true });
   });
-  return { env, paths };
+  return { env, paths, repository };
 }
 
 function authorizedRuntime(runtime) {
@@ -1358,6 +1683,27 @@ function runCliProcess(env, args) {
       resolveResult({ code, signal, stdout, stderr });
     });
   });
+}
+
+function gitObservation(repository) {
+  return {
+    commit_sha: execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim(),
+    status: execFileSync("git", [
+      "-C",
+      repository,
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+    ], { encoding: "utf8" }).trim(),
+  };
+}
+
+function materializeReviewAction(action, values) {
+  if (action === undefined) return null;
+  const { operator_input: _operatorInput, ...command } = action;
+  return { ...command, ...values };
 }
 
 function oneObservationWatcher(observation) {

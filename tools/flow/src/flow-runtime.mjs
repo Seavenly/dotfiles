@@ -51,6 +51,9 @@ import {
   createReviewOperationRegistration,
   isReviewTargetInvalidationCommand,
   isReviewTargetRefreshCommand,
+  isReviewHumanCommand,
+  projectReviewInbox,
+  REVIEW_INBOX_QUERY_CONTRACT,
   GITHUB_REVIEW_OPERATION_CONTRACTS,
   GITHUB_REVIEW_PENDING_CHECKPOINT_ID,
   GITHUB_REVIEW_TARGET_SCHEMA,
@@ -346,6 +349,9 @@ export function createFlowRuntime({
       if (isReviewTargetRefreshCommand(command)) {
         return ownedReviewAuthority.command(command);
       }
+      if (isReviewHumanCommand(command)) {
+        return ownedReviewAuthority.command(command);
+      }
       const before = typeof command?.run_id === "string"
         ? runAuthority.query(command.run_id)
         : null;
@@ -414,6 +420,14 @@ export function createFlowRuntime({
     },
 
     query(request = {}) {
+      if (request?.query === "review_inbox") {
+        if (!isExactReviewInboxRequest(request, "flow.query/v1")) {
+          return reviewInboxRequestRejection(ownedReviewAuthority, "query");
+        }
+        return ownedReviewAuthority.query({
+          contract: REVIEW_INBOX_QUERY_CONTRACT,
+        });
+      }
       const reviewSubject = reviewRequestSubject(request);
       if (reviewSubject !== null) {
         const authority = ownedGitHubReviewAuthority.query({
@@ -442,6 +456,16 @@ export function createFlowRuntime({
       const watchOptions = request?.[FLOW_RUNTIME_BACKGROUND_WATCH] === true
         ? { unrefPollTimer: true }
         : null;
+      if (request?.query === "review_inbox") {
+        if (!isExactReviewInboxRequest(request, "flow.watch/v1")) {
+          return oneShotReviewObservation(
+            reviewInboxRequestRejection(ownedReviewAuthority, "watch"),
+          );
+        }
+        return oneShotReviewObservation(ownedReviewAuthority.query({
+          contract: REVIEW_INBOX_QUERY_CONTRACT,
+        }));
+      }
       const reviewSubject = reviewRequestSubject(request);
       if (reviewSubject !== null) {
         const githubProjection = ownedGitHubReviewAuthority.query({
@@ -802,6 +826,32 @@ function reviewRequestSubject(request) {
     return request.review_id ?? request.subject_id;
   }
   return null;
+}
+
+function isExactReviewInboxRequest(request, schema) {
+  return request !== null && typeof request === "object" &&
+    !Array.isArray(request) &&
+    Object.keys(request).sort().join(",") === "query,schema" &&
+    request.schema === schema && request.query === "review_inbox";
+}
+
+function reviewInboxRequestRejection(reviewAuthority, operation) {
+  let current = null;
+  try {
+    current = reviewAuthority.query({
+      contract: REVIEW_INBOX_QUERY_CONTRACT,
+    });
+  } catch {
+    // A malformed public request must still produce a stable rejection when
+    // the backing authority is unavailable or corrupt.
+  }
+  return createRejection({
+    operation,
+    code: "invalid_review_query",
+    authorityWatermark: current?.watermark ?? null,
+    authorityWatermarkDomain: "review",
+    legalActions: [],
+  });
 }
 
 function oneShotReviewObservation(value) {

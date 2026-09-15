@@ -93,7 +93,10 @@ import {
 import {
   isReviewTargetInvalidationCommand,
   isReviewTargetRefreshCommand,
+  isReviewHumanCommand,
   GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
+  REVIEW_INBOX_QUERY_CONTRACT,
+  projectReviewInbox,
   projectReviewCandidateCurrency,
   projectReviewCurrency,
   reviewRecordCandidateAuthorityIssue,
@@ -1732,7 +1735,21 @@ export function createDurableRunAuthority({
           bootId,
           processIdentity,
         });
-        const currentProjection = readStream(database, identity.streamId)?.fold ?? null;
+        const storedProjection = readStream(database, identity.streamId)?.fold ?? null;
+        const humanCommand = isReviewHumanCommand(command);
+        // Human review commands carry a disposable projection watermark. The
+        // command boundary must rebuild that projection from the same Work
+        // observations used by query(), otherwise a copied action could cross
+        // a workspace, artifact, retention, or candidate-lifecycle fence.
+        const currentProjection = humanCommand &&
+            storedProjection?.schema === "flow.review-projection/v1"
+          ? queryWorkProjection(
+              database,
+              authorityDirectory,
+              identity,
+              gitRetentionAdapter,
+            )
+          : storedProjection;
         let reviewAuthorityObservation = null;
         if (isReviewTargetInvalidationCommand(command)) {
           reviewAuthorityObservation = durableReviewTargetObservation(
@@ -1848,6 +1865,7 @@ export function createDurableRunAuthority({
           identity,
           command,
           reviewAuthorityObservation,
+          humanCommand ? currentProjection : undefined,
         );
         if (structuralDecision.schema === "work.rejection/v1") {
           return structuralDecision;
@@ -1889,6 +1907,7 @@ export function createDurableRunAuthority({
           identity,
           command,
           reviewAuthorityObservation,
+          humanCommand ? currentProjection : undefined,
         );
         if (decision.schema === "work.rejection/v1") return decision;
         if (decision.replayed) {
@@ -1942,11 +1961,20 @@ export function createDurableRunAuthority({
             bootId,
             processIdentity,
           });
+          const committedProjection = humanCommand
+            ? queryWorkProjection(
+                database,
+                authorityDirectory,
+                identity,
+                gitRetentionAdapter,
+              )
+            : undefined;
           const committed = evaluateWorkCommand(
             database,
             identity,
             command,
             reviewAuthorityObservation,
+            humanCommand ? committedProjection : undefined,
           );
           if (committed.schema === "work.rejection/v1") {
             database.exec("ROLLBACK");
@@ -3128,7 +3156,7 @@ export function createDurableRunAuthority({
         "work.review-target-invalidation-command/v1",
         "work.review-target-refresh-command/v1",
         GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
-      ].includes(command?.schema) ||
+      ].includes(command?.schema) && !isReviewHumanCommand(command) ||
           command.contract !== "work.review/v1") {
         return workRejection("command", "invalid_review_command", { command });
       }
@@ -3142,6 +3170,9 @@ export function createDurableRunAuthority({
       if (isReviewTargetRefreshCommand(command)) {
         return workCommand(command);
       }
+      if (isReviewHumanCommand(command)) {
+        return workCommand(command);
+      }
       return workRejection(
         "command",
         "review_candidate_seal_requires_run_authority",
@@ -3149,6 +3180,20 @@ export function createDurableRunAuthority({
       );
     },
     query(request) {
+      if (request?.contract === REVIEW_INBOX_QUERY_CONTRACT) {
+        assertOpen();
+        if (!databaseExists(databasePath)) return projectReviewInbox();
+        const database = openAuthorityDatabase(databasePath, { readOnly: true });
+        try {
+          return queryReviewInboxProjection(
+            database,
+            authorityDirectory,
+            gitRetentionAdapter,
+          );
+        } finally {
+          database.close();
+        }
+      }
       if (request?.contract !== "work.review/v1") {
         return workRejection("query", "invalid_review_query", {
           contract: request?.contract ?? null,
@@ -3158,6 +3203,9 @@ export function createDurableRunAuthority({
       return workQuery(request);
     },
     watch(request) {
+      if (request?.contract === REVIEW_INBOX_QUERY_CONTRACT) {
+        return createOneShotWatcher(this.query(request));
+      }
       return createOneShotWatcher(workQuery({
         contract: "work.review/v1",
         subject_id: request?.subject_id,
@@ -3423,6 +3471,27 @@ function queryWorkProjection(
     const candidateProjection = candidateIdentity
       ? readStream(database, candidateIdentity.streamId)?.fold ?? null
       : null;
+    if (candidateProjection === null) {
+      return freezeCanonical({
+        ...projection,
+        status: "stale",
+        current: false,
+        evidence_currency: "stale",
+        blocking_reasons: ["candidate_authority_projection_missing"],
+        approval: "ineligible",
+        approval_eligible: false,
+        submission_pending: false,
+        submission_eligible: false,
+        integration_eligible: false,
+        integration_authorized: false,
+        merge_eligible: false,
+        merge_authorized: false,
+        tracker_completion_eligible: false,
+        tracker_completion_authorized: false,
+        remote_submission_authorized: false,
+        legal_actions: [],
+      });
+    }
     if (projection.current !== true &&
         !["superseded", "abandoned"].includes(candidateProjection?.status)) {
       return projection;
@@ -3504,6 +3573,42 @@ function queryWorkProjection(
     observeGitRetention(gitRetentionAdapter, projection.git_retention),
     consumerObservations,
   );
+}
+
+function queryReviewInboxProjection(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+) {
+  const candidates = [];
+  const reviews = [];
+  const rows = database.prepare(`
+    SELECT stream_id FROM authority_streams
+     WHERE stream_kind = 'review'
+     ORDER BY stream_id ASC
+  `).all();
+  const prefix = "work:work.review/v1:";
+  for (const row of rows) {
+    if (typeof row.stream_id !== "string" ||
+        !row.stream_id.startsWith(prefix)) continue;
+    const subjectId = row.stream_id.slice(prefix.length);
+    const identity = workStreamIdentity("work.review/v1", subjectId);
+    if (!identity) continue;
+    const stream = readStream(database, identity.streamId);
+    if (!stream) continue;
+    const projection = queryWorkProjection(
+      database,
+      authorityDirectory,
+      identity,
+      gitRetentionAdapter,
+    );
+    if (projection?.schema === "work.review-candidate-projection/v1") {
+      candidates.push(projection);
+    } else if (projection?.schema === "flow.review-projection/v1") {
+      reviews.push(projection);
+    }
+  }
+  return projectReviewInbox({ candidates, reviews });
 }
 
 function queryWorkspaceForReview(database, projection) {
@@ -3637,8 +3742,16 @@ function workCommandReceipt(command, projection, created) {
   });
 }
 
-function evaluateWorkCommand(database, identity, command, authorityObservation = null) {
-  const current = readStream(database, identity.streamId)?.fold ?? null;
+function evaluateWorkCommand(
+  database,
+  identity,
+  command,
+  authorityObservation = null,
+  currentOverride = undefined,
+) {
+  const current = currentOverride === undefined
+    ? readStream(database, identity.streamId)?.fold ?? null
+    : currentOverride;
   return decideWorkCommand(current, command, { authorityObservation });
 }
 

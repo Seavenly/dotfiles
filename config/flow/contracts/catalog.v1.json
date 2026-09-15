@@ -433,6 +433,17 @@
           "review": {
             "request": "flow.query/v1",
             "projection": "flow.review-projection/v1",
+            "inbox": {
+              "query": "review_inbox",
+              "projection": "flow.review-inbox-projection/v1",
+              "authority": "ReviewAuthority",
+              "watermark": "flow.review-inbox-watermark/v1"
+            },
+            "rejection": "flow.rejection/v1"
+          },
+          "review_inbox": {
+            "request": "flow.query/v1",
+            "projection": "flow.review-inbox-projection/v1",
             "rejection": "flow.rejection/v1"
           }
         }
@@ -450,7 +461,9 @@
         "review": {
           "request": "flow.watch/v1",
           "projection": "flow.review-projection/v1",
-          "watermark": "exact_review_authority"
+          "inbox": "flow.review-inbox-projection/v1",
+          "watermark": "exact_review_authority",
+          "inbox_watermark": "flow.review-inbox-watermark/v1"
         }
       }
     },
@@ -687,8 +700,23 @@
         "work.review-candidate-seal-command/v1",
         "work.review-record-command/v1",
         "work.review-target-invalidation-command/v1",
-        "work.review-target-refresh-command/v1"
+        "work.review-target-refresh-command/v1",
+        "work.review-human-command/v1"
       ],
+      "human_event": "flow.review-human-event/v1",
+      "operator_input": "flow.review-operator-input/v1",
+      "session": "flow.review-session/v1",
+      "comment": "flow.review-comment/v1",
+      "disposition": "flow.review-disposition/v1",
+      "approval": "flow.review-approval/v1",
+      "supersession": "flow.review-supersession/v1",
+      "integration": "flow.review-integration/v1",
+      "integration_evidence": "flow.review-integration-evidence/v1",
+      "inbox_query": "work.review-inbox/v1",
+      "inbox_projection": "flow.review-inbox-projection/v1",
+      "inbox_item": "flow.review-inbox-item/v1",
+      "inbox_watermark": "flow.review-inbox-watermark/v1",
+      "human_dispositions": ["accept", "request_changes", "dismiss", "defer"],
       "operation": "flow.operation/review-record/v1",
       "operation_registration_policy": "review_authority_owned_builtin_reserved",
       "request": "flow.review-request/v1",
@@ -983,6 +1011,20 @@
     "work.review-record-command/v1",
     "work.review-target-invalidation-command/v1",
     "work.review-target-refresh-command/v1",
+    "work.review-human-command/v1",
+    "flow.review-operator-input/v1",
+    "flow.review-human-event/v1",
+    "flow.review-session/v1",
+    "flow.review-comment/v1",
+    "flow.review-disposition/v1",
+    "flow.review-approval/v1",
+    "flow.review-supersession/v1",
+    "flow.review-integration/v1",
+    "flow.review-integration-evidence/v1",
+    "work.review-inbox/v1",
+    "flow.review-inbox-projection/v1",
+    "flow.review-inbox-item/v1",
+    "flow.review-inbox-watermark/v1",
     "flow.definition/review/v1",
     "flow.operation/review-record/v1",
     "flow.review-request/v1",

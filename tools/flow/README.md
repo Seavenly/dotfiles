@@ -796,6 +796,106 @@ adapter fails closed at the invalidation command with
 authority observation contract. Refresh reuses the recorded observation and
 does not grant lifecycle authority to the caller.
 
+### Local human review through a replaceable tuicr consumer
+
+The local human-review surface is a projection-only consumer seam, not a
+second authority or an executable adapter. `tuicr` (or another review UI)
+reads the disposable inbox projection from `ReviewAuthority` through the
+public five-operation `FlowRuntime` interface and submits only the projected
+commands back through `FlowRuntime.command`. The inbox keeps no state and
+cannot schedule work, approve or integrate a flow run, advance lifecycle, or
+mutate Git. ReviewAuthority remains the sole owner of the review subject and
+its append-only human events, so a replacement consumer can be built without
+changing authority storage or registering a new operation.
+
+Start or reconnect to the public owner, then inspect the complete inbox or a
+one-shot watermarked snapshot:
+
+```sh
+flow start --json
+flow query --input '{"schema":"flow.query/v1","query":"review_inbox"}' --json
+flow watch --input '{"schema":"flow.watch/v1","query":"review_inbox"}' --json
+```
+
+`flow.review-inbox-projection/v1` contains the exact `ReviewAuthority`
+`watermark` (also published as `authority_watermark`) and an ordered `items`
+array. Each item carries the candidate fingerprint and candidate-seal
+watermark, lifecycle generation, review authority watermark, candidate and
+review inspection projections, and only the legal human-review actions for
+that item. The `subject_watermarks` field is the canonical stream snapshot
+declared by `flow.review-inbox-watermark/v1`: candidate and review stream
+identities are ordered by exact `stream_id`, and each entry carries that
+stream's exact watermark. `projection_digest` is the digest of the complete
+canonical visible item snapshot, including fresh workspace, artifact,
+retention, and handoff observations. The inbox `watermark` binds both that
+digest and the ordered source-watermark set; it is not a mutable inbox cursor
+or a timestamp. `watch` returns
+one such snapshot and does not create a subscription or a new authority
+stream.
+
+Each `legal_actions` entry is a complete
+`work.review-human-command/v1` template. It repeats the exact
+`review_id`, `target_fingerprint`, `candidate_fingerprint`, candidate
+authority watermark, lifecycle generation, `expected_watermark`, and
+`expected_generation` needed by the authority. An entry with
+`operator_input` is a materialization template: collect the named required
+fields, remove `operator_input`, and add those fields before sending the
+command. For example, after selecting the session-start action, a consumer
+materializes and sends:
+
+```json
+{
+  "schema": "work.review-human-command/v1",
+  "type": "review_session_start",
+  "contract": "work.review/v1",
+  "command_id": "review-session-start:review:<candidate>:1",
+  "subject_id": "review:<candidate>:1",
+  "review_id": "review:<candidate>:1",
+  "target_fingerprint": "sha256:<64 hex characters>",
+  "candidate_fingerprint": "sha256:<64 hex characters>",
+  "candidate_authority_watermark": "sha256:<64 hex characters>",
+  "lifecycle_generation": 1,
+  "expected_watermark": "sha256:<64 hex characters>",
+  "expected_generation": 0,
+  "session_id": "tuicr:<session identity>"
+}
+```
+
+The same materialization rule applies to `review_comment` (a `comment_id`
+and `body`), `review_disposition` (one of `accept`, `request_changes`,
+`dismiss`, or `defer`, with an optional `finding_id`),
+`review_supersession` (a replacement candidate fingerprint and lifecycle
+generation), and `review_integration` (typed evidence matching the candidate
+fingerprint and lifecycle generation). The approval action is already a
+concrete command with `decision: "approve"` or `"revoke"`. Submit a concrete
+command with the normal public command operation:
+
+```sh
+flow command --input '<materialized work.review-human-command/v1 JSON>' --json
+```
+
+Every accepted command appends one ReviewAuthority event and advances both
+the review generation and review watermark. A command copied from an older
+inbox snapshot is rejected with a typed stale-generation or stale-watermark
+result and does not append history. Target fingerprint, candidate-seal
+watermark, lifecycle generation, session identity, and action-specific
+identity are checked together. Re-query the inbox or review subject after
+each receipt and use the newly projected legal action, rather than reusing a
+prior action. Once supersession is accepted, the review projection is
+terminal for human review (`human_status: "superseded"`, `current: false`,
+stale evidence, and no legal actions); a previously projected follow-up is
+therefore rejected.
+
+The review subject and events survive owner close/reopen. Discarding a local
+inbox snapshot and querying again rebuilds the exact same projection from
+ReviewAuthority - it loses and invents no items or actions. Candidate and
+review watermarks remain distinct: the candidate watermark fences the sealed
+producer output, while the review watermark fences each human event. The
+`review_integration` command records supplied evidence and integration
+authorization only; it never runs Git integration or changes the repository.
+There is no public tuicr command for scheduling, approval outside the review
+action vocabulary, lifecycle control, or Git mutation.
+
 ### Immutable GitHub pull-request review snapshots
 
 The same `review/v1` semantic graph may target one exact open GitHub pull

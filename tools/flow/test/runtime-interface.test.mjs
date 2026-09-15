@@ -3760,6 +3760,53 @@ test("watch streams the current and next watermarked authority projections", asy
   assert.deepEqual(await iterator.return(), { done: true, value: undefined });
 });
 
+test("public FlowRuntime exposes an authority-derived review inbox projection", () => {
+  const runtime = createTestRuntime();
+  const projection = runtime.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+
+  assert.equal(projection.schema, "flow.review-inbox-projection/v1");
+  assert.equal(projection.authority, "ReviewAuthority");
+  assert.deepEqual(projection.items, []);
+  assert.deepEqual(projection.legal_actions, []);
+});
+
+test("public review inbox query and watch reject closed-schema extras", async () => {
+  const runtime = createTestRuntime();
+  const queryRejection = runtime.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+    undocumented: true,
+  });
+  assert.equal(queryRejection.schema, "flow.rejection/v1");
+  assert.equal(queryRejection.operation, "query");
+  assert.equal(queryRejection.code, "invalid_review_query");
+
+  const watcher = runtime.watch({
+    schema: "flow.watch/v1",
+    query: "review_inbox",
+    undocumented: true,
+  });
+  assert.deepEqual(await watcher.next(), {
+    done: false,
+    value: {
+      ...queryRejection,
+      operation: "watch",
+    },
+  });
+  await watcher.return();
+
+  const malformedQuery = runtime.query({ query: "review_inbox" });
+  assert.equal(malformedQuery.code, "invalid_review_query");
+  const malformedWatcher = runtime.watch({ query: "review_inbox" });
+  const malformedObservation = await malformedWatcher.next();
+  assert.equal(malformedObservation.done, false);
+  assert.equal(malformedObservation.value.code, "invalid_review_query");
+  await malformedWatcher.return();
+});
+
 function createTestRuntime(options = {}) {
   return createFlowRuntime({
     ...options,
