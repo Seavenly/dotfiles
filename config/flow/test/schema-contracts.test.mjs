@@ -8,6 +8,10 @@ import test from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
+import {
+  DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+  DETERMINISTIC_QUALIFICATION_SCOPE,
+} from "../../../tools/flow/src/qualification-recipe.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
 import { describeDelegatedAgent } from "../../../tools/drovr/src/description.mjs";
 import {
@@ -31,6 +35,7 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "flow.runtime-runner-status.v1.schema.json",
     "flow.query.v1.schema.json",
     "flow.feature-preparation-request.v1.schema.json",
+    "flow.dark-opt-in.v1.schema.json",
     "flow.feature-candidate-archive.v1.schema.json",
     "flow.feature-criterion-evidence.v1.schema.json",
     "flow.feature-critique-output.v1.schema.json",
@@ -41,6 +46,13 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "flow.required-authority-binding.v1.schema.json",
     "flow.required-authority-revalidation.v1.schema.json",
     "flow.rejection.v1.schema.json",
+    "flow.capability-manifest.v1.schema.json",
+    "flow.release-manifest.v1.schema.json",
+    "flow.launch-selection.v1.schema.json",
+    "flow.launch-rejection.v1.schema.json",
+    "flow.transition-qualification-evidence.v1.schema.json",
+    "flow.production-route-conformance-evidence.v1.schema.json",
+    "flow.release-content.v1.schema.json",
     "flow.time-fact.v1.schema.json",
     "flow.subject-generation.v1.schema.json",
     "flow.reboot-effect-recheck.v1.schema.json",
@@ -60,6 +72,149 @@ test("public host and reboot admission schemas compile in strict mode", async ()
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
 });
 
+test("release transition contracts validate the managed manifest and receipt", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const names = [
+    "flow.dark-opt-in.v1.schema.json",
+    "flow.capability-manifest.v1.schema.json",
+    "flow.release-manifest.v1.schema.json",
+    "flow.launch-selection.v1.schema.json",
+    "flow.launch-rejection.v1.schema.json",
+    "flow.rejection.v1.schema.json",
+    "flow.authority-fact.v1.schema.json",
+    "flow.transition-qualification-evidence.v1.schema.json",
+    "flow.production-route-conformance-evidence.v1.schema.json",
+    "flow.release-content.v1.schema.json",
+  ];
+  for (const name of names) {
+    ajv.addSchema(JSON.parse(await readFile(join(root, "schemas", name), "utf8")));
+  }
+  const validate = (name, value) => ajv.getSchema(
+    `https://dotfiles.local/schemas/${name}.schema.json`,
+  )(value);
+  const manifest = JSON.parse(await readFile(
+    join(root, "release-manifest.v1.json"),
+    "utf8",
+  ));
+  const qualification = JSON.parse(await readFile(
+    join(root, "evidence/release-qualification.v1.json"),
+    "utf8",
+  ));
+  const productionRouteConformance = JSON.parse(await readFile(
+    join(root, "evidence/production-route-conformance.v1.json"),
+    "utf8",
+  ));
+  const releaseContent = JSON.parse(await readFile(
+    join(root, "evidence/release-content.v1.json"),
+    "utf8",
+  ));
+  qualification.candidate_tree_sha =
+    releaseContent.git_binding.candidate_tree_sha ?? "a".repeat(40);
+  qualification.scope = DETERMINISTIC_QUALIFICATION_SCOPE;
+  qualification.assertions = DETERMINISTIC_QUALIFICATION_ASSERTIONS;
+  const digest = `sha256:${"a".repeat(64)}`;
+  const capabilityManifest = {
+    schema: "flow.capability-manifest/v1",
+    version: manifest.version,
+    release_id: manifest.release_id,
+    implementation: manifest.implementation,
+    scope: manifest.scope,
+    not_authorized_before_issue: manifest.not_authorized_before_issue,
+    normal_use_authorized: manifest.normal_use_authorized,
+    remote_mutations_authorized: manifest.remote_mutations_authorized,
+    supported_routes: manifest.supported_routes.map(({ flow, mode }) => ({ flow, mode })),
+    disabled_routes: manifest.disabled_routes.map(({ flow, mode, outcome }) => ({
+      flow,
+      mode,
+      outcome,
+    })),
+    digest,
+  };
+  assert.equal(validate("flow.release-manifest.v1", manifest), true);
+  assert.equal(validate("flow.transition-qualification-evidence.v1", qualification), true);
+  assert.equal(validate(
+    "flow.production-route-conformance-evidence.v1",
+    productionRouteConformance,
+  ), true, ajv.errorsText(ajv.getSchema(
+    "https://dotfiles.local/schemas/flow.production-route-conformance-evidence.v1.schema.json",
+  ).errors));
+  assert.equal(validate("flow.release-content.v1", releaseContent), true);
+  const phase2WithoutRecipe = structuredClone(productionRouteConformance);
+  phase2WithoutRecipe.status = "passed";
+  phase2WithoutRecipe.phase1_evidence_sha256 = "a".repeat(64);
+  phase2WithoutRecipe.recipe = null;
+  assert.equal(validate(
+    "flow.production-route-conformance-evidence.v1",
+    phase2WithoutRecipe,
+  ), false);
+  assert.equal(validate("flow.dark-opt-in.v1", {
+    schema: "flow.dark-opt-in/v1",
+    release_id: manifest.release_id,
+    purpose: "sacrificial_qualification",
+  }), true);
+  assert.equal(validate("flow.capability-manifest.v1", capabilityManifest), true);
+  assert.equal(validate("flow.capability-manifest.v1", {
+    ...capabilityManifest,
+    version: undefined,
+  }), false);
+  assert.equal(validate("flow.launch-selection.v1", {
+    schema: "flow.launch-selection/v1",
+    policy_generation: 1,
+    policy_watermark: digest,
+    implementation: "flow-runtime/v1",
+    authority_root_spec: { base: "state", path: "flow" },
+    authority_root: "/state/flow",
+    release_id: manifest.release_id,
+    scope: manifest.scope,
+    not_authorized_before_issue: 50,
+    route: { flow: "feature", mode: "verify" },
+    normal_use_authorized: false,
+    remote_mutations_authorized: false,
+    release_manifest: {
+      schema: manifest.schema,
+      release_id: manifest.release_id,
+      digest,
+    },
+    capability_manifest: capabilityManifest,
+  }), true);
+  assert.equal(validate("flow.launch-rejection.v1", {
+    schema: "flow.launch-rejection/v1",
+    operation: "launch",
+    code: "route_disabled",
+    outcome: "disabled",
+    reason: "route is disabled",
+    route: { flow: "feature", mode: "test" },
+    legal_actions: [{ flow: "feature", mode: "verify" }],
+  }), true);
+  assert.equal(validate("flow.rejection.v1", {
+    schema: "flow.rejection/v1",
+    operation: "prepare",
+    code: "compatibility_blocked",
+    outcome: "unsupported",
+    reason: "Drovr route is blocked",
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: null,
+    authority_watermark_domain: "host",
+    legal_actions: ["refresh_compatibility"],
+    findings: [{ field: "model", reason: "changed" }],
+  }), true);
+  assert.equal(validate("flow.rejection.v1", {
+    schema: "flow.rejection/v1",
+    operation: "prepare",
+    code: "compatibility_blocked",
+    reason: "Drovr route is blocked",
+    command_type: null,
+    run_id: null,
+    bundle_digest: null,
+    authority_watermark: null,
+    authority_watermark_domain: "host",
+    legal_actions: [],
+    findings: [{ field: "model" }],
+  }), false);
+});
+
 test("public host schemas accept exact frames, status, and ordinary preparation", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const names = [
@@ -71,6 +226,7 @@ test("public host schemas accept exact frames, status, and ordinary preparation"
     "flow.runtime-runner-status.v1.schema.json",
     "flow.query.v1.schema.json",
     "flow.feature-preparation-request.v1.schema.json",
+    "flow.dark-opt-in.v1.schema.json",
     "flow.feature-candidate-archive.v1.schema.json",
     "flow.feature-criterion-evidence.v1.schema.json",
     "flow.feature-critique-output.v1.schema.json",
@@ -1358,7 +1514,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@31",
+          catalog_id: "flow.contract-catalog/v1@33",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,

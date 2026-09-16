@@ -28,9 +28,12 @@ selection="$(HOME="$home" XDG_STATE_HOME="$home/.local/state" node --input-type=
     configDirectory: process.argv[2],
     repositoryRoot: process.argv[3],
   });
-  process.stdout.write(result.selected_implementation);
+  process.stdout.write(JSON.stringify({
+    selected_implementation: result.selected_implementation,
+    dark_opt_in_available: result.dark_opt_in.available,
+  }));
 ' "$root/tools/flow/src/transition-projection.mjs" "$managed_flow" "$root")"
-[[ "$selection" == "legacy-claude/v1" ]] \
+[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","dark_opt_in_available":true}' ]] \
   || fail "repeated convergence selected replacement authority"
 
 echo "ok - repeated convergence preserves the frozen legacy launch policy"

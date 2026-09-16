@@ -41,6 +41,30 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Capability manifest**:
+The exact versioned release declaration of supported, disabled, and unsupported
+public routes, including the authority limits that remain false for a
+sacrificial release.
+_Avoid_: Feature list, implied capability
+
+**Dark opt-in**:
+An explicit request-local `flow.dark-opt-in/v1` binding that may select only
+the routes named by one qualified capability manifest. It is not normal-use
+authorization and does not prove that deferred real scenarios ran.
+_Avoid_: Replacement default, approval
+
+**Transition ledger**:
+The durable release/environment record that binds prerequisites, contracts,
+manifest and content digests, qualification evidence, legacy inventory, and
+not-run scenarios to one projection.
+_Avoid_: Changelog, test summary
+
+**Qualification evidence**:
+Digest-backed deterministic recipe and receipt evidence for one exact release
+content set. It can make a dark opt-in available only when every required
+record is passed; it does not authorize scope expansion or remote mutation.
+_Avoid_: Synthetic pass, production run
+
 **Run ownership**:
 The authority-recorded relationship that identifies a flow run as top-level or
 as a child of one exact parent run.

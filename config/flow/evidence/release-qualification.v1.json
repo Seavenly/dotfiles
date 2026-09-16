@@ -1,0 +1,262 @@
+{
+  "schema": "flow.transition-qualification-evidence/v1",
+  "release_id": "flow-release-1.0-dark/v1",
+  "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
+  "release_content_digest": "sha256:d573abd087404d5e1c6afb784fe92ec16b1a38cdda61040e60d463d86fda164f",
+  "status": "passed",
+  "scope": "deterministic_route_and_host_fault_conformance",
+  "contracts": [
+    "flow.launch-policy/v1",
+    "flow.launch-selection/v1",
+    "flow.launch-rejection/v1",
+    "flow.release-manifest/v1",
+    "flow.transition-ledger/v1",
+    "flow.transition-projection/v1",
+    "flow.production-route-conformance-evidence/v1"
+  ],
+  "routes": {
+    "supported": [
+      {
+        "flow": "feature",
+        "mode": "verify"
+      },
+      {
+        "flow": "review",
+        "mode": "local"
+      }
+    ],
+    "negative_classes": [
+      {
+        "flow": "feature",
+        "mode": "test",
+        "outcome": "disabled"
+      },
+      {
+        "flow": "feature",
+        "mode": "mixed",
+        "outcome": "disabled"
+      },
+      {
+        "flow": "spike",
+        "mode": "quick",
+        "outcome": "disabled"
+      },
+      {
+        "flow": "spike",
+        "mode": "deep",
+        "outcome": "disabled"
+      },
+      {
+        "flow": "epic",
+        "mode": "default",
+        "outcome": "disabled"
+      },
+      {
+        "flow": "review",
+        "mode": "github",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "tracker",
+        "mode": "github",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "tracker",
+        "mode": "jira",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "forge",
+        "mode": "default",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "publication",
+        "mode": "default",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "merge",
+        "mode": "default",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "push",
+        "mode": "default",
+        "outcome": "unsupported"
+      },
+      {
+        "flow": "remote",
+        "mode": "mutation",
+        "outcome": "unsupported"
+      }
+    ]
+  },
+  "recipe": {
+    "schema": "flow.deterministic-qualification-recipe/v1",
+    "digest": "sha256:b2645c04b0742c31220ebf71046ea6d97d52bef1687d5d305b4bb87db0e951f9",
+    "commands": [
+      {
+        "id": "launch_selector",
+        "command": "node --test tools/flow/test/launch-selector.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/launch-selector.tap",
+        "receipt_sha256": "5c691f9e2e020eb6638a1507f02073cfc836badd87686ce986f1bcca997010df",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "release_tree_integrity",
+        "command": "node --test --test-name-pattern='release content binds|release content validates from a fresh clone|release-content generator excludes ignored files|Git tree derivation matches|release manifest with a missing governed file|candidate-tree bytes|wrong or unavailable candidate tree binding|evidence symlink outside authority|external symlink before reading' tools/flow/test/transition-projection.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/release-tree-integrity.tap",
+        "receipt_sha256": "2df58368e43501a67cdc432ac7570b9fade6e83917dcd78686163232374d3286",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "contract_catalog",
+        "command": "node --test tools/flow/test/contract-catalog.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/contract-catalog.tap",
+        "receipt_sha256": "7579252b764f0ae05981448ceef8bd6fd3896d461a56aa4b846345560078da07",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "feature_review_drovr_conformance",
+        "command": "node --test tools/flow/test/feature-flow.test.mjs tools/flow/test/review-flow.test.mjs tools/flow/test/delegated-agent-port.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/feature-review-drovr.tap",
+        "receipt_sha256": "af6208e4261829694f200e5f275552713290ab64c23fa223e4348d42328c6357",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 264,
+        "passed": 264,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "production_runtime_reboot",
+        "command": "node --test --test-name-pattern='default FlowRuntime is durable|default production work evidence fails closed|production reboot observation|production critique evidence is strict' config/flow/test/production-runtime.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/production-runtime-reboot.tap",
+        "receipt_sha256": "c54fe2869821c4c6c54f28745f97d302d7431da3dff2c1eeafe864732257ef45",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "public_host_negative_routes",
+        "command": "node --test --test-name-pattern='public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra' config/flow/test/runtime.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/public-host-negative-routes.tap",
+        "receipt_sha256": "49e6a6044c4d679194cf0d46e578cb6755ff4ba8d3f4310e2c071249c71e0c6a",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 18,
+        "passed": 18,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "host_fault_reboot",
+        "command": "node --test --test-skip-pattern='public host (?:rebuilds the review inbox after the producing client exits|supersedes a production review and rejects stale follow-up actions)' config/flow/test/host-lifecycle.test.mjs config/flow/test/public-process.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/host-fault-reboot.tap",
+        "receipt_sha256": "d3e57cbb120e277aa07d53efb7d3c46bb11500a5ffcfb9c1f9214053b9293582",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 33,
+        "passed": 33,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "schema_contracts",
+        "command": "node --test config/flow/test/schema-contracts.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/schema-contracts.tap",
+        "receipt_sha256": "48c4f885f62347844c0e7e2405bf8de384a197d9b6cdf67fa02aa45faff849e0",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      }
+    ]
+  },
+  "assertions": [
+    "legacy Claude remains the repeated default policy selection",
+    "dark opt-in resolves only exact feature verify and local review routes",
+    "dynamic, unknown, and mixed dangerous executor routes are rejected",
+    "failed, blocked, not-run, and tampered qualification withholds admission",
+    "feature verify and local review pass core conformance with the Drovr port",
+    "unavailable feature operations fail before a public route is admitted",
+    "public host fault, restart, and reboot suites pass without remote authority",
+    "phase-one host-fault suites use the registered-operation test runtime; production positives are qualified separately",
+    "release content binds the exact governed tree and contained regular files",
+    "normal use and remote mutation authority remain false",
+    "prerequisite integrity remains bound to the declared qualification base"
+  ],
+  "real_scenarios": [
+    {
+      "id": "issue-84",
+      "status": "not_run"
+    },
+    {
+      "id": "issue-44",
+      "status": "not_run"
+    },
+    {
+      "id": "issue-46",
+      "status": "not_run"
+    },
+    {
+      "id": "quick-spike",
+      "status": "not_run"
+    }
+  ],
+  "captured_at": "2026-09-16T16:05:01Z",
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "git": "2.53.0"
+  },
+  "candidate_tree_sha": "44807ed4eb3856463136d199efc6e92bccd9f282"
+}

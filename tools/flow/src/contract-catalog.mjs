@@ -237,7 +237,7 @@ const REJECTION_FIELDS = [
   "authority_watermark_domain",
   "legal_actions",
 ];
-const REJECTION_OPTIONAL_FIELDS = ["authority_fact"];
+const REJECTION_OPTIONAL_FIELDS = ["authority_fact", "findings", "outcome"];
 const LEGACY_IMPORT_VALIDATIONS = [
   "digest",
   "schema",
@@ -525,7 +525,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@31",
+  catalog_id: "flow.contract-catalog/v1@33",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",

@@ -189,27 +189,45 @@ directories to their platform-appropriate destinations.
 
 ## Flow implementation transition
 
-The future harness-neutral `flow` runtime is being built beside the frozen
-Claude-only and Hermes-backed implementations. New launches still select the
-Claude-only baseline by default. Repeating `dotfiles install` reapplies the
-same versioned policy from `config/flow/launch-policy.v1.json`; it does not
-change the selector merely because replacement sources are installed. The
-future launcher remains responsible for enforcing that converged decision.
+The harness-neutral `flow` runtime is available beside the frozen Claude-only
+and Hermes-backed implementations. New launches still select the Claude-only
+baseline by default. Repeating `dotfiles install` reapplies the same versioned
+policy from `config/flow/launch-policy.v1.json`; it does not change the
+selector merely because replacement sources are installed. The launcher
+enforces that converged decision.
+
+The public replacement Interface is also fail-closed: `prepare` and `launch`
+require a request-local `flow.dark-opt-in/v1` bound to the exact release
+manifest. That opt-in admits only the production feature `verify` and local
+review routes for sacrificial qualification. Feature test or mixed modes,
+spikes, epics, GitHub review, tracker/forge operations, publication, merge,
+push, and other remote mutations return typed disabled or unsupported
+outcomes. It does not authorize normal use, remote mutation, later issue runs,
+or a change to the Claude default. Use `config/flow/transition-ledger.v1.json`
+and the transition projection for the exact release, evidence status, and
+legal actions before selecting it deliberately.
+
+Dark opt-in admission requires both deterministic/core qualification and a
+separate production-route conformance record. Phase one includes host-fault
+and reboot suites on the registered-operation test runtime; phase two
+exercises feature verify and local review through the production public
+runtime. A failed or incomplete
+phase keeps admission withheld.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
-`tools/flow/src/evidence-safety.mjs`. Catalog v31 binds policy
+`tools/flow/src/evidence-safety.mjs`. Catalog v33 binds policy
 `flow.evidence-safety-policy/v1` to exact catalog identity
-`flow.contract-catalog/v1@31`; rejected evidence produces only typed redacted
+`flow.contract-catalog/v1@33`; rejected evidence produces only typed redacted
 codes and never reads ambient host state.
 
 The three implementations use disjoint authority roots, and existing runs
 remain owned by the implementation that created them. No legacy import adapter
 ships initially. Inspect the exact transition watermark, evidence status, and
-legal next actions with `npm --silent --prefix tools/flow run status`. The
-dark replacement API can prepare, confirm, durably launch, observe, recover,
-cancel, and complete a finite dynamic plan with one registered operation without
-changing the converged launch selector. One-shot uncertain effects require a
+legal next actions with `npm --silent --prefix tools/flow run status`. The replacement
+API retains the five-operation runtime and its existing run
+ownership, but this release gate admits only the two listed sacrificial routes;
+it does not expose a general dynamic-plan bypass. One-shot uncertain effects require a
 fresh operation-bound checkpoint; safer classes can execute from an exact
 authority-projected command. Operation
 effects use durable intent-before-effect authority, typed receipts, and

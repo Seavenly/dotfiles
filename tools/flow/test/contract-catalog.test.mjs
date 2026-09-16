@@ -32,7 +32,19 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 31);
+  assert.equal(catalog.catalog_version, 33);
+  for (const contract of [
+    "flow.release-manifest/v1",
+    "flow.dark-opt-in/v1",
+    "flow.capability-manifest/v1",
+    "flow.launch-selection/v1",
+    "flow.launch-rejection/v1",
+    "flow.transition-qualification-evidence/v1",
+    "flow.production-route-conformance-evidence/v1",
+    "flow.release-content/v1",
+  ]) {
+    assert.equal(catalog.contracts.includes(contract), true, contract);
+  }
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
     `flow.contract-catalog/v1@${catalog.catalog_version}`,
@@ -139,7 +151,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@31",
+    catalog_id: "flow.contract-catalog/v1@33",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -274,7 +286,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
       "authority_watermark_domain",
       "legal_actions",
     ],
-    optional_fields: ["authority_fact"],
+    optional_fields: ["authority_fact", "findings", "outcome"],
     watermark_domains: {
       host: "host_run_index_admission_and_authority_schema",
       run: "run_lifecycle_stream_authority_epoch_and_authority_schema",

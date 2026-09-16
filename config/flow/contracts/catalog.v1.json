@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 31,
+  "catalog_version": 33,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -115,7 +115,7 @@
         "authority_watermark_domain",
         "legal_actions"
       ],
-      "optional_fields": ["authority_fact"],
+      "optional_fields": ["authority_fact", "findings", "outcome"],
       "watermark_domains": {
         "host": "host_run_index_admission_and_authority_schema",
         "run": "run_lifecycle_stream_authority_epoch_and_authority_schema"
@@ -201,7 +201,7 @@
       "binding": "flow.evidence-safety-binding/v1",
       "catalog_view": "flow.evidence-safety-catalog/v1",
       "policy_id": "flow.evidence-safety-policy/v1",
-      "catalog_id": "flow.contract-catalog/v1@31",
+      "catalog_id": "flow.contract-catalog/v1@33",
       "allowed_uses": [
         "delegate_transfer",
         "artifact_acceptance",
@@ -1099,6 +1099,14 @@
     "flow.validator/feature-test-receipt/v1",
     "work.idempotency-receipt/v1",
     "flow.launch-policy/v1",
+    "flow.launch-selection/v1",
+    "flow.launch-rejection/v1",
+    "flow.release-manifest/v1",
+    "flow.dark-opt-in/v1",
+    "flow.capability-manifest/v1",
+    "flow.transition-qualification-evidence/v1",
+    "flow.production-route-conformance-evidence/v1",
+    "flow.release-content/v1",
     "flow.transition-ledger/v1",
     "flow.transition-projection/v1",
     "flow.legacy-baseline-inventory/v1",

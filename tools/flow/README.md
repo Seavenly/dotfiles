@@ -4,12 +4,57 @@ This directory contains the public transition contracts and the dark,
 harness-neutral `flow` replacement. The replacement launch policy remains
 disabled, so this API does not authorize normal replacement launches.
 
+## Release capability and qualification
+
+`config/flow/release-manifest.v1.json` is the versioned capability manifest.
+Its `flow.dark-opt-in/v1` value is request-local authority for only feature
+`verify` and local review. The public `config/flow` runtime gates both
+`prepare` and `launch` through the same selector; missing opt-in is a typed
+`disabled` rejection, while every unlisted or unavailable adapter is a typed
+`unsupported` rejection. Claude remains the default implementation, and the
+gate never authorizes normal use, remote mutation, publication, merge, push,
+tracker/forge work, GitHub review, spikes, epics, or mixed/test feature modes.
+
+The transition ledger binds the exact environment, prerequisite commits,
+catalog, policy, manifest, release-content digest, legacy inventory, and
+qualification records. `config/flow/evidence/release-content.v1.json` binds
+an exact candidate Git tree and complete file/mode/digest listing under the
+governed include/exclude model in `src/release-content-contract.mjs`. It
+includes this runtime and its public host, the issue-supported Drovr
+implementation, `config/flow/`, the relevant host/CLI/transition tests, and
+the governing ADRs. Transition evidence and the ledger are explicitly excluded
+to avoid a digest cycle. Git-ignored untracked files under governed prefixes,
+including generated dependencies and platform metadata such as `.DS_Store`,
+are outside the projection; tracked files remain governed. The
+candidate Git tree ID is derived exactly from governed paths, modes, and blob
+identities using Git tree hashing rules, without requiring the synthesized
+object to exist in the repository. Validation checks the derived ID, complete
+governed listing, every regular-file byte, regular-file modes, and realpath
+containment.
+
+Qualification uses two separately hashed phases. Phase one binds the immutable
+base commit name (not a claim that the candidate is committed), candidate
+tree, release-content digest, deterministic recipe, and TAP receipts from
+passing core commands and host-fault/reboot commands on the registered-
+operation test runtime. Phase two
+runs production feature verify, public local-review process cases, and a real
+Drovr finding-schema case through the production public runtime. Its record
+binds phase one, the release tree, recipe, and actual TAP receipts; both phases
+are required for admission. Regenerate the content tree before qualification
+evidence with
+`node config/flow/scripts/generate-release-content.mjs` followed by
+`node config/flow/scripts/generate-qualification-evidence.mjs`. The projection
+exposes `dark_opt_in.available` only when all required evidence records are
+passed and every receipt remains bound. Later sacrificial issues and deferred
+scenarios remain explicitly `not_run`; the manifest is not a production-run
+adapter or synthetic pass mechanism.
+
 ## Evidence safety contract
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v31 binds it to
-`flow.contract-catalog/v1@31`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v33 binds it to
+`flow.contract-catalog/v1@33`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -1305,7 +1350,7 @@ The managed sources under `config/flow/` are:
   feature-capture identities, the five `FlowRuntime` operations, authority
   ownership, the execution-time accounting contract, and the reboot-admission
   typed-fact and uncertainty policy. The current catalog identity is
-  `flow.contract-catalog/v1@31`; a catalog change must update this managed
+  `flow.contract-catalog/v1@33`; a catalog change must update this managed
   source and the source constants/tests that validate its exact contents. Any
   future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported

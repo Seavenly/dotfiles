@@ -20,6 +20,7 @@
     "schema": { "const": "flow.rejection/v1" },
     "operation": { "enum": ["prepare", "launch", "command", "query", "watch"] },
     "code": { "type": "string", "minLength": 1 },
+    "outcome": { "enum": ["disabled", "unsupported"] },
     "reason": { "type": ["string", "null"] },
     "command_type": { "type": ["string", "null"] },
     "run_id": { "type": ["string", "null"] },
@@ -30,6 +31,18 @@
     },
     "authority_watermark_domain": { "enum": ["host", "run"] },
     "legal_actions": { "type": "array" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason"],
+        "properties": {
+          "field": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "authority_fact": {
       "$ref": "flow.authority-fact.v1.schema.json"
     }

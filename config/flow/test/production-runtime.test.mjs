@@ -20,11 +20,19 @@ import {
   createFlowRuntime,
   statusFlowRuntime,
 } from "../src/runtime.mjs";
+import {
+  createProductionRouteConformanceSession,
+} from "../../../tools/flow/src/qualification-phase2-session.mjs";
 import { createProductionComposition } from "../src/production-composition.mjs";
 import { validateFeatureCritiqueOutput } from
   "../src/production-feature-operations.mjs";
 
 const execFile = promisify(execFileCallback);
+const DARK_OPT_IN = {
+  schema: "flow.dark-opt-in/v1",
+  release_id: "flow-release-1.0-dark/v1",
+  purpose: "sacrificial_qualification",
+};
 
 test("default FlowRuntime is durable and autonomous", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-production-runtime-"));
@@ -307,7 +315,7 @@ test("ordinary feature preparation derives immutable facts from a brief and repo
   const delegatedAgentPort = {
     async describe(request) {
       const description = await supportedDescription(
-        request,
+        { ...request, schema: "drovr.delegated-agent-description-request/v1" },
         repositoryDrovrDependencies(),
       );
       return {
@@ -341,6 +349,7 @@ test("ordinary feature preparation derives immutable facts from a brief and repo
     },
     repository: { path: repository },
     mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
     routes: {
       apply: {
         launch: {
@@ -418,11 +427,11 @@ test("production preparation enforces the closed published request schema", asyn
     ["top-level key", unknownTopLevel],
     ["nested key", unknownNested],
   ]) {
-    await assert.rejects(
-      runtime.prepare(request),
-      (error) => error?.code === "invalid_preparation_request",
-      label,
-    );
+    const result = await runtime.prepare(request);
+    assert.equal(result.schema, "flow.rejection/v1", label);
+    assert.equal(result.operation, "prepare", label);
+    assert.equal(result.outcome, "unsupported", label);
+    assert.equal(typeof result.code, "string", label);
   }
   const prepared = await runtime.prepare(valid);
   assert.equal(prepared.schema, "flow.prepared-run/v1");
@@ -496,11 +505,13 @@ test("production preparation rejects a dirty repository before route description
   });
   t.after(() => closeFlowRuntime(runtime));
 
-  await assert.rejects(
-    runtime.prepare(preparationRequest(repository, "brief:dirty")),
-    (error) => error?.name === "ProductionPreparationError" &&
-      error.code === "repository_dirty",
+  const rejection = await runtime.prepare(
+    preparationRequest(repository, "brief:dirty"),
   );
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "prepare");
+  assert.equal(rejection.code, "repository_dirty");
+  assert.equal(rejection.outcome, "unsupported");
   assert.equal(described, false);
 });
 
@@ -529,9 +540,28 @@ test("production feature runs a real Git mutation through a local candidate", as
     criterionExpected: () => candidateText,
     critiqueFindings: [retainedFinding],
   });
+  const qualificationPhase2Session =
+    process.env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION === "1"
+      ? createProductionRouteConformanceSession({
+        authorityDirectory: process.env.FLOW_CONFIG_DIRECTORY,
+        marker: process.env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER,
+      })
+      : null;
   const runtime = createFlowRuntime({
-    env: { HOME: scratch, XDG_STATE_HOME: state },
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: state,
+      ...(typeof process.env.FLOW_CONFIG_DIRECTORY === "string" ? {
+        FLOW_CONFIG_DIRECTORY: process.env.FLOW_CONFIG_DIRECTORY,
+      } : {}),
+      ...(typeof process.env.FLOW_REPOSITORY_ROOT === "string" ? {
+        FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT,
+      } : {}),
+    },
     delegatedAgentPort,
+    ...(qualificationPhase2Session === null ? {} : {
+      qualificationPhase2Session,
+    }),
   });
   t.after(() => closeFlowRuntime(runtime));
 
@@ -548,6 +578,7 @@ test("production feature runs a real Git mutation through a local candidate", as
     },
     repository: { path: repository },
     mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
     routes: {
       apply: {
         launch: {
@@ -654,12 +685,12 @@ test("production feature launch fails closed when an operation is missing", asyn
   });
   t.after(() => closeFlowRuntime(runtime));
 
-  await assert.rejects(
-    runtime.prepare(preparationRequest(repository, "brief:missing-operation")),
-    (error) => error?.name === "DynamicPlanValidationError" &&
-      /operation contract is not registered: flow\.operation\/feature-verify\/v1/u
-        .test(error.message),
+  const result = runtime.prepare(
+    preparationRequest(repository, "brief:missing-operation"),
   );
+  assert.equal(result.schema, "flow.rejection/v1");
+  assert.equal(result.code, "route_unavailable");
+  assert.equal(result.outcome, "unsupported");
   assert.deepEqual(runtime.query().runs, []);
 });
 
@@ -1442,7 +1473,7 @@ function supportedDelegatedAgentPort() {
   return {
     async describe(request) {
       const description = await supportedDescription(
-        request,
+        { ...request, schema: "drovr.delegated-agent-description-request/v1" },
         repositoryDrovrDependencies(),
       );
       return {
@@ -1472,6 +1503,7 @@ function preparationRequest(repository, briefId) {
     },
     repository: { path: repository },
     mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
     routes: {
       apply: {
         launch: {
@@ -1499,6 +1531,7 @@ function preparationRequest(repository, briefId) {
 function confirmedPredefinedLaunchRequest(prepared) {
   return {
     prepared,
+    dark_opt_in: DARK_OPT_IN,
     confirmation: {
       schema: "flow.predefined-flow-confirmation-decision/v1",
       decision: "accept",
@@ -1559,7 +1592,7 @@ function productionDelegatedAgentPort({
     contract: "flow.delegated-agent-port/v1",
     async describe(request) {
       const description = await supportedDescription(
-        request,
+        { ...request, schema: "drovr.delegated-agent-description-request/v1" },
         repositoryDrovrDependencies(),
       );
       return {

@@ -47,6 +47,62 @@ It does not create a replacement run or mutate Drovr delegated work. Until all
 required lifecycle features advertise `supported`, the projection is a typed
 compatibility block with repair and refresh as its only legal actions.
 
+## Qualified release gate
+
+`release-manifest.v1.json` is the capability manifest for the bounded
+dark-sacrificial release. The request-local `dark_opt_in` field is accepted by
+the feature preparation schema and by the public runtime gate; it must match
+the manifest release ID and purpose. The gate is applied at both public
+`prepare` and `launch`, before production preparation or run admission, so a
+caller cannot bypass it with a predefined bundle or dynamic graph. Legacy
+Claude remains the default policy selection.
+
+Only feature `verify` and local review are production-supported routes. The
+manifest records feature test/mixed, spike, epic, GitHub review,
+tracker/forge, publication, merge, push, and remote mutation as typed
+disabled or unsupported outcomes. Missing registered feature adapters also
+produce a typed unsupported rejection. The public rejection schema and the
+launch rejection schema are kept separate: runtime callers receive
+`flow.rejection/v1` with an optional `outcome`, while selector callers receive
+`flow.launch-rejection/v1` with the exact route and legal actions.
+
+`transition-ledger.v1.json` binds catalog v33, policy, manifest, release
+content, environment, prerequisite commits, legacy inventory, and evidence.
+`evidence/release-content.v1.json` binds an exact candidate Git tree ID,
+its declared qualification-base commit, and every regular-file byte in the
+governed release surface. The governance prefixes include the public host,
+`config/flow/`, `tools/flow/`, the supported Drovr implementation and contract
+tests, the CLI/transition tests, and the relevant ADRs. Transition evidence
+and the ledger are explicitly excluded to avoid a digest cycle. Git-ignored
+untracked files under governed prefixes, including generated `node_modules`
+and platform metadata such as `.DS_Store`, are outside the projection;
+tracked files remain governed. The exact candidate tree ID is derived
+from sorted paths, modes, and blob identities with Git tree hashing rules.
+Validation checks that derived identity, complete governed listing, every
+worktree blob/mode, and realpath containment; it does not depend on the
+synthesized Git object being present.
+
+Qualification has two required evidence phases. Phase one binds the immutable
+base commit, candidate tree, release-content digest, deterministic recipe, and
+TAP receipts from passing core commands and host-fault/reboot commands on the
+registered-operation test runtime. Phase two runs production feature verify,
+public local-review
+process cases, and the real Drovr finding-schema case through the production
+public runtime. Its separately hashed record binds phase one, the release tree,
+recipe, and TAP receipts. Admission requires both phases; a failed or
+incomplete phase keeps it withheld. Regenerate release content first, then
+qualification evidence with:
+
+```sh
+node config/flow/scripts/generate-release-content.mjs
+node config/flow/scripts/generate-qualification-evidence.mjs
+```
+
+These artifacts make no claim that the current candidate is committed and do
+not record real runs for deferred issue 84/44/46 or remote actions. The
+projection withholds `dark_opt_in.available` whenever any required evidence
+record is failed, blocked, or not run.
+
 ## Public host runtime
 
 The supported public surface is one versioned `flow.runtime/v1` Interface with
@@ -84,7 +140,7 @@ opt-in procedure, see [`host/README.md`](host/README.md).
 
 ## Delegate input compatibility
 
-Catalog v31 publishes one versioned input contract for every dynamic delegate
+Since catalog v32, one versioned input contract is published for every dynamic delegate
 card and shipped delegated role: feature apply and critique (including serialized slices), local
 and GitHub review lenses and critic, and quick-spike researcher and synthesizer
 all send `flow.delegate-input-envelope/v1`. Each envelope selects bounded
@@ -106,7 +162,7 @@ capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
 the evidence-safety catalog identity is
-`flow.contract-catalog/v1@31`.
+`flow.contract-catalog/v1@33`.
 
 Callers select instructions, minimal task-input IDs and facts, resource
 selection IDs, and output requirements. RunAuthority derives execution

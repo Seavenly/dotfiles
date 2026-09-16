@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 import {
   createFlowRuntime as createCoreFlowRuntime,
@@ -23,9 +24,25 @@ import {
   flowRuntimeMutationAuthority,
   statusFlowRuntime,
 } from "./production-runtime.mjs";
-import { createProductionComposition } from "./production-composition.mjs";
+import {
+  createProductionComposition,
+  ProductionPreparationError,
+} from "./production-composition.mjs";
+import {
+  classifyPublicRoute,
+  LaunchSelectionError,
+  resolvePublicLaunchPolicy,
+} from "../../../tools/flow/src/launch-selector.mjs";
+import {
+  publicQualificationIsAvailable,
+} from "../../../tools/flow/src/transition-projection.mjs";
+import {
+  productionRouteConformanceSessionDetails,
+} from "../../../tools/flow/src/qualification-phase2-session.mjs";
 
 const RUNNER_CAPACITY_LIMIT = 64;
+const FLOW_CONFIG_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..");
+const FLOW_REPOSITORY_ROOT = join(FLOW_CONFIG_DIRECTORY, "../..");
 const RUNNER_CAPACITY_ENV = Object.freeze({
   delegateCapacity: "FLOW_RUNNER_DELEGATE_CAPACITY",
   operationCapacity: "FLOW_RUNNER_OPERATION_CAPACITY",
@@ -46,7 +63,12 @@ export function createFlowRuntime({
   autonomous = undefined,
   runnerOptions = undefined,
   runnerErrorSink = undefined,
+  qualificationPhase2Session = null,
 } = {}) {
+  if (qualificationPhase2Session !== null &&
+      productionRouteConformanceSessionDetails(qualificationPhase2Session) === null) {
+    throw new TypeError("production FlowRuntime qualification session is invalid");
+  }
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
     throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
   }
@@ -163,22 +185,59 @@ export function createFlowRuntime({
     });
     const runtime = Object.freeze({
       prepare(proposal) {
+        const gate = publicReplacementGate({
+          operation: "prepare",
+          request: proposal,
+          composition,
+          authority,
+          env,
+          qualificationPhase2Session,
+        });
+        if (gate?.schema === "flow.rejection/v1") return gate;
+        const publicProposal = withoutDarkOptIn(proposal);
         if (!composition.isPreparationRequest(proposal)) {
-          return coreRuntime.prepare(proposal);
+          return coreRuntime.prepare(publicProposal);
         }
-        return composition.prepare(proposal, (selection) =>
-          coreRuntime.prepare(selection));
+        return composition.prepare(publicProposal, (selection) =>
+          coreRuntime.prepare(selection)).catch((error) => {
+          if (!(error instanceof ProductionPreparationError)) throw error;
+          const compatibility = error.compatibility;
+          return createRejection({
+            operation: "prepare",
+            code: compatibility?.code ?? error.code,
+            outcome: "unsupported",
+            reason: error.message,
+            authorityWatermark: safeAuthorityWatermark(authority),
+            authorityWatermarkDomain: "host",
+            legalActions: compatibility?.legal_actions ?? [],
+            findings: compatibility?.findings,
+          });
+        });
       },
       launch(request) {
+        const gate = publicReplacementGate({
+          operation: "launch",
+          request,
+          composition,
+          authority,
+          env,
+          qualificationPhase2Session,
+        });
+        if (gate?.schema === "flow.rejection/v1") return gate;
+        const publicRequest = withoutDarkOptIn(request);
+        const adopted = typeof authority?.adoptExactLaunch === "function"
+          ? authority.adoptExactLaunch(publicRequest)
+          : null;
+        if (adopted !== null && adopted !== undefined) return adopted;
         let launchPreparation = null;
         try {
-          launchPreparation = composition.beforeLaunch?.(request, authority) ?? null;
+          launchPreparation = composition.beforeLaunch?.(publicRequest, authority) ?? null;
         } catch (error) {
           return createRejection({
             operation: "launch",
             code: error?.code ?? "production_launch_setup_failed",
             reason: error?.message ?? "production launch setup failed",
-            bundleDigest: request?.prepared?.bundle_digest ?? null,
+            bundleDigest: publicRequest?.prepared?.bundle_digest ?? null,
             authorityWatermark: authority?.query?.()?.watermark ?? null,
             authorityWatermarkDomain: "host",
           });
@@ -187,7 +246,7 @@ export function createFlowRuntime({
           return launchPreparation;
         }
         try {
-          const receipt = coreRuntime.launch(request);
+          const receipt = coreRuntime.launch(publicRequest);
           if (receipt?.schema === "flow.rejection/v1") {
             launchPreparation?.rollback?.();
           }
@@ -235,6 +294,123 @@ export class FlowQueryRejected extends Error {
     super(message);
     this.name = "FlowQueryRejected";
     this.code = code;
+  }
+}
+
+function publicReplacementGate({
+  operation,
+  request,
+  composition,
+  authority,
+  env,
+  qualificationPhase2Session,
+}) {
+  const route = classifyPublicRoute(request);
+  const configDirectory = env.FLOW_CONFIG_DIRECTORY ?? FLOW_CONFIG_DIRECTORY;
+  let selection;
+  try {
+    selection = resolvePublicLaunchPolicy({
+      policyPath: env.FLOW_LAUNCH_POLICY_PATH ??
+        join(configDirectory, "launch-policy.v1.json"),
+      releaseManifestPath: env.FLOW_RELEASE_MANIFEST_PATH ??
+        join(configDirectory, "release-manifest.v1.json"),
+      darkOptIn: request?.dark_opt_in,
+      route,
+      homeDirectory: env.HOME ?? homedir(),
+      stateDirectory: env.XDG_STATE_HOME ??
+        join(env.HOME ?? homedir(), ".local", "state"),
+    });
+  } catch (error) {
+    if (error instanceof LaunchSelectionError) {
+      return createRejection({
+        operation,
+        code: error.code,
+        outcome: error.outcome,
+        reason: error.reason,
+        authorityWatermark: safeAuthorityWatermark(authority),
+        authorityWatermarkDomain: "host",
+        legalActions: error.legal_actions,
+      });
+    }
+    return createRejection({
+      operation,
+      code: "public_release_unavailable",
+      outcome: "unsupported",
+      reason: error?.message ?? "public replacement release is unavailable",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+    });
+  }
+
+  let availability;
+  try {
+    availability = composition.publicRouteAvailability?.(route, request) ?? {
+      available: false,
+      missing: ["public_route_availability"],
+    };
+  } catch (error) {
+    return createRejection({
+      operation,
+      code: "route_unavailable",
+      outcome: "unsupported",
+      reason: error?.message ?? "public route availability is unavailable",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+    });
+  }
+  if (availability.available !== true) {
+    return createRejection({
+      operation,
+      code: "route_unavailable",
+      outcome: "unsupported",
+      reason: `production route adapter is unavailable: ${
+        (availability.missing ?? []).join(",") || "unknown"}`,
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+      legalActions: selection.capability_manifest?.supported_routes ?? [],
+    });
+  }
+
+  let qualificationAvailable = false;
+  try {
+    qualificationAvailable = publicQualificationIsAvailable({
+      configDirectory,
+      repositoryRoot: env.FLOW_REPOSITORY_ROOT ?? FLOW_REPOSITORY_ROOT,
+      selection,
+      homeDirectory: env.HOME ?? homedir(),
+      stateDirectory: env.XDG_STATE_HOME ??
+        join(env.HOME ?? homedir(), ".local", "state"),
+      qualificationPhase2Session,
+    });
+  } catch {
+    qualificationAvailable = false;
+  }
+  if (!qualificationAvailable) {
+    return createRejection({
+      operation,
+      code: "qualification_withheld",
+      outcome: "disabled",
+      reason: "public release qualification is withheld or invalid",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  return selection;
+}
+
+function withoutDarkOptIn(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      !Object.hasOwn(value, "dark_opt_in")) return value;
+  const { dark_opt_in: _darkOptIn, ...withoutOptIn } = value;
+  return withoutOptIn;
+}
+
+function safeAuthorityWatermark(authority) {
+  try {
+    return authority?.query?.()?.watermark ?? null;
+  } catch {
+    return null;
   }
 }
 

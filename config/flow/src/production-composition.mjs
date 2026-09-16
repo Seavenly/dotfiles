@@ -16,7 +16,11 @@ import {
   validateFeatureTestReceipt,
   validateFeatureVerificationReceipt,
 } from "../../../tools/flow/src/feature-flow.mjs";
-import { createReviewDefinition } from "../../../tools/flow/src/review-flow.mjs";
+import {
+  createReviewDefinition,
+  REVIEW_LENSES,
+  REVIEW_OPERATION_CONTRACTS,
+} from "../../../tools/flow/src/review-flow.mjs";
 import { createHostAuthorityIdentityAdapter } from "../../../tools/flow/src/host-authority-identity.mjs";
 import { createTopLevelRunOwnershipAdapter } from "../../../tools/flow/src/run-authority.mjs";
 import { getWorkspaceAuthority } from "../../../tools/flow/src/work-authority.mjs";
@@ -124,16 +128,17 @@ export function createProductionComposition({
     defaults: featureOperationRegistrations(featureOperations.operations),
     overrides: registeredOperations,
   });
+  const definitions = mergeRegistrations({
+    defaults: {
+      "feature/v1": createFeatureDefinition({ independentCritique: true }),
+      "review/v1": createReviewDefinition(),
+    },
+    overrides: predefinedDefinitions,
+  });
 
   return Object.freeze({
     authorityOptions: productionAuthorityOptions,
-    definitions: mergeRegistrations({
-      defaults: {
-        "feature/v1": createFeatureDefinition({ independentCritique: true }),
-        "review/v1": createReviewDefinition(),
-      },
-      overrides: predefinedDefinitions,
-    }),
+    definitions,
     operations,
     authorities: mergeRegistrations({
       defaults: authorityRegistrations(),
@@ -148,6 +153,104 @@ export function createProductionComposition({
       },
       overrides: delegateOutputValidators,
     }),
+    publicRouteAvailability(route, request) {
+      if (route?.flow === "feature" && route?.mode === "verify") {
+        const required = new Set([
+          FEATURE_OPERATION_CONTRACTS.capture,
+          FEATURE_OPERATION_CONTRACTS.verify,
+          FEATURE_OPERATION_CONTRACTS.seal,
+        ]);
+        const featureOperations = new Set(
+          Object.values(FEATURE_OPERATION_CONTRACTS),
+        );
+        const selectionInputs = publicFeatureSelectionInputs(request);
+        if (selectionInputs?.setup !== undefined &&
+            selectionInputs.setup !== null) {
+          required.add(FEATURE_OPERATION_CONTRACTS.setup);
+        }
+        if (Array.isArray(selectionInputs?.slices) &&
+            selectionInputs.slices.some(({ mode }) => mode === "test")) {
+          required.add(FEATURE_OPERATION_CONTRACTS.test);
+        }
+        const preparedCards = request?.prepared?.graph?.cards ??
+          request?.prepared?.plan?.graph?.cards ?? [];
+        const unexpected = new Set();
+        for (const card of preparedCards) {
+          const executor = card?.executor;
+          if (executor?.kind === "operation") {
+            if (typeof executor.contract !== "string" ||
+                !featureOperations.has(executor.contract)) {
+              unexpected.add(executor.contract ?? "operation:unknown");
+              continue;
+            }
+            required.add(card.executor.contract);
+          } else if (executor?.kind === "delegate") {
+            if (executor.contract !== "flow.delegated-agent-port/v1") {
+              unexpected.add(executor.contract ?? "delegate:unknown");
+            }
+          } else {
+            unexpected.add(executor?.contract ?? `${executor?.kind ?? "missing"}:unknown`);
+          }
+        }
+        const featureDefinition = definitions["feature/v1"];
+        const contracts = [...required];
+        const missing = contracts.filter((contract) => {
+          const registration = registeredOperation(operations, contract);
+          return registration === undefined ||
+            typeof registration.invoke !== "function" ||
+            registration.availability === "unavailable" ||
+            registration.available === false;
+        });
+        return {
+          available: featureDefinition?.schema === "flow.predefined-definition/v1" &&
+            featureDefinition?.contract === "flow.definition/feature/v1" &&
+            missing.length === 0 && unexpected.size === 0,
+          source: "production_feature_operations",
+          contracts,
+          missing: featureDefinition?.schema !== "flow.predefined-definition/v1" ||
+              featureDefinition?.contract !== "flow.definition/feature/v1"
+            ? ["flow.definition/feature/v1", ...missing,
+              ...[...unexpected].map((contract) => `unlisted_executor:${contract}`)]
+            : [...missing,
+              ...[...unexpected].map((contract) => `unlisted_executor:${contract}`)],
+        };
+      }
+      if (route?.flow === "review" && route?.mode === "local") {
+        const reviewDefinition = definitions["review/v1"];
+        const prepared = request?.prepared;
+        const graphCards = prepared?.graph?.cards ??
+          prepared?.plan?.graph?.cards;
+        const unexpected = reviewGraphAvailabilityFindings({
+          prepared,
+          graphCards,
+        });
+        const missing = [];
+        if (reviewDefinition?.schema !== "flow.predefined-definition/v1" ||
+            reviewDefinition?.contract !== "flow.definition/review/v1") {
+          missing.push("flow.definition/review/v1");
+        }
+        if (delegatedAgentPort.contract !== "flow.delegated-agent-port/v1" ||
+            typeof delegatedAgentPort.describe !== "function") {
+          missing.push("flow.delegated-agent-port/v1");
+        }
+        return {
+          available: missing.length === 0 && unexpected.length === 0,
+          source: "trusted_review_authority",
+          contracts: [
+            "flow.definition/review/v1",
+            REVIEW_OPERATION_CONTRACTS.record,
+            "flow.delegated-agent-port/v1",
+          ],
+          missing: [...missing, ...unexpected],
+        };
+      }
+      return {
+        available: false,
+        source: "production_composition",
+        contracts: [],
+        missing: ["unlisted_public_route"],
+      };
+    },
     isPreparationRequest(request) {
       return request?.schema === PREPARATION_SCHEMA ||
         request?.brief !== undefined && request?.repository !== undefined;
@@ -215,11 +318,52 @@ export function createProductionComposition({
   }
 }
 
+function reviewGraphAvailabilityFindings({ prepared, graphCards }) {
+  if (prepared === undefined) return [];
+  if (!Array.isArray(graphCards)) return ["review_graph_missing"];
+  const lenses = prepared.selection?.inputs?.lenses;
+  if (!Array.isArray(lenses) || lenses.length === 0 ||
+      new Set(lenses).size !== lenses.length ||
+      lenses.some((lens) => !REVIEW_LENSES.includes(lens))) {
+    return ["review_selection_lenses_invalid"];
+  }
+  const expectedIds = new Set([
+    "review-critic",
+    "review-record",
+    ...lenses.map((lens) => `review-lens-${lens}`),
+  ]);
+  const unexpected = new Set();
+  const seen = new Set();
+  for (const card of graphCards) {
+    const id = card?.id;
+    if (typeof id !== "string" || !expectedIds.has(id) || seen.has(id)) {
+      unexpected.add(`unlisted_executor:${id ?? "card:unknown"}`);
+      continue;
+    }
+    seen.add(id);
+    const executor = card?.executor;
+    const isRecordOperation = id === "review-record" &&
+      executor?.kind === "operation" &&
+      executor?.contract === REVIEW_OPERATION_CONTRACTS.record;
+    const isReviewDelegate = id !== "review-record" &&
+      executor?.kind === "delegate" &&
+      executor?.contract === "flow.delegated-agent-port/v1";
+    if (!isRecordOperation && !isReviewDelegate) {
+      unexpected.add(`unlisted_executor:${executor?.contract ?? id}`);
+    }
+  }
+  if (seen.size !== expectedIds.size) unexpected.add("review_graph_incomplete");
+  return [...unexpected];
+}
+
 export class ProductionPreparationError extends Error {
-  constructor(code, message, options) {
+  constructor(code, message, options = {}) {
     super(message, options);
     this.name = "ProductionPreparationError";
     this.code = code;
+    if (options.compatibility !== undefined) {
+      this.compatibility = freezeCanonical(options.compatibility);
+    }
   }
 }
 
@@ -532,6 +676,7 @@ function featureOperationRegistrations(productionOperations) {
   const unavailable = (extra = {}) => ({
     schema: "flow.registered-operation/v1",
     classification: "caller_idempotent",
+    availability: "unavailable",
     ...extra,
     invoke() {
       throw new ProductionPreparationError(
@@ -556,6 +701,16 @@ function featureOperationRegistrations(productionOperations) {
       FEATURE_OPERATION_CONTRACTS.seal
     ],
   };
+}
+
+function publicFeatureSelectionInputs(request) {
+  const preparedInputs = request?.prepared?.selection?.inputs;
+  if (preparedInputs !== null && typeof preparedInputs === "object" &&
+      !Array.isArray(preparedInputs)) return preparedInputs;
+  const selectionInputs = request?.selection?.inputs;
+  if (selectionInputs !== null && typeof selectionInputs === "object" &&
+      !Array.isArray(selectionInputs)) return selectionInputs;
+  return request;
 }
 
 function authorityRegistrations() {
@@ -613,7 +768,7 @@ async function describedRoute({
     );
   }
   const request = {
-    schema: "drovr.delegated-agent-description-request/v1",
+    schema: "flow.delegated-agent-description-request/v1",
     launch: { ...launch, capability: launch.capability ?? capability },
     caller_metadata: {
       flow: "feature/v1",
@@ -623,9 +778,25 @@ async function describedRoute({
   const projection = await delegatedAgentPort.describe(request);
   const description = projection?.description;
   if (projection?.status !== "compatible" || !isRecord(description)) {
+    const compatibility = isRecord(projection?.compatibility)
+      ? projection.compatibility
+      : {};
+    const code = typeof compatibility.code === "string" &&
+      compatibility.code.length > 0
+      ? compatibility.code
+      : "drovr_incompatible";
     throw new ProductionPreparationError(
-      "drovr_incompatible",
+      code,
       `Drovr ${role} route is unavailable or incompatible`,
+      {
+        compatibility: {
+          code,
+          findings: normalizeCompatibilityFindings(compatibility.findings),
+          legal_actions: Array.isArray(projection?.legal_next_actions)
+            ? projection.legal_next_actions
+            : [],
+        },
+      },
     );
   }
   let findings;
@@ -648,8 +819,21 @@ async function describedRoute({
       !isDigest(description.comparison_keys?.effective_authority) ||
       !isDigest(description.watermark?.content_sha256)) {
     throw new ProductionPreparationError(
-      "drovr_incompatible",
+      "incompatible_feature_advertisement",
       `Drovr ${role} route does not satisfy the shipped feature contract`,
+      {
+        compatibility: {
+          code: "incompatible_feature_advertisement",
+          findings: normalizeCompatibilityFindings(
+            findings.length > 0
+              ? findings
+              : [{ field: "description", reason: "contradictory" }],
+          ),
+          legal_actions: Array.isArray(projection.legal_next_actions)
+            ? projection.legal_next_actions
+            : [],
+        },
+      },
     );
   }
   const {
@@ -672,6 +856,25 @@ async function describedRoute({
     },
     validators: [FEATURE_DELEGATE_OUTPUT_VALIDATOR],
   };
+}
+
+function normalizeCompatibilityFindings(findings) {
+  if (!Array.isArray(findings)) return [];
+  return findings.flatMap((finding) => {
+    if (!isRecord(finding) || typeof finding.reason !== "string" ||
+        finding.reason.length === 0) return [];
+    if (typeof finding.field === "string" && finding.field.length > 0) {
+      return [{ field: finding.field, reason: finding.reason }];
+    }
+    const featureId = typeof finding.feature_id === "string" &&
+      finding.feature_id.length > 0
+      ? finding.feature_id
+      : "unknown";
+    return [{
+      field: `feature_advertisement.${featureId}`,
+      reason: finding.reason,
+    }];
+  });
 }
 
 function routeCapabilities(apply, critique) {

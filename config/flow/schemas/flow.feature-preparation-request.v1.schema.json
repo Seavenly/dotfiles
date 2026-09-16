@@ -7,6 +7,7 @@
   "required": ["schema", "brief", "repository", "mode", "routes"],
   "properties": {
     "schema": { "const": "flow.feature-preparation-request/v1" },
+    "dark_opt_in": { "$ref": "flow.dark-opt-in.v1.schema.json" },
     "brief": { "$ref": "#/$defs/brief" },
     "repository": {
       "oneOf": [

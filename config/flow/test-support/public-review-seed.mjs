@@ -8,6 +8,9 @@ import {
   createFlowRuntime,
 } from "../src/runtime.mjs";
 import {
+  createProductionRouteConformanceSession,
+} from "../../../tools/flow/src/qualification-phase2-session.mjs";
+import {
   completedTurnProjection,
 } from "../../../tools/flow/test-support/delegate-card.mjs";
 import {
@@ -18,6 +21,11 @@ import { dynamicCheckpointProposal } from "../../../tools/flow/test-support/dyna
 import { digest, freezeCanonical } from "../../../tools/flow/src/canonical.mjs";
 
 const execFile = promisify(execFileCallback);
+const DARK_OPT_IN = {
+  schema: "flow.dark-opt-in/v1",
+  release_id: "flow-release-1.0-dark/v1",
+  purpose: "sacrificial_qualification",
+};
 
 /**
  * Produce one exact candidate and automated review using the production
@@ -36,6 +44,12 @@ export async function seedPublicReview({
     authorityDirectory,
     delegatedAgentPort,
     autonomous: true,
+    ...(env?.FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION === "1" ? {
+      qualificationPhase2Session: createProductionRouteConformanceSession({
+        authorityDirectory: env.FLOW_CONFIG_DIRECTORY,
+        marker: env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER,
+      }),
+    } : {}),
   });
   try {
     const featurePrepared = await runtime.prepare(
@@ -64,6 +78,7 @@ export async function seedPublicReview({
       definition: "review/v1",
       inputs: await reviewInputs(candidateProjection),
       explicit_facts: reviewFacts(candidateProjection),
+      dark_opt_in: DARK_OPT_IN,
     });
     const reviewLaunch = runtime.launch(
       confirmedPredefinedLaunchRequest(reviewPrepared),
@@ -113,6 +128,7 @@ function featurePreparationRequest(repository) {
     },
     repository: { path: repository },
     mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
     routes: {
       apply: {
         launch: {
@@ -220,6 +236,7 @@ function reviewRoute(agentId, description) {
 function confirmedPredefinedLaunchRequest(prepared) {
   return {
     prepared,
+    dark_opt_in: DARK_OPT_IN,
     confirmation: {
       schema: "flow.predefined-flow-confirmation-decision/v1",
       decision: "accept",
@@ -260,7 +277,7 @@ function createPublicDelegatedAgentPort({ repository } = {}) {
     contract: "flow.delegated-agent-port/v1",
     async describe(request) {
       const description = await supportedDescription(
-        request,
+        { ...request, schema: "drovr.delegated-agent-description-request/v1" },
         repositoryDrovrDependencies(),
       );
       return {

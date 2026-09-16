@@ -1,0 +1,48 @@
+TAP version 13
+# (node:1466559) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: default FlowRuntime is durable and autonomous
+ok 1 - default FlowRuntime is durable and autonomous
+  ---
+  duration_ms: 26.534718
+  type: 'test'
+  ...
+# Subtest: default production work evidence fails closed without authoritative bytes
+ok 2 - default production work evidence fails closed without authoritative bytes
+  ---
+  duration_ms: 0.272766
+  type: 'test'
+  ...
+# Subtest: production reboot observation uses exact synchronous registered effect evidence
+ok 3 - production reboot observation uses exact synchronous registered effect evidence
+  ---
+  duration_ms: 1.479974
+  type: 'test'
+  ...
+# Subtest: production reboot observation normalizes causation by proven presence
+ok 4 - production reboot observation normalizes causation by proven presence
+  ---
+  duration_ms: 0.610411
+  type: 'test'
+  ...
+# Subtest: production reboot observation leaves repeat-exact effects indeterminate without fabricated presence
+ok 5 - production reboot observation leaves repeat-exact effects indeterminate without fabricated presence
+  ---
+  duration_ms: 0.32367
+  type: 'test'
+  ...
+# Subtest: production critique evidence is strict, independently bound, and ordered
+ok 6 - production critique evidence is strict, independently bound, and ordered
+  ---
+  duration_ms: 15.070542
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 118.160067
