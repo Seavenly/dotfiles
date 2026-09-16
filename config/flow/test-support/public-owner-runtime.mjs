@@ -8,6 +8,10 @@ import {
   createDurableRunAuthority,
 } from "../../../tools/flow/src/run-authority.mjs";
 import {
+  createGitRetentionAdapter,
+  createGitWorkspaceObservationAdapter,
+} from "../../../tools/flow/src/git-retention-adapter.mjs";
+import {
   fixedExecutionTimeAdapter,
   fixedHostIdentity,
 } from "../../../tools/flow/test-support/fixed-host-identity.mjs";
@@ -35,6 +39,14 @@ export async function createFlowRuntime({
       `owner-process:${process.pid}`,
     ),
     timeObservationAdapter: fixedExecutionTimeAdapter({ bootId: BOOT_ID }),
+    ...(typeof env.FLOW_PUBLIC_REPOSITORY === "string" ? {
+      gitWorkspaceObservationAdapter: createGitWorkspaceObservationAdapter(),
+      gitRetentionAdapter: createGitRetentionAdapter({
+        resolveRepository() {
+          return env.FLOW_PUBLIC_REPOSITORY;
+        },
+      }),
+    } : {}),
   });
   const runtime = createCoreFlowRuntime({
     runAuthority: authority,

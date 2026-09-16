@@ -18,6 +18,9 @@ import {
   reviewTargetRefreshIssue,
   reviewEventWatermark,
   reviewAuthorityEventWatermark,
+  buildReviewHumanEvent,
+  isReviewHumanCommand,
+  reviewHumanCommandIssue,
   reviewRecordWatermarkIdentity,
   reviewTargetFingerprint,
   validateReviewRecordCommand,
@@ -109,6 +112,9 @@ export function decideWorkCommand(current, command, { authorityObservation = nul
       (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA &&
        command.type === "github_review_record")) {
     return decideReviewRecord(current, command);
+  }
+  if (isReviewHumanCommand(command)) {
+    return decideReviewHumanCommand(current, command);
   }
   if (isReviewTargetInvalidationCommand(command)) {
     return decideReviewTargetInvalidation(current, command, authorityObservation);
@@ -233,6 +239,18 @@ function decideReviewRecord(current, command) {
         command_receipt: workIdempotencyReceipt(command),
       },
     },
+  };
+}
+
+function decideReviewHumanCommand(current, command) {
+  const issue = reviewHumanCommandIssue(command, current);
+  if (issue !== null) return reject(command, issue, current);
+  const built = buildReviewHumanEvent({ command, current });
+  if (built.issue !== undefined) return reject(command, built.issue, current);
+  return {
+    accepted: true,
+    streamKind: "review",
+    event: built.event,
   };
 }
 
@@ -469,11 +487,19 @@ export function foldWorkStream(streamKind, subjectId, records, watermark) {
       const recorded = records[0].payload;
       const events = records.map(({ payload }) => payload);
       if (recorded.body?.schema === GITHUB_REVIEW_RECORD_SCHEMA) {
-        return projectGitHubReviewRecord(
-          recorded.body,
-          recorded.watermark ?? watermark,
-          events,
-        );
+        try {
+          return projectGitHubReviewRecord(
+            recorded.body,
+            reviewAuthorityEventWatermark(events),
+            events,
+          );
+        } catch (error) {
+          if (error?.code === "review_authority_integrity_failure") throw error;
+          throw reviewAuthorityIntegrityFailure(
+            "malformed_event",
+            error?.message ?? "GitHub review authority event is malformed",
+          );
+        }
       }
       try {
         return projectReviewRecord(

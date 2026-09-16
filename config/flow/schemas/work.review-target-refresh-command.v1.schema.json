@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/work.review-target-refresh-command.v1.schema.json",
+  "title": "work.review-target-refresh-command/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "type",
+    "contract",
+    "command_id",
+    "subject_id",
+    "expected_watermark",
+    "prior_candidate_fingerprint",
+    "prior_lifecycle_generation",
+    "observed_candidate_fingerprint",
+    "observed_lifecycle_generation",
+    "authority_observation"
+  ],
+  "properties": {
+    "schema": { "const": "work.review-target-refresh-command/v1" },
+    "type": { "const": "review_target_refresh" },
+    "contract": { "const": "work.review/v1" },
+    "command_id": { "type": "string", "minLength": 1 },
+    "subject_id": { "type": "string", "minLength": 1 },
+    "expected_watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "prior_candidate_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "prior_lifecycle_generation": { "type": "integer", "minimum": 1 },
+    "observed_candidate_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "observed_lifecycle_generation": { "type": "integer", "minimum": 1 },
+    "prior_mutation_epoch": { "type": "integer", "minimum": 1 },
+    "observed_mutation_epoch": { "type": "integer", "minimum": 1 },
+    "authority_observation": { "$ref": "#/$defs/targetObservation" }
+  },
+  "dependentRequired": {
+    "prior_mutation_epoch": ["observed_mutation_epoch"],
+    "observed_mutation_epoch": ["prior_mutation_epoch"]
+  },
+  "$defs": {
+    "targetObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "subject_id",
+        "candidate_id",
+        "candidate_fingerprint",
+        "lifecycle_generation",
+        "authority_watermark",
+        "source",
+        "evidence_digest"
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-target-observation/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lifecycle_generation": { "type": "integer", "minimum": 1 },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "authority_watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source": {
+          "enum": ["candidate_projection", "named_mechanism_observation"]
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

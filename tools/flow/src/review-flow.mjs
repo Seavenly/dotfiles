@@ -3,6 +3,7 @@ import {
   freezeCanonical,
   idempotencyCommandDigest,
 } from "./canonical.mjs";
+import { isDeepStrictEqual } from "node:util";
 import { operationEffectIdentity } from "./effect-identity.mjs";
 import { PredefinedFlowValidationError } from "./plan-compiler.mjs";
 import {
@@ -31,6 +32,69 @@ export { validateReviewCandidate };
 export const REVIEW_OPERATION_CONTRACTS = Object.freeze({
   record: "flow.operation/review-record/v1",
 });
+
+export const REVIEW_HUMAN_COMMAND_SCHEMA =
+  "work.review-human-command/v1";
+export const REVIEW_OPERATOR_INPUT_SCHEMA =
+  "flow.review-operator-input/v1";
+export const REVIEW_INBOX_QUERY_CONTRACT = "work.review-inbox/v1";
+export const REVIEW_INBOX_PROJECTION_SCHEMA =
+  "flow.review-inbox-projection/v1";
+export const REVIEW_INBOX_WATERMARK_SCHEMA =
+  "flow.review-inbox-watermark/v1";
+export const REVIEW_SESSION_SCHEMA = "flow.review-session/v1";
+export const REVIEW_HUMAN_EVENT_SCHEMA = "flow.review-human-event/v1";
+// The public projection schema is intentionally unchanged.  This private
+// fold marker lets the durable authority distinguish a projection written by
+// the pre-human-review reducer from one written by the current reducer.
+export const REVIEW_PROJECTION_FOLD_CONTRACT =
+  "flow.review-projection-fold/v2";
+export const REVIEW_LEGACY_PROJECTION_FOLD_CONTRACT =
+  "flow.review-projection/v1";
+const REVIEW_ACCEPTED_COMMAND_SCHEMA = "flow.review-accepted-command/v1";
+export const REVIEW_INTEGRATION_EVIDENCE_SCHEMA =
+  "flow.review-integration-evidence/v1";
+export const REVIEW_HUMAN_ACTIONS = Object.freeze([
+  "review_session_start",
+  "review_comment",
+  "review_disposition",
+  "review_approval",
+  "review_supersession",
+  "review_integration",
+]);
+export const REVIEW_DISPOSITIONS = Object.freeze([
+  "accept",
+  "request_changes",
+  "dismiss",
+  "defer",
+]);
+
+const REVIEW_HUMAN_COMMAND_COMMON_KEYS = Object.freeze([
+  "schema",
+  "type",
+  "contract",
+  "command_id",
+  "subject_id",
+  "review_id",
+  "target_fingerprint",
+  "candidate_fingerprint",
+  "candidate_authority_watermark",
+  "lifecycle_generation",
+  "expected_watermark",
+  "expected_generation",
+]);
+const REVIEW_HUMAN_COMMAND_ROOT_KEYS = Object.freeze([
+  ...REVIEW_HUMAN_COMMAND_COMMON_KEYS,
+  "session_id",
+  "comment_id",
+  "body",
+  "finding_id",
+  "disposition",
+  "decision",
+  "operator_input",
+  "replacement",
+  "evidence",
+]);
 
 /**
  * GitHub review creation remains a separate, one-shot effect from the local
@@ -2515,6 +2579,41 @@ export function createInMemoryReviewAuthority({
           created: true,
         };
       }
+      if (isReviewHumanCommand(command)) {
+        const prior = events.find(({ command_receipt: receipt }) =>
+          receipt?.command_id === command.command_id);
+        if (prior !== undefined) {
+          try {
+            if (prior.command_receipt.command_digest === idempotencyCommandDigest(command)) {
+              return {
+                accepted: true,
+                replayed: true,
+                authority_watermark: current.watermark,
+              };
+            }
+          } catch {
+            // Fall through to the typed idempotency conflict.
+          }
+          return reviewRejection("idempotency_conflict", command, current);
+        }
+        const built = buildReviewHumanEvent({ command, current });
+        if (built.issue !== undefined) {
+          return reviewRejection(built.issue, command, current);
+        }
+        streams.set(subjectId, [
+          ...events,
+          built.event.payload,
+        ]);
+        return {
+          schema: "work.command-receipt/v1",
+          command_type: command.type,
+          contract: command.contract,
+          subject_id: subjectId,
+          authority_watermark: built.watermark,
+          accepted: true,
+          created: true,
+        };
+      }
       if (command?.schema !== "work.review-record-command/v1" ||
           command?.type !== "review_record" ||
           command?.contract !== "work.review/v1" || typeof subjectId !== "string") {
@@ -2610,9 +2709,15 @@ export function createInMemoryReviewAuthority({
         command_id: command.command_id,
         command_digest: idempotencyCommandDigest(command),
       });
+      const {
+        evidence_validation: _evidenceValidation,
+        git_observation: _gitObservation,
+        human_authority_validation: _humanAuthorityValidation,
+        ...canonicalCommand
+      } = command;
       const event = {
         type: "review_recorded",
-        command,
+        command: freezeCanonical(canonicalCommand),
         body,
         watermark,
         command_receipt: commandReceipt,
@@ -2629,6 +2734,20 @@ export function createInMemoryReviewAuthority({
       };
     },
     query(request = {}) {
+      if (request?.contract === REVIEW_INBOX_QUERY_CONTRACT) {
+        const reviews = [];
+        for (const [subjectId, records] of streams) {
+          const first = records[0]?.payload ?? records[0];
+          if (first?.type === "review_recorded" ||
+              first?.type === "github_review_recorded") {
+            reviews.push(queryProjection(subjectId));
+          }
+        }
+        const candidates = [];
+        const candidate = currentCandidateProjection();
+        if (candidate !== null) candidates.push(candidate);
+        return projectReviewInbox({ candidates, reviews });
+      }
       if (request?.contract !== "work.review/v1" || typeof request.subject_id !== "string") {
         return reviewRejection("invalid_review_query", request, null, "query");
       }
@@ -2638,6 +2757,9 @@ export function createInMemoryReviewAuthority({
       return queryProjection(request.subject_id);
     },
     watch(request = {}) {
+      if (request?.contract === REVIEW_INBOX_QUERY_CONTRACT) {
+        return oneShot(authority.query(request));
+      }
       const subjectId = typeof request === "string" ? request : request.subject_id;
       return oneShot(queryProjection(subjectId));
     },
@@ -2884,6 +3006,17 @@ export function createInMemoryGitHubReviewAuthority({
 }
 
 export function projectGitHubReviewRecord(body, watermark, events = []) {
+  const firstEvent = events[0]?.payload ?? events[0];
+  if (firstEvent?.type === "github_review_recorded") {
+    validateReviewHumanEventRecords(events, body);
+  } else if (REVIEW_HUMAN_ACTIONS.includes(firstEvent?.type) ||
+      firstEvent?.type === "review_target_invalidated" ||
+      firstEvent?.type === "review_target_refresh_acknowledged") {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "GitHub review projection cannot accept local review events",
+    );
+  }
   const commandReceipts = events
     .map((event) => event.command_receipt)
     .filter((receipt) => receipt !== undefined);
@@ -2910,11 +3043,18 @@ export function projectGitHubReviewRecord(body, watermark, events = []) {
     automated_evidence: body.automated_evidence,
     artifacts: body.artifacts,
     status: "automated_completed",
+    current: true,
+    evidence_currency: "current",
     posture: body.summary.posture,
     findings: body.summary.findings,
     semantic_findings: body.summary.findings,
     rendered_findings: body.summary.rendered_findings,
     cap_reasons: body.summary.cap_reasons,
+    urgency_floor: body.summary.urgency_floor,
+    orientation: body.summary.orientation ?? null,
+    diagrams: body.summary.diagrams ?? [],
+    coverage: body.summary.coverage,
+    merge_ready: body.summary.merge_ready,
     remote_review: {
       provider: "github",
       status: "not_created",
@@ -2934,7 +3074,12 @@ function githubReviewRecordWatermarkIdentity(body) {
   return identity;
 }
 
-export function projectReviewRecord(body, watermark, events = []) {
+export function projectReviewRecord(
+  body,
+  watermark,
+  events = [],
+) {
+  if (events.length > 0) validateReviewHumanEventRecords(events, body);
   const summary = isRecord(body?.summary) ? body.summary : {};
   const invalidationEvent = events
     .map((event) => event?.payload ?? event)
@@ -2944,7 +3089,8 @@ export function projectReviewRecord(body, watermark, events = []) {
     .map((event) => event?.payload ?? event)
     .find(({ type }) => type === "review_target_refresh_acknowledged");
   const refresh = refreshEvent?.refresh ?? null;
-  const current = invalidation === null;
+  const humanState = reviewHumanState(events);
+  const current = invalidation === null && humanState.supersession === null;
   const commandReceipts = events
     .map((event) => (event?.payload ?? event).command_receipt)
     .filter((receipt) => receipt !== undefined);
@@ -2976,9 +3122,25 @@ export function projectReviewRecord(body, watermark, events = []) {
   }];
   /*
    * This command is the only legal post-invalidation acknowledgement. It
-   * records that the observed target facts were retained without making the
-   * stale review current or authorizing any downstream action.
-   */
+  * records that the observed target facts were retained without making the
+  * stale review current or authorizing any downstream action.
+  */
+  const humanFields = humanState.hasEvents
+    ? humanProjectionFields(humanState, watermark)
+    : {};
+  const humanLegalActions = current
+    ? reviewHumanLegalActions({
+        subject_id: body.review_id,
+        target_fingerprint: body.candidate_fingerprint,
+        candidate_fingerprint: body.candidate_fingerprint,
+        candidate_authority_watermark: body.candidate_authority_watermark,
+        lifecycle_generation: body.lifecycle_generation,
+        watermark,
+        current,
+        status: "automated_completed",
+        ...humanFields,
+      })
+    : [];
   const projection = {
     schema: "flow.review-projection/v1",
     contract: "work.review/v1",
@@ -2986,7 +3148,9 @@ export function projectReviewRecord(body, watermark, events = []) {
     watermark,
     authority_watermark: watermark,
     authority_watermark_domain: "review",
+    target_fingerprint: body.candidate_fingerprint,
     candidate_fingerprint: body.candidate_fingerprint,
+    target_authority_watermark: body.candidate_authority_watermark,
     candidate_authority_watermark: body.candidate_authority_watermark,
     lifecycle_generation: body.lifecycle_generation,
     ...(body.source_run_id === undefined ? {} : { source_run_id: body.source_run_id }),
@@ -3034,20 +3198,836 @@ export function projectReviewRecord(body, watermark, events = []) {
     }),
     ...(body.artifacts === undefined ? {} : { artifacts: body.artifacts }),
     ...reviewCompletionAuthority(),
+    append_only_event_count: events.length,
+    command_receipts: commandReceipts,
+    ...humanFields,
+    // Target invalidation is terminal for every authorization domain. Apply
+    // this fence after human composition so prior approval or integration
+    // cannot restore stale-target authority.
     ...(current ? {} : {
+      status: "stale",
+      current: false,
+      evidence_currency: "stale",
       approval: "ineligible",
       approval_eligible: false,
       submission_pending: false,
       submission_eligible: false,
       integration_eligible: false,
+      integration_authorized: false,
       merge_eligible: false,
+      merge_authorized: false,
       tracker_completion_eligible: false,
+      tracker_completion_authorized: false,
+      remote_submission_authorized: false,
     }),
-    append_only_event_count: events.length,
-    command_receipts: commandReceipts,
-    legal_actions: refreshAction,
+    legal_actions: current ? humanLegalActions : refreshAction,
   };
   return freezeCanonical(projection);
+}
+
+/**
+ * Reconstruct the fold shape emitted before the human review projection was
+ * added.  This is deliberately a narrow compatibility helper for durable
+ * migration: callers must still compare its canonical bytes and digest with
+ * the stored fold before accepting an upgrade.
+ */
+export function legacyReviewProjectionFold(fold, events = []) {
+  if (!isRecord(fold) || fold.schema !== "flow.review-projection/v1") {
+    return null;
+  }
+  const payloads = events.map((record) => record?.payload ?? record);
+  if (payloads.some((payload) => REVIEW_HUMAN_ACTIONS.includes(payload?.type))) {
+    return null;
+  }
+  const legacy = { ...fold };
+  if (fold.target_kind === "github") {
+    for (const key of [
+      "current",
+      "evidence_currency",
+      "urgency_floor",
+      "orientation",
+      "diagrams",
+      "coverage",
+      "merge_ready",
+    ]) delete legacy[key];
+    return freezeCanonical(legacy);
+  }
+  if (fold.target_kind !== undefined && fold.target_kind !== "local") {
+    return null;
+  }
+  delete legacy.target_fingerprint;
+  delete legacy.target_authority_watermark;
+  if (fold.current === true && payloads.length > 0) {
+    legacy.legal_actions = [];
+  }
+  return freezeCanonical(legacy);
+}
+
+function reviewHumanState(events) {
+  const state = {
+    hasEvents: false,
+    reviewGeneration: 0,
+    session: null,
+    comments: [],
+    dispositions: [],
+    approval: null,
+    supersession: null,
+    integration: null,
+  };
+  for (const record of events) {
+    const payload = record?.payload ?? record;
+    if (!REVIEW_HUMAN_ACTIONS.includes(payload?.type) ||
+        !isRecord(payload?.event)) continue;
+    const event = payload.event;
+    state.hasEvents = true;
+    state.reviewGeneration = event.review_generation;
+    if (payload.type === "review_session_start") {
+      state.session = event.session;
+    } else if (payload.type === "review_comment") {
+      state.comments.push(event.comment);
+    } else if (payload.type === "review_disposition") {
+      state.dispositions.push(event.disposition);
+    } else if (payload.type === "review_approval") {
+      state.approval = event.approval;
+    } else if (payload.type === "review_supersession") {
+      state.supersession = event.supersession;
+    } else if (payload.type === "review_integration") {
+      state.integration = event.integration;
+    }
+  }
+  return state;
+}
+
+function humanProjectionFields(state, reviewAuthorityWatermark) {
+  const session = state.session === null
+    ? null
+    : {
+        ...state.session,
+        review_authority_watermark: reviewAuthorityWatermark,
+      };
+  const approval = state.approval === null
+    ? "not_requested"
+    : state.approval.decision === "approve"
+      ? "approved"
+      : "revoked";
+  const eligibility = reviewHumanActionEligibility({
+    session,
+    approval,
+    integration: state.integration,
+  });
+  return {
+    review_generation: state.reviewGeneration,
+    review_authority_watermark: reviewAuthorityWatermark,
+    session,
+    comments: state.comments,
+    approval_eligible: eligibility.approvalEligible,
+    dispositions: state.dispositions,
+    ...(state.approval === null ? {} : {
+      approval,
+      approval_receipt: state.approval,
+    }),
+    ...(state.integration === null ? {} : {
+      integration: state.integration,
+      integration_authorized: state.approval?.decision === "approve",
+    }),
+    integration_eligible: eligibility.integrationEligible,
+    // Supersession is terminal for human review. Apply it after integration
+    // composition so no later state can restore authorization or eligibility.
+    ...(state.supersession === null ? {} : {
+      human_status: "superseded",
+      supersession: state.supersession,
+      current: false,
+      evidence_currency: "stale",
+      approval: "ineligible",
+      approval_eligible: false,
+      submission_pending: false,
+      submission_eligible: false,
+      integration_eligible: false,
+      integration_authorized: false,
+      merge_eligible: false,
+      merge_authorized: false,
+      tracker_completion_eligible: false,
+      tracker_completion_authorized: false,
+      remote_submission_authorized: false,
+    }),
+  };
+}
+
+function reviewHumanActionEligibility({ session, approval, integration }) {
+  const hasSession = session !== null && session !== undefined;
+  const hasIntegration = integration !== null && integration !== undefined;
+  const approvalDecision = !hasSession
+    ? null
+    : approval !== "approved"
+      ? "approve"
+      : hasIntegration
+        ? null
+        : "revoke";
+  return {
+    approvalDecision,
+    approvalEligible: approvalDecision === "approve",
+    integrationEligible: hasSession && approval === "approved" &&
+      !hasIntegration,
+  };
+}
+
+function reviewSessionStartAction({
+  reviewId,
+  candidateFingerprint,
+  lifecycleGeneration,
+  candidateAuthorityWatermark,
+  expectedWatermark,
+  expectedGeneration,
+}) {
+  return {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type: "review_session_start",
+    contract: "work.review/v1",
+    command_id: `review-session-start:${reviewId}`,
+    subject_id: reviewId,
+    review_id: reviewId,
+    target_fingerprint: candidateFingerprint,
+    candidate_fingerprint: candidateFingerprint,
+    candidate_authority_watermark: candidateAuthorityWatermark,
+    lifecycle_generation: lifecycleGeneration,
+    expected_watermark: expectedWatermark,
+    expected_generation: expectedGeneration,
+    operator_input: reviewOperatorInput({
+      action: "review_session_start",
+      required: ["session_id"],
+    }),
+  };
+}
+
+function reviewOperatorInput({ action, required, optional = [], details = {} }) {
+  return {
+    schema: REVIEW_OPERATOR_INPUT_SCHEMA,
+    action,
+    required,
+    ...(optional.length === 0 ? {} : { optional }),
+    ...details,
+  };
+}
+
+function validReviewOperatorInput(input, action) {
+  const definitions = {
+    review_session_start: {
+      required: ["session_id"],
+    },
+    review_comment: {
+      required: ["comment_id", "body"],
+    },
+    review_disposition: {
+      required: ["disposition"],
+      optional: ["finding_id"],
+      allowed_dispositions: [...REVIEW_DISPOSITIONS],
+    },
+    review_supersession: {
+      required: ["replacement"],
+      replacement: {
+        required: ["candidate_fingerprint", "lifecycle_generation"],
+      },
+    },
+    review_integration: {
+      required: ["evidence"],
+      evidence_schema: REVIEW_INTEGRATION_EVIDENCE_SCHEMA,
+    },
+  };
+  const definition = definitions[action];
+  if (definition === undefined || !isRecord(input) ||
+      input.schema !== REVIEW_OPERATOR_INPUT_SCHEMA ||
+      input.action !== action ||
+      !Array.isArray(input.required) ||
+      !isDeepStrictEqual(input.required, definition.required)) {
+    return false;
+  }
+  const optional = definition.optional ?? [];
+  if (optional.length === 0) {
+    if (Object.hasOwn(input, "optional")) return false;
+  } else if (!isDeepStrictEqual(input.optional, optional)) {
+    return false;
+  }
+  if (definition.allowed_dispositions !== undefined &&
+      !isDeepStrictEqual(input.allowed_dispositions,
+        definition.allowed_dispositions)) {
+    return false;
+  }
+  if (definition.evidence_schema !== undefined &&
+      input.evidence_schema !== definition.evidence_schema) {
+    return false;
+  }
+  if (definition.replacement !== undefined &&
+      !isDeepStrictEqual(input.replacement, definition.replacement)) {
+    return false;
+  }
+  const optionalKeys = [
+    ...(optional.length === 0 ? [] : ["optional"]),
+    ...(definition.allowed_dispositions === undefined
+      ? []
+      : ["allowed_dispositions"]),
+    ...(definition.evidence_schema === undefined ? [] : ["evidence_schema"]),
+    ...(definition.replacement === undefined ? [] : ["replacement"]),
+  ];
+  return hasExactKeys(
+    input,
+    ["schema", "action", "required"],
+    optionalKeys,
+  );
+}
+
+function validReviewHumanCommandShape(command) {
+  if (!isRecord(command) || !REVIEW_HUMAN_ACTIONS.includes(command.type) ||
+      !hasExactKeys(command, REVIEW_HUMAN_COMMAND_COMMON_KEYS,
+        REVIEW_HUMAN_COMMAND_ROOT_KEYS.filter((key) =>
+          !REVIEW_HUMAN_COMMAND_COMMON_KEYS.includes(key)))) {
+    return false;
+  }
+  const materialized = {
+    review_session_start: {
+      required: ["session_id"],
+    },
+    review_comment: {
+      required: ["session_id", "comment_id", "body"],
+    },
+    review_disposition: {
+      required: ["session_id", "disposition"],
+      optional: ["finding_id"],
+    },
+    review_approval: {
+      required: ["session_id", "decision"],
+    },
+    review_supersession: {
+      required: ["session_id", "replacement"],
+    },
+    review_integration: {
+      required: ["session_id", "evidence"],
+    },
+  }[command.type];
+  const hasOperatorInput = Object.hasOwn(command, "operator_input");
+  if (hasOperatorInput) {
+    if (command.type === "review_approval" ||
+        !hasExactKeys(command, [
+          ...REVIEW_HUMAN_COMMAND_COMMON_KEYS,
+          ...(command.type === "review_session_start" ? [] : ["session_id"]),
+          "operator_input",
+        ]) ||
+        !validReviewOperatorInput(command.operator_input, command.type)) {
+      return false;
+    }
+    return true;
+  }
+  if (command.type === "review_session_start") {
+    return hasExactKeys(command, [
+      ...REVIEW_HUMAN_COMMAND_COMMON_KEYS,
+      "session_id",
+    ]);
+  }
+  return hasExactKeys(
+    command,
+    [...REVIEW_HUMAN_COMMAND_COMMON_KEYS, ...materialized.required],
+    materialized.optional ?? [],
+  );
+}
+
+function reviewHumanLegalActions(review, candidate = null) {
+  if (!isRecord(review) || review.current !== true ||
+      ["stale", "superseded"].includes(review.status) ||
+      review.human_status === "superseded") return [];
+  const targetFingerprint = review.target_fingerprint ?? review.candidate_fingerprint;
+  const lifecycleGeneration = review.lifecycle_generation;
+  const candidateAuthorityWatermark = review.candidate_authority_watermark ??
+    candidate?.watermark ?? null;
+  const base = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    contract: "work.review/v1",
+    subject_id: review.subject_id,
+    review_id: review.subject_id,
+    target_fingerprint: targetFingerprint,
+    candidate_fingerprint: targetFingerprint,
+    candidate_authority_watermark: candidateAuthorityWatermark,
+    lifecycle_generation: lifecycleGeneration,
+    expected_watermark: review.watermark,
+    expected_generation: review.review_generation ?? 0,
+  };
+  if (review.session === null || review.session === undefined) {
+    return [reviewSessionStartAction({
+      reviewId: review.subject_id,
+      candidateFingerprint: targetFingerprint,
+      lifecycleGeneration,
+      candidateAuthorityWatermark,
+      expectedWatermark: review.watermark,
+      expectedGeneration: review.review_generation ?? 0,
+    })];
+  }
+  const session = { session_id: review.session.session_id };
+  const eligibility = reviewHumanActionEligibility({
+    session: review.session,
+    approval: review.approval,
+    integration: review.integration,
+  });
+  const actions = [{
+    ...base,
+    ...session,
+    type: "review_comment",
+    command_id: `review-comment:${review.subject_id}:${base.expected_generation + 1}`,
+    operator_input: reviewOperatorInput({
+      action: "review_comment",
+      required: ["comment_id", "body"],
+    }),
+  }, {
+    ...base,
+    ...session,
+    type: "review_disposition",
+    command_id: `review-disposition:${review.subject_id}:${base.expected_generation + 1}`,
+    operator_input: reviewOperatorInput({
+      action: "review_disposition",
+      required: ["disposition"],
+      optional: ["finding_id"],
+      details: { allowed_dispositions: [...REVIEW_DISPOSITIONS] },
+    }),
+  }];
+  if (eligibility.approvalDecision === "approve") {
+    actions.push({
+      ...base,
+      ...session,
+      type: "review_approval",
+      command_id: `review-approval:${review.subject_id}:${base.expected_generation + 1}`,
+      decision: "approve",
+    });
+  } else if (eligibility.approvalDecision === "revoke") {
+    actions.push({
+      ...base,
+      ...session,
+      type: "review_approval",
+      command_id: `review-revoke-approval:${review.subject_id}:${base.expected_generation + 1}`,
+      decision: "revoke",
+    });
+  }
+  actions.push({
+    ...base,
+    ...session,
+    type: "review_supersession",
+    command_id: `review-supersession:${review.subject_id}:${base.expected_generation + 1}`,
+    operator_input: reviewOperatorInput({
+      action: "review_supersession",
+      required: ["replacement"],
+      details: {
+        replacement: {
+          required: ["candidate_fingerprint", "lifecycle_generation"],
+        },
+      },
+    }),
+  });
+  if (eligibility.integrationEligible) {
+    actions.push({
+      ...base,
+      ...session,
+      type: "review_integration",
+      command_id: `review-integration:${review.subject_id}:${base.expected_generation + 1}`,
+      operator_input: reviewOperatorInput({
+        action: "review_integration",
+        required: ["evidence"],
+        details: { evidence_schema: "flow.review-integration-evidence/v1" },
+      }),
+    });
+  }
+  return actions;
+}
+
+export function reviewHumanCommandIssue(command, current) {
+  if (!isReviewHumanCommand(command) ||
+      !validReviewHumanCommandShape(command)) {
+    return "invalid_review_human_command";
+  }
+  if (current?.schema !== "flow.review-projection/v1") return "unknown_subject";
+  if (current.target_kind !== undefined && current.target_kind !== "local") {
+    return "review_target_not_local";
+  }
+  if (!nonEmpty(command.command_id) ||
+      !nonEmpty(command.review_id) ||
+      command.review_id !== current.subject_id ||
+      command.subject_id !== current.subject_id) {
+    return "invalid_review_human_command";
+  }
+  const candidateFingerprint = command.target_fingerprint ??
+    command.candidate_fingerprint;
+  if (!isDigest(candidateFingerprint) ||
+      candidateFingerprint !== current.candidate_fingerprint ||
+      command.candidate_fingerprint !== candidateFingerprint ||
+      command.target_fingerprint !== candidateFingerprint ||
+      !isDigest(command.candidate_authority_watermark) ||
+      command.candidate_authority_watermark !== current.candidate_authority_watermark ||
+      !Number.isSafeInteger(command.lifecycle_generation) ||
+      command.lifecycle_generation < 1 ||
+      command.lifecycle_generation !== current.lifecycle_generation ||
+      !Number.isSafeInteger(command.expected_generation) ||
+      command.expected_generation < 0 ||
+      command.expected_generation !== (current.review_generation ?? 0)) {
+    return command.expected_generation !== (current.review_generation ?? 0)
+      ? "stale_review_generation"
+      : "review_target_mismatch";
+  }
+  if (command.expected_watermark !== current.watermark) {
+    return "stale_authority_watermark";
+  }
+  if (current.current !== true || current.status === "stale") {
+    return "review_target_not_current";
+  }
+  const hasSession = current.session !== null && current.session !== undefined;
+  if (command.type === "review_session_start") {
+    if (hasSession) return "review_session_already_started";
+    if (!nonEmpty(command.session_id)) return "invalid_review_session";
+    return null;
+  }
+  if (!hasSession || command.session_id !== current.session.session_id) {
+    return "review_session_required";
+  }
+  if (command.type === "review_comment") {
+    if (!nonEmpty(command.comment_id) ||
+        typeof command.body !== "string" || command.body.length === 0 ||
+        command.body.length > 16_384) {
+      return "invalid_review_comment";
+    }
+    if ((current.comments ?? []).some(({ comment_id: commentId }) =>
+      commentId === command.comment_id)) {
+      return "review_comment_already_recorded";
+    }
+    return null;
+  }
+  if (command.type === "review_disposition") {
+    if (!REVIEW_DISPOSITIONS.includes(command.disposition) ||
+        Object.hasOwn(command, "finding_id") &&
+          !nonEmpty(command.finding_id)) {
+      return "invalid_review_disposition";
+    }
+    const findingId = command.finding_id ?? null;
+    if (findingId !== null &&
+        (!Array.isArray(current.findings) ||
+         !current.findings.some(({ finding_id: surfacedFindingId }) =>
+           surfacedFindingId === findingId))) {
+      return "review_finding_not_surfaced";
+    }
+    if ((current.dispositions ?? []).some((entry) =>
+      (entry.finding_id ?? null) === findingId)) {
+      return "review_disposition_already_recorded";
+    }
+    return null;
+  }
+  if (command.type === "review_approval") {
+    if (current.integration !== undefined && current.integration !== null) {
+      return "review_approval_after_integration";
+    }
+    if (!["approve", "revoke"].includes(command.decision)) {
+      return "invalid_review_approval";
+    }
+    const approval = current.approval ?? "not_requested";
+    if (command.decision === "approve" && approval === "approved") {
+      return "review_approval_already_granted";
+    }
+    if (command.decision === "revoke" && approval !== "approved") {
+      return "review_approval_not_active";
+    }
+    return null;
+  }
+  if (command.type === "review_supersession") {
+    const replacement = command.replacement;
+    if (hasExactKeys(replacement, [
+      "candidate_fingerprint",
+      "lifecycle_generation",
+    ]) &&
+      isDigest(replacement.candidate_fingerprint) &&
+      Number.isSafeInteger(replacement.lifecycle_generation) &&
+      replacement.lifecycle_generation >= 1) {
+      return replacement.candidate_fingerprint === current.candidate_fingerprint &&
+        replacement.lifecycle_generation === current.lifecycle_generation
+        ? "review_self_supersession"
+        : null;
+    }
+    return "invalid_review_supersession";
+  }
+  if (command.type === "review_integration") {
+    const evidence = command.evidence;
+    if (!validateReviewIntegrationEvidence(evidence, {
+      candidateFingerprint: current.candidate_fingerprint,
+      lifecycleGeneration: current.lifecycle_generation,
+    })) {
+      return "invalid_review_integration";
+    }
+    if (current.integration !== undefined && current.integration !== null) {
+      return "review_integration_already_recorded";
+    }
+    if (current.approval !== "approved") return "review_approval_required";
+    return null;
+  }
+  return "invalid_review_human_command";
+}
+
+export function validateReviewIntegrationEvidence(
+  evidence,
+  { candidateFingerprint = undefined, lifecycleGeneration = undefined } = {},
+) {
+  if (!isRecord(evidence) ||
+      !hasExactKeys(evidence, [
+        "schema",
+        "candidate_fingerprint",
+        "lifecycle_generation",
+      ]) ||
+      evidence.schema !== REVIEW_INTEGRATION_EVIDENCE_SCHEMA ||
+      !isDigest(evidence.candidate_fingerprint) ||
+      !Number.isSafeInteger(evidence.lifecycle_generation) ||
+      evidence.lifecycle_generation < 1 ||
+      candidateFingerprint !== undefined &&
+        evidence.candidate_fingerprint !== candidateFingerprint ||
+      lifecycleGeneration !== undefined &&
+        evidence.lifecycle_generation !== lifecycleGeneration) {
+    return false;
+  }
+  return true;
+}
+
+export function buildReviewHumanEvent({ command, current }) {
+  const issue = reviewHumanCommandIssue(command, current);
+  if (issue !== null) return { issue };
+  const reviewGeneration = current.review_generation ?? 0;
+  const acceptedCommand = reviewAcceptedCommandIdentity(command);
+  const commandReceipt = freezeCanonical({
+    schema: "work.idempotency-receipt/v1",
+    command_id: command.command_id,
+    command_digest: idempotencyCommandDigest(command),
+  });
+  const base = {
+    schema: REVIEW_HUMAN_EVENT_SCHEMA,
+    review_id: current.subject_id,
+    target_fingerprint: current.candidate_fingerprint,
+    candidate_authority_watermark: current.candidate_authority_watermark,
+    lifecycle_generation: current.lifecycle_generation,
+    accepted_command: acceptedCommand,
+    command_receipt_digest: reviewCommandReceiptDigest(commandReceipt),
+    expected_watermark: current.watermark,
+    expected_generation: reviewGeneration,
+    review_generation: reviewGeneration + 1,
+  };
+  let event = base;
+  if (command.type === "review_session_start") {
+    event = {
+      ...base,
+      session: {
+        schema: REVIEW_SESSION_SCHEMA,
+        session_id: command.session_id,
+        review_id: current.subject_id,
+        target_fingerprint: current.candidate_fingerprint,
+        candidate_authority_watermark: current.candidate_authority_watermark,
+        lifecycle_generation: current.lifecycle_generation,
+      },
+    };
+  } else if (command.type === "review_comment") {
+    event = {
+      ...base,
+      comment: {
+        schema: "flow.review-comment/v1",
+        comment_id: command.comment_id,
+        session_id: command.session_id,
+        body: command.body,
+      },
+    };
+  } else if (command.type === "review_disposition") {
+    event = {
+      ...base,
+      disposition: {
+        schema: "flow.review-disposition/v1",
+        session_id: command.session_id,
+        ...(command.finding_id === undefined ? {} : {
+          finding_id: command.finding_id,
+        }),
+        disposition: command.disposition,
+      },
+    };
+  } else if (command.type === "review_approval") {
+    event = {
+      ...base,
+      approval: {
+        schema: "flow.review-approval/v1",
+        session_id: command.session_id,
+        decision: command.decision,
+      },
+    };
+  } else if (command.type === "review_supersession") {
+    event = {
+      ...base,
+      supersession: {
+        schema: "flow.review-supersession/v1",
+        session_id: command.session_id,
+        replacement: command.replacement,
+      },
+    };
+  } else if (command.type === "review_integration") {
+    const evidence = command.evidence;
+    event = {
+      ...base,
+      integration: {
+        schema: "flow.review-integration/v1",
+        session_id: command.session_id,
+        evidence,
+        evidence_digest: digest(evidence),
+      },
+    };
+  }
+  const watermark = reviewEventWatermark({
+    previousWatermark: current.watermark,
+    event,
+  });
+  return {
+    event: {
+      contract: "work.review-event/v1",
+      payload: {
+        type: command.type,
+        event: freezeCanonical(event),
+        watermark,
+        command_receipt: commandReceipt,
+      },
+    },
+    watermark,
+  };
+}
+
+/**
+ * Build the disposable operator view of ReviewAuthority subjects. The inbox
+ * has no state of its own: callers may discard it and obtain the same view by
+ * asking the authority again. Each item retains the exact candidate/review
+ * watermarks used to authorize any subsequent command.
+ */
+export function projectReviewInbox({
+  candidates = [],
+  reviews = [],
+} = {}) {
+  const candidateById = new Map(
+    candidates
+      .filter((candidate) => candidate?.schema === "work.review-candidate-projection/v1")
+      .map((candidate) => [candidate.subject_id, candidate]),
+  );
+  const reviewItems = reviews
+    .filter((review) => review?.schema === "flow.review-projection/v1")
+    .map((review) => {
+      const candidate = candidateById.get(review.candidate?.candidate_id) ??
+        candidateById.get(review.subject_id);
+      return reviewInboxItem({ review, candidate });
+    });
+  const reviewedCandidateIds = new Set(reviewItems.map(({ candidate }) =>
+    candidate?.subject_id ?? candidate?.candidate?.candidate_id ?? null));
+  const candidateItems = candidates
+    .filter((candidate) =>
+      candidate?.schema === "work.review-candidate-projection/v1" &&
+      !reviewedCandidateIds.has(candidate.subject_id))
+    .map((candidate) => reviewInboxItem({ candidate }));
+  const items = [...reviewItems, ...candidateItems]
+    .sort((left, right) => canonicalStringCompare(left.review_id, right.review_id));
+  const subjectWatermarks = [
+    ...candidates
+      .filter((candidate) =>
+        candidate?.schema === "work.review-candidate-projection/v1")
+      .map((candidate) => reviewInboxSubjectWatermark(
+        "candidate",
+        candidate.subject_id,
+        candidate.watermark,
+      )),
+    ...reviews
+      .filter((review) => review?.schema === "flow.review-projection/v1")
+      .map((review) => reviewInboxSubjectWatermark(
+        "review",
+        review.subject_id,
+        review.watermark,
+      )),
+  ].sort((left, right) => canonicalStringCompare(left.stream_id, right.stream_id));
+  const projectionDigest = digest({
+    schema: "flow.review-inbox-visible-snapshot/v1",
+    items,
+  });
+  const watermarkRecord = {
+    schema: REVIEW_INBOX_WATERMARK_SCHEMA,
+    projection_digest: projectionDigest,
+    subject_watermarks: subjectWatermarks,
+  };
+  const authorityWatermark = digest(watermarkRecord);
+  return freezeCanonical({
+    schema: REVIEW_INBOX_PROJECTION_SCHEMA,
+    contract: REVIEW_INBOX_QUERY_CONTRACT,
+    authority: "ReviewAuthority",
+    watermark: authorityWatermark,
+    authority_watermark: authorityWatermark,
+    authority_watermark_domain: "review",
+    watermark_schema: REVIEW_INBOX_WATERMARK_SCHEMA,
+    projection_digest: projectionDigest,
+    subject_watermarks: subjectWatermarks,
+    items,
+    legal_actions: [],
+  });
+}
+
+function reviewInboxSubjectWatermark(streamKind, subjectId, watermark) {
+  return {
+    stream_kind: streamKind,
+    stream_id: `work:work.review/v1:${subjectId}`,
+    subject_id: subjectId,
+    watermark,
+  };
+}
+
+function canonicalStringCompare(left, right) {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function reviewInboxItem({ review = null, candidate = null } = {}) {
+  const reviewId = review?.subject_id ??
+    candidate?.review_id ??
+    candidate?.candidate?.candidate_id ?? null;
+  const candidateValue = review?.candidate ?? candidate?.candidate ?? null;
+  const candidateFingerprint = review?.candidate_fingerprint ??
+    candidate?.candidate_fingerprint ?? candidateValue?.candidate_fingerprint ?? null;
+  const lifecycleGeneration = review?.lifecycle_generation ??
+    candidate?.candidate?.lifecycle_generation ?? null;
+  const candidateProjection = candidate === null ? null : {
+    ...candidate,
+    legal_actions: [],
+  };
+  const localReview = review?.target_kind === undefined ||
+    review?.target_kind === "local";
+  const reviewLegalActions = localReview &&
+      Array.isArray(review?.legal_actions) &&
+      review.legal_actions.length > 0
+    ? review.legal_actions
+    : localReview ? reviewHumanLegalActions(review, candidate) : [];
+  const reviewProjection = review === null ? null : {
+    ...review,
+    legal_actions: reviewLegalActions,
+  };
+  const reviewAuthorityWatermark = review?.watermark ?? null;
+  const candidateAuthorityWatermark = candidate?.watermark ??
+    review?.candidate_authority_watermark ?? null;
+  const legalActions = reviewProjection?.legal_actions ??
+    (localReview && review !== null && review.current === true
+      ? [reviewSessionStartAction({
+          reviewId,
+          candidateFingerprint,
+          lifecycleGeneration,
+          candidateAuthorityWatermark,
+          expectedWatermark: reviewAuthorityWatermark ?? EMPTY_WATERMARK,
+          expectedGeneration: review?.review_generation ?? 0,
+        })]
+      : []);
+  return {
+    schema: "flow.review-inbox-item/v1",
+    review_id: reviewId,
+    candidate_id: candidateValue?.candidate_id ?? candidate?.subject_id ?? null,
+    candidate_fingerprint: candidateFingerprint,
+    lifecycle_generation: lifecycleGeneration,
+    candidate_authority_watermark: candidateAuthorityWatermark,
+    review_authority_watermark: reviewAuthorityWatermark,
+    candidate: candidateProjection,
+    review: reviewProjection,
+    status: reviewProjection?.status ?? candidate?.status ?? "unknown",
+    current: reviewProjection?.current ?? candidate?.current ?? false,
+    legal_actions: legalActions,
+  };
 }
 
 export function validateReviewRecordCommand(command) {
@@ -3341,11 +4321,32 @@ export function isReviewTargetRefreshCommand(command) {
     command.contract === "work.review/v1";
 }
 
+export function isReviewHumanCommand(command) {
+  return command?.schema === REVIEW_HUMAN_COMMAND_SCHEMA &&
+    command.contract === "work.review/v1" &&
+    REVIEW_HUMAN_ACTIONS.includes(command.type);
+}
+
 export function reviewTargetInvalidationIssue(
   command,
   current,
   authorityObservation = null,
 ) {
+  if (!hasExactKeys(command, [
+    "schema",
+    "type",
+    "contract",
+    "command_id",
+    "subject_id",
+    "expected_watermark",
+    "prior_candidate_fingerprint",
+    "prior_lifecycle_generation",
+    "observed_candidate_fingerprint",
+    "observed_lifecycle_generation",
+    "reason",
+  ], ["prior_mutation_epoch", "observed_mutation_epoch"])) {
+    return "invalid_review_target_invalidation";
+  }
   if (current?.schema !== "flow.review-projection/v1") return "unknown_subject";
   if (command.expected_watermark !== current.watermark) {
     return "stale_authority_watermark";
@@ -3354,20 +4355,17 @@ export function reviewTargetInvalidationIssue(
     return "review_already_invalidated";
   }
   const priorMutationEpoch = current.candidate?.workspace?.mutation_epoch;
-  const hasMutationEpoch = command.prior_mutation_epoch !== undefined ||
-    command.observed_mutation_epoch !== undefined;
-  const mutationEpochsValid = !hasMutationEpoch ||
-    Number.isSafeInteger(command.prior_mutation_epoch ?? priorMutationEpoch) &&
+  const hasMutationEpoch = Object.hasOwn(command, "prior_mutation_epoch") ||
+    Object.hasOwn(command, "observed_mutation_epoch");
+  const mutationEpochsValid = hasCompleteMutationEpochPair(command) &&
+    (!hasMutationEpoch ||
+      Number.isSafeInteger(command.prior_mutation_epoch ?? priorMutationEpoch) &&
       (command.prior_mutation_epoch ?? priorMutationEpoch) >= 1 &&
-    Number.isSafeInteger(command.observed_mutation_epoch) &&
+      Number.isSafeInteger(command.observed_mutation_epoch) &&
       command.observed_mutation_epoch >= 1 &&
-    (command.prior_mutation_epoch === undefined ||
-      command.prior_mutation_epoch === priorMutationEpoch);
-  const targetMoved = command.observed_candidate_fingerprint !==
-      command.prior_candidate_fingerprint ||
-    command.observed_lifecycle_generation !== command.prior_lifecycle_generation ||
-    hasMutationEpoch && command.observed_mutation_epoch !==
-      (command.prior_mutation_epoch ?? priorMutationEpoch);
+      (command.prior_mutation_epoch === undefined ||
+        command.prior_mutation_epoch === priorMutationEpoch));
+  const targetMoved = reviewTargetMovement(command);
   if (command.subject_id !== current.subject_id ||
       !isDigest(command.prior_candidate_fingerprint) ||
       command.prior_candidate_fingerprint !== current.candidate_fingerprint ||
@@ -3396,6 +4394,34 @@ export function reviewTargetRefreshIssue(
   current,
   authorityObservation = null,
 ) {
+  if (!hasExactKeys(command, [
+    "schema",
+    "type",
+    "contract",
+    "command_id",
+    "subject_id",
+    "expected_watermark",
+    "prior_candidate_fingerprint",
+    "prior_lifecycle_generation",
+    "observed_candidate_fingerprint",
+    "observed_lifecycle_generation",
+    "authority_observation",
+  ], ["prior_mutation_epoch", "observed_mutation_epoch"]) ||
+      !hasCompleteMutationEpochPair(command) ||
+      command.schema !== "work.review-target-refresh-command/v1" ||
+      command.type !== "review_target_refresh" ||
+      command.contract !== "work.review/v1" ||
+      !nonEmpty(command.command_id) ||
+      !nonEmpty(command.subject_id) ||
+      !isDigest(command.expected_watermark) ||
+      !isDigest(command.prior_candidate_fingerprint) ||
+      !Number.isSafeInteger(command.prior_lifecycle_generation) ||
+      command.prior_lifecycle_generation < 1 ||
+      !isDigest(command.observed_candidate_fingerprint) ||
+      !Number.isSafeInteger(command.observed_lifecycle_generation) ||
+      command.observed_lifecycle_generation < 1) {
+    return "invalid_review_target_refresh";
+  }
   if (current?.schema !== "flow.review-projection/v1") return "unknown_subject";
   if (command.expected_watermark !== current.watermark) {
     return "stale_authority_watermark";
@@ -3417,15 +4443,18 @@ export function reviewTargetRefreshIssue(
         observedCandidateFingerprint: command.observed_candidate_fingerprint,
         observedLifecycleGeneration: command.observed_lifecycle_generation,
         observedMutationEpoch: command.observed_mutation_epoch,
-      })) {
+    })) {
     return "invalid_review_target_refresh";
   }
-  const observation = authorityObservation ?? invalidation.observation ?? null;
-  if (observation !== null && reviewTargetObservationIssue(
-    command,
-    current,
-    observation,
-  ) !== null) {
+  const trustedObservation = invalidation.observation ?? null;
+  if (reviewTargetObservationShapeIssue(trustedObservation) !== null ||
+      !isDeepEqualDigest(command.authority_observation, trustedObservation) ||
+      authorityObservation !== null &&
+        !isDeepEqualDigest(authorityObservation, trustedObservation)) {
+    return "invalid_review_target_refresh";
+  }
+  const observation = authorityObservation ?? trustedObservation;
+  if (reviewTargetObservationIssue(command, current, observation) !== null) {
     return "invalid_review_target_refresh";
   }
   if (observation === null) return "review_target_observation_unavailable";
@@ -3487,11 +4516,20 @@ function reviewTargetObservationIssue(command, current, observation) {
   }
   const shapeIssue = reviewTargetObservationShapeIssue(observation);
   if (shapeIssue !== null) return shapeIssue;
+  const commandHasMutationEpoch = Object.hasOwn(
+    command,
+    "observed_mutation_epoch",
+  );
+  const observationHasMutationEpoch = Object.hasOwn(
+    observation,
+    "mutation_epoch",
+  );
   if (observation.subject_id !== current.subject_id ||
       observation.candidate_id !== current.candidate?.candidate_id ||
       observation.candidate_fingerprint !== command.observed_candidate_fingerprint ||
       observation.lifecycle_generation !== command.observed_lifecycle_generation ||
-      command.observed_mutation_epoch !== undefined &&
+      commandHasMutationEpoch !== observationHasMutationEpoch ||
+      commandHasMutationEpoch &&
         observation.mutation_epoch !== command.observed_mutation_epoch) {
     return "review_target_observation_mismatch";
   }
@@ -3499,14 +4537,23 @@ function reviewTargetObservationIssue(command, current, observation) {
 }
 
 function reviewTargetObservationShapeIssue(observation) {
-  if (!isRecord(observation) ||
+  if (!hasExactKeys(observation, [
+    "schema",
+    "subject_id",
+    "candidate_id",
+    "candidate_fingerprint",
+    "lifecycle_generation",
+    "authority_watermark",
+    "source",
+    "evidence_digest",
+  ], ["mutation_epoch"]) ||
       observation.schema !== "flow.review-target-observation/v1" ||
       !nonEmpty(observation.subject_id) ||
       !nonEmpty(observation.candidate_id) ||
       !isDigest(observation.candidate_fingerprint) ||
       !Number.isSafeInteger(observation.lifecycle_generation) ||
       observation.lifecycle_generation < 1 ||
-      observation.mutation_epoch !== undefined &&
+      Object.hasOwn(observation, "mutation_epoch") &&
         (!Number.isSafeInteger(observation.mutation_epoch) ||
          observation.mutation_epoch < 1) ||
       !isDigest(observation.authority_watermark) ||
@@ -3519,6 +4566,19 @@ function reviewTargetObservationShapeIssue(observation) {
     return "invalid_review_target_observation";
   }
   return null;
+}
+
+function hasCompleteMutationEpochPair(value) {
+  return Object.hasOwn(value, "prior_mutation_epoch") ===
+    Object.hasOwn(value, "observed_mutation_epoch");
+}
+
+function reviewTargetMovement(value) {
+  return value.observed_candidate_fingerprint !==
+      value.prior_candidate_fingerprint ||
+    value.observed_lifecycle_generation !== value.prior_lifecycle_generation ||
+    Object.hasOwn(value, "prior_mutation_epoch") &&
+      value.observed_mutation_epoch !== value.prior_mutation_epoch;
 }
 
 function reviewTargetInvalidationCommandId(command) {
@@ -3681,6 +4741,7 @@ export function reviewAuthorityEventWatermark(records) {
       "review authority event records are not an array",
     );
   }
+  validateReviewHumanEventRecords(records);
   let previousWatermark = EMPTY_WATERMARK;
   for (const payload of records) {
     let event;
@@ -3712,12 +4773,1201 @@ export function reviewAuthorityEventWatermark(records) {
   return previousWatermark;
 }
 
+function validateReviewRecordedEvent(payload, previousWatermark) {
+  if (!hasExactKeys(payload, [
+    "type",
+    "body",
+    "watermark",
+  ], ["command", "command_receipt"]) ||
+      payload.type !== "review_recorded" ||
+      !isDigest(payload.watermark) ||
+      payload.command !== undefined && payload.command_receipt === undefined ||
+      payload.command_receipt !== undefined &&
+        !validReviewCommandReceipt(payload.command_receipt)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review record event envelope is malformed",
+    );
+  }
+  const body = payload.body;
+  if (!hasExactKeys(body, [
+    "schema",
+    "review_id",
+    "candidate_fingerprint",
+    "candidate_authority_watermark",
+    "lifecycle_generation",
+    "candidate",
+    "summary",
+    "automated_evidence",
+    "artifacts",
+    "source_authority_watermark",
+    "source_run_id",
+    "operation_contract",
+    "operation_effect_id",
+    "operation_attempt_id",
+    "operation_idempotency_key",
+  ]) || body.schema !== "flow.review-record/v1") {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review record event body is malformed",
+    );
+  }
+  if (payload.command_receipt === undefined) {
+    validateLegacyReviewRecordedBody(body, previousWatermark, payload.watermark);
+    return;
+  }
+  const command = payload.command ?? reviewRecordCommandFromEvent(
+    body,
+    payload.command_receipt,
+    previousWatermark,
+  );
+  const commandKeys = [
+    "schema",
+    "type",
+    "contract",
+    "command_id",
+    "subject_id",
+    "expected_watermark",
+    "candidate_fingerprint",
+    "candidate_authority_watermark",
+    "lifecycle_generation",
+    "candidate",
+    "summary",
+    "automated_evidence",
+    "artifacts",
+    "source_authority_watermark",
+    "operation_contract",
+    "operation_effect_id",
+    "operation_attempt_id",
+    "operation_idempotency_key",
+    "source_run_id",
+  ];
+  if (!hasExactKeys(command, commandKeys) ||
+      command.expected_watermark !== previousWatermark ||
+      command.command_id !== payload.command_receipt.command_id) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review record event command identity is malformed",
+    );
+  }
+  try {
+    validateReviewRecordCommand(command);
+  } catch (error) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      error?.message ?? "review record event command is invalid",
+    );
+  }
+  const expectedBody = reviewRecordBodyFromCommand(command);
+  if (!isDeepStrictEqual(expectedBody, body) ||
+      payload.command_receipt.command_digest !== idempotencyCommandDigest(command) ||
+      body.artifacts.watermark !== payload.watermark) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review record event is not bound to its accepted command",
+    );
+  }
+}
+
+function validateGitHubReviewRecordedEvent(payload, previousWatermark) {
+  if (!hasExactKeys(payload, [
+    "type",
+    "body",
+    "watermark",
+  ], ["command_receipt"]) ||
+      payload.type !== "github_review_recorded" ||
+      !isDigest(payload.watermark) ||
+      payload.command_receipt !== undefined &&
+        !validReviewCommandReceipt(payload.command_receipt)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "GitHub review record event envelope is malformed",
+    );
+  }
+  const body = payload.body;
+  const bodyKeys = [
+    "schema",
+    "review_id",
+    "target",
+    "target_fingerprint",
+    "target_authority_watermark",
+    "lifecycle_generation",
+    "summary",
+    "automated_evidence",
+    "artifacts",
+    "source_authority_watermark",
+    "source_run_id",
+    "operation_contract",
+    "operation_effect_id",
+    "operation_attempt_id",
+    "operation_idempotency_key",
+  ];
+  if (!hasExactKeys(body, bodyKeys) ||
+      body.schema !== GITHUB_REVIEW_RECORD_SCHEMA) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "GitHub review record event body is malformed",
+    );
+  }
+  const command = githubReviewRecordCommandFromEvent(
+    body,
+    payload.command_receipt,
+    previousWatermark,
+  );
+  try {
+    validateGitHubReviewRecordCommand(command);
+  } catch (error) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      error?.message ?? "GitHub review record event command is invalid",
+    );
+  }
+  if (payload.command_receipt !== undefined && (
+    payload.command_receipt.command_id !== command.command_id ||
+    payload.command_receipt.command_digest !== idempotencyCommandDigest(command) ||
+    body.artifacts.watermark !== payload.watermark
+  )) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "GitHub review record event is not bound to its accepted command",
+    );
+  }
+}
+
+function githubReviewRecordCommandFromEvent(body, receipt, expectedWatermark) {
+  const targetFingerprint = body.target_fingerprint;
+  const lifecycleGeneration = body.lifecycle_generation;
+  return {
+    schema: GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
+    type: "github_review_record",
+    contract: "work.review/v1",
+    command_id: receipt?.command_id ??
+      `github-review-record:${targetFingerprint}:${lifecycleGeneration}`,
+    subject_id: body.review_id,
+    expected_watermark: expectedWatermark,
+    target: body.target,
+    target_fingerprint: targetFingerprint,
+    target_authority_watermark: body.target_authority_watermark,
+    lifecycle_generation: lifecycleGeneration,
+    summary: body.summary,
+    automated_evidence: body.automated_evidence,
+    artifacts: body.artifacts,
+    source_authority_watermark: body.source_authority_watermark,
+    source_run_id: body.source_run_id,
+    operation_contract: body.operation_contract,
+    operation_effect_id: body.operation_effect_id,
+    operation_attempt_id: body.operation_attempt_id,
+    operation_idempotency_key: body.operation_idempotency_key,
+  };
+}
+
+function validateLegacyReviewRecordedBody(
+  body,
+  previousWatermark,
+  eventWatermark,
+) {
+  if (!isRecord(body) ||
+      body.schema !== "flow.review-record/v1" ||
+      !nonEmpty(body.review_id) ||
+      !isDigest(body.candidate_fingerprint) ||
+      !isDigest(body.candidate_authority_watermark) ||
+      !Number.isSafeInteger(body.lifecycle_generation) ||
+      body.lifecycle_generation < 1 ||
+      body.review_id !==
+        `review:${body.candidate_fingerprint}:${body.lifecycle_generation}` ||
+      !validateReviewCandidate(body.candidate) ||
+      body.candidate.candidate_fingerprint !== body.candidate_fingerprint ||
+      !isRecord(body.summary) ||
+      body.summary.schema !== "flow.review-summary/v1" ||
+      body.summary.candidate_fingerprint !== body.candidate_fingerprint ||
+      body.summary.candidate_authority_watermark !==
+        body.candidate_authority_watermark ||
+      body.summary.lifecycle_generation !== body.lifecycle_generation ||
+      !isRecord(body.automated_evidence) ||
+      body.automated_evidence.schema !== "flow.review-automated-evidence/v1" ||
+      body.source_authority_watermark !==
+        body.automated_evidence.source_authority_watermark ||
+      !isDeepStrictEqual(body.automated_evidence, body.summary.automated_evidence) ||
+      !isRecord(body.artifacts) ||
+      body.artifacts.schema !== "flow.review-artifacts/v1" ||
+      !isDigest(body.artifacts.watermark) ||
+      !nonEmpty(body.operation_contract) ||
+      !nonEmpty(body.operation_effect_id) ||
+      !nonEmpty(body.operation_attempt_id) ||
+      !nonEmpty(body.operation_idempotency_key) ||
+      !nonEmpty(body.source_run_id) ||
+      !isDigest(body.source_authority_watermark)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "legacy review record event body is malformed",
+    );
+  }
+  const expectedWatermark = reviewEventWatermark({
+    previousWatermark,
+    event: reviewRecordWatermarkIdentity(body),
+  });
+  if (eventWatermark !== expectedWatermark ||
+      body.artifacts.watermark !== eventWatermark) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "legacy review record event watermark is not bound to its artifacts",
+    );
+  }
+  let normalizedSummary;
+  try {
+    normalizedSummary = validateLegacyReviewSummary(
+      body.summary,
+      body.automated_evidence,
+    );
+    validateLegacyReviewArtifacts(
+      body.artifacts,
+      body,
+      normalizedSummary,
+      eventWatermark,
+    );
+  } catch (error) {
+    if (error?.code === "review_authority_integrity_failure") throw error;
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      error?.message ?? "legacy review record event body is malformed",
+    );
+  }
+}
+
+function validateLegacyReviewSummary(summary, automatedEvidence) {
+  const optionalLegacyKeys = ["coverage", "orientation", "diagrams"];
+  const requiredKeys = [
+    "schema",
+    "candidate_fingerprint",
+    "candidate_authority_watermark",
+    "lifecycle_generation",
+    "enabled_lenses",
+    "finding_cap",
+    "urgency_floor",
+    "lens_results",
+    "critic_result",
+    "findings",
+    "rendered_findings",
+    "cap_reasons",
+    "posture",
+    "merge_ready",
+    "automated_evidence",
+  ];
+  if (!hasExactKeys(summary, requiredKeys, optionalLegacyKeys) ||
+      summary.schema !== "flow.review-summary/v1") {
+    throw new TypeError("legacy review summary has an invalid shape");
+  }
+  const normalized = {
+    ...summary,
+    orientation: summary.orientation ?? null,
+    diagrams: summary.diagrams ?? [],
+  };
+  if (!Object.hasOwn(summary, "coverage")) {
+    const lensResults = summary.lens_results.map((result, index) =>
+      parseReviewDelegateResult(result, {
+        lens: summary.enabled_lenses[index],
+        role: "lens",
+        urgencyFloor: summary.urgency_floor,
+      }));
+    const criticResult = parseReviewDelegateResult(summary.critic_result, {
+      role: "critic",
+      urgencyFloor: summary.urgency_floor,
+    });
+    const recomputed = buildReviewSummary({
+      candidateFingerprint: summary.candidate_fingerprint,
+      candidateAuthorityWatermark: summary.candidate_authority_watermark,
+      lifecycleGeneration: summary.lifecycle_generation,
+      enabledLenses: summary.enabled_lenses,
+      lensResults: Object.fromEntries(lensResults.map((result, index) => [
+        summary.enabled_lenses[index], result,
+      ])),
+      criticResult,
+      sourceAuthorityWatermark: automatedEvidence.source_authority_watermark,
+      findingCap: summary.finding_cap,
+      urgencyFloor: summary.urgency_floor,
+      orientation: normalized.orientation,
+      diagrams: normalized.diagrams,
+    });
+    normalized.coverage = recomputed.coverage;
+  }
+  validateReviewSummary(normalized, automatedEvidence);
+  return normalized;
+}
+
+function validateLegacyReviewArtifacts(
+  artifacts,
+  body,
+  normalizedSummary,
+  eventWatermark,
+) {
+  if (!hasExactKeys(artifacts, [
+    "schema",
+    "watermark",
+    "provenance",
+    "formats",
+    "digests",
+  ]) || artifacts.schema !== "flow.review-artifacts/v1" ||
+      artifacts.watermark !== eventWatermark) {
+    throw new TypeError("legacy review artifacts have an invalid shape");
+  }
+  const provenance = artifacts.provenance;
+  const legacyArtifact = hasExactKeys(provenance, ["operation_contract"]) &&
+    hasExactKeys(artifacts.formats, ["markdown"]) &&
+    hasExactKeys(artifacts.digests, ["markdown"]);
+  if (legacyArtifact) {
+    if (provenance.operation_contract !== REVIEW_OPERATION_CONTRACTS.record ||
+        typeof artifacts.formats.markdown !== "string" ||
+        !isDigest(artifacts.digests.markdown) ||
+        artifacts.digests.markdown !== digest(artifacts.formats.markdown)) {
+      throw new TypeError("legacy review artifact identity is malformed");
+    }
+    return;
+  }
+  if (!validateReviewProvenance(provenance, body, eventWatermark)) {
+    throw new TypeError("legacy review artifact provenance is malformed");
+  }
+  const expectedArtifacts = renderReviewArtifacts({
+    summary: normalizedSummary,
+    watermark: eventWatermark,
+    provenance,
+  });
+  if (!isDeepStrictEqual(expectedArtifacts, artifacts)) {
+    throw new TypeError("legacy review artifacts are not deterministic");
+  }
+}
+
+function validateReviewProvenance(provenance, body, eventWatermark) {
+  return hasExactKeys(provenance, [
+    "schema",
+    "operation_contract",
+    "operation_idempotency_key",
+    "run_id",
+    "operation_effect_id",
+    "operation_attempt_id",
+    "candidate_fingerprint",
+    "lifecycle_generation",
+    "candidate_authority_watermark",
+    "source_authority_watermark",
+    "review_authority_watermark",
+  ]) && provenance.schema === "flow.review-provenance/v1" &&
+    provenance.operation_contract === body.operation_contract &&
+    provenance.operation_idempotency_key === body.operation_idempotency_key &&
+    provenance.run_id === body.source_run_id &&
+    provenance.operation_effect_id === body.operation_effect_id &&
+    provenance.operation_attempt_id === body.operation_attempt_id &&
+    provenance.candidate_fingerprint === body.candidate_fingerprint &&
+    provenance.lifecycle_generation === body.lifecycle_generation &&
+    provenance.candidate_authority_watermark === body.candidate_authority_watermark &&
+    provenance.source_authority_watermark === body.source_authority_watermark &&
+    provenance.review_authority_watermark === eventWatermark;
+}
+
+function reviewRecordCommandFromEvent(body, receipt, expectedWatermark) {
+  return {
+    schema: "work.review-record-command/v1",
+    type: "review_record",
+    contract: "work.review/v1",
+    command_id: receipt.command_id,
+    subject_id: body.review_id,
+    expected_watermark: expectedWatermark,
+    candidate_fingerprint: body.candidate_fingerprint,
+    candidate_authority_watermark: body.candidate_authority_watermark,
+    lifecycle_generation: body.lifecycle_generation,
+    candidate: body.candidate,
+    summary: body.summary,
+    automated_evidence: body.automated_evidence,
+    artifacts: body.artifacts,
+    source_authority_watermark: body.source_authority_watermark,
+    operation_contract: body.operation_contract,
+    operation_effect_id: body.operation_effect_id,
+    operation_attempt_id: body.operation_attempt_id,
+    operation_idempotency_key: body.operation_idempotency_key,
+    source_run_id: body.source_run_id,
+  };
+}
+
+function reviewRecordBodyFromCommand(command) {
+  return {
+    schema: "flow.review-record/v1",
+    review_id: command.subject_id,
+    candidate_fingerprint: command.candidate_fingerprint,
+    candidate_authority_watermark: command.candidate_authority_watermark,
+    lifecycle_generation: command.lifecycle_generation,
+    candidate: command.candidate,
+    summary: command.summary,
+    automated_evidence: command.automated_evidence,
+    artifacts: command.artifacts,
+    source_authority_watermark: command.source_authority_watermark,
+    source_run_id: command.source_run_id,
+    operation_contract: command.operation_contract,
+    operation_effect_id: command.operation_effect_id,
+    operation_attempt_id: command.operation_attempt_id,
+    operation_idempotency_key: command.operation_idempotency_key,
+  };
+}
+
+export function validateReviewHumanEventRecords(records, reviewBody = undefined) {
+  if (!Array.isArray(records)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review authority event records are not an array",
+    );
+  }
+  if (records.length === 0) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review authority event stream is missing its initial review record",
+    );
+  }
+  const firstPayload = records[0]?.payload ?? records[0];
+  if (!isRecord(firstPayload)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review authority event stream has a malformed initial record",
+    );
+  }
+  if (firstPayload.type !== "review_recorded" &&
+      firstPayload.type !== "github_review_recorded") {
+    throw reviewAuthorityIntegrityError(
+      REVIEW_HUMAN_ACTIONS.includes(firstPayload.type) ||
+        firstPayload.type === "review_target_invalidated" ||
+        firstPayload.type === "review_target_refresh_acknowledged"
+        ? "malformed_event"
+        : "unknown_event",
+      "review authority event stream must begin with a review record",
+    );
+  }
+  const body = reviewBody ?? (
+    firstPayload?.type === "review_recorded" ||
+      firstPayload?.type === "github_review_recorded"
+      ? firstPayload.body
+      : null
+  );
+  let reviewGeneration = 0;
+  let previousWatermark = EMPTY_WATERMARK;
+  let recorded = false;
+  let initialTargetKind = null;
+  let session = null;
+  let approval = null;
+  let integrationRecorded = false;
+  let superseded = false;
+  let invalidated = false;
+  let targetInvalidation = null;
+  let targetRefresh = null;
+  const commentIds = new Set();
+  const dispositionIds = new Set();
+
+  for (const record of records) {
+    const payload = record?.payload ?? record;
+    if (!isRecord(payload)) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review authority event payload is malformed",
+      );
+    }
+    if (payload.type === "review_recorded" ||
+        payload.type === "github_review_recorded") {
+      if (recorded || targetInvalidation !== null || targetRefresh !== null) {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          "review record event is out of order",
+        );
+      }
+      if (payload.type === "review_recorded") {
+        validateReviewRecordedEvent(payload, previousWatermark);
+      } else {
+        validateGitHubReviewRecordedEvent(payload, previousWatermark);
+      }
+      recorded = true;
+      initialTargetKind = payload.type === "github_review_recorded" ? "github" : "local";
+      if (isDigest(payload.watermark)) previousWatermark = payload.watermark;
+      continue;
+    }
+    if (payload.type === "review_target_invalidated") {
+      if (initialTargetKind === "github") {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          "GitHub review stream cannot accept local target invalidation events",
+        );
+      }
+      if (!recorded || targetInvalidation !== null || targetRefresh !== null ||
+          superseded) {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          superseded
+            ? "review target invalidation event follows supersession"
+            : targetRefresh === null
+              ? "review target invalidation event is duplicated or out of order"
+              : "review target invalidation event follows target refresh",
+        );
+      }
+      validateReviewTargetInvalidationEvent(payload, body, previousWatermark);
+      targetInvalidation = payload.invalidation;
+      invalidated = true;
+      previousWatermark = payload.watermark;
+      continue;
+    }
+    if (payload.type === "review_target_refresh_acknowledged") {
+      if (initialTargetKind === "github") {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          "GitHub review stream cannot accept local target refresh events",
+        );
+      }
+      if (!recorded || targetInvalidation === null || targetRefresh !== null) {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          targetInvalidation === null
+            ? "review target refresh event has no preceding invalidation"
+            : "review target refresh event is duplicated or out of order",
+        );
+      }
+      validateReviewTargetRefreshEvent(
+        payload,
+        body,
+        targetInvalidation,
+        previousWatermark,
+      );
+      targetRefresh = payload.refresh;
+      invalidated = true;
+      previousWatermark = payload.watermark;
+      continue;
+    }
+    if (!REVIEW_HUMAN_ACTIONS.includes(payload.type)) continue;
+    if (initialTargetKind === "github") {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "GitHub review stream cannot accept local human events",
+      );
+    }
+    if (!recorded) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event precedes the initial review record",
+      );
+    }
+    if (!hasExactKeys(payload, [
+      "type",
+      "event",
+      "watermark",
+      "command_receipt",
+    ]) || !isDigest(payload.watermark) ||
+        !validReviewCommandReceipt(payload.command_receipt)) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event envelope is malformed",
+      );
+    }
+    const event = payload.event;
+    const commonKeys = [
+      "schema",
+      "review_id",
+      "target_fingerprint",
+      "candidate_authority_watermark",
+      "lifecycle_generation",
+      "accepted_command",
+      "command_receipt_digest",
+      "expected_watermark",
+      "expected_generation",
+      "review_generation",
+    ];
+    const nestedKey = {
+      review_session_start: "session",
+      review_comment: "comment",
+      review_disposition: "disposition",
+      review_approval: "approval",
+      review_supersession: "supersession",
+      review_integration: "integration",
+    }[payload.type];
+    if (!hasExactKeys(event, [...commonKeys, nestedKey]) ||
+        event.schema !== REVIEW_HUMAN_EVENT_SCHEMA ||
+        !nonEmpty(event.review_id) ||
+        !isDigest(event.target_fingerprint) ||
+        !isDigest(event.candidate_authority_watermark) ||
+        !Number.isSafeInteger(event.lifecycle_generation) ||
+        event.lifecycle_generation < 1 ||
+        !isDigest(event.expected_watermark) ||
+        event.expected_watermark !== previousWatermark ||
+        !Number.isSafeInteger(event.expected_generation) ||
+        event.expected_generation < 0 ||
+        event.expected_generation !== reviewGeneration ||
+        !Number.isSafeInteger(event.review_generation) ||
+        event.review_generation !== reviewGeneration + 1) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event identity or generation is malformed",
+      );
+    }
+    if (isRecord(body) && (
+      event.review_id !== body.review_id ||
+        event.target_fingerprint !== body.candidate_fingerprint ||
+        event.candidate_authority_watermark !== body.candidate_authority_watermark ||
+        event.lifecycle_generation !== body.lifecycle_generation
+    )) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event target identity is inconsistent",
+      );
+    }
+    if (!isDigest(event.command_receipt_digest) ||
+        event.command_receipt_digest !==
+          reviewCommandReceiptDigest(payload.command_receipt)) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event receipt identity is inconsistent",
+      );
+    }
+    if (superseded || invalidated) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event follows a terminal target transition",
+      );
+    }
+
+    const nested = event[nestedKey];
+    if (payload.type === "review_session_start") {
+      if (session !== null || !validReviewSession(nested, event)) {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          "review session event is malformed",
+        );
+      }
+      session = nested;
+    } else {
+      if (session === null || nested?.session_id !== session.session_id) {
+        throw reviewAuthorityIntegrityError(
+          "malformed_event",
+          "review human event session identity is inconsistent",
+        );
+      }
+      if (payload.type === "review_comment") {
+        if (!validReviewComment(nested) || commentIds.has(nested.comment_id)) {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review comment event is malformed",
+          );
+        }
+        commentIds.add(nested.comment_id);
+      } else if (payload.type === "review_disposition") {
+        if (!validReviewDisposition(nested)) {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review disposition event is malformed",
+          );
+        }
+        if (nested.finding_id !== undefined &&
+            !surfacedReviewFindingIds(body).has(nested.finding_id)) {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review disposition event finding is not surfaced",
+          );
+        }
+        const findingId = nested.finding_id ?? null;
+        if (dispositionIds.has(findingId)) {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review disposition event is duplicated",
+          );
+        }
+        dispositionIds.add(findingId);
+      } else if (payload.type === "review_approval") {
+        if (!validReviewApproval(nested) ||
+            integrationRecorded ||
+            nested.decision === "approve" && approval === "approve" ||
+            nested.decision === "revoke" && approval !== "approve") {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review approval event is malformed",
+          );
+        }
+        approval = nested.decision;
+      } else if (payload.type === "review_supersession") {
+        if (!validReviewSupersession(nested) ||
+            (nested.replacement.candidate_fingerprint === body?.candidate_fingerprint &&
+             nested.replacement.lifecycle_generation === body?.lifecycle_generation)) {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review supersession event is malformed",
+          );
+        }
+        superseded = true;
+      } else if (payload.type === "review_integration") {
+        if (!validReviewIntegration(nested, event) ||
+            integrationRecorded || approval !== "approve") {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review integration event is malformed",
+          );
+        }
+        integrationRecorded = true;
+      }
+    }
+    if (!validReviewAcceptedCommand(
+      event.accepted_command,
+      payload.type,
+      event,
+      payload.command_receipt,
+    )) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event accepted command identity is inconsistent",
+      );
+    }
+    if (!validReviewCommandReceipt(payload.command_receipt, payload.type, event)) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review human event receipt is not bound to its event",
+      );
+    }
+    reviewGeneration = event.review_generation;
+    previousWatermark = payload.watermark;
+  }
+}
+
+function validateReviewTargetInvalidationEvent(payload, body, previousWatermark) {
+  if (!hasExactKeys(payload, [
+    "type",
+    "invalidation",
+    "watermark",
+    "command_receipt",
+  ]) || !isDigest(payload.watermark) ||
+      !validReviewCommandReceipt(payload.command_receipt)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target invalidation event envelope is malformed",
+    );
+  }
+  const invalidation = payload.invalidation;
+  if (!hasExactKeys(invalidation, [
+    "schema",
+    "subject_id",
+    "prior_candidate_fingerprint",
+    "prior_lifecycle_generation",
+    "observed_candidate_fingerprint",
+    "observed_lifecycle_generation",
+    "reason",
+    "observation",
+  ], ["prior_mutation_epoch", "observed_mutation_epoch"]) ||
+      !hasCompleteMutationEpochPair(invalidation) ||
+      invalidation.schema !== "flow.review-target-invalidation/v1" ||
+      !nonEmpty(invalidation.subject_id) ||
+      !isDigest(invalidation.prior_candidate_fingerprint) ||
+      !Number.isSafeInteger(invalidation.prior_lifecycle_generation) ||
+      invalidation.prior_lifecycle_generation < 1 ||
+      !isDigest(invalidation.observed_candidate_fingerprint) ||
+      !Number.isSafeInteger(invalidation.observed_lifecycle_generation) ||
+      invalidation.observed_lifecycle_generation < 1 ||
+      invalidation.reason !== "target_moved" ||
+      !reviewTargetMovement(invalidation)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target invalidation event payload is malformed",
+    );
+  }
+  validateReviewTargetEventIdentity(invalidation, body, "invalidation");
+  validateReviewTargetObservationForEvent(invalidation, body, "invalidation");
+  const command = reviewTargetInvalidationCommandFromEvent(
+    invalidation,
+    previousWatermark,
+    payload.command_receipt.command_id,
+  );
+  if (payload.command_receipt.command_id !==
+        reviewTargetInvalidationCommandId(command) ||
+      payload.command_receipt.command_digest !== idempotencyCommandDigest(command)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target invalidation event receipt is not bound to its payload",
+    );
+  }
+}
+
+function validateReviewTargetRefreshEvent(
+  payload,
+  body,
+  invalidation,
+  previousWatermark,
+) {
+  if (!hasExactKeys(payload, [
+    "type",
+    "refresh",
+    "watermark",
+    "command_receipt",
+  ]) || !isDigest(payload.watermark) ||
+      !validReviewCommandReceipt(payload.command_receipt)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target refresh event envelope is malformed",
+    );
+  }
+  const refresh = payload.refresh;
+  if (!hasExactKeys(refresh, [
+    "schema",
+    "subject_id",
+    "prior_candidate_fingerprint",
+    "prior_lifecycle_generation",
+    "observed_candidate_fingerprint",
+    "observed_lifecycle_generation",
+    "observation",
+  ], ["prior_mutation_epoch", "observed_mutation_epoch"]) ||
+      !hasCompleteMutationEpochPair(refresh) ||
+      refresh.schema !== "flow.review-target-refresh/v1" ||
+      !nonEmpty(refresh.subject_id) ||
+      !isDigest(refresh.prior_candidate_fingerprint) ||
+      !Number.isSafeInteger(refresh.prior_lifecycle_generation) ||
+      refresh.prior_lifecycle_generation < 1 ||
+      !isDigest(refresh.observed_candidate_fingerprint) ||
+      !Number.isSafeInteger(refresh.observed_lifecycle_generation) ||
+      refresh.observed_lifecycle_generation < 1) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target refresh event payload is malformed",
+    );
+  }
+  validateReviewTargetEventIdentity(refresh, body, "refresh");
+  validateReviewTargetObservationForEvent(refresh, body, "refresh");
+  for (const field of [
+    "subject_id",
+    "prior_candidate_fingerprint",
+    "prior_lifecycle_generation",
+    "observed_candidate_fingerprint",
+    "observed_lifecycle_generation",
+    "prior_mutation_epoch",
+    "observed_mutation_epoch",
+  ]) {
+    if (refresh[field] !== invalidation[field]) {
+      throw reviewAuthorityIntegrityError(
+        "malformed_event",
+        "review target refresh event is not bound to its invalidation",
+      );
+    }
+  }
+  if (!isDeepEqualDigest(refresh.observation, invalidation.observation)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target refresh observation is not bound to its invalidation",
+    );
+  }
+  const command = reviewTargetRefreshCommandFromEvent(
+    refresh,
+    previousWatermark,
+    payload.command_receipt.command_id,
+  );
+  if (payload.command_receipt.command_id !== reviewTargetRefreshCommandId({
+    subjectId: command.subject_id,
+    observedCandidateFingerprint: command.observed_candidate_fingerprint,
+    observedLifecycleGeneration: command.observed_lifecycle_generation,
+    observedMutationEpoch: command.observed_mutation_epoch,
+  }) || payload.command_receipt.command_digest !== idempotencyCommandDigest(command)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      "review target refresh event receipt is not bound to its payload",
+    );
+  }
+}
+
+function validateReviewTargetEventIdentity(event, body, kind) {
+  const expectedSubjectId = body?.review_id;
+  const expectedFingerprint = body?.candidate_fingerprint;
+  const expectedLifecycleGeneration = body?.lifecycle_generation;
+  if (!hasCompleteMutationEpochPair(event) ||
+      body?.schema !== "flow.review-record/v1" ||
+      event.subject_id !== expectedSubjectId ||
+      event.prior_candidate_fingerprint !== expectedFingerprint ||
+      event.prior_lifecycle_generation !== expectedLifecycleGeneration) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      `review target ${kind} event identity is inconsistent`,
+    );
+  }
+  const priorMutationEpoch = body.candidate?.workspace?.mutation_epoch;
+  const hasMutationEpoch = event.prior_mutation_epoch !== undefined ||
+    event.observed_mutation_epoch !== undefined;
+  if (hasMutationEpoch &&
+      (!Number.isSafeInteger(event.prior_mutation_epoch) ||
+       event.prior_mutation_epoch < 1 ||
+       event.prior_mutation_epoch !== priorMutationEpoch ||
+       !Number.isSafeInteger(event.observed_mutation_epoch) ||
+       event.observed_mutation_epoch < 1)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      `review target ${kind} mutation identity is inconsistent`,
+    );
+  }
+}
+
+function validateReviewTargetObservationForEvent(event, body, kind) {
+  const observation = event.observation;
+  const expectedCandidateId = body?.candidate?.candidate_id;
+  if (reviewTargetObservationShapeIssue(observation) !== null ||
+      observation.subject_id !== event.subject_id ||
+      observation.candidate_id !== expectedCandidateId ||
+      observation.candidate_fingerprint !== event.observed_candidate_fingerprint ||
+      observation.lifecycle_generation !== event.observed_lifecycle_generation ||
+      (event.observed_mutation_epoch === undefined
+        ? observation.mutation_epoch !== undefined
+        : observation.mutation_epoch !== event.observed_mutation_epoch)) {
+    throw reviewAuthorityIntegrityError(
+      "malformed_event",
+      `review target ${kind} observation is malformed`,
+    );
+  }
+}
+
+function reviewTargetInvalidationCommandFromEvent(
+  invalidation,
+  expectedWatermark,
+  commandId,
+) {
+  return {
+    schema: "work.review-target-invalidation-command/v1",
+    type: "review_target_invalidated",
+    contract: "work.review/v1",
+    command_id: commandId,
+    subject_id: invalidation.subject_id,
+    expected_watermark: expectedWatermark,
+    prior_candidate_fingerprint: invalidation.prior_candidate_fingerprint,
+    prior_lifecycle_generation: invalidation.prior_lifecycle_generation,
+    observed_candidate_fingerprint: invalidation.observed_candidate_fingerprint,
+    observed_lifecycle_generation: invalidation.observed_lifecycle_generation,
+    ...(invalidation.prior_mutation_epoch === undefined ? {} : {
+      prior_mutation_epoch: invalidation.prior_mutation_epoch,
+    }),
+    ...(invalidation.observed_mutation_epoch === undefined ? {} : {
+      observed_mutation_epoch: invalidation.observed_mutation_epoch,
+    }),
+    reason: invalidation.reason,
+  };
+}
+
+function reviewTargetRefreshCommandFromEvent(refresh, expectedWatermark, commandId) {
+  return {
+    schema: "work.review-target-refresh-command/v1",
+    type: "review_target_refresh",
+    contract: "work.review/v1",
+    command_id: commandId,
+    subject_id: refresh.subject_id,
+    expected_watermark: expectedWatermark,
+    prior_candidate_fingerprint: refresh.prior_candidate_fingerprint,
+    prior_lifecycle_generation: refresh.prior_lifecycle_generation,
+    observed_candidate_fingerprint: refresh.observed_candidate_fingerprint,
+    observed_lifecycle_generation: refresh.observed_lifecycle_generation,
+    ...(refresh.prior_mutation_epoch === undefined ? {} : {
+      prior_mutation_epoch: refresh.prior_mutation_epoch,
+    }),
+    ...(refresh.observed_mutation_epoch === undefined ? {} : {
+      observed_mutation_epoch: refresh.observed_mutation_epoch,
+    }),
+    authority_observation: refresh.observation,
+  };
+}
+
+function hasExactKeys(value, requiredKeys, optionalKeys = []) {
+  if (!isRecord(value)) return false;
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  const ownKeys = Reflect.ownKeys(value);
+  return requiredKeys.every((key) => Object.hasOwn(value, key)) &&
+    ownKeys.every((key) => typeof key === "string" && allowed.has(key));
+}
+
+function validReviewCommandReceipt(receipt, type = undefined, event = undefined) {
+  if (!hasExactKeys(receipt, [
+    "schema",
+    "command_id",
+    "command_digest",
+  ]) || receipt.schema !== "work.idempotency-receipt/v1" ||
+      !nonEmpty(receipt.command_id) || !isDigest(receipt.command_digest)) {
+    return false;
+  }
+  if (type === undefined || event === undefined) return true;
+  const command = reviewHumanCommandForEvent(receipt.command_id, type, event);
+  return command !== null &&
+    idempotencyCommandDigest(command) === receipt.command_digest;
+}
+
+function reviewCommandReceiptDigest(receipt) {
+  return digest({
+    schema: "flow.review-command-receipt-identity/v1",
+    command_id: receipt.command_id,
+    command_digest: receipt.command_digest,
+  });
+}
+
+function reviewAcceptedCommandIdentity(command) {
+  const commandDigest = idempotencyCommandDigest(command);
+  return freezeCanonical({
+    schema: REVIEW_ACCEPTED_COMMAND_SCHEMA,
+    command_id: command.command_id,
+    command_digest: commandDigest,
+    action_digest: reviewHumanActionDigest(command),
+  });
+}
+
+function reviewHumanActionDigest(command) {
+  const {
+    command_id: _commandId,
+    evidence_validation: _evidenceValidation,
+    git_observation: _gitObservation,
+    human_authority_validation: _humanValidation,
+    ...action
+  } = command;
+  return digest(action);
+}
+
+function validReviewAcceptedCommand(identity, type, event, receipt) {
+  if (!hasExactKeys(identity, [
+    "schema",
+    "command_id",
+    "command_digest",
+    "action_digest",
+  ]) || identity.schema !== REVIEW_ACCEPTED_COMMAND_SCHEMA ||
+      !nonEmpty(identity.command_id) ||
+      !isDigest(identity.command_digest) ||
+      !isDigest(identity.action_digest) ||
+      identity.command_id !== receipt.command_id ||
+      identity.command_digest !== receipt.command_digest) {
+    return false;
+  }
+  const command = reviewHumanCommandForEvent(identity.command_id, type, event);
+  return command !== null &&
+    idempotencyCommandDigest(command) === identity.command_digest &&
+    reviewHumanActionDigest(command) === identity.action_digest;
+}
+
+function reviewHumanCommandForEvent(commandId, type, event) {
+  const command = {
+    schema: REVIEW_HUMAN_COMMAND_SCHEMA,
+    type,
+    contract: "work.review/v1",
+    command_id: commandId,
+    subject_id: event.review_id,
+    review_id: event.review_id,
+    target_fingerprint: event.target_fingerprint,
+    candidate_fingerprint: event.target_fingerprint,
+    candidate_authority_watermark: event.candidate_authority_watermark,
+    lifecycle_generation: event.lifecycle_generation,
+    expected_watermark: event.expected_watermark,
+    expected_generation: event.expected_generation,
+  };
+  const nestedKey = {
+    review_session_start: "session",
+    review_comment: "comment",
+    review_disposition: "disposition",
+    review_approval: "approval",
+    review_supersession: "supersession",
+    review_integration: "integration",
+  }[type];
+  const nested = event[nestedKey];
+  if (!isRecord(nested)) return null;
+  command.session_id = nested.session_id;
+  if (type === "review_session_start") {
+    return command;
+  }
+  if (type === "review_comment") {
+    command.comment_id = nested.comment_id;
+    command.body = nested.body;
+  } else if (type === "review_disposition") {
+    if (nested.finding_id !== undefined) command.finding_id = nested.finding_id;
+    command.disposition = nested.disposition;
+  } else if (type === "review_approval") {
+    command.decision = nested.decision;
+  } else if (type === "review_supersession") {
+    command.replacement = nested.replacement;
+  } else if (type === "review_integration") {
+    command.evidence = nested.evidence;
+  }
+  return command;
+}
+
+function validReviewSession(session, event) {
+  return hasExactKeys(session, [
+    "schema",
+    "session_id",
+    "review_id",
+    "target_fingerprint",
+    "candidate_authority_watermark",
+    "lifecycle_generation",
+  ]) && session.schema === REVIEW_SESSION_SCHEMA &&
+    nonEmpty(session.session_id) &&
+    session.review_id === event.review_id &&
+    session.target_fingerprint === event.target_fingerprint &&
+    session.candidate_authority_watermark === event.candidate_authority_watermark &&
+    session.lifecycle_generation === event.lifecycle_generation;
+}
+
+function validReviewComment(comment) {
+  return hasExactKeys(comment, [
+    "schema",
+    "comment_id",
+    "session_id",
+    "body",
+  ]) && comment.schema === "flow.review-comment/v1" &&
+    nonEmpty(comment.comment_id) && nonEmpty(comment.session_id) &&
+    typeof comment.body === "string" && comment.body.length > 0 &&
+    comment.body.length <= 16_384;
+}
+
+function validReviewDisposition(disposition) {
+  return hasExactKeys(disposition, [
+    "schema",
+    "session_id",
+    "disposition",
+  ], ["finding_id"]) &&
+    disposition.schema === "flow.review-disposition/v1" &&
+    nonEmpty(disposition.session_id) &&
+    REVIEW_DISPOSITIONS.includes(disposition.disposition) &&
+    (disposition.finding_id === undefined || nonEmpty(disposition.finding_id));
+}
+
+function validReviewApproval(approval) {
+  return hasExactKeys(approval, [
+    "schema",
+    "session_id",
+    "decision",
+  ]) && approval.schema === "flow.review-approval/v1" &&
+    nonEmpty(approval.session_id) &&
+    ["approve", "revoke"].includes(approval.decision);
+}
+
+function validReviewSupersession(supersession) {
+  const replacement = supersession?.replacement;
+  return hasExactKeys(supersession, [
+    "schema",
+    "session_id",
+    "replacement",
+  ]) && supersession.schema === "flow.review-supersession/v1" &&
+    nonEmpty(supersession.session_id) &&
+    hasExactKeys(replacement, ["candidate_fingerprint", "lifecycle_generation"]) &&
+    isDigest(replacement.candidate_fingerprint) &&
+    Number.isSafeInteger(replacement.lifecycle_generation) &&
+    replacement.lifecycle_generation >= 1;
+}
+
+function validReviewIntegration(integration, event) {
+  return hasExactKeys(integration, [
+    "schema",
+    "session_id",
+    "evidence",
+    "evidence_digest",
+  ]) && integration.schema === "flow.review-integration/v1" &&
+    nonEmpty(integration.session_id) &&
+    validateReviewIntegrationEvidence(integration.evidence, {
+      candidateFingerprint: event.target_fingerprint,
+      lifecycleGeneration: event.lifecycle_generation,
+    }) && isDigest(integration.evidence_digest) &&
+    integration.evidence_digest === digest(integration.evidence);
+}
+
 function reviewEventWatermarkIdentityForPayload(payload) {
   if (payload?.type === "review_recorded") {
     return reviewRecordWatermarkIdentity(payload.body);
   }
+  if (payload?.type === "github_review_recorded") {
+    return githubReviewRecordWatermarkIdentity(payload.body);
+  }
   if (payload?.type === "review_target_invalidated") return payload.invalidation;
   if (payload?.type === "review_target_refresh_acknowledged") return payload.refresh;
+  if (REVIEW_HUMAN_ACTIONS.includes(payload?.type) &&
+      isRecord(payload.event)) return payload.event;
   throw reviewAuthorityIntegrityError(
     "unknown_event",
     "review authority event type is unknown",
@@ -3816,6 +6066,16 @@ function unavailableReviewDelegateResult() {
   };
 }
 
+function surfacedReviewFindingIds(body) {
+  return new Set(
+    Array.isArray(body?.summary?.findings)
+      ? body.summary.findings
+        .map(({ finding_id: findingId }) => findingId)
+        .filter((findingId) => nonEmpty(findingId))
+      : [],
+  );
+}
+
 function reviewEvidenceFallbackEntry(validation, acceptedDelegate, error) {
   if (!isRecord(validation) ||
       !Array.isArray(validation.invalid_delegate_evidence)) return null;
@@ -3837,10 +6097,11 @@ function reviewEvidenceValidationIssue(validation, actualEntries) {
   if (actualEntries.length === 0) {
     return validation === undefined
       ? null
-      : { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is unexpected" };
+      : validReviewEvidenceValidation(validation)
+        ? { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is unexpected" }
+        : { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is malformed" };
   }
-  if (!isRecord(validation) ||
-      !Array.isArray(validation.invalid_delegate_evidence)) {
+  if (!validReviewEvidenceValidation(validation)) {
     return {
       code: "review_source_evidence_mismatch",
       reason: "malformed review evidence has no authority validation marker",
@@ -3860,6 +6121,30 @@ function reviewEvidenceValidationIssue(validation, actualEntries) {
     };
   }
   return null;
+}
+
+function validReviewEvidenceValidation(validation) {
+  if (!hasExactKeys(validation, ["invalid_delegate_evidence"]) ||
+      !Array.isArray(validation.invalid_delegate_evidence) ||
+      validation.invalid_delegate_evidence.length === 0) {
+    return false;
+  }
+  const cardIds = new Set();
+  return validation.invalid_delegate_evidence.every((entry) => {
+    if (!hasExactKeys(entry, [
+      "card_id",
+      "evidence_digest",
+      "reason",
+    ]) ||
+        !nonEmpty(entry.card_id) ||
+        cardIds.has(entry.card_id) ||
+        !isDigest(entry.evidence_digest) ||
+        entry.reason !== "independent_validation_failed") {
+      return false;
+    }
+    cardIds.add(entry.card_id);
+    return true;
+  });
 }
 
 function isSafeReviewReason(value) {

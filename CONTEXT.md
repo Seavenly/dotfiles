@@ -620,6 +620,46 @@ _Avoid_: Registry entry, tuicr session
 A rebuildable, derived view of a review manifest for discovery and display.
 _Avoid_: Review state, approval record
 
+**Review inbox**:
+The disposable `flow.review-inbox-projection/v1` view of candidate and review
+subjects derived from ReviewAuthority's exact watermark. Its
+`subject_watermarks` are the canonical ordered candidate/review stream set
+declared by `flow.review-inbox-watermark/v1`; the inbox watermark is its digest,
+and binds `projection_digest`, the digest of the complete visible item
+snapshot including fresh authority observations. It is not a timestamp or
+mutable global stream. It carries the candidate-seal
+watermark, review lifecycle generation, and closed human-review legal-action
+vocabulary but owns no state or authority.
+_Avoid_: Queue, inbox database, scheduler
+
+**Human review session**:
+An explicit ReviewAuthority event binding one operator session to one exact
+review identity, target fingerprint, candidate-seal watermark, and lifecycle
+generation. Later human commands must cite that session and the current
+expected review generation and watermark.
+_Avoid_: tuicr pane, login session, review authority
+
+**Review operator input**:
+The `flow.review-operator-input/v1` declaration embedded in a projected legal
+action. It names the fields a replaceable review consumer must materialize into
+a `work.review-human-command/v1`; it is not an authority grant or a command
+side channel.
+_Avoid_: Prompt, callback, caller authority
+
+**Human review event**:
+An append-only `flow.review-human-event/v1` record for a session start,
+comment, disposition, approval, supersession, or integration evidence action.
+ReviewAuthority accepts it only through an expected-generation
+`FlowRuntime.command` and advances its exact review watermark.
+_Avoid_: UI event, mutable review status
+
+**Review integration evidence**:
+Typed evidence submitted by a human review command to record that an approved
+candidate is eligible for integration. It authorizes no Git operation and does
+not execute integration; any resulting Git change requires a separate owning
+authority and receipt.
+_Avoid_: Merge flag, integration command
+
 **Automated review record**:
 The append-only ReviewAuthority result of one automated review, bound separately
 to the candidate seal watermark and review lifecycle generation; it records
@@ -721,6 +761,16 @@ _Avoid_: Migration record, replacement run
   **completion PR**.
 - A **review projection** derives from one **review manifest** and never owns
   approval or lifecycle state.
+- A **review inbox** derives from **ReviewAuthority** and is consumed by a
+  replaceable **tuicr** review UI through the public **FlowRuntime** query,
+  watch, and command operations; it never schedules, advances lifecycle, or
+  mutates Git.
+- A **human review session** binds one operator to one exact review target and
+  lifecycle generation; each **human review event** must carry the current
+  expected review watermark and generation.
+- **Review operator input** is materialized into a public human-review command
+  before submission, while **review integration evidence** records
+  authorization without executing Git integration.
 - An **integration receipt** proves where a **review candidate** entered Git
   history before its **review manifest** advances to integrated.
 - An **active stack generation** derives from one **stack plan** and supplies

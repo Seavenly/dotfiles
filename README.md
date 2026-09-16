@@ -117,7 +117,17 @@ flow query delegated-agent --harness codex --capability read-only \
 flow start --json                start the optional host-owned replacement runtime
 flow status --json               inspect owner, runner capacity, and errors
 flow stop --json                 stop the exact recorded owner
+flow query --input '{"schema":"flow.query/v1","query":"review_inbox"}' --json
+                                inspect the ReviewAuthority-owned local review inbox
+flow watch --input '{"schema":"flow.watch/v1","query":"review_inbox"}' --json
+                                read one watermarked review-inbox snapshot
 ```
+
+The local review inbox is a disposable projection for tuicr or another
+replaceable consumer. Materialize its legal action templates and submit the
+resulting `work.review-human-command/v1` values through `flow command`; an
+integration action records evidence and authorization only and never runs Git
+integration.
 
 The autonomous owner uses one delegate slot and one operation slot by default.
 Set `FLOW_RUNNER_DELEGATE_CAPACITY` and

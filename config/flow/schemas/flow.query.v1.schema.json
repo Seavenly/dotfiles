@@ -49,6 +49,15 @@
         },
         "caller_metadata": {}
       }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "review_inbox" }
+      }
     }
   ]
 }
