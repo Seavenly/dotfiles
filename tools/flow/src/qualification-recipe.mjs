@@ -61,10 +61,10 @@ const commands = [
   },
   {
     id: "public_host_negative_routes",
-    command: "node --test --test-name-pattern='public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra' config/flow/test/runtime.test.mjs",
+    command: "node --test --test-name-pattern='public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra|public module imports cannot mint|public admission withholds qualification captured' config/flow/test/runtime.test.mjs",
     args: [
       "--test",
-      "--test-name-pattern=public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra",
+      "--test-name-pattern=public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra|public module imports cannot mint|public admission withholds qualification captured",
       "config/flow/test/runtime.test.mjs",
     ],
     receipt_path: "evidence/receipts/public-host-negative-routes.tap",
@@ -113,9 +113,10 @@ export const PRODUCTION_ROUTE_CONFORMANCE_ROUTES = Object.freeze([
 const productionRouteCommands = [
   {
     id: "production_feature_verify",
-    command: "node --test --test-name-pattern='production feature runs a real Git mutation through a local candidate' config/flow/test/production-runtime.test.mjs",
+    command: "node --test --experimental-test-isolation=none --test-name-pattern='production feature runs a real Git mutation through a local candidate' config/flow/test/production-runtime.test.mjs",
     args: [
       "--test",
+      "--experimental-test-isolation=none",
       "--test-name-pattern=production feature runs a real Git mutation through a local candidate",
       "config/flow/test/production-runtime.test.mjs",
     ],
@@ -124,9 +125,10 @@ const productionRouteCommands = [
   },
   {
     id: "public_local_review_process",
-    command: "node --test --test-name-pattern='public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions' config/flow/test/public-process.test.mjs",
+    command: "node --test --experimental-test-isolation=none --test-name-pattern='public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions' config/flow/test/public-process.test.mjs",
     args: [
       "--test",
+      "--experimental-test-isolation=none",
       "--test-name-pattern=public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions",
       "config/flow/test/public-process.test.mjs",
     ],
@@ -135,9 +137,10 @@ const productionRouteCommands = [
   },
   {
     id: "public_drovr_finding_schema",
-    command: "node --test --test-name-pattern='public preparation normalizes real Drovr feature findings' config/flow/test/runtime.test.mjs",
+    command: "node --test --experimental-test-isolation=none --test-name-pattern='public preparation normalizes real Drovr feature findings' config/flow/test/runtime.test.mjs",
     args: [
       "--test",
+      "--experimental-test-isolation=none",
       "--test-name-pattern=public preparation normalizes real Drovr feature findings",
       "config/flow/test/runtime.test.mjs",
     ],

@@ -1,36 +1,41 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { fstatSync, readSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
+const SESSION_DESCRIPTOR = 3;
+const SESSION_PROCESS_ENV = "FLOW_PRODUCTION_ROUTE_CONFORMANCE_PROCESS";
+const SESSION_SCHEMA = "flow.production-route-conformance-process-session/v1";
+const MAX_SESSION_BYTES = 4096;
+
 /**
- * In-process capability for the phase-two evidence generator's temporary
- * authority copy. It is never read from a request, environment variable, or
- * public transport frame.
+ * Read the generator-owned phase-two process capability. The capability is
+ * inherited on an already-open file descriptor, not accepted through the
+ * public runtime constructor, a request, or environment-carried secret.
  */
-const SESSION_BRAND = Symbol("production-route-conformance-generation-session");
-
-export function createProductionRouteConformanceSession({
-  authorityDirectory,
-  marker,
-} = {}) {
-  if (typeof authorityDirectory !== "string" ||
-      typeof marker !== "string" || !/^[0-9a-f]{64}$/u.test(marker)) {
-    throw new TypeError("production route conformance session is invalid");
+export function inheritedProductionRouteConformanceSession() {
+  if (process.env[SESSION_PROCESS_ENV] !== "1") return null;
+  try {
+    const stats = fstatSync(SESSION_DESCRIPTOR);
+    if (!stats.isFile() || stats.size < 1 || stats.size > MAX_SESSION_BYTES) {
+      return null;
+    }
+    const bytes = Buffer.alloc(stats.size);
+    const length = readSync(SESSION_DESCRIPTOR, bytes, 0, bytes.length, 0);
+    if (length !== bytes.length) return null;
+    const session = JSON.parse(bytes.toString("utf8"));
+    if (session?.schema !== SESSION_SCHEMA ||
+        typeof session.authority_directory !== "string" ||
+        typeof session.marker !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(session.marker)) {
+      return null;
+    }
+    return Object.freeze({
+      authorityDirectory: realpathSync(resolve(session.authority_directory)),
+      marker: session.marker,
+    });
+  } catch {
+    return null;
   }
-  return Object.freeze({
-    [SESSION_BRAND]: true,
-    authorityDirectory: realpathSync(resolve(authorityDirectory)),
-    marker,
-  });
-}
-
-export function productionRouteConformanceSessionDetails(session) {
-  if (session === null || typeof session !== "object" ||
-      session[SESSION_BRAND] !== true) return null;
-  return {
-    authorityDirectory: session.authorityDirectory,
-    marker: session.marker,
-  };
 }
 
 export function productionRouteConformanceSessionBinding({
@@ -44,4 +49,19 @@ export function productionRouteConformanceSessionBinding({
       `flow.production-route-conformance-session/v1\0${authorityRoot}\0${generationId}\0${marker}`,
     ))
     .digest("hex");
+}
+
+export function productionRouteConformanceSessionBytes({
+  authorityDirectory,
+  marker,
+}) {
+  const authorityRoot = realpathSync(resolve(authorityDirectory));
+  if (typeof marker !== "string" || !/^[0-9a-f]{64}$/u.test(marker)) {
+    throw new TypeError("production route conformance marker is invalid");
+  }
+  return Buffer.from(`${JSON.stringify({
+    schema: SESSION_SCHEMA,
+    authority_directory: authorityRoot,
+    marker,
+  })}\n`);
 }

@@ -20,9 +20,6 @@ import {
   createFlowRuntime,
   statusFlowRuntime,
 } from "../src/runtime.mjs";
-import {
-  createProductionRouteConformanceSession,
-} from "../../../tools/flow/src/qualification-phase2-session.mjs";
 import { createProductionComposition } from "../src/production-composition.mjs";
 import { validateFeatureCritiqueOutput } from
   "../src/production-feature-operations.mjs";
@@ -540,13 +537,6 @@ test("production feature runs a real Git mutation through a local candidate", as
     criterionExpected: () => candidateText,
     critiqueFindings: [retainedFinding],
   });
-  const qualificationPhase2Session =
-    process.env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION === "1"
-      ? createProductionRouteConformanceSession({
-        authorityDirectory: process.env.FLOW_CONFIG_DIRECTORY,
-        marker: process.env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER,
-      })
-      : null;
   const runtime = createFlowRuntime({
     env: {
       HOME: scratch,
@@ -559,9 +549,6 @@ test("production feature runs a real Git mutation through a local candidate", as
       } : {}),
     },
     delegatedAgentPort,
-    ...(qualificationPhase2Session === null ? {} : {
-      qualificationPhase2Session,
-    }),
   });
   t.after(() => closeFlowRuntime(runtime));
 

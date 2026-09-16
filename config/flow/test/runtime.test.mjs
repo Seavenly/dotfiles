@@ -53,7 +53,7 @@ import {
 import { validateDelegateEvidenceSafety } from
   "../../../tools/flow/src/evidence-safety.mjs";
 import {
-  createProductionRouteConformanceSession,
+  productionRouteConformanceSessionBinding,
 } from "../../../tools/flow/src/qualification-phase2-session.mjs";
 
 const DARK_OPT_IN = {
@@ -263,6 +263,117 @@ test("ordinary request and environment inputs cannot activate phase-two generati
   assertQualificationWithheld(rejection, "prepare");
 });
 
+test("public module imports cannot mint phase-two generation authority", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-phase2-import-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repositoryRoot = join(scratch, "repository");
+  await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
+    repositoryRoot]);
+  const configDirectory = join(repositoryRoot, "config/flow");
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase1 = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  const evidencePath = join(configDirectory, phase2.path);
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  const marker = "c".repeat(64);
+  evidence.status = "running";
+  evidence.phase1_evidence_sha256 = phase1.sha256;
+  evidence.generation_id = "00000000-0000-4000-8000-000000000002";
+  evidence.generation_binding_sha256 =
+    productionRouteConformanceSessionBinding({
+      authorityDirectory: configDirectory,
+      generationId: evidence.generation_id,
+      marker,
+    });
+  evidence.recipe = null;
+  const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  await writeFile(evidencePath, evidenceBytes);
+  phase2.status = "not_run";
+  phase2.sha256 = createHash("sha256").update(evidenceBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const sessionModule = await import(
+    "../../../tools/flow/src/qualification-phase2-session.mjs"
+  );
+  const exportedMint = sessionModule.createProductionRouteConformanceSession;
+  const forgedSession = typeof exportedMint === "function"
+    ? exportedMint({ authorityDirectory: configDirectory, marker })
+    : { authorityDirectory: configDirectory, marker };
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: repositoryRoot,
+    },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+    qualificationPhase2Session: forgedSession,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assert.equal(exportedMint, undefined);
+  assertQualificationWithheld(rejection, "prepare");
+});
+
+test("public admission withholds qualification captured on another host", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-foreign-host-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repositoryRoot = join(scratch, "repository");
+  await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
+    repositoryRoot]);
+  const configDirectory = join(repositoryRoot, "config/flow");
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: repositoryRoot,
+    },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase1 = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  const phase1Path = join(configDirectory, phase1.path);
+  const phase1Evidence = JSON.parse(await readFile(phase1Path, "utf8"));
+  phase1Evidence.environment.os = process.platform === "darwin" ? "linux" : "darwin";
+  const phase1Bytes = Buffer.from(`${JSON.stringify(phase1Evidence, null, 2)}\n`);
+  await writeFile(phase1Path, phase1Bytes);
+  phase1.sha256 = createHash("sha256").update(phase1Bytes).digest("hex");
+
+  const phase2Path = join(configDirectory, phase2.path);
+  const phase2Evidence = JSON.parse(await readFile(phase2Path, "utf8"));
+  phase2Evidence.environment.os = phase1Evidence.environment.os;
+  phase2Evidence.phase1_evidence_sha256 = phase1.sha256;
+  const phase2Bytes = Buffer.from(`${JSON.stringify(phase2Evidence, null, 2)}\n`);
+  await writeFile(phase2Path, phase2Bytes);
+  phase2.sha256 = createHash("sha256").update(phase2Bytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assertQualificationWithheld(rejection, "prepare");
+});
+
 test("public preparation preserves blocked Drovr compatibility details", async (t) => {
   const delegatedAgentPort = {
     async describe() {
@@ -346,13 +457,6 @@ test("public preparation normalizes real Drovr feature findings to the rejection
   });
   const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ??
     FLOW_CONFIG_DIRECTORY;
-  const qualificationPhase2Session =
-    process.env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION === "1"
-      ? createProductionRouteConformanceSession({
-        authorityDirectory: configDirectory,
-        marker: process.env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER,
-      })
-      : null;
   const runtime = createFlowRuntime({
     env: {
       ...process.env,
@@ -363,9 +467,6 @@ test("public preparation normalizes real Drovr feature findings to the rejection
     },
     delegatedAgentPort,
     autonomous: false,
-    ...(qualificationPhase2Session === null ? {} : {
-      qualificationPhase2Session,
-    }),
   });
   t.after(() => closeFlowRuntime(runtime));
   const repository = join(scratch, "candidate-repository");

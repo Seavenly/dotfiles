@@ -1,15 +1,18 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  closeSync,
   cpSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -28,6 +31,7 @@ import {
   "../../../tools/flow/src/qualification-recipe.mjs";
 import {
   productionRouteConformanceSessionBinding,
+  productionRouteConformanceSessionBytes,
 } from "../../../tools/flow/src/qualification-phase2-session.mjs";
 
 const configDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -232,11 +236,16 @@ function runProductionRouteConformancePhase() {
       ...process.env,
       FLOW_CONFIG_DIRECTORY: phase2ConfigDirectory,
       FLOW_REPOSITORY_ROOT: repositoryRoot,
-      FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION: "1",
-      FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER: marker,
+      FLOW_PRODUCTION_ROUTE_CONFORMANCE_PROCESS: "1",
     };
     return PRODUCTION_ROUTE_CONFORMANCE_COMMANDS.map((command) =>
-      runCommand(command, env));
+      runCommand(command, env, {
+        phase2Session: {
+          authorityDirectory: phase2ConfigDirectory,
+          marker,
+          tokenDirectory: scratch,
+        },
+      }));
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -332,13 +341,34 @@ function writeAtomic(path, bytes) {
   renameSync(temporaryPath, path);
 }
 
-function runCommand(command, env = process.env) {
-  const result = spawnSync(process.execPath, command.args, {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    env,
-  });
+function runCommand(command, env = process.env, { phase2Session = null } = {}) {
+  let sessionDescriptor = null;
+  if (phase2Session !== null) {
+    const tokenPath = join(
+      phase2Session.tokenDirectory,
+      `.${randomUUID()}.phase2-session`,
+    );
+    writeFileSync(tokenPath, productionRouteConformanceSessionBytes({
+      authorityDirectory: phase2Session.authorityDirectory,
+      marker: phase2Session.marker,
+    }), { flag: "wx", mode: 0o600 });
+    sessionDescriptor = openSync(tokenPath, "r");
+    unlinkSync(tokenPath);
+  }
+  let result;
+  try {
+    result = spawnSync(process.execPath, command.args, {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      maxBuffer: 128 * 1024 * 1024,
+      env,
+      ...(sessionDescriptor === null ? {} : {
+        stdio: ["ignore", "pipe", "pipe", sessionDescriptor],
+      }),
+    });
+  } finally {
+    if (sessionDescriptor !== null) closeSync(sessionDescriptor);
+  }
   const output = result.stdout ?? "";
   const diagnostics = `${output}${result.stderr ?? ""}`;
   if (result.error) throw result.error;

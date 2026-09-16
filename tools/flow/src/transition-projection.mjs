@@ -39,8 +39,8 @@ import {
 } from "./launch-selector.mjs";
 import { isExactSequence } from "./validation.mjs";
 import {
+  inheritedProductionRouteConformanceSession,
   productionRouteConformanceSessionBinding,
-  productionRouteConformanceSessionDetails,
 } from "./qualification-phase2-session.mjs";
 
 const STATUSES = ["passed", "failed", "blocked", "not_run"];
@@ -58,6 +58,7 @@ const PHASE1_QUALIFICATION_EVIDENCE = Object.freeze([
   "release_content_binding",
   "deterministic_qualification",
 ]);
+let qualificationEnvironmentCache;
 const REQUIRED_PREREQUISITES = Object.freeze([
   [80, "cca3158", "cca3158a3d41bda0064d43366e686b9647863bd7"],
   [81, "da66e76", "da66e76dfd5760388b70d65e46a01ca3d756b614"],
@@ -255,7 +256,6 @@ export function publicQualificationIsAvailable({
   selection,
   homeDirectory,
   stateDirectory,
-  qualificationPhase2Session = null,
 }) {
   if (!repositoryRoot) {
     throw new Error("public qualification requires the repository root");
@@ -300,8 +300,7 @@ export function publicQualificationIsAvailable({
     ledger.evidence.map((evidence) => [evidence.id, evidence]),
   );
   const phase2Record = evidenceById.get("production_route_conformance");
-  const phase2GenerationSession =
-    productionRouteConformanceSessionDetails(qualificationPhase2Session);
+  const phase2GenerationSession = inheritedProductionRouteConformanceSession();
   const sessionMatchesAuthority = phase2GenerationSession?.authorityDirectory ===
     configRoot;
   if (!LEGACY_LAUNCH_EVIDENCE.every((id) =>
@@ -775,6 +774,7 @@ function validateQualificationEvidence({
         { id: "issue-46", status: "not_run" },
         { id: "quick-spike", status: "not_run" },
       ]) ||
+      !qualificationEnvironmentMatches(evidence.environment) ||
       !recipeIsBound(
         configDirectory,
         evidence.recipe,
@@ -831,13 +831,7 @@ function validateProductionRouteEvidence({
         PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS) ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(
         evidence.captured_at ?? "") ||
-      !isDeepStrictEqual(evidence.environment, {
-        os: evidence.environment?.os,
-        architecture: evidence.environment?.architecture,
-        node: evidence.environment?.node,
-        npm: evidence.environment?.npm,
-        git: evidence.environment?.git,
-      }) ||
+      !qualificationEnvironmentMatches(evidence.environment) ||
       (evidence.status !== record.status && !generationState) ||
       (!generationState && evidence.generation_binding_sha256 !== null) ||
       (evidence.phase1_evidence_sha256 !== null &&
@@ -866,6 +860,30 @@ function validateProductionRouteEvidence({
     return false;
   }
   return true;
+}
+
+function qualificationEnvironmentMatches(environment) {
+  if (qualificationEnvironmentCache === undefined) {
+    try {
+      qualificationEnvironmentCache = Object.freeze({
+        os: process.platform,
+        architecture: process.arch,
+        node: process.version,
+        npm: execFileSync("npm", ["--version"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim(),
+        git: execFileSync("git", ["--version"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim().replace(/^git version /u, ""),
+      });
+    } catch {
+      qualificationEnvironmentCache = null;
+    }
+  }
+  return qualificationEnvironmentCache !== null &&
+    isDeepStrictEqual(environment, qualificationEnvironmentCache);
 }
 
 function recipeIsBound(configDirectory, recipe, recipeSchema, expectedCommands) {

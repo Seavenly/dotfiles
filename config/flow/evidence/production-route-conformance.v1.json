@@ -2,8 +2,8 @@
   "schema": "flow.production-route-conformance-evidence/v1",
   "release_id": "flow-release-1.0-dark/v1",
   "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
-  "candidate_tree_sha": "44807ed4eb3856463136d199efc6e92bccd9f282",
-  "release_content_digest": "sha256:d573abd087404d5e1c6afb784fe92ec16b1a38cdda61040e60d463d86fda164f",
+  "candidate_tree_sha": "1e56839612e96fe3a11860dc9d1d0c5e00ecf712",
+  "release_content_digest": "sha256:8233d7e7e7549211b005111757f328ec161218604baa9c0ad481a3d88994b7d5",
   "status": "passed",
   "scope": "production_public_route_conformance",
   "routes": [
@@ -21,19 +21,19 @@
     "public local review prepares and launches through production runtime, gate, composition, review authority, and inbox projection",
     "production route cases use isolated local repositories and do not authorize remote mutations"
   ],
-  "phase1_evidence_sha256": "27fe4a5ac619a81bd3658833a925cd9b67aebec7593a2ed96385903571bd1f49",
+  "phase1_evidence_sha256": "06e132b5649281fd21503ef96f16fc478defa51d116105dfdd307a76335e62b1",
   "generation_id": null,
   "generation_binding_sha256": null,
   "recipe": {
     "schema": "flow.production-route-conformance-recipe/v1",
-    "digest": "sha256:33efe1656d851dc9b0ba95b93cd1d40641b2a0cd58d0e73bfe1b312e109d54ba",
+    "digest": "sha256:a49b635a07530409f20e65b3c8274b32484d69720cb0142da99366a75cb36be0",
     "commands": [
       {
         "id": "production_feature_verify",
-        "command": "node --test --test-name-pattern='production feature runs a real Git mutation through a local candidate' config/flow/test/production-runtime.test.mjs",
+        "command": "node --test --experimental-test-isolation=none --test-name-pattern='production feature runs a real Git mutation through a local candidate' config/flow/test/production-runtime.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/production-feature-verify.tap",
-        "receipt_sha256": "9c028d6e72d46702b70ced0693ecb2c620bd7f65047208cff5d0dae8f64ce9a2",
+        "receipt_sha256": "b55160203192a1e47209cec52880afabe640ec40f9eb748c3a367ca5a4e0224f",
         "status": "passed",
         "exit_code": 0,
         "tests": 1,
@@ -45,10 +45,10 @@
       },
       {
         "id": "public_local_review_process",
-        "command": "node --test --test-name-pattern='public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions' config/flow/test/public-process.test.mjs",
+        "command": "node --test --experimental-test-isolation=none --test-name-pattern='public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions' config/flow/test/public-process.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/public-local-review-process.tap",
-        "receipt_sha256": "10c6f7f8ae5fbb8e014be359fc30724faa42fa2094a0c847067e07738f075dcc",
+        "receipt_sha256": "f957cd5d6d2c945333102968de1dfe53d18a47d5d38d5e1d046073cfa6111cac",
         "status": "passed",
         "exit_code": 0,
         "tests": 2,
@@ -60,10 +60,10 @@
       },
       {
         "id": "public_drovr_finding_schema",
-        "command": "node --test --test-name-pattern='public preparation normalizes real Drovr feature findings' config/flow/test/runtime.test.mjs",
+        "command": "node --test --experimental-test-isolation=none --test-name-pattern='public preparation normalizes real Drovr feature findings' config/flow/test/runtime.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/public-drovr-finding-schema.tap",
-        "receipt_sha256": "c42ddf2e63999caf38b3844a0f0aac02b8fefb2f12ef6bf889f5f727c389c129",
+        "receipt_sha256": "5fd454baaf9a0a5cedc42fd45688fbff7cdbfa5fb48006863160099c8d8e2e54",
         "status": "passed",
         "exit_code": 0,
         "tests": 1,
@@ -75,7 +75,7 @@
       }
     ]
   },
-  "captured_at": "2026-09-16T16:05:12Z",
+  "captured_at": "2026-09-16T23:13:59Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",

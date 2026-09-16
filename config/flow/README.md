@@ -90,7 +90,12 @@ public local-review
 process cases, and the real Drovr finding-schema case through the production
 public runtime. Its separately hashed record binds phase one, the release tree,
 recipe, and TAP receipts. Admission requires both phases; a failed or
-incomplete phase keeps it withheld. Regenerate release content first, then
+incomplete phase keeps it withheld. The generator's temporary running phase is
+available only to its child process through an inherited descriptor; it is not
+a public constructor, request, or environment capability. Both phases must
+also match the admitting host's exact OS, architecture, Node, npm, and Git
+versions, so evidence from another supported host class fails closed until
+that host is qualified separately. Regenerate release content first, then
 qualification evidence with:
 
 ```sh

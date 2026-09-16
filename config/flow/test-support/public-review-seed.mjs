@@ -8,9 +8,6 @@ import {
   createFlowRuntime,
 } from "../src/runtime.mjs";
 import {
-  createProductionRouteConformanceSession,
-} from "../../../tools/flow/src/qualification-phase2-session.mjs";
-import {
   completedTurnProjection,
 } from "../../../tools/flow/test-support/delegate-card.mjs";
 import {
@@ -44,12 +41,6 @@ export async function seedPublicReview({
     authorityDirectory,
     delegatedAgentPort,
     autonomous: true,
-    ...(env?.FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION === "1" ? {
-      qualificationPhase2Session: createProductionRouteConformanceSession({
-        authorityDirectory: env.FLOW_CONFIG_DIRECTORY,
-        marker: env.FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER,
-      }),
-    } : {}),
   });
   try {
     const featurePrepared = await runtime.prepare(

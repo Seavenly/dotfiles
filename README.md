@@ -211,8 +211,11 @@ Dark opt-in admission requires both deterministic/core qualification and a
 separate production-route conformance record. Phase one includes host-fault
 and reboot suites on the registered-operation test runtime; phase two
 exercises feature verify and local review through the production public
-runtime. A failed or incomplete
-phase keeps admission withheld.
+runtime. The generator grants that temporary running phase only through an
+inherited process descriptor; requests, environment fields, and runtime
+constructor options cannot mint it. Both evidence phases must match the
+admitting host's exact OS, architecture, Node, npm, and Git versions. A failed,
+incomplete, or foreign-environment phase keeps admission withheld.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in

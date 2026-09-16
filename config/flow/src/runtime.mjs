@@ -36,9 +36,6 @@ import {
 import {
   publicQualificationIsAvailable,
 } from "../../../tools/flow/src/transition-projection.mjs";
-import {
-  productionRouteConformanceSessionDetails,
-} from "../../../tools/flow/src/qualification-phase2-session.mjs";
 
 const RUNNER_CAPACITY_LIMIT = 64;
 const FLOW_CONFIG_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,12 +60,7 @@ export function createFlowRuntime({
   autonomous = undefined,
   runnerOptions = undefined,
   runnerErrorSink = undefined,
-  qualificationPhase2Session = null,
 } = {}) {
-  if (qualificationPhase2Session !== null &&
-      productionRouteConformanceSessionDetails(qualificationPhase2Session) === null) {
-    throw new TypeError("production FlowRuntime qualification session is invalid");
-  }
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
     throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
   }
@@ -191,7 +183,6 @@ export function createFlowRuntime({
           composition,
           authority,
           env,
-          qualificationPhase2Session,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicProposal = withoutDarkOptIn(proposal);
@@ -221,7 +212,6 @@ export function createFlowRuntime({
           composition,
           authority,
           env,
-          qualificationPhase2Session,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicRequest = withoutDarkOptIn(request);
@@ -303,7 +293,6 @@ function publicReplacementGate({
   composition,
   authority,
   env,
-  qualificationPhase2Session,
 }) {
   const route = classifyPublicRoute(request);
   const configDirectory = env.FLOW_CONFIG_DIRECTORY ?? FLOW_CONFIG_DIRECTORY;
@@ -380,7 +369,6 @@ function publicReplacementGate({
       homeDirectory: env.HOME ?? homedir(),
       stateDirectory: env.XDG_STATE_HOME ??
         join(env.HOME ?? homedir(), ".local", "state"),
-      qualificationPhase2Session,
     });
   } catch {
     qualificationAvailable = false;
