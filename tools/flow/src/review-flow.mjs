@@ -44,6 +44,13 @@ export const REVIEW_INBOX_WATERMARK_SCHEMA =
   "flow.review-inbox-watermark/v1";
 export const REVIEW_SESSION_SCHEMA = "flow.review-session/v1";
 export const REVIEW_HUMAN_EVENT_SCHEMA = "flow.review-human-event/v1";
+// The public projection schema is intentionally unchanged.  This private
+// fold marker lets the durable authority distinguish a projection written by
+// the pre-human-review reducer from one written by the current reducer.
+export const REVIEW_PROJECTION_FOLD_CONTRACT =
+  "flow.review-projection-fold/v2";
+export const REVIEW_LEGACY_PROJECTION_FOLD_CONTRACT =
+  "flow.review-projection/v1";
 const REVIEW_ACCEPTED_COMMAND_SCHEMA = "flow.review-accepted-command/v1";
 export const REVIEW_INTEGRATION_EVIDENCE_SCHEMA =
   "flow.review-integration-evidence/v1";
@@ -2702,9 +2709,15 @@ export function createInMemoryReviewAuthority({
         command_id: command.command_id,
         command_digest: idempotencyCommandDigest(command),
       });
+      const {
+        evidence_validation: _evidenceValidation,
+        git_observation: _gitObservation,
+        human_authority_validation: _humanAuthorityValidation,
+        ...canonicalCommand
+      } = command;
       const event = {
         type: "review_recorded",
-        command,
+        command: freezeCanonical(canonicalCommand),
         body,
         watermark,
         command_receipt: commandReceipt,
@@ -3212,6 +3225,44 @@ export function projectReviewRecord(
   return freezeCanonical(projection);
 }
 
+/**
+ * Reconstruct the fold shape emitted before the human review projection was
+ * added.  This is deliberately a narrow compatibility helper for durable
+ * migration: callers must still compare its canonical bytes and digest with
+ * the stored fold before accepting an upgrade.
+ */
+export function legacyReviewProjectionFold(fold, events = []) {
+  if (!isRecord(fold) || fold.schema !== "flow.review-projection/v1") {
+    return null;
+  }
+  const payloads = events.map((record) => record?.payload ?? record);
+  if (payloads.some((payload) => REVIEW_HUMAN_ACTIONS.includes(payload?.type))) {
+    return null;
+  }
+  const legacy = { ...fold };
+  if (fold.target_kind === "github") {
+    for (const key of [
+      "current",
+      "evidence_currency",
+      "urgency_floor",
+      "orientation",
+      "diagrams",
+      "coverage",
+      "merge_ready",
+    ]) delete legacy[key];
+    return freezeCanonical(legacy);
+  }
+  if (fold.target_kind !== undefined && fold.target_kind !== "local") {
+    return null;
+  }
+  delete legacy.target_fingerprint;
+  delete legacy.target_authority_watermark;
+  if (fold.current === true && payloads.length > 0) {
+    legacy.legal_actions = [];
+  }
+  return freezeCanonical(legacy);
+}
+
 function reviewHumanState(events) {
   const state = {
     hasEvents: false,
@@ -3254,24 +3305,32 @@ function humanProjectionFields(state, reviewAuthorityWatermark) {
         ...state.session,
         review_authority_watermark: reviewAuthorityWatermark,
       };
+  const approval = state.approval === null
+    ? "not_requested"
+    : state.approval.decision === "approve"
+      ? "approved"
+      : "revoked";
+  const eligibility = reviewHumanActionEligibility({
+    session,
+    approval,
+    integration: state.integration,
+  });
   return {
     review_generation: state.reviewGeneration,
     review_authority_watermark: reviewAuthorityWatermark,
     session,
     comments: state.comments,
+    approval_eligible: eligibility.approvalEligible,
     dispositions: state.dispositions,
     ...(state.approval === null ? {} : {
-      approval: state.approval.decision === "approve"
-        ? "approved"
-        : "revoked",
-      approval_eligible: state.approval.decision !== "revoke",
+      approval,
       approval_receipt: state.approval,
     }),
     ...(state.integration === null ? {} : {
       integration: state.integration,
-      integration_eligible: state.approval?.decision === "approve",
       integration_authorized: state.approval?.decision === "approve",
     }),
+    integration_eligible: eligibility.integrationEligible,
     // Supersession is terminal for human review. Apply it after integration
     // composition so no later state can restore authorization or eligibility.
     ...(state.supersession === null ? {} : {
@@ -3291,6 +3350,24 @@ function humanProjectionFields(state, reviewAuthorityWatermark) {
       tracker_completion_authorized: false,
       remote_submission_authorized: false,
     }),
+  };
+}
+
+function reviewHumanActionEligibility({ session, approval, integration }) {
+  const hasSession = session !== null && session !== undefined;
+  const hasIntegration = integration !== null && integration !== undefined;
+  const approvalDecision = !hasSession
+    ? null
+    : approval !== "approved"
+      ? "approve"
+      : hasIntegration
+        ? null
+        : "revoke";
+  return {
+    approvalDecision,
+    approvalEligible: approvalDecision === "approve",
+    integrationEligible: hasSession && approval === "approved" &&
+      !hasIntegration,
   };
 }
 
@@ -3483,6 +3560,11 @@ function reviewHumanLegalActions(review, candidate = null) {
     })];
   }
   const session = { session_id: review.session.session_id };
+  const eligibility = reviewHumanActionEligibility({
+    session: review.session,
+    approval: review.approval,
+    integration: review.integration,
+  });
   const actions = [{
     ...base,
     ...session,
@@ -3504,7 +3586,7 @@ function reviewHumanLegalActions(review, candidate = null) {
       details: { allowed_dispositions: [...REVIEW_DISPOSITIONS] },
     }),
   }];
-  if (review.approval !== "approved") {
+  if (eligibility.approvalDecision === "approve") {
     actions.push({
       ...base,
       ...session,
@@ -3512,7 +3594,7 @@ function reviewHumanLegalActions(review, candidate = null) {
       command_id: `review-approval:${review.subject_id}:${base.expected_generation + 1}`,
       decision: "approve",
     });
-  } else if (review.integration_authorized !== true) {
+  } else if (eligibility.approvalDecision === "revoke") {
     actions.push({
       ...base,
       ...session,
@@ -3536,7 +3618,7 @@ function reviewHumanLegalActions(review, candidate = null) {
       },
     }),
   });
-  if (review.approval === "approved" && review.integration_authorized !== true) {
+  if (eligibility.integrationEligible) {
     actions.push({
       ...base,
       ...session,
@@ -3619,6 +3701,12 @@ export function reviewHumanCommandIssue(command, current) {
       return "invalid_review_disposition";
     }
     const findingId = command.finding_id ?? null;
+    if (findingId !== null &&
+        (!Array.isArray(current.findings) ||
+         !current.findings.some(({ finding_id: surfacedFindingId }) =>
+           surfacedFindingId === findingId))) {
+      return "review_finding_not_surfaced";
+    }
     if ((current.dispositions ?? []).some((entry) =>
       (entry.finding_id ?? null) === findingId)) {
       return "review_disposition_already_recorded";
@@ -3643,15 +3731,19 @@ export function reviewHumanCommandIssue(command, current) {
   }
   if (command.type === "review_supersession") {
     const replacement = command.replacement;
-    return hasExactKeys(replacement, [
+    if (hasExactKeys(replacement, [
       "candidate_fingerprint",
       "lifecycle_generation",
     ]) &&
       isDigest(replacement.candidate_fingerprint) &&
       Number.isSafeInteger(replacement.lifecycle_generation) &&
-      replacement.lifecycle_generation >= 1
-      ? null
-      : "invalid_review_supersession";
+      replacement.lifecycle_generation >= 1) {
+      return replacement.candidate_fingerprint === current.candidate_fingerprint &&
+        replacement.lifecycle_generation === current.lifecycle_generation
+        ? "review_self_supersession"
+        : null;
+    }
+    return "invalid_review_supersession";
   }
   if (command.type === "review_integration") {
     const evidence = command.evidence;
@@ -5363,6 +5455,13 @@ export function validateReviewHumanEventRecords(records, reviewBody = undefined)
             "review disposition event is malformed",
           );
         }
+        if (nested.finding_id !== undefined &&
+            !surfacedReviewFindingIds(body).has(nested.finding_id)) {
+          throw reviewAuthorityIntegrityError(
+            "malformed_event",
+            "review disposition event finding is not surfaced",
+          );
+        }
         const findingId = nested.finding_id ?? null;
         if (dispositionIds.has(findingId)) {
           throw reviewAuthorityIntegrityError(
@@ -5383,7 +5482,9 @@ export function validateReviewHumanEventRecords(records, reviewBody = undefined)
         }
         approval = nested.decision;
       } else if (payload.type === "review_supersession") {
-        if (!validReviewSupersession(nested)) {
+        if (!validReviewSupersession(nested) ||
+            (nested.replacement.candidate_fingerprint === body?.candidate_fingerprint &&
+             nested.replacement.lifecycle_generation === body?.lifecycle_generation)) {
           throw reviewAuthorityIntegrityError(
             "malformed_event",
             "review supersession event is malformed",
@@ -5965,6 +6066,16 @@ function unavailableReviewDelegateResult() {
   };
 }
 
+function surfacedReviewFindingIds(body) {
+  return new Set(
+    Array.isArray(body?.summary?.findings)
+      ? body.summary.findings
+        .map(({ finding_id: findingId }) => findingId)
+        .filter((findingId) => nonEmpty(findingId))
+      : [],
+  );
+}
+
 function reviewEvidenceFallbackEntry(validation, acceptedDelegate, error) {
   if (!isRecord(validation) ||
       !Array.isArray(validation.invalid_delegate_evidence)) return null;
@@ -5986,10 +6097,11 @@ function reviewEvidenceValidationIssue(validation, actualEntries) {
   if (actualEntries.length === 0) {
     return validation === undefined
       ? null
-      : { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is unexpected" };
+      : validReviewEvidenceValidation(validation)
+        ? { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is unexpected" }
+        : { code: "review_source_evidence_mismatch", reason: "review evidence validation marker is malformed" };
   }
-  if (!isRecord(validation) ||
-      !Array.isArray(validation.invalid_delegate_evidence)) {
+  if (!validReviewEvidenceValidation(validation)) {
     return {
       code: "review_source_evidence_mismatch",
       reason: "malformed review evidence has no authority validation marker",
@@ -6009,6 +6121,30 @@ function reviewEvidenceValidationIssue(validation, actualEntries) {
     };
   }
   return null;
+}
+
+function validReviewEvidenceValidation(validation) {
+  if (!hasExactKeys(validation, ["invalid_delegate_evidence"]) ||
+      !Array.isArray(validation.invalid_delegate_evidence) ||
+      validation.invalid_delegate_evidence.length === 0) {
+    return false;
+  }
+  const cardIds = new Set();
+  return validation.invalid_delegate_evidence.every((entry) => {
+    if (!hasExactKeys(entry, [
+      "card_id",
+      "evidence_digest",
+      "reason",
+    ]) ||
+        !nonEmpty(entry.card_id) ||
+        cardIds.has(entry.card_id) ||
+        !isDigest(entry.evidence_digest) ||
+        entry.reason !== "independent_validation_failed") {
+      return false;
+    }
+    cardIds.add(entry.card_id);
+    return true;
+  });
 }
 
 function isSafeReviewReason(value) {

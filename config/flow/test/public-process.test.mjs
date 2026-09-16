@@ -275,7 +275,7 @@ test("public host rebuilds the review inbox after the producing client exits", a
   assert.equal(completed.review_generation, 5);
   assert.equal(completed.approval, "approved");
   assert.equal(completed.integration.evidence_digest !== undefined, true);
-  assert.equal(completed.integration_eligible, true);
+  assert.equal(completed.integration_eligible, false);
   assert.equal(completed.integration_authorized, true);
   assert.deepEqual(completed.legal_actions.map(({ type }) => type), [
     "review_comment",

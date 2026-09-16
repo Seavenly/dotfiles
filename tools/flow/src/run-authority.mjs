@@ -60,6 +60,7 @@ import { foldRetryStates, retryStateIsDue } from "./retry-state.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import {
   AuthorityIntegrityError,
+  migrateReviewProjectionFolds,
   readAuthorityStream,
   replayAuthorityStream,
   runEventsFromRecords,
@@ -99,6 +100,7 @@ import {
   projectReviewInbox,
   projectReviewCandidateCurrency,
   projectReviewCurrency,
+  REVIEW_PROJECTION_FOLD_CONTRACT,
   reviewRecordCandidateAuthorityIssue,
   reviewRecordSourceAuthorityIssue,
 } from "./review-flow.mjs";
@@ -741,6 +743,7 @@ export function createDurableRunAuthority({
           beforeCommit: beforeSchemaTransitionCommit,
         });
         if (authoritySchemaCompatibility.status === "compatible") {
+          migrateReviewProjectionFolds(database);
           const previousAdmission = readAdmission(database);
           // Active runs retain capacity until unresolved effects settle. Any
           // future release path must preserve that recovery-coverage invariant.
@@ -4497,11 +4500,14 @@ function appendAuthorityEvents(database, {
 
   const replayed = replayStream(database, streamId, { verifyFold: false });
   const foldJson = JSON.stringify(canonicalize(replayed.fold));
+  const foldContract = replayed.fold.schema === "flow.review-projection/v1"
+    ? REVIEW_PROJECTION_FOLD_CONTRACT
+    : replayed.fold.schema;
   database.prepare(`
     UPDATE authority_streams
        SET fold_contract = ?, fold_json = ?, fold_digest = ?
      WHERE stream_id = ?
-  `).run(replayed.fold.schema, foldJson, digest(replayed.fold), streamId);
+  `).run(foldContract, foldJson, digest(replayed.fold), streamId);
 }
 
 function readStream(database, streamId) {

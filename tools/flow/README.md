@@ -874,6 +874,15 @@ command with the normal public command operation:
 flow command --input '<materialized work.review-human-command/v1 JSON>' --json
 ```
 
+A disposition with `finding_id` is valid only when that ID names a finding
+currently surfaced by the review projection. Omit `finding_id` for one overall
+review disposition. Each finding can receive one disposition for the life of
+the review; a repeated disposition is rejected, and projection rebuilds retain
+the recorded per-finding disposition. An unknown or no-longer-surfaced finding
+is rejected with the stable `review_finding_not_surfaced` code. A supersession
+that repeats the current target fingerprint and lifecycle generation is
+rejected without append with the stable `review_self_supersession` code.
+
 Every accepted command appends one ReviewAuthority event and advances both
 the review generation and review watermark. A command copied from an older
 inbox snapshot is rejected with a typed stale-generation or stale-watermark
