@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  accessSync,
+  constants as fsConstants,
   lstatSync,
   readFileSync,
   realpathSync,
@@ -257,9 +259,25 @@ function qualificationEnvironment() {
     os: process.platform,
     architecture: process.arch,
     node: process.version,
-    npm: commandVersion("npm", ["--version"]),
+    npm: commandVersion(pinnedNpmExecutable(), ["--version"]),
     git: commandVersion("git", ["--version"]).replace(/^git version /u, ""),
   };
+}
+
+function pinnedNpmExecutable() {
+  const npmName = process.platform === "win32" ? "npm.cmd" : "npm";
+  const candidate = join(dirname(process.execPath), npmName);
+  let resolved;
+  try {
+    resolved = realpathSync(candidate);
+    accessSync(resolved, fsConstants.X_OK);
+  } catch (error) {
+    throw new Error(
+      `the pinned Node installation has no executable npm: ${candidate}`,
+      { cause: error },
+    );
+  }
+  return resolved;
 }
 
 function commandVersion(command, args) {

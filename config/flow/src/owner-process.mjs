@@ -28,6 +28,12 @@ import { ensureTrustedDirectoryTree } from "./trusted-directory.mjs";
 import { summarizeFlowRuntimeError } from
   "../../../tools/flow/src/flow-runtime-runner.mjs";
 import { normalizeProductionRunnerOptions } from "./runtime.mjs";
+import {
+  assertOwnerRuntimeBinding,
+  deriveOwnerRuntimeBinding,
+  ownerRuntimeBindingEqual,
+  validOwnerRuntimeBinding,
+} from "./owner-runtime-binding.mjs";
 
 export const FLOW_OWNER_ENDPOINT = "flow.owner-endpoint/v1";
 export const FLOW_OWNER_STATUS = "flow.owner-status/v1";
@@ -179,6 +185,7 @@ export function createFlowOwner({
   let operatorErrorSuppressed = 0;
   let operatorErrors = [];
   let operatorErrorWrite = Promise.resolve();
+  let runtimeBinding = null;
 
   const owner = Object.freeze({
     async start() {
@@ -232,6 +239,7 @@ export function createFlowOwner({
 
   async function startOwner() {
     startupError = null;
+    runtimeBinding = ownerRuntimeBindingForEnvironment({ env });
     await ensurePrivateDirectory(paths.authorityDirectory, {
       code: "authority_directory",
       rejectMode: false,
@@ -296,7 +304,12 @@ export function createFlowOwner({
       });
       await transport.start();
       socketIdentity = await socketIdentityAt(activeSocketPath);
-      endpoint = makeEndpoint({ paths, ownerToken, processStartIdentity });
+      endpoint = makeEndpoint({
+        paths,
+        ownerToken,
+        processStartIdentity,
+        runtimeBinding,
+      });
       await writeEndpoint(paths.endpointPath, endpoint);
       await flushOperatorErrors();
       started = true;
@@ -473,12 +486,20 @@ export async function startFlowOwner({
     env,
     runnerOptions,
   });
+  const runtimeBinding = ownerRuntimeBindingForEnvironment({
+    env,
+    ownerScript,
+  });
   const existing = await statusFlowOwner({
     ...paths,
     cleanupStale: false,
     processStartIdentityReader,
   });
   if (["running", "starting"].includes(existing.state)) {
+    if (runtimeBinding !== null &&
+        !ownerRuntimeBindingEqual(existing.runtime_binding, runtimeBinding)) {
+      throw ownerError("owner_runtime_binding_mismatch");
+    }
     return { ...existing, started: false, already_running: true };
   }
   if (existing.state === "unknown") {
@@ -497,6 +518,9 @@ export async function startFlowOwner({
       FLOW_OWNER_SOCKET_FALLBACK_ROOT: paths.socketFallbackRoot,
     }),
     FLOW_OWNER_MAX_FRAME_BYTES: String(maxFrameBytes),
+    ...(runtimeBinding === null ? {} : {
+      FLOW_OWNER_RUNTIME_BINDING: JSON.stringify(runtimeBinding),
+    }),
     ...(resolvedRunnerOptions.delegateCapacity === undefined ? {} : {
       FLOW_RUNNER_DELEGATE_CAPACITY: String(resolvedRunnerOptions.delegateCapacity),
     }),
@@ -697,6 +721,7 @@ export async function runFlowOwnerProcess({
   onError = () => {},
   installSignalHandlers = true,
 } = {}) {
+  ownerRuntimeBindingForEnvironment({ env });
   const factory = runtimeFactory ?? await runtimeFactoryFromEnvironment(env);
   const owner = createFlowOwner({
     env,
@@ -805,7 +830,12 @@ async function runtimeFactoryFromEnvironment(env) {
   return factory;
 }
 
-function makeEndpoint({ paths, ownerToken, processStartIdentity }) {
+function makeEndpoint({
+  paths,
+  ownerToken,
+  processStartIdentity,
+  runtimeBinding = null,
+}) {
   return {
     schema: FLOW_OWNER_ENDPOINT,
     version: FLOW_OWNER_PROTOCOL_VERSION,
@@ -817,6 +847,7 @@ function makeEndpoint({ paths, ownerToken, processStartIdentity }) {
     endpoint_path: paths.endpointPath,
     socket_path: paths.socketPath,
     started_at: new Date().toISOString(),
+    ...(runtimeBinding === null ? {} : { runtime_binding: runtimeBinding }),
   };
 }
 
@@ -876,6 +907,10 @@ function validateEndpoint(endpoint, paths) {
       endpoint.endpoint_path !== paths.endpointPath ||
       endpoint.socket_path !== paths.socketPath) {
     return "endpoint_path_mismatch";
+  }
+  if (endpoint.runtime_binding !== undefined &&
+      !validOwnerRuntimeBinding(endpoint.runtime_binding)) {
+    return "invalid_runtime_binding";
   }
   return null;
 }
@@ -986,11 +1021,14 @@ async function removeStaleOwnerFiles(
     return false;
   }
   const socketIdentity = await socketIdentityAt(paths.socketPath);
+  const endpointIdentity = await endpointIdentityAt(paths.endpointPath);
   const latest = await readEndpoint(paths.endpointPath);
-  if (!sameEndpointRecord(endpoint, latest)) return false;
-  await unlink(paths.endpointPath).catch((error) => {
-    if (error?.code !== "ENOENT") throw error;
-  });
+  const latestEndpointIdentity = await endpointIdentityAt(paths.endpointPath);
+  if (!sameEndpointRecord(endpoint, latest) ||
+      !sameFileIdentity(endpointIdentity, latestEndpointIdentity)) return false;
+  if (!await unlinkEndpointIfIdentity(paths.endpointPath, endpointIdentity)) {
+    return false;
+  }
   await removeSocketIfPresent(paths.socketPath, socketIdentity);
   return true;
 }
@@ -1093,10 +1131,35 @@ async function removeEndpointIfOwned(
   expectedEndpoint = null,
 ) {
   const current = await readEndpoint(endpointPath);
+  const endpointIdentity = await endpointIdentityAt(endpointPath);
   if (current?.owner_token !== ownerToken ||
       expectedEndpoint !== null && !sameEndpointRecord(current, expectedEndpoint)) {
     return false;
   }
+  return unlinkEndpointIfIdentity(endpointPath, endpointIdentity);
+}
+
+async function endpointIdentityAt(endpointPath) {
+  try {
+    const info = await lstat(endpointPath);
+    return info.isFile() && !info.isSymbolicLink()
+      ? { dev: info.dev, ino: info.ino }
+      : null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function sameFileIdentity(left, right) {
+  return left !== null && right !== null &&
+    left.dev === right.dev && left.ino === right.ino;
+}
+
+async function unlinkEndpointIfIdentity(endpointPath, expectedIdentity) {
+  if (expectedIdentity === null) return false;
+  const currentIdentity = await endpointIdentityAt(endpointPath);
+  if (!sameFileIdentity(expectedIdentity, currentIdentity)) return false;
   await unlink(endpointPath).catch((error) => {
     if (error?.code !== "ENOENT") throw error;
   });
@@ -1116,11 +1179,11 @@ async function socketIdentityAt(socketPath) {
 function sameEndpointRecord(left, right) {
   if (left === null || right === null ||
       typeof left !== "object" || typeof right !== "object") return false;
-  const leftKeys = Object.keys(left).sort();
-  const rightKeys = Object.keys(right).sort();
-  return leftKeys.length === rightKeys.length &&
-    leftKeys.every((key, index) => key === rightKeys[index] &&
-      left[key] === right[key]);
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 async function pathExists(path) {
@@ -1168,6 +1231,9 @@ function statusProjection(state, {
     process_identity: endpoint?.process_identity ?? null,
     process_start_identity: endpoint?.process_start_identity ?? null,
     started_at: endpoint?.started_at ?? null,
+    ...(endpoint?.runtime_binding === undefined ? {} : {
+      runtime_binding: endpoint.runtime_binding,
+    }),
     ...(reason === null ? {} : { reason }),
     ...(previous_state === undefined ? {} : { previous_state }),
     ...(forced === undefined ? {} : { forced }),
@@ -1298,6 +1364,27 @@ function ownerError(code) {
   const error = new Error(code);
   error.code = code;
   return error;
+}
+
+function ownerRuntimeBindingForEnvironment({ env, ownerScript = fileURLToPath(import.meta.url) }) {
+  const requested = env.FLOW_OWNER_RUNTIME_BINDING !== undefined ||
+    env.FLOW_OWNER_RUNTIME_MODULE !== undefined ||
+    env.FLOW_CONFIG_DIRECTORY !== undefined ||
+    env.FLOW_QUALIFICATION_REPOSITORY_ROOT !== undefined ||
+    ownerScript === fileURLToPath(import.meta.url);
+  if (!requested) return null;
+  try {
+    if (env.FLOW_OWNER_RUNTIME_BINDING !== undefined) {
+      return assertOwnerRuntimeBinding({ env, ownerScript });
+    }
+    return deriveOwnerRuntimeBinding({ env, ownerScript });
+  } catch (error) {
+    if (error?.code === "owner_runtime_binding_unavailable" ||
+        error?.code === "owner_runtime_binding_mismatch") {
+      throw error;
+    }
+    throw ownerError("owner_runtime_binding_unavailable");
+  }
 }
 
 function assertPath(path, name) {

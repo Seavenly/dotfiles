@@ -87,9 +87,34 @@
           ]
         }
       }
-    }
+    },
+    "runtime_binding": { "$ref": "#/$defs/runtime-binding" }
   },
   "$defs": {
+    "runtime-binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "runtime_module_path",
+        "runtime_module_sha256",
+        "config_directory",
+        "config_directory_sha256",
+        "qualification_repository_root",
+        "release_content_digest",
+        "release_content_bytes_sha256"
+      ],
+      "properties": {
+        "schema": { "const": "flow.owner-runtime-binding/v1" },
+        "runtime_module_path": { "type": "string", "pattern": "^/" },
+        "runtime_module_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "config_directory": { "type": "string", "pattern": "^/" },
+        "config_directory_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "qualification_repository_root": { "type": "string", "pattern": "^/" },
+        "release_content_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "release_content_bytes_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
     "operator-error": {
       "type": "object",
       "additionalProperties": false,

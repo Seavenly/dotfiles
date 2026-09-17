@@ -7,7 +7,7 @@ import {
   statSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { digest as canonicalDigest } from "./canonical.mjs";
@@ -869,10 +869,7 @@ function qualificationEnvironmentMatches(environment) {
         os: process.platform,
         architecture: process.arch,
         node: process.version,
-        npm: execFileSync("npm", ["--version"], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        }).trim(),
+        npm: currentNpmVersion(),
         git: execFileSync("git", ["--version"], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
@@ -884,6 +881,23 @@ function qualificationEnvironmentMatches(environment) {
   }
   return qualificationEnvironmentCache !== null &&
     isDeepStrictEqual(environment, qualificationEnvironmentCache);
+}
+
+function currentNpmVersion() {
+  try {
+    const npmPackage = resolve(
+      dirname(process.execPath),
+      "../lib/node_modules/npm/package.json",
+    );
+    const version = JSON.parse(readFileSync(npmPackage, "utf8"))?.version;
+    if (typeof version === "string" && version.length > 0) return version;
+  } catch {
+    // Fall back for Node installations that do not ship npm beside the binary.
+  }
+  return execFileSync("npm", ["--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
 }
 
 function recipeIsBound(configDirectory, recipe, recipeSchema, expectedCommands) {

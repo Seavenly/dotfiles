@@ -103,10 +103,13 @@ node config/flow/scripts/generate-release-content.mjs
 node config/flow/scripts/generate-qualification-evidence.mjs
 ```
 
-These artifacts make no claim that the current candidate is committed and do
-not record real runs for deferred issue 84/44/46 or remote actions. The
-projection withholds `dark_opt_in.available` whenever any required evidence
-record is failed, blocked, or not run.
+These phase-one and phase-two artifacts make no claim that the current
+candidate is committed and do not record real runs for deferred issue 84/44
+or remote actions. First-release host recovery is qualified separately by the
+issue-46 catalog and external raw receipts documented in
+`qualification/README.md`; actual reboot and expanded macOS visuals remain
+deferred to issue 47. The projection withholds `dark_opt_in.available`
+whenever any required evidence record is failed, blocked, or not run.
 
 ## Public host runtime
 
@@ -129,6 +132,39 @@ explicit `runnerOptions` production constructor fields. It does not count
 passive child-run observation against operation capacity, and never auto-
 admits a checkpoint, capability expansion, uncertain effect, or terminal
 disposition.
+
+### Isolated production backup and restore
+
+Production backup and restore are composed only when the owner is given an
+explicit absolute `FLOW_BACKUP_DIRECTORY` and an explicit absolute
+`FLOW_REPOSITORY_ROOT`. The provider directory must be outside the resolved
+authority directory; it is created owner-private and stores canonical,
+manifest-digest-addressed records. The equivalent constructor options are
+`authorityOptions.backupRestoreDirectory` and
+`authorityOptions.backupRestoreRepositoryRoot`.
+
+Without those explicit isolated paths, or when they are invalid, the runtime
+keeps the fail-closed null backup adapter and reports a typed unavailable
+observation. Default legacy compatibility roots and the ambient current
+working directory are never inferred as backup sources. Callers that need
+legacy files in an isolated backup must pass those roots explicitly through
+the `legacyRoots` constructor field.
+
+Production qualification also requires an absolute isolated `XDG_STATE_HOME`
+for the resolved Flow authority and an isolated absolute `DROVR_CONFIG_DIR`
+with its effective configuration/session bound to that same disposable
+environment. Ambient HOME/XDG/Drovr defaults and shared state are not valid
+isolation prerequisites and must remain fail-closed or qualification
+unavailable.
+
+`backup_create` observes the durable authority, Git identity, artifact bytes,
+and any explicitly supplied legacy roots before recording its intent. The
+provider then writes an atomic idempotent record containing the canonical
+manifest and contained snapshots. `restore` copies only those manifest-bound
+files and imports exact retained authority streams while preserving the fresh
+host admission fence. The public restore barrier still requires fresh
+reconciliation of all six evidence domains and an exact `restore_admit` action;
+provider failure or changed evidence remains a typed block.
 
 `flow status --json` includes the live runner status with capacity, active
 counts, and bounded sanitized error summaries. A detached owner also retains

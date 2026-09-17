@@ -46,6 +46,7 @@ export async function seedPublicReview({
     const featurePrepared = await runtime.prepare(
       featurePreparationRequest(repository),
     );
+    assertPrepared(featurePrepared, "feature");
     const featureLaunch = runtime.launch(
       confirmedPredefinedLaunchRequest(featurePrepared),
     );
@@ -71,6 +72,7 @@ export async function seedPublicReview({
       explicit_facts: reviewFacts(candidateProjection),
       dark_opt_in: DARK_OPT_IN,
     });
+    assertPrepared(reviewPrepared, "review");
     const reviewLaunch = runtime.launch(
       confirmedPredefinedLaunchRequest(reviewPrepared),
     );
@@ -246,6 +248,12 @@ function assertAcceptedLaunch(launch, label) {
   if (launch?.schema !== "flow.launch-receipt/v1" ||
       typeof launch.run_id !== "string") {
     throw new Error(`public ${label} seed launch rejected: ${JSON.stringify(launch)}`);
+  }
+}
+
+function assertPrepared(prepared, label) {
+  if (prepared?.schema !== "flow.prepared-run/v1") {
+    throw new Error(`public ${label} seed preparation rejected: ${JSON.stringify(prepared)}`);
   }
 }
 

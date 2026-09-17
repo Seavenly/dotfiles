@@ -18,6 +18,61 @@
       "type": "string",
       "const": "delegate_effect_materialization"
     },
-    "retryable": { "type": "boolean" }
+    "retryable": { "type": "boolean" },
+    "absence_proven": { "const": true },
+    "request_envelope": { "$ref": "#/$defs/request-envelope" },
+    "drovr": { "$ref": "#/$defs/drovr-classification" }
+  },
+  "$defs": {
+    "request-envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "fields_present", "field_digests"],
+      "properties": {
+        "schema": { "const": "flow.delegate-request-envelope-observation/v1" },
+        "fields_present": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+        },
+        "field_digests": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        },
+        "envelope_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "payload_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "dispatch-proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "stage",
+        "native_dispatch_started",
+        "turn_created",
+        "effect_created"
+      ],
+      "properties": {
+        "schema": { "const": "drovr.dispatch-proof/v1" },
+        "stage": { "const": "pre_dispatch_validation" },
+        "native_dispatch_started": { "const": false },
+        "turn_created": { "const": false },
+        "effect_created": { "const": false }
+      }
+    },
+    "drovr-classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "outcome", "classification"],
+      "properties": {
+        "schema": { "const": "drovr.failure-classification/v1" },
+        "outcome": { "type": "string", "pattern": "^[a-z0-9_:-]+$" },
+        "classification": {
+          "enum": ["pre_dispatch_validation", "unproven"]
+        },
+        "dispatch_proof": { "$ref": "#/$defs/dispatch-proof" }
+      }
+    }
   }
 }

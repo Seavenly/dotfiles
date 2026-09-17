@@ -235,6 +235,11 @@ function runProductionRouteConformancePhase() {
     const env = {
       ...process.env,
       FLOW_CONFIG_DIRECTORY: phase2ConfigDirectory,
+      // The phase-two authority is a disposable copy of config/flow, but
+      // qualification must remain bound to the exact governed release tree.
+      // Never infer this from the copied config or the disposable backup
+      // repository.
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: repositoryRoot,
       FLOW_REPOSITORY_ROOT: repositoryRoot,
       FLOW_PRODUCTION_ROUTE_CONFORMANCE_PROCESS: "1",
     };

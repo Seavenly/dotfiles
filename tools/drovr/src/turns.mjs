@@ -37,6 +37,16 @@ import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { reconcileOrRecoverAgent } from "./recovery.mjs";
 import { ownedStagedTurn } from "./staged-input-receipt.mjs";
 
+// This symbol is intentionally module-private. Consumers may inspect a
+// proof through the read-only predicate below, but cannot mint the marker by
+// copying serialized proof fields.
+const PRE_DISPATCH_PROVENANCE = Symbol("drovr.pre-dispatch-provenance");
+
+export function trustedPreDispatchProof(error) {
+  const proof = error?.[PRE_DISPATCH_PROVENANCE];
+  return proof === undefined ? null : proof;
+}
+
 async function turnContext(registryDirectory, turnId) {
   const turns = await readRecords(registryDirectory, "turns");
   const turn = turns.find(({ id }) => id === turnId);
@@ -327,13 +337,18 @@ export async function discoverTurn(callerKey, dependencies = {}) {
 }
 
 export async function dispatchTurn(agentId, options, dependencies = {}) {
-  requireCallerKey(options.callerKey);
-  requireCallerKey(options.inputKey);
-  const prompt = typeof options.prompt === "string"
-    ? normalizeInputText(options.prompt)
-    : options.prompt;
-  requireInputText(prompt);
-  validateLaunchBinding(options.launchBinding);
+  let prompt;
+  try {
+    requireCallerKey(options.callerKey);
+    requireCallerKey(options.inputKey);
+    prompt = typeof options.prompt === "string"
+      ? normalizeInputText(options.prompt)
+      : options.prompt;
+    requireInputText(prompt);
+    validateLaunchBinding(options.launchBinding);
+  } catch (error) {
+    throw markPreDispatchValidation(error);
+  }
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
   const lockOperation = dependencies.lockOperation ??
@@ -382,7 +397,12 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
               : "adopted",
         };
       }
-      const initial = await agentContext(registryDirectory, agentId);
+      let initial;
+      try {
+        initial = await agentContext(registryDirectory, agentId);
+      } catch (error) {
+        throw markPreDispatchValidation(error);
+      }
       requireAgentLaunchBinding(initial);
       const exactDescription = await describeDelegatedAgent({
         schema: "drovr.delegated-agent-description-request/v1",
@@ -1144,6 +1164,30 @@ function requireInputText(value) {
       outcome: "invalid_arguments",
     });
   }
+}
+
+function markPreDispatchValidation(error) {
+  if (error?.outcome !== "invalid_arguments") return error;
+  const proof = Object.freeze({
+    schema: "drovr.dispatch-proof/v1",
+    stage: "pre_dispatch_validation",
+    native_dispatch_started: false,
+    turn_created: false,
+    effect_created: false,
+  });
+  Object.defineProperty(error, PRE_DISPATCH_PROVENANCE, {
+    configurable: false,
+    enumerable: false,
+    value: proof,
+    writable: false,
+  });
+  error.details = {
+    ...(error.details !== null && typeof error.details === "object"
+      ? error.details
+      : {}),
+    dispatch_proof: proof,
+  };
+  return error;
 }
 
 function callerKeyConflict(callerKey) {

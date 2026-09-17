@@ -14,6 +14,7 @@ import {
   getTurn,
   reconcileTurn,
   sendToTurn,
+  trustedPreDispatchProof,
   turnCommandResult,
   turnDiscoveryCommandResult,
   waitForTurn,
@@ -36,6 +37,18 @@ const PROJECTION_CONTRACT =
   "flow.delegated-agent-description-projection/v1";
 const LIFECYCLE_PROJECTION_CONTRACT =
   "flow.delegated-agent-lifecycle-projection/v1";
+const PRE_DISPATCH_PROOF = Object.freeze({
+  schema: "drovr.dispatch-proof/v1",
+  stage: "pre_dispatch_validation",
+  native_dispatch_started: false,
+  turn_created: false,
+  effect_created: false,
+});
+const TRUSTED_PRE_DISPATCH_PROJECTIONS = new WeakSet();
+
+export function isTrustedPreDispatchProjection(projection) {
+  return TRUSTED_PRE_DISPATCH_PROJECTIONS.has(projection);
+}
 const REGISTRY_LOCK_OUTCOMES = new Set([
   "registry_locked",
   "registry_lock_recovery_required",
@@ -265,7 +278,12 @@ export function createDrovrDelegatedAgentPort({
 
     async dispatch(request) {
       if (!validDispatchRequest(request)) {
-        return lifecycleBlock("dispatch", "invalid_dispatch_request", []);
+        return lifecycleBlock(
+          "dispatch",
+          "invalid_dispatch_request",
+          [],
+          PRE_DISPATCH_PROOF,
+        );
       }
       return invokeLifecycle("dispatch", async () => {
         const description = request.description;
@@ -481,6 +499,7 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
         "compatibility_blocked",
         error.details?.compatibility?.legal_actions ??
           ["refresh_compatibility", "run_drovr_doctor"],
+        dispatchProofFrom(error),
       );
     }
     if (
@@ -503,6 +522,7 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
       identityConflict(error?.outcome)
         ? []
         : ["retry_delegated_runtime_operation"],
+      dispatchProofFrom(error),
     );
   }
 }
@@ -628,7 +648,8 @@ function lifecycleConflictFromDiscovery(operation, error, discovery) {
     "launch_binding_missing",
     "launch_binding_stale",
   ].includes(code);
-  return freezeCanonical({
+  const dispatchProof = dispatchProofFrom(error);
+  const projection = freezeCanonical({
     schema: LIFECYCLE_PROJECTION_CONTRACT,
     operation,
     status: "blocked",
@@ -636,10 +657,17 @@ function lifecycleConflictFromDiscovery(operation, error, discovery) {
     delegation: error.details?.delegation ?? null,
     turn: null,
     compatibility: { contract: PORT_CONTRACT, code },
+    ...(dispatchProof === null ? {} : {
+      dispatch_proof: dispatchProof,
+    }),
     legal_next_actions: immutableAgentConflict
       ? ["retire_agent"]
       : ["refresh_delegated_runtime_description"],
   });
+  if (dispatchProof !== null) {
+    TRUSTED_PRE_DISPATCH_PROJECTIONS.add(projection);
+  }
+  return projection;
 }
 
 function identityConflict(outcome) {
@@ -651,8 +679,13 @@ function identityConflict(outcome) {
   ].includes(outcome);
 }
 
-function lifecycleBlock(operation, code, legalNextActions) {
-  return freezeCanonical({
+function lifecycleBlock(
+  operation,
+  code,
+  legalNextActions,
+  dispatchProof = null,
+) {
+  const projection = freezeCanonical({
     schema: LIFECYCLE_PROJECTION_CONTRACT,
     operation,
     status: "blocked",
@@ -660,8 +693,29 @@ function lifecycleBlock(operation, code, legalNextActions) {
     delegation: null,
     turn: null,
     compatibility: { contract: PORT_CONTRACT, code },
+    ...(dispatchProof === null ? {} : { dispatch_proof: dispatchProof }),
     legal_next_actions: legalNextActions,
   });
+  if (dispatchProof !== null) {
+    TRUSTED_PRE_DISPATCH_PROJECTIONS.add(projection);
+  }
+  return projection;
+}
+
+function dispatchProofFrom(error) {
+  const proof = trustedPreDispatchProof(error);
+  if (proof === null) return null;
+  return validDispatchProof(proof) ? proof : null;
+}
+
+function validDispatchProof(proof) {
+  return proof?.schema === "drovr.dispatch-proof/v1" &&
+    proof.stage === "pre_dispatch_validation" &&
+    proof.native_dispatch_started === false &&
+    proof.turn_created === false &&
+    proof.effect_created === false &&
+    Object.keys(proof).sort().join(",") ===
+      "effect_created,native_dispatch_started,schema,stage,turn_created";
 }
 
 function validDispatchRequest(request) {

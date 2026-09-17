@@ -374,6 +374,32 @@ test("public admission withholds qualification captured on another host", async 
   assertQualificationWithheld(rejection, "prepare");
 });
 
+test("public admission uses the governed qualification root instead of disposable backup root", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-qualified-root-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const disposableRepository = join(scratch, "disposable-repository");
+  await initializeCleanTestRepository(disposableRepository);
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY,
+      FLOW_REPOSITORY_ROOT: disposableRepository,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT,
+    },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const result = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+  assert.notEqual(result.code, "qualification_withheld");
+});
+
 test("public preparation preserves blocked Drovr compatibility details", async (t) => {
   const delegatedAgentPort = {
     async describe() {
@@ -2058,6 +2084,7 @@ async function createRuntimeWithCopiedFlowConfig(
       XDG_STATE_HOME: join(scratch, "state"),
       FLOW_CONFIG_DIRECTORY: configDirectory,
       FLOW_REPOSITORY_ROOT: REPOSITORY_ROOT,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT,
     },
     delegatedAgentPort,
     autonomous: false,

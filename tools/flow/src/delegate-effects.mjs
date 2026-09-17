@@ -22,9 +22,13 @@ import {
   DELEGATE_FAILURE_OBSERVATION_SCHEMA,
 } from "./provider-receipt-policies/delegate-drovr.mjs";
 import {
+  isTrustedPreDispatchProjection,
+} from "./drovr-delegated-agent-port.mjs";
+import {
   validateDelegateEvidenceSafety,
 } from "./evidence-safety.mjs";
 import { isCredentialShapedString } from "./provider-receipt-sanitizers.mjs";
+const TRUSTED_DELEGATE_RUNTIME_ERRORS = new WeakSet();
 const REQUIRED_PORT_OPERATIONS = [
   "describe",
   "dispatch",
@@ -163,16 +167,20 @@ export function dispatchDelegateEffect(
     }
   }).catch(async (error) => {
     if (typeof runAuthority.recordEffectObservation !== "function") return;
-    const providerObservation = error?.code === "delegated_runtime_unresolved"
+    const providerObservation = error?.code === "delegated_runtime_unresolved" &&
+        !isInvalidArgumentProjection(error)
       ? error.projection ?? null
-      : delegateFailureObservation(error);
+      : delegateFailureObservation(error, intent);
     if (!isPlainRecord(providerObservation)) return;
+    const presence = providerObservation.absence_proven === true
+      ? "absent"
+      : "indeterminate";
     try {
       await runAuthority.recordEffectObservation(intent, {
         schema: "flow.effect-observation/v1",
         effect_id: intent.effect_id,
         idempotency_key: intent.idempotency_key,
-        presence: "indeterminate",
+        presence,
         causation: null,
         provider_observation: providerObservation,
       });
@@ -182,19 +190,86 @@ export function dispatchDelegateEffect(
   });
 }
 
-function delegateFailureObservation(error) {
+function delegateFailureObservation(error, intent) {
   const code = typeof error?.reason === "string" &&
       /^[a-z0-9_:-]+$/u.test(error.reason)
     ? error.reason
     : typeof error?.code === "string" && /^[a-z0-9_:-]+$/u.test(error.code)
       ? error.code
       : "delegate_effect_failed";
+  const projection = error?.projection;
+  const dispatchProof = TRUSTED_DELEGATE_RUNTIME_ERRORS.has(error) &&
+      validDispatchProof(error?.dispatch_proof)
+    ? error.dispatch_proof
+    : null;
+  const outcome = safeOutcome(
+    projection?.compatibility?.code ?? error?.outcome ?? code,
+  );
+  const preDispatch = dispatchProof !== null;
   return {
     schema: DELEGATE_FAILURE_OBSERVATION_SCHEMA,
     code,
     stage: "delegate_effect_materialization",
     retryable: false,
+    ...(preDispatch ? { absence_proven: true } : {}),
+    request_envelope: requestEnvelopeObservation(intent),
+    drovr: {
+      schema: "drovr.failure-classification/v1",
+      outcome,
+      classification: preDispatch ? "pre_dispatch_validation" : "unproven",
+      ...(dispatchProof === null ? {} : { dispatch_proof: dispatchProof }),
+    },
   };
+}
+
+function requestEnvelopeObservation(intent) {
+  const input = isPlainRecord(intent?.delegate_input)
+    ? intent.delegate_input
+    : {};
+  const fields = Object.keys(input).sort();
+  const fieldDigests = Object.fromEntries(fields.flatMap((field) => {
+    try {
+      return [[field, digest(input[field])]];
+    } catch {
+      return [];
+    }
+  }));
+  let serialized = null;
+  try {
+    serialized = materializeDelegateWireInputs(intent)?.[0] ?? null;
+  } catch {
+    // Keep field presence/digests even when materialization itself failed.
+  }
+  return {
+    schema: "flow.delegate-request-envelope-observation/v1",
+    fields_present: fields,
+    field_digests: fieldDigests,
+    ...(serialized === null ? {} : {
+      envelope_digest: serialized.envelope?.envelope_digest,
+      payload_sha256: serialized.payload_sha256,
+    }),
+  };
+}
+
+function isInvalidArgumentProjection(error) {
+  return error?.projection?.compatibility?.code === "invalid_arguments" ||
+    error?.projection?.compatibility?.code === "invalid_dispatch_request";
+}
+
+function safeOutcome(value) {
+  return typeof value === "string" && /^[a-z0-9_:-]{1,128}$/u.test(value)
+    ? value
+    : "delegate_effect_failed";
+}
+
+function validDispatchProof(proof) {
+  return proof?.schema === "drovr.dispatch-proof/v1" &&
+    proof.stage === "pre_dispatch_validation" &&
+    proof.native_dispatch_started === false &&
+    proof.turn_created === false &&
+    proof.effect_created === false &&
+    Object.keys(proof).sort().join(",") ===
+      "effect_created,native_dispatch_started,schema,stage,turn_created";
 }
 
 async function executeDelegateCancellation(intent, port) {
@@ -1179,7 +1254,14 @@ function delegatedRuntimeError(projection) {
   const error = new Error("delegated runtime did not prove an exact turn");
   error.code = projection?.compatibility?.code ??
     "delegated_runtime_unresolved";
+  error.outcome = projection?.compatibility?.code ?? null;
+  error.dispatch_proof = isTrustedPreDispatchProjection(projection)
+    ? projection.dispatch_proof
+    : null;
   error.projection = projection ?? null;
+  if (error.dispatch_proof !== null) {
+    TRUSTED_DELEGATE_RUNTIME_ERRORS.add(error);
+  }
   return error;
 }
 

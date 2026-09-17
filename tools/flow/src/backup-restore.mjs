@@ -1513,12 +1513,52 @@ export function executeHostRecoveryCommand({
     }
     if (before.restore?.active === true) {
       if (before.restore.manifest_digest === manifest.manifest_digest) {
-        return freezeCanonical({
+        if (before.restore.applied_receipt !== null &&
+            before.restore.applied_receipt !== undefined) {
+          return freezeCanonical({
+            schema: "flow.command-receipt/v1",
+            command_type: type,
+            run_id: null,
+            authority_watermark: before.watermark,
+            accepted: false,
+          });
+        }
+        let appliedReceipt = null;
+        try {
+          appliedReceipt = applyRestoreThroughAdapter(
+            recoveryAdapter,
+            before.restore.manifest,
+            before.restore.intent,
+          );
+          if (appliedReceipt !== null) {
+            const applied = record({ type: "restore_applied", receipt: appliedReceipt });
+            if (applied) return applied;
+          }
+          } catch (error) {
+            return reject(
+              "restore",
+              error?.code ?? "restore_apply_failed",
+              error?.message ?? null,
+              current(),
+            );
+          }
+          if (appliedReceipt === null) {
+            return reject(
+              "restore",
+              "restore_writer_unavailable",
+              "restore writer is unavailable",
+              current(),
+            );
+          }
+          const after = current();
+          return freezeCanonical({
           schema: "flow.command-receipt/v1",
           command_type: type,
           run_id: null,
-          authority_watermark: before.watermark,
-          accepted: false,
+          authority_watermark: after.watermark,
+          accepted: true,
+          manifest_digest: manifest.manifest_digest,
+          ...(appliedReceipt === null ? {} : { receipt: appliedReceipt }),
         });
       }
       return mutationReject(before);

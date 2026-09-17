@@ -484,12 +484,103 @@ function sanitizeDelegateFailureObservation(value) {
       typeof value.retryable !== "boolean") {
     return null;
   }
+  const requestEnvelope = value.request_envelope === undefined
+    ? null
+    : sanitizeDelegateRequestEnvelopeObservation(value.request_envelope);
+  if (value.request_envelope !== undefined && requestEnvelope === null) {
+    return null;
+  }
+  const drovr = value.drovr === undefined
+    ? null
+    : sanitizeDrovrFailureClassification(value.drovr);
+  if (value.drovr !== undefined && drovr === null) return null;
+  if (value.absence_proven === true &&
+      (drovr?.classification !== "pre_dispatch_validation" ||
+       drovr.dispatch_proof === undefined)) {
+    return null;
+  }
   return {
     schema: DELEGATE_FAILURE_OBSERVATION_SCHEMA,
     code: value.code,
     stage: value.stage,
     retryable: value.retryable,
+    ...(value.absence_proven === true ? { absence_proven: true } : {}),
+    ...(requestEnvelope === null ? {} : { request_envelope: requestEnvelope }),
+    ...(drovr === null ? {} : { drovr }),
   };
+}
+
+function sanitizeDelegateRequestEnvelopeObservation(value) {
+  if (!isRecord(value) ||
+      value.schema !== "flow.delegate-request-envelope-observation/v1" ||
+      !Array.isArray(value.fields_present) ||
+      new Set(value.fields_present).size !== value.fields_present.length ||
+      !value.fields_present.every((field) =>
+        typeof field === "string" && /^[a-z][a-z0-9_]*$/u.test(field)) ||
+      !isRecord(value.field_digests) ||
+      Object.keys(value.field_digests).length !== value.fields_present.length ||
+      !value.fields_present.every((field) =>
+        Object.hasOwn(value.field_digests, field) &&
+        isDigest(value.field_digests[field])) ||
+      value.envelope_digest !== undefined && !isDigest(value.envelope_digest) ||
+      value.payload_sha256 !== undefined && !isDigest(value.payload_sha256)) {
+    return null;
+  }
+  return {
+    schema: value.schema,
+    fields_present: [...value.fields_present],
+    field_digests: Object.fromEntries(
+      value.fields_present.map((field) => [field, value.field_digests[field]]),
+    ),
+    ...(value.envelope_digest === undefined ? {} : {
+      envelope_digest: value.envelope_digest,
+    }),
+    ...(value.payload_sha256 === undefined ? {} : {
+      payload_sha256: value.payload_sha256,
+    }),
+  };
+}
+
+function sanitizeDrovrFailureClassification(value) {
+  if (!isRecord(value) ||
+      value.schema !== "drovr.failure-classification/v1" ||
+      !safeProviderString(value.outcome) ||
+      !["pre_dispatch_validation", "unproven"].includes(value.classification)) {
+    return null;
+  }
+  const dispatchProof = value.dispatch_proof === undefined
+    ? null
+    : sanitizeDispatchProof(value.dispatch_proof);
+  if (value.dispatch_proof !== undefined && dispatchProof === null) return null;
+  return {
+    schema: value.schema,
+    outcome: value.outcome,
+    classification: value.classification,
+    ...(dispatchProof === null ? {} : { dispatch_proof: dispatchProof }),
+  };
+}
+
+function sanitizeDispatchProof(value) {
+  return isRecord(value) &&
+    value.schema === "drovr.dispatch-proof/v1" &&
+    value.stage === "pre_dispatch_validation" &&
+    value.native_dispatch_started === false &&
+    value.turn_created === false &&
+    value.effect_created === false &&
+    Object.keys(value).sort().join(",") ===
+      "effect_created,native_dispatch_started,schema,stage,turn_created"
+    ? {
+        schema: value.schema,
+        stage: value.stage,
+        native_dispatch_started: false,
+        turn_created: false,
+        effect_created: false,
+      }
+    : null;
+}
+
+function isDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 // One dispatcher keeps provider evidence consistent at authority write time,
@@ -744,6 +835,10 @@ function observationPresence(observation, intent, { exact }) {
 function hasObservationEvidence(providerObservation, presence) {
   if (!isRecord(providerObservation)) return false;
   if (presence === "present") return hasPositiveProviderEvidence(providerObservation);
+  if (presence === "absent" &&
+      providerObservation.schema === DELEGATE_FAILURE_OBSERVATION_SCHEMA) {
+    return providerObservation.absence_proven === true;
+  }
   if (providerObservation.found === false) return true;
   if (Number.isSafeInteger(providerObservation.matching_review_count) &&
       providerObservation.matching_review_count === 0) return true;

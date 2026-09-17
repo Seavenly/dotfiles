@@ -18,6 +18,7 @@ import {
   reduceHostRecoveryEvent,
 } from "../src/backup-restore.mjs";
 import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
+import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
 import {
   capabilityBlockedCheckpointProposal,
@@ -27,6 +28,12 @@ import {
   repeatedRevisionCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+import {
+  DELEGATE_OUTPUT_VALIDATOR,
+  delegateCardProposal,
+} from "../test-support/delegate-card.mjs";
+import { supportedDescription } from
+  "../test-support/delegated-agent-description.mjs";
 import {
   createFixedTimeDurableRunAuthority as createDurableRunAuthority,
   fixedHostIdentity,
@@ -3225,6 +3232,131 @@ test("recovery fails closed for effects that require reconciliation", async (t) 
   );
 });
 
+test("durable delegate absence settles after restart without reinvocation", async (t) => {
+  const exactDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-absence-"));
+  const unprovenDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-unproven-"));
+  t.after(() => rm(exactDirectory, { recursive: true, force: true }));
+  t.after(() => rm(unprovenDirectory, { recursive: true, force: true }));
+
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "read-only",
+    },
+    caller_metadata: { owner: "issue-46-durable-restart" },
+  }, {});
+  const exactAuthority = createDurableRunAuthority({
+    authorityDirectory: exactDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-exact-a"),
+  });
+  const exactRuntime = createFlowRuntime({
+    runAuthority: exactAuthority,
+    delegatedAgentPort: durableDelegatePort(),
+    delegateOutputValidators: durableDelegateValidators(),
+  });
+  const exactPrepared = exactRuntime.prepare(delegateCardProposal(description));
+  const exactLaunch = exactRuntime.launch(confirmedLaunchRequest(exactPrepared));
+  assert.equal(exactLaunch.created, true, JSON.stringify(exactLaunch));
+  const exactApproval = exactRuntime.query({ run_id: exactLaunch.run_id })
+    .legal_actions.find(({ type, decision }) =>
+      type === "checkpoint_decision" && decision === "approve");
+  assert.ok(exactApproval, "durable delegate launch must expose approval");
+  exactRuntime.command(exactApproval);
+  const exactExecute = exactRuntime.query({ run_id: exactLaunch.run_id })
+    .legal_actions.find(({ type }) => type === "delegate_execute");
+  assert.ok(exactExecute, "approved durable delegate must expose execution");
+  const exactReceiptBeforeRestart = exactRuntime.command(exactExecute);
+  const exactIntent = exactReceiptBeforeRestart.effect_intents?.[0];
+  assert.ok(exactIntent, JSON.stringify(exactReceiptBeforeRestart));
+  await nextTurn();
+  await exactAuthority.recordEffectObservation(
+    exactIntent,
+    delegateEffectObservation(exactIntent, { proven: true }),
+  );
+  exactAuthority.close();
+
+  const exactRecovered = createDurableRunAuthority({
+    authorityDirectory: exactDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-exact-b"),
+  });
+  t.after(() => exactRecovered.close());
+  let exactInvocations = 0;
+  const exactReceipt = await exactRecovered.invokeEffect(exactIntent, {
+    reconciliation: "settle_absent",
+    invoke() {
+      exactInvocations += 1;
+      assert.fail("proven pre-dispatch absence must not invoke the delegate");
+    },
+  });
+  assert.equal(exactInvocations, 0);
+  assert.equal(exactReceipt.outcome, "not_created");
+  assert.equal(exactRecovered.query(exactLaunch.run_id).effects[0].status,
+    "not_created");
+
+  const unprovenAuthority = createDurableRunAuthority({
+    authorityDirectory: unprovenDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-unproven-a"),
+  });
+  const unprovenRuntime = createFlowRuntime({
+    runAuthority: unprovenAuthority,
+    delegatedAgentPort: durableDelegatePort(),
+    delegateOutputValidators: durableDelegateValidators(),
+  });
+  const unprovenPrepared = unprovenRuntime.prepare(
+    delegateCardProposal(description),
+  );
+  const unprovenLaunch = unprovenRuntime.launch(
+    confirmedLaunchRequest(unprovenPrepared),
+  );
+  assert.equal(unprovenLaunch.created, true, JSON.stringify(unprovenLaunch));
+  const unprovenApproval = unprovenRuntime.query({
+    run_id: unprovenLaunch.run_id,
+  }).legal_actions.find(({ type, decision }) =>
+    type === "checkpoint_decision" && decision === "approve");
+  assert.ok(unprovenApproval, "durable delegate launch must expose approval");
+  unprovenRuntime.command(unprovenApproval);
+  const unprovenExecute = unprovenRuntime.query({
+    run_id: unprovenLaunch.run_id,
+  }).legal_actions.find(({ type }) => type === "delegate_execute");
+  assert.ok(unprovenExecute,
+    "approved durable delegate must expose execution");
+  const unprovenReceiptBeforeRestart = unprovenRuntime.command(unprovenExecute);
+  const unprovenIntent = unprovenReceiptBeforeRestart.effect_intents?.[0];
+  assert.ok(unprovenIntent, JSON.stringify(unprovenReceiptBeforeRestart));
+  await nextTurn();
+  await unprovenAuthority.recordEffectObservation(
+    unprovenIntent,
+    delegateEffectObservation(unprovenIntent, { proven: false }),
+  );
+  unprovenAuthority.close();
+
+  const unprovenRecovered = createDurableRunAuthority({
+    authorityDirectory: unprovenDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-unproven-b"),
+  });
+  t.after(() => unprovenRecovered.close());
+  const unprovenProjection = unprovenRecovered.query(unprovenLaunch.run_id);
+  assert.equal(unprovenProjection.effects[0].status, "reconciling");
+  assert.ok(unprovenProjection.legal_actions.some((action) =>
+    action.type === "recovery" && action.effect_id === unprovenIntent.effect_id));
+  let unprovenInvocations = 0;
+  await assert.rejects(
+    () => unprovenRecovered.invokeEffect(unprovenIntent, {
+      reconciliation: "settle_absent",
+      invoke() {
+        unprovenInvocations += 1;
+        assert.fail("unproven absence must not invoke the delegate");
+      },
+    }),
+    (error) => error.code === "effect_absence_not_proven",
+  );
+  assert.equal(unprovenInvocations, 0);
+});
+
 test("presence evidence older than an invocation cannot be adopted", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-authority-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -3948,6 +4080,91 @@ function effectLifecycle(fold, command, classification = "caller_idempotent") {
           resource_claims: [],
         }],
       };
+}
+
+function delegateEffectObservation(intent, { proven }) {
+  const dispatchProof = {
+    schema: "drovr.dispatch-proof/v1",
+    stage: "pre_dispatch_validation",
+    native_dispatch_started: false,
+    turn_created: false,
+    effect_created: false,
+  };
+  const failure = {
+    schema: "flow.delegate-failure-observation/v1",
+    code: "invalid_arguments",
+    stage: "delegate_effect_materialization",
+    retryable: false,
+    request_envelope: {
+      schema: "flow.delegate-request-envelope-observation/v1",
+      fields_present: ["description", "prompt"],
+      field_digests: {
+        description: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        prompt: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      },
+      envelope_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      payload_sha256: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    },
+    ...(proven ? { absence_proven: true } : {}),
+    drovr: {
+      schema: "drovr.failure-classification/v1",
+      outcome: "invalid_arguments",
+      classification: proven ? "pre_dispatch_validation" : "unproven",
+      ...(proven ? { dispatch_proof: dispatchProof } : {}),
+    },
+  };
+  return {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: proven ? "absent" : "indeterminate",
+    causation: null,
+    provider_observation: failure,
+  };
+}
+
+function durableDelegatePort() {
+  return {
+    contract: "flow.delegated-agent-port/v1",
+    async describe() {},
+    async discover() {
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "discover",
+        status: "proven_absent",
+        watermark: {
+          schema: "drovr.registry-authority-watermark/v1",
+          authority: "drovr.registry",
+          turns_sha256: `sha256:${"0".repeat(64)}`,
+        },
+        delegation: null,
+        turn: null,
+        legal_next_actions: ["dispatch_exact_turn"],
+      };
+    },
+    async dispatch() {
+      return new Promise(() => {});
+    },
+    async send() {},
+    async observe() {},
+    async wait() {},
+    async cancel() {},
+    async reconcile() {},
+    async retire() {},
+  };
+}
+
+function durableDelegateValidators() {
+  return {
+    [DELEGATE_OUTPUT_VALIDATOR]: {
+      validate: () => true,
+      evidenceSafety: validateDelegateEvidenceSafety,
+    },
+  };
+}
+
+function nextTurn() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function multiEffectLifecycle(_fold, command) {

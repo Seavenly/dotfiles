@@ -1,0 +1,2979 @@
+{
+  "schema": "flow.host-recovery-qualification-evidence/v1",
+  "version": 1,
+  "issue": 46,
+  "run_id": "run:issue46-final-v11",
+  "status": "passed",
+  "scope": "first_release_host_recovery_and_local_rendering",
+  "release": {
+    "release_id": "flow-release-1.0-dark/v1",
+    "implementation": "flow-runtime/v1",
+    "candidate_tree_sha": "056f19fa0744467929e578df4beb4b7eced6062c",
+    "release_content_digest": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+    "pinned_git_tree_sha": "6e16c4628e80a4da052c52cec2e38daaa2f296c3",
+    "release_content_bytes_sha256": "6a7dde7b7af45efc5f821f48a2ec980da81631834dbf68e4deb033336f0bae84"
+  },
+  "host": {
+    "os": "linux",
+    "architecture": "x64",
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "git": "2.53.0"
+  },
+  "tools": {
+    "node": {
+      "path_ref": "runtime/node",
+      "version": "v22.23.1",
+      "sha256": "93956de2e59480474a7b46571da1651180b1a050cdf32641ebec4ce6e478e068"
+    },
+    "flow_launcher": {
+      "path_ref": "config/flow/src/cli.mjs",
+      "version": "flow-runtime/v1",
+      "sha256": "03216046e79e64fc44a1a792b2e77a3b716b2a6966d1b68423a45bd694d8f64f"
+    },
+    "flow_host": {
+      "path_ref": "config/flow/src/owner-process.mjs",
+      "version": "flow-runtime/v1",
+      "sha256": "907dbd64fcb0c3b307f546a789d51d0f273d805acf679a7669d05963a55d25e2"
+    },
+    "drovr": {
+      "path_ref": "tools/drovr/src/cli.mjs",
+      "version": "drovr-source/v1",
+      "sha256": "572051696081feb30e1fb1e7c9157ba5cbe6ec532dbe4614ef7f4b2b4015d5d5"
+    },
+    "herdr": {
+      "path_ref": "external/herdr/not-required",
+      "version": "not_required",
+      "sha256": "d9efe7372f3511956f3ba4e340a82a790ea64ae046eb50b5644f52436ab760cd"
+    }
+  },
+  "isolation": {
+    "state_root_ref": "isolation/state",
+    "authority_root_ref": "isolation/authority",
+    "socket_ref": "isolation/authority/owner.sock",
+    "endpoint_ref": "isolation/authority/owner.json",
+    "backup_root_ref": "isolation/backup",
+    "repository_root_ref": "isolation/repository",
+    "drovr_config_root_ref": "isolation/drovr-config",
+    "herdr_session_ref": "herdr-session/sha256:593ce50a30a80111e3b539246897921bf0a6b8b513d13650b493dd6b23af49c7",
+    "run_id": "run:issue46-final-v11",
+    "identity_digest": "sha256:9bcbca958214280ef2afd09a7ac7436ece63e70f4bfe9ff9e89f74e88b5f99a5"
+  },
+  "scenarios": [
+    {
+      "id": "concurrent_runs_owner_restart",
+      "execution_kind": "native_provider",
+      "proof_predicate": "concurrent_owner_restart",
+      "required_command_kinds": [
+        "native_concurrency_recovery_probe"
+      ],
+      "required_observation_kinds": [
+        "capacity",
+        "client_exit",
+        "owner_restart",
+        "effect"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:15.856Z",
+      "finished_at": "2026-09-17T13:08:17.774Z",
+      "commands": [
+        {
+          "id": "native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
+            "--scenario",
+            "concurrent_runs_owner_restart",
+            "--worktree",
+            "<worktree>",
+            "--authority-directory",
+            "<authority>",
+            "--home-directory",
+            "<workspace>",
+            "--xdg-state-home",
+            "<state>",
+            "--drovr-config-directory",
+            "<drovr>",
+            "--owner-isolation-root",
+            "<workspace><path:sha256:1257209ed024a21e8caf8bfc025979f15378a5ee2b6b1ffe0ed44975f1a4a5ad>",
+            "--repository-root",
+            "<repository>",
+            "--backup-directory",
+            "<backup>",
+            "--run-id",
+            "run:issue46-final-v11",
+            "--timeout",
+            "120000"
+          ],
+          "command_kind": "native_concurrency_recovery_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
+          "host_ref": "native/flow-provider",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:15.856Z",
+          "finished_at": "2026-09-17T13:08:17.774Z",
+          "duration_ms": 1918,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2.stdout.log",
+              "sha256": "bb72e4e31f67bfe5b6f012a9ef7b8735991cd3eee391ce3d535c8de9fc2af367",
+              "bytes": 368909
+            },
+            "stderr": {
+              "path": "logs/native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "native:concurrent_runs_owner_restart:capacity",
+          "kind": "capacity",
+          "content": {
+            "bounded_capacity": true,
+            "capacity": 1,
+            "active_runs": 2,
+            "run_ids": [
+              "run:28949167b2f7959e220408fe72fe38a547b5ca6b232cac35f9a06a829fab0057",
+              "run:3baa68da78db6b1004581bbdfb0a4d03eea30d884dc041d8dcdd83519ebf822d"
+            ],
+            "slow_delegate": true,
+            "provider_dispatch_count": 1,
+            "watermark": "sha256:56fc7ab99d9a5b6dd4731f22a90c089fbefa09832ca9a3e63599f91e6f0b1359",
+            "legal_actions": []
+          },
+          "content_digest": "sha256:ed8c3db678dd80f322c24934d60516a10e5f47422607b92ded547a56e02f7320"
+        },
+        {
+          "id": "native:concurrent_runs_owner_restart:client_exit",
+          "kind": "client_exit",
+          "content": {
+            "client_exited": true,
+            "client_exit_code": 0,
+            "owner_survived_client_exit": true,
+            "owner_status": "running",
+            "watermark": "sha256:41065586d2b116422a68243aeffd9f528a6a7f1a1522c2eda981ff8c3924178b",
+            "legal_actions": []
+          },
+          "content_digest": "sha256:ddcd3d0fc547837e1effa074ed171c8f0d6f60b9c01771c564fabea25f305785"
+        },
+        {
+          "id": "native:concurrent_runs_owner_restart:owner_restart",
+          "kind": "owner_restart",
+          "content": {
+            "same_boot_restart": true,
+            "owner_killed": true,
+            "termination_signal": "SIGKILL",
+            "before_boot_id": "boot:issue-46-public-owner",
+            "after_boot_id": "boot:issue-46-public-owner",
+            "before_process_identity": "owner:2430897:42d05876-4cb9-4848-bfad-789f63dee9f3",
+            "after_process_identity": "owner:2431032:926d4b79-8e13-4ebb-bed2-7188b0d01607",
+            "same_authority": true,
+            "run_ids_before_restart": [
+              "run:28949167b2f7959e220408fe72fe38a547b5ca6b232cac35f9a06a829fab0057",
+              "run:3baa68da78db6b1004581bbdfb0a4d03eea30d884dc041d8dcdd83519ebf822d"
+            ],
+            "run_ids_after_restart": [
+              "run:28949167b2f7959e220408fe72fe38a547b5ca6b232cac35f9a06a829fab0057",
+              "run:3baa68da78db6b1004581bbdfb0a4d03eea30d884dc041d8dcdd83519ebf822d"
+            ],
+            "watermark": "sha256:32d52ba9a442a4327393f51f90beb3737ac98c9bbd708338507fe489ad621d46",
+            "legal_actions": []
+          },
+          "content_digest": "sha256:29349b2c4a5538cb100f544778ddac9da8b057ee5d968de85c38358b41cda1b9"
+        },
+        {
+          "id": "native:concurrent_runs_owner_restart:effect",
+          "kind": "effect",
+          "content": {
+            "duplicate_effect": false,
+            "invocation_count": 1,
+            "total_invocation_count": 2,
+            "effect_id": "effect:48b89fdd6836bc2b7fbcb4a9570eb9e47cf1ca0924c55139d62f08da11fbfba5",
+            "effect_ids": [
+              "effect:48b89fdd6836bc2b7fbcb4a9570eb9e47cf1ca0924c55139d62f08da11fbfba5",
+              "effect:9cb850972c93e8d551047e160f3aaac026424542d54b589248986716055a1a60"
+            ],
+            "provider_dispatch_count": 2,
+            "provider_recovery_count": 1,
+            "manual_driver": false,
+            "post_restart_recovery_command_count": 0,
+            "watermark": "sha256:73eccb3fa728c63d2d332a69c4ed0fcd4c9bcde3006d8acec6b270fe934065bc",
+            "legal_actions": []
+          },
+          "content_digest": "sha256:d7c2bfd7ea33cd421c71f5e18634e02a2a46ef09072ebb61ca4985131849a71e"
+        }
+      ],
+      "captures": [
+        {
+          "id": "native-provider-concurrent_runs_owner_restart-native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2",
+          "kind": "native_provider_result",
+          "format": "json",
+          "path": "captures/native-provider-concurrent_runs_owner_restart-native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2.json",
+          "sha256": "cc7e711b8021a20db3ec8c026ed3c2cf5360998e7110caed474882d4aa424bbc",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:04f2de83dd99c4a4d7d4c10a42087864a474128e0a428a629f0abebbf22325d6",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "bounded_capacity",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:concurrent_runs_owner_restart:capacity"
+          ]
+        },
+        {
+          "id": "client_exit",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:concurrent_runs_owner_restart:client_exit"
+          ]
+        },
+        {
+          "id": "same_boot_owner_restart",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:concurrent_runs_owner_restart:owner_restart"
+          ]
+        },
+        {
+          "id": "no_duplicate_effect",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:concurrent_runs_owner_restart:effect"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:17.800Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "actionable_failure_recovery",
+      "execution_kind": "native_provider",
+      "proof_predicate": "failure_recovery",
+      "required_command_kinds": [
+        "native_failure_recovery_probe"
+      ],
+      "required_observation_kinds": [
+        "failure",
+        "uncertainty"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:18.254Z",
+      "finished_at": "2026-09-17T13:08:21.720Z",
+      "commands": [
+        {
+          "id": "native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
+            "--scenario",
+            "actionable_failure_recovery",
+            "--worktree",
+            "<worktree>",
+            "--authority-directory",
+            "<authority>",
+            "--home-directory",
+            "<workspace>",
+            "--xdg-state-home",
+            "<state>",
+            "--drovr-config-directory",
+            "<drovr>",
+            "--owner-isolation-root",
+            "<workspace><path:sha256:1257209ed024a21e8caf8bfc025979f15378a5ee2b6b1ffe0ed44975f1a4a5ad>",
+            "--repository-root",
+            "<repository>",
+            "--backup-directory",
+            "<backup>",
+            "--run-id",
+            "run:issue46-final-v11",
+            "--timeout",
+            "120000"
+          ],
+          "command_kind": "native_failure_recovery_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
+          "host_ref": "native/flow-provider",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:18.254Z",
+          "finished_at": "2026-09-17T13:08:21.720Z",
+          "duration_ms": 3466,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a.stdout.log",
+              "sha256": "38e61bb464f1e371634c85ce723dc49b559428addd8d390a659154dd5f691172",
+              "bytes": 259400
+            },
+            "stderr": {
+              "path": "logs/native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "native:actionable_failure_recovery:failure",
+          "kind": "failure",
+          "content": {
+            "typed_failure": true,
+            "cancellation": true,
+            "deadline": true,
+            "capped_recovery": true,
+            "provider_outage": true,
+            "invalid_output": true,
+            "failure_codes": [
+              "run_cancelled",
+              "execution_deadline_exhausted",
+              "retry_exhausted",
+              "provider_unavailable",
+              "invalid_output"
+            ],
+            "invocation_counts": {
+              "cancellation": 1,
+              "deadline": 1,
+              "capped_recovery": 2,
+              "provider_outage": 1,
+              "invalid_output": 1
+            },
+            "actionable_failures": {
+              "cancellation": {
+                "observed": true,
+                "operator_response": "cancel",
+                "legal_actions": [
+                  {
+                    "expected_watermark": "sha256:d58af757509ff84dd57eae50dbc883b2852c290ca5fc592dc735e597dcf72fe9",
+                    "run_id": "run:4ae905e22eb9031c5549a14aed1efca006f7a3f8b2d61b0057b9cd699792af9f",
+                    "schema": "flow.command/v1",
+                    "type": "cancel"
+                  }
+                ]
+              },
+              "deadline": {
+                "observed": true,
+                "operator_response": "observe_deadline_exhaustion",
+                "legal_actions": []
+              },
+              "capped_recovery": {
+                "observed": true,
+                "operator_response": "repeat_exact_until_cap",
+                "legal_actions": [
+                  {
+                    "effect_id": "effect:19f9c4a7e1f7bff040cfa85d620f6ccb3ba25367671f86ac544c5f39d37f9c1e",
+                    "expected_watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+                    "recovery": "repeat_exact",
+                    "run_id": "run:087e5c12887dab3db8a3da1cef3153ca0d75a0e66953a55e8abec9a5ea0d03f1",
+                    "schema": "flow.command/v1",
+                    "type": "recovery"
+                  }
+                ]
+              },
+              "provider_outage": {
+                "observed": true,
+                "operator_response": "reconcile_provider_outage",
+                "legal_actions": [
+                  {
+                    "effect_id": "effect:5292a51b490279832658a25defa3826cbe175e5f4b432b82df51a87b0fbbffa8",
+                    "expected_watermark": "sha256:a7af6ea794f5a5f7472d892057403c0e663f23e4bdcb368a13315ed59b79db70",
+                    "recovery": "reconcile",
+                    "run_id": "run:5faa5d909b4e2d6419783b4734216d21a5f76a0861e75364aca3bf9d27bdfd48",
+                    "schema": "flow.command/v1",
+                    "type": "recovery"
+                  }
+                ]
+              },
+              "invalid_output": {
+                "observed": true,
+                "operator_response": "inspect_invalid_provider_output",
+                "legal_actions": []
+              }
+            },
+            "legal_actions": [
+              {
+                "effect_id": "effect:19f9c4a7e1f7bff040cfa85d620f6ccb3ba25367671f86ac544c5f39d37f9c1e",
+                "expected_watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+                "recovery": "repeat_exact",
+                "run_id": "run:087e5c12887dab3db8a3da1cef3153ca0d75a0e66953a55e8abec9a5ea0d03f1",
+                "schema": "flow.command/v1",
+                "type": "recovery"
+              }
+            ],
+            "watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+            "authority_watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+            "action_identity_valid": true,
+            "expected_negative_commands": [
+              {
+                "action": "cancel",
+                "expected_exit_code": 0,
+                "expected_signal": null,
+                "expected_timed_out": false
+              },
+              {
+                "action": "deadline",
+                "expected_exit_code": 1,
+                "expected_signal": null,
+                "expected_timed_out": false
+              },
+              {
+                "action": "recovery-cap",
+                "expected_exit_code": 1,
+                "expected_signal": null,
+                "expected_timed_out": false
+              },
+              {
+                "action": "provider-outage",
+                "expected_exit_code": 1,
+                "expected_signal": null,
+                "expected_timed_out": false
+              },
+              {
+                "action": "invalid-provider-output",
+                "expected_exit_code": 1,
+                "expected_signal": null,
+                "expected_timed_out": false
+              }
+            ]
+          },
+          "content_digest": "sha256:921d790be8b545c4a66eeae8f1561f244496a72fdec6cc6283b295a12f0a57a9"
+        },
+        {
+          "id": "native:actionable_failure_recovery:uncertainty",
+          "kind": "uncertainty",
+          "content": {
+            "one_shot": true,
+            "duplicate_effect": false,
+            "manual_driver": false,
+            "invocation_count": 1,
+            "effect_id": "effect:4151671d6aef155e7faae1b69ff45e1a7861be528940551ee92d565941fcb7ca",
+            "legal_actions": [
+              {
+                "effect_id": "effect:4151671d6aef155e7faae1b69ff45e1a7861be528940551ee92d565941fcb7ca",
+                "expected_watermark": "sha256:442d4b5a21499645e08a39dea9c9ea198c37597f02e74ecfffab6d3499024ea0",
+                "recovery": "reconcile",
+                "run_id": "run:05e30863304e12d36c46663820f53a07f24acd6204b02174a47907a45e8bbb1f",
+                "schema": "flow.command/v1",
+                "type": "recovery"
+              }
+            ],
+            "watermark": "sha256:442d4b5a21499645e08a39dea9c9ea198c37597f02e74ecfffab6d3499024ea0",
+            "authority_watermark": "sha256:442d4b5a21499645e08a39dea9c9ea198c37597f02e74ecfffab6d3499024ea0",
+            "action_identity_valid": true
+          },
+          "content_digest": "sha256:f82b084a92251f78c318e5f8243b4c6f9f8f6f7532af2f46842a733058c389d3"
+        }
+      ],
+      "captures": [
+        {
+          "id": "native-provider-actionable_failure_recovery-native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a",
+          "kind": "native_provider_result",
+          "format": "json",
+          "path": "captures/native-provider-actionable_failure_recovery-native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a.json",
+          "sha256": "38e61bb464f1e371634c85ce723dc49b559428addd8d390a659154dd5f691172",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:479eadba6bdde5c70460c7f12e531f0f9a4c562288ebea6f0622d564718796c6",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "typed_failure_observations",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:actionable_failure_recovery:failure"
+          ]
+        },
+        {
+          "id": "one_shot_uncertainty_no_duplicate_effect",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:actionable_failure_recovery:uncertainty"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:21.741Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "backup_restore_reconciliation",
+      "execution_kind": "native_provider",
+      "proof_predicate": "backup_restore_reconciliation",
+      "required_command_kinds": [
+        "native_backup_restore_probe"
+      ],
+      "required_observation_kinds": [
+        "backup",
+        "loss",
+        "restore",
+        "reconciliation",
+        "admission"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:22.521Z",
+      "finished_at": "2026-09-17T13:08:22.524Z",
+      "commands": [
+        {
+          "id": "native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-native-probe.mjs",
+            "--probe",
+            "backup_restore",
+            "--worktree",
+            "<worktree>",
+            "--raw-root",
+            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "--temporary-root",
+            "<path:sha256:cf3a47c61bee8df0e3bceddd1d0fd81d840e4bd1840ac9fc9cbc3361d075ffd9>",
+            "--xdg-state-home",
+            "<state>",
+            "--authority-directory",
+            "<authority>",
+            "--socket",
+            "<authority><path:sha256:d287533d1e3d5a633800e22351c11d92e763849c1c5b82c24b7ee35bcf165baf>",
+            "--endpoint",
+            "<authority><path:sha256:ecfb11fe28948b3453aec51e16d9f6d27ed6e5261feffe91f071af9ff58bdf9c>",
+            "--backup-directory",
+            "<backup>",
+            "--repository-root",
+            "<repository>",
+            "--drovr-config-directory",
+            "<drovr>",
+            "--qualification-workspace",
+            "<state><path:sha256:38be4724d3d9b6b7d52f2ce0a7ecdb41dd3b4d2f0f020c61139e2e2ab7e654d2>",
+            "--herdr-session",
+            "herdr:issue46-final-v11",
+            "--run-id",
+            "run:issue46-final-v11",
+            "--timeout",
+            "120000"
+          ],
+          "command_kind": "native_backup_restore_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-native-probe.mjs",
+          "host_ref": "runtime/flow-runtime",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:22.191Z",
+          "finished_at": "2026-09-17T13:08:22.518Z",
+          "duration_ms": 327,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d.stdout.log",
+              "sha256": "64573ce57a482f85ba93a6242d0139f99f9e8274f15ae70fd76a8d25779f1249",
+              "bytes": 5289
+            },
+            "stderr": {
+              "path": "logs/native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d.stderr.log",
+              "sha256": "02b029c25796925211cf0df5a8a5b4c1de8d5a035114b3163356e57e8b52a223",
+              "bytes": 171
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "backup-observation",
+          "kind": "backup",
+          "content": {
+            "production_backup": true,
+            "provider": "flow.filesystem-backup/v1",
+            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "snapshot_digest": "sha256:044c98684198a615d17ef0f0819ef0b431b84044cf55b57ddb6d17511b127fa9",
+            "backup_id": "backup:sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "legal_actions": [],
+            "source_schema": "flow.production-backup-live-observation/v1",
+            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "action_identities": [],
+            "source_command_kind": "native_backup_restore_probe"
+          },
+          "content_digest": "sha256:1ab7f5ce88c6ee9b2f3522ed0eb173420e7a5124b6ab732ed28d4958a1b947bf"
+        },
+        {
+          "id": "loss-observation",
+          "kind": "loss",
+          "content": {
+            "destructive_loss": true,
+            "disposable_only": true,
+            "protected_state_intact": true,
+            "lost_paths": [
+              "authority.lock.sqlite",
+              "authority.lock.sqlite-journal",
+              "authority.sqlite",
+              "authority.sqlite-shm",
+              "authority.sqlite-wal"
+            ],
+            "source_schema": "flow.production-backup-live-observation/v1",
+            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "action_identities": [],
+            "source_command_kind": "native_backup_restore_probe"
+          },
+          "content_digest": "sha256:3d5e2849cd23a1a5e938c520cc9508f81473e25fbc0c65cf8c4b60fc8cbf0fb8"
+        },
+        {
+          "id": "restore-observation",
+          "kind": "restore",
+          "content": {
+            "restored": true,
+            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "restore_id": "restore:sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "watermark": "sha256:9c9115387759c9d8db0560fba76d8919f3848cea2061d464cc7c96513492852a",
+            "source_schema": "flow.production-backup-live-observation/v1",
+            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "action_identities": [],
+            "source_command_kind": "native_backup_restore_probe"
+          },
+          "content_digest": "sha256:f9e2fd38be8aeb6840beb016f2800d803095d7586c155eaeacf7e1ecf1325c90"
+        },
+        {
+          "id": "reconciliation-observation",
+          "kind": "reconciliation",
+          "content": {
+            "domains_reconciled": 6,
+            "complete": true,
+            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "domains": [
+              {
+                "domain": "database_streams",
+                "expected_digest": "sha256:0e67c7b8d12a0b21be83c8750ecb57d4a3d0dc50e7c90e45dad10239c4bde7a6",
+                "observed_digest": "sha256:0e67c7b8d12a0b21be83c8750ecb57d4a3d0dc50e7c90e45dad10239c4bde7a6",
+                "status": "reconciled"
+              },
+              {
+                "domain": "artifact_state",
+                "expected_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "observed_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "status": "reconciled"
+              },
+              {
+                "domain": "git_state",
+                "expected_digest": "sha256:ef8a3d5d6f30f0b60553eec392db8acfa92f56efe6d3c34086ad8dd61e551c68",
+                "observed_digest": "sha256:ef8a3d5d6f30f0b60553eec392db8acfa92f56efe6d3c34086ad8dd61e551c68",
+                "status": "reconciled"
+              },
+              {
+                "domain": "filesystem_state",
+                "expected_digest": "sha256:a74f4fd28d10ee52bd705b9782afdda6059b66d3a399d0c4fbe70683e4217fd2",
+                "observed_digest": "sha256:a74f4fd28d10ee52bd705b9782afdda6059b66d3a399d0c4fbe70683e4217fd2",
+                "status": "reconciled"
+              },
+              {
+                "domain": "external_effects",
+                "expected_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "observed_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "status": "reconciled"
+              },
+              {
+                "domain": "drovr_obligations",
+                "expected_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "observed_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "status": "reconciled"
+              }
+            ],
+            "watermark": "sha256:54a2529138ab4926dc7de7aed7d69d439c797b6fe983ae812beeb5d7e5a30e80",
+            "source_schema": "flow.production-backup-live-observation/v1",
+            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "action_identities": [],
+            "source_command_kind": "native_backup_restore_probe"
+          },
+          "content_digest": "sha256:db37513522e9336f8a1edf41e7d712131553240b0c594b444740a8826e6151a8"
+        },
+        {
+          "id": "admission-observation",
+          "kind": "admission",
+          "content": {
+            "retained_result_admitted": true,
+            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "result_digest": "sha256:1c05b9f315a7ebdffd92483a9ff4d158ab5eb8b7ecef7b2b99ee90b6e81b1f1d",
+            "explicit": true,
+            "watermark": "sha256:e741bd40c9e71beddd94ad48585bed4e0d6f7ca54dcf48344d1688be8f9ce4bc",
+            "source_schema": "flow.production-backup-live-observation/v1",
+            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "action_identities": [],
+            "source_command_kind": "native_backup_restore_probe"
+          },
+          "content_digest": "sha256:069e0f23115fbb50fb051cdde829fd0b23e235b428045d791dca4ce4dea57a86"
+        }
+      ],
+      "captures": [
+        {
+          "id": "backup_restore_reconciliation-native_backup_restore_probe-native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d",
+          "kind": "native_backup_restore_probe",
+          "format": "json",
+          "path": "captures/backup_restore_reconciliation-native_backup_restore_probe-native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d.json",
+          "sha256": "a5be78e449a6c15078cc365858616c578bdcf361c98a00c42a17e23a0beddab6",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "production_backup",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:backup-observation"
+          ]
+        },
+        {
+          "id": "destructive_loss",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:loss-observation"
+          ]
+        },
+        {
+          "id": "restore",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:restore-observation"
+          ]
+        },
+        {
+          "id": "six_domain_reconciliation",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reconciliation-observation"
+          ]
+        },
+        {
+          "id": "retained_result_admission",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:admission-observation"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:22.524Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "ubuntu_headless_text_captures",
+      "execution_kind": "native_provider",
+      "proof_predicate": "headless_capture_inventory",
+      "required_command_kinds": [
+        "status",
+        "query",
+        "watch",
+        "native_headless_capture_probe"
+      ],
+      "required_observation_kinds": [
+        "capture_inventory"
+      ],
+      "required_capture_kinds": [
+        "terminal",
+        "status",
+        "checkpoint",
+        "candidate",
+        "review",
+        "graph",
+        "timeline",
+        "tuicr"
+      ],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:25.874Z",
+      "finished_at": "2026-09-17T13:08:26.291Z",
+      "commands": [
+        {
+          "id": "status-bb71a9a4-adf8-41e0-a5d8-425132a141de",
+          "argv": [
+            "node",
+            "config/flow/src/cli.mjs",
+            "status",
+            "--json"
+          ],
+          "command_kind": "status",
+          "launcher_ref": "config/flow/src/cli.mjs",
+          "host_ref": "config/flow/src/owner-process.mjs",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:25.875Z",
+          "finished_at": "2026-09-17T13:08:25.990Z",
+          "duration_ms": 115,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/status-bb71a9a4-adf8-41e0-a5d8-425132a141de.stdout.log",
+              "sha256": "f83b76ce3dd71c5b6e1dd672d428b512849e5938e431a0fc763bb9e88cee3ce4",
+              "bytes": 1538
+            },
+            "stderr": {
+              "path": "logs/status-bb71a9a4-adf8-41e0-a5d8-425132a141de.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        },
+        {
+          "id": "query-329d411d-08bc-49bd-a61e-46f3fb7b199f",
+          "argv": [
+            "node",
+            "config/flow/src/cli.mjs",
+            "query",
+            "--input",
+            "{\"schema\":\"flow.query/v1\",\"query\":\"review_inbox\"}",
+            "--json"
+          ],
+          "command_kind": "query",
+          "launcher_ref": "config/flow/src/cli.mjs",
+          "host_ref": "config/flow/src/owner-process.mjs",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:25.990Z",
+          "finished_at": "2026-09-17T13:08:26.085Z",
+          "duration_ms": 95,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/query-329d411d-08bc-49bd-a61e-46f3fb7b199f.stdout.log",
+              "sha256": "d34a63d6605e4df5c4cc342773898dde2f466cf3c8419392faf8539761129fe3",
+              "bytes": 44940
+            },
+            "stderr": {
+              "path": "logs/query-329d411d-08bc-49bd-a61e-46f3fb7b199f.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        },
+        {
+          "id": "watch-3e6e30e9-c375-4ff7-ac0c-789e409ee024",
+          "argv": [
+            "node",
+            "config/flow/src/cli.mjs",
+            "watch",
+            "--input",
+            "{\"schema\":\"flow.watch/v1\",\"query\":\"review_inbox\"}",
+            "--json"
+          ],
+          "command_kind": "watch",
+          "launcher_ref": "config/flow/src/cli.mjs",
+          "host_ref": "config/flow/src/owner-process.mjs",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:26.086Z",
+          "finished_at": "2026-09-17T13:08:26.179Z",
+          "duration_ms": 93,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/watch-3e6e30e9-c375-4ff7-ac0c-789e409ee024.stdout.log",
+              "sha256": "d34a63d6605e4df5c4cc342773898dde2f466cf3c8419392faf8539761129fe3",
+              "bytes": 44940
+            },
+            "stderr": {
+              "path": "logs/watch-3e6e30e9-c375-4ff7-ac0c-789e409ee024.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        },
+        {
+          "id": "native-headless-capture-1d29e063-57e5-402a-8591-8b7a2cd6bf91",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-headless-provider.mjs",
+            "--input-root",
+            "<workspace><path:sha256:9730dec27c734c81a3b1fa2e0714b7532521bfa73c5fb1a218d09f641db325d8>"
+          ],
+          "command_kind": "native_headless_capture_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-headless-provider.mjs",
+          "host_ref": "native/headless-provider",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:26.180Z",
+          "finished_at": "2026-09-17T13:08:26.217Z",
+          "duration_ms": 37,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native-headless-capture-1d29e063-57e5-402a-8591-8b7a2cd6bf91.stdout.log",
+              "sha256": "456ca982a9f482f797e1ed5186b6c9ca6620a6de90cb3f959516d239bf707740",
+              "bytes": 195988
+            },
+            "stderr": {
+              "path": "logs/native-headless-capture-1d29e063-57e5-402a-8591-8b7a2cd6bf91.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "ubuntu_headless_text_captures:capture_inventory",
+          "kind": "capture_inventory",
+          "content": {
+            "inventory_complete": true,
+            "required_kinds": [
+              "terminal",
+              "status",
+              "checkpoint",
+              "candidate",
+              "review",
+              "graph",
+              "timeline",
+              "tuicr"
+            ],
+            "observed_kinds": [
+              "terminal",
+              "status",
+              "checkpoint",
+              "candidate",
+              "review",
+              "graph",
+              "timeline",
+              "tuicr"
+            ],
+            "capture_ids": [
+              "ubuntu_headless_text_captures:capture:terminal",
+              "ubuntu_headless_text_captures:capture:status",
+              "ubuntu_headless_text_captures:capture:checkpoint",
+              "ubuntu_headless_text_captures:capture:candidate",
+              "ubuntu_headless_text_captures:capture:review",
+              "ubuntu_headless_text_captures:capture:graph",
+              "ubuntu_headless_text_captures:capture:timeline",
+              "ubuntu_headless_text_captures:capture:tuicr"
+            ],
+            "capture_digests": [
+              "5ab77ca6401bacf29a30303ef0eecfe93b771d5ae96711243f5c81492f047a17",
+              "c062033140d8599cd4202f9cf97e7e44a22dda83459de6d763e32b750faf50ad",
+              "ccb1ecd844b11c8773038bf91dbe73b644a52001a3904b25dff456c8c3576479",
+              "ff6f99e8ba72063497322f0b3214542c28af3e31840e89008bdffb187aeba04c",
+              "66c12169782541836d92999f3b2ff013100ffc6a74a97ac1fba3ecb372122430",
+              "9374229b58304ef0ef05efc5983207db64b09b93fa1cab6469618fbdf7f2edd9",
+              "902b4eb7c50f3c46e39fd2f990e4d400727284bc4636feb0872130bdb01a94ee",
+              "b945f68130293fe0e3a9d9eed0c8ba966d24c251dcb80c4e56d10c0712efe735"
+            ],
+            "watermarks": {
+              "terminal": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+              "status": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+              "checkpoint": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+              "candidate": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+              "review": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+              "graph": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+              "timeline": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+              "tuicr": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba"
+            },
+            "legibility": "pass",
+            "provenance": "pass",
+            "watermark": "pass",
+            "legal_actions": "pass",
+            "out_of_scope_forms": [
+              {
+                "form": "macos_visual",
+                "status": "out_of_scope",
+                "reason": "expanded macOS visual capture is deferred to issue 47",
+                "release_evidence": {
+                  "release_id": "flow-release-1.0-dark/v1",
+                  "manifest_digest": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+                  "route": "ubuntu_headless_text",
+                  "candidate_tree_sha": "056f19fa0744467929e578df4beb4b7eced6062c"
+                }
+              },
+              {
+                "form": "expanded_macos_visuals",
+                "status": "out_of_scope",
+                "reason": "expanded macOS visual capture is deferred to issue 47",
+                "release_evidence": {
+                  "release_id": "flow-release-1.0-dark/v1",
+                  "manifest_digest": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+                  "route": "ubuntu_headless_text",
+                  "candidate_tree_sha": "056f19fa0744467929e578df4beb4b7eced6062c"
+                }
+              }
+            ],
+            "disabled_forms_recorded": true
+          },
+          "content_digest": "sha256:ae2dd1f09c263044ed4a2a5ea1b04ea9fa6514969445ecbe6fe7461261df08fd"
+        }
+      ],
+      "captures": [
+        {
+          "id": "ubuntu_headless_text_captures:capture:terminal",
+          "kind": "terminal",
+          "format": "text",
+          "path": "captures/ubuntu_headless_text_captures/terminal.text",
+          "sha256": "5ab77ca6401bacf29a30303ef0eecfe93b771d5ae96711243f5c81492f047a17",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:status",
+          "kind": "status",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/status.json",
+          "sha256": "c062033140d8599cd4202f9cf97e7e44a22dda83459de6d763e32b750faf50ad",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:checkpoint",
+          "kind": "checkpoint",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/checkpoint.json",
+          "sha256": "ccb1ecd844b11c8773038bf91dbe73b644a52001a3904b25dff456c8c3576479",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:candidate",
+          "kind": "candidate",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/candidate.json",
+          "sha256": "ff6f99e8ba72063497322f0b3214542c28af3e31840e89008bdffb187aeba04c",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:review",
+          "kind": "review",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/review.json",
+          "sha256": "66c12169782541836d92999f3b2ff013100ffc6a74a97ac1fba3ecb372122430",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:graph",
+          "kind": "graph",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/graph.json",
+          "sha256": "9374229b58304ef0ef05efc5983207db64b09b93fa1cab6469618fbdf7f2edd9",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:timeline",
+          "kind": "timeline",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/timeline.json",
+          "sha256": "902b4eb7c50f3c46e39fd2f990e4d400727284bc4636feb0872130bdb01a94ee",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "legal_actions": "pass"
+        },
+        {
+          "id": "ubuntu_headless_text_captures:capture:tuicr",
+          "kind": "tuicr",
+          "format": "json",
+          "path": "captures/ubuntu_headless_text_captures/tuicr.json",
+          "sha256": "b945f68130293fe0e3a9d9eed0c8ba966d24c251dcb80c4e56d10c0712efe735",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "capture_inventory",
+          "disposition": "pass",
+          "evidence_refs": [
+            "capture:ubuntu_headless_text_captures:capture:terminal",
+            "capture:ubuntu_headless_text_captures:capture:status",
+            "capture:ubuntu_headless_text_captures:capture:checkpoint",
+            "capture:ubuntu_headless_text_captures:capture:candidate",
+            "capture:ubuntu_headless_text_captures:capture:review",
+            "capture:ubuntu_headless_text_captures:capture:graph",
+            "capture:ubuntu_headless_text_captures:capture:timeline",
+            "capture:ubuntu_headless_text_captures:capture:tuicr"
+          ]
+        },
+        {
+          "id": "capture_legibility",
+          "disposition": "pass",
+          "evidence_refs": [
+            "capture:ubuntu_headless_text_captures:capture:terminal",
+            "capture:ubuntu_headless_text_captures:capture:status",
+            "capture:ubuntu_headless_text_captures:capture:checkpoint",
+            "capture:ubuntu_headless_text_captures:capture:candidate",
+            "capture:ubuntu_headless_text_captures:capture:review",
+            "capture:ubuntu_headless_text_captures:capture:graph",
+            "capture:ubuntu_headless_text_captures:capture:timeline",
+            "capture:ubuntu_headless_text_captures:capture:tuicr"
+          ]
+        },
+        {
+          "id": "capture_provenance",
+          "disposition": "pass",
+          "evidence_refs": [
+            "capture:ubuntu_headless_text_captures:capture:terminal",
+            "capture:ubuntu_headless_text_captures:capture:status",
+            "capture:ubuntu_headless_text_captures:capture:checkpoint",
+            "capture:ubuntu_headless_text_captures:capture:candidate",
+            "capture:ubuntu_headless_text_captures:capture:review",
+            "capture:ubuntu_headless_text_captures:capture:graph",
+            "capture:ubuntu_headless_text_captures:capture:timeline",
+            "capture:ubuntu_headless_text_captures:capture:tuicr"
+          ]
+        },
+        {
+          "id": "capture_watermark",
+          "disposition": "pass",
+          "evidence_refs": [
+            "capture:ubuntu_headless_text_captures:capture:terminal",
+            "capture:ubuntu_headless_text_captures:capture:status",
+            "capture:ubuntu_headless_text_captures:capture:checkpoint",
+            "capture:ubuntu_headless_text_captures:capture:candidate",
+            "capture:ubuntu_headless_text_captures:capture:review",
+            "capture:ubuntu_headless_text_captures:capture:graph",
+            "capture:ubuntu_headless_text_captures:capture:timeline",
+            "capture:ubuntu_headless_text_captures:capture:tuicr"
+          ]
+        },
+        {
+          "id": "capture_legal_actions",
+          "disposition": "pass",
+          "evidence_refs": [
+            "capture:ubuntu_headless_text_captures:capture:terminal",
+            "capture:ubuntu_headless_text_captures:capture:status",
+            "capture:ubuntu_headless_text_captures:capture:checkpoint",
+            "capture:ubuntu_headless_text_captures:capture:candidate",
+            "capture:ubuntu_headless_text_captures:capture:review",
+            "capture:ubuntu_headless_text_captures:capture:graph",
+            "capture:ubuntu_headless_text_captures:capture:timeline",
+            "capture:ubuntu_headless_text_captures:capture:tuicr"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:26.291Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "tuicr_review_after_producer_exit",
+      "execution_kind": "native_provider",
+      "proof_predicate": "tuicr_after_producer_exit",
+      "required_command_kinds": [
+        "native_tuicr_live_probe"
+      ],
+      "required_observation_kinds": [
+        "producer_exit",
+        "disposition",
+        "stale_action",
+        "rebuild"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:26.752Z",
+      "finished_at": "2026-09-17T13:08:35.004Z",
+      "commands": [
+        {
+          "id": "native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-tuicr-live-probe.mjs",
+            "--input",
+            "isolation/qualification-workspace/tuicr-live-input.json"
+          ],
+          "command_kind": "native_tuicr_live_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-tuicr-live-probe.mjs",
+          "host_ref": "native/tuicr-live-provider",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:26.752Z",
+          "finished_at": "2026-09-17T13:08:35.004Z",
+          "duration_ms": 8252,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab.stdout.log",
+              "sha256": "379843eeccdea0b7cccf3aee97ff68e48b6f197308002a3f6e2cc378a33471b3",
+              "bytes": 119308
+            },
+            "stderr": {
+              "path": "logs/native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "native:tuicr_review_after_producer_exit:producer_exit",
+          "kind": "producer_exit",
+          "content": {
+            "schema": "flow.host-recovery-producer-exit/v1",
+            "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+            "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+            "producer_exited": true,
+            "producer_exited_at": "2026-09-17T13:08:34.109Z",
+            "process_absence": {
+              "status": "absent",
+              "method": "waited_child_and_kill_0_esrch",
+              "pid": 2432010,
+              "process_identity": "node-production-review-seed:2432010"
+            },
+            "command": {
+              "schema": "flow.tuicr-pty-command/v1",
+              "id": "production_review_seed:296887f3-a3c7-4676-8c50-b8a837a0c45f",
+              "command_kind": "production_review_seed",
+              "argv": [
+                "<path:sha256:270b2f5f23a2aa3ebca01eeb9194c8f3a1c00c1ddd4806bd1ae998fb1d617a6f>",
+                "<path:sha256:7bfecabf93eea8fed7b2a4cad5ca64d2557af71d9e73027fdba323188b87d8cd>",
+                "--producer",
+                "--input",
+                "<path:sha256:feae87a708487b6fe6961963921103f07fc973566ac7ccc5c50118f9b727015c>",
+                "--output",
+                "<path:sha256:c523b634a0f7d8f2b03efde1115795e3c92ccbe97ece7ce24db68e0c2a6ef9f0>"
+              ],
+              "cwd": "<path:sha256:48c3a2b7f3074875011e647570c9986c945bcf14705131f51583465a99f2b638>",
+              "started_at": "2026-09-17T13:08:31.372Z",
+              "finished_at": "2026-09-17T13:08:34.109Z",
+              "exit_code": 0,
+              "signal": null,
+              "expected_exit_code": 0,
+              "expected_signal": null,
+              "timed_out": false,
+              "logs": {
+                "stdout": {
+                  "path": "71c0da25-a44d-4f03-a4f8-e9a0214fc0f9.stdout.log",
+                  "sha256": "sha256:11f8ef565270c4fb3121dcc907271dbb51810c5ce3dca8d0552d848f17d0c1c9",
+                  "bytes": 370
+                },
+                "stderr": {
+                  "path": "71c0da25-a44d-4f03-a4f8-e9a0214fc0f9.stderr.log",
+                  "sha256": "sha256:5451e8211fb81a0bbb9b9868ee75ac34e6b7a0c2c602aa0fbfbefce1d5660889",
+                  "bytes": 171
+                }
+              }
+            }
+          },
+          "content_digest": "sha256:506e94ff4be5c29e6979a36f997c08c22c7a66599bf59d8fe2e70676b387d2a1"
+        },
+        {
+          "id": "native:tuicr_review_after_producer_exit:disposition",
+          "kind": "disposition",
+          "content": {
+            "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+            "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+            "lifecycle_generation": 1,
+            "flowruntime_disposition": "approved",
+            "disposition": "<redacted:non-json>",
+            "approval": "approved",
+            "disposition_event": "<redacted:non-json>",
+            "approval_event": "<redacted:non-json>",
+            "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df"
+          },
+          "content_digest": "sha256:9d7aed7132bfa2d16c4f08ff66f3b4111ba52810afb013bef518ccef9b126148"
+        },
+        {
+          "id": "native:tuicr_review_after_producer_exit:stale_action",
+          "kind": "stale_action",
+          "content": {
+            "authority_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+            "code": "stale_review_generation",
+            "contract": "work.review/v1",
+            "legal_actions": [
+              {
+                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
+                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "command_id": "review-comment:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "contract": "work.review/v1",
+                "expected_generation": 4,
+                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "lifecycle_generation": 1,
+                "operator_input": {
+                  "action": "review_comment",
+                  "required": [
+                    "comment_id",
+                    "body"
+                  ],
+                  "schema": "flow.review-operator-input/v1"
+                },
+                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "schema": "work.review-human-command/v1",
+                "session_id": "session:run:issue46-final-v11:tuicr",
+                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "type": "review_comment"
+              },
+              {
+                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
+                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "command_id": "review-disposition:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "contract": "work.review/v1",
+                "expected_generation": 4,
+                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "lifecycle_generation": 1,
+                "operator_input": {
+                  "action": "review_disposition",
+                  "allowed_dispositions": [
+                    "accept",
+                    "request_changes",
+                    "dismiss",
+                    "defer"
+                  ],
+                  "optional": [
+                    "finding_id"
+                  ],
+                  "required": [
+                    "disposition"
+                  ],
+                  "schema": "flow.review-operator-input/v1"
+                },
+                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "schema": "work.review-human-command/v1",
+                "session_id": "session:run:issue46-final-v11:tuicr",
+                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "type": "review_disposition"
+              },
+              {
+                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
+                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "command_id": "review-revoke-approval:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "contract": "work.review/v1",
+                "decision": "revoke",
+                "expected_generation": 4,
+                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "lifecycle_generation": 1,
+                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "schema": "work.review-human-command/v1",
+                "session_id": "session:run:issue46-final-v11:tuicr",
+                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "type": "review_approval"
+              },
+              {
+                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
+                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "command_id": "review-supersession:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "contract": "work.review/v1",
+                "expected_generation": 4,
+                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "lifecycle_generation": 1,
+                "operator_input": {
+                  "action": "review_supersession",
+                  "replacement": {
+                    "required": [
+                      "candidate_fingerprint",
+                      "lifecycle_generation"
+                    ]
+                  },
+                  "required": [
+                    "replacement"
+                  ],
+                  "schema": "flow.review-operator-input/v1"
+                },
+                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "schema": "work.review-human-command/v1",
+                "session_id": "session:run:issue46-final-v11:tuicr",
+                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "type": "review_supersession"
+              },
+              {
+                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
+                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "command_id": "review-integration:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "contract": "work.review/v1",
+                "expected_generation": 4,
+                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "lifecycle_generation": 1,
+                "operator_input": {
+                  "action": "review_integration",
+                  "evidence_schema": "flow.review-integration-evidence/v1",
+                  "required": [
+                    "evidence"
+                  ],
+                  "schema": "flow.review-operator-input/v1"
+                },
+                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "schema": "work.review-human-command/v1",
+                "session_id": "session:run:issue46-final-v11:tuicr",
+                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "type": "review_integration"
+              }
+            ],
+            "operation": "command",
+            "schema": "work.rejection/v1",
+            "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+            "rejected": true,
+            "mutated": false
+          },
+          "content_digest": "sha256:b05abcfed03420ed7cb6c9253cbbde9bcc01c646ceaa39cbd45323825f00158b"
+        },
+        {
+          "id": "native:tuicr_review_after_producer_exit:rebuild",
+          "kind": "rebuild",
+          "content": {
+            "identity_stable": true,
+            "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+            "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+            "lifecycle_generation": 1,
+            "before": {
+              "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+              "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+              "lifecycle_generation": 1,
+              "review_generation": 4,
+              "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df"
+            },
+            "after": {
+              "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+              "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+              "lifecycle_generation": 1,
+              "review_generation": 4,
+              "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df"
+            },
+            "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+            "without_mutation_lock": true
+          },
+          "content_digest": "sha256:0a3756d00c6b763f94cfc61257eb197116e2473f77328a36af1d5bca214c46d4"
+        }
+      ],
+      "captures": [
+        {
+          "id": "native-provider-tuicr_review_after_producer_exit-native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab",
+          "kind": "native_provider_result",
+          "format": "json",
+          "path": "captures/native-provider-tuicr_review_after_producer_exit-native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab.json",
+          "sha256": "1d72967305fbedebd635b648e06c91a552379d7605aaffa605150eb0d157e27d",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:2e5a2d311ff4147c4baf620ab0ceeed3e27f4606ecf7e8e8755c377cfbe19f7c",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "producer_exit_before_review",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:tuicr_review_after_producer_exit:producer_exit"
+          ]
+        },
+        {
+          "id": "flowruntime_disposition_and_approval",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:tuicr_review_after_producer_exit:disposition"
+          ]
+        },
+        {
+          "id": "stale_action_rejection",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:tuicr_review_after_producer_exit:stale_action"
+          ]
+        },
+        {
+          "id": "projection_rebuild_identity",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:native:tuicr_review_after_producer_exit:rebuild"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:34.998Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "drovr_registry_lock_reconciliation",
+      "execution_kind": "native_provider",
+      "proof_predicate": "drovr_lock_reconciliation",
+      "required_command_kinds": [
+        "native_drovr_lock_probe"
+      ],
+      "required_observation_kinds": [
+        "lock_owner",
+        "reconciliation",
+        "negative_age",
+        "negative_force"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:35.605Z",
+      "finished_at": "2026-09-17T13:08:35.610Z",
+      "commands": [
+        {
+          "id": "native-drovr-lock-29a1f581-67d7-4b7d-bf3c-2c81d7984483",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-native-probe.mjs",
+            "--probe",
+            "drovr_lock",
+            "--worktree",
+            "<worktree>",
+            "--raw-root",
+            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "--temporary-root",
+            "<path:sha256:cf3a47c61bee8df0e3bceddd1d0fd81d840e4bd1840ac9fc9cbc3361d075ffd9>",
+            "--xdg-state-home",
+            "<state>",
+            "--authority-directory",
+            "<authority>",
+            "--socket",
+            "<authority><path:sha256:d287533d1e3d5a633800e22351c11d92e763849c1c5b82c24b7ee35bcf165baf>",
+            "--endpoint",
+            "<authority><path:sha256:ecfb11fe28948b3453aec51e16d9f6d27ed6e5261feffe91f071af9ff58bdf9c>",
+            "--backup-directory",
+            "<backup>",
+            "--repository-root",
+            "<repository>",
+            "--drovr-config-directory",
+            "<drovr>",
+            "--qualification-workspace",
+            "<state><path:sha256:38be4724d3d9b6b7d52f2ce0a7ecdb41dd3b4d2f0f020c61139e2e2ab7e654d2>",
+            "--herdr-session",
+            "herdr:issue46-final-v11",
+            "--run-id",
+            "run:issue46-final-v11",
+            "--timeout",
+            "120000"
+          ],
+          "command_kind": "native_drovr_lock_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-native-probe.mjs",
+          "host_ref": "native/drovr-registry",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:35.461Z",
+          "finished_at": "2026-09-17T13:08:35.603Z",
+          "duration_ms": 142,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native-drovr-lock-29a1f581-67d7-4b7d-bf3c-2c81d7984483.stdout.log",
+              "sha256": "db49d3eb8c5c3c39f88003a2506d85e696ed11540522d4519b74e760c7be5747",
+              "bytes": 6461
+            },
+            "stderr": {
+              "path": "logs/native-drovr-lock-29a1f581-67d7-4b7d-bf3c-2c81d7984483.stderr.log",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "drovr_registry_lock_reconciliation:lock_owner",
+          "kind": "lock_owner",
+          "content": {
+            "schema": "flow.drovr-lock-live-observation/v1",
+            "registry_directory": "<drovr><path:sha256:f0ebb72e404194cc654344fe0281383971fede2a4cc8e4fd733244d5c5cffacf>",
+            "resource_key": "issue-46:run:issue46-final-v11",
+            "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+            "authority_watermark": "sha256:6d8a2b92f0058ae5a81ce08076b90434f83298609b736f1fbdb7be44762b877c",
+            "owner_killed": true,
+            "termination_signal": "SIGKILL",
+            "owner_status": "absent",
+            "process_absence": {
+              "status": "absent",
+              "process_identity": "sha256:6a8e2730bcd9a25dda7b71fcc917599e9de33eb8fd4bfc917f76767a286a00c1",
+              "pid": 2432426,
+              "observed_exit_signal": "SIGKILL"
+            },
+            "lock_projection": {
+              "schema": "drovr.registry-lock-reconciliation/v1",
+              "status": "blocked",
+              "authority_watermark": {
+                "schema": "drovr.registry-authority-watermark/v1",
+                "authority": "drovr.registry",
+                "groups_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "tasks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "agents_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "turns_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "blocks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "groups_count": 0,
+                "tasks_count": 0,
+                "agents_count": 0,
+                "turns_count": 0,
+                "blocks_count": 0,
+                "generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                "registry_sha256": "sha256:8f95549f0ea9a50407445482f6ea1b22010e62a1853d4adc4e4e8ad325cece4b"
+              },
+              "locks": [
+                {
+                  "resource_key": "issue-46:run:issue46-final-v11",
+                  "lock_entry": "7c5b26b355caf5990ed24df6d6393b9f4ab86d3c13d0f5e09a82fb9f789ba07d",
+                  "lock_path": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>",
+                  "status": "held",
+                  "owner_status": "absent",
+                  "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+                  "operation": {
+                    "id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11",
+                    "kind": "issue_46_lock_probe"
+                  },
+                  "authority_id": "issue-46-live-owner",
+                  "acquisition_watermark": {
+                    "schema": "drovr.registry-authority-watermark/v1",
+                    "authority": "drovr.registry",
+                    "groups_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "tasks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "agents_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "turns_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "blocks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "groups_count": 0,
+                    "tasks_count": 0,
+                    "agents_count": 0,
+                    "turns_count": 0,
+                    "blocks_count": 0,
+                    "generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                    "registry_sha256": "sha256:8f95549f0ea9a50407445482f6ea1b22010e62a1853d4adc4e4e8ad325cece4b"
+                  },
+                  "registry_changed_since_acquisition": false,
+                  "acquisition_generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                  "current_generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                  "legal_next_actions": [
+                    "release_absent_registry_lock"
+                  ]
+                }
+              ],
+              "legal_next_actions": [
+                "release_absent_registry_lock"
+              ]
+            },
+            "reconciliation": {
+              "reconciled": true,
+              "recovery_action": "release_absent_registry_lock",
+              "status": "released",
+              "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+              "resource_key": "issue-46:run:issue46-final-v11",
+              "legal_next_actions": [
+                "acquire_registry_lock"
+              ],
+              "authority_watermark": {
+                "schema": "drovr.registry-authority-watermark/v1",
+                "authority": "drovr.registry",
+                "groups_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "tasks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "agents_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "turns_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "blocks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "groups_count": 0,
+                "tasks_count": 0,
+                "agents_count": 0,
+                "turns_count": 0,
+                "blocks_count": 0,
+                "generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                "registry_sha256": "sha256:8f95549f0ea9a50407445482f6ea1b22010e62a1853d4adc4e4e8ad325cece4b"
+              },
+              "absence_proof": {
+                "schema": "drovr.registry-lock-absence-proof/v1",
+                "owner_status": "absent",
+                "process_identity": {
+                  "schema": "drovr.process-identity/v1",
+                  "pid": 2432426,
+                  "boot_id": "c105ac92-627e-48c6-a82d-3a939d1fc0d7",
+                  "start_token": "230005784"
+                }
+              }
+            },
+            "negative_age": {
+              "action": "age_takeover",
+              "rejected": true,
+              "accepted": false,
+              "mutated": false,
+              "code": "registry_lock_recovery_required",
+              "outcome": "registry_lock_recovery_required",
+              "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+              "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+            },
+            "negative_force": {
+              "action": "force_takeover",
+              "rejected": true,
+              "accepted": false,
+              "mutated": false,
+              "code": "registry_lock_recovery_required",
+              "outcome": "registry_lock_recovery_required",
+              "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+              "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+            },
+            "child": {
+              "pid": 2432426,
+              "exit_signal": "SIGKILL",
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "cleanup": {
+              "disposition": "complete",
+              "owned_resources": [
+                {
+                  "kind": "isolated_registry_directory",
+                  "identity_ref": "<drovr><path:sha256:f0ebb72e404194cc654344fe0281383971fede2a4cc8e4fd733244d5c5cffacf>"
+                },
+                {
+                  "kind": "isolated_registry_lock",
+                  "identity_ref": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>"
+                }
+              ],
+              "resource_dispositions": [
+                {
+                  "kind": "isolated_registry_directory",
+                  "identity_ref": "<drovr><path:sha256:f0ebb72e404194cc654344fe0281383971fede2a4cc8e4fd733244d5c5cffacf>",
+                  "disposition": "removed",
+                  "proof": "absent_after_cleanup"
+                },
+                {
+                  "kind": "isolated_registry_lock",
+                  "identity_ref": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>",
+                  "disposition": "removed",
+                  "proof": "absent_after_cleanup"
+                }
+              ],
+              "unresolved_obligations": [],
+              "completed_at": "2026-09-17T13:08:35.599Z"
+            },
+            "setup": {
+              "schema": "flow.native-drovr-lock-setup/v1",
+              "registry_directory": "<drovr><path:sha256:f0ebb72e404194cc654344fe0281383971fede2a4cc8e4fd733244d5c5cffacf>",
+              "isolated_roots": [
+                "<state>",
+                "<authority>",
+                "<backup>",
+                "<repository>",
+                "<drovr>",
+                "<state><path:sha256:38be4724d3d9b6b7d52f2ce0a7ecdb41dd3b4d2f0f020c61139e2e2ab7e654d2>"
+              ]
+            },
+            "status": "pass",
+            "reason": null,
+            "watermark": null,
+            "legal_actions": [
+              "acquire_registry_lock"
+            ]
+          },
+          "content_digest": "sha256:92e84ac020faf090d5a2218182df63a959d2d3f78bd084dd64144eaaddcd5786"
+        },
+        {
+          "id": "drovr_registry_lock_reconciliation:reconciliation",
+          "kind": "reconciliation",
+          "content": {
+            "reconciled": true,
+            "recovery_action": "release_absent_registry_lock",
+            "status": "released",
+            "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+            "resource_key": "issue-46:run:issue46-final-v11",
+            "legal_next_actions": [
+              "acquire_registry_lock"
+            ],
+            "authority_watermark": {
+              "schema": "drovr.registry-authority-watermark/v1",
+              "authority": "drovr.registry",
+              "groups_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "tasks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "agents_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "turns_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "blocks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+              "groups_count": 0,
+              "tasks_count": 0,
+              "agents_count": 0,
+              "turns_count": 0,
+              "blocks_count": 0,
+              "generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+              "registry_sha256": "sha256:8f95549f0ea9a50407445482f6ea1b22010e62a1853d4adc4e4e8ad325cece4b"
+            },
+            "absence_proof": {
+              "schema": "drovr.registry-lock-absence-proof/v1",
+              "owner_status": "absent",
+              "process_identity": {
+                "schema": "drovr.process-identity/v1",
+                "pid": 2432426,
+                "boot_id": "c105ac92-627e-48c6-a82d-3a939d1fc0d7",
+                "start_token": "230005784"
+              }
+            },
+            "native_projection": {
+              "schema": "drovr.registry-lock-reconciliation/v1",
+              "status": "blocked",
+              "authority_watermark": {
+                "schema": "drovr.registry-authority-watermark/v1",
+                "authority": "drovr.registry",
+                "groups_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "tasks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "agents_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "turns_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "blocks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "groups_count": 0,
+                "tasks_count": 0,
+                "agents_count": 0,
+                "turns_count": 0,
+                "blocks_count": 0,
+                "generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                "registry_sha256": "sha256:8f95549f0ea9a50407445482f6ea1b22010e62a1853d4adc4e4e8ad325cece4b"
+              },
+              "locks": [
+                {
+                  "resource_key": "issue-46:run:issue46-final-v11",
+                  "lock_entry": "7c5b26b355caf5990ed24df6d6393b9f4ab86d3c13d0f5e09a82fb9f789ba07d",
+                  "lock_path": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>",
+                  "status": "held",
+                  "owner_status": "absent",
+                  "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+                  "operation": {
+                    "id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11",
+                    "kind": "issue_46_lock_probe"
+                  },
+                  "authority_id": "issue-46-live-owner",
+                  "acquisition_watermark": {
+                    "schema": "drovr.registry-authority-watermark/v1",
+                    "authority": "drovr.registry",
+                    "groups_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "tasks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "agents_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "turns_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "blocks_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "groups_count": 0,
+                    "tasks_count": 0,
+                    "agents_count": 0,
+                    "turns_count": 0,
+                    "blocks_count": 0,
+                    "generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                    "registry_sha256": "sha256:8f95549f0ea9a50407445482f6ea1b22010e62a1853d4adc4e4e8ad325cece4b"
+                  },
+                  "registry_changed_since_acquisition": false,
+                  "acquisition_generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                  "current_generation": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+                  "legal_next_actions": [
+                    "release_absent_registry_lock"
+                  ]
+                }
+              ],
+              "legal_next_actions": [
+                "release_absent_registry_lock"
+              ]
+            }
+          },
+          "content_digest": "sha256:d11348215d76f553ca791f4eaa0da72b084530675ece34c1192d5cfe3e6a1f47"
+        },
+        {
+          "id": "drovr_registry_lock_reconciliation:negative_age",
+          "kind": "negative_age",
+          "content": {
+            "action": "age_takeover",
+            "rejected": true,
+            "accepted": false,
+            "mutated": false,
+            "code": "registry_lock_recovery_required",
+            "outcome": "registry_lock_recovery_required",
+            "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+            "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+          },
+          "content_digest": "sha256:759396b4403d958766195ff66b402fdf5305ae47a2e0c66602b2f9935a3e7534"
+        },
+        {
+          "id": "drovr_registry_lock_reconciliation:negative_force",
+          "kind": "negative_force",
+          "content": {
+            "action": "force_takeover",
+            "rejected": true,
+            "accepted": false,
+            "mutated": false,
+            "code": "registry_lock_recovery_required",
+            "outcome": "registry_lock_recovery_required",
+            "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
+            "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+          },
+          "content_digest": "sha256:47156c1fb0ed0236b61ca06ed6be24a73c045ed176894a7dde5789073a534758"
+        }
+      ],
+      "captures": [
+        {
+          "id": "drovr_registry_lock_reconciliation:capture:native_drovr_lock_probe",
+          "kind": "native_drovr_lock_probe",
+          "format": "json",
+          "path": "captures/drovr_registry_lock_reconciliation/native_drovr_lock_probe.json",
+          "sha256": "a48e75c62c151794f061bb8b19791cee19bb18ba9bfcd748104197264c8c6c1b",
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:6d8a2b92f0058ae5a81ce08076b90434f83298609b736f1fbdb7be44762b877c",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "killed_lock_owner",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:drovr_registry_lock_reconciliation:lock_owner"
+          ]
+        },
+        {
+          "id": "lock_reconciliation_or_block",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:drovr_registry_lock_reconciliation:reconciliation"
+          ]
+        },
+        {
+          "id": "negative_age_takeover",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:drovr_registry_lock_reconciliation:negative_age"
+          ]
+        },
+        {
+          "id": "negative_force_takeover",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:drovr_registry_lock_reconciliation:negative_force"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:35.610Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "projection_rebuild_readers",
+      "execution_kind": "native_provider",
+      "proof_predicate": "projection_rebuild_readers",
+      "required_command_kinds": [
+        "native_projection_reader_probe"
+      ],
+      "required_observation_kinds": [
+        "query",
+        "watch",
+        "rebuild",
+        "views",
+        "latency"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:36.053Z",
+      "finished_at": "2026-09-17T13:08:36.879Z",
+      "commands": [
+        {
+          "id": "native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-reader-probe.mjs",
+            "--probe",
+            "projection",
+            "--worktree",
+            "<worktree>",
+            "--raw-root",
+            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "--xdg-state-home",
+            "<state>",
+            "--authority-directory",
+            "<authority>",
+            "--socket",
+            "<authority><path:sha256:d287533d1e3d5a633800e22351c11d92e763849c1c5b82c24b7ee35bcf165baf>",
+            "--endpoint",
+            "<authority><path:sha256:ecfb11fe28948b3453aec51e16d9f6d27ed6e5261feffe91f071af9ff58bdf9c>",
+            "--backup-directory",
+            "<backup>",
+            "--repository-root",
+            "<repository>",
+            "--drovr-config-directory",
+            "<drovr>",
+            "--qualification-workspace",
+            "<workspace>",
+            "--herdr-session",
+            "herdr:issue46-final-v11",
+            "--run-id",
+            "run:issue46-final-v11",
+            "--timeout",
+            "120000"
+          ],
+          "command_kind": "native_projection_reader_probe",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-reader-probe.mjs",
+          "host_ref": "native/reader-provider",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:36.053Z",
+          "finished_at": "2026-09-17T13:08:36.879Z",
+          "duration_ms": 826,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6.stdout.log",
+              "sha256": "3dab9c90b4ddedc9369e0c6c3daf2067e1090d80d2ca0bbefe9099038d2fb880",
+              "bytes": 9870
+            },
+            "stderr": {
+              "path": "logs/native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6.stderr.log",
+              "sha256": "b1c8b02481b5586cee07f0ba9c977c9961458c036d096c5040e833759e5764d8",
+              "bytes": 171
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "reader:query",
+          "kind": "query",
+          "content": {
+            "observed": true,
+            "watermark": "sha256:82cfbd2b976b5b9fc846b435a7cac54e7084040c17cea7721f1fa12d547fe706",
+            "provenance": "public_process",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:f9a2ebc8543f987dea95944ba53d528e702f86bfb85e39c6b32f6a8b6a9387f0"
+        },
+        {
+          "id": "reader:watch",
+          "kind": "watch",
+          "content": {
+            "observed": true,
+            "watermark": "sha256:82cfbd2b976b5b9fc846b435a7cac54e7084040c17cea7721f1fa12d547fe706",
+            "provenance": "public_process",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:f9a2ebc8543f987dea95944ba53d528e702f86bfb85e39c6b32f6a8b6a9387f0"
+        },
+        {
+          "id": "reader:rebuild",
+          "kind": "rebuild",
+          "content": {
+            "without_mutation_lock": true,
+            "mutation_lock_acquired": false,
+            "mutation_lock_observed": true,
+            "projection_identity_stable": true,
+            "rebuild_count": 1,
+            "provenance": "deterministic_supporting_check",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:41e86f666034c6cd73db2029bf9dad3130d242511824f3fce7eb858674f76476"
+        },
+        {
+          "id": "reader:views",
+          "kind": "views",
+          "content": {
+            "count": 4,
+            "view_ids": [
+              "host:run-index",
+              "review:inbox",
+              "run:run:7d0058b2babdbb3a2c4acce1d52c04381a319fc433301c9163856f4cc7628014",
+              "run:run:dc2169e79bc337a7f314ad520f1a1f8c7432151a8854a96d3fe306d7819e399f"
+            ],
+            "identities": [
+              {
+                "id": "host:run-index",
+                "schema": "flow.run-index-projection/v1",
+                "watermark": "sha256:67c8cd2b829eaab3e75289686b7be8d503deeda613992ef9f8bee85b6ee7a223",
+                "digest": "sha256:a3d7a36e3ef5336cca6d644fd4405ff6bd45651d48964bb7a5ef43382b8ac13a"
+              },
+              {
+                "id": "review:inbox",
+                "schema": "flow.review-inbox-projection/v1",
+                "watermark": "sha256:82cfbd2b976b5b9fc846b435a7cac54e7084040c17cea7721f1fa12d547fe706",
+                "digest": "sha256:8591aa83dcabaecdeff8b572ffc2a6a29ffae2be285da142ee557ef92c92090f"
+              },
+              {
+                "id": "run:run:7d0058b2babdbb3a2c4acce1d52c04381a319fc433301c9163856f4cc7628014",
+                "schema": "flow.run-projection/v1",
+                "watermark": "sha256:7c99146f170e3ee720ace53133d66e047a1f170671cd041ebff122796597d0d4",
+                "digest": "sha256:7f4744198befe025062b22007c7d75b7045d69a6b39eba54c11ce86bccb27c3e"
+              },
+              {
+                "id": "run:run:dc2169e79bc337a7f314ad520f1a1f8c7432151a8854a96d3fe306d7819e399f",
+                "schema": "flow.run-projection/v1",
+                "watermark": "sha256:daee3f7925443ed16d6c9206067f0f813c511b2a37216a982dd2a1f97523c6e2",
+                "digest": "sha256:bb5cc9cc90beb60c227eaebdeb7a3936b52e035ab60f4f2b570dd43f2ba10e11"
+              }
+            ],
+            "provenance": "deterministic_supporting_check",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:05b50df2fe54b8e9796817f15c56599d29614edab4b0d174b97611a5499e3ed7"
+        },
+        {
+          "id": "reader:latency",
+          "kind": "latency",
+          "content": {
+            "samples": [
+              15,
+              8
+            ],
+            "history_entries": 2,
+            "seed_history_entries": 2,
+            "max_latency_ms": 15,
+            "provenance": "deterministic_supporting_check",
+            "history_seed_provenance": "deterministic_supporting_check",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:30dfe5f746403c32a5a9f3cc6f0bce2ec28d3d089bd3fd02107ba61605d8840c"
+        }
+      ],
+      "captures": [
+        {
+          "id": "projection_reader_probe-native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6",
+          "kind": "projection_reader_probe",
+          "format": "json",
+          "path": "captures/projection_reader_probe-native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6.json",
+          "sha256": "2cd81e3abc3679cd936c348162eb9576410566ec41a4934587d81655fd3e8fe1",
+          "bytes": 13404,
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:b0923a8e86a63dd921f58e93ba28b1d4956d6c727a3a51129847ae55e6e3c62c",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "query_projection",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:query"
+          ]
+        },
+        {
+          "id": "watch_projection",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:watch"
+          ]
+        },
+        {
+          "id": "rebuild_without_mutation_lock",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:rebuild"
+          ]
+        },
+        {
+          "id": "multiple_views",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:views"
+          ]
+        },
+        {
+          "id": "history_latency_samples",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:latency"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:36.880Z"
+      },
+      "reason": null
+    },
+    {
+      "id": "suspended_run_admission",
+      "execution_kind": "native_provider",
+      "proof_predicate": "suspended_run_admission",
+      "required_command_kinds": [
+        "native_suspended_admission_check"
+      ],
+      "required_observation_kinds": [
+        "suspended",
+        "admission",
+        "reboot"
+      ],
+      "required_capture_kinds": [],
+      "status": "passed",
+      "started_at": "2026-09-17T13:08:37.324Z",
+      "finished_at": "2026-09-17T13:08:37.692Z",
+      "commands": [
+        {
+          "id": "native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c",
+          "argv": [
+            "node",
+            "config/flow/scripts/run-host-recovery-reader-probe.mjs",
+            "--probe",
+            "suspended",
+            "--worktree",
+            "<worktree>",
+            "--raw-root",
+            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "--xdg-state-home",
+            "<state>",
+            "--authority-directory",
+            "<authority>",
+            "--socket",
+            "<authority><path:sha256:d287533d1e3d5a633800e22351c11d92e763849c1c5b82c24b7ee35bcf165baf>",
+            "--endpoint",
+            "<authority><path:sha256:ecfb11fe28948b3453aec51e16d9f6d27ed6e5261feffe91f071af9ff58bdf9c>",
+            "--backup-directory",
+            "<backup>",
+            "--repository-root",
+            "<repository>",
+            "--drovr-config-directory",
+            "<drovr>",
+            "--qualification-workspace",
+            "<workspace>",
+            "--herdr-session",
+            "herdr:issue46-final-v11",
+            "--run-id",
+            "run:issue46-final-v11",
+            "--timeout",
+            "120000"
+          ],
+          "command_kind": "native_suspended_admission_check",
+          "launcher_ref": "config/flow/scripts/run-host-recovery-reader-probe.mjs",
+          "host_ref": "native/reader-provider",
+          "working_directory_ref": "worktree",
+          "started_at": "2026-09-17T13:08:37.324Z",
+          "finished_at": "2026-09-17T13:08:37.692Z",
+          "duration_ms": 368,
+          "exit_code": 0,
+          "signal": null,
+          "expected_exit_code": 0,
+          "expected_signal": null,
+          "expected_timed_out": false,
+          "timed_out": false,
+          "logs": {
+            "stdout": {
+              "path": "logs/native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c.stdout.log",
+              "sha256": "68423f4d02128d153d0fa64f9c265a1f98633cdd93e0ab8101c22652ae98d2c0",
+              "bytes": 76113
+            },
+            "stderr": {
+              "path": "logs/native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c.stderr.log",
+              "sha256": "0abede206f438427f4bbb044b298a4d583ba4b16fbc9acd5408a9c8769e52ecf",
+              "bytes": 171
+            }
+          }
+        }
+      ],
+      "observations": [
+        {
+          "id": "reader:suspended",
+          "kind": "suspended",
+          "content": {
+            "observed": true,
+            "run_id": "run:4484d6be63d9f18c077366181b2ea3e7e9c76edb98a88434e6d728054b730d7d",
+            "admission": "suspended_after_reboot",
+            "prior_boot_id": "issue-46-support-boot-old",
+            "current_boot_id": "issue-46-support-boot-new",
+            "simulated_boot": true,
+            "provenance": "production_runtime",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:e93c4807c8ec4bce821ab8f477451e91fd6d9a67f877fe024764727d966795d7"
+        },
+        {
+          "id": "reader:admission",
+          "kind": "admission",
+          "content": {
+            "explicit": true,
+            "run_id": "run:4484d6be63d9f18c077366181b2ea3e7e9c76edb98a88434e6d728054b730d7d",
+            "command_type": "reboot_admission",
+            "action_identity": "sha256:03b190648ebbad94d4064a17ca592e9df11880b2781536d32345ec697f394639",
+            "simulated_boot": true,
+            "provenance": "production_runtime",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:32cb78b70595fc039ae814ff5928300705703f4838621254b44d3b1cfeb4d473"
+        },
+        {
+          "id": "reader:reboot",
+          "kind": "reboot",
+          "content": {
+            "actual_reboot": false,
+            "deferred": true,
+            "simulated": true,
+            "boot_identity_observed": true,
+            "deferred_issue": "47",
+            "provenance": "deterministic_supporting_check",
+            "support_schema": "flow.host-recovery-reader-support/v1"
+          },
+          "content_digest": "sha256:a5e458d9e951545ae668f513bb5689c666944ca3605b43323702c6285aed8c1b"
+        }
+      ],
+      "captures": [
+        {
+          "id": "suspended_admission_check-native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c",
+          "kind": "suspended_admission_check",
+          "format": "json",
+          "path": "captures/suspended_admission_check-native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c.json",
+          "sha256": "f936f1ac5b45eb3e02844cc2aa7ee3555242a35f784bb840c9a15a6097c232a1",
+          "bytes": 142381,
+          "legibility": "pass",
+          "provenance": "native_provider",
+          "watermark": "sha256:86354dec17463b097b3a9a9fec0d1930fa798079105c7b9485a6d90af2570581",
+          "legal_actions": "pass"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "suspended_run_observation",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:suspended"
+          ]
+        },
+        {
+          "id": "explicit_admission",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:admission"
+          ]
+        },
+        {
+          "id": "actual_reboot_deferred",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:reader:reboot"
+          ]
+        }
+      ],
+      "retained_obligations": [],
+      "cleanup": {
+        "disposition": "complete",
+        "owned_resources": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config"
+          }
+        ],
+        "resource_dispositions": [
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/qualification-workspace",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/state",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/authority",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/backup",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/repository",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          },
+          {
+            "kind": "isolated_root",
+            "identity_ref": "isolation/drovr-config",
+            "disposition": "removed",
+            "proof": "absent_after_cleanup"
+          }
+        ],
+        "unresolved_obligations": [],
+        "completed_at": "2026-09-17T13:08:37.697Z"
+      },
+      "reason": null
+    }
+  ],
+  "supporting_checks": [],
+  "deferred": [
+    {
+      "id": "actual_host_reboot",
+      "issue": "47",
+      "status": "not_run",
+      "reason": "actual reboot is deferred to issue 47"
+    },
+    {
+      "id": "expanded_macos_visuals",
+      "issue": "47",
+      "status": "not_run",
+      "reason": "expanded macOS visual matrix is deferred to issue 47"
+    }
+  ],
+  "source_receipts": [
+    {
+      "path": "concurrent_runs_owner_restart.json",
+      "sha256": "90b8a12ae322443edc8ecf5d49f82c88bb5c10c29ce556f1ad37dd0b731dec4d"
+    },
+    {
+      "path": "actionable_failure_recovery.json",
+      "sha256": "da8bb24bc7fea4b69c744bd1bbefd5df9a0f8e55a31bde0b84d562a25af90d0f"
+    },
+    {
+      "path": "backup_restore_reconciliation.json",
+      "sha256": "2b3ad9eac180b8a47863a9f0486c799c19715425d2472bc0bbec9143b53ee46c"
+    },
+    {
+      "path": "ubuntu_headless_text_captures.json",
+      "sha256": "81d6f813c9c9a7f358fc6ab042eae1482e160900fc46dd016a2b453c56072911"
+    },
+    {
+      "path": "tuicr_review_after_producer_exit.json",
+      "sha256": "4f0089991995b48c26c39f146281f4dd8c8b447b5b4533238f312c6cdb92203d"
+    },
+    {
+      "path": "drovr_registry_lock_reconciliation.json",
+      "sha256": "f4151e7935d8bdc9cf0b90d9974bba9bc89bfc4a0f3ccb9694cd14a5aae9bf22"
+    },
+    {
+      "path": "projection_rebuild_readers.json",
+      "sha256": "870e801eb1ba603c2615d4889404f5ef24051630e29782cd1a69cc1b74589a87"
+    },
+    {
+      "path": "suspended_run_admission.json",
+      "sha256": "6ee2f95efb206f19b7780f4297729f9d397241e3eee8e5b9e5b982a220aea241"
+    }
+  ],
+  "captured_at": "2026-09-17T13:08:15.856Z",
+  "finished_at": "2026-09-17T13:08:37.692Z",
+  "evidence_digest": "sha256:ca3ce6fd8ce9c9c0f3dffd6a9b8ace996cb4eb37af9cf45974a16d43422e8167"
+}

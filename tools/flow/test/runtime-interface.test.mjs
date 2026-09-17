@@ -278,6 +278,107 @@ test("restore passes one manifest-bound intent to its Adapter and preserves the 
   assert.deepEqual(runtime.query().restore.applied_receipt, result.receipt);
 });
 
+test("exact restore retry re-enters an incomplete provider operation behind the barrier", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const differentManifest = createBackupManifest({
+    ...observation,
+    replacement_authority: completeReplacementAuthority({
+      git_state: {
+        commit: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+    }),
+  });
+  let attempts = 0;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      observeRestore: () => observation,
+      restore() {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error("injected restore interruption");
+          error.code = "restore_injected_interruption";
+          throw error;
+        }
+        return { provider_receipt_id: "restore/retry" };
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  const first = runtime.command({ type: "restore", manifest });
+
+  assert.equal(first.code, "restore_injected_interruption");
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(runtime.query().restore.applied_receipt, null);
+
+  const different = runtime.command({ type: "restore", manifest: differentManifest });
+  assert.equal(different.code, "host_reconciliation_required");
+
+  const retried = runtime.command({ type: "restore", manifest });
+  assert.equal(retried.accepted, true);
+  assert.equal(attempts, 2);
+  assert.equal(runtime.query().restore.applied_receipt.provider_receipt.provider_receipt_id,
+    "restore/retry");
+
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(reconciled.accepted, true);
+  assert.equal(runtime.query().restore.state, "ready");
+  const admitted = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(admitted.accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("restore retry stays blocked when a rebooted host has no restore writer", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-null-retry-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      restore() {
+        const error = new Error("injected restore interruption");
+        error.code = "restore_injected_interruption";
+        throw error;
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("restore-null-boot-a", "restore-null-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const interrupted = firstRuntime.command({ type: "restore", manifest });
+  assert.equal(interrupted.code, "restore_injected_interruption");
+  assert.equal(firstRuntime.query().restore.active, true);
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("restore-null-boot-b", "restore-null-b"),
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebootedRuntime = createFlowRuntime({ runAuthority: rebootedAuthority });
+
+  const blocked = rebootedRuntime.command({ type: "restore", manifest });
+
+  assert.equal(blocked.schema, "flow.rejection/v1", JSON.stringify(blocked));
+  assert.equal(blocked.code, "restore_writer_unavailable");
+  assert.equal(rebootedRuntime.query().restore.active, true);
+  assert.equal(rebootedRuntime.query().restore.applied_receipt, null);
+});
+
 test("active host restore replaces ordinary run and view actions with reconciliation admission", async () => {
   const observation = {
     replacement_authority: {
@@ -1366,6 +1467,51 @@ test("external and Drovr obligations require identity-bound settlement receipts"
   assert.equal(projection.restore.state, "ready");
   assert.equal(runtime.command(projection.restore.legal_actions[0]).accepted, true);
   assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("restore preserves failed and cancelled external settlement receipts", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: ["failed", "cancelled"].map((outcome, index) => ({
+      effect_id: `effect:${index + 1}`,
+      provider: "github",
+      pointer: `issue:${index + 1}`,
+      idempotency_key: `issue:${index + 1}`,
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: `effect:${index + 1}`,
+        idempotency_key: `issue:${index + 1}`,
+        provider_receipt_id: `provider/${index + 1}`,
+        outcome,
+      },
+    })),
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => observation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+
+  assert.deepEqual(
+    manifest.external_pointers.map(({ receipt }) => receipt.outcome).sort(),
+    ["cancelled", "failed"],
+  );
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+
+  assert.equal(reconciled.accepted, true, JSON.stringify(reconciled));
+  assert.equal(runtime.query().restore.state, "ready");
+  assert.equal(
+    runtime.query().restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "reconciled",
+  );
 });
 
 test("Drovr obligations recover through an exact named durable-holder handoff", () => {

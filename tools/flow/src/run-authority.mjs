@@ -59,6 +59,9 @@ import {
 import { foldRetryStates, retryStateIsDue } from "./retry-state.mjs";
 import { deriveChildRunId } from "./subrun-effects.mjs";
 import {
+  DELEGATE_FAILURE_OBSERVATION_SCHEMA,
+} from "./provider-receipt-policies/delegate-drovr.mjs";
+import {
   AuthorityIntegrityError,
   migrateReviewProjectionFolds,
   readAuthorityStream,
@@ -2271,6 +2274,12 @@ export function createDurableRunAuthority({
           intent,
         );
         const observationIsFresh = latestObservationIndex > latestInvocationIndex;
+        const provenDelegateAbsence = isProvenDelegatePreDispatchAbsence(
+          intent,
+          latestObservation,
+          observedPresence,
+          observationIsFresh,
+        );
         if (reconciliation === "adopt_present" &&
             (observedPresence !== "present" || !observationIsFresh)) {
           throw new AuthorityFenceError(
@@ -2288,10 +2297,10 @@ export function createDurableRunAuthority({
         }
         if (reconciliation === "settle_absent" &&
             (observedPresence !== "absent" || !observationIsFresh ||
-             stream.fold.phase !== "cancelled")) {
+             !provenDelegateAbsence && stream.fold.phase !== "cancelled")) {
           throw new AuthorityFenceError(
             "effect_absence_not_proven",
-            "cancelled effect settlement requires exact durable absence evidence",
+            "effect settlement requires exact durable absence evidence",
           );
         }
         const executionTimeObservation = observeExecutionTime(
@@ -5542,6 +5551,23 @@ function providerEffectErrorObservation(intent, providerObservation) {
     causation: null,
     provider_observation: providerObservation,
   };
+}
+
+function isProvenDelegatePreDispatchAbsence(
+  intent,
+  observation,
+  observedPresence,
+  observationIsFresh,
+) {
+  const providerObservation = observation?.provider_observation;
+  return intent?.effect_kind === "delegate" &&
+    observedPresence === "absent" &&
+    observationIsFresh &&
+    providerObservation?.schema === DELEGATE_FAILURE_OBSERVATION_SCHEMA &&
+    providerObservation.absence_proven === true &&
+    providerObservation.drovr?.classification === "pre_dispatch_validation" &&
+    providerObservation.drovr?.dispatch_proof?.schema ===
+      "drovr.dispatch-proof/v1";
 }
 
 function sanitizeEffectObservation(observation, intent) {
