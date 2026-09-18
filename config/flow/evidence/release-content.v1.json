@@ -26,10 +26,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "1e56839612e96fe3a11860dc9d1d0c5e00ecf712",
+    "candidate_tree_sha": "57cf104c2570940348e8f0c1003a13de667c1f5e",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:8233d7e7e7549211b005111757f328ec161218604baa9c0ad481a3d88994b7d5",
+  "content_digest": "sha256:842d0ecc3cf53897515a702325d5945c13030f9d395e99c7451c3fa8c8c980a2",
   "files": [
     {
       "path": "CONTEXT.md",
@@ -40,8 +40,8 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "git_blob_sha": "13c64e70db1cb7a0be3a6232e7209c8cd73bd822",
-      "sha256": "04ab2385a3265b5753cefe84ab41ed150c41656d7e419c5eb79e4505c1ba20d1"
+      "git_blob_sha": "dd2d47fa1de53294a73b7c55a60dc1c0dfd1093f",
+      "sha256": "de2e95ebb4b9ba97a1785fcbeecbaa0f7fdde27039221ef6a23969c32bb2e77c"
     },
     {
       "path": "bin/flow",
@@ -546,6 +546,12 @@
       "mode": "100644",
       "git_blob_sha": "107fbe59d9279a7d37af25ddfe187fbd1cf34f3b",
       "sha256": "b85aeab60ed26fddf5dda107de831f53ae2b33990d262f2d0b435f500c12faae"
+    },
+    {
+      "path": "config/flow/test/operator-guide.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "6878708ffd6e953d7f3bc71ec93ce17d87bfcf92",
+      "sha256": "6921fb53ec2118231fa148cd1e6791af07c70b6502389d3d2651f5e20571cc27"
     },
     {
       "path": "config/flow/test/production-runtime.test.mjs",

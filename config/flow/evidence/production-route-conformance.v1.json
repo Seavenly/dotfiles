@@ -2,8 +2,8 @@
   "schema": "flow.production-route-conformance-evidence/v1",
   "release_id": "flow-release-1.0-dark/v1",
   "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
-  "candidate_tree_sha": "1e56839612e96fe3a11860dc9d1d0c5e00ecf712",
-  "release_content_digest": "sha256:8233d7e7e7549211b005111757f328ec161218604baa9c0ad481a3d88994b7d5",
+  "candidate_tree_sha": "57cf104c2570940348e8f0c1003a13de667c1f5e",
+  "release_content_digest": "sha256:842d0ecc3cf53897515a702325d5945c13030f9d395e99c7451c3fa8c8c980a2",
   "status": "passed",
   "scope": "production_public_route_conformance",
   "routes": [
@@ -21,19 +21,19 @@
     "public local review prepares and launches through production runtime, gate, composition, review authority, and inbox projection",
     "production route cases use isolated local repositories and do not authorize remote mutations"
   ],
-  "phase1_evidence_sha256": "06e132b5649281fd21503ef96f16fc478defa51d116105dfdd307a76335e62b1",
+  "phase1_evidence_sha256": "10900ea79d28d7864c1f87c6eabb6bdad158ff3a0dea05e98e98a589f0076110",
   "generation_id": null,
   "generation_binding_sha256": null,
   "recipe": {
     "schema": "flow.production-route-conformance-recipe/v1",
-    "digest": "sha256:a49b635a07530409f20e65b3c8274b32484d69720cb0142da99366a75cb36be0",
+    "digest": "sha256:38d2a3d289f0d37bf54ad13a004064820b97359557dd3c54187624ba1210e3da",
     "commands": [
       {
         "id": "production_feature_verify",
         "command": "node --test --experimental-test-isolation=none --test-name-pattern='production feature runs a real Git mutation through a local candidate' config/flow/test/production-runtime.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/production-feature-verify.tap",
-        "receipt_sha256": "b55160203192a1e47209cec52880afabe640ec40f9eb748c3a367ca5a4e0224f",
+        "receipt_sha256": "bc03adbfb29b8f0c09c61a062863ef479e9cd262483d998f2734680846494ca7",
         "status": "passed",
         "exit_code": 0,
         "tests": 1,
@@ -48,7 +48,7 @@
         "command": "node --test --experimental-test-isolation=none --test-name-pattern='public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions' config/flow/test/public-process.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/public-local-review-process.tap",
-        "receipt_sha256": "f957cd5d6d2c945333102968de1dfe53d18a47d5d38d5e1d046073cfa6111cac",
+        "receipt_sha256": "a5e124f050065cd1dd6d16fd2d9bf1c7d34a449f2c4cd370dd6efc95853b95b3",
         "status": "passed",
         "exit_code": 0,
         "tests": 2,
@@ -63,7 +63,7 @@
         "command": "node --test --experimental-test-isolation=none --test-name-pattern='public preparation normalizes real Drovr feature findings' config/flow/test/runtime.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/public-drovr-finding-schema.tap",
-        "receipt_sha256": "5fd454baaf9a0a5cedc42fd45688fbff7cdbfa5fb48006863160099c8d8e2e54",
+        "receipt_sha256": "a6044cd2fb26f37862c456112e02b8f4d3ae252493b36eafe4b388ee8de3d852",
         "status": "passed",
         "exit_code": 0,
         "tests": 1,
@@ -75,7 +75,7 @@
       }
     ]
   },
-  "captured_at": "2026-09-16T23:13:59Z",
+  "captured_at": "2026-09-18T02:52:40Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",

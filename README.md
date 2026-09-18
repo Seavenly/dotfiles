@@ -196,6 +196,8 @@ policy from `config/flow/launch-policy.v1.json`; it does not change the
 selector merely because replacement sources are installed. The launcher
 enforces that converged decision.
 
+The copyable first-release operator path is the [Flow 1.0 dark opt-in guide](docs/flow/operator-guide.md).
+
 The public replacement Interface is also fail-closed: `prepare` and `launch`
 require a request-local `flow.dark-opt-in/v1` bound to the exact release
 manifest. That opt-in admits only the production feature `verify` and local
