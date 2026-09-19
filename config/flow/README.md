@@ -66,7 +66,7 @@ launch rejection schema are kept separate: runtime callers receive
 `flow.rejection/v1` with an optional `outcome`, while selector callers receive
 `flow.launch-rejection/v1` with the exact route and legal actions.
 
-`transition-ledger.v1.json` binds catalog v33, policy, manifest, release
+`transition-ledger.v1.json` binds catalog v34, policy, manifest, release
 content, environment, prerequisite commits, legacy inventory, and evidence.
 `evidence/release-content.v1.json` binds an exact candidate Git tree ID,
 its declared qualification-base commit, and every regular-file byte in the
@@ -167,7 +167,7 @@ capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
 the evidence-safety catalog identity is
-`flow.contract-catalog/v1@33`.
+`flow.contract-catalog/v1@34`.
 
 Callers select instructions, minimal task-input IDs and facts, resource
 selection IDs, and output requirements. RunAuthority derives execution
@@ -202,6 +202,19 @@ unresolved for recovery. Flow requires a Drovr retirement receipt before
 accepted or exhausted delegated work can settle. A non-destructive bounded
 wait preserves the current attempt for same-turn recovery rather than
 consuming retry capacity.
+
+The route `agent_id` is a planning identity, never a Drovr registry ID. After
+turn discovery proves exact absence, Flow's separate
+`flow.delegated-agent-resource-port/v1` performs the two-operation
+`ensure`/`retire` lifecycle: it resolves the canonical cwd through
+WorkspaceAuthority, opens or adopts only the deterministic run-scoped task and
+agent key through public Drovr resource commands, and returns the actual
+registry IDs with a binding digest and watermark. Dispatch and recovery use
+that returned identity; collisions, workspace/configuration drift,
+launch/native drift, and uncertain resource actions block with closed legal
+actions instead of making identity-free progress. Declared managed-agent
+reuse, ordered steering, and independent fallback remain the existing Flow
+policies.
 
 Declared managed-agent reuse binds a complete ordered card set to one exact
 launch and names the terminal card that must retire it; duplicate agent routes

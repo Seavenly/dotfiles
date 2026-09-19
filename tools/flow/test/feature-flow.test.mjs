@@ -67,6 +67,11 @@ import { supportedDescription } from
 const DELEGATE_OUTPUT_VALIDATOR =
   "flow.validator/delegate-output-conformance/v1";
 
+function withoutTerminalDisposition(evidence) {
+  const { terminal_disposition: _terminalDisposition, ...transferable } = evidence;
+  return transferable;
+}
+
 test("feature/v1 verify selection prepares an honest candidate plan", () => {
   const facts = dynamicCheckpointProposal().explicit_facts;
   facts.operation_contracts = Object.values(FEATURE_OPERATION_CONTRACTS);
@@ -4244,8 +4249,8 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.deepEqual(materialized.accepted_delegates.map(({ card_id: cardId }) =>
     cardId), ["feature-apply", "feature-critique"]);
   assert.deepEqual(materialized.accepted_delegates.map(({ evidence }) => evidence), [
-    applyEvidence,
-    critiqueEvidence,
+    withoutTerminalDisposition(applyEvidence),
+    withoutTerminalDisposition(critiqueEvidence),
   ]);
   const sourceEffects = new Map(completed.effects.map((effect) => [
     effect.card_id,
@@ -4257,7 +4262,11 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     assert.equal(entry.attempt_id, source.attempt_id);
     assert.equal(entry.idempotency_key, source.idempotency_key);
     assert.match(entry.source_authority_watermark, /^sha256:[0-9a-f]{64}$/);
-    assert.deepEqual(entry.evidence, source.receipt.provider_receipt);
+    assert.deepEqual(
+      entry.evidence,
+      withoutTerminalDisposition(source.receipt.provider_receipt),
+    );
+    assert.ok(source.receipt.provider_receipt.terminal_disposition);
   }
   const verifyEntry = materialized.operation_receipts.find(({ card_id: cardId }) =>
     cardId === "feature-verify");

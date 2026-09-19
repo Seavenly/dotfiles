@@ -404,6 +404,9 @@ function delegateCancellationIntent(delegateIntent, {
     attempt_id: `${delegateIntent.attempt_id}:cancellation`,
     delegate_attempt_id: delegateIntent.attempt_id,
     delegate_effect_id: delegateIntent.effect_id,
+    ...(delegateIntent.run_id === undefined ? {} : {
+      run_id: delegateIntent.run_id,
+    }),
     retire_managed_agent: retireManagedAgent,
     settlement_phase: settlementPhase,
     card_id: delegateIntent.card_id,
@@ -411,6 +414,20 @@ function delegateCancellationIntent(delegateIntent, {
     operation_contract: delegateIntent.operation_contract,
     route_binding: delegateIntent.route_binding,
     resource_claims: delegateIntent.resource_claims,
+    managed_agent_binding: delegateIntent.managed_agent_binding ?? null,
+    ...(delegateIntent.delegate_input === undefined ? {} : {
+      delegate_input: {
+        ...(delegateIntent.delegate_input.description === undefined ? {} : {
+          description: delegateIntent.delegate_input.description,
+        }),
+        ...(delegateIntent.delegate_input.resource_references === undefined
+          ? {}
+          : {
+              resource_references:
+                delegateIntent.delegate_input.resource_references,
+            }),
+      },
+    }),
   };
 }
 
@@ -457,6 +474,13 @@ function delegateDecision(fold, command, delegate) {
   const routeBinding = fallback?.activate_for_attempt === ordinal
     ? fallback.route
     : card.route;
+  const nextFallback = fallback?.activate_for_attempt === ordinal + 1;
+  const nextRouteBinding = nextFallback ? fallback.route : routeBinding;
+  const retryResourceStrategy = ordinal < card.limits.max_attempts
+    ? nextFallback
+      ? "retire_exact_primary_before_independent_fallback"
+      : "retain_exact_primary_for_same_route_retry"
+    : null;
   const baseDelegateInput = fallback?.activate_for_attempt === ordinal
     ? { ...card.inputs, description: fallback.description }
     : card.inputs;
@@ -506,6 +530,10 @@ function delegateDecision(fold, command, delegate) {
         delegateInput.authority_materialized_candidate,
       ),
     }),
+    ...(retryResourceStrategy === null ? {} : {
+      next_route_binding: nextRouteBinding,
+      retry_resource_strategy: retryResourceStrategy,
+    }),
   });
   const completesRun = decisionCompletesRun(fold, {
     completedCardIds: [delegate.id],
@@ -538,6 +566,10 @@ function delegateDecision(fold, command, delegate) {
       delegate_validator_contracts: card.validators,
       managed_agent_binding: card.inputs.managed_agent ?? null,
       route_binding: routeBinding,
+      ...(retryResourceStrategy === null ? {} : {
+        next_route_binding: nextRouteBinding,
+        retry_resource_strategy: retryResourceStrategy,
+      }),
       resource_claims: card.resource_claims,
       terminal_disposition_policy: {
         schema: "flow.delegate-terminal-disposition-policy/v1",
@@ -1093,7 +1125,7 @@ function materializeDeclaredResultBindings(fold, card, declarations) {
         attempt_id: binding.attempt_id,
         idempotency_key: binding.provenance.idempotency_key,
         source_authority_watermark: binding.provenance.source_authority_watermark,
-        evidence: binding.content,
+        evidence: transferableDelegateEvidence(binding.content),
       });
     } else if (producer.executor.kind === "operation") {
       const entry = {
@@ -1166,9 +1198,29 @@ function resolveDelegateEvidence(fold, cardId) {
       attempt_id: attempt.attempt_id,
       idempotency_key: intent.idempotency_key,
       source_authority_watermark: intent.source_authority_watermark,
-      evidence: attempt.evidence,
+      evidence: transferableDelegateEvidence(attempt.evidence),
     },
   };
+}
+
+function transferableDelegateEvidence(evidence) {
+  const allowed = [
+    "schema",
+    "attempt_id",
+    "card_id",
+    "turn_id",
+    "drovr_watermark",
+    "route_binding",
+    "settlement_proof",
+    "validator_receipts",
+    "validated_output",
+    "evidence_safety_receipt",
+    "evidence_safety_binding",
+    "authority_terminal_disposition",
+  ];
+  return Object.fromEntries(allowed
+    .filter((key) => Object.hasOwn(evidence, key))
+    .map((key) => [key, evidence[key]]));
 }
 
 function delegateEvidenceSafetyValid(providerReceipt) {

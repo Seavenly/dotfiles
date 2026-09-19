@@ -2,75 +2,75 @@ TAP version 13
 # Subtest: public host and reboot admission schemas compile in strict mode
 ok 1 - public host and reboot admission schemas compile in strict mode
   ---
-  duration_ms: 228.64612
+  duration_ms: 258.999869
   type: 'test'
   ...
 # Subtest: release transition contracts validate the managed manifest and receipt
 ok 2 - release transition contracts validate the managed manifest and receipt
   ---
-  duration_ms: 44.380418
+  duration_ms: 48.71311
   type: 'test'
   ...
 # Subtest: public host schemas accept exact frames, status, and ordinary preparation
 ok 3 - public host schemas accept exact frames, status, and ordinary preparation
   ---
-  duration_ms: 35.81634
+  duration_ms: 40.480826
   type: 'test'
   ...
 # Subtest: review inbox actions are closed public commands and materialize through their input templates
 ok 4 - review inbox actions are closed public commands and materialize through their input templates
   ---
-  duration_ms: 201.63682
+  duration_ms: 233.647973
   type: 'test'
   ...
 # Subtest: delegate input envelope schemas compile in strict mode
 ok 5 - delegate input envelope schemas compile in strict mode
   ---
-  duration_ms: 28.37919
+  duration_ms: 32.492635
   type: 'test'
   ...
 # Subtest: delegate task-input schema rejects forbidden aliases recursively
 ok 6 - delegate task-input schema rejects forbidden aliases recursively
   ---
-  duration_ms: 8.647103
+  duration_ms: 10.9918
   type: 'test'
   ...
 # Subtest: delegate failure observation schema is strict and preserves operator fields
 ok 7 - delegate failure observation schema is strict and preserves operator fields
   ---
-  duration_ms: 6.5425
+  duration_ms: 8.982655
   type: 'test'
   ...
 # Subtest: predecessor evidence schema branches reject unknown fields
 ok 8 - predecessor evidence schema branches reject unknown fields
   ---
-  duration_ms: 11.988789
+  duration_ms: 12.66935
   type: 'test'
   ...
 # Subtest: delegate resource selection schema is plan-time ID-only
 ok 9 - delegate resource selection schema is plan-time ID-only
   ---
-  duration_ms: 8.582935
+  duration_ms: 10.498776
   type: 'test'
   ...
 # Subtest: authority observations require their binding observation input
 ok 10 - authority observations require their binding observation input
   ---
-  duration_ms: 7.210359
+  duration_ms: 9.059488
   type: 'test'
   ...
 # Subtest: Flow description schema accepts the current Drovr description shape
 ok 11 - Flow description schema accepts the current Drovr description shape
   ---
-  duration_ms: 20.348671
+  duration_ms: 22.561271
   type: 'test'
   ...
-# (node:1571778) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (node:3911655) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: published Flow projections satisfy their JSON schemas
 ok 12 - published Flow projections satisfy their JSON schemas
   ---
-  duration_ms: 622.791915
+  duration_ms: 950.311087
   type: 'test'
   ...
 1..12
@@ -81,4 +81,4 @@ ok 12 - published Flow projections satisfy their JSON schemas
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 1334.192246
+# duration_ms 1767.42505

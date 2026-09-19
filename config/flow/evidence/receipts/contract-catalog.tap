@@ -2,121 +2,121 @@ TAP version 13
 # Subtest: the public catalog exposes the settled interface and forbids legacy import
 ok 1 - the public catalog exposes the settled interface and forbids legacy import
   ---
-  duration_ms: 7.37792
+  duration_ms: 8.052019
   type: 'test'
   ...
 # Subtest: the public catalog publishes immutable result and capture contracts
 ok 2 - the public catalog publishes immutable result and capture contracts
   ---
-  duration_ms: 1.157145
+  duration_ms: 1.467601
   type: 'test'
   ...
 # Subtest: the public catalog requires both prepare input contracts
 ok 3 - the public catalog requires both prepare input contracts
   ---
-  duration_ms: 3.132948
+  duration_ms: 3.13889
   type: 'test'
   ...
 # Subtest: the public catalog binds checkpoint contracts in its source and JSON
 ok 4 - the public catalog binds checkpoint contracts in its source and JSON
   ---
-  duration_ms: 2.113618
+  duration_ms: 2.17296
   type: 'test'
   ...
 # Subtest: the public catalog requires both launch confirmation contracts
 ok 5 - the public catalog requires both launch confirmation contracts
   ---
-  duration_ms: 2.094773
+  duration_ms: 2.326594
   type: 'test'
   ...
 # Subtest: the public catalog rejects a weakened Drovr feature baseline
 ok 6 - the public catalog rejects a weakened Drovr feature baseline
   ---
-  duration_ms: 2.81553
+  duration_ms: 2.819267
   type: 'test'
   ...
 # Subtest: the public catalog rejects nested authority roots
 ok 7 - the public catalog rejects nested authority roots
   ---
-  duration_ms: 1.799126
+  duration_ms: 1.944786
   type: 'test'
   ...
 # Subtest: the public catalog requires the complete rejection contract
 ok 8 - the public catalog requires the complete rejection contract
   ---
-  duration_ms: 1.284411
+  duration_ms: 1.516563
   type: 'test'
   ...
 # Subtest: the public catalog requires the durable authority contract
 ok 9 - the public catalog requires the durable authority contract
   ---
-  duration_ms: 1.311672
+  duration_ms: 1.938925
   type: 'test'
   ...
 # Subtest: the public catalog requires complete registered operation contracts
 ok 10 - the public catalog requires complete registered operation contracts
   ---
-  duration_ms: 1.797292
+  duration_ms: 1.703849
   type: 'test'
   ...
 # Subtest: the public catalog requires the delegate quarantine block contract
 ok 11 - the public catalog requires the delegate quarantine block contract
   ---
-  duration_ms: 1.425985
+  duration_ms: 1.599366
   type: 'test'
   ...
 # Subtest: the public catalog binds registered queries to published contracts
 ok 12 - the public catalog binds registered queries to published contracts
   ---
-  duration_ms: 1.462232
+  duration_ms: 1.870269
   type: 'test'
   ...
 # Subtest: the public catalog requires the complete legacy import policy
 ok 13 - the public catalog requires the complete legacy import policy
   ---
-  duration_ms: 5.828778
+  duration_ms: 7.222101
   type: 'test'
   ...
 # Subtest: the public catalog requires the exact evidence-safety identity
 ok 14 - the public catalog requires the exact evidence-safety identity
   ---
-  duration_ms: 3.679302
+  duration_ms: 2.864681
   type: 'test'
   ...
 # Subtest: legacy import requires every catalog validation
 ok 15 - legacy import requires every catalog validation
   ---
-  duration_ms: 1.465017
+  duration_ms: 1.432266
   type: 'test'
   ...
 # Subtest: legacy import rejects an adapter that is not bound to a catalog contract
 ok 16 - legacy import rejects an adapter that is not bound to a catalog contract
   ---
-  duration_ms: 0.950141
+  duration_ms: 1.375612
   type: 'test'
   ...
 # Subtest: legacy import rejects untyped caller validation flags
 ok 17 - legacy import rejects untyped caller validation flags
   ---
-  duration_ms: 2.931916
+  duration_ms: 0.971402
   type: 'test'
   ...
 # Subtest: legacy import rejects a validation receipt unrelated to the subject bytes
 ok 18 - legacy import rejects a validation receipt unrelated to the subject bytes
   ---
-  duration_ms: 1.287867
+  duration_ms: 1.44498
   type: 'test'
   ...
 # Subtest: legacy import does not claim unauthenticated receipt provenance
 ok 19 - legacy import does not claim unauthenticated receipt provenance
   ---
-  duration_ms: 1.167885
+  duration_ms: 1.151766
   type: 'test'
   ...
 # Subtest: legacy import permits validated bytes but never legacy authority
 ok 20 - legacy import permits validated bytes but never legacy authority
   ---
-  duration_ms: 2.007593
+  duration_ms: 1.779058
   type: 'test'
   ...
 1..20
@@ -127,4 +127,4 @@ ok 20 - legacy import permits validated bytes but never legacy authority
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 90.784431
+# duration_ms 91.445181

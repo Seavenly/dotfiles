@@ -16,6 +16,8 @@ import {
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
 import { dynamicCheckpointProposal } from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
 import { digest, freezeCanonical } from "../../../tools/flow/src/canonical.mjs";
+import { deriveDelegatedAgentResourceKey } from
+  "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
 
 const execFile = promisify(execFileCallback);
 const DARK_OPT_IN = {
@@ -40,6 +42,7 @@ export async function seedPublicReview({
     env,
     authorityDirectory,
     delegatedAgentPort,
+    delegatedAgentResourcePort: publicResourcePort(),
     autonomous: true,
   });
   try {
@@ -97,6 +100,92 @@ export async function seedPublicReview({
   } finally {
     closeFlowRuntime(runtime);
   }
+}
+
+function publicResourcePort() {
+  return {
+    contract: "flow.delegated-agent-resource-port/v1",
+    async ensure(request) {
+      const resourceKey = deriveDelegatedAgentResourceKey(request);
+      const suffix = resourceKey.slice(-16);
+      const delegation = {
+        agent_id: `agent:public-resource-${suffix}`,
+        task_id: `task:agent:public-resource-${suffix}`,
+        group_id: "group:public-review-seed",
+      };
+      const bindingInput = {
+        resource_key: resourceKey,
+        owner: request.owner,
+        workspace_claim: request.workspace_claim,
+        launch_binding: request.launch_binding,
+        delegation,
+        native_session: `native:public-resource-${suffix}`,
+        managed_runtime_evidence_digest: digest({ resourceKey, delegation }),
+      };
+      const binding = {
+        schema: "flow.delegated-agent-resource-binding/v1",
+        ...bindingInput,
+        binding_digest: digest(bindingInput),
+      };
+      return {
+        schema: "flow.delegated-agent-resource-projection/v1",
+        operation: "ensure",
+        status: "ready",
+        resource_key: resourceKey,
+        binding,
+        binding_digest: binding.binding_digest,
+        delegation,
+        watermark: publicResourceWatermark(resourceKey, delegation),
+        reason: null,
+        legal_next_actions: ["dispatch_exact_turn", "retire_exact_resource"],
+      };
+    },
+    async retire({ binding }) {
+      return {
+        schema: "flow.delegated-agent-resource-projection/v1",
+        operation: "retire",
+        status: "retired",
+        resource_key: binding.resource_key,
+        binding,
+        binding_digest: binding.binding_digest,
+        delegation: binding.delegation,
+        watermark: publicResourceWatermark(
+          binding.resource_key,
+          binding.delegation,
+        ),
+        cleanup_receipt: { proof: "exact_group_closed" },
+        reason: null,
+        legal_next_actions: [],
+      };
+    },
+  };
+}
+
+function publicResourceWatermark(resourceKey, delegation) {
+  const authority = {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    groups_sha256: digest([]),
+    groups_count: 0,
+    tasks_sha256: digest([]),
+    tasks_count: 0,
+    agents_sha256: digest([]),
+    agents_count: 0,
+    turns_sha256: digest([]),
+    turns_count: 0,
+    blocks_sha256: digest([]),
+    blocks_count: 0,
+    generation: digest({ resourceKey }),
+    registry_sha256: digest({ resourceKey, delegation }),
+  };
+  return {
+    schema: "flow.delegated-agent-resource-watermark/v1",
+    authority: "drovr.registry",
+    resource_key: resourceKey,
+    ...delegation,
+    record_sha256: digest({ resourceKey, delegation }),
+    authority_watermark: authority,
+  };
 }
 
 export async function initializePublicReviewRepository(repository) {
@@ -453,7 +542,13 @@ function workingDelegationProjection(turn) {
     turn: {
       id: turnId,
       status: "working",
-      caller: { dispatch_key: request.caller_key },
+      caller: {
+        dispatch_key: request.caller_key,
+        metadata: {
+          ...request.description.caller_metadata,
+          flow_resource_binding: request.resource_binding,
+        },
+      },
       launch_binding: {
         schema: "drovr.launch-binding/v1",
         comparison_key: request.description.comparison_keys.launch,

@@ -103,6 +103,9 @@ export async function startTurn(agentId, options, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await agentContext(registryDirectory, agentId);
+  if (options.resourceBinding !== undefined) {
+    validateResourceBinding(options.resourceBinding, initial.agent.id);
+  }
   const operationPrompt = typeof options.prompt === "string"
     ? normalizeInputText(options.prompt)
     : options.prompt ?? null;
@@ -115,6 +118,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
         prompt: operationPrompt,
         input_key: options.inputKey ?? null,
         caller: options.caller ?? null,
+        resource_binding: options.resourceBinding ?? null,
         launch_binding: options.launchBinding ?? null,
       },
     );
@@ -275,6 +279,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
             caller: options.caller,
             inputKey: options.inputKey,
             launchBinding: options.launchBinding,
+            resourceBinding: options.resourceBinding,
           });
           return { ...current, turn };
         },
@@ -334,6 +339,9 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
     : options.prompt;
   requireInputText(prompt);
   validateLaunchBinding(options.launchBinding);
+  if (options.resourceBinding !== undefined) {
+    validateResourceBinding(options.resourceBinding, agentId);
+  }
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
   const lockOperation = dependencies.lockOperation ??
@@ -346,6 +354,7 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
         caller_key: options.callerKey,
         input_key: options.inputKey,
         caller_metadata: options.callerMetadata ?? null,
+        resource_binding: options.resourceBinding ?? null,
         launch_binding: options.launchBinding,
       },
     );
@@ -354,6 +363,9 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
     prompt,
     input_key: options.inputKey,
     caller_metadata: options.callerMetadata,
+    ...(options.resourceBinding === undefined ? {} : {
+      resource_binding: options.resourceBinding,
+    }),
     launch_binding: options.launchBinding,
   });
   return withResourceLock(
@@ -370,6 +382,16 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
         );
       }
       if (existing.length === 1) {
+        const existingBinding = existing[0].resource_binding;
+        const requestedHasBinding = options.resourceBinding !== undefined;
+        const existingHasBinding = existingBinding !== undefined &&
+          existingBinding !== null;
+        if (requestedHasBinding !== existingHasBinding ||
+            options.resourceBinding !== undefined &&
+              digestCanonical(existingBinding) !==
+                digestCanonical(options.resourceBinding)) {
+          callerKeyConflict(options.callerKey);
+        }
         if (existing[0].caller.payload_sha256 !== payloadSha256) {
           callerKeyConflict(options.callerKey);
         }
@@ -446,6 +468,7 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
           payload_sha256: payloadSha256,
           metadata: structuredClone(options.callerMetadata),
         },
+        resourceBinding: options.resourceBinding,
       }, { ...dependencies, lockOperation });
       return { ...context, dispatch_status: "dispatched" };
     },
@@ -1128,6 +1151,118 @@ function validateLaunchBinding(binding) {
   }
 }
 
+export function validateResourceBinding(binding, expectedAgentId) {
+  const invalid = () => {
+    throw new DrovrError("invalid exact resource binding", {
+      code: 2,
+      outcome: "invalid_arguments",
+    });
+  };
+  if (!isPlainRecord(binding) ||
+      !hasExactKeys(binding, [
+        "schema",
+        "resource_key",
+        "owner",
+        "workspace_claim",
+        "launch_binding",
+        "delegation",
+        "native_session",
+        "managed_runtime_evidence_digest",
+        "binding_digest",
+      ]) ||
+      binding.schema !== "flow.delegated-agent-resource-binding/v1" ||
+      !isDigest(binding.resource_key) ||
+      !isDigest(binding.managed_runtime_evidence_digest) ||
+      !isDigest(binding.binding_digest) ||
+      !isPlainRecord(binding.owner) ||
+      !hasExactKeys(binding.owner, [
+        "run_id",
+        "card_id",
+        "route_key",
+      ], ["managed_agent_binding_id"]) ||
+      !nonEmptyString(binding.owner.run_id) ||
+      !nonEmptyString(binding.owner.card_id) ||
+      !nonEmptyString(binding.owner.route_key) ||
+      binding.owner.managed_agent_binding_id !== undefined &&
+        !nonEmptyString(binding.owner.managed_agent_binding_id) ||
+      !isPlainRecord(binding.workspace_claim) ||
+      !hasExactKeys(binding.workspace_claim, [
+        "kind",
+        "authority",
+        "contract",
+        "subject_id",
+        "generation",
+        "mutation_epoch",
+        "fingerprint",
+        "access",
+      ], ["operation"]) ||
+      binding.workspace_claim.kind !== "workspace" ||
+      binding.workspace_claim.authority !== "WorkspaceAuthority" ||
+      binding.workspace_claim.contract !== "work.workspace/v1" ||
+      !nonEmptyString(binding.workspace_claim.subject_id) ||
+      !Number.isSafeInteger(binding.workspace_claim.generation) ||
+      binding.workspace_claim.generation < 1 ||
+      !Number.isSafeInteger(binding.workspace_claim.mutation_epoch) ||
+      binding.workspace_claim.mutation_epoch < 1 ||
+      !isDigest(binding.workspace_claim.fingerprint) ||
+      !["read_only", "mutation"].includes(binding.workspace_claim.access) ||
+      binding.workspace_claim.operation !== undefined &&
+        !nonEmptyString(binding.workspace_claim.operation) ||
+      !isPlainRecord(binding.launch_binding) ||
+      !hasExactKeys(binding.launch_binding, [
+        "description_digest",
+        "launch_comparison_key",
+        "effective_authority_comparison_key",
+        "configuration_watermark",
+      ]) ||
+      !isDigest(binding.launch_binding.description_digest) ||
+      !isDigest(binding.launch_binding.launch_comparison_key) ||
+      !isDigest(binding.launch_binding.effective_authority_comparison_key) ||
+      !isDigest(binding.launch_binding.configuration_watermark) ||
+      !isPlainRecord(binding.delegation) ||
+      !hasExactKeys(binding.delegation, ["group_id", "task_id", "agent_id"]) ||
+      !nonEmptyString(binding.delegation.group_id) ||
+      !nonEmptyString(binding.delegation.task_id) ||
+      !nonEmptyString(binding.delegation.agent_id) ||
+      binding.delegation.agent_id !== expectedAgentId ||
+      binding.native_session !== null &&
+        !nonEmptyString(binding.native_session)) {
+    invalid();
+  }
+  try {
+    if (binding.binding_digest !== digestCanonical({
+      resource_key: binding.resource_key,
+      owner: binding.owner,
+      workspace_claim: binding.workspace_claim,
+      launch_binding: binding.launch_binding,
+      delegation: binding.delegation,
+      native_session: binding.native_session,
+      managed_runtime_evidence_digest:
+        binding.managed_runtime_evidence_digest,
+    })) invalid();
+  } catch (error) {
+    if (error?.outcome === "invalid_arguments") throw error;
+    invalid();
+  }
+}
+
+function hasExactKeys(value, required, optional = []) {
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" &&
+    !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 function requireCallerKey(value) {
   if (typeof value !== "string" || value.length === 0) {
     throw new DrovrError("caller key must be a non-empty string", {
@@ -1538,6 +1673,9 @@ function summarizeTurn(
     status: turn.status,
     input_count: turn.inputs.length,
     ...(turn.caller ? { caller: structuredClone(turn.caller) } : {}),
+    ...(turn.resource_binding
+      ? { resource_binding: structuredClone(turn.resource_binding) }
+      : {}),
     ...(turn.launch_binding
       ? { launch_binding: summarizeLaunchBinding(turn.launch_binding) }
       : {}),

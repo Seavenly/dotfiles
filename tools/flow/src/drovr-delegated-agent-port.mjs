@@ -16,6 +16,7 @@ import {
   sendToTurn,
   turnCommandResult,
   turnDiscoveryCommandResult,
+  validateResourceBinding as validateDrovrResourceBinding,
   waitForTurn,
 } from "../../drovr/src/turns.mjs";
 import { retireAgent } from "../../drovr/src/lifecycle.mjs";
@@ -272,6 +273,9 @@ export function createDrovrDelegatedAgentPort({
         const context = await dispatchDrovr(request.agent_id, {
           callerKey: request.caller_key,
           callerMetadata: description.caller_metadata,
+          ...(request.resource_binding === undefined ? {} : {
+            resourceBinding: structuredClone(request.resource_binding),
+          }),
           inputKey: request.input_key,
           launchBinding: {
             schema: "drovr.launch-binding/v1",
@@ -673,13 +677,25 @@ function validDispatchRequest(request) {
       "prompt",
       "payload_sha256",
       "description",
+      ...(request.resource_binding === undefined ? [] : ["resource_binding"]),
     ]) ||
     request.description?.schema !== "drovr.delegated-agent-description/v1" ||
     !isDigest(request.description?.description_digest) ||
     !isDigest(request.description?.comparison_keys?.launch) ||
-    !isDigest(request.description?.watermark?.content_sha256)
+    !isDigest(request.description?.watermark?.content_sha256) ||
+    request.resource_binding !== undefined &&
+      !validResourceBinding(request.resource_binding, request.agent_id)
   ) return false;
   return payloadDigestMatches(request);
+}
+
+function validResourceBinding(binding, agentId) {
+  try {
+    validateDrovrResourceBinding(binding, agentId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validKeyedRequest(request, operation, fields) {
@@ -692,6 +708,8 @@ function validKeyedRequest(request, operation, fields) {
       ? isDigest(request[field])
       : field === "timeout_ms" || field === "description"
       ? Object.hasOwn(request, field)
+      : field === "resource_binding"
+      ? isRecord(request[field])
       : nonEmptyString(request[field])
   );
 }

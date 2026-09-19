@@ -53,8 +53,8 @@ adapter or synthetic pass mechanism.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v33 binds it to
-`flow.contract-catalog/v1@33`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v34 binds it to
+`flow.contract-catalog/v1@34`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -1344,13 +1344,33 @@ the narrow lifecycle projection and ignores any lifecycle or scheduling claims
 outside the port contract. The authority-boundary negative suite exercises
 that rule with attempted Drovr-authored cards and terminal events.
 
+The logical route `agent_id` is a planning identity, not a Drovr registry ID.
+After the existing delegated-agent port proves that no turn exists, Flow uses
+the separate deep `flow.delegated-agent-resource-port/v1` seam. Its only
+operations are `ensure` and `retire`: the production Adapter derives a
+run-scoped resource key from the run/card or managed binding, exact workspace
+claim, and launch binding; resolves the canonical cwd through
+WorkspaceAuthority; and invokes only public Drovr `openTask`/`startAgent`
+resource commands. The projection returns actual group/task/agent IDs, a
+binding digest, exact managed pane/process evidence digest, and a registry
+watermark. Before the first prompt its native session is null; Drovr binds the
+native session during that first logical turn. Dispatch validates the
+provisional binding and uses the returned agent ID. Recovery, cancellation,
+and terminal disposition
+may adopt, retire, or hand off only that exact owned resource. Collisions,
+workspace/configuration drift, launch/native identity drift, and uncertain
+provisioning or retirement are typed blocks with closed legal actions; an
+identity-free `reconciling` projection cannot advance the run. The adapter
+seam is injected in production and deterministic tests, so ordered steering,
+independent fallback, and declared managed-agent reuse remain Flow policies.
+
 The managed sources under `config/flow/` are:
 
 - `contracts/catalog.v1.json` - public contract names, result-binding and
   feature-capture identities, the five `FlowRuntime` operations, authority
   ownership, the execution-time accounting contract, and the reboot-admission
   typed-fact and uncertainty policy. The current catalog identity is
-  `flow.contract-catalog/v1@33`; a catalog change must update this managed
+  `flow.contract-catalog/v1@34`; a catalog change must update this managed
   source and the source constants/tests that validate its exact contents. Any
   future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
@@ -1382,6 +1402,11 @@ The managed sources under `config/flow/` are:
 - `schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json` - the
   public lifecycle result shape, including authority and discovery watermarks,
   delegation identity, turn evidence, and legal next actions.
+- `schemas/flow.delegated-agent-resource-ensure-request.v1.schema.json`,
+  `schemas/flow.delegated-agent-resource-retire-request.v1.schema.json`, and
+  `schemas/flow.delegated-agent-resource-projection.v1.schema.json` - the
+  exact resource-binding requests and closed provisioning/retirement
+  projection for the separate resource port.
 - `launch-policy.v1.json` - the converged selector policy. Its default is
   `legacy-claude/v1`; `flow-runtime/v1` is disabled.
 - `legacy-baselines.v1.json` - content-addressed Git trees for both frozen
