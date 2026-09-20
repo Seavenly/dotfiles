@@ -343,6 +343,15 @@ test("workspace-write cannot bypass a workspace claim by declaring read_only", a
       },
       async wait() {},
     },
+    delegatedAgentResourcePort: {
+      contract: "flow.delegated-agent-resource-port/v1",
+      async ensure() {
+        throw new Error("invalid input must not provision a resource");
+      },
+      async retire() {
+        throw new Error("invalid input must not retire a resource");
+      },
+    },
     delegateOutputValidators: {
       [DELEGATE_OUTPUT_VALIDATOR]: {
         validate(output) {
@@ -1775,7 +1784,11 @@ test("cancelling a proven-absent held managed turn delegates cleanup", async (t)
   ).receipt.provider_receipt.terminal_disposition;
 
   assert.equal(retirements.length, 0);
-  assert.equal(disposition.durable_holder, "drovr.registry");
+  assert.equal(disposition.resource.type, "drovr_agent_unresolved");
+  assert.deepEqual(disposition.planning_identity, {
+    type: "flow_route",
+    agent_id: first.route.agent_id,
+  });
   assert.equal(cancelled.phase, "cancelled");
   assert.deepEqual(cancelled.legal_actions, []);
 });
@@ -2131,7 +2144,7 @@ test("a wrong discovered agent receives no steering input", async (t) => {
       sends += 1;
       assert.fail("steering must not be sent to a mismatched agent");
     },
-  });
+  }, undefined, { resourcePort: nonWorkspaceResourcePort() });
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
   approveAndExecute(runtime, launch.run_id);
@@ -2248,7 +2261,7 @@ test("a result from the wrong routed agent remains quarantined", async (t) => {
         description,
       });
     },
-  });
+  }, undefined, { resourcePort: nonWorkspaceResourcePort() });
   const prepared = runtime.prepare(delegateCardProposal(description));
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
   approveAndExecute(runtime, launch.run_id);
@@ -2480,7 +2493,7 @@ test("cancelled settlement rejects a discovered turn from the wrong agent", asyn
       retirements += 1;
       return completePortOperations().retire(request);
     },
-  });
+  }, undefined, { resourcePort: nonWorkspaceResourcePort() });
   const proposal = delegateCardProposal(description);
   proposal.requested_authority.commands.push("cancel");
   const prepared = runtime.prepare(proposal);
@@ -2607,10 +2620,14 @@ function delegateRuntime(
   authority,
   portOverrides,
   validate = (output) => output === "accepted output",
-  { evidenceSafety = validateDelegateEvidenceSafety } = {},
+  {
+    evidenceSafety = validateDelegateEvidenceSafety,
+    resourcePort = null,
+  } = {},
 ) {
   return createFlowRuntime({
     runAuthority: authority,
+    delegatedAgentResourcePort: resourcePort,
     delegatedAgentPort: {
       contract: "flow.delegated-agent-port/v1",
       ...completePortOperations(),
@@ -2632,6 +2649,18 @@ function delegateRuntime(
       },
     },
   });
+}
+
+function nonWorkspaceResourcePort() {
+  return {
+    contract: "flow.delegated-agent-resource-port/v1",
+    async ensure() {
+      assert.fail("non-workspace intents must not ensure a resource");
+    },
+    async retire() {
+      assert.fail("non-workspace identity mismatch must not retire a resource");
+    },
+  };
 }
 
 function completePortOperations(calls = []) {

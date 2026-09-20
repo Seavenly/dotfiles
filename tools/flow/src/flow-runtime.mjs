@@ -25,6 +25,7 @@ import {
   delegateCompatibilityIssue,
   dispatchDelegateEffect,
   snapshotDelegatedAgentPort,
+  snapshotDelegatedAgentResourcePort,
   snapshotDelegateOutputValidators,
   snapshotRequiredDrovrFeatures,
 } from "./delegate-effects.mjs";
@@ -93,6 +94,7 @@ export function createFlowRuntime({
   registeredOperations = {},
   registeredQueries = {},
   delegatedAgentPort = null,
+  delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
   predefinedDefinitions = {},
   registeredAuthorities = {},
@@ -176,6 +178,9 @@ export function createFlowRuntime({
   );
   const delegateValidators = snapshotDelegateOutputValidators(validatorInputs);
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
+  const delegateResourcePort = snapshotDelegatedAgentResourcePort(
+    delegatedAgentResourcePort,
+  );
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
   const predefinedRegistry = snapshotPredefinedDefinitions(predefinedDefinitions);
   const authorityRegistry = snapshotRegisteredAuthorities(registeredAuthorities);
@@ -294,6 +299,7 @@ export function createFlowRuntime({
               delegatePort,
               delegateValidators,
               requiredDrovrFeatures,
+              delegateResourcePort,
             ),
           }))
           .find(({ issue }) => issue !== null);
@@ -392,6 +398,7 @@ export function createFlowRuntime({
                   intent.settlement_phase !== "declined") ||
                 (authorityCommand?.type === "recovery" &&
                   authorityCommand.recovery === "settle_cancelled"),
+              resourcePort: delegateResourcePort,
             },
           );
         } else {

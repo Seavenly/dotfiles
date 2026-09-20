@@ -2,55 +2,55 @@ TAP version 13
 # Subtest: release content binds the governed candidate tree and declared base
 ok 1 - release content binds the governed candidate tree and declared base
   ---
-  duration_ms: 5.096109
+  duration_ms: 5.065332
   type: 'test'
   ...
 # Subtest: release content validates from a fresh clone without synthesized Git objects
 ok 2 - release content validates from a fresh clone without synthesized Git objects
   ---
-  duration_ms: 1143.569725
+  duration_ms: 1014.336941
   type: 'test'
   ...
 # Subtest: release-content generator excludes ignored files beneath governed prefixes
 ok 3 - release-content generator excludes ignored files beneath governed prefixes
   ---
-  duration_ms: 906.632656
+  duration_ms: 923.996741
   type: 'test'
   ...
 # Subtest: Git tree derivation matches Git's nested object hashing and detects tampering
 ok 4 - Git tree derivation matches Git's nested object hashing and detects tampering
   ---
-  duration_ms: 21.259558
+  duration_ms: 18.721922
   type: 'test'
   ...
 # Subtest: transition query rejects a release manifest with a missing governed file
 ok 5 - transition query rejects a release manifest with a missing governed file
   ---
-  duration_ms: 70.481694
+  duration_ms: 73.276954
   type: 'test'
   ...
 # Subtest: transition query rejects candidate-tree bytes that differ from the worktree
 ok 6 - transition query rejects candidate-tree bytes that differ from the worktree
   ---
-  duration_ms: 902.280567
+  duration_ms: 895.246895
   type: 'test'
   ...
 # Subtest: transition query rejects a wrong or unavailable candidate tree binding
 ok 7 - transition query rejects a wrong or unavailable candidate tree binding
   ---
-  duration_ms: 199.916025
+  duration_ms: 212.730956
   type: 'test'
   ...
 # Subtest: transition query rejects an evidence symlink outside authority
 ok 8 - transition query rejects an evidence symlink outside authority
   ---
-  duration_ms: 65.184692
+  duration_ms: 66.751453
   type: 'test'
   ...
 # Subtest: release-content reader rejects an external symlink before reading it
 ok 9 - release-content reader rejects an external symlink before reading it
   ---
-  duration_ms: 1.905583
+  duration_ms: 1.292317
   type: 'test'
   ...
 1..9
@@ -61,4 +61,4 @@ ok 9 - release-content reader rejects an external symlink before reading it
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 3365.191182
+# duration_ms 3257.890421

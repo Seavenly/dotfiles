@@ -484,11 +484,26 @@ function sanitizeDelegateFailureObservation(value) {
       typeof value.retryable !== "boolean") {
     return null;
   }
+  const resourceProjection = Object.hasOwn(value, "resource_projection")
+    ? sanitizeProviderReceiptValue(value.resource_projection)
+    : undefined;
+  if (Object.hasOwn(value, "resource_projection") &&
+      (!isRecord(resourceProjection) ||
+       resourceProjection.schema !==
+         "flow.delegated-agent-resource-projection/v1" ||
+       typeof resourceProjection.status !== "string" ||
+       !Object.hasOwn(resourceProjection, "watermark") ||
+       !Array.isArray(resourceProjection.legal_next_actions))) {
+    return null;
+  }
   return {
     schema: DELEGATE_FAILURE_OBSERVATION_SCHEMA,
     code: value.code,
     stage: value.stage,
     retryable: value.retryable,
+    ...(resourceProjection === undefined
+      ? {}
+      : { resource_projection: resourceProjection }),
   };
 }
 

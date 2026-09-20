@@ -1,124 +1,124 @@
 TAP version 13
-# (node:4063430) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (node:175403) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: public prepare withholds dark opt-in when qualification is failed
 ok 1 - public prepare withholds dark opt-in when qualification is failed
   ---
-  duration_ms: 64.305742
+  duration_ms: 50.248406
   type: 'test'
   ...
 # Subtest: public prepare withholds dark opt-in when qualification is blocked
 ok 2 - public prepare withholds dark opt-in when qualification is blocked
   ---
-  duration_ms: 67.704565
+  duration_ms: 26.302948
   type: 'test'
   ...
 # Subtest: public prepare withholds dark opt-in when qualification is not_run
 ok 3 - public prepare withholds dark opt-in when qualification is not_run
   ---
-  duration_ms: 33.427298
+  duration_ms: 21.561888
   type: 'test'
   ...
 # Subtest: public launch withholds dark opt-in when qualification has a defect
 ok 4 - public launch withholds dark opt-in when qualification has a defect
   ---
-  duration_ms: 30.088278
+  duration_ms: 24.052796
   type: 'test'
   ...
 # Subtest: public prepare withholds tampered transition evidence from its configured authority
 ok 5 - public prepare withholds tampered transition evidence from its configured authority
   ---
-  duration_ms: 27.58625
+  duration_ms: 22.785566
   type: 'test'
   ...
 # Subtest: public prepare withholds dark opt-in when production route qualification is failed
 ok 6 - public prepare withholds dark opt-in when production route qualification is failed
   ---
-  duration_ms: 21.110803
+  duration_ms: 18.425383
   type: 'test'
   ...
 # Subtest: public prepare withholds dark opt-in when production route qualification is blocked
 ok 7 - public prepare withholds dark opt-in when production route qualification is blocked
   ---
-  duration_ms: 40.691889
+  duration_ms: 23.911194
   type: 'test'
   ...
 # Subtest: public prepare withholds dark opt-in when production route qualification is not_run
 ok 8 - public prepare withholds dark opt-in when production route qualification is not_run
   ---
-  duration_ms: 27.61336
+  duration_ms: 24.441277
   type: 'test'
   ...
 # Subtest: public module imports cannot mint phase-two generation authority
 ok 9 - public module imports cannot mint phase-two generation authority
   ---
-  duration_ms: 972.684187
+  duration_ms: 737.563292
   type: 'test'
   ...
 # Subtest: public admission withholds qualification captured on another host
 ok 10 - public admission withholds qualification captured on another host
   ---
-  duration_ms: 1019.446501
+  duration_ms: 833.892688
   type: 'test'
   ...
 # Subtest: public dynamic prepare requires explicit dark opt-in
 ok 11 - public dynamic prepare requires explicit dark opt-in
   ---
-  duration_ms: 4.35166
+  duration_ms: 4.403305
   type: 'test'
   ...
 # Subtest: public dynamic plans cannot classify a mixed feature and push graph as feature verify
 ok 12 - public dynamic plans cannot classify a mixed feature and push graph as feature verify
   ---
-  duration_ms: 4.431256
+  duration_ms: 2.963645
   type: 'test'
   ...
 # Subtest: public feature verify rejects an exact-definition graph with a registered push executor
 ok 13 - public feature verify rejects an exact-definition graph with a registered push executor
   ---
-  duration_ms: 4.941633
+  duration_ms: 3.006845
   type: 'test'
   ...
 # Subtest: public dynamic prepare with opt-in is unsupported
 ok 14 - public dynamic prepare with opt-in is unsupported
   ---
-  duration_ms: 4.03384
+  duration_ms: 3.539783
   type: 'test'
   ...
 # Subtest: public launch with opt-in rejects a prepared dynamic plan
 ok 15 - public launch with opt-in rejects a prepared dynamic plan
   ---
-  duration_ms: 5.757926
+  duration_ms: 4.680048
   type: 'test'
   ...
 # Subtest: public prepare requires explicit dark opt-in and classifies disabled scope
 ok 16 - public prepare requires explicit dark opt-in and classifies disabled scope
   ---
-  duration_ms: 3.32785
+  duration_ms: 3.86771
   type: 'test'
   ...
 # Subtest: public launch cannot bypass disabled or unsupported release routes
 ok 17 - public launch cannot bypass disabled or unsupported release routes
   ---
-  duration_ms: 8.272769
+  duration_ms: 3.964241
   type: 'test'
   ...
 # Subtest: public dark feature verify fails closed when its production operation is unavailable
 ok 18 - public dark feature verify fails closed when its production operation is unavailable
   ---
-  duration_ms: 3.844018
+  duration_ms: 3.874304
   type: 'test'
   ...
 # Subtest: public local review rejects forged extra operation and delegate cards before launch
 ok 19 - public local review rejects forged extra operation and delegate cards before launch
   ---
-  duration_ms: 4.25013
+  duration_ms: 5.153285
   type: 'test'
   ...
 # Subtest: public verify plans requiring unavailable setup or test operations are rejected before launch
 ok 20 - public verify plans requiring unavailable setup or test operations are rejected before launch
   ---
-  duration_ms: 4.780374
+  duration_ms: 3.828689
   type: 'test'
   ...
 1..20
@@ -129,4 +129,4 @@ ok 20 - public verify plans requiring unavailable setup or test operations are r
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 2472.315123
+# duration_ms 1921.380607

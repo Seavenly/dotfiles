@@ -64,6 +64,9 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "flow.review-inbox-watermark.v1.schema.json",
     "flow.review-inbox-projection.v1.schema.json",
     "flow.review-inbox-item.v1.schema.json",
+    "flow.delegated-agent-resource-ensure-request.v1.schema.json",
+    "flow.delegated-agent-resource-retire-request.v1.schema.json",
+    "flow.delegated-agent-resource-projection.v1.schema.json",
   ];
   const schemas = await Promise.all(names.map(async (name) =>
     JSON.parse(await readFile(join(root, "schemas", name), "utf8"))));
@@ -1514,7 +1517,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@33",
+          catalog_id: "flow.contract-catalog/v1@34",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,

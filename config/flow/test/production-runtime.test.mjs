@@ -17,9 +17,11 @@ import { completedTurnProjection } from
 import { supportedDescription, repositoryDrovrDependencies } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
 import {
   closeFlowRuntime,
-  createFlowRuntime,
+  createFlowRuntime as createProductionFlowRuntime,
   statusFlowRuntime,
 } from "../src/runtime.mjs";
+import { deriveDelegatedAgentResourceKey } from
+  "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
 import { createProductionComposition } from "../src/production-composition.mjs";
 import { validateFeatureCritiqueOutput } from
   "../src/production-feature-operations.mjs";
@@ -30,6 +32,115 @@ const DARK_OPT_IN = {
   release_id: "flow-release-1.0-dark/v1",
   purpose: "sacrificial_qualification",
 };
+
+function createFlowRuntime(options = {}) {
+  return createProductionFlowRuntime({
+    ...options,
+    ...(options.delegatedAgentPort === undefined ||
+        options.delegatedAgentResourcePort !== undefined
+      ? {}
+      : { delegatedAgentResourcePort: deterministicResourcePort() }),
+  });
+}
+
+function deterministicResourcePort() {
+  return {
+    contract: "flow.delegated-agent-resource-port/v1",
+    async ensure(request) {
+      const resourceKey = deriveDelegatedAgentResourceKey(request);
+      const suffix = resourceKey.slice(-16);
+      const delegation = {
+        agent_id: `agent:test-resource-${suffix}`,
+        task_id: `task:agent:test-resource-${suffix}`,
+        group_id: "group:production-feature",
+      };
+      const owner = request.owner.managed_agent_binding_id === undefined
+        ? request.owner
+        : {
+            ...request.owner,
+            card_id: request.owner.managed_agent_binding_id,
+            route_key: request.owner.managed_agent_binding_id,
+          };
+      const workspaceClaim = request.owner.managed_agent_binding_id === undefined
+        ? request.workspace_claim
+        : Object.fromEntries(Object.entries(request.workspace_claim)
+          .filter(([key]) => key !== "operation"));
+      const bindingInput = {
+        resource_key: resourceKey,
+        owner,
+        workspace_claim: workspaceClaim,
+        launch_binding: request.launch_binding,
+        delegation,
+        native_session: `native:test-resource-${suffix}`,
+        managed_runtime_evidence_digest: digest({ resourceKey, delegation }),
+      };
+      const binding = {
+        schema: "flow.delegated-agent-resource-binding/v1",
+        ...bindingInput,
+        binding_digest: digest(bindingInput),
+      };
+      return {
+        schema: "flow.delegated-agent-resource-projection/v1",
+        operation: "ensure",
+        status: "ready",
+        resource_key: resourceKey,
+        binding,
+        binding_digest: binding.binding_digest,
+        delegation,
+        watermark: resourceWatermark(resourceKey, delegation),
+        reason: null,
+        legal_next_actions: ["dispatch_exact_turn", "retire_exact_resource"],
+      };
+    },
+    async retire({ binding }) {
+      return {
+        schema: "flow.delegated-agent-resource-projection/v1",
+        operation: "retire",
+        status: "retired",
+        resource_key: binding.resource_key,
+        binding,
+        binding_digest: binding.binding_digest,
+        delegation: binding.delegation,
+        watermark: resourceWatermark(binding.resource_key, binding.delegation),
+        cleanup_receipt: {
+          schema: "flow.delegated-agent-resource-cleanup-receipt/v1",
+          proof: "exact_group_closed",
+          group_id: binding.delegation.group_id,
+          task_id: binding.delegation.task_id,
+          agent_id: binding.delegation.agent_id,
+          authority_watermark: registryWatermark(),
+        },
+        reason: null,
+        legal_next_actions: [],
+      };
+    },
+  };
+}
+
+function resourceWatermark(resourceKey, delegation) {
+  return {
+    schema: "flow.delegated-agent-resource-watermark/v1",
+    authority: "drovr.registry",
+    resource_key: resourceKey,
+    group_id: delegation.group_id,
+    task_id: delegation.task_id,
+    agent_id: delegation.agent_id,
+    record_sha256: digest({ resourceKey, delegation }),
+    authority_watermark: registryWatermark(),
+  };
+}
+
+function registryWatermark() {
+  const values = Object.fromEntries(["groups", "tasks", "agents", "turns", "blocks"]
+    .flatMap((kind) => [[`${kind}_sha256`, digest([])], [`${kind}_count`, 0]]));
+  return {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    ...values,
+    generation: digest(values),
+    registry_sha256: digest({ values }),
+  };
+}
 
 test("default FlowRuntime is durable and autonomous", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-production-runtime-"));
@@ -1616,7 +1727,11 @@ function productionDelegatedAgentPort({
           turn: {
             id: existing.turnId,
             status: "working",
-            caller: { dispatch_key: existing.request.caller_key },
+            resource_binding: existing.request.resource_binding,
+            caller: {
+              dispatch_key: existing.request.caller_key,
+              metadata: existing.request.description.caller_metadata,
+            },
             launch_binding: {
               schema: "drovr.launch-binding/v1",
               comparison_key: existing.request.description.comparison_keys.launch,

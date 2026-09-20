@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 33);
+  assert.equal(catalog.catalog_version, 34);
   for (const contract of [
     "flow.release-manifest/v1",
     "flow.dark-opt-in/v1",
@@ -151,7 +151,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@33",
+    catalog_id: "flow.contract-catalog/v1@34",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -421,6 +421,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     authority: "RunAuthority",
     adapter_authority: "mechanism_only",
     port: "flow.delegated-agent-port/v1",
+    resource_port: "flow.delegated-agent-resource-port/v1",
     intent: "flow.effect-intent/v1",
     receipt: "flow.effect-receipt/v1",
     evidence: "flow.delegate-evidence/v1",
@@ -913,6 +914,24 @@ test("the public catalog exposes the settled interface and forbids legacy import
       content_sha256:
         "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896",
     },
+  });
+  assert.deepEqual(catalog.delegated_agent_resource_port, {
+    contract: "flow.delegated-agent-resource-port/v1",
+    authority: "non_authoritative",
+    adapter: "drovr/v1",
+    workspace_authority: "WorkspaceAuthority",
+    ensure_request: "flow.delegated-agent-resource-ensure-request/v1",
+    retire_request: "flow.delegated-agent-resource-retire-request/v1",
+    projection: "flow.delegated-agent-resource-projection/v1",
+    operations: {
+      ensure: "ensure",
+      retire: "retire",
+    },
+    identity: "run_card_or_managed_binding_workspace_claim_launch_binding",
+    key: "deterministic_run_scoped_resource_key",
+    provisioning: "public_drovr_open_task_start_agent_with_registry_lock",
+    recovery: "exact_owned_resource_only_no_ambient_reuse",
+    uncertainty: "typed_block_no_identity_free_reconciling",
   });
   assert.deepEqual(catalog.authority_roots, {
     legacy_claude: { base: "home", path: ".agent-teams" },

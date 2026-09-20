@@ -26,22 +26,22 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "eb074204b077a24ac2e9b39ac0a73f13bf1917ce",
+    "candidate_tree_sha": "786dbef7f949f3981bb1de4d2163da9904282d1a",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:6824c19873b6b22a67ff215734a6edca90289a1086695770fa84ca02d550d80c",
+  "content_digest": "sha256:aef823af8211b58dba2c988e765e40592f0e0bded02c99f1f58ce114be3323b8",
   "files": [
     {
       "path": "CONTEXT.md",
       "mode": "100644",
-      "git_blob_sha": "d203eb6f72e32a735bbf7442ffb79123fa1727b1",
-      "sha256": "dd997e98ed8c1b47354ebdfbc9757ed68011b160260c9c70341356b82a6de8be"
+      "git_blob_sha": "9be018232664658147b61aebca40f522d86b29d5",
+      "sha256": "f2ec7c381fffdd593ee176bc967afd3c77e66be5543ebc64a61f9a380f88e284"
     },
     {
       "path": "README.md",
       "mode": "100644",
-      "git_blob_sha": "dd2d47fa1de53294a73b7c55a60dc1c0dfd1093f",
-      "sha256": "de2e95ebb4b9ba97a1785fcbeecbaa0f7fdde27039221ef6a23969c32bb2e77c"
+      "git_blob_sha": "d16e4febcd2f50aa52f710b05f826acad3ba84c3",
+      "sha256": "960302feaf8cfd5df28ab682d3db63c3d03a0dd147b3fc84257fcde72e76ea24"
     },
     {
       "path": "bin/flow",
@@ -52,14 +52,14 @@
     {
       "path": "config/flow/README.md",
       "mode": "100644",
-      "git_blob_sha": "3e003e2d523c250121827e40bfcb825331acd884",
-      "sha256": "a2a355f0cd63a7b6afc7857c034a4829e7c0ac115100757c52a0c71a76f0337f"
+      "git_blob_sha": "3cf896edd17ea44824b2cbccbf8e98c6b183412f",
+      "sha256": "9abcb40db9ce4ec943fb4975dd2f4a79bc2e95c7785c110c51071f9c43965c26"
     },
     {
       "path": "config/flow/contracts/catalog.v1.json",
       "mode": "100644",
-      "git_blob_sha": "8dcdaf743fa221adb5603003c7f21535a878b459",
-      "sha256": "3645a1e1e898c2071796c00aa580c67440609d3472a6f313cc1f2f3eceebc737"
+      "git_blob_sha": "460ee4efc13f6976a888f6a758476be462989ec9",
+      "sha256": "6bc7ba3cc966379b2943d79f05da733f1eaeec456ac705636de2554f4eae9b06"
     },
     {
       "path": "config/flow/contracts/drovr-required-features.v1.json",
@@ -184,8 +184,8 @@
     {
       "path": "config/flow/schemas/flow.delegate-failure-observation.v1.schema.json",
       "mode": "100644",
-      "git_blob_sha": "29fa266e2c1e96dfb6b4a17a2828cc4dfb97dadf",
-      "sha256": "a944573c08343013c83370268b7287a7d99b23bd1fb65f206e9f041bdd9b6249"
+      "git_blob_sha": "4c6ed7a9a08c45dc04a9d5167531acc846b8ddf8",
+      "sha256": "55cf9ff45980ee41fc8d93a053d128aad492f566761aff723acc3d8e79dafce5"
     },
     {
       "path": "config/flow/schemas/flow.delegate-input-envelope.v1.schema.json",
@@ -202,8 +202,8 @@
     {
       "path": "config/flow/schemas/flow.delegate-predecessor-evidence.v1.schema.json",
       "mode": "100644",
-      "git_blob_sha": "5e5cf67291a544ef251824905f716cdcf8e9ff27",
-      "sha256": "5a2cfb205d4aa216c4c2d879bacafa53af24e6e5a3e6bb0c08cccbbd931a3e0c"
+      "git_blob_sha": "c430dcf6fbbc8e7301c5bfcc444172ab2ddf1f58",
+      "sha256": "f46233e5d495cc3047f72e4992f2ba5c136d00bdb842ba02de9288d00c26c5b6"
     },
     {
       "path": "config/flow/schemas/flow.delegate-task-inputs.v1.schema.json",
@@ -220,8 +220,26 @@
     {
       "path": "config/flow/schemas/flow.delegated-agent-lifecycle-projection.v1.schema.json",
       "mode": "100644",
-      "git_blob_sha": "4b57797297bf688c88132437947fab6b67b0f4f8",
-      "sha256": "4dac82f90e655ddc1a5d095d1aa3c1e639f3fe7c24adb28f15aa8e6647e4311b"
+      "git_blob_sha": "43c0ad1e23162cc4ac2eb9c0e9a81ddc893b7b7a",
+      "sha256": "a79826b241f600451af2d82444f198a07ec135bac838ff2a795d7e7444a48d7f"
+    },
+    {
+      "path": "config/flow/schemas/flow.delegated-agent-resource-ensure-request.v1.schema.json",
+      "mode": "100644",
+      "git_blob_sha": "e01d86a9725cd5c2e14cd9e8525d04552237614e",
+      "sha256": "620a21e551d3a4d98803f037f001526971aceb2541667ed2cef81a7c9167868a"
+    },
+    {
+      "path": "config/flow/schemas/flow.delegated-agent-resource-projection.v1.schema.json",
+      "mode": "100644",
+      "git_blob_sha": "e408d43c68e83aa94f26dc8577dc31a4ffc262fa",
+      "sha256": "87df1a26fa08da868db38254a7ff0c03c8c9844ee00cb95a7e2ee26d2b27daf4"
+    },
+    {
+      "path": "config/flow/schemas/flow.delegated-agent-resource-retire-request.v1.schema.json",
+      "mode": "100644",
+      "git_blob_sha": "1141cd29f45f355a294f61a9a3bec6fcc0838a9a",
+      "sha256": "725ef05782f9f21e91a02a84645e2dfd4c284e818682046bcf5d67651b6ca0d4"
     },
     {
       "path": "config/flow/schemas/flow.execution-time-accounting.v1.schema.json",
@@ -490,8 +508,8 @@
     {
       "path": "config/flow/src/production-composition.mjs",
       "mode": "100644",
-      "git_blob_sha": "b35f6ac296b33ee25cf305295e97709687a38973",
-      "sha256": "3f4dc84fa2eb8b534e79956188bf51aaecda26f51fe50743e31c33d918f37061"
+      "git_blob_sha": "c939a7a23a7d99b94f626bac38d40122df5ccf45",
+      "sha256": "5557e940dbeba1d9885b3c2df34ef96493267a52c51c3c0468fb6cec0e498b43"
     },
     {
       "path": "config/flow/src/production-feature-operations.mjs",
@@ -508,8 +526,8 @@
     {
       "path": "config/flow/src/runtime.mjs",
       "mode": "100644",
-      "git_blob_sha": "90e09f464bccc74f67f8fb526849351cd73ec87a",
-      "sha256": "d59b89dfa5c83f4827afb5b2301a2ce43541ede6d19016c2ffebcc28a5a6446c"
+      "git_blob_sha": "752240b6640625b5128c3dd311b54b9dec794cf2",
+      "sha256": "aae6170130a9ef5f5e4137f1ce8346264f04882cdbdf1b8a10586a8e8c5dcedf"
     },
     {
       "path": "config/flow/src/transport.mjs",
@@ -532,8 +550,8 @@
     {
       "path": "config/flow/test-support/public-review-seed.mjs",
       "mode": "100644",
-      "git_blob_sha": "2013a9d9f76eacddabf514adc7dc9fd46b6788f6",
-      "sha256": "54f17aab08a54e2e08cd81fac1f07097c3a2deafbf4e6a585ff1768f4c4dc2b3"
+      "git_blob_sha": "7b9c0b83e6e5ce0f6b7f5aa1d85bf53786c17bd1",
+      "sha256": "a8f19ffe46e76e73750dc5d211b5c7056c7dd702ce3759117c2c4b62966ff81a"
     },
     {
       "path": "config/flow/test/cli.test.mjs",
@@ -556,8 +574,8 @@
     {
       "path": "config/flow/test/production-runtime.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "e63f1b847db1b2019bc21f42118fa8f417973773",
-      "sha256": "f7118165a5900dffdf24f5b571d8fc2f3c0d441bc95b495af1d997503bdb74b8"
+      "git_blob_sha": "e94bbf402d7f81da61d7430ae542db5b288c5fda",
+      "sha256": "a957aa03dce6c798ab136c42293e3e6e0c425d56dd7aa334c4219361acf39480"
     },
     {
       "path": "config/flow/test/public-process.test.mjs",
@@ -574,8 +592,8 @@
     {
       "path": "config/flow/test/schema-contracts.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "da814831c7bd022706b5330bd0d0246ab6b98181",
-      "sha256": "ae46c56bd5c0c4cedc5d81e605f1d34afcccc45c683ab70717b3fabd06a241ed"
+      "git_blob_sha": "505a6aef00b02bae2b637925c9604a57e478ce9f",
+      "sha256": "dc2968389a78e86d77d03cd716bae60b43116558341f00201dcebcc41b4ba3a0"
     },
     {
       "path": "docs/adr/0007-use-drovr-as-the-delegated-agent-runtime.md",
@@ -928,20 +946,20 @@
     {
       "path": "tools/drovr/src/turn-lifecycle.mjs",
       "mode": "100644",
-      "git_blob_sha": "dad8e498927824bda8a85afe1fdde4dea9fe196b",
-      "sha256": "8b4efaaa38b473431c422aae58e2a196fd52d91f305779b8754ee57035e65872"
+      "git_blob_sha": "a60e6522c4acd6586af5b2287854bd81dbc54310",
+      "sha256": "74257a537b108808640708afa0eea648255a9a580d15179916775593440397f4"
     },
     {
       "path": "tools/drovr/src/turn-record.mjs",
       "mode": "100644",
-      "git_blob_sha": "9363dc631560f9a07187f7eaed1678642cdf7ef8",
-      "sha256": "50c19b1f9d65b278dd029b71b760e933a09b61ce8dfa2c230d379f7a3e1c0fab"
+      "git_blob_sha": "f9fbcc5502dbfb19058310a4042d1a91d6a8804a",
+      "sha256": "1154c8a36d51a4fa73312668c33e88ad1edf3c839a3d2d3e6d6b7b61a01545cf"
     },
     {
       "path": "tools/drovr/src/turns.mjs",
       "mode": "100644",
-      "git_blob_sha": "cc7497b0a868baabf1151d65ad900a478908356f",
-      "sha256": "84629495c3f08c7602472430de67fa450088ee5efaf9c22baf575dc61a218936"
+      "git_blob_sha": "d6c2d240d988c55a08f877b23e1cedeaf6c83120",
+      "sha256": "c0b1baa58def14eb7514913cdc21c58d0a07b63b6b63e3d97aee0236d45aae46"
     },
     {
       "path": "tools/drovr/test/compatibility.test.mjs",
@@ -958,8 +976,8 @@
     {
       "path": "tools/flow/README.md",
       "mode": "100644",
-      "git_blob_sha": "b29ca4a4c1196c2e156bdc15dc6c5b5b08d99ba2",
-      "sha256": "22992d7667cb9033abd8c06ec59c99332945007cdb61a8fe35432bf41da613dc"
+      "git_blob_sha": "207b3e714f8bb5cabf0f9b23e76781ff971f51e7",
+      "sha256": "3fd902b252216225c838504a40dba15055a596603f5742508097808a60117abb"
     },
     {
       "path": "tools/flow/package-lock.json",
@@ -1024,8 +1042,8 @@
     {
       "path": "tools/flow/src/contract-catalog.mjs",
       "mode": "100644",
-      "git_blob_sha": "d604bc7dcf0b70707393df4be09bd9274c0a0ed3",
-      "sha256": "f16042dbc005675e8d47ce47e9a8232db792dbc192d212f9d1c63b3fbbe4aa08"
+      "git_blob_sha": "524cf1d0d2a87eace940e3d6718ac7351e0e6c3a",
+      "sha256": "b9e213940709a64f1e38966c31d5c7ad7b63d95a2775cd7da4ba74dd459612c2"
     },
     {
       "path": "tools/flow/src/delegate-capabilities.mjs",
@@ -1036,8 +1054,8 @@
     {
       "path": "tools/flow/src/delegate-effects.mjs",
       "mode": "100644",
-      "git_blob_sha": "bea43145554a3712142bc5d4f9f068da627e7de7",
-      "sha256": "6e8db31d6b99e3cb41f070422586096d3d2c24afe69e006ba7a0ba0307b964b6"
+      "git_blob_sha": "6df69643d07ad3501e56b5e470706576c144463f",
+      "sha256": "1016a68261f3390e4438e82a64181939c018213e81e92e61cb0a1615970722e4"
     },
     {
       "path": "tools/flow/src/delegate-input-envelope.mjs",
@@ -1048,8 +1066,14 @@
     {
       "path": "tools/flow/src/drovr-delegated-agent-port.mjs",
       "mode": "100644",
-      "git_blob_sha": "b2bef4b80f4c7393fce09d93653a363392cc6bed",
-      "sha256": "61c4bf6af835694a350e2a576007186bb5861af2ce6d01cf96bcbb4ca1eff89e"
+      "git_blob_sha": "2631f1fd07cd391f35f5d8166cb90da095ec0fc0",
+      "sha256": "ca76c9cb97e2cf6801390962854d7796caf806e10068ecf4745bcd4cec12574a"
+    },
+    {
+      "path": "tools/flow/src/drovr-delegated-agent-resource-port.mjs",
+      "mode": "100644",
+      "git_blob_sha": "bb96aa128536b67e488850d289b24933fe28e36d",
+      "sha256": "df6c14656d6bfd8eb08e53bd93048895e784e01071637b7f132616a716381b33"
     },
     {
       "path": "tools/flow/src/effect-identity.mjs",
@@ -1060,8 +1084,8 @@
     {
       "path": "tools/flow/src/evidence-safety.mjs",
       "mode": "100644",
-      "git_blob_sha": "3ad0e3c8b6268ec4501256cf601401a5d209869a",
-      "sha256": "b35d2947b69fa315a13c69faba22161f13f2a887b17cbee3b586f957bd4cb0ff"
+      "git_blob_sha": "1d4e5aad767a54d3e9b32858d6719b35ff7b0828",
+      "sha256": "53110a053de0223bd1ab5b03c5f0602e524052e47dc235d11a53d317a12f975b"
     },
     {
       "path": "tools/flow/src/execution-time-policy.mjs",
@@ -1102,8 +1126,8 @@
     {
       "path": "tools/flow/src/flow-runtime.mjs",
       "mode": "100644",
-      "git_blob_sha": "9526fa244b018f665867cb7754722fe1cd76a3f3",
-      "sha256": "b283220f541bcddf187ab4bf9a0179b048a2e07728eadee843ed195b3ac4dcdf"
+      "git_blob_sha": "a17fb4360e1fe51c0acdb11ba702b780b573258f",
+      "sha256": "7a9dfb65d54b4a1d8f651e087de6d0089e388d8fc32003778d227cc2f8d9f93c"
     },
     {
       "path": "tools/flow/src/git-retention-adapter.mjs",
@@ -1150,14 +1174,14 @@
     {
       "path": "tools/flow/src/lifecycle-kernel.mjs",
       "mode": "100644",
-      "git_blob_sha": "25acba793794b0b0acfa0bf0fe1e8a49af1d2ea3",
-      "sha256": "ce5e85edf0124c99092405c65cdb3314f76165658385249ea95f04da417a699b"
+      "git_blob_sha": "a21f64853eaa43788157381e1d2dcf824b032f06",
+      "sha256": "cca7344a6da0765118efa16beaffca5f1740afa2b37492e7824bd0fcb37964e1"
     },
     {
       "path": "tools/flow/src/operation-effects.mjs",
       "mode": "100644",
-      "git_blob_sha": "2c69d482154d630cc24843e3b1f0a3355e85f28f",
-      "sha256": "a132c9ea5d306bcfb69c0d4b67807c11ac9d0072fdbe51d4a3bbb8feed4a749f"
+      "git_blob_sha": "dd75b3c9813c8341e5e3087d4c8fe099319627c5",
+      "sha256": "87c7169ec59e30888f025e75709f0706d15aefcb7f4a9d5e6708fdd0eeb6d1ef"
     },
     {
       "path": "tools/flow/src/plan-compiler.mjs",
@@ -1204,8 +1228,8 @@
     {
       "path": "tools/flow/src/provider-receipt-policies/delegate-drovr.mjs",
       "mode": "100644",
-      "git_blob_sha": "fb999d0973060b26996839947402902ef46452b8",
-      "sha256": "edfb406e8be44e818501592419971943ca5251480fff5230c965f5b7b68dc258"
+      "git_blob_sha": "d12c740be4a17e84c6d0512464114e091c733505",
+      "sha256": "4ae09cfe82b2cc50892241c1c038f8ee9ef36b94aba5063a2171f598d5e17b39"
     },
     {
       "path": "tools/flow/src/provider-receipt-policies/feature-work.mjs",
@@ -1222,8 +1246,8 @@
     {
       "path": "tools/flow/src/provider-receipt-policies/tracker-subrun-resource.mjs",
       "mode": "100644",
-      "git_blob_sha": "54190fdfafa06659b27e51e3751d6c47dac6ee8c",
-      "sha256": "d4ff5ef64dea2725c15c782da13a1de1c35a3f672aaac353f9834d8bfb07d4c6"
+      "git_blob_sha": "4866636d94d8aa10afce9043b4a9ade535054912",
+      "sha256": "5eadcbca3cfa030199a1be336e74a1ff97c3a0ca3041f935bccfda6a30c04c5f"
     },
     {
       "path": "tools/flow/src/provider-receipt-sanitizers.mjs",
@@ -1456,14 +1480,14 @@
     {
       "path": "tools/flow/test/contract-catalog.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "3185f164dad7eff534b568e73a71735fe0d6cd71",
-      "sha256": "e4fa09a3e15df051cb4c10d089235fe1efd1939900b8ba966f68932dfa29e2a5"
+      "git_blob_sha": "36f2f1bfd919a5bd0132ddbe73b2c7f7e24c8f18",
+      "sha256": "80651fbee4db5add65c69c3daa25d6d4072db29d36b6819e01e8376d51997d15"
     },
     {
       "path": "tools/flow/test/delegate-card.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "5bef0386e66939b6c8102e5ff16e20def2de2452",
-      "sha256": "bd585bf48290f3eea690968f00c67d237fdec1b843f7874bb6eb96af5cb085e0"
+      "git_blob_sha": "7e7dcccf293ea6099123bf56ce2cf19ae100de93",
+      "sha256": "eb7be3868c3e9f289030724edad7c97df27a47cccbe9a7814564824d2b34d357"
     },
     {
       "path": "tools/flow/test/delegate-input-envelope.test.mjs",
@@ -1476,6 +1500,12 @@
       "mode": "100644",
       "git_blob_sha": "975e0de92020138bf328f3c64b117911e359336f",
       "sha256": "343b7df8117a812ef3fd4643dae128053dc06e181b360fced99a0e81038c70bf"
+    },
+    {
+      "path": "tools/flow/test/delegated-agent-resource-port.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "aa2ced1233ea6d9e5ebbebe7ea69ae338f13d41b",
+      "sha256": "19cc6eb49ae66d3fd2729388030cf7ad1434538eb9226df75d4382235ab0c305"
     },
     {
       "path": "tools/flow/test/durable-authority.test.mjs",
@@ -1492,8 +1522,8 @@
     {
       "path": "tools/flow/test/feature-flow.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "4696ec7db56a78fbec7927d7a7d47b71b7021c03",
-      "sha256": "bbee1c44e7c542f0912c04baea054ba7ba20d9ca01c58d051a7f7e79efb48110"
+      "git_blob_sha": "97703d42501e359f06034bbd80e97aa159012cd2",
+      "sha256": "6454243420aabf6b200cf2c43e52a8c878ba023d5c5d046b2038ff394771e706"
     },
     {
       "path": "tools/flow/test/flow-runtime-runner.test.mjs",
@@ -1540,8 +1570,8 @@
     {
       "path": "tools/flow/test/registered-operation.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "3d8058f5df1281b3b9a3bbb49e1054283bc61c12",
-      "sha256": "656d87c4f152b53d6748e407b9bdc8ff592e5d52a50ac9d438dace50d4a6ce82"
+      "git_blob_sha": "210f7bbb7f4844eded4559855463c0a586318540",
+      "sha256": "5636c251584de76d100dfdcbb1b8ab8c6bf6704df8cb800551f12431ac274b96"
     },
     {
       "path": "tools/flow/test/review-flow.test.mjs",

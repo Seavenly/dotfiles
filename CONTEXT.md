@@ -517,6 +517,34 @@ The non-authoritative Flow interface that requests an exact delegated-runtime
 description and independently checks it before plan preparation may bind it.
 _Avoid_: Runtime controller, scheduler
 
+**Delegated route identity**:
+The `agent_id` in a Flow route binding is a planning identity from the
+compiled description. It is not a Drovr registry identifier and is never used
+as one after resource discovery proves that no turn exists.
+
+**Delegated agent resource port**:
+The deep two-operation (`ensure`, `retire`) Flow seam that materializes and
+retires the exact Drovr group, task, and managed agent owned by one run/card
+or declared managed-agent binding. Its adapter derives a run-scoped resource
+key from the immutable owner, WorkspaceAuthority claim, and launch binding;
+resolves the canonical cwd through WorkspaceAuthority; and calls only public
+Drovr resource commands. It returns the actual registry IDs, binding digest,
+and registry watermark. Recovery adopts only that exact owned binding, and
+uncertain provisioning or retirement is a typed block with closed legal
+actions.
+
+**Delegated resource binding**:
+The immutable relationship between a Flow run/card (or managed-agent
+binding), an exact workspace claim, an exact launch/effective-authority
+comparison key, a native session identity, and the materialized Drovr
+group/task/agent IDs. Before the first prompt, the binding carries an exact
+managed pane/process evidence digest while `native_session` is null; Drovr
+binds the native session during the first logical turn. A logical turn may use
+and complete the binding, but cannot replace or widen it. Dispatch records the
+binding in a dedicated exact-turn field outside digest-bearing caller metadata
+so restart recovery can adopt it without provisioning again. A declared managed-agent span scopes the binding
+to its managed-agent ID rather than to changing per-card operation labels.
+
 **Exact launch description**:
 A non-mutating, identity-bearing resolution of one delegated launch, including
 its native settings, effective authority, capacity, credential-reference

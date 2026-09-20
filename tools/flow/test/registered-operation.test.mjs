@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
+import { digest } from "../src/canonical.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
@@ -78,6 +79,282 @@ test("domain receipt policies compose through the generic default-deny boundary"
   assert.equal(Object.hasOwn(sanitized, "opaque"), false);
 });
 
+test("delegate receipt policy retains exact delegated resource evidence", () => {
+  const digestValue = `sha256:${"a".repeat(64)}`;
+  const sanitized = sanitizeProviderReceiptValue({
+    schema: "flow.delegate-evidence/v1",
+    attempt_id: "attempt:resource",
+    card_id: "feature-apply",
+    turn_id: "turn:resource",
+    route_binding: { agent_id: "agent:logical" },
+    validator_receipts: [],
+    terminal_disposition: {
+      schema: "flow.delegated-agent-lifecycle-projection/v1",
+      operation: "retire",
+      status: "retired",
+      resource_disposition: {
+        schema: "flow.delegated-agent-resource-projection/v1",
+        operation: "retire",
+        status: "retired",
+        resource_key: digestValue,
+        binding_digest: digestValue,
+        delegation: {
+          group_id: "group:resource",
+          task_id: "task:resource",
+          agent_id: "agent:actual",
+        },
+        watermark: {
+          schema: "flow.delegated-agent-resource-watermark/v1",
+          authority: "drovr.registry",
+          resource_key: digestValue,
+          group_id: "group:resource",
+          task_id: "task:resource",
+          agent_id: "agent:actual",
+          record_sha256: digestValue,
+          authority_watermark: {
+            schema: "drovr.registry-authority-watermark/v1",
+            authority: "drovr.registry",
+            generation: digestValue,
+            registry_sha256: digestValue,
+            groups_count: 1,
+            groups_sha256: digestValue,
+            tasks_count: 1,
+            tasks_sha256: digestValue,
+            agents_count: 1,
+            agents_sha256: digestValue,
+            turns_count: 0,
+            turns_sha256: digestValue,
+            blocks_count: 0,
+            blocks_sha256: digestValue,
+          },
+        },
+        cleanup_receipt: {
+          schema: "flow.delegated-agent-resource-cleanup-receipt/v1",
+          proof: "exact_group_closed",
+          group_id: "group:resource",
+          task_id: "task:resource",
+          agent_id: "agent:actual",
+          authority_watermark: {
+            schema: "drovr.registry-authority-watermark/v1",
+            authority: "drovr.registry",
+            generation: digestValue,
+            registry_sha256: digestValue,
+          },
+        },
+        legal_next_actions: [],
+        opaque: "must-not-survive",
+      },
+    },
+  });
+  const resource = sanitized.terminal_disposition.resource_disposition;
+
+  assert.equal(resource.resource_key, digestValue);
+  assert.equal(resource.binding_digest, digestValue);
+  assert.deepEqual(resource.delegation, {
+    group_id: "group:resource",
+    task_id: "task:resource",
+    agent_id: "agent:actual",
+  });
+  assert.equal(resource.watermark.authority_watermark.generation, digestValue);
+  assert.equal(resource.watermark.authority_watermark.registry_sha256,
+    digestValue);
+  assert.equal(resource.watermark.authority_watermark.groups_count, 1);
+  assert.equal(resource.cleanup_receipt.proof, "exact_group_closed");
+  assert.equal(resource.cleanup_receipt.authority_watermark.registry_sha256,
+    digestValue);
+  assert.equal(Object.hasOwn(resource, "opaque"), false);
+});
+
+test("durable handoff receipts preserve unresolved planning and exact bindings", async (t) => {
+  const resourceKey = `sha256:${"a".repeat(64)}`;
+  const binding = {
+    schema: "flow.delegated-agent-resource-binding/v1",
+    resource_key: resourceKey,
+    owner: {
+      run_id: "run:handoff",
+      card_id: "delegate-review",
+      route_key: "agent:planned",
+    },
+    workspace_claim: {
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: "workspace:handoff",
+      generation: 2,
+      mutation_epoch: 3,
+      fingerprint: `sha256:${"b".repeat(64)}`,
+      access: "read_only",
+    },
+    launch_binding: {
+      description_digest: `sha256:${"c".repeat(64)}`,
+      launch_comparison_key: `sha256:${"d".repeat(64)}`,
+      effective_authority_comparison_key: `sha256:${"e".repeat(64)}`,
+      configuration_watermark: `sha256:${"f".repeat(64)}`,
+    },
+    delegation: {
+      group_id: "group:handoff",
+      task_id: "task:handoff",
+      agent_id: "agent:actual",
+    },
+    native_session: "native:handoff",
+    managed_runtime_evidence_digest: `sha256:${"1".repeat(64)}`,
+  };
+  binding.binding_digest = digest({
+    resource_key: binding.resource_key,
+    owner: binding.owner,
+    workspace_claim: binding.workspace_claim,
+    launch_binding: binding.launch_binding,
+    delegation: binding.delegation,
+    native_session: binding.native_session,
+    managed_runtime_evidence_digest: binding.managed_runtime_evidence_digest,
+  });
+  const uncertainProjection = {
+    schema: "flow.delegated-agent-resource-projection/v1",
+    operation: "retire",
+    status: "blocked",
+    binding,
+    binding_digest: binding.binding_digest,
+    delegation: binding.delegation,
+    watermark: {
+      schema: "flow.delegated-agent-resource-watermark/v1",
+      authority: "drovr.registry",
+      resource_key: binding.resource_key,
+      group_id: binding.delegation.group_id,
+      task_id: binding.delegation.task_id,
+      agent_id: binding.delegation.agent_id,
+      record_sha256: "sha256:" + "2".repeat(64),
+      authority_watermark: {
+        schema: "drovr.registry-authority-watermark/v1",
+        authority: "drovr.registry",
+        generation: "sha256:" + "3".repeat(64),
+        registry_sha256: "sha256:" + "4".repeat(64),
+      },
+    },
+    legal_next_actions: ["reconcile_exact_agent_retirement"],
+    reason: {
+      code: "resource_retirement_uncertain",
+      message: "exact retirement was not proven",
+    },
+  };
+
+  const cases = [
+    ["unresolved", {
+      schema: "flow.resource-handoff/v1",
+      resource: { type: "drovr_agent_unresolved" },
+      planning_identity: {
+        type: "flow_route",
+        agent_id: "agent:planned",
+      },
+      durable_holder: "flow.run:run:handoff",
+      reason: "review_coverage_unavailable",
+      attempt_id: "attempt:unresolved",
+    }],
+    ["exact", {
+      schema: "flow.resource-handoff/v1",
+      resource: { type: "drovr_agent", id: "agent:actual" },
+      resource_binding: binding,
+      durable_holder: "drovr.registry",
+      reason: "review_coverage_unavailable",
+      attempt_id: "attempt:exact",
+    }],
+    ["uncertain", {
+      schema: "flow.resource-handoff/v1",
+      resource: { type: "drovr_agent", id: "agent:actual" },
+      resource_binding: binding,
+      resource_projection: uncertainProjection,
+      durable_holder: "drovr.registry",
+      reason: "resource_retirement_uncertain",
+      attempt_id: "attempt:uncertain",
+    }],
+  ];
+
+  for (const [label, terminalDisposition] of cases) {
+    const authorityDirectory = await mkdtemp(
+      join(tmpdir(), `flow-handoff-${label}-`),
+    );
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+    const authority = createDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-a", `process-${label}`),
+    });
+    const runtime = operationRuntime(authority, {
+      classification: "caller_idempotent",
+      invoke(intent) {
+        return operationReceipt(intent, {
+          schema: "flow.delegate-evidence/v1",
+          attempt_id: intent.attempt_id,
+          card_id: intent.card_id,
+          turn_id: "turn:handoff",
+          route_binding: { agent_id: "agent:planned" },
+          validator_receipts: [],
+          terminal_disposition: terminalDisposition,
+        });
+      },
+    });
+    const prepared = runtime.prepare(registeredOperationProposal({
+      checkpointBound: false,
+    }));
+    const launch = runtime.launch(confirmedLaunchRequest(prepared));
+    runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+      ({ type }) => type === "operation_execute",
+    ));
+    await until(() => runtime.query({ run_id: launch.run_id }).phase ===
+      "succeeded");
+
+    const live = runtime.query({ run_id: launch.run_id });
+    const liveDisposition = live.effects[0].receipt.provider_receipt
+      .terminal_disposition;
+    if (label === "unresolved") {
+      assert.equal(liveDisposition.resource.type, "drovr_agent_unresolved");
+      assert.deepEqual(liveDisposition.planning_identity, {
+        type: "flow_route",
+        agent_id: "agent:planned",
+      });
+      assert.equal(Object.hasOwn(liveDisposition.resource, "id"), false);
+    } else if (label === "exact") {
+      assert.equal(liveDisposition.resource.id, "agent:actual");
+      assert.equal(liveDisposition.resource_binding.binding_digest,
+        binding.binding_digest);
+      assert.equal(digest({
+        resource_key: liveDisposition.resource_binding.resource_key,
+        owner: liveDisposition.resource_binding.owner,
+        workspace_claim: liveDisposition.resource_binding.workspace_claim,
+        launch_binding: liveDisposition.resource_binding.launch_binding,
+        delegation: liveDisposition.resource_binding.delegation,
+        native_session: liveDisposition.resource_binding.native_session,
+        managed_runtime_evidence_digest:
+          liveDisposition.resource_binding.managed_runtime_evidence_digest,
+      }), binding.binding_digest);
+    } else {
+      assert.equal(liveDisposition.resource.id, "agent:actual");
+      assert.equal(liveDisposition.reason, "resource_retirement_uncertain");
+      assert.deepEqual(liveDisposition.resource_projection,
+        uncertainProjection);
+      assert.equal(liveDisposition.resource_projection.status, "blocked");
+      assert.equal(liveDisposition.resource_projection.reason.code,
+        "resource_retirement_uncertain");
+      assert.deepEqual(liveDisposition.resource_projection.legal_next_actions,
+        ["reconcile_exact_agent_retirement"]);
+      assert.equal(Object.hasOwn(liveDisposition.resource_projection,
+        "cleanup_receipt"), false);
+    }
+
+    authority.close();
+    const reopened = createDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-a", `replay-${label}`),
+    });
+    t.after(() => reopened.close());
+    const replayed = createFlowRuntime({ runAuthority: reopened }).query({
+      run_id: launch.run_id,
+    });
+    assert.deepEqual(
+      replayed.effects[0].receipt.provider_receipt.terminal_disposition,
+      liveDisposition,
+    );
+  }
+});
+
 test("delegate failure observations preserve their strict operator fields", () => {
   const observation = {
     schema: "flow.delegate-failure-observation/v1",
@@ -90,6 +367,178 @@ test("delegate failure observations preserve their strict operator fields", () =
     ...observation,
     retryable: "false",
   }), null);
+});
+
+test("durable cancelled workspace uncertainty replays without an agent claim", async (t) => {
+  const authorityDirectory = await mkdtemp(
+    join(tmpdir(), "flow-cancel-handoff-"),
+  );
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authorityWatermark = {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    generation: "sha256:" + "1".repeat(64),
+    registry_sha256: "sha256:" + "2".repeat(64),
+  };
+  const terminalDisposition = {
+    schema: "flow.resource-handoff/v1",
+    resource: { type: "drovr_agent_unresolved" },
+    planning_identity: {
+      type: "flow_route",
+      agent_id: "agent:planned",
+    },
+    durable_holder: "flow.run:run:cancel",
+    reason: "resource_retirement_uncertain",
+    attempt_id: "run:cancel:attempt:1",
+    resource_projection: {
+      schema: "flow.delegated-agent-resource-projection/v1",
+      operation: "retire",
+      status: "blocked",
+      binding: null,
+      binding_digest: null,
+      delegation: null,
+      watermark: authorityWatermark,
+      legal_next_actions: ["reconcile_exact_agent_retirement"],
+      reason: {
+        code: "resource_retirement_uncertain",
+        message: "exact workspace identity was not carried through cancellation",
+      },
+    },
+  };
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-cancel"),
+  });
+  t.after(() => authority.close());
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      return operationReceipt(intent, {
+        schema: "flow.delegate-cancellation-receipt/v1",
+        delegate_attempt_id: "run:cancel:attempt:1",
+        delegate_effect_id: "effect:cancel",
+        turn_id: null,
+        drovr_watermark: authorityWatermark,
+        terminal_disposition: terminalDisposition,
+      });
+    },
+  });
+  const prepared = runtime.prepare(registeredOperationProposal({
+    checkpointBound: false,
+  }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ type }) => type === "operation_execute",
+  ));
+  await until(() => runtime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+
+  const live = runtime.query({ run_id: launch.run_id });
+  const liveDisposition = live.effects[0].receipt.provider_receipt
+    .terminal_disposition;
+  assert.deepEqual(liveDisposition.resource, {
+    type: "drovr_agent_unresolved",
+  });
+  assert.deepEqual(liveDisposition.planning_identity, {
+    type: "flow_route",
+    agent_id: "agent:planned",
+  });
+  assert.equal(Object.hasOwn(liveDisposition.resource, "id"), false);
+  assert.deepEqual(liveDisposition.resource_projection.watermark,
+    authorityWatermark);
+  assert.deepEqual(liveDisposition.resource_projection.legal_next_actions,
+    ["reconcile_exact_agent_retirement"]);
+
+  authority.close();
+  const reopened = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-cancel-replay"),
+  });
+  t.after(() => reopened.close());
+  const replayed = createFlowRuntime({ runAuthority: reopened }).query({
+    run_id: launch.run_id,
+  });
+  assert.deepEqual(
+    replayed.effects[0].receipt.provider_receipt.terminal_disposition,
+    liveDisposition,
+  );
+});
+
+test("delegate failure observations retain a complete resource projection", () => {
+  const resourceKey = `sha256:${"a".repeat(64)}`;
+  const binding = {
+    schema: "flow.delegated-agent-resource-binding/v1",
+    resource_key: resourceKey,
+    owner: {
+      run_id: "run:failure",
+      card_id: "review",
+      route_key: "agent:planned",
+      managed_agent_binding_id: "managed:review",
+    },
+    workspace_claim: {
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: "workspace:failure",
+      generation: 2,
+      mutation_epoch: 3,
+      fingerprint: `sha256:${"b".repeat(64)}`,
+      access: "read_only",
+    },
+    launch_binding: {
+      description_digest: `sha256:${"c".repeat(64)}`,
+      launch_comparison_key: `sha256:${"d".repeat(64)}`,
+      effective_authority_comparison_key: `sha256:${"e".repeat(64)}`,
+      configuration_watermark: `sha256:${"f".repeat(64)}`,
+    },
+    delegation: {
+      group_id: "group:failure",
+      task_id: "task:failure",
+      agent_id: "agent:failure",
+    },
+    native_session: "native:failure",
+    managed_runtime_evidence_digest: `sha256:${"1".repeat(64)}`,
+  };
+  binding.binding_digest = digest({
+    resource_key: binding.resource_key,
+    owner: binding.owner,
+    workspace_claim: binding.workspace_claim,
+    launch_binding: binding.launch_binding,
+    delegation: binding.delegation,
+    native_session: binding.native_session,
+    managed_runtime_evidence_digest: binding.managed_runtime_evidence_digest,
+  });
+  const projection = {
+    schema: "flow.delegated-agent-resource-projection/v1",
+    operation: "ensure",
+    status: "blocked",
+    resource_key: resourceKey,
+    binding,
+    binding_digest: binding.binding_digest,
+    delegation: null,
+    watermark: {
+      schema: "drovr.registry-authority-watermark/v1",
+      authority: "drovr.registry",
+      turns_sha256: `sha256:${"2".repeat(64)}`,
+    },
+    legal_next_actions: ["repair_delegated_runtime_registry"],
+    reason: { code: "resource_provisioning_uncertain", message: "uncertain" },
+  };
+  const failure = {
+    schema: "flow.delegate-failure-observation/v1",
+    code: "resource_provisioning_uncertain",
+    stage: "delegate_effect_materialization",
+    retryable: false,
+    resource_projection: projection,
+    secret: "api_key=must-not-survive",
+  };
+  const sanitized = sanitizeProviderObservation(failure);
+  assert.deepEqual(sanitized.resource_projection, projection);
+  assert.equal(Object.hasOwn(sanitized, "secret"), false);
+  assert.equal(
+    digest(sanitized.resource_projection.binding),
+    digest(projection.binding),
+  );
 });
 
 test("typed delegate failures survive durable persistence, replay, and projection", async (t) => {
@@ -116,6 +565,16 @@ test("typed delegate failures survive durable persistence, replay, and projectio
     code: "invalid_envelope",
     stage: "delegate_effect_materialization",
     retryable: false,
+    resource_projection: {
+      schema: "flow.delegated-agent-resource-projection/v1",
+      status: "blocked",
+      watermark: {
+        schema: "drovr.registry-authority-watermark/v1",
+        authority: "drovr.registry",
+        turns_sha256: `sha256:${"a".repeat(64)}`,
+      },
+      legal_next_actions: ["repair_delegated_runtime_registry"],
+    },
   };
   await authority.recordEffectObservation(intent, {
     schema: "flow.effect-observation/v1",

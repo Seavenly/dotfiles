@@ -48,6 +48,9 @@ import {
   turnCommandResult,
   waitForTurn,
 } from "../src/turns.mjs";
+import { createDrovrDelegatedAgentPort } from "../../flow/src/drovr-delegated-agent-port.mjs";
+import { digest } from "../../flow/src/canonical.mjs";
+import { digestDelegateInputBytes } from "../../flow/src/delegate-input-envelope.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -525,6 +528,176 @@ test("caller-owned dispatch and ordered input survive caller exit and fail close
     { outcome: "launch_binding_missing" },
   );
   assert.equal(deliveries, 2);
+});
+
+test("Flow resource binding uses a dedicated Drovr turn field through real dispatch and discovery", async (t) => {
+  const fixture = await turnFixture(t);
+  const [priorTurn] = await readRecords(fixture.registryDirectory, "turns");
+  priorTurn.status = "cancelled";
+  await writeRecord(fixture.registryDirectory, "turns", priorTurn);
+  const callerMetadata = { run_id: "run:44", card_id: "review" };
+  const description = await describeDelegatedAgent({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      capability: "on-approve",
+    },
+    caller_metadata: callerMetadata,
+  }, { env: fixture.env, requireCompatibility: false });
+  const [agent] = await readRecords(fixture.registryDirectory, "agents");
+  agent.launch_binding = {
+    schema: "drovr.agent-launch-binding/v1",
+    comparison_key: description.comparison_keys.launch,
+    configuration_watermark: description.watermark.content_sha256,
+  };
+  await writeRecord(fixture.registryDirectory, "agents", agent);
+  const binding = {
+    schema: "flow.delegated-agent-resource-binding/v1",
+    resource_key: `sha256:${"a".repeat(64)}`,
+    owner: {
+      run_id: "run:44",
+      card_id: "review",
+      route_key: "agent:planned",
+    },
+    workspace_claim: {
+      kind: "workspace",
+      authority: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      subject_id: "workspace:44",
+      generation: 1,
+      mutation_epoch: 1,
+      fingerprint: `sha256:${"b".repeat(64)}`,
+      access: "read_only",
+    },
+    launch_binding: {
+      description_digest: description.description_digest,
+      launch_comparison_key: description.comparison_keys.launch,
+      effective_authority_comparison_key:
+        description.comparison_keys.effective_authority,
+      configuration_watermark: description.watermark.content_sha256,
+    },
+    delegation: {
+      agent_id: agent.id,
+      task_id: "task-1",
+      group_id: "group-1",
+    },
+    native_session: "codex-session-1",
+    managed_runtime_evidence_digest: `sha256:${"c".repeat(64)}`,
+  };
+  binding.binding_digest = digest({
+    resource_key: binding.resource_key,
+    owner: binding.owner,
+    workspace_claim: binding.workspace_claim,
+    launch_binding: binding.launch_binding,
+    delegation: binding.delegation,
+    native_session: binding.native_session,
+    managed_runtime_evidence_digest: binding.managed_runtime_evidence_digest,
+  });
+  let deliveries = 0;
+  const dependencies = {
+    env: fixture.env,
+    requireCompatibility: false,
+    herdr: {
+      async ensureSession() {},
+      async agentRecord() {
+        return {
+          agent_status: deliveries === 0 ? "idle" : "working",
+          state_change_seq: deliveries,
+          agent_session: { value: "codex-session-1" },
+        };
+      },
+      async prompt() {
+        deliveries += 1;
+      },
+      async waitForAgent() {
+        return { drovr_status: "still_running" };
+      },
+    },
+  };
+  const port = createDrovrDelegatedAgentPort({ dependencies });
+  const described = await port.describe({
+    schema: "flow.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      capability: "on-approve",
+    },
+    caller_metadata: callerMetadata,
+  });
+  assert.equal(described.status, "compatible");
+  assert.equal(described.description.description_digest,
+    description.description_digest);
+  const dispatched = await port.dispatch({
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: agent.id,
+    caller_key: "run:44/card:review/attempt:1",
+    input_key: "run:44/card:review/attempt:1:input:1",
+    prompt: "inspect the exact candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the exact candidate"),
+    description: described.description,
+    resource_binding: binding,
+  });
+  assert.equal(dispatched.status, "working");
+  assert.equal(dispatched.turn.resource_binding.binding_digest,
+    binding.binding_digest);
+  assert.deepEqual(dispatched.turn.caller.metadata, callerMetadata);
+  assert.equal(Object.hasOwn(dispatched.turn.caller.metadata,
+    "flow_resource_binding"), false);
+  const discovered = await port.discover({
+    schema: "flow.delegated-agent-discover-request/v1",
+    caller_key: "run:44/card:review/attempt:1",
+  });
+  assert.equal(discovered.status, "working");
+  assert.deepEqual(discovered.turn.resource_binding, binding);
+  assert.equal(deliveries, 1);
+
+  await assert.rejects(
+    () => dispatchTurn(agent.id, {
+      callerKey: "run:44/card:review/attempt:1",
+      callerMetadata,
+      inputKey: "run:44/card:review/attempt:1:input:1",
+      launchBinding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: description.comparison_keys.launch,
+        configuration_watermark: description.watermark.content_sha256,
+        description_digest: description.description_digest,
+      },
+      prompt: "inspect the exact candidate",
+      resourceBinding: { ...binding, caller_controlled: true },
+    }, { env: fixture.env, herdr: dependencies.herdr }),
+    { outcome: "invalid_arguments" },
+  );
+  const replayBinding = structuredClone(binding);
+  replayBinding.resource_key = `sha256:${"d".repeat(64)}`;
+  replayBinding.binding_digest = digest({
+    resource_key: replayBinding.resource_key,
+    owner: replayBinding.owner,
+    workspace_claim: replayBinding.workspace_claim,
+    launch_binding: replayBinding.launch_binding,
+    delegation: replayBinding.delegation,
+    native_session: replayBinding.native_session,
+    managed_runtime_evidence_digest:
+      replayBinding.managed_runtime_evidence_digest,
+  });
+  await assert.rejects(
+    () => dispatchTurn(agent.id, {
+      callerKey: "run:44/card:review/attempt:1",
+      callerMetadata,
+      inputKey: "run:44/card:review/attempt:1:input:1",
+      launchBinding: {
+        schema: "drovr.launch-binding/v1",
+        comparison_key: description.comparison_keys.launch,
+        configuration_watermark: description.watermark.content_sha256,
+        description_digest: description.description_digest,
+      },
+      prompt: "inspect the exact candidate",
+      resourceBinding: replayBinding,
+    }, { env: fixture.env, herdr: dependencies.herdr }),
+    { outcome: "caller_key_conflict" },
+  );
 });
 
 test("start refuses unknown staged Claude input before creating a logical turn", async (t) => {

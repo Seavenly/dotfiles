@@ -18,6 +18,35 @@
       "type": "string",
       "const": "delegate_effect_materialization"
     },
-    "retryable": { "type": "boolean" }
+    "retryable": { "type": "boolean" },
+    "resource_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "status", "watermark", "legal_next_actions"],
+      "properties": {
+        "schema": { "const": "flow.delegated-agent-resource-projection/v1" },
+        "operation": { "type": "string", "minLength": 1 },
+        "status": { "type": "string" },
+        "resource_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "binding_digest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "binding": { "type": ["object", "null"] },
+        "delegation": { "type": ["object", "null"] },
+        "watermark": {},
+        "legal_next_actions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reason": { "type": ["object", "null"] },
+        "cleanup_receipt": { "type": ["object", "null"] },
+        "workspace": { "type": ["object", "null"] },
+        "owner": { "type": "object" }
+      }
+    }
   }
 }

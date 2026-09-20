@@ -8,6 +8,9 @@ import {
 import {
   createDrovrDelegatedAgentPort,
 } from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
+import {
+  createDrovrDelegatedAgentResourcePort,
+} from "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
 import { contentDigest } from "./canonical-json.mjs";
 import {
   FilesystemLegacyCompatibilityAdapter,
@@ -48,6 +51,7 @@ const RUNNER_CAPACITY_ENV = Object.freeze({
 export function createFlowRuntime({
   env = process.env,
   delegatedAgentPort = null,
+  delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
   registeredOperations = {},
   registeredAuthorities = {},
@@ -85,6 +89,11 @@ export function createFlowRuntime({
     predefinedDefinitions,
     delegateOutputValidators,
   });
+  const delegationResourcePort = delegatedAgentResourcePort ??
+    createDrovrDelegatedAgentResourcePort({
+      resolveWorkspace: composition.resolveDelegatedWorkspaceClaim,
+      dependencies: { env },
+    });
   const ownsAuthority = runAuthority === undefined;
   let authority = null;
   let coreRuntime = null;
@@ -107,6 +116,7 @@ export function createFlowRuntime({
     coreRuntime = createCoreFlowRuntime({
       runAuthority: authority,
       delegatedAgentPort: delegationPort,
+      delegatedAgentResourcePort: delegationResourcePort,
       delegateOutputValidators: composition.validators,
       registeredOperations: composition.operations,
       predefinedDefinitions: composition.definitions,

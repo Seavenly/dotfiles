@@ -5,8 +5,11 @@ export const TRACKER_SUBRUN_RESOURCE_RECEIPT_SCHEMA_FIELDS = new Map([
     "attempt_id",
     "durable_holder",
     "managed_agent_binding",
+    "planning_identity",
     "reason",
     "resource",
+    "resource_binding",
+    "resource_projection",
     "schema",
     "terminal_disposition",
     "turn_disposition",
@@ -34,6 +37,7 @@ export const TRACKER_SUBRUN_RESOURCE_RECEIPT_SCHEMA_FIELDS = new Map([
 ]);
 
 export const TRACKER_SUBRUN_RESOURCE_NESTED_FIELDS = new Set([
+  "agent_id",
   "authority",
   "body",
   "clean",
@@ -44,12 +48,16 @@ export const TRACKER_SUBRUN_RESOURCE_NESTED_FIELDS = new Set([
   "generation",
   "git",
   "git_retention",
+  "id",
   "mutation_epoch",
   "owner",
   "path",
   "publication_digest",
+  "planning_identity",
   "ref",
   "repository",
   "resource",
+  "resource_binding",
   "tree_sha",
+  "type",
 ]);

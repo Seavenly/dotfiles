@@ -2,7 +2,7 @@ TAP version 13
 # Subtest: public preparation normalizes real Drovr feature findings to the rejection contract
 ok 1 - public preparation normalizes real Drovr feature findings to the rejection contract
   ---
-  duration_ms: 317.579652
+  duration_ms: 282.023561
   type: 'test'
   ...
 1..1
@@ -13,4 +13,4 @@ ok 1 - public preparation normalizes real Drovr feature findings to the rejectio
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 400.296482
+# duration_ms 363.003738

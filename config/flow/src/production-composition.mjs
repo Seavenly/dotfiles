@@ -275,6 +275,14 @@ export function createProductionComposition({
       boundAuthority = authority;
       featureOperations.bindAuthority(authority);
     },
+    resolveDelegatedWorkspaceClaim(claim, request = {}) {
+      return resolveDelegatedWorkspaceClaim({
+        claim,
+        request,
+        resolveWorkspace: resolveProductionWorkspace,
+        runAuthority: boundAuthority,
+      });
+    },
     beforeLaunch(request, authority) {
       return prepareProductionFeatureLaunch({
         request,
@@ -316,6 +324,66 @@ export function createProductionComposition({
     repositories.set(repository.repository_id, repository.path);
     return repository;
   }
+}
+
+function resolveDelegatedWorkspaceClaim({
+  claim,
+  request,
+  resolveWorkspace,
+  runAuthority,
+}) {
+  const repository = resolveWorkspace(claim?.subject_id);
+  if (repository === null || repository === undefined) {
+    throw new ProductionPreparationError(
+      "workspace_claim_stale",
+      "delegated workspace is not registered for the exact subject",
+    );
+  }
+  let projection;
+  try {
+    projection = getWorkspaceAuthority({ runAuthority }).query({
+      contract: "work.workspace/v1",
+      subject_id: claim.subject_id,
+    });
+  } catch (error) {
+    throw new ProductionPreparationError(
+      "workspace_claim_uncertain",
+      "WorkspaceAuthority could not prove the delegated workspace claim",
+      { cause: error },
+    );
+  }
+  if (projection?.schema !== "work.workspace-projection/v1" ||
+      projection.subject_id !== claim.subject_id ||
+      projection.generation !== claim.generation ||
+      projection.mutation_epoch !== claim.mutation_epoch ||
+      digest({ git: projection.git }) !== claim.fingerprint ||
+      projection.workspace?.canonical_path !== repository.path ||
+      projection.repository?.canonical_id !== repository.repository_id) {
+    throw new ProductionPreparationError(
+      "workspace_claim_stale",
+      "WorkspaceAuthority projection does not match the delegated workspace claim",
+    );
+  }
+  if (claim.access === "mutation") {
+    const exactClaim = projection.claims?.find((candidate) =>
+      candidate.holder === request.owner?.run_id &&
+      candidate.operations?.includes(request.owner?.card_id));
+    if (!exactClaim) {
+      throw new ProductionPreparationError(
+        "workspace_claim_conflict",
+        "delegated mutation workspace is not held by the exact run and card",
+      );
+    }
+  }
+  return {
+    subject_id: claim.subject_id,
+    generation: claim.generation,
+    mutation_epoch: claim.mutation_epoch,
+    fingerprint: claim.fingerprint,
+    canonical_path: repository.path,
+    repository_id: repository.repository_id,
+    ref: repository.ref,
+  };
 }
 
 function reviewGraphAvailabilityFindings({ prepared, graphCards }) {

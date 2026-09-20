@@ -322,10 +322,29 @@ const TRACKER_PROGRESS = {
   provider_state_authority: "none",
   marker_cardinality: "at_most_one_update_in_place",
 };
+const DELEGATED_AGENT_RESOURCE_PORT = {
+  contract: "flow.delegated-agent-resource-port/v1",
+  authority: "non_authoritative",
+  adapter: "drovr/v1",
+  workspace_authority: "WorkspaceAuthority",
+  ensure_request: "flow.delegated-agent-resource-ensure-request/v1",
+  retire_request: "flow.delegated-agent-resource-retire-request/v1",
+  projection: "flow.delegated-agent-resource-projection/v1",
+  operations: {
+    ensure: "ensure",
+    retire: "retire",
+  },
+  identity: "run_card_or_managed_binding_workspace_claim_launch_binding",
+  key: "deterministic_run_scoped_resource_key",
+  provisioning: "public_drovr_open_task_start_agent_with_registry_lock",
+  recovery: "exact_owned_resource_only_no_ambient_reuse",
+  uncertainty: "typed_block_no_identity_free_reconciling",
+};
 const DELEGATE_EXECUTION = {
   authority: "RunAuthority",
   adapter_authority: "mechanism_only",
   port: "flow.delegated-agent-port/v1",
+  resource_port: DELEGATED_AGENT_RESOURCE_PORT.contract,
   intent: "flow.effect-intent/v1",
   receipt: "flow.effect-receipt/v1",
   evidence: "flow.delegate-evidence/v1",
@@ -525,7 +544,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@33",
+  catalog_id: "flow.contract-catalog/v1@34",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -960,6 +979,7 @@ export async function loadContractCatalog({
     DELEGATE_EXECUTION,
   ) || ![
     DELEGATE_EXECUTION.port,
+    DELEGATE_EXECUTION.resource_port,
     DELEGATE_EXECUTION.intent,
     DELEGATE_EXECUTION.receipt,
     DELEGATE_EXECUTION.evidence,
@@ -1182,6 +1202,9 @@ export async function loadContractCatalog({
       "contract catalog Drovr feature baseline is incomplete or weakened",
     );
   }
+  if (!delegatedAgentResourcePortIsPublished(catalog)) {
+    throw new Error("contract catalog delegated resource port is incomplete");
+  }
   const roots = Object.values(catalog.authority_roots ?? {});
   if (roots.length === 0 || !authorityRootsAreDisjoint(roots, {
     homeDirectory,
@@ -1256,6 +1279,18 @@ function delegatedAgentPortIsPublished(
       publishedFeatureContract.schema,
       ...publishedFeatureContract.features.map(({ contract }) => contract),
     ].every((contract) => contracts.includes(contract));
+}
+
+function delegatedAgentResourcePortIsPublished(catalog) {
+  return isDeepStrictEqual(
+    catalog.delegated_agent_resource_port,
+    DELEGATED_AGENT_RESOURCE_PORT,
+  ) && catalog.contracts.includes(DELEGATED_AGENT_RESOURCE_PORT.contract) &&
+    catalog.contracts.includes(DELEGATED_AGENT_RESOURCE_PORT.ensure_request) &&
+    catalog.contracts.includes(DELEGATED_AGENT_RESOURCE_PORT.retire_request) &&
+    catalog.contracts.includes(DELEGATED_AGENT_RESOURCE_PORT.projection) &&
+    catalog.flow_runtime?.delegate_execution?.resource_port ===
+      DELEGATED_AGENT_RESOURCE_PORT.contract;
 }
 
 export function authorizeLegacyImport(catalog, {
