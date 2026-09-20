@@ -126,8 +126,6 @@ test("operator guide binds the qualified release and public operator path", asyn
     "flow query --input",
     "flow watch --input",
     "checkpoint_decision",
-    "operation_execute",
-    "delegate_execute",
     "recovery",
     "cancel",
     "reboot_admission",
@@ -231,7 +229,7 @@ test("operator guide binds the qualified release and public operator path", asyn
   assert.match(guide, /re-?query.*backup.*manifest|fresh.*projection.*manifest/isu,
     "fresh backup projection before manifest extraction");
 
-  const reviewStart = guide.indexOf('select(.type == "review_session_start")');
+  const reviewStart = guide.indexOf('select(.type == "review_session_start"');
   assert.ok(reviewStart >= 0, "review session start selector");
   assert.ok(guide.lastIndexOf(".legal_actions[]", reviewStart) >= 0,
     "review session start comes from legal_actions");
@@ -244,6 +242,65 @@ test("operator guide binds the qualified release and public operator path", asyn
     "review comment materialization");
   assert.match(reviewSection, /del\(\.operator_input\)[\s\S]*disposition/u,
     "review disposition materialization");
+
+  const candidateSection = guide.slice(
+    guide.indexOf("## Candidate inspection and local review"),
+  );
+
+  assert.match(reviewSection,
+    /operator CLI has no query that returns the authority-observed review facts/u,
+    "review preparation limitation is explicit");
+  assert.match(reviewSection,
+    /does not launch `review\/local`/u,
+    "guide does not claim to launch review/local");
+  assert.match(reviewSection,
+    /Issue 84's real feature\/candidate plus separate review remains `not_run`/u,
+    "issue 84 review boundary is explicit");
+  assert.match(reviewSection,
+    /do not claim a live or billed exercise/iu,
+    "guide does not claim a live billed exercise");
+  assert.doesNotMatch(reviewSection,
+    /flow (?:prepare|launch) --input|flow\.predefined-flow-confirmation-decision\/v1|REVIEW_(?:SELECTION|PREPARE|LAUNCH)/u,
+    "review section has no synthetic prepare or launch flow");
+  assert.doesNotMatch(reviewSection,
+    /catalog_fingerprint|route_snapshot|explicit_facts|time_facts|wall_time|monotonic|boot_id|clock_source|agent(?:_id|_identity)?\s*:|1{64}|2{64}/iu,
+    "review section has no fabricated authority facts or placeholder identities");
+  assert.match(candidateSection,
+    /contract:"work\.review\/v1",subject_id:\$id/u,
+    "candidate inspection queries the exact public candidate projection");
+  assert.match(candidateSection,
+    /REVIEW_ID="\$\(jq -er '\.review_id' [<]{3}"\$ITEM"\)/u,
+    "review identity is derived from the inbox item");
+  assert.match(candidateSection,
+    /candidate-only inbox item is not a review/u,
+    "candidate-only inbox item is rejected");
+  const humanReviewSection = candidateSection.slice(
+    candidateSection.indexOf('REVIEW_ID="$(jq -er'),
+  );
+  assert.equal(
+    (humanReviewSection.match(
+      /flow query --input "\$\(jq -cn --arg id "\$REVIEW_ID"/gu,
+    ) ?? []).length,
+    3,
+    "all review projections bind REVIEW_ID",
+  );
+  assert.match(humanReviewSection,
+    /contract:"work\.review\/v1",subject_id:\$id/u,
+    "review projections use REVIEW_ID");
+  assert.doesNotMatch(humanReviewSection,
+    /--arg id "\$CANDIDATE_ID"|contract:"work\.review\/v1",subject_id:\$CANDIDATE_ID/u,
+    "candidate ID is not used for review projections");
+
+  const statusSection = guide.slice(
+    guide.indexOf("## Status, query, watch, and authority-projected actions"),
+    guide.indexOf("## Fresh runtime limits and diagnosis"),
+  );
+  assert.match(statusSection,
+    /autonomous runner[\s\S]*operation_execute[\s\S]*delegate_execute/iu,
+    "autonomous runner owns execute actions");
+  assert.doesNotMatch(statusSection,
+    /select\(\.type == "operation_execute"[\s\S]*flow command --input|select\(\.type == "delegate_execute"[\s\S]*flow command --input/su,
+    "operator guide does not manually submit execute actions");
 
   const rebootSection = guide.slice(guide.indexOf("## Same-boot recovery"),
     guide.indexOf("## Candidate inspection and local review"));
@@ -259,9 +316,6 @@ test("operator guide binds the qualified release and public operator path", asyn
     /reboot_admission[\s\S]*recovered-run\.json/u,
     "reboot action does not use same-boot recovery file");
 
-  const candidateSection = guide.slice(
-    guide.indexOf("## Candidate inspection and local review"),
-  );
   assert.match(candidateSection,
     /COMPLETED="\$RECEIPTS\/completed-run\.json"[\s\S]*flow query[\s\S]*COMPLETED/u,
     "candidate path refreshes the terminal run projection");

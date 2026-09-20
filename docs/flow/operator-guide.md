@@ -17,15 +17,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `1e3e4665d4241419ad573d208077a20d845289bc` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `57cf104c2570940348e8f0c1003a13de667c1f5e` |
-| Governed release content | `sha256:842d0ecc3cf53897515a702325d5945c13030f9d395e99c7451c3fa8c8c980a2` |
+| Governed release candidate tree (`release-content.v1.json`) | `eb074204b077a24ac2e9b39ac0a73f13bf1917ce` |
+| Governed release content | `sha256:6824c19873b6b22a67ff215734a6edca90289a1086695770fa84ca02d550d80c` |
 | Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@33`, `sha256:3645a1e1e898c2071796c00aa580c67440609d3472a6f313cc1f2f3eceebc737` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:0c34c6f36546ca9560e9c50bb9aa558338e999c9d9ff0af901c9142684ad7c8d` |
-| Deterministic qualification evidence | `config/flow/evidence/release-qualification.v1.json`, `sha256:10900ea79d28d7864c1f87c6eabb6bdad158ff3a0dea05e98e98a589f0076110` |
-| Production-route evidence | `config/flow/evidence/production-route-conformance.v1.json`, `sha256:0f7f5252bfd08e74e616370b28281135ee06caef08810dd7d37f26d83f62f870` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:a61bb25344bca7ee9f0fd466af94f64ba56a55366febb21837c6943bf25a7c1c` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:3df230d4b23f101122f63ab23691160fa5aa68a1de0467a8bbfa9c4ff09aa112` |
+| Deterministic qualification evidence | `config/flow/evidence/release-qualification.v1.json`, `sha256:0c7163736091cc1ca89a7e63fb1ace46e23565553788e5aa17b345fda3f473ea` |
+| Production-route evidence | `config/flow/evidence/production-route-conformance.v1.json`, `sha256:6929b8b270e8878f72e933c88e0944294278f5953d83dc7d1d9557b42e91208b` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:4012e502aec769eedd102ef562a2054b8945511fa93eafb7e0d56f58c1117950` |
 
 The ledger records the historical `source_commit`; it does not say that this
 working tree is that commit. The current governed release tree is the separate
@@ -456,9 +456,13 @@ The operator view includes phase, admission, revision, card readiness, route
 and capability facts, checkpoints, attempts, effects, result bindings,
 workspace/artifact/handoff facts, and closed `legal_actions`.
 
-Always select a complete action from the latest projection and submit it
-unchanged. These are examples of the closed action types; the `jq` selectors
-must find a returned action before invoking `flow command`:
+Always select a complete operator action from the latest projection and submit
+it unchanged. The autonomous runner owns ready `operation_execute` and
+`delegate_execute` actions. The operator refreshes and observes those actions;
+do not race the runner by submitting either execute action manually. Operator
+commands remain appropriate for authority-projected checkpoints, recovery,
+terminal disposition, and cancellation; the `jq` selectors must find a
+returned action before invoking `flow command`:
 
 ```sh
 RUN_JSON="$RECEIPTS/run.json"
@@ -466,14 +470,10 @@ RUN_JSON="$RECEIPTS/run.json"
 ACTION="$(jq -ce '.views.operator.legal_actions[] |
   select(.type == "checkpoint_decision" and .decision == "approve")' "$RUN_JSON")"
 flow command --input "$ACTION" --json | tee "$RECEIPTS/checkpoint.json"
-
-ACTION="$(jq -ce '.views.operator.legal_actions[] |
-  select(.type == "operation_execute" or .type == "delegate_execute")' "$RUN_JSON")"
-flow command --input "$ACTION" --json | tee "$RECEIPTS/execute.json"
 ```
 
-Refresh `run.json` after every receipt. Do not reuse a stale watermark or
-materialize a command by hand. A card block exposes only its named
+Refresh `run.json` after every receipt or autonomous-runner observation. Do not
+reuse a stale watermark or materialize a command by hand. A card block exposes only its named
 `capability_grant` or `revision_decision`; there is no generic unblock. An
 operation-bound checkpoint requires a fresh `checkpoint_decision`, and an
 uncertain effect requires the exact returned recovery action rather than a
@@ -604,8 +604,19 @@ CANDIDATE_ID="$(jq -er '.review_candidate_reference.candidate_id' "$COMPLETED")"
 flow query --input "$(jq -cn --arg id "$CANDIDATE_ID" \
   '{contract:"work.review/v1",subject_id:$id}')" --json \
   | tee "$RECEIPTS/candidate.json"
-flow query --input '{"schema":"flow.query/v1","query":"review_inbox"}' \
-  --json | tee "$RECEIPTS/review-inbox.json"
+jq -e --arg id "$CANDIDATE_ID" '
+  (.schema == "work.review-candidate-projection/v1") and
+  (.contract == "work.review/v1") and
+  (.subject_id == $id) and
+  (.status == "sealed") and
+  (.candidate.candidate_id == $id) and
+  (.candidate_fingerprint == .candidate.candidate_fingerprint) and
+  ((.watermark | type) == "string") and
+  ((.workspace.subject_id | type) == "string") and
+  ((.workspace.generation | type) == "number") and
+  ((.workspace.mutation_epoch | type) == "number") and
+  ((.workspace.fingerprint | type) == "string")
+' "$RECEIPTS/candidate.json"
 ```
 
 The candidate projection must show a sealed candidate with clean workspace
@@ -616,41 +627,88 @@ observations remove review authorization while preserving history. A consumer
 pins the exact handoff and rechecks it before mutation; it never selects
 `latest`.
 
+The candidate is not itself a review. The release exposes the `review/local`
+contract, including `flow.review-request/v1`,
+`flow.predefined-flow-selection/v1`, and `flow.dark-opt-in/v1`, but the public
+operator CLI has no query that returns the authority-observed review facts
+needed to prepare and launch that definition from this candidate. Do not
+manufacture catalog fingerprints, route watermarks, time or boot facts,
+delegation identities, candidate identities, or review identities. The
+in-process production test helper that assembles those facts is not an
+operator interface. This guide therefore does not launch `review/local`.
+
+Issue 84's real feature/candidate plus separate review remains `not_run`, as do
+issue 44's mixed delegation and issue 46's host recovery/concurrency/rendering
+scenarios. These instructions do not claim a live or billed exercise.
+
 Local review is the supported human route. It is a projection-only consumer
 such as tuicr; `ReviewAuthority` owns review lifecycle and `FlowRuntime` owns
 the command. The review inbox is the disposable
-`flow.review-inbox-projection/v1` view. Materialize an action using the public
-`work.review-human-command/v1` shape: remove its presentation-only
-`operator_input`, add only values the operator supplied, and send the
-unchanged authority fields.
+`flow.review-inbox-projection/v1` view. The following commands are conditional
+on a separately authorized `review/local` run having already produced an exact
+current `flow.review-projection/v1`; this guide does not produce that run.
+Refresh the inbox only after that run succeeds, then select the exact current
+review item. Derive `REVIEW_ID` from
+the item's `.review_id`; do not derive it from `CANDIDATE_ID` or construct a
+`review:<candidate-fingerprint>:<generation>` identity. Materialize an action
+using the public `work.review-human-command/v1` shape: remove its
+presentation-only `operator_input`, add only values the operator supplied, and
+send the unchanged authority fields.
 
 ```sh
-ITEM="$(jq -ce --arg id "$CANDIDATE_ID" \
-  '.items[] | select(.candidate_id == $id)' "$RECEIPTS/review-inbox.json")"
-START="$(jq -ce --arg session "session:${CANDIDATE_ID}:operator" \
-  '.legal_actions[] | select(.type == "review_session_start") \
-   | del(.operator_input) | . + {session_id:$session}' <<<"$ITEM")"
+flow query --input '{"schema":"flow.query/v1","query":"review_inbox"}' \
+  --json | tee "$RECEIPTS/review-inbox.json"
+if jq -e --arg candidate "$CANDIDATE_ID" '
+  any(.items[]; .candidate_id == $candidate and
+    (.review == null or .review_id == .candidate_id))
+' "$RECEIPTS/review-inbox.json" >/dev/null; then
+  echo "candidate-only inbox item is not a review; refresh after review/v1" >&2
+  exit 1
+fi
+ITEM="$(jq -ce --arg candidate "$CANDIDATE_ID" '
+  .items[] | select(.candidate_id == $candidate and
+    .review_id != .candidate_id and
+    .review.schema == "flow.review-projection/v1" and
+    .review.current == true)
+' "$RECEIPTS/review-inbox.json")"
+REVIEW_ID="$(jq -er '.review_id' <<<"$ITEM")"
+jq -e --arg review "$REVIEW_ID" --arg candidate "$CANDIDATE_ID" '
+  (.review_id == $review) and
+  (.candidate_id == $candidate) and
+  (.review_id != .candidate_id) and
+  (.review.schema == "flow.review-projection/v1") and
+  (.review.current == true)
+' <<<"$ITEM"
+SESSION_ID="session:${REVIEW_ID}:operator"
+START="$(jq -ce --arg review_id "$REVIEW_ID" --arg session "$SESSION_ID" \
+  '.legal_actions[] | select(.type == "review_session_start" and
+    .review_id == $review_id) | del(.operator_input) |
+    . + {session_id:$session}' <<<"$ITEM")"
 flow command --input "$START" --json | tee "$RECEIPTS/review-session.json"
 
-REVIEW="$(flow query --input "$(jq -cn --arg id "$CANDIDATE_ID" \
+REVIEW="$(flow query --input "$(jq -cn --arg id "$REVIEW_ID" \
   '{contract:"work.review/v1",subject_id:$id}')" --json)"
-ACTION="$(jq -ce --arg id "comment:${CANDIDATE_ID}:operator" \
+ACTION="$(jq -ce --arg review_id "$REVIEW_ID" \
+  --arg id "comment:${REVIEW_ID}:operator" \
   --arg body "The retained candidate is ready for review." \
-  '.legal_actions[] | select(.type == "review_comment") \
+  '.legal_actions[] | select(.type == "review_comment" and
+    .review_id == $review_id) \
    | del(.operator_input) | . + {comment_id:$id,body:$body}' <<<"$REVIEW")"
 flow command --input "$ACTION" --json | tee "$RECEIPTS/review-comment.json"
 
-REVIEW="$(flow query --input "$(jq -cn --arg id "$CANDIDATE_ID" \
+REVIEW="$(flow query --input "$(jq -cn --arg id "$REVIEW_ID" \
   '{contract:"work.review/v1",subject_id:$id}')" --json)"
-ACTION="$(jq -ce '.legal_actions[] |
-  select(.type == "review_disposition") | del(.operator_input) \
+ACTION="$(jq -ce --arg review_id "$REVIEW_ID" '.legal_actions[] |
+  select(.type == "review_disposition" and .review_id == $review_id) |
+  del(.operator_input) \
   | . + {disposition:"accept"}' <<<"$REVIEW")"
 flow command --input "$ACTION" --json | tee "$RECEIPTS/review-disposition.json"
 
-REVIEW="$(flow query --input "$(jq -cn --arg id "$CANDIDATE_ID" \
+REVIEW="$(flow query --input "$(jq -cn --arg id "$REVIEW_ID" \
   '{contract:"work.review/v1",subject_id:$id}')" --json)"
-ACTION="$(jq -ce '.legal_actions[] |
-  select(.type == "review_approval" and .decision == "approve") \
+ACTION="$(jq -ce --arg review_id "$REVIEW_ID" '.legal_actions[] |
+  select(.type == "review_approval" and .decision == "approve" and
+    .review_id == $review_id) \
   | del(.operator_input)' \
   <<<"$REVIEW")"
 flow command --input "$ACTION" --json | tee "$RECEIPTS/review-approval.json"

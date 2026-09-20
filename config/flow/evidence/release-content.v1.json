@@ -26,10 +26,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "57cf104c2570940348e8f0c1003a13de667c1f5e",
+    "candidate_tree_sha": "eb074204b077a24ac2e9b39ac0a73f13bf1917ce",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:842d0ecc3cf53897515a702325d5945c13030f9d395e99c7451c3fa8c8c980a2",
+  "content_digest": "sha256:6824c19873b6b22a67ff215734a6edca90289a1086695770fa84ca02d550d80c",
   "files": [
     {
       "path": "CONTEXT.md",
@@ -550,8 +550,8 @@
     {
       "path": "config/flow/test/operator-guide.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "6878708ffd6e953d7f3bc71ec93ce17d87bfcf92",
-      "sha256": "6921fb53ec2118231fa148cd1e6791af07c70b6502389d3d2651f5e20571cc27"
+      "git_blob_sha": "59661645a1a5c61795666a347b4dff255e44cf6a",
+      "sha256": "d1719585e4a9220fac10e8e3316a0ea78146b9e0f16a0ed2bacc77f86e28d90e"
     },
     {
       "path": "config/flow/test/production-runtime.test.mjs",

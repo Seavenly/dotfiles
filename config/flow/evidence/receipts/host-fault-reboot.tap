@@ -2,199 +2,199 @@ TAP version 13
 # Subtest: host lifecycle sources are explicit opt-in and supervise one owner
 ok 1 - host lifecycle sources are explicit opt-in and supervise one owner
   ---
-  duration_ms: 4.079203
+  duration_ms: 3.486374
   type: 'test'
   ...
 # Subtest: client process exit does not stop the detached owner or its autonomous run
 ok 2 - client process exit does not stop the detached owner or its autonomous run
   ---
-  duration_ms: 552.439943
+  duration_ms: 605.255868
   type: 'test'
   ...
 # Subtest: detached owner progresses a multi-card dynamic run after explicit checkpoint admission
 ok 3 - detached owner progresses a multi-card dynamic run after explicit checkpoint admission
   ---
-  duration_ms: 449.757948
+  duration_ms: 476.543004
   type: 'test'
   ...
 # Subtest: SIGKILL leaves a stale endpoint and same-boot restart resumes the durable effect
 ok 4 - SIGKILL leaves a stale endpoint and same-boot restart resumes the durable effect
   ---
-  duration_ms: 362.056501
+  duration_ms: 387.409087
   type: 'test'
   ...
 # Subtest: competing clients can query and watch without acquiring owner authority
 ok 5 - competing clients can query and watch without acquiring owner authority
   ---
-  duration_ms: 172.258826
+  duration_ms: 178.819619
   type: 'test'
   ...
 # Subtest: owner refuses to touch a socket without durable mutation authority
 ok 6 - owner refuses to touch a socket without durable mutation authority
   ---
-  duration_ms: 2.555188
+  duration_ms: 2.508901
   type: 'test'
   ...
 # Subtest: owner preserves a live socket when its endpoint is missing
 ok 7 - owner preserves a live socket when its endpoint is missing
   ---
-  duration_ms: 2.918622
+  duration_ms: 4.497649
   type: 'test'
   ...
 # Subtest: detached startup reports a child socket failure without waiting for timeout
 ok 8 - detached startup reports a child socket failure without waiting for timeout
   ---
-  duration_ms: 75.076117
+  duration_ms: 82.073436
   type: 'test'
   ...
 # Subtest: endpoint publication is exclusive and a competing owner cannot replace it
 ok 9 - endpoint publication is exclusive and a competing owner cannot replace it
   ---
-  duration_ms: 7.791007
+  duration_ms: 5.748037
   type: 'test'
   ...
 # Subtest: stale cleanup preserves an endpoint replaced during the identity check
 ok 10 - stale cleanup preserves an endpoint replaced during the identity check
   ---
-  duration_ms: 1.45598
+  duration_ms: 2.077621
   type: 'test'
   ...
 # Subtest: owner rejects a precreated symlink fallback directory
 ok 11 - owner rejects a precreated symlink fallback directory
   ---
-  duration_ms: 1.910502
+  duration_ms: 2.013503
   type: 'test'
   ...
 # Subtest: root-owned ancestor symlinks resolve for owner and transport
 ok 12 - root-owned ancestor symlinks resolve for owner and transport
   ---
-  duration_ms: 3.179066
+  duration_ms: 3.329324
   type: 'test'
   ...
 # Subtest: transport rejects a controlled socket leaf symlink
 ok 13 - transport rejects a controlled socket leaf symlink
   ---
-  duration_ms: 1.156314
+  duration_ms: 1.373969
   type: 'test'
   ...
 # Subtest: fallback validates the XDG runtime root, ownership, mode, and traversal
 ok 14 - fallback validates the XDG runtime root, ownership, mode, and traversal
   ---
-  duration_ms: 3.890444
+  duration_ms: 4.319861
   type: 'test'
   ...
 # Subtest: fallback rejects a symlinked XDG runtime component before chmod
 ok 15 - fallback rejects a symlinked XDG runtime component before chmod
   ---
-  duration_ms: 1.052913
+  duration_ms: 1.170972
   type: 'test'
   ...
 # Subtest: detached startup preserves the bounded fallback path across the child boundary
 ok 16 - detached startup preserves the bounded fallback path across the child boundary
   ---
-  duration_ms: 90.158273
+  duration_ms: 92.94832
   type: 'test'
   ...
 # Subtest: malformed, multiple, and oversized frames fail closed with bounded errors
 ok 17 - malformed, multiple, and oversized frames fail closed with bounded errors
   ---
-  duration_ms: 4.569282
+  duration_ms: 5.41999
   type: 'test'
   ...
 # Subtest: watch rejects an oversized incomplete server frame without buffering unbounded data
 ok 18 - watch rejects an oversized incomplete server frame without buffering unbounded data
   ---
-  duration_ms: 7.529291
+  duration_ms: 1.853436
   type: 'test'
   ...
 # Subtest: watch accepts one chunk containing multiple individually valid frames
 ok 19 - watch accepts one chunk containing multiple individually valid frames
   ---
-  duration_ms: 1.905514
+  duration_ms: 1.840532
   type: 'test'
   ...
 # Subtest: public CLI sends all five FlowRuntime operations over one versioned transport
 ok 20 - public CLI sends all five FlowRuntime operations over one versioned transport
   ---
-  duration_ms: 4.47634
+  duration_ms: 11.987758
   type: 'test'
   ...
 # Subtest: public FlowRuntime clients expose exactly the five versioned operations
 ok 21 - public FlowRuntime clients expose exactly the five versioned operations
   ---
-  duration_ms: 0.130723
+  duration_ms: 0.09733
   type: 'test'
   ...
 # Subtest: owner tightens pre-existing endpoint and socket parent permissions
 ok 22 - owner tightens pre-existing endpoint and socket parent permissions
   ---
-  duration_ms: 2.256635
+  duration_ms: 2.103471
   type: 'test'
   ...
 # Subtest: CLI transport failures keep their bounded result shape for null requests
 ok 23 - CLI transport failures keep their bounded result shape for null requests
   ---
-  duration_ms: 0.815432
+  duration_ms: 0.834097
   type: 'test'
   ...
 # Subtest: CLI rejects an extra positional value after an input flag
 ok 24 - CLI rejects an extra positional value after an input flag
   ---
-  duration_ms: 0.231109
+  duration_ms: 0.204178
   type: 'test'
   ...
 # Subtest: public lifecycle commands use disposable owner state
 ok 25 - public lifecycle commands use disposable owner state
   ---
-  duration_ms: 115.996662
+  duration_ms: 117.025544
   type: 'test'
   ...
 # Subtest: detached owner forwards runner capacity and exposes it through flow status
 ok 26 - detached owner forwards runner capacity and exposes it through flow status
   ---
-  duration_ms: 211.892704
+  duration_ms: 210.131386
   type: 'test'
   ...
 # Subtest: owner persists bounded private sanitized runner errors
 ok 27 - owner persists bounded private sanitized runner errors
   ---
-  duration_ms: 11.090394
+  duration_ms: 11.232496
   type: 'test'
   ...
 # Subtest: process identity fallback supports /proc-less hosts and fences reused PIDs
 ok 28 - process identity fallback supports /proc-less hosts and fences reused PIDs
   ---
-  duration_ms: 2.620469
+  duration_ms: 2.77202
   type: 'test'
   ...
 # Subtest: detached start replaces a reused-PID endpoint without signalling that PID
 ok 29 - detached start replaces a reused-PID endpoint without signalling that PID
   ---
-  duration_ms: 107.771331
+  duration_ms: 120.390553
   type: 'test'
   ...
 # Subtest: owner start fails closed when an existing PID identity cannot be read
 ok 30 - owner start fails closed when an existing PID identity cannot be read
   ---
-  duration_ms: 3.268101
+  duration_ms: 2.800643
   type: 'test'
   ...
 # Subtest: long explicit socket paths are reduced to an AF_UNIX-safe endpoint
 ok 31 - long explicit socket paths are reduced to an AF_UNIX-safe endpoint
   ---
-  duration_ms: 0.229116
+  duration_ms: 0.19424
   type: 'test'
   ...
 # Subtest: a malformed endpoint is invalid rather than a stopped owner
 ok 32 - a malformed endpoint is invalid rather than a stopped owner
   ---
-  duration_ms: 1.872884
+  duration_ms: 1.416516
   type: 'test'
   ...
 # Subtest: watch carries watermarks and returns the server iterator on client disconnect
 ok 33 - watch carries watermarks and returns the server iterator on client disconnect
   ---
-  duration_ms: 13.158609
+  duration_ms: 13.201046
   type: 'test'
   ...
 1..33
@@ -205,4 +205,4 @@ ok 33 - watch carries watermarks and returns the server iterator on client disco
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 2300.629914
+# duration_ms 2447.117442
