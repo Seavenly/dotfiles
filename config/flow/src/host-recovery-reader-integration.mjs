@@ -57,6 +57,7 @@ const EXECUTION_KINDS = new Set([
   "native_provider",
   "deterministic_supporting_check",
 ]);
+const LIVE_PROJECTION_PROVENANCES = new Set(["native_provider", "production_runtime"]);
 const COMMAND_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -177,6 +178,7 @@ export function adaptReaderProbeResult(options = {}) {
   }
 
   const observations = buildObservations(kind, support, problems);
+  if (kind === "projection") validateProjectionObservationProvenance(observations, problems);
   const capture = buildCapture({
     kind,
     support,
@@ -264,7 +266,7 @@ function readerProbeEnvelope({ kind, support, isolation, rawRoot, timeoutMs }) {
         query: "public_process",
         watch: "public_process",
         stop: "public_process",
-        rebuild: "deterministic_supporting_check",
+        rebuild: "native_provider",
         history_seed: support.seed?.provenance ?? "none",
       }
       : {
@@ -320,6 +322,25 @@ function observationFromProof(kind, value, support) {
   };
 }
 
+function validateProjectionObservationProvenance(observations, problems) {
+  const byKind = new Map(observations.map((observation) => [observation.kind, observation.content]));
+  if (byKind.get("query")?.provenance !== "public_process") {
+    problems.push("projection_query_provenance_invalid");
+  }
+  if (byKind.get("watch")?.provenance !== "public_process") {
+    problems.push("projection_watch_provenance_invalid");
+  }
+  for (const kind of ["rebuild", "views", "latency"]) {
+    if (!LIVE_PROJECTION_PROVENANCES.has(byKind.get(kind)?.provenance)) {
+      problems.push(`projection_${kind}_provenance_invalid`);
+    }
+  }
+  const lock = byKind.get("rebuild")?.external_mutation_lock;
+  if (lock?.held !== false || !LIVE_PROJECTION_PROVENANCES.has(lock?.provenance)) {
+    problems.push("projection_external_mutation_lock_provenance_invalid");
+  }
+}
+
 function buildCapture({
   kind,
   support,
@@ -363,7 +384,7 @@ function buildCapture({
         public_commands: ["start", "query", "watch", "stop"],
         query: "public_process",
         watch: "public_process",
-        rebuild: "deterministic_supporting_check",
+        rebuild: "native_provider",
       }
       : {
         suspended: "production_runtime",

@@ -26,6 +26,7 @@ const GENERIC_PROVIDER_RECEIPT_FIELDS = new Set([
   "owner",
   "provider_error_code",
   "provider_id",
+  "provider_receipt_id",
   "publication_digest",
   "project",
   "git_retention",

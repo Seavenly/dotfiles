@@ -2,16 +2,16 @@
   "schema": "flow.host-recovery-qualification-evidence/v1",
   "version": 1,
   "issue": 46,
-  "run_id": "run:issue46-final-v11",
+  "run_id": "run:issue-46-final-q1",
   "status": "passed",
   "scope": "first_release_host_recovery_and_local_rendering",
   "release": {
     "release_id": "flow-release-1.0-dark/v1",
     "implementation": "flow-runtime/v1",
-    "candidate_tree_sha": "056f19fa0744467929e578df4beb4b7eced6062c",
-    "release_content_digest": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
-    "pinned_git_tree_sha": "6e16c4628e80a4da052c52cec2e38daaa2f296c3",
-    "release_content_bytes_sha256": "6a7dde7b7af45efc5f821f48a2ec980da81631834dbf68e4deb033336f0bae84"
+    "candidate_tree_sha": "3ca6bc7e76da04004bf689881d0ef49e1c84aa9b",
+    "release_content_digest": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
+    "pinned_git_tree_sha": "6aa449449fb802146bffaec4e834eb6e25598956",
+    "release_content_bytes_sha256": "fe153a5bbd7aeaf35a2733269db276bfafb4319c076d4fae80e764810061d59e"
   },
   "host": {
     "os": "linux",
@@ -55,9 +55,9 @@
     "backup_root_ref": "isolation/backup",
     "repository_root_ref": "isolation/repository",
     "drovr_config_root_ref": "isolation/drovr-config",
-    "herdr_session_ref": "herdr-session/sha256:593ce50a30a80111e3b539246897921bf0a6b8b513d13650b493dd6b23af49c7",
-    "run_id": "run:issue46-final-v11",
-    "identity_digest": "sha256:9bcbca958214280ef2afd09a7ac7436ece63e70f4bfe9ff9e89f74e88b5f99a5"
+    "herdr_session_ref": "herdr-session/sha256:1426a713b293bdff150f20c7a3e30be38197d5caf72354bd8784645e2367380c",
+    "run_id": "run:issue-46-final-q1",
+    "identity_digest": "sha256:12ce873f49e0c0aa7ff62eff320dc82adfc0d85eabbc9281891ddbf829086382"
   },
   "scenarios": [
     {
@@ -75,11 +75,11 @@
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:15.856Z",
-      "finished_at": "2026-09-17T13:08:17.774Z",
+      "started_at": "2026-09-20T20:31:22.621Z",
+      "finished_at": "2026-09-20T20:31:24.625Z",
       "commands": [
         {
-          "id": "native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2",
+          "id": "native_concurrency_recovery_probe-d0e3681a-383b-4d1d-8d5f-380482b53f8f",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
@@ -102,7 +102,7 @@
             "--backup-directory",
             "<backup>",
             "--run-id",
-            "run:issue46-final-v11",
+            "run:issue-46-final-q1",
             "--timeout",
             "120000"
           ],
@@ -110,9 +110,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
           "host_ref": "native/flow-provider",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:15.856Z",
-          "finished_at": "2026-09-17T13:08:17.774Z",
-          "duration_ms": 1918,
+          "started_at": "2026-09-20T20:31:22.621Z",
+          "finished_at": "2026-09-20T20:31:24.625Z",
+          "duration_ms": 2004,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -121,12 +121,12 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2.stdout.log",
-              "sha256": "bb72e4e31f67bfe5b6f012a9ef7b8735991cd3eee391ce3d535c8de9fc2af367",
-              "bytes": 368909
+              "path": "logs/native_concurrency_recovery_probe-d0e3681a-383b-4d1d-8d5f-380482b53f8f.stdout.log",
+              "sha256": "6cfe1623afefbbc910b3936550e3611f0830062a3ef0c4891a4f18345106bf6e",
+              "bytes": 368895
             },
             "stderr": {
-              "path": "logs/native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2.stderr.log",
+              "path": "logs/native_concurrency_recovery_probe-d0e3681a-383b-4d1d-8d5f-380482b53f8f.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
@@ -160,10 +160,10 @@
             "client_exit_code": 0,
             "owner_survived_client_exit": true,
             "owner_status": "running",
-            "watermark": "sha256:41065586d2b116422a68243aeffd9f528a6a7f1a1522c2eda981ff8c3924178b",
+            "watermark": "sha256:1f0b61abf593cd27dcd6c32e4712a84f11879d545255053a3be8023fc14e4bb5",
             "legal_actions": []
           },
-          "content_digest": "sha256:ddcd3d0fc547837e1effa074ed171c8f0d6f60b9c01771c564fabea25f305785"
+          "content_digest": "sha256:286ef1a7f312817d709f55bb1334504f4c2eac593b68e9fcb7d249aa18fb5751"
         },
         {
           "id": "native:concurrent_runs_owner_restart:owner_restart",
@@ -174,8 +174,8 @@
             "termination_signal": "SIGKILL",
             "before_boot_id": "boot:issue-46-public-owner",
             "after_boot_id": "boot:issue-46-public-owner",
-            "before_process_identity": "owner:2430897:42d05876-4cb9-4848-bfad-789f63dee9f3",
-            "after_process_identity": "owner:2431032:926d4b79-8e13-4ebb-bed2-7188b0d01607",
+            "before_process_identity": "owner:353516:38b6d2e5-4279-4c41-9eb2-9ca858f424c7",
+            "after_process_identity": "owner:353654:b223afec-3748-499d-aaa9-2a75faedd174",
             "same_authority": true,
             "run_ids_before_restart": [
               "run:28949167b2f7959e220408fe72fe38a547b5ca6b232cac35f9a06a829fab0057",
@@ -185,10 +185,10 @@
               "run:28949167b2f7959e220408fe72fe38a547b5ca6b232cac35f9a06a829fab0057",
               "run:3baa68da78db6b1004581bbdfb0a4d03eea30d884dc041d8dcdd83519ebf822d"
             ],
-            "watermark": "sha256:32d52ba9a442a4327393f51f90beb3737ac98c9bbd708338507fe489ad621d46",
+            "watermark": "sha256:e105fb2aaa43ad18b4ae7fc8553e0aac7d6c2a7d5a36d310ef1dfd8d0e6a5b70",
             "legal_actions": []
           },
-          "content_digest": "sha256:29349b2c4a5538cb100f544778ddac9da8b057ee5d968de85c38358b41cda1b9"
+          "content_digest": "sha256:baab18c67c32a65d82bec27fca74b4d8fb969e79b24b346976f2e10bb7df702d"
         },
         {
           "id": "native:concurrent_runs_owner_restart:effect",
@@ -206,22 +206,22 @@
             "provider_recovery_count": 1,
             "manual_driver": false,
             "post_restart_recovery_command_count": 0,
-            "watermark": "sha256:73eccb3fa728c63d2d332a69c4ed0fcd4c9bcde3006d8acec6b270fe934065bc",
+            "watermark": "sha256:665e7a70bef89875417389858ab66e36107ee8183e4863e6e028e483b186953f",
             "legal_actions": []
           },
-          "content_digest": "sha256:d7c2bfd7ea33cd421c71f5e18634e02a2a46ef09072ebb61ca4985131849a71e"
+          "content_digest": "sha256:3dcf6118b9d04a3892a6328046292eb37feff4a291a75c62b5a88a75754d4b9f"
         }
       ],
       "captures": [
         {
-          "id": "native-provider-concurrent_runs_owner_restart-native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2",
+          "id": "native-provider-concurrent_runs_owner_restart-native_concurrency_recovery_probe-d0e3681a-383b-4d1d-8d5f-380482b53f8f",
           "kind": "native_provider_result",
           "format": "json",
-          "path": "captures/native-provider-concurrent_runs_owner_restart-native_concurrency_recovery_probe-abfb5453-6233-4590-9f56-ad12b6701fd2.json",
-          "sha256": "cc7e711b8021a20db3ec8c026ed3c2cf5360998e7110caed474882d4aa424bbc",
+          "path": "captures/native-provider-concurrent_runs_owner_restart-native_concurrency_recovery_probe-d0e3681a-383b-4d1d-8d5f-380482b53f8f.json",
+          "sha256": "09f878a7cd8152771e6ec6151b40ae08abbddc5a6822ff3a0b894ca229fb60ea",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:04f2de83dd99c4a4d7d4c10a42087864a474128e0a428a629f0abebbf22325d6",
+          "watermark": "sha256:08ef82b8d5fc8320ae041355a08c557fefe94947ff9d80c65818a50def55a8e5",
           "legal_actions": "pass"
         }
       ],
@@ -323,7 +323,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:17.800Z"
+        "completed_at": "2026-09-20T20:31:24.652Z"
       },
       "reason": null
     },
@@ -340,11 +340,11 @@
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:18.254Z",
-      "finished_at": "2026-09-17T13:08:21.720Z",
+      "started_at": "2026-09-20T20:31:25.122Z",
+      "finished_at": "2026-09-20T20:31:28.738Z",
       "commands": [
         {
-          "id": "native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a",
+          "id": "native_failure_recovery_probe-3edaf70a-203b-40b0-896d-5366b0b0e94b",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
@@ -367,7 +367,7 @@
             "--backup-directory",
             "<backup>",
             "--run-id",
-            "run:issue46-final-v11",
+            "run:issue-46-final-q1",
             "--timeout",
             "120000"
           ],
@@ -375,9 +375,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-provider-scenarios.mjs",
           "host_ref": "native/flow-provider",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:18.254Z",
-          "finished_at": "2026-09-17T13:08:21.720Z",
-          "duration_ms": 3466,
+          "started_at": "2026-09-20T20:31:25.122Z",
+          "finished_at": "2026-09-20T20:31:28.738Z",
+          "duration_ms": 3616,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -386,12 +386,12 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a.stdout.log",
-              "sha256": "38e61bb464f1e371634c85ce723dc49b559428addd8d390a659154dd5f691172",
-              "bytes": 259400
+              "path": "logs/native_failure_recovery_probe-3edaf70a-203b-40b0-896d-5366b0b0e94b.stdout.log",
+              "sha256": "ee2ca9602d7961a01dd246f469427c2a3eb3c63971bec7719e97fc1a25bf5884",
+              "bytes": 259386
             },
             "stderr": {
-              "path": "logs/native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a.stderr.log",
+              "path": "logs/native_failure_recovery_probe-3edaf70a-203b-40b0-896d-5366b0b0e94b.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
@@ -429,7 +429,7 @@
                 "operator_response": "cancel",
                 "legal_actions": [
                   {
-                    "expected_watermark": "sha256:d58af757509ff84dd57eae50dbc883b2852c290ca5fc592dc735e597dcf72fe9",
+                    "expected_watermark": "sha256:460d8d1cba854e856bdced3b55ccb593b0bb0b5d18323705ceb7f2d189a4e070",
                     "run_id": "run:4ae905e22eb9031c5549a14aed1efca006f7a3f8b2d61b0057b9cd699792af9f",
                     "schema": "flow.command/v1",
                     "type": "cancel"
@@ -447,7 +447,7 @@
                 "legal_actions": [
                   {
                     "effect_id": "effect:19f9c4a7e1f7bff040cfa85d620f6ccb3ba25367671f86ac544c5f39d37f9c1e",
-                    "expected_watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+                    "expected_watermark": "sha256:d681465512e87ed45eeb625f0ac2e5871d31727feb26d1b721785fbcc3293389",
                     "recovery": "repeat_exact",
                     "run_id": "run:087e5c12887dab3db8a3da1cef3153ca0d75a0e66953a55e8abec9a5ea0d03f1",
                     "schema": "flow.command/v1",
@@ -461,7 +461,7 @@
                 "legal_actions": [
                   {
                     "effect_id": "effect:5292a51b490279832658a25defa3826cbe175e5f4b432b82df51a87b0fbbffa8",
-                    "expected_watermark": "sha256:a7af6ea794f5a5f7472d892057403c0e663f23e4bdcb368a13315ed59b79db70",
+                    "expected_watermark": "sha256:6cf81ee6d3ed2210daec7d1435f59ed854f59d7580a21f6b87f3e32c4119cdc2",
                     "recovery": "reconcile",
                     "run_id": "run:5faa5d909b4e2d6419783b4734216d21a5f76a0861e75364aca3bf9d27bdfd48",
                     "schema": "flow.command/v1",
@@ -478,15 +478,15 @@
             "legal_actions": [
               {
                 "effect_id": "effect:19f9c4a7e1f7bff040cfa85d620f6ccb3ba25367671f86ac544c5f39d37f9c1e",
-                "expected_watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+                "expected_watermark": "sha256:d681465512e87ed45eeb625f0ac2e5871d31727feb26d1b721785fbcc3293389",
                 "recovery": "repeat_exact",
                 "run_id": "run:087e5c12887dab3db8a3da1cef3153ca0d75a0e66953a55e8abec9a5ea0d03f1",
                 "schema": "flow.command/v1",
                 "type": "recovery"
               }
             ],
-            "watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
-            "authority_watermark": "sha256:de79128a5a3218f3cc708a71be8ec14384e9c13ab190eeea148fb321b56e0352",
+            "watermark": "sha256:d681465512e87ed45eeb625f0ac2e5871d31727feb26d1b721785fbcc3293389",
+            "authority_watermark": "sha256:d681465512e87ed45eeb625f0ac2e5871d31727feb26d1b721785fbcc3293389",
             "action_identity_valid": true,
             "expected_negative_commands": [
               {
@@ -521,7 +521,7 @@
               }
             ]
           },
-          "content_digest": "sha256:921d790be8b545c4a66eeae8f1561f244496a72fdec6cc6283b295a12f0a57a9"
+          "content_digest": "sha256:496f7da7385c759a87a6a47abdc02845fcabf90f8d2e8180be38ffe2b1cf5328"
         },
         {
           "id": "native:actionable_failure_recovery:uncertainty",
@@ -535,30 +535,30 @@
             "legal_actions": [
               {
                 "effect_id": "effect:4151671d6aef155e7faae1b69ff45e1a7861be528940551ee92d565941fcb7ca",
-                "expected_watermark": "sha256:442d4b5a21499645e08a39dea9c9ea198c37597f02e74ecfffab6d3499024ea0",
+                "expected_watermark": "sha256:2e1a7c18f14814f4072cef8dec25624709f6b7be1df89ee3dae27a9078e26bb7",
                 "recovery": "reconcile",
                 "run_id": "run:05e30863304e12d36c46663820f53a07f24acd6204b02174a47907a45e8bbb1f",
                 "schema": "flow.command/v1",
                 "type": "recovery"
               }
             ],
-            "watermark": "sha256:442d4b5a21499645e08a39dea9c9ea198c37597f02e74ecfffab6d3499024ea0",
-            "authority_watermark": "sha256:442d4b5a21499645e08a39dea9c9ea198c37597f02e74ecfffab6d3499024ea0",
+            "watermark": "sha256:2e1a7c18f14814f4072cef8dec25624709f6b7be1df89ee3dae27a9078e26bb7",
+            "authority_watermark": "sha256:2e1a7c18f14814f4072cef8dec25624709f6b7be1df89ee3dae27a9078e26bb7",
             "action_identity_valid": true
           },
-          "content_digest": "sha256:f82b084a92251f78c318e5f8243b4c6f9f8f6f7532af2f46842a733058c389d3"
+          "content_digest": "sha256:5c3cd9345c1d3eb24e7eb2835bf34c7f9f479d9bba8ee84958b1f57f6dab0ff9"
         }
       ],
       "captures": [
         {
-          "id": "native-provider-actionable_failure_recovery-native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a",
+          "id": "native-provider-actionable_failure_recovery-native_failure_recovery_probe-3edaf70a-203b-40b0-896d-5366b0b0e94b",
           "kind": "native_provider_result",
           "format": "json",
-          "path": "captures/native-provider-actionable_failure_recovery-native_failure_recovery_probe-63b764c0-f613-4aa5-9de5-b8bc6345cc2a.json",
-          "sha256": "38e61bb464f1e371634c85ce723dc49b559428addd8d390a659154dd5f691172",
+          "path": "captures/native-provider-actionable_failure_recovery-native_failure_recovery_probe-3edaf70a-203b-40b0-896d-5366b0b0e94b.json",
+          "sha256": "ee2ca9602d7961a01dd246f469427c2a3eb3c63971bec7719e97fc1a25bf5884",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:479eadba6bdde5c70460c7f12e531f0f9a4c562288ebea6f0622d564718796c6",
+          "watermark": "sha256:949e3e2e70083441d52a485422970eeb2142750c918825a9f13e869276616d53",
           "legal_actions": "pass"
         }
       ],
@@ -646,7 +646,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:21.741Z"
+        "completed_at": "2026-09-20T20:31:28.759Z"
       },
       "reason": null
     },
@@ -662,15 +662,16 @@
         "loss",
         "restore",
         "reconciliation",
+        "drovr_status",
         "admission"
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:22.521Z",
-      "finished_at": "2026-09-17T13:08:22.524Z",
+      "started_at": "2026-09-20T20:31:29.718Z",
+      "finished_at": "2026-09-20T20:31:29.721Z",
       "commands": [
         {
-          "id": "native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d",
+          "id": "native-backup-restore-9faf9e8a-a394-449b-9513-f0d57699c602",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-native-probe.mjs",
@@ -679,9 +680,9 @@
             "--worktree",
             "<worktree>",
             "--raw-root",
-            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "<path:sha256:19fa2a651d9cf9ece2dea9db4eeaf53acc8544a3b00ad20063d8fd6473a3d2f3>",
             "--temporary-root",
-            "<path:sha256:cf3a47c61bee8df0e3bceddd1d0fd81d840e4bd1840ac9fc9cbc3361d075ffd9>",
+            "<path:sha256:d8659f02ec21b9b98c2550a8266efaf490c0fdaa06571a6d5300a2c985502e79>",
             "--xdg-state-home",
             "<state>",
             "--authority-directory",
@@ -699,9 +700,9 @@
             "--qualification-workspace",
             "<state><path:sha256:38be4724d3d9b6b7d52f2ce0a7ecdb41dd3b4d2f0f020c61139e2e2ab7e654d2>",
             "--herdr-session",
-            "herdr:issue46-final-v11",
+            "herdr:issue-46-final-q1",
             "--run-id",
-            "run:issue46-final-v11",
+            "run:issue-46-final-q1",
             "--timeout",
             "120000"
           ],
@@ -709,9 +710,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-native-probe.mjs",
           "host_ref": "runtime/flow-runtime",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:22.191Z",
-          "finished_at": "2026-09-17T13:08:22.518Z",
-          "duration_ms": 327,
+          "started_at": "2026-09-20T20:31:29.231Z",
+          "finished_at": "2026-09-20T20:31:29.715Z",
+          "duration_ms": 484,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -720,14 +721,14 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d.stdout.log",
-              "sha256": "64573ce57a482f85ba93a6242d0139f99f9e8274f15ae70fd76a8d25779f1249",
-              "bytes": 5289
+              "path": "logs/native-backup-restore-9faf9e8a-a394-449b-9513-f0d57699c602.stdout.log",
+              "sha256": "f58f24281cd344da9164ffacdc5f37b88e32ee5e1cc89bf878a1957c89542fea",
+              "bytes": 8010
             },
             "stderr": {
-              "path": "logs/native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d.stderr.log",
-              "sha256": "02b029c25796925211cf0df5a8a5b4c1de8d5a035114b3163356e57e8b52a223",
-              "bytes": 171
+              "path": "logs/native-backup-restore-9faf9e8a-a394-449b-9513-f0d57699c602.stderr.log",
+              "sha256": "41c515089ea98cd234d6816e017a836a7da96bf828166f8e919b60c13ff55a83",
+              "bytes": 170
             }
           }
         }
@@ -739,17 +740,17 @@
           "content": {
             "production_backup": true,
             "provider": "flow.filesystem-backup/v1",
-            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
-            "snapshot_digest": "sha256:044c98684198a615d17ef0f0819ef0b431b84044cf55b57ddb6d17511b127fa9",
-            "backup_id": "backup:sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
-            "watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "manifest_digest": "sha256:f2fa6e558a2a82cbb798af4a45cf655e8f8a13fa738fdb1df184b535361ba736",
+            "snapshot_digest": "sha256:3edbe844f88917bbf9a69f514ae8f9225e68a299a82e71d0d9b01871048a74e0",
+            "backup_id": "backup:sha256:f2fa6e558a2a82cbb798af4a45cf655e8f8a13fa738fdb1df184b535361ba736",
+            "watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
             "legal_actions": [],
             "source_schema": "flow.production-backup-live-observation/v1",
-            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "source_watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
             "action_identities": [],
             "source_command_kind": "native_backup_restore_probe"
           },
-          "content_digest": "sha256:1ab7f5ce88c6ee9b2f3522ed0eb173420e7a5124b6ab732ed28d4958a1b947bf"
+          "content_digest": "sha256:4291e694899ee454003e86eefeae5f72994f361116302c3df5f180c7c9c90d9f"
         },
         {
           "id": "loss-observation",
@@ -759,6 +760,7 @@
             "disposable_only": true,
             "protected_state_intact": true,
             "lost_paths": [
+              "artifacts/67511e4a831ee53232c3c76e960484b8746c62c25eda6bbf36ef1b2b05063150",
               "authority.lock.sqlite",
               "authority.lock.sqlite-journal",
               "authority.sqlite",
@@ -766,26 +768,26 @@
               "authority.sqlite-wal"
             ],
             "source_schema": "flow.production-backup-live-observation/v1",
-            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "source_watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
             "action_identities": [],
             "source_command_kind": "native_backup_restore_probe"
           },
-          "content_digest": "sha256:3d5e2849cd23a1a5e938c520cc9508f81473e25fbc0c65cf8c4b60fc8cbf0fb8"
+          "content_digest": "sha256:2c13f87cfec3f6cb0cc5e919357f82938ea4fd150f898c378ffca610a169e872"
         },
         {
           "id": "restore-observation",
           "kind": "restore",
           "content": {
             "restored": true,
-            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
-            "restore_id": "restore:sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
-            "watermark": "sha256:9c9115387759c9d8db0560fba76d8919f3848cea2061d464cc7c96513492852a",
+            "manifest_digest": "sha256:f2fa6e558a2a82cbb798af4a45cf655e8f8a13fa738fdb1df184b535361ba736",
+            "restore_id": "restore:sha256:f2fa6e558a2a82cbb798af4a45cf655e8f8a13fa738fdb1df184b535361ba736",
+            "watermark": "sha256:49877d0337768f34586ce5f9957900da0b53ece5b85084ad367d5d8993f2fe3b",
             "source_schema": "flow.production-backup-live-observation/v1",
-            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "source_watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
             "action_identities": [],
             "source_command_kind": "native_backup_restore_probe"
           },
-          "content_digest": "sha256:f9e2fd38be8aeb6840beb016f2800d803095d7586c155eaeacf7e1ecf1325c90"
+          "content_digest": "sha256:8ba4565576e4c9460abfecc9f283215a711b88e2d8400b6d0819092615739c48"
         },
         {
           "id": "reconciliation-observation",
@@ -793,80 +795,106 @@
           "content": {
             "domains_reconciled": 6,
             "complete": true,
-            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
+            "non_empty_domains": {
+              "database_streams": true,
+              "artifact_state": true,
+              "git_state": true,
+              "filesystem_state": true,
+              "external_effects": true,
+              "drovr_obligations": true
+            },
+            "all_domains_non_empty": true,
+            "manifest_digest": "sha256:f2fa6e558a2a82cbb798af4a45cf655e8f8a13fa738fdb1df184b535361ba736",
             "domains": [
               {
                 "domain": "database_streams",
-                "expected_digest": "sha256:0e67c7b8d12a0b21be83c8750ecb57d4a3d0dc50e7c90e45dad10239c4bde7a6",
-                "observed_digest": "sha256:0e67c7b8d12a0b21be83c8750ecb57d4a3d0dc50e7c90e45dad10239c4bde7a6",
+                "expected_digest": "sha256:a962fe3b546b1656ebeaa19f9d1dd6e02626b784fca9f885eeb0fe1f12320af4",
+                "observed_digest": "sha256:a962fe3b546b1656ebeaa19f9d1dd6e02626b784fca9f885eeb0fe1f12320af4",
                 "status": "reconciled"
               },
               {
                 "domain": "artifact_state",
-                "expected_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-                "observed_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "expected_digest": "sha256:218bb49dc30845fe14062c7e5d534cdf00d628b4f778843a5c243057c75b1ba6",
+                "observed_digest": "sha256:218bb49dc30845fe14062c7e5d534cdf00d628b4f778843a5c243057c75b1ba6",
                 "status": "reconciled"
               },
               {
                 "domain": "git_state",
-                "expected_digest": "sha256:ef8a3d5d6f30f0b60553eec392db8acfa92f56efe6d3c34086ad8dd61e551c68",
-                "observed_digest": "sha256:ef8a3d5d6f30f0b60553eec392db8acfa92f56efe6d3c34086ad8dd61e551c68",
+                "expected_digest": "sha256:ac958fd307d30f494178d124283214ad165a1c56d503796c8f702cbc797062b2",
+                "observed_digest": "sha256:ac958fd307d30f494178d124283214ad165a1c56d503796c8f702cbc797062b2",
                 "status": "reconciled"
               },
               {
                 "domain": "filesystem_state",
-                "expected_digest": "sha256:a74f4fd28d10ee52bd705b9782afdda6059b66d3a399d0c4fbe70683e4217fd2",
-                "observed_digest": "sha256:a74f4fd28d10ee52bd705b9782afdda6059b66d3a399d0c4fbe70683e4217fd2",
+                "expected_digest": "sha256:87fa30d4e5e4b1de2274de0264f92ab071f33239ac0a87419bd129abc654c6a7",
+                "observed_digest": "sha256:87fa30d4e5e4b1de2274de0264f92ab071f33239ac0a87419bd129abc654c6a7",
                 "status": "reconciled"
               },
               {
                 "domain": "external_effects",
-                "expected_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-                "observed_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "expected_digest": "sha256:01db69feb5673ba64a50b1517ff46df7a620b2d9e115098107d712a7c6b40b53",
+                "observed_digest": "sha256:01db69feb5673ba64a50b1517ff46df7a620b2d9e115098107d712a7c6b40b53",
                 "status": "reconciled"
               },
               {
                 "domain": "drovr_obligations",
-                "expected_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-                "observed_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "expected_digest": "sha256:b3e40fab3f16fea52a3354cf6f1750f3bc094cd674c564c8f1bed3fbc719e78d",
+                "observed_digest": "sha256:b3e40fab3f16fea52a3354cf6f1750f3bc094cd674c564c8f1bed3fbc719e78d",
                 "status": "reconciled"
               }
             ],
-            "watermark": "sha256:54a2529138ab4926dc7de7aed7d69d439c797b6fe983ae812beeb5d7e5a30e80",
+            "watermark": "sha256:d1142a686e4fb53500908d715160d12cc4834c5f50a82c7a0629a1144387de20",
             "source_schema": "flow.production-backup-live-observation/v1",
-            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "source_watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
             "action_identities": [],
             "source_command_kind": "native_backup_restore_probe"
           },
-          "content_digest": "sha256:db37513522e9336f8a1edf41e7d712131553240b0c594b444740a8826e6151a8"
+          "content_digest": "sha256:dc2553d16c2ff0089faa2445372c4df8fd0be8028942d3d37786cf89413406ca"
+        },
+        {
+          "id": "drovr_status-observation",
+          "kind": "drovr_status",
+          "content": {
+            "observed": true,
+            "command": "drovr status",
+            "turn_id": "turn:issue-46-backup-retained",
+            "status": "working",
+            "provenance": "public_process",
+            "output_digest": "sha256:924fd684bfe4fde709ec34d13e946a9e362afb110ac09f7718aad6166e2748ec",
+            "source_schema": "flow.production-backup-live-observation/v1",
+            "source_watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
+            "action_identities": [],
+            "source_command_kind": "native_backup_restore_probe"
+          },
+          "content_digest": "sha256:ed933a09406acce8b165c1d7ee5a317ff1adff852a0dfa2e811e8d8355d57882"
         },
         {
           "id": "admission-observation",
           "kind": "admission",
           "content": {
             "retained_result_admitted": true,
-            "manifest_digest": "sha256:75f24b141ca4e4e88b8c1858b203a1c0afd11eaf2fbfdafa32d0364d80395d9e",
-            "result_digest": "sha256:1c05b9f315a7ebdffd92483a9ff4d158ab5eb8b7ecef7b2b99ee90b6e81b1f1d",
+            "manifest_digest": "sha256:f2fa6e558a2a82cbb798af4a45cf655e8f8a13fa738fdb1df184b535361ba736",
+            "result_digest": "sha256:42d4160da6a950687dbc4a1a9d45679713315c0d9522fea9e1376ba5a5fe4bf2",
             "explicit": true,
-            "watermark": "sha256:e741bd40c9e71beddd94ad48585bed4e0d6f7ca54dcf48344d1688be8f9ce4bc",
+            "watermark": "sha256:d81487c50e58115dd19e31f680f9d266796b24bfadf2efe8f696863e6b75cd07",
             "source_schema": "flow.production-backup-live-observation/v1",
-            "source_watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+            "source_watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
             "action_identities": [],
             "source_command_kind": "native_backup_restore_probe"
           },
-          "content_digest": "sha256:069e0f23115fbb50fb051cdde829fd0b23e235b428045d791dca4ce4dea57a86"
+          "content_digest": "sha256:587a49fa3ca57bb4af39a62887b10edf8c596b8b45ff634f4ee700c3828c10dc"
         }
       ],
       "captures": [
         {
-          "id": "backup_restore_reconciliation-native_backup_restore_probe-native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d",
+          "id": "backup_restore_reconciliation-native_backup_restore_probe-native-backup-restore-9faf9e8a-a394-449b-9513-f0d57699c602",
           "kind": "native_backup_restore_probe",
           "format": "json",
-          "path": "captures/backup_restore_reconciliation-native_backup_restore_probe-native-backup-restore-294992e4-5727-4e61-8c8d-60360c157b6d.json",
-          "sha256": "a5be78e449a6c15078cc365858616c578bdcf361c98a00c42a17e23a0beddab6",
+          "path": "captures/backup_restore_reconciliation-native_backup_restore_probe-native-backup-restore-9faf9e8a-a394-449b-9513-f0d57699c602.json",
+          "sha256": "04ff280c17375944facbca9c2f030cd9475bf8cf3ac41f1a5b57a6d2e22621ef",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:b520930fefcdfc53a52ddeb28112f9c69be3c0ab1cc6704d7f71206aff1a7867",
+          "watermark": "sha256:ba070573e16ccddd0711bd4cd1b22fce0900c121d9543d4e27bc603fcb3cce0b",
           "legal_actions": "pass"
         }
       ],
@@ -897,6 +925,13 @@
           "disposition": "pass",
           "evidence_refs": [
             "observation:reconciliation-observation"
+          ]
+        },
+        {
+          "id": "public_drovr_status_observation",
+          "disposition": "pass",
+          "evidence_refs": [
+            "observation:drovr_status-observation"
           ]
         },
         {
@@ -975,7 +1010,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:22.524Z"
+        "completed_at": "2026-09-20T20:31:29.721Z"
       },
       "reason": null
     },
@@ -1003,11 +1038,11 @@
         "tuicr"
       ],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:25.874Z",
-      "finished_at": "2026-09-17T13:08:26.291Z",
+      "started_at": "2026-09-20T20:31:38.127Z",
+      "finished_at": "2026-09-20T20:31:38.584Z",
       "commands": [
         {
-          "id": "status-bb71a9a4-adf8-41e0-a5d8-425132a141de",
+          "id": "status-8aefe104-d190-4756-bf15-ee2ed2745b04",
           "argv": [
             "node",
             "config/flow/src/cli.mjs",
@@ -1018,9 +1053,9 @@
           "launcher_ref": "config/flow/src/cli.mjs",
           "host_ref": "config/flow/src/owner-process.mjs",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:25.875Z",
-          "finished_at": "2026-09-17T13:08:25.990Z",
-          "duration_ms": 115,
+          "started_at": "2026-09-20T20:31:38.127Z",
+          "finished_at": "2026-09-20T20:31:38.244Z",
+          "duration_ms": 117,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -1029,19 +1064,19 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/status-bb71a9a4-adf8-41e0-a5d8-425132a141de.stdout.log",
-              "sha256": "f83b76ce3dd71c5b6e1dd672d428b512849e5938e431a0fc763bb9e88cee3ce4",
-              "bytes": 1538
+              "path": "logs/status-8aefe104-d190-4756-bf15-ee2ed2745b04.stdout.log",
+              "sha256": "5163b5a6840aab56d8d5c7fec4f179ec20bdc4c6be5eea34d5215bc9f0eb3f1c",
+              "bytes": 1536
             },
             "stderr": {
-              "path": "logs/status-bb71a9a4-adf8-41e0-a5d8-425132a141de.stderr.log",
+              "path": "logs/status-8aefe104-d190-4756-bf15-ee2ed2745b04.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
           }
         },
         {
-          "id": "query-329d411d-08bc-49bd-a61e-46f3fb7b199f",
+          "id": "query-78e45451-e075-4aff-a26f-86987bae44ff",
           "argv": [
             "node",
             "config/flow/src/cli.mjs",
@@ -1054,8 +1089,8 @@
           "launcher_ref": "config/flow/src/cli.mjs",
           "host_ref": "config/flow/src/owner-process.mjs",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:25.990Z",
-          "finished_at": "2026-09-17T13:08:26.085Z",
+          "started_at": "2026-09-20T20:31:38.245Z",
+          "finished_at": "2026-09-20T20:31:38.340Z",
           "duration_ms": 95,
           "exit_code": 0,
           "signal": null,
@@ -1065,19 +1100,19 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/query-329d411d-08bc-49bd-a61e-46f3fb7b199f.stdout.log",
-              "sha256": "d34a63d6605e4df5c4cc342773898dde2f466cf3c8419392faf8539761129fe3",
+              "path": "logs/query-78e45451-e075-4aff-a26f-86987bae44ff.stdout.log",
+              "sha256": "1c0a7535a53a976b9d3f92e1840bf430d0c406d5e14ec72e266892e20d2d4752",
               "bytes": 44940
             },
             "stderr": {
-              "path": "logs/query-329d411d-08bc-49bd-a61e-46f3fb7b199f.stderr.log",
+              "path": "logs/query-78e45451-e075-4aff-a26f-86987bae44ff.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
           }
         },
         {
-          "id": "watch-3e6e30e9-c375-4ff7-ac0c-789e409ee024",
+          "id": "watch-c3633889-f283-47c8-bce5-10d0cd3c6a65",
           "argv": [
             "node",
             "config/flow/src/cli.mjs",
@@ -1090,8 +1125,8 @@
           "launcher_ref": "config/flow/src/cli.mjs",
           "host_ref": "config/flow/src/owner-process.mjs",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:26.086Z",
-          "finished_at": "2026-09-17T13:08:26.179Z",
+          "started_at": "2026-09-20T20:31:38.341Z",
+          "finished_at": "2026-09-20T20:31:38.434Z",
           "duration_ms": 93,
           "exit_code": 0,
           "signal": null,
@@ -1101,19 +1136,19 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/watch-3e6e30e9-c375-4ff7-ac0c-789e409ee024.stdout.log",
-              "sha256": "d34a63d6605e4df5c4cc342773898dde2f466cf3c8419392faf8539761129fe3",
+              "path": "logs/watch-c3633889-f283-47c8-bce5-10d0cd3c6a65.stdout.log",
+              "sha256": "1c0a7535a53a976b9d3f92e1840bf430d0c406d5e14ec72e266892e20d2d4752",
               "bytes": 44940
             },
             "stderr": {
-              "path": "logs/watch-3e6e30e9-c375-4ff7-ac0c-789e409ee024.stderr.log",
+              "path": "logs/watch-c3633889-f283-47c8-bce5-10d0cd3c6a65.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
           }
         },
         {
-          "id": "native-headless-capture-1d29e063-57e5-402a-8591-8b7a2cd6bf91",
+          "id": "native-headless-capture-8907aaab-e365-47e4-9c02-0c8199a26ee7",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-headless-provider.mjs",
@@ -1124,9 +1159,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-headless-provider.mjs",
           "host_ref": "native/headless-provider",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:26.180Z",
-          "finished_at": "2026-09-17T13:08:26.217Z",
-          "duration_ms": 37,
+          "started_at": "2026-09-20T20:31:38.435Z",
+          "finished_at": "2026-09-20T20:31:38.522Z",
+          "duration_ms": 87,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -1135,12 +1170,12 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native-headless-capture-1d29e063-57e5-402a-8591-8b7a2cd6bf91.stdout.log",
-              "sha256": "456ca982a9f482f797e1ed5186b6c9ca6620a6de90cb3f959516d239bf707740",
-              "bytes": 195988
+              "path": "logs/native-headless-capture-8907aaab-e365-47e4-9c02-0c8199a26ee7.stdout.log",
+              "sha256": "e23c8b1d6676d41688cd366dfba99d18b1590cdae250821f4f7926b0dd12784c",
+              "bytes": 138218
             },
             "stderr": {
-              "path": "logs/native-headless-capture-1d29e063-57e5-402a-8591-8b7a2cd6bf91.stderr.log",
+              "path": "logs/native-headless-capture-8907aaab-e365-47e4-9c02-0c8199a26ee7.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
@@ -1184,24 +1219,24 @@
               "ubuntu_headless_text_captures:capture:tuicr"
             ],
             "capture_digests": [
-              "5ab77ca6401bacf29a30303ef0eecfe93b771d5ae96711243f5c81492f047a17",
-              "c062033140d8599cd4202f9cf97e7e44a22dda83459de6d763e32b750faf50ad",
-              "ccb1ecd844b11c8773038bf91dbe73b644a52001a3904b25dff456c8c3576479",
-              "ff6f99e8ba72063497322f0b3214542c28af3e31840e89008bdffb187aeba04c",
-              "66c12169782541836d92999f3b2ff013100ffc6a74a97ac1fba3ecb372122430",
-              "9374229b58304ef0ef05efc5983207db64b09b93fa1cab6469618fbdf7f2edd9",
-              "902b4eb7c50f3c46e39fd2f990e4d400727284bc4636feb0872130bdb01a94ee",
-              "b945f68130293fe0e3a9d9eed0c8ba966d24c251dcb80c4e56d10c0712efe735"
+              "1b719f8194af1bdefae6545b250261b3b8a07eb86f87887617df464e15914356",
+              "dc0418fb0562d218d15368fa5b44e5d7836b60b33db2c56d12bf64729aa51452",
+              "b2cc16900f7e6dc7a17e6a9ebe3d6ee1be9122533615756c74bf39648ca3f3ae",
+              "fedc0a0407985f2eb145ecbc5d14b67927799d7453ba3abb611794346c8ac4f7",
+              "c112015bb92aa8036a132e580724999260cb43a4c4ab9c8a5c77fb4b130283ac",
+              "cad7656f70bb6c609fb01504eb123dc1dc518778021d93ecb1ce8f6684acc076",
+              "35f025f5cd05baf08b00a3b3ac81371cd1c882dce3141e2272817f5b57a96045",
+              "857ab18b57a1613eb0a5180c886e670b11186eb040db9981b176cce7d1945ddd"
             ],
             "watermarks": {
-              "terminal": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
-              "status": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
-              "checkpoint": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
-              "candidate": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
-              "review": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
-              "graph": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
-              "timeline": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
-              "tuicr": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba"
+              "terminal": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
+              "status": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
+              "checkpoint": "sha256:03ea148ffb5fd6c9f28f078c3e9ddc9a2991ee69e0b6e4e628f3058f90e1474e",
+              "candidate": "sha256:f730f6f8a4cb4f9db6fa10885d1f65ff9008e283aa9e30bf7d045dd4a5d05756",
+              "review": "sha256:aae4807d5d0c62f4be8f9321401552ad8d168d0175d8cd9031a2c3b761bb1bf7",
+              "graph": "sha256:03ea148ffb5fd6c9f28f078c3e9ddc9a2991ee69e0b6e4e628f3058f90e1474e",
+              "timeline": "sha256:03ea148ffb5fd6c9f28f078c3e9ddc9a2991ee69e0b6e4e628f3058f90e1474e",
+              "tuicr": "sha256:dea73eb0ca707333ff5c32f3480844c40abd1387315d8436ef0c88503478d56a"
             },
             "legibility": "pass",
             "provenance": "pass",
@@ -1214,9 +1249,9 @@
                 "reason": "expanded macOS visual capture is deferred to issue 47",
                 "release_evidence": {
                   "release_id": "flow-release-1.0-dark/v1",
-                  "manifest_digest": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+                  "manifest_digest": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
                   "route": "ubuntu_headless_text",
-                  "candidate_tree_sha": "056f19fa0744467929e578df4beb4b7eced6062c"
+                  "candidate_tree_sha": "3ca6bc7e76da04004bf689881d0ef49e1c84aa9b"
                 }
               },
               {
@@ -1225,15 +1260,15 @@
                 "reason": "expanded macOS visual capture is deferred to issue 47",
                 "release_evidence": {
                   "release_id": "flow-release-1.0-dark/v1",
-                  "manifest_digest": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+                  "manifest_digest": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
                   "route": "ubuntu_headless_text",
-                  "candidate_tree_sha": "056f19fa0744467929e578df4beb4b7eced6062c"
+                  "candidate_tree_sha": "3ca6bc7e76da04004bf689881d0ef49e1c84aa9b"
                 }
               }
             ],
             "disabled_forms_recorded": true
           },
-          "content_digest": "sha256:ae2dd1f09c263044ed4a2a5ea1b04ea9fa6514969445ecbe6fe7461261df08fd"
+          "content_digest": "sha256:4047cc4dfc7a1a40124eda1164f62144d7ea745f61cd75672278b8729217febc"
         }
       ],
       "captures": [
@@ -1242,10 +1277,10 @@
           "kind": "terminal",
           "format": "text",
           "path": "captures/ubuntu_headless_text_captures/terminal.text",
-          "sha256": "5ab77ca6401bacf29a30303ef0eecfe93b771d5ae96711243f5c81492f047a17",
+          "sha256": "1b719f8194af1bdefae6545b250261b3b8a07eb86f87887617df464e15914356",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+          "watermark": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
           "legal_actions": "pass"
         },
         {
@@ -1253,10 +1288,10 @@
           "kind": "status",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/status.json",
-          "sha256": "c062033140d8599cd4202f9cf97e7e44a22dda83459de6d763e32b750faf50ad",
+          "sha256": "dc0418fb0562d218d15368fa5b44e5d7836b60b33db2c56d12bf64729aa51452",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:b88ccd0a9b3ad2730b6b9e6a237dc6baf2a63e2ac8e7d7e82179ae5856ea0fbf",
+          "watermark": "sha256:9a3ed69acec233892e00f8bcd4e6f7eb83cf25e913705b83bc6e99264b627baa",
           "legal_actions": "pass"
         },
         {
@@ -1264,10 +1299,10 @@
           "kind": "checkpoint",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/checkpoint.json",
-          "sha256": "ccb1ecd844b11c8773038bf91dbe73b644a52001a3904b25dff456c8c3576479",
+          "sha256": "b2cc16900f7e6dc7a17e6a9ebe3d6ee1be9122533615756c74bf39648ca3f3ae",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "watermark": "sha256:03ea148ffb5fd6c9f28f078c3e9ddc9a2991ee69e0b6e4e628f3058f90e1474e",
           "legal_actions": "pass"
         },
         {
@@ -1275,10 +1310,10 @@
           "kind": "candidate",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/candidate.json",
-          "sha256": "ff6f99e8ba72063497322f0b3214542c28af3e31840e89008bdffb187aeba04c",
+          "sha256": "fedc0a0407985f2eb145ecbc5d14b67927799d7453ba3abb611794346c8ac4f7",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "watermark": "sha256:f730f6f8a4cb4f9db6fa10885d1f65ff9008e283aa9e30bf7d045dd4a5d05756",
           "legal_actions": "pass"
         },
         {
@@ -1286,10 +1321,10 @@
           "kind": "review",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/review.json",
-          "sha256": "66c12169782541836d92999f3b2ff013100ffc6a74a97ac1fba3ecb372122430",
+          "sha256": "c112015bb92aa8036a132e580724999260cb43a4c4ab9c8a5c77fb4b130283ac",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "watermark": "sha256:aae4807d5d0c62f4be8f9321401552ad8d168d0175d8cd9031a2c3b761bb1bf7",
           "legal_actions": "pass"
         },
         {
@@ -1297,10 +1332,10 @@
           "kind": "graph",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/graph.json",
-          "sha256": "9374229b58304ef0ef05efc5983207db64b09b93fa1cab6469618fbdf7f2edd9",
+          "sha256": "cad7656f70bb6c609fb01504eb123dc1dc518778021d93ecb1ce8f6684acc076",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "watermark": "sha256:03ea148ffb5fd6c9f28f078c3e9ddc9a2991ee69e0b6e4e628f3058f90e1474e",
           "legal_actions": "pass"
         },
         {
@@ -1308,10 +1343,10 @@
           "kind": "timeline",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/timeline.json",
-          "sha256": "902b4eb7c50f3c46e39fd2f990e4d400727284bc4636feb0872130bdb01a94ee",
+          "sha256": "35f025f5cd05baf08b00a3b3ac81371cd1c882dce3141e2272817f5b57a96045",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "watermark": "sha256:03ea148ffb5fd6c9f28f078c3e9ddc9a2991ee69e0b6e4e628f3058f90e1474e",
           "legal_actions": "pass"
         },
         {
@@ -1319,10 +1354,10 @@
           "kind": "tuicr",
           "format": "json",
           "path": "captures/ubuntu_headless_text_captures/tuicr.json",
-          "sha256": "b945f68130293fe0e3a9d9eed0c8ba966d24c251dcb80c4e56d10c0712efe735",
+          "sha256": "857ab18b57a1613eb0a5180c886e670b11186eb040db9981b176cce7d1945ddd",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:129df741823274c609c4f0c9ea0b776eb0878655acdff8fb2a4a2c31ef3e58ba",
+          "watermark": "sha256:dea73eb0ca707333ff5c32f3480844c40abd1387315d8436ef0c88503478d56a",
           "legal_actions": "pass"
         }
       ],
@@ -1466,7 +1501,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:26.291Z"
+        "completed_at": "2026-09-20T20:31:38.584Z"
       },
       "reason": null
     },
@@ -1485,11 +1520,11 @@
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:26.752Z",
-      "finished_at": "2026-09-17T13:08:35.004Z",
+      "started_at": "2026-09-20T20:31:39.055Z",
+      "finished_at": "2026-09-20T20:31:47.396Z",
       "commands": [
         {
-          "id": "native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab",
+          "id": "native_tuicr_live_probe-ea75452a-f339-44ec-8037-0a5deadbf0b9",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-tuicr-live-probe.mjs",
@@ -1500,9 +1535,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-tuicr-live-probe.mjs",
           "host_ref": "native/tuicr-live-provider",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:26.752Z",
-          "finished_at": "2026-09-17T13:08:35.004Z",
-          "duration_ms": 8252,
+          "started_at": "2026-09-20T20:31:39.055Z",
+          "finished_at": "2026-09-20T20:31:47.396Z",
+          "duration_ms": 8341,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -1511,12 +1546,12 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab.stdout.log",
-              "sha256": "379843eeccdea0b7cccf3aee97ff68e48b6f197308002a3f6e2cc378a33471b3",
-              "bytes": 119308
+              "path": "logs/native_tuicr_live_probe-ea75452a-f339-44ec-8037-0a5deadbf0b9.stdout.log",
+              "sha256": "cd5e18f309f6144682f164523f82bf54241b89f2607ce7e26633aa878b6a5472",
+              "bytes": 122076
             },
             "stderr": {
-              "path": "logs/native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab.stderr.log",
+              "path": "logs/native_tuicr_live_probe-ea75452a-f339-44ec-8037-0a5deadbf0b9.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
@@ -1529,32 +1564,32 @@
           "kind": "producer_exit",
           "content": {
             "schema": "flow.host-recovery-producer-exit/v1",
-            "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-            "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+            "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+            "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
             "producer_exited": true,
-            "producer_exited_at": "2026-09-17T13:08:34.109Z",
+            "producer_exited_at": "2026-09-20T20:31:46.489Z",
             "process_absence": {
               "status": "absent",
               "method": "waited_child_and_kill_0_esrch",
-              "pid": 2432010,
-              "process_identity": "node-production-review-seed:2432010"
+              "pid": 354703,
+              "process_identity": "node-production-review-seed:354703"
             },
             "command": {
               "schema": "flow.tuicr-pty-command/v1",
-              "id": "production_review_seed:296887f3-a3c7-4676-8c50-b8a837a0c45f",
+              "id": "production_review_seed:ab92db3b-4240-4537-a8b9-43c8f285ea60",
               "command_kind": "production_review_seed",
               "argv": [
                 "<path:sha256:270b2f5f23a2aa3ebca01eeb9194c8f3a1c00c1ddd4806bd1ae998fb1d617a6f>",
                 "<path:sha256:7bfecabf93eea8fed7b2a4cad5ca64d2557af71d9e73027fdba323188b87d8cd>",
                 "--producer",
                 "--input",
-                "<path:sha256:feae87a708487b6fe6961963921103f07fc973566ac7ccc5c50118f9b727015c>",
+                "<path:sha256:6d4b7e8c4b42a0044d1289c02c9e070f520998ec8697dedb2b852193f0da852e>",
                 "--output",
-                "<path:sha256:c523b634a0f7d8f2b03efde1115795e3c92ccbe97ece7ce24db68e0c2a6ef9f0>"
+                "<path:sha256:2a0fefdc141db9b6e922e38b82c69cd80f4a77e28ea3eb887ecb77ce27b9c025>"
               ],
               "cwd": "<path:sha256:48c3a2b7f3074875011e647570c9986c945bcf14705131f51583465a99f2b638>",
-              "started_at": "2026-09-17T13:08:31.372Z",
-              "finished_at": "2026-09-17T13:08:34.109Z",
+              "started_at": "2026-09-20T20:31:43.674Z",
+              "finished_at": "2026-09-20T20:31:46.488Z",
               "exit_code": 0,
               "signal": null,
               "expected_exit_code": 0,
@@ -1562,51 +1597,83 @@
               "timed_out": false,
               "logs": {
                 "stdout": {
-                  "path": "71c0da25-a44d-4f03-a4f8-e9a0214fc0f9.stdout.log",
-                  "sha256": "sha256:11f8ef565270c4fb3121dcc907271dbb51810c5ce3dca8d0552d848f17d0c1c9",
-                  "bytes": 370
+                  "path": "93957ca5-00f7-40d2-9adf-5a73c36e555c.stdout.log",
+                  "sha256": "sha256:f77a05473bed75929c241b6f1416528d96a7b988faf43fc900c1f36181e66610",
+                  "bytes": 368
                 },
                 "stderr": {
-                  "path": "71c0da25-a44d-4f03-a4f8-e9a0214fc0f9.stderr.log",
-                  "sha256": "sha256:5451e8211fb81a0bbb9b9868ee75ac34e6b7a0c2c602aa0fbfbefce1d5660889",
-                  "bytes": 171
+                  "path": "93957ca5-00f7-40d2-9adf-5a73c36e555c.stderr.log",
+                  "sha256": "sha256:ac73a9bd642422526bdf5018d59b32fb0491383c0a9713a3837a8bf2dabaae20",
+                  "bytes": 170
                 }
               }
             }
           },
-          "content_digest": "sha256:506e94ff4be5c29e6979a36f997c08c22c7a66599bf59d8fe2e70676b387d2a1"
+          "content_digest": "sha256:708637a3f6bd65fe7c1529dc7264acccab638bc607a580c8dfee78a79a53ac38"
         },
         {
           "id": "native:tuicr_review_after_producer_exit:disposition",
           "kind": "disposition",
           "content": {
-            "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-            "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+            "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+            "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
             "lifecycle_generation": 1,
-            "flowruntime_disposition": "approved",
-            "disposition": "<redacted:non-json>",
+            "flowruntime_disposition": "accept",
+            "disposition": {
+              "disposition": "accept",
+              "schema": "flow.review-disposition/v1",
+              "session_id": "session:run:issue-46-final-q1:tuicr"
+            },
+            "dispositions": [
+              {
+                "disposition": "accept",
+                "schema": "flow.review-disposition/v1",
+                "session_id": "session:run:issue-46-final-q1:tuicr"
+              }
+            ],
             "approval": "approved",
-            "disposition_event": "<redacted:non-json>",
-            "approval_event": "<redacted:non-json>",
-            "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df"
+            "approval_receipt": {
+              "decision": "approve",
+              "schema": "flow.review-approval/v1",
+              "session_id": "session:run:issue-46-final-q1:tuicr"
+            },
+            "disposition_receipt": {
+              "accepted": true,
+              "authority_watermark": "sha256:54ef6fbc41e4dc302cc5fe74136d1cb9381e17715bb3e9385ef69307b54308fe",
+              "command_type": "review_disposition",
+              "contract": "work.review/v1",
+              "created": true,
+              "schema": "work.command-receipt/v1",
+              "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1"
+            },
+            "approval_command_receipt": {
+              "accepted": true,
+              "authority_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
+              "command_type": "review_approval",
+              "contract": "work.review/v1",
+              "created": true,
+              "schema": "work.command-receipt/v1",
+              "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1"
+            },
+            "watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f"
           },
-          "content_digest": "sha256:9d7aed7132bfa2d16c4f08ff66f3b4111ba52810afb013bef518ccef9b126148"
+          "content_digest": "sha256:179488aaed2cd4d1d24d2d119d3efc42d7b2958b6d535e302c0a62e5fbca265f"
         },
         {
           "id": "native:tuicr_review_after_producer_exit:stale_action",
           "kind": "stale_action",
           "content": {
-            "authority_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+            "authority_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
             "code": "stale_review_generation",
             "contract": "work.review/v1",
             "legal_actions": [
               {
-                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
-                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
-                "command_id": "review-comment:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "candidate_authority_watermark": "sha256:c55e7fc2718ed2496ac630b0bede723368a097af39a63b197002c54ffd42bd48",
+                "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
+                "command_id": "review-comment:review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1:5",
                 "contract": "work.review/v1",
                 "expected_generation": 4,
-                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "expected_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
                 "lifecycle_generation": 1,
                 "operator_input": {
                   "action": "review_comment",
@@ -1616,20 +1683,20 @@
                   ],
                   "schema": "flow.review-operator-input/v1"
                 },
-                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
                 "schema": "work.review-human-command/v1",
-                "session_id": "session:run:issue46-final-v11:tuicr",
-                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "session_id": "session:run:issue-46-final-q1:tuicr",
+                "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+                "target_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
                 "type": "review_comment"
               },
               {
-                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
-                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
-                "command_id": "review-disposition:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "candidate_authority_watermark": "sha256:c55e7fc2718ed2496ac630b0bede723368a097af39a63b197002c54ffd42bd48",
+                "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
+                "command_id": "review-disposition:review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1:5",
                 "contract": "work.review/v1",
                 "expected_generation": 4,
-                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "expected_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
                 "lifecycle_generation": 1,
                 "operator_input": {
                   "action": "review_disposition",
@@ -1647,36 +1714,36 @@
                   ],
                   "schema": "flow.review-operator-input/v1"
                 },
-                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
                 "schema": "work.review-human-command/v1",
-                "session_id": "session:run:issue46-final-v11:tuicr",
-                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "session_id": "session:run:issue-46-final-q1:tuicr",
+                "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+                "target_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
                 "type": "review_disposition"
               },
               {
-                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
-                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
-                "command_id": "review-revoke-approval:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "candidate_authority_watermark": "sha256:c55e7fc2718ed2496ac630b0bede723368a097af39a63b197002c54ffd42bd48",
+                "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
+                "command_id": "review-revoke-approval:review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1:5",
                 "contract": "work.review/v1",
                 "decision": "revoke",
                 "expected_generation": 4,
-                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "expected_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
                 "lifecycle_generation": 1,
-                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
                 "schema": "work.review-human-command/v1",
-                "session_id": "session:run:issue46-final-v11:tuicr",
-                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "session_id": "session:run:issue-46-final-q1:tuicr",
+                "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+                "target_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
                 "type": "review_approval"
               },
               {
-                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
-                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
-                "command_id": "review-supersession:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "candidate_authority_watermark": "sha256:c55e7fc2718ed2496ac630b0bede723368a097af39a63b197002c54ffd42bd48",
+                "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
+                "command_id": "review-supersession:review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1:5",
                 "contract": "work.review/v1",
                 "expected_generation": 4,
-                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "expected_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
                 "lifecycle_generation": 1,
                 "operator_input": {
                   "action": "review_supersession",
@@ -1691,20 +1758,20 @@
                   ],
                   "schema": "flow.review-operator-input/v1"
                 },
-                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
                 "schema": "work.review-human-command/v1",
-                "session_id": "session:run:issue46-final-v11:tuicr",
-                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "session_id": "session:run:issue-46-final-q1:tuicr",
+                "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+                "target_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
                 "type": "review_supersession"
               },
               {
-                "candidate_authority_watermark": "sha256:de26007bc19eefac65be7073c90a900000c81a2df834c017004aecea5adf27c4",
-                "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
-                "command_id": "review-integration:review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1:5",
+                "candidate_authority_watermark": "sha256:c55e7fc2718ed2496ac630b0bede723368a097af39a63b197002c54ffd42bd48",
+                "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
+                "command_id": "review-integration:review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1:5",
                 "contract": "work.review/v1",
                 "expected_generation": 4,
-                "expected_watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+                "expected_watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
                 "lifecycle_generation": 1,
                 "operator_input": {
                   "action": "review_integration",
@@ -1714,60 +1781,60 @@
                   ],
                   "schema": "flow.review-operator-input/v1"
                 },
-                "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+                "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
                 "schema": "work.review-human-command/v1",
-                "session_id": "session:run:issue46-final-v11:tuicr",
-                "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-                "target_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+                "session_id": "session:run:issue-46-final-q1:tuicr",
+                "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+                "target_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
                 "type": "review_integration"
               }
             ],
             "operation": "command",
             "schema": "work.rejection/v1",
-            "subject_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
+            "subject_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
             "rejected": true,
             "mutated": false
           },
-          "content_digest": "sha256:b05abcfed03420ed7cb6c9253cbbde9bcc01c646ceaa39cbd45323825f00158b"
+          "content_digest": "sha256:53ec8a9fd9db98c486fd413b26e742f8a4f6e17dea7bf4a495d959560b6d47fa"
         },
         {
           "id": "native:tuicr_review_after_producer_exit:rebuild",
           "kind": "rebuild",
           "content": {
             "identity_stable": true,
-            "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-            "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+            "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+            "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
             "lifecycle_generation": 1,
             "before": {
-              "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-              "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+              "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+              "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
               "lifecycle_generation": 1,
               "review_generation": 4,
-              "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df"
+              "watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f"
             },
             "after": {
-              "review_id": "review:sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17:1",
-              "candidate_fingerprint": "sha256:cf48ab82698b553baf8600ec51bce53ceec13e3e4d55e57d745f1a9b3791ab17",
+              "review_id": "review:sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f:1",
+              "candidate_fingerprint": "sha256:a50e6797952604eab43a01648af71fba99a4e0a1765b704b6b6f3015dba9a15f",
               "lifecycle_generation": 1,
               "review_generation": 4,
-              "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df"
+              "watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f"
             },
-            "watermark": "sha256:d59d440f4f3e38fbb11be1d15ab019207f8ab1456127855f3d38b2f188c8e6df",
+            "watermark": "sha256:07715aa0c2d4ec84eb787b2076d3eaf6b024dd5c5fab993442d0198057d9378f",
             "without_mutation_lock": true
           },
-          "content_digest": "sha256:0a3756d00c6b763f94cfc61257eb197116e2473f77328a36af1d5bca214c46d4"
+          "content_digest": "sha256:b1a5aa17cfc6be857fe1783d8d975c8903e6495e99bcfac04a45ad1ed02adb55"
         }
       ],
       "captures": [
         {
-          "id": "native-provider-tuicr_review_after_producer_exit-native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab",
+          "id": "native-provider-tuicr_review_after_producer_exit-native_tuicr_live_probe-ea75452a-f339-44ec-8037-0a5deadbf0b9",
           "kind": "native_provider_result",
           "format": "json",
-          "path": "captures/native-provider-tuicr_review_after_producer_exit-native_tuicr_live_probe-a4d5b2c9-a5b7-42e5-9456-217ca07e65ab.json",
-          "sha256": "1d72967305fbedebd635b648e06c91a552379d7605aaffa605150eb0d157e27d",
+          "path": "captures/native-provider-tuicr_review_after_producer_exit-native_tuicr_live_probe-ea75452a-f339-44ec-8037-0a5deadbf0b9.json",
+          "sha256": "84dfdec3512eee4877a8e9fe1a8e4364cf1983d11076f23f92223e0e3ffb3ec0",
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:2e5a2d311ff4147c4baf620ab0ceeed3e27f4606ecf7e8e8755c377cfbe19f7c",
+          "watermark": "sha256:15db3848126a17f56e66b7c7b569bb62b01dee38cb9c39b75586bf8ca9b6ca6d",
           "legal_actions": "pass"
         }
       ],
@@ -1869,7 +1936,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:34.998Z"
+        "completed_at": "2026-09-20T20:31:47.390Z"
       },
       "reason": null
     },
@@ -1888,11 +1955,11 @@
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:35.605Z",
-      "finished_at": "2026-09-17T13:08:35.610Z",
+      "started_at": "2026-09-20T20:31:48.006Z",
+      "finished_at": "2026-09-20T20:31:48.011Z",
       "commands": [
         {
-          "id": "native-drovr-lock-29a1f581-67d7-4b7d-bf3c-2c81d7984483",
+          "id": "native-drovr-lock-1cd8ee57-0880-4f01-ac47-79e2fcd98c0f",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-native-probe.mjs",
@@ -1901,9 +1968,9 @@
             "--worktree",
             "<worktree>",
             "--raw-root",
-            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "<path:sha256:19fa2a651d9cf9ece2dea9db4eeaf53acc8544a3b00ad20063d8fd6473a3d2f3>",
             "--temporary-root",
-            "<path:sha256:cf3a47c61bee8df0e3bceddd1d0fd81d840e4bd1840ac9fc9cbc3361d075ffd9>",
+            "<path:sha256:d8659f02ec21b9b98c2550a8266efaf490c0fdaa06571a6d5300a2c985502e79>",
             "--xdg-state-home",
             "<state>",
             "--authority-directory",
@@ -1921,9 +1988,9 @@
             "--qualification-workspace",
             "<state><path:sha256:38be4724d3d9b6b7d52f2ce0a7ecdb41dd3b4d2f0f020c61139e2e2ab7e654d2>",
             "--herdr-session",
-            "herdr:issue46-final-v11",
+            "herdr:issue-46-final-q1",
             "--run-id",
-            "run:issue46-final-v11",
+            "run:issue-46-final-q1",
             "--timeout",
             "120000"
           ],
@@ -1931,9 +1998,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-native-probe.mjs",
           "host_ref": "native/drovr-registry",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:35.461Z",
-          "finished_at": "2026-09-17T13:08:35.603Z",
-          "duration_ms": 142,
+          "started_at": "2026-09-20T20:31:47.872Z",
+          "finished_at": "2026-09-20T20:31:48.003Z",
+          "duration_ms": 131,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -1942,12 +2009,12 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native-drovr-lock-29a1f581-67d7-4b7d-bf3c-2c81d7984483.stdout.log",
-              "sha256": "db49d3eb8c5c3c39f88003a2506d85e696ed11540522d4519b74e760c7be5747",
-              "bytes": 6461
+              "path": "logs/native-drovr-lock-1cd8ee57-0880-4f01-ac47-79e2fcd98c0f.stdout.log",
+              "sha256": "c35b4261280745af30927f3aac11a9f7b7c6048858a3580fa0df66eec78f27b8",
+              "bytes": 6576
             },
             "stderr": {
-              "path": "logs/native-drovr-lock-29a1f581-67d7-4b7d-bf3c-2c81d7984483.stderr.log",
+              "path": "logs/native-drovr-lock-1cd8ee57-0880-4f01-ac47-79e2fcd98c0f.stderr.log",
               "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "bytes": 0
             }
@@ -1961,16 +2028,16 @@
           "content": {
             "schema": "flow.drovr-lock-live-observation/v1",
             "registry_directory": "<drovr><path:sha256:f0ebb72e404194cc654344fe0281383971fede2a4cc8e4fd733244d5c5cffacf>",
-            "resource_key": "issue-46:run:issue46-final-v11",
-            "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+            "resource_key": "issue-46:run:issue-46-final-q1",
+            "lock_id": "41c9af3d-2ccf-4a11-880c-a642e4e0a428",
             "authority_watermark": "sha256:6d8a2b92f0058ae5a81ce08076b90434f83298609b736f1fbdb7be44762b877c",
             "owner_killed": true,
             "termination_signal": "SIGKILL",
             "owner_status": "absent",
             "process_absence": {
               "status": "absent",
-              "process_identity": "sha256:6a8e2730bcd9a25dda7b71fcc917599e9de33eb8fd4bfc917f76767a286a00c1",
-              "pid": 2432426,
+              "process_identity": "sha256:566712728e8ccc430e09640fdee599de64f3cf05dfb96e29046d88cb8a11cef4",
+              "pid": 355086,
               "observed_exit_signal": "SIGKILL"
             },
             "lock_projection": {
@@ -1994,14 +2061,14 @@
               },
               "locks": [
                 {
-                  "resource_key": "issue-46:run:issue46-final-v11",
-                  "lock_entry": "7c5b26b355caf5990ed24df6d6393b9f4ab86d3c13d0f5e09a82fb9f789ba07d",
-                  "lock_path": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>",
+                  "resource_key": "issue-46:run:issue-46-final-q1",
+                  "lock_entry": "6e2ef84e608a805fac26a658d6903d3dbc604c8b02d2e163df020c22f2d71638",
+                  "lock_path": "<drovr><path:sha256:c63e39310a8c2cd177b6968e26c64dd3313fa5aedfb9d36889ca8710e0e746e9>",
                   "status": "held",
                   "owner_status": "absent",
-                  "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+                  "lock_id": "41c9af3d-2ccf-4a11-880c-a642e4e0a428",
                   "operation": {
-                    "id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11",
+                    "id": "drovr:issue-46-lock:issue-46:run:issue-46-final-q1",
                     "kind": "issue_46_lock_probe"
                   },
                   "authority_id": "issue-46-live-owner",
@@ -2037,8 +2104,8 @@
               "reconciled": true,
               "recovery_action": "release_absent_registry_lock",
               "status": "released",
-              "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
-              "resource_key": "issue-46:run:issue46-final-v11",
+              "lock_id": "41c9af3d-2ccf-4a11-880c-a642e4e0a428",
+              "resource_key": "issue-46:run:issue-46-final-q1",
               "legal_next_actions": [
                 "acquire_registry_lock"
               ],
@@ -2063,34 +2130,44 @@
                 "owner_status": "absent",
                 "process_identity": {
                   "schema": "drovr.process-identity/v1",
-                  "pid": 2432426,
+                  "pid": 355086,
                   "boot_id": "c105ac92-627e-48c6-a82d-3a939d1fc0d7",
-                  "start_token": "230005784"
+                  "start_token": "258585025"
                 }
               }
             },
             "negative_age": {
               "action": "age_takeover",
+              "requested_option": "staleAfterMs",
               "rejected": true,
               "accepted": false,
               "mutated": false,
-              "code": "registry_lock_recovery_required",
-              "outcome": "registry_lock_recovery_required",
+              "code": "invalid_arguments",
+              "outcome": "invalid_arguments",
               "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
-              "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+              "operation_id": "drovr:issue-46-lock:issue-46:run:issue-46-final-q1",
+              "api_rejection": true,
+              "unsupported_options": [
+                "staleAfterMs"
+              ]
             },
             "negative_force": {
               "action": "force_takeover",
+              "requested_option": "force",
               "rejected": true,
               "accepted": false,
               "mutated": false,
-              "code": "registry_lock_recovery_required",
-              "outcome": "registry_lock_recovery_required",
+              "code": "invalid_arguments",
+              "outcome": "invalid_arguments",
               "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
-              "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+              "operation_id": "drovr:issue-46-lock:issue-46:run:issue-46-final-q1",
+              "api_rejection": true,
+              "unsupported_options": [
+                "force"
+              ]
             },
             "child": {
-              "pid": 2432426,
+              "pid": 355086,
               "exit_signal": "SIGKILL",
               "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
             },
@@ -2103,7 +2180,7 @@
                 },
                 {
                   "kind": "isolated_registry_lock",
-                  "identity_ref": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>"
+                  "identity_ref": "<drovr><path:sha256:c63e39310a8c2cd177b6968e26c64dd3313fa5aedfb9d36889ca8710e0e746e9>"
                 }
               ],
               "resource_dispositions": [
@@ -2115,13 +2192,13 @@
                 },
                 {
                   "kind": "isolated_registry_lock",
-                  "identity_ref": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>",
+                  "identity_ref": "<drovr><path:sha256:c63e39310a8c2cd177b6968e26c64dd3313fa5aedfb9d36889ca8710e0e746e9>",
                   "disposition": "removed",
                   "proof": "absent_after_cleanup"
                 }
               ],
               "unresolved_obligations": [],
-              "completed_at": "2026-09-17T13:08:35.599Z"
+              "completed_at": "2026-09-20T20:31:47.999Z"
             },
             "setup": {
               "schema": "flow.native-drovr-lock-setup/v1",
@@ -2142,7 +2219,7 @@
               "acquire_registry_lock"
             ]
           },
-          "content_digest": "sha256:92e84ac020faf090d5a2218182df63a959d2d3f78bd084dd64144eaaddcd5786"
+          "content_digest": "sha256:6781cfae200bc934229f021dbb81dc456ea725d5fa88eede198ca0738d7bbe59"
         },
         {
           "id": "drovr_registry_lock_reconciliation:reconciliation",
@@ -2151,8 +2228,8 @@
             "reconciled": true,
             "recovery_action": "release_absent_registry_lock",
             "status": "released",
-            "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
-            "resource_key": "issue-46:run:issue46-final-v11",
+            "lock_id": "41c9af3d-2ccf-4a11-880c-a642e4e0a428",
+            "resource_key": "issue-46:run:issue-46-final-q1",
             "legal_next_actions": [
               "acquire_registry_lock"
             ],
@@ -2177,9 +2254,9 @@
               "owner_status": "absent",
               "process_identity": {
                 "schema": "drovr.process-identity/v1",
-                "pid": 2432426,
+                "pid": 355086,
                 "boot_id": "c105ac92-627e-48c6-a82d-3a939d1fc0d7",
-                "start_token": "230005784"
+                "start_token": "258585025"
               }
             },
             "native_projection": {
@@ -2203,14 +2280,14 @@
               },
               "locks": [
                 {
-                  "resource_key": "issue-46:run:issue46-final-v11",
-                  "lock_entry": "7c5b26b355caf5990ed24df6d6393b9f4ab86d3c13d0f5e09a82fb9f789ba07d",
-                  "lock_path": "<drovr><path:sha256:486bd806e9293a01c66858e68ff06f0254598e6b78d9efd59714d96079a042ff>",
+                  "resource_key": "issue-46:run:issue-46-final-q1",
+                  "lock_entry": "6e2ef84e608a805fac26a658d6903d3dbc604c8b02d2e163df020c22f2d71638",
+                  "lock_path": "<drovr><path:sha256:c63e39310a8c2cd177b6968e26c64dd3313fa5aedfb9d36889ca8710e0e746e9>",
                   "status": "held",
                   "owner_status": "absent",
-                  "lock_id": "a77eb256-fc8c-4751-960d-708e51b9a5a1",
+                  "lock_id": "41c9af3d-2ccf-4a11-880c-a642e4e0a428",
                   "operation": {
-                    "id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11",
+                    "id": "drovr:issue-46-lock:issue-46:run:issue-46-final-q1",
                     "kind": "issue_46_lock_probe"
                   },
                   "authority_id": "issue-46-live-owner",
@@ -2243,37 +2320,47 @@
               ]
             }
           },
-          "content_digest": "sha256:d11348215d76f553ca791f4eaa0da72b084530675ece34c1192d5cfe3e6a1f47"
+          "content_digest": "sha256:1816d5341f24f8c18dbcc53a2188171aeec47b65812c885f3421f7a714388306"
         },
         {
           "id": "drovr_registry_lock_reconciliation:negative_age",
           "kind": "negative_age",
           "content": {
             "action": "age_takeover",
+            "requested_option": "staleAfterMs",
             "rejected": true,
             "accepted": false,
             "mutated": false,
-            "code": "registry_lock_recovery_required",
-            "outcome": "registry_lock_recovery_required",
+            "code": "invalid_arguments",
+            "outcome": "invalid_arguments",
             "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
-            "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+            "operation_id": "drovr:issue-46-lock:issue-46:run:issue-46-final-q1",
+            "api_rejection": true,
+            "unsupported_options": [
+              "staleAfterMs"
+            ]
           },
-          "content_digest": "sha256:759396b4403d958766195ff66b402fdf5305ae47a2e0c66602b2f9935a3e7534"
+          "content_digest": "sha256:f09b63ff0af8009db4ab6db4a486c56652246b62ef5da37c448fc10baa6fcedd"
         },
         {
           "id": "drovr_registry_lock_reconciliation:negative_force",
           "kind": "negative_force",
           "content": {
             "action": "force_takeover",
+            "requested_option": "force",
             "rejected": true,
             "accepted": false,
             "mutated": false,
-            "code": "registry_lock_recovery_required",
-            "outcome": "registry_lock_recovery_required",
+            "code": "invalid_arguments",
+            "outcome": "invalid_arguments",
             "watermark": "sha256:8d1b8f6c424edc3ef7241632ebb4ac340105092e4a2e64f4cd923122eb0e0666",
-            "operation_id": "drovr:issue-46-lock:issue-46:run:issue46-final-v11"
+            "operation_id": "drovr:issue-46-lock:issue-46:run:issue-46-final-q1",
+            "api_rejection": true,
+            "unsupported_options": [
+              "force"
+            ]
           },
-          "content_digest": "sha256:47156c1fb0ed0236b61ca06ed6be24a73c045ed176894a7dde5789073a534758"
+          "content_digest": "sha256:8f8822ebdfae1e9bc72b32a5872b61295de10a6e9a828000e3870716639c6a12"
         }
       ],
       "captures": [
@@ -2282,7 +2369,7 @@
           "kind": "native_drovr_lock_probe",
           "format": "json",
           "path": "captures/drovr_registry_lock_reconciliation/native_drovr_lock_probe.json",
-          "sha256": "a48e75c62c151794f061bb8b19791cee19bb18ba9bfcd748104197264c8c6c1b",
+          "sha256": "45c2ce10e0b0b3e01b8e3600f5879d9e8c58c3f0916b544b651fe10364fb0a5f",
           "legibility": "pass",
           "provenance": "native_provider",
           "watermark": "sha256:6d8a2b92f0058ae5a81ce08076b90434f83298609b736f1fbdb7be44762b877c",
@@ -2387,7 +2474,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:35.610Z"
+        "completed_at": "2026-09-20T20:31:48.011Z"
       },
       "reason": null
     },
@@ -2407,11 +2494,11 @@
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:36.053Z",
-      "finished_at": "2026-09-17T13:08:36.879Z",
+      "started_at": "2026-09-20T20:31:48.472Z",
+      "finished_at": "2026-09-20T20:31:53.448Z",
       "commands": [
         {
-          "id": "native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6",
+          "id": "native_projection_reader_probe-7b579950-79a0-4f37-9061-7576973036cd",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-reader-probe.mjs",
@@ -2420,7 +2507,7 @@
             "--worktree",
             "<worktree>",
             "--raw-root",
-            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "<path:sha256:19fa2a651d9cf9ece2dea9db4eeaf53acc8544a3b00ad20063d8fd6473a3d2f3>",
             "--xdg-state-home",
             "<state>",
             "--authority-directory",
@@ -2438,9 +2525,9 @@
             "--qualification-workspace",
             "<workspace>",
             "--herdr-session",
-            "herdr:issue46-final-v11",
+            "herdr:issue-46-final-q1",
             "--run-id",
-            "run:issue46-final-v11",
+            "run:issue-46-final-q1",
             "--timeout",
             "120000"
           ],
@@ -2448,9 +2535,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-reader-probe.mjs",
           "host_ref": "native/reader-provider",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:36.053Z",
-          "finished_at": "2026-09-17T13:08:36.879Z",
-          "duration_ms": 826,
+          "started_at": "2026-09-20T20:31:48.472Z",
+          "finished_at": "2026-09-20T20:31:53.448Z",
+          "duration_ms": 4976,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -2459,14 +2546,14 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6.stdout.log",
-              "sha256": "3dab9c90b4ddedc9369e0c6c3daf2067e1090d80d2ca0bbefe9099038d2fb880",
-              "bytes": 9870
+              "path": "logs/native_projection_reader_probe-7b579950-79a0-4f37-9061-7576973036cd.stdout.log",
+              "sha256": "6cd18468a8ef805efabd51d83219eb05931cacb13d75626c28aa6614c3b9cc38",
+              "bytes": 11928
             },
             "stderr": {
-              "path": "logs/native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6.stderr.log",
-              "sha256": "b1c8b02481b5586cee07f0ba9c977c9961458c036d096c5040e833759e5764d8",
-              "bytes": 171
+              "path": "logs/native_projection_reader_probe-7b579950-79a0-4f37-9061-7576973036cd.stderr.log",
+              "sha256": "7d0d5ec45ba8f2ac546ddc92d3488f53509ab954125bafb2a0aba91ce8248014",
+              "bytes": 170
             }
           }
         }
@@ -2501,12 +2588,50 @@
             "without_mutation_lock": true,
             "mutation_lock_acquired": false,
             "mutation_lock_observed": true,
+            "external_mutation_lock": {
+              "method": "sqlite_begin_immediate",
+              "path_ref": "isolation/authority/authority.lock.sqlite",
+              "held": false,
+              "available": true,
+              "error": null,
+              "provenance": "native_provider"
+            },
+            "owner_mutation_lock": {
+              "held": true,
+              "provenance": "native_provider",
+              "inspect_runtime_open": true
+            },
+            "inspect_runtime_lock_observations": [
+              {
+                "method": "sqlite_begin_immediate",
+                "path_ref": "isolation/authority/authority.lock.sqlite",
+                "held": true,
+                "available": true,
+                "error": "database is locked",
+                "provenance": "native_provider"
+              },
+              {
+                "method": "sqlite_begin_immediate",
+                "path_ref": "isolation/authority/authority.lock.sqlite",
+                "held": true,
+                "available": true,
+                "error": "database is locked",
+                "provenance": "native_provider"
+              }
+            ],
+            "owner_lock_release_observed": true,
+            "owner_authority_watermark": {
+              "before": "sha256:9f127303e1590944b49ae073b623a2f6334556929d65a95770fdec9b944a75a0",
+              "after": "sha256:9f127303e1590944b49ae073b623a2f6334556929d65a95770fdec9b944a75a0",
+              "stable": true,
+              "delta": null
+            },
             "projection_identity_stable": true,
             "rebuild_count": 1,
-            "provenance": "deterministic_supporting_check",
+            "provenance": "native_provider",
             "support_schema": "flow.host-recovery-reader-support/v1"
           },
-          "content_digest": "sha256:41e86f666034c6cd73db2029bf9dad3130d242511824f3fce7eb858674f76476"
+          "content_digest": "sha256:ca45ded0394c86c5aed7945bc688996373e84045e045155ca7091343c1e5710c"
         },
         {
           "id": "reader:views",
@@ -2516,15 +2641,15 @@
             "view_ids": [
               "host:run-index",
               "review:inbox",
-              "run:run:7d0058b2babdbb3a2c4acce1d52c04381a319fc433301c9163856f4cc7628014",
-              "run:run:dc2169e79bc337a7f314ad520f1a1f8c7432151a8854a96d3fe306d7819e399f"
+              "run:run:474b59d3619c3f63931a4075958ae903f1a92f56c568869e7540c3ed460e5f71",
+              "run:run:7a1a51ee8e26a2e49fa3f9e03128d0c0ef818335ec7889f365d7aa007d6f220c"
             ],
             "identities": [
               {
                 "id": "host:run-index",
                 "schema": "flow.run-index-projection/v1",
-                "watermark": "sha256:67c8cd2b829eaab3e75289686b7be8d503deeda613992ef9f8bee85b6ee7a223",
-                "digest": "sha256:a3d7a36e3ef5336cca6d644fd4405ff6bd45651d48964bb7a5ef43382b8ac13a"
+                "watermark": "sha256:9f127303e1590944b49ae073b623a2f6334556929d65a95770fdec9b944a75a0",
+                "digest": "sha256:4123777adb3cc4fffce0e2d999e4c4d54e34eb222aa2b93dea07d8c93853f0ed"
               },
               {
                 "id": "review:inbox",
@@ -2533,52 +2658,52 @@
                 "digest": "sha256:8591aa83dcabaecdeff8b572ffc2a6a29ffae2be285da142ee557ef92c92090f"
               },
               {
-                "id": "run:run:7d0058b2babdbb3a2c4acce1d52c04381a319fc433301c9163856f4cc7628014",
+                "id": "run:run:474b59d3619c3f63931a4075958ae903f1a92f56c568869e7540c3ed460e5f71",
                 "schema": "flow.run-projection/v1",
-                "watermark": "sha256:7c99146f170e3ee720ace53133d66e047a1f170671cd041ebff122796597d0d4",
-                "digest": "sha256:7f4744198befe025062b22007c7d75b7045d69a6b39eba54c11ce86bccb27c3e"
+                "watermark": "sha256:87a037f584a7c552343570238d1b6b4493a26082dabd4ed5532a16d281825f63",
+                "digest": "sha256:6979fe536045562d312163027248f4578577f38a69dfaa75c512e3c73b93a7c1"
               },
               {
-                "id": "run:run:dc2169e79bc337a7f314ad520f1a1f8c7432151a8854a96d3fe306d7819e399f",
+                "id": "run:run:7a1a51ee8e26a2e49fa3f9e03128d0c0ef818335ec7889f365d7aa007d6f220c",
                 "schema": "flow.run-projection/v1",
-                "watermark": "sha256:daee3f7925443ed16d6c9206067f0f813c511b2a37216a982dd2a1f97523c6e2",
-                "digest": "sha256:bb5cc9cc90beb60c227eaebdeb7a3936b52e035ab60f4f2b570dd43f2ba10e11"
+                "watermark": "sha256:5d753daf92b3c05293622f074e91b33566c7a223a1c024dc58e5f629cb689d18",
+                "digest": "sha256:987f916974a581d599d29447cf456b768eb55ed255874152d6b2486cedcf6bad"
               }
             ],
-            "provenance": "deterministic_supporting_check",
+            "provenance": "native_provider",
             "support_schema": "flow.host-recovery-reader-support/v1"
           },
-          "content_digest": "sha256:05b50df2fe54b8e9796817f15c56599d29614edab4b0d174b97611a5499e3ed7"
+          "content_digest": "sha256:14a3efdfa80fd92d84933385099d7432efa38b5b95b56a5ab201f6480b740358"
         },
         {
           "id": "reader:latency",
           "kind": "latency",
           "content": {
             "samples": [
-              15,
-              8
+              2034,
+              2026
             ],
-            "history_entries": 2,
-            "seed_history_entries": 2,
-            "max_latency_ms": 15,
-            "provenance": "deterministic_supporting_check",
+            "history_entries": 6,
+            "seed_history_entries": 6,
+            "max_latency_ms": 2034,
+            "provenance": "native_provider",
             "history_seed_provenance": "deterministic_supporting_check",
             "support_schema": "flow.host-recovery-reader-support/v1"
           },
-          "content_digest": "sha256:30dfe5f746403c32a5a9f3cc6f0bce2ec28d3d089bd3fd02107ba61605d8840c"
+          "content_digest": "sha256:df866711f1a031f76b891cc07bef174ef3d87f6a111ec89d4c3ef646019f93e2"
         }
       ],
       "captures": [
         {
-          "id": "projection_reader_probe-native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6",
+          "id": "projection_reader_probe-native_projection_reader_probe-7b579950-79a0-4f37-9061-7576973036cd",
           "kind": "projection_reader_probe",
           "format": "json",
-          "path": "captures/projection_reader_probe-native_projection_reader_probe-7733a19d-95b8-4b0e-8169-7fb9e55cb6d6.json",
-          "sha256": "2cd81e3abc3679cd936c348162eb9576410566ec41a4934587d81655fd3e8fe1",
-          "bytes": 13404,
+          "path": "captures/projection_reader_probe-native_projection_reader_probe-7b579950-79a0-4f37-9061-7576973036cd.json",
+          "sha256": "6676c6e987b671b70f789d8c9e193f15dceb8763dff9f0835606d0716ce2fdbc",
+          "bytes": 16558,
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:b0923a8e86a63dd921f58e93ba28b1d4956d6c727a3a51129847ae55e6e3c62c",
+          "watermark": "sha256:f767be5030876ec62fe1907d8e24fd859040f66780a6bbae557b0f490c3a0c8b",
           "legal_actions": "pass"
         }
       ],
@@ -2687,7 +2812,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:36.880Z"
+        "completed_at": "2026-09-20T20:31:53.450Z"
       },
       "reason": null
     },
@@ -2705,11 +2830,11 @@
       ],
       "required_capture_kinds": [],
       "status": "passed",
-      "started_at": "2026-09-17T13:08:37.324Z",
-      "finished_at": "2026-09-17T13:08:37.692Z",
+      "started_at": "2026-09-20T20:31:53.906Z",
+      "finished_at": "2026-09-20T20:31:54.285Z",
       "commands": [
         {
-          "id": "native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c",
+          "id": "native_suspended_admission_check-dd72697e-602c-492f-8646-e889ca5a76ac",
           "argv": [
             "node",
             "config/flow/scripts/run-host-recovery-reader-probe.mjs",
@@ -2718,7 +2843,7 @@
             "--worktree",
             "<worktree>",
             "--raw-root",
-            "<path:sha256:878de02dc93909b11b2f83ac011c2207182e051af6030beacf90feccb9efa11a>",
+            "<path:sha256:19fa2a651d9cf9ece2dea9db4eeaf53acc8544a3b00ad20063d8fd6473a3d2f3>",
             "--xdg-state-home",
             "<state>",
             "--authority-directory",
@@ -2736,9 +2861,9 @@
             "--qualification-workspace",
             "<workspace>",
             "--herdr-session",
-            "herdr:issue46-final-v11",
+            "herdr:issue-46-final-q1",
             "--run-id",
-            "run:issue46-final-v11",
+            "run:issue-46-final-q1",
             "--timeout",
             "120000"
           ],
@@ -2746,9 +2871,9 @@
           "launcher_ref": "config/flow/scripts/run-host-recovery-reader-probe.mjs",
           "host_ref": "native/reader-provider",
           "working_directory_ref": "worktree",
-          "started_at": "2026-09-17T13:08:37.324Z",
-          "finished_at": "2026-09-17T13:08:37.692Z",
-          "duration_ms": 368,
+          "started_at": "2026-09-20T20:31:53.906Z",
+          "finished_at": "2026-09-20T20:31:54.285Z",
+          "duration_ms": 379,
           "exit_code": 0,
           "signal": null,
           "expected_exit_code": 0,
@@ -2757,14 +2882,14 @@
           "timed_out": false,
           "logs": {
             "stdout": {
-              "path": "logs/native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c.stdout.log",
-              "sha256": "68423f4d02128d153d0fa64f9c265a1f98633cdd93e0ab8101c22652ae98d2c0",
+              "path": "logs/native_suspended_admission_check-dd72697e-602c-492f-8646-e889ca5a76ac.stdout.log",
+              "sha256": "3a2fe6071a28b52c3222e9c1a1d4f03e7fa3a06bed8230893da597bb2a685830",
               "bytes": 76113
             },
             "stderr": {
-              "path": "logs/native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c.stderr.log",
-              "sha256": "0abede206f438427f4bbb044b298a4d583ba4b16fbc9acd5408a9c8769e52ecf",
-              "bytes": 171
+              "path": "logs/native_suspended_admission_check-dd72697e-602c-492f-8646-e889ca5a76ac.stderr.log",
+              "sha256": "ec31989727720cde8324f9fd64841bacaf148117fc2e89435398b6d77697d94a",
+              "bytes": 170
             }
           }
         }
@@ -2792,12 +2917,12 @@
             "explicit": true,
             "run_id": "run:4484d6be63d9f18c077366181b2ea3e7e9c76edb98a88434e6d728054b730d7d",
             "command_type": "reboot_admission",
-            "action_identity": "sha256:03b190648ebbad94d4064a17ca592e9df11880b2781536d32345ec697f394639",
+            "action_identity": "sha256:f353d9b1b33a35332abb60ecd268ec2414dbc4b2da647a01fccbf5886c082c1a",
             "simulated_boot": true,
             "provenance": "production_runtime",
             "support_schema": "flow.host-recovery-reader-support/v1"
           },
-          "content_digest": "sha256:32cb78b70595fc039ae814ff5928300705703f4838621254b44d3b1cfeb4d473"
+          "content_digest": "sha256:8e26ff0283aa34fb0b9b63ead70a9d6a00465e4192760243c9cbfeddb9cf117f"
         },
         {
           "id": "reader:reboot",
@@ -2816,15 +2941,15 @@
       ],
       "captures": [
         {
-          "id": "suspended_admission_check-native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c",
+          "id": "suspended_admission_check-native_suspended_admission_check-dd72697e-602c-492f-8646-e889ca5a76ac",
           "kind": "suspended_admission_check",
           "format": "json",
-          "path": "captures/suspended_admission_check-native_suspended_admission_check-4e54c67b-7987-4607-bd25-ce8b40419a6c.json",
-          "sha256": "f936f1ac5b45eb3e02844cc2aa7ee3555242a35f784bb840c9a15a6097c232a1",
+          "path": "captures/suspended_admission_check-native_suspended_admission_check-dd72697e-602c-492f-8646-e889ca5a76ac.json",
+          "sha256": "213f50919cc6b7c0781c19c684c9978a2fd3b7e9d19818b0b90285621b694679",
           "bytes": 142381,
           "legibility": "pass",
           "provenance": "native_provider",
-          "watermark": "sha256:86354dec17463b097b3a9a9fec0d1930fa798079105c7b9485a6d90af2570581",
+          "watermark": "sha256:cce77dbaf616d8048f3ddbb57707d239850e872986fa77ba59c34382771ab610",
           "legal_actions": "pass"
         }
       ],
@@ -2919,7 +3044,7 @@
           }
         ],
         "unresolved_obligations": [],
-        "completed_at": "2026-09-17T13:08:37.697Z"
+        "completed_at": "2026-09-20T20:31:54.289Z"
       },
       "reason": null
     }
@@ -2942,38 +3067,38 @@
   "source_receipts": [
     {
       "path": "concurrent_runs_owner_restart.json",
-      "sha256": "90b8a12ae322443edc8ecf5d49f82c88bb5c10c29ce556f1ad37dd0b731dec4d"
+      "sha256": "91318387d0ec3245cfd704b398b8df6108f8ef062cf3a74fd4b1a3d33147a872"
     },
     {
       "path": "actionable_failure_recovery.json",
-      "sha256": "da8bb24bc7fea4b69c744bd1bbefd5df9a0f8e55a31bde0b84d562a25af90d0f"
+      "sha256": "faea3a734ca500cd9049c8c9d1c15d7707ce1c8f709cb2476a2ce6a2d3a20aef"
     },
     {
       "path": "backup_restore_reconciliation.json",
-      "sha256": "2b3ad9eac180b8a47863a9f0486c799c19715425d2472bc0bbec9143b53ee46c"
+      "sha256": "3b79c1ed408d43d6f56496b6f55f49d370360f338950656a621f9f3944af5ceb"
     },
     {
       "path": "ubuntu_headless_text_captures.json",
-      "sha256": "81d6f813c9c9a7f358fc6ab042eae1482e160900fc46dd016a2b453c56072911"
+      "sha256": "a66e8617665edcd689ee8f4a79291f8653f71c26b8b453d21b7fe883e9e509e1"
     },
     {
       "path": "tuicr_review_after_producer_exit.json",
-      "sha256": "4f0089991995b48c26c39f146281f4dd8c8b447b5b4533238f312c6cdb92203d"
+      "sha256": "11c77b822f53acb638cd063b2de7be1bae5fd36e72bf8e798e79037a22cccc24"
     },
     {
       "path": "drovr_registry_lock_reconciliation.json",
-      "sha256": "f4151e7935d8bdc9cf0b90d9974bba9bc89bfc4a0f3ccb9694cd14a5aae9bf22"
+      "sha256": "13912562181f268aaf9138723ee92c1e950600119fac296a59840f39d5cf71d3"
     },
     {
       "path": "projection_rebuild_readers.json",
-      "sha256": "870e801eb1ba603c2615d4889404f5ef24051630e29782cd1a69cc1b74589a87"
+      "sha256": "512c5c29d027b482dde14ffd229fd543e81b61a1826b2d5462a0356c4dec00f2"
     },
     {
       "path": "suspended_run_admission.json",
-      "sha256": "6ee2f95efb206f19b7780f4297729f9d397241e3eee8e5b9e5b982a220aea241"
+      "sha256": "ccafb91be1eb6446b94657e2935c228c64a09f4e417fa49a379cb0107ca9dc53"
     }
   ],
-  "captured_at": "2026-09-17T13:08:15.856Z",
-  "finished_at": "2026-09-17T13:08:37.692Z",
-  "evidence_digest": "sha256:ca3ce6fd8ce9c9c0f3dffd6a9b8ace996cb4eb37af9cf45974a16d43422e8167"
+  "captured_at": "2026-09-20T20:31:22.621Z",
+  "finished_at": "2026-09-20T20:31:54.285Z",
+  "evidence_digest": "sha256:bc56c0eee1384adb804ad4f5eae25a2b6303aa7075c3e6f49478b2fc8a8e9ad5"
 }

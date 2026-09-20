@@ -204,6 +204,7 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
     }));
     requireAccepted(approvalReceipt, "review approval");
     const approved = await queryReview(client, producer.review_id);
+    validateApprovedProjection(approved);
 
     const staleReceipt = await client.command(staleAction);
     validateStaleReceipt(staleReceipt);
@@ -232,6 +233,26 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
       );
     }
 
+    const disposition = approved.dispositions.at(-1);
+    const assertions = {
+      producer_exit_before_review: true,
+      flowruntime_disposition_and_approval:
+        disposition?.disposition === "accept" &&
+        approved.approval === "approved" &&
+        approved.approval_receipt?.decision === "approve" &&
+        dispositionReceipt.accepted === true &&
+        approvalReceipt.accepted === true,
+      stale_action_rejection: true,
+      projection_rebuild_identity: true,
+    };
+    if (Object.values(assertions).some((value) => value !== true)) {
+      throw new TuicrScenarioBlocked(
+        "review_approval_unproven",
+        "FlowRuntime review projection did not bind acceptance and approval to durable receipts",
+        { review_id: approved.review_id },
+      );
+    }
+
     const observations = [
       observation("producer_exit", {
         ...producer.producer_exit,
@@ -241,11 +262,13 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
         review_id: approved.review_id,
         candidate_fingerprint: approved.candidate_fingerprint,
         lifecycle_generation: approved.lifecycle_generation,
-        flowruntime_disposition: approved.flowruntime_disposition ?? "approved",
-        disposition: approved.disposition,
+        flowruntime_disposition: disposition?.disposition,
+        disposition,
+        dispositions: approved.dispositions,
         approval: approved.approval,
-        disposition_event: approved.disposition_event,
-        approval_event: approved.approval_event,
+        approval_receipt: approved.approval_receipt,
+        disposition_receipt: dispositionReceipt,
+        approval_command_receipt: approvalReceipt,
         watermark: extractWatermark(approved),
       }),
       observation("stale_action", {
@@ -278,13 +301,7 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
         capture("review-rebuilt", rebuilt, "public_process"),
       ],
       commands: [tuicrList.command, tuicrComments.command],
-      assertions: {
-        producer_exit_before_review: true,
-        flowruntime_disposition_and_approval:
-          approved.approval === "approved" && approved.disposition_event?.accepted === true,
-        stale_action_rejection: true,
-        projection_rebuild_identity: true,
-      },
+      assertions,
     };
   } catch (error) {
     outcome = { error: normalizeError(error) };
@@ -595,6 +612,20 @@ function validateConsumer(value, reviewId) {
     throw new TuicrScenarioBlocked(
       "tuicr_consumer_invalid",
       `tuicr list/comments did not resolve isolated review ${reviewId}`,
+    );
+  }
+}
+
+function validateApprovedProjection(value) {
+  if (value?.schema !== "flow.review-projection/v1" ||
+      !Array.isArray(value.dispositions) || value.dispositions.length === 0 ||
+      !value.dispositions.some((entry) => entry?.disposition === "accept") ||
+      value.approval !== "approved" ||
+      value.approval_receipt?.schema !== "flow.review-approval/v1" ||
+      value.approval_receipt.decision !== "approve") {
+    throw new TuicrScenarioBlocked(
+      "review_approval_unproven",
+      "public FlowRuntime did not expose accepted dispositions and an approval receipt",
     );
   }
 }

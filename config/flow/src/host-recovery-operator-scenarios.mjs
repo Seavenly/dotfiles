@@ -460,6 +460,17 @@ async function runTuicrScenario(context) {
     optional: context.options.reviewObservation !== undefined,
   });
   const reviewValue = review ?? context.options.reviewObservation;
+  const scenarioAssertions = context.options.scenarioAssertions ?? context.options.assertions;
+  if (!isObject(scenarioAssertions) ||
+      scenarioAssertions.producer_exit_before_review !== true ||
+      scenarioAssertions.flowruntime_disposition_and_approval !== true ||
+      scenarioAssertions.stale_action_rejection !== true ||
+      scenarioAssertions.projection_rebuild_identity !== true) {
+    throw new OperatorScenarioBlocked(
+      "scenario_assertion_failed",
+      "the live Tuicr adapter did not report every scenario assertion as true",
+    );
+  }
   validateApprovedReview(reviewValue, inboxQuery.output, producer);
 
   const staleAction = await invokeCommand(
@@ -483,9 +494,14 @@ async function runTuicrScenario(context) {
     review_id: reviewValue.review_id,
     candidate_fingerprint: reviewValue.candidate_fingerprint,
     lifecycle_generation: reviewValue.lifecycle_generation,
-    flowruntime_disposition: "approved",
-    disposition: reviewValue.disposition,
+    flowruntime_disposition: reviewValue.dispositions?.at(-1)?.disposition,
+    disposition: reviewValue.dispositions?.at(-1),
+    dispositions: reviewValue.dispositions,
     approval: reviewValue.approval,
+    approval_receipt: reviewValue.approval_receipt,
+    disposition_receipt: reviewValue.disposition_receipt,
+    approval_command_receipt: reviewValue.approval_command_receipt,
+    scenario_assertions: scenarioAssertions ?? null,
     review_watermark: extractWatermark(reviewValue),
   });
   const staleObservation = makeObservation(context, "stale_action", {
@@ -1108,9 +1124,14 @@ function validateReviewConsumer(value) {
 }
 
 function validateApprovedReview(value, inbox, producer) {
-  if (!isObject(value) || value.schema !== "work.review-projection/v1" ||
-      value.flowruntime_disposition !== "approved" || value.approval !== "approved" ||
-      value.disposition_event?.accepted !== true || value.approval_event?.accepted !== true ||
+  if (!isObject(value) || value.schema !== "flow.review-projection/v1" ||
+      !Array.isArray(value.dispositions) ||
+      !value.dispositions.some(({ disposition }) => disposition === "accept") ||
+      value.approval !== "approved" ||
+      value.approval_receipt?.schema !== "flow.review-approval/v1" ||
+      value.approval_receipt.decision !== "approve" ||
+      value.disposition_receipt?.accepted !== true ||
+      value.approval_command_receipt?.accepted !== true ||
       typeof value.review_id !== "string" || typeof value.candidate_fingerprint !== "string" ||
       !Number.isSafeInteger(value.lifecycle_generation) || !extractWatermark(value) ||
       !Array.isArray(value.legal_actions)) {
@@ -1206,8 +1227,12 @@ function validateNegativeTakeover(value, expectedKind) {
   const action = String(value?.action ?? value?.requested_action ?? "").toLowerCase();
   const isAge = expectedKind === "age" && /(age|timer|stale)/u.test(action);
   const isForce = expectedKind === "force" && /(force|generic|unlock|takeover)/u.test(action);
+  const requestedOption = expectedKind === "age" ? "staleAfterMs" : "force";
   if (!isObject(value) || (!isAge && !isForce && expectedKind !== "command") ||
       value.rejected !== true || value.accepted === true || value.mutated !== false ||
+      value.requested_option !== requestedOption || value.api_rejection !== true ||
+      !Array.isArray(value.unsupported_options) ||
+      !value.unsupported_options.includes(requestedOption) ||
       !(typeof value.code === "string" || typeof value.outcome === "string") ||
       !extractWatermark(value)) {
     throw new OperatorScenarioFailed(

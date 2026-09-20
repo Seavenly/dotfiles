@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -82,6 +82,7 @@ test("production backup support performs disposable loss, restore, six-domain re
   await execFileAsync("git", ["-C", repository, "add", "README.md"]);
   await execFileAsync("git", ["-C", repository, "commit", "--quiet", "-m", "issue-46"]);
 
+  let statusEnvironment;
   const result = await runProductionBackupRestoreProbe({
     authorityDirectory: join(root, "authority"),
     backupDirectory: join(root, "backup"),
@@ -91,6 +92,18 @@ test("production backup support performs disposable loss, restore, six-domain re
     env: {
       HOME: join(root, "home"),
       XDG_STATE_HOME: join(root, "state"),
+      DROVR_AMBIENT_SHOULD_NOT_LEAK: "caller-value",
+      PATH: "/qualification/bin",
+    },
+    drovrStatusRunner: ({ env }) => {
+      statusEnvironment = env;
+      return JSON.parse(execFileSync(process.execPath, [
+        join(WORKTREE, "tools/drovr/src/cli.mjs"), "status",
+      ], {
+        cwd: join(WORKTREE, "tools/drovr/src"),
+        env,
+        encoding: "utf8",
+      }));
     },
   });
 
@@ -101,10 +114,34 @@ test("production backup support performs disposable loss, restore, six-domain re
   assert.equal(result.proof.restore.restored, true);
   assert.equal(result.proof.reconciliation.domains_reconciled, 6);
   assert.equal(result.proof.reconciliation.complete, true);
+  assert.equal(result.proof.reconciliation.all_domains_non_empty, true);
+  assert.deepEqual(result.proof.reconciliation.non_empty_domains, {
+    database_streams: true,
+    artifact_state: true,
+    git_state: true,
+    filesystem_state: true,
+    external_effects: true,
+    drovr_obligations: true,
+  });
   assert.equal(result.proof.admission.retained_result_admitted, true);
+  const statusSandbox = join(drovr, "status-sandbox");
+  assert.equal(statusEnvironment.HOME, join(statusSandbox, "drovr-status-home"));
+  assert.equal(statusEnvironment.XDG_STATE_HOME, join(statusSandbox, "drovr-status-state"));
+  assert.equal(statusEnvironment.PATH, "/qualification/bin");
+  assert.equal(Object.hasOwn(statusEnvironment, "DROVR_AMBIENT_SHOULD_NOT_LEAK"), false);
   assert.equal(result.cleanup.disposition, "complete");
   assert.deepEqual(result.cleanup.unresolved_obligations, []);
+  assert.deepEqual(
+    result.cleanup.owned_resources.map(({ identity_ref }) => identity_ref),
+    [join(root, "authority"), statusSandbox],
+  );
+  assert.deepEqual(
+    result.cleanup.resource_dispositions.map(({ identity_ref, proof }) => [identity_ref, proof]),
+    [[join(root, "authority"), "absent_after_cleanup"], [statusSandbox, "absent_after_cleanup"]],
+  );
   await assert.rejects(lstat(join(root, "authority")), { code: "ENOENT" });
+  await assert.rejects(lstat(statusSandbox), { code: "ENOENT" });
+  await assert.rejects(lstat(join(statusSandbox, "drovr-status-state")), { code: "ENOENT" });
 });
 
 test("Drovr lock support kills one isolated native owner and proves age/force are not takeover authority", async (t) => {

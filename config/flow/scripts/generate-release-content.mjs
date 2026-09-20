@@ -120,6 +120,16 @@ if (!ledger.evidence.some(({ id }) => id === "production_route_conformance")) {
     recorded_at: timestamp,
   });
 }
+if (!ledger.evidence.some(({ id }) => id === "issue_46_host_recovery")) {
+  ledger.evidence.push({
+    id: "issue_46_host_recovery",
+    path: null,
+    sha256: null,
+    evidence_digest: null,
+    status: "not_run",
+    recorded_at: timestamp,
+  });
+}
 for (const evidence of ledger.evidence) {
   if (evidence.id === "public_contract_catalog") {
     evidence.path = "contracts/catalog.v1.json";

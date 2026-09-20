@@ -38,7 +38,9 @@ import {
 } from "../src/host-recovery-reader-integration.mjs";
 import {
   resolvePinnedTuicrPath,
+  seedTuicrSession,
 } from "../src/host-recovery-tuicr-live-integration.mjs";
+import { runTuicrCli } from "../src/host-recovery-tuicr-scenario.mjs";
 import {
   startFlowOwner,
   stopFlowOwner,
@@ -50,9 +52,16 @@ import {
 import {
   digest as canonicalDigest,
 } from "../../../tools/flow/src/canonical.mjs";
+import {
+  confirmedLaunchRequest,
+} from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
+import {
+  registeredOperationProposal,
+} from "../../../tools/flow/test-support/registered-operation.mjs";
 
 const configDirectory = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repositoryRoot = resolve(configDirectory, "../..");
+const HEADLESS_RECEIPT_MANIFEST = "public-command-receipts.json";
 
 async function main() {
 let options;
@@ -158,9 +167,32 @@ try {
       cleanupRunner: () => cleanupQualificationIsolation(isolation),
     });
   } else if (scenario.id === "ubuntu_headless_text_captures") {
-    await seedHeadlessPublicReview({ worktreeRoot, isolation });
+    const headlessSeed = await seedHeadlessPublicReview({
+      worktreeRoot,
+      isolation,
+      rawRoot,
+    });
     await startHeadlessPublicOwner({ entrypoints, isolation });
     headlessOwnerStarted = true;
+    await captureHeadlessCheckpointProjection({
+      entrypoints,
+      isolation,
+      rawRoot,
+      timeoutMs: driverOptions.timeoutMs,
+    });
+    await captureHeadlessSeededProjections({
+      entrypoints,
+      isolation,
+      rawRoot,
+      seeded: headlessSeed.seeded,
+    });
+    await captureHeadlessTuicrConsumer({
+      isolation,
+      rawRoot,
+      seeded: headlessSeed.seeded,
+      session: headlessSeed.tuicr,
+      timeoutMs: driverOptions.timeoutMs,
+    });
     scenarioResult = await runHostRecoveryOperatorScenario(scenario.id, {
       ...driverOptions,
       cleanupRunner: () => cleanupHeadlessPublicOwner(isolation, () => {
@@ -295,7 +327,7 @@ async function startHeadlessPublicOwner({ entrypoints, isolation }) {
   });
 }
 
-async function seedHeadlessPublicReview({ worktreeRoot, isolation }) {
+async function seedHeadlessPublicReview({ worktreeRoot, isolation, rawRoot }) {
   prepareNativeProviderDrovrConfig({ worktreeRoot, isolation });
   mkdirSync(isolation.repository_root, { recursive: true, mode: 0o700 });
   writeFileSync(join(isolation.repository_root, "feature.txt"), "before\n", { mode: 0o600 });
@@ -304,11 +336,31 @@ async function seedHeadlessPublicReview({ worktreeRoot, isolation }) {
     ...isolatedQualificationEnvironment(isolation),
     FLOW_PUBLIC_REPOSITORY: isolation.repository_root,
   };
-  await seedPublicReview({
+  writeFileSync(join(isolation.repository_root, "tuicr-seed.txt"), "after\n", {
+    mode: 0o600,
+  });
+  const tuicr = await seedTuicrSession({
+    isolation,
+    rawRoot,
+    env,
+    tuicrPath: resolvePinnedTuicrPath(),
+    draftComment: "issue-46 headless qualification draft",
+  });
+  execFileSync("git", ["-C", isolation.repository_root, "add", "tuicr-seed.txt"]);
+  execFileSync("git", [
+    "-C",
+    isolation.repository_root,
+    "commit",
+    "--quiet",
+    "-m",
+    "retain headless Tuicr qualification seed",
+  ]);
+  const seeded = await seedPublicReview({
     authorityDirectory: isolation.authority_directory,
     env,
     repository: isolation.repository_root,
   });
+  return { seeded, tuicr };
 }
 
 async function stopHeadlessPublicOwner(isolation) {
@@ -575,12 +627,19 @@ function adaptTuicrLiveProbeResult({ output, command, rawRoot, isolation }) {
   };
   const assertions = definition.required_assertion_ids.map((id) => {
     const observation = normalized.byKind.get(assertionKinds[id]);
+    const scenarioAssertion = output.scenario?.assertions?.[id];
     return {
       id,
-      disposition: output.status === "pass" && observation ? "pass" : "not_observed",
+      // The native probe's scenario assertion map is the authoritative
+      // assertion result. Output status alone cannot turn a missing or false
+      // assertion into proof.
+      disposition: output.status === "pass" && output.scenario?.status === "pass" &&
+        scenarioAssertion === true && observation ? "pass" : "not_observed",
       evidence_refs: observation ? [`observation:${observation.id}`] : [],
     };
   });
+  const scenarioAssertionFailed = definition.required_assertion_ids.some((id) =>
+    output.scenario?.assertions?.[id] !== true);
   const capture = persistNativeProviderCapture({
     scenarioId,
     commandId: command.id,
@@ -595,7 +654,9 @@ function adaptTuicrLiveProbeResult({ output, command, rawRoot, isolation }) {
     assertions.every(({ disposition }) => disposition === "pass") &&
     output.cleanup?.disposition === "complete" &&
     output.cleanup?.unresolved_obligations?.length === 0;
-  const reason = pass ? null : output.reason ?? "native_tuicr_live_proof_incomplete";
+  const reason = pass ? null : scenarioAssertionFailed
+    ? "scenario_assertion_failed"
+    : output.reason ?? "native_tuicr_live_proof_incomplete";
   return {
     schema: "flow.host-recovery-runtime-scenario/v1",
     version: 1,
@@ -941,6 +1002,284 @@ function captureHeadlessPublicOutput({ request, command, rawRoot, stdoutPath }) 
     throw new Error(`headless public capture already exists: ${destination}`);
   }
   writeFileSync(destination, bytes, { flag: "wx", mode: 0o600 });
+  const persistedSha = hash(bytes);
+  const stdoutSha = command.logs?.stdout?.sha256;
+  if (typeof stdoutSha !== "string" || stdoutSha !== persistedSha) {
+    throw new Error(`headless public capture receipt does not match persisted stdout: ${command.id}`);
+  }
+  updateHeadlessReceiptManifest(inputRoot, {
+    path: relative(inputRoot, destination),
+    provenance: "public_process",
+    command_id: command.id,
+    command_kind: command.command_kind,
+    stdout_sha256: stdoutSha,
+    persisted_sha256: persistedSha,
+  });
+}
+
+function updateHeadlessReceiptManifest(inputRoot, entry) {
+  const path = join(inputRoot, HEADLESS_RECEIPT_MANIFEST);
+  let manifest = {
+    schema: "flow.headless-public-receipts/v1",
+    receipts: [],
+  };
+  if (existsSync(path)) manifest = JSON.parse(readFileSync(path, "utf8"));
+  if (manifest.schema !== "flow.headless-public-receipts/v1" ||
+      !Array.isArray(manifest.receipts)) {
+    throw new Error("headless public receipt manifest is invalid");
+  }
+  if (manifest.receipts.some(({ path: existingPath }) => existingPath === entry.path)) {
+    throw new Error(`headless public receipt already exists: ${entry.path}`);
+  }
+  manifest.receipts.push(entry);
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+}
+
+async function captureHeadlessCheckpointProjection({
+  entrypoints,
+  isolation,
+  rawRoot,
+  timeoutMs,
+}) {
+  const preparedCommand = await runPinnedPublicCommand({
+    entrypoints,
+    isolation,
+    args: [
+      "prepare",
+      "--input",
+      JSON.stringify(registeredOperationProposal({ checkpointBound: true })),
+      "--json",
+    ],
+    logDirectory: join(rawRoot, "logs"),
+    cwd: isolation.worktree_root,
+    timeoutMs,
+  });
+  const prepared = readCommandJsonOutput(preparedCommand, rawRoot, "checkpoint prepare");
+  if (preparedCommand.exit_code !== 0 || preparedCommand.signal !== null ||
+      preparedCommand.timed_out || prepared?.schema !== "flow.prepared-run/v1") {
+    throw new Error("headless public checkpoint preparation failed");
+  }
+  const launchCommand = await runPinnedPublicCommand({
+    entrypoints,
+    isolation,
+    args: [
+      "launch",
+      "--input",
+      JSON.stringify(confirmedLaunchRequest(prepared)),
+      "--json",
+    ],
+    logDirectory: join(rawRoot, "logs"),
+    cwd: isolation.worktree_root,
+    timeoutMs,
+  });
+  const launch = readCommandJsonOutput(launchCommand, rawRoot, "checkpoint launch");
+  if (launchCommand.exit_code !== 0 || launchCommand.signal !== null ||
+      launchCommand.timed_out || launch?.schema !== "flow.launch-receipt/v1" ||
+      typeof launch.run_id !== "string") {
+    throw new Error("headless public checkpoint launch failed");
+  }
+  const queryCommand = await runPinnedPublicCommand({
+    entrypoints,
+    isolation,
+    args: ["query", "--input", JSON.stringify({ run_id: launch.run_id }), "--json"],
+    logDirectory: join(rawRoot, "logs"),
+    cwd: isolation.worktree_root,
+    timeoutMs,
+  });
+  if (queryCommand.exit_code !== 0 || queryCommand.signal !== null || queryCommand.timed_out) {
+    throw new Error("headless public checkpoint projection query failed");
+  }
+  const stdoutPath = queryCommand.logs?.stdout?.path;
+  if (typeof stdoutPath !== "string") {
+    throw new Error("headless public checkpoint projection query emitted no stdout log");
+  }
+  captureHeadlessPublicOutput({
+    request: {
+      isolation,
+      kind: "seeded-checkpoint",
+      scenario_id: "ubuntu_headless_text_captures",
+    },
+    command: queryCommand,
+    rawRoot,
+    stdoutPath,
+  });
+}
+
+function readCommandJsonOutput(command, rawRoot, label) {
+  const stdoutPath = command.logs?.stdout?.path;
+  if (typeof stdoutPath !== "string") {
+    throw new Error(`${label} emitted no stdout log`);
+  }
+  try {
+    return JSON.parse(readFileSync(join(rawRoot, "logs", stdoutPath), "utf8"));
+  } catch (error) {
+    throw new Error(`${label} emitted invalid JSON: ${error.message}`);
+  }
+}
+
+async function captureHeadlessSeededProjections({
+  entrypoints,
+  isolation,
+  rawRoot,
+  seeded,
+}) {
+  for (const [label, runId] of [
+    ["feature", seeded?.feature?.run_id],
+    ["review", seeded?.reviewRun?.run_id],
+  ]) {
+    if (typeof runId !== "string" || runId.length === 0) {
+      throw new Error(`headless public seed did not expose a ${label} run identity`);
+    }
+    const command = await runPinnedPublicCommand({
+      entrypoints,
+      isolation,
+      args: [
+        "query",
+        "--input",
+        JSON.stringify({ run_id: runId }),
+        "--json",
+      ],
+      logDirectory: join(rawRoot, "logs"),
+      cwd: isolation.worktree_root,
+    });
+    if (command.exit_code !== 0 || command.signal !== null || command.timed_out) {
+      throw new Error(`headless public ${label} projection query failed`);
+    }
+    const stdoutPath = command.logs?.stdout?.path;
+    if (typeof stdoutPath !== "string") {
+      throw new Error(`headless public ${label} projection query emitted no stdout log`);
+    }
+    captureHeadlessPublicOutput({
+      request: {
+        isolation,
+        kind: `seeded-${label}`,
+        scenario_id: "ubuntu_headless_text_captures",
+      },
+      command,
+      rawRoot,
+      stdoutPath,
+    });
+  }
+}
+
+async function captureHeadlessTuicrConsumer({
+  isolation,
+  rawRoot,
+  seeded,
+  session,
+  timeoutMs,
+}) {
+  if (typeof session?.session_path !== "string") {
+    throw new Error("headless Tuicr seed did not expose a session path");
+  }
+  const env = {
+    ...isolatedQualificationEnvironment(isolation),
+    HOME: isolation.qualification_workspace,
+    XDG_DATA_HOME: join(isolation.qualification_workspace, "tuicr-data"),
+    TUICR_NO_UPDATE_CHECK: "1",
+    TERM: "xterm-256color",
+  };
+  const tuicrPath = resolvePinnedTuicrPath();
+  const logDirectory = join(rawRoot, "logs");
+  const list = await runTuicrCli({
+    tuicrPath,
+    args: ["review", "list", "--repo", isolation.repository_root],
+    cwd: isolation.repository_root,
+    env,
+    logDirectory,
+    commandKind: "headless_tuicr_list",
+    timeoutMs,
+  });
+  const comments = await runTuicrCli({
+    tuicrPath,
+    args: [
+      "review",
+      "comments",
+      "--repo",
+      isolation.repository_root,
+      "--session",
+      session.session_path,
+    ],
+    cwd: isolation.repository_root,
+    env,
+    logDirectory,
+    commandKind: "headless_tuicr_comments",
+    timeoutMs,
+  });
+  if ([list.command, comments.command].some((command) =>
+    command.exit_code !== 0 || command.signal !== null || command.timed_out)) {
+    throw new Error("headless Tuicr consumer command failed");
+  }
+  const rows = String(list.stdout).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const commentsValue = JSON.parse(String(comments.stdout));
+  const reviewId = seeded?.review?.review_id ?? seeded?.review?.subject_id ?? null;
+  const consumer = {
+    schema: "tuicr.review-consumer-observation/v1",
+    // This JSON is a composed consumer observation. Its provenance is bound
+    // below to the persisted stdout logs of both public Tuicr commands.
+    provenance: "composed",
+    consumer: "tuicr",
+    started: true,
+    session_path: session.session_path,
+    list: {
+      session_path: session.session_path,
+      review_id: reviewId,
+      rows,
+      found: rows.some((row) => row.includes(session.session_path)),
+      raw_digest: canonicalDigest(rows),
+      command_id: list.command.id,
+      stdout_sha256: list.command.logs.stdout.sha256,
+    },
+    comments: commentsValue,
+    comments_command: {
+      command_id: comments.command.id,
+      stdout_sha256: comments.command.logs.stdout.sha256,
+    },
+    watermark: seeded?.review?.watermark ?? seeded?.candidate?.watermark ?? null,
+    legal_actions: seeded?.review?.legal_actions ?? seeded?.candidate?.legal_actions ?? [],
+  };
+  if (consumer.list.found !== true) {
+    throw new Error("headless Tuicr list did not resolve the seeded session");
+  }
+  const inputRoot = headlessInputRoot(isolation);
+  const path = join(inputRoot, "public-tuicr-consumer.json");
+  const consumerBytes = Buffer.from(`${JSON.stringify(consumer, null, 2)}\n`);
+  writeFileSync(path, consumerBytes, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  const componentLogs = [
+    { label: "list", command: list.command },
+    { label: "comments", command: comments.command },
+  ].map(({ label, command }) => {
+    const stdoutPath = command.logs?.stdout?.path;
+    if (typeof stdoutPath !== "string") {
+      throw new Error(`headless Tuicr ${label} command emitted no stdout log`);
+    }
+    const bytes = readFileSync(join(rawRoot, "logs", stdoutPath));
+    const stdoutSha256 = command.logs?.stdout?.sha256;
+    const stdoutHex = typeof stdoutSha256 === "string"
+      ? stdoutSha256.replace(/^sha256:/u, "")
+      : null;
+    if (stdoutHex === null || hash(bytes) !== stdoutHex) {
+      throw new Error(`headless Tuicr ${label} stdout log differs from its command receipt`);
+    }
+    const destination = join(inputRoot, `public-tuicr-${label}-${command.id}.stdout.log`);
+    writeFileSync(destination, bytes, { flag: "wx", mode: 0o600 });
+    return {
+      path: relative(inputRoot, destination),
+      sha256: hash(bytes),
+      stdout_sha256: stdoutSha256,
+      command_id: command.id,
+      command_kind: command.command_kind,
+    };
+  });
+  updateHeadlessReceiptManifest(inputRoot, {
+    path: relative(inputRoot, path),
+    provenance: "composed",
+    persisted_sha256: hash(consumerBytes),
+    components: componentLogs,
+  });
 }
 
 function nativeHeadlessProviderRunner({
@@ -1399,11 +1738,16 @@ function buildOperatorRawReceipt({
   };
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error?.message ?? error}\n`);
-  process.exitCode = error?.code === "path_not_absolute" ||
-    error?.code === "isolation_incomplete" ? 2 : 1;
-});
+export { adaptTuicrLiveProbeResult };
+
+if (process.argv[1] !== undefined &&
+    resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error?.message ?? error}\n`);
+    process.exitCode = error?.code === "path_not_absolute" ||
+      error?.code === "isolation_incomplete" ? 2 : 1;
+  });
+}
 
 function parseArgs(args) {
   const options = {};

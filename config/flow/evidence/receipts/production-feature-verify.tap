@@ -2,7 +2,7 @@ TAP version 13
 # Subtest: production feature runs a real Git mutation through a local candidate
 ok 1 - production feature runs a real Git mutation through a local candidate
   ---
-  duration_ms: 3187.545722
+  duration_ms: 3315.526071
   type: 'test'
   ...
 1..1
@@ -13,4 +13,4 @@ ok 1 - production feature runs a real Git mutation through a local candidate
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 3245.253559
+# duration_ms 3373.155324

@@ -76,12 +76,20 @@ export const HOST_RECOVERY_SCENARIOS = Object.freeze([
       "destructive_loss",
       "restore",
       "six_domain_reconciliation",
+      "public_drovr_status_observation",
       "retained_result_admission",
     ],
     ["native_backup_restore_probe"],
     {
       proofPredicate: "backup_restore_reconciliation",
-      requiredObservationKinds: ["backup", "loss", "restore", "reconciliation", "admission"],
+      requiredObservationKinds: [
+        "backup",
+        "loss",
+        "restore",
+        "reconciliation",
+        "drovr_status",
+        "admission",
+      ],
     },
   ),
   scenario(
@@ -191,6 +199,7 @@ export const HOST_RECOVERY_DEFERRED_SCENARIOS = Object.freeze([
 const SCENARIO_BY_ID = new Map(HOST_RECOVERY_SCENARIOS.map((item) => [item.id, item]));
 const STATUS_VALUES = new Set(["pass", "fail", "blocked", "not_run"]);
 const EVIDENCE_STATUS_VALUES = new Set(["passed", "failed", "blocked", "not_run"]);
+const LIVE_PROJECTION_PROVENANCES = new Set(["native_provider", "production_runtime"]);
 const PATH_FIELDS = Object.freeze([
   "xdgStateHome",
   "authorityDirectory",
@@ -241,6 +250,7 @@ const ASSERTION_PROOF_KINDS = Object.freeze({
     destructive_loss: ["observation:loss"],
     restore: ["observation:restore"],
     six_domain_reconciliation: ["observation:reconciliation"],
+    public_drovr_status_observation: ["observation:drovr_status"],
     retained_result_admission: ["observation:admission"],
   }),
   tuicr_review_after_producer_exit: Object.freeze({
@@ -1247,7 +1257,7 @@ export function generateHostRecoveryEvidence({
 }
 
 /** Validate generated evidence and recompute its digest before any persistence. */
-export function validateHostRecoveryEvidence(evidence) {
+export function validateHostRecoveryEvidence(evidence, { catalog = HOST_RECOVERY_SCENARIOS } = {}) {
   assertExactKeys(evidence, [
     "schema", "version", "issue", "run_id", "status", "scope", "release", "host",
     "tools", "isolation", "scenarios", "supporting_checks", "deferred", "source_receipts",
@@ -1265,13 +1275,13 @@ export function validateHostRecoveryEvidence(evidence) {
   validateHost(evidence.host);
   validateTools(evidence.tools);
   validateIsolationReference(evidence.isolation, evidence.run_id);
-  validateHostRecoveryCatalog(HOST_RECOVERY_SCENARIOS);
-  if (!Array.isArray(evidence.scenarios) || evidence.scenarios.length !== HOST_RECOVERY_SCENARIOS.length) {
+  if (catalog === HOST_RECOVERY_SCENARIOS) validateHostRecoveryCatalog(catalog);
+  if (!Array.isArray(evidence.scenarios) || evidence.scenarios.length !== catalog.length) {
     throw new QualificationReceiptError("evidence_catalog_invalid", "aggregate evidence must contain exactly eight scenarios");
   }
   const scenarioIds = new Set();
   for (const [index, scenarioEvidence] of evidence.scenarios.entries()) {
-    const definition = HOST_RECOVERY_SCENARIOS[index];
+    const definition = catalog[index];
     assertExactKeys(scenarioEvidence, [
       "id", "execution_kind", "proof_predicate", "required_command_kinds",
       "required_observation_kinds", "required_capture_kinds", "status", "started_at", "finished_at",
@@ -1359,6 +1369,208 @@ export function validateHostRecoveryEvidence(evidence) {
     throw new QualificationReceiptError("evidence_digest_mismatch", "aggregate evidence digest does not match its content");
   }
   return true;
+}
+
+/**
+ * Validate the tracked issue-46 aggregate as a release consumer would.
+ *
+ * The aggregate is not trusted merely because its JSON is well formed: its
+ * release and qualification tools must still match this worktree, and the
+ * transition ledger must bind the exact persisted bytes, recomputed digest,
+ * and status.  This is intentionally read-only and fails closed for a stale
+ * or unbound generated artifact.
+ */
+export function validateTrackedHostRecoveryEvidence({
+  worktreeRoot,
+  evidencePath = undefined,
+  ledgerPath = undefined,
+} = {}) {
+  const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
+  const configRoot = resolve(worktree, "config/flow");
+  const aggregatePath = resolve(
+    evidencePath ?? join(configRoot, "evidence/host-recovery-qualification.v1.json"),
+  );
+  const transitionLedgerPath = resolve(
+    ledgerPath ?? join(configRoot, "transition-ledger.v1.json"),
+  );
+  if (!isContained(worktree, aggregatePath) || !isContained(worktree, transitionLedgerPath)) {
+    throw new QualificationReceiptError(
+      "tracked_aggregate_path_invalid",
+      "tracked issue-46 evidence and transition ledger must remain inside the worktree",
+    );
+  }
+
+  let aggregateBytes;
+  let evidence;
+  try {
+    aggregateBytes = readFileSync(aggregatePath);
+    evidence = JSON.parse(aggregateBytes.toString("utf8"));
+  } catch (error) {
+    throw new QualificationReceiptError(
+      "tracked_aggregate_unreadable",
+      `tracked issue-46 evidence is unreadable: ${error.message}`,
+    );
+  }
+  validateHostRecoveryEvidence(evidence);
+
+  const release = derivePinnedReleaseIdentity({ worktreeRoot: worktree });
+  // The aggregate is generated before the landing commit, so the Git tree
+  // observed by the receipt cannot remain equal after that commit. Bind the
+  // consumer to release fields stable across landing and retain the pinned
+  // tree only as informational receipt data. Raw receipts still require the
+  // exact pinned tree while they are qualified.
+  if (!sameLandingRelease(evidence.release, release)) {
+    throw new QualificationReceiptError(
+      "tracked_aggregate_release_mismatch",
+      "tracked issue-46 evidence release is not the current pinned worktree release",
+    );
+  }
+  const tools = resolvePinnedQualificationTools({ worktreeRoot: worktree });
+  validateReceiptToolIdentity(evidence.tools, tools);
+
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(transitionLedgerPath, "utf8"));
+  } catch (error) {
+    throw new QualificationReceiptError(
+      "tracked_aggregate_ledger_unreadable",
+      `transition ledger is unreadable: ${error.message}`,
+    );
+  }
+  if (ledger?.schema !== "flow.transition-ledger/v1" || !Array.isArray(ledger.evidence)) {
+    throw new QualificationReceiptError(
+      "tracked_aggregate_ledger_invalid",
+      "transition ledger does not expose its versioned evidence records",
+    );
+  }
+  const ledgerEvidence = ledger.evidence.find(({ id }) => id === "issue_46_host_recovery");
+  const expectedPath = relative(configRoot, aggregatePath);
+  const aggregateSha256 = sha256(aggregateBytes);
+  if (!isRecord(ledgerEvidence) ||
+      ledgerEvidence.path !== expectedPath ||
+      ledgerEvidence.sha256 !== aggregateSha256 ||
+      ledgerEvidence.evidence_digest !== evidence.evidence_digest ||
+      ledgerEvidence.status !== evidence.status ||
+      evidence.status !== "passed" ||
+      ledgerEvidence.status !== "passed") {
+    throw new QualificationReceiptError(
+      evidence.status === "passed" && ledgerEvidence.status === "passed"
+        ? "tracked_aggregate_ledger_binding_invalid"
+        : "tracked_aggregate_unqualified",
+      "transition ledger must bind a passed issue-46 aggregate with exact bytes, digest, and status",
+    );
+  }
+  return Object.freeze({
+    schema: "flow.tracked-host-recovery-consumer-result/v1",
+    status: "passed",
+    evidence_digest: evidence.evidence_digest,
+    evidence_sha256: aggregateSha256,
+    release: structuredClone(release),
+    tools: structuredClone(tools),
+    ledger_record: structuredClone(ledgerEvidence),
+  });
+}
+
+/**
+ * Validate the predecessor binding required before replacing tracked issue-46
+ * evidence.  This deliberately does not require the predecessor release to
+ * match the current worktree: successor generation exists for refreshing a
+ * valid, ledger-bound artifact after the governed release changes.
+ */
+export function validateTrackedHostRecoverySuccessor({
+  worktreeRoot,
+  evidencePath = undefined,
+  ledgerPath = undefined,
+} = {}) {
+  const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
+  const configRoot = resolve(worktree, "config/flow");
+  const aggregatePath = resolve(
+    evidencePath ?? join(configRoot, "evidence/host-recovery-qualification.v1.json"),
+  );
+  const transitionLedgerPath = resolve(
+    ledgerPath ?? join(configRoot, "transition-ledger.v1.json"),
+  );
+  const evidenceRoot = resolve(configRoot, "evidence");
+  if (!isContained(evidenceRoot, aggregatePath) ||
+      !isContained(worktree, transitionLedgerPath)) {
+    throw new QualificationReceiptError(
+      "tracked_successor_path_invalid",
+      "tracked issue-46 successor paths must remain inside the pinned worktree",
+    );
+  }
+
+  let aggregateBytes;
+  let evidence;
+  try {
+    aggregateBytes = readFileSync(aggregatePath);
+    evidence = JSON.parse(aggregateBytes.toString("utf8"));
+  } catch (error) {
+    throw new QualificationReceiptError(
+      "tracked_successor_unreadable",
+      `tracked issue-46 predecessor is unreadable: ${error.message}`,
+    );
+  }
+  validateHostRecoveryEvidence(evidence, {
+    catalog: predecessorCatalog(evidence),
+  });
+
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(transitionLedgerPath, "utf8"));
+  } catch (error) {
+    throw new QualificationReceiptError(
+      "tracked_successor_ledger_unreadable",
+      `transition ledger is unreadable: ${error.message}`,
+    );
+  }
+  if (ledger?.schema !== "flow.transition-ledger/v1" || !Array.isArray(ledger.evidence)) {
+    throw new QualificationReceiptError(
+      "tracked_successor_ledger_invalid",
+      "transition ledger does not expose versioned evidence records",
+    );
+  }
+  const ledgerEvidence = ledger.evidence.find(({ id }) => id === "issue_46_host_recovery");
+  const expectedPath = relative(configRoot, aggregatePath);
+  const aggregateSha256 = sha256(aggregateBytes);
+  if (!isRecord(ledgerEvidence) ||
+      ledgerEvidence.path !== expectedPath ||
+      ledgerEvidence.sha256 !== aggregateSha256 ||
+      ledgerEvidence.evidence_digest !== evidence.evidence_digest ||
+      ledgerEvidence.status !== evidence.status) {
+    throw new QualificationReceiptError(
+      "tracked_successor_predecessor_unbound",
+      "tracked issue-46 predecessor is not exactly bound by the current transition ledger",
+    );
+  }
+  return Object.freeze({
+    aggregatePath,
+    transitionLedgerPath,
+    aggregateBytes,
+    evidence: structuredClone(evidence),
+    ledger: structuredClone(ledger),
+    ledgerEvidence: structuredClone(ledgerEvidence),
+  });
+}
+
+function predecessorCatalog(evidence) {
+  if (!Array.isArray(evidence?.scenarios)) {
+    throw new QualificationReceiptError(
+      "tracked_successor_catalog_invalid",
+      "tracked issue-46 predecessor has no versioned scenario catalog",
+    );
+  }
+  return evidence.scenarios.map((scenarioEvidence) => ({
+    id: scenarioEvidence.id,
+    execution_kind: scenarioEvidence.execution_kind,
+    proof_predicate: scenarioEvidence.proof_predicate,
+    required_command_kinds: scenarioEvidence.required_command_kinds,
+    required_observation_kinds: scenarioEvidence.required_observation_kinds,
+    required_capture_kinds: scenarioEvidence.required_capture_kinds,
+    required_assertion_ids: Array.isArray(scenarioEvidence.assertions)
+      ? scenarioEvidence.assertions.map(({ id }) => id)
+      : [],
+    public_command_kinds: [],
+  }));
 }
 
 function validateEvidenceAssertion(assertion) {
@@ -1922,7 +2134,27 @@ function evaluateScenarioProof(receipt, definition, observationsByKind) {
       requires("backup", (value) => value?.production_backup === true);
       requires("loss", (value) => value?.destructive_loss === true);
       requires("restore", (value) => value?.restored === true);
-      requires("reconciliation", (value) => value?.domains_reconciled === 6);
+      requires("reconciliation", (value) => {
+        const domains = [
+          "database_streams",
+          "artifact_state",
+          "git_state",
+          "filesystem_state",
+          "external_effects",
+          "drovr_obligations",
+        ];
+        return value?.domains_reconciled === domains.length &&
+          value?.all_domains_non_empty === true &&
+          isRecord(value.non_empty_domains) &&
+          domains.every((domain) => value.non_empty_domains[domain] === true);
+      });
+      requires("drovr_status", (value) => value?.observed === true &&
+        value?.command === "drovr status" &&
+        typeof value?.turn_id === "string" && value.turn_id.length > 0 &&
+        value?.status === "working" &&
+        value?.provenance === "public_process" &&
+        typeof value?.output_digest === "string" &&
+        /^sha256:[0-9a-f]{64}$/u.test(value.output_digest));
       requires("admission", (value) => value?.retained_result_admitted === true);
       return;
     case "headless_capture_inventory":
@@ -1940,7 +2172,15 @@ function evaluateScenarioProof(receipt, definition, observationsByKind) {
       return;
     case "tuicr_after_producer_exit":
       requires("producer_exit", (value) => value?.producer_exited === true);
-      requires("disposition", (value) => value?.flowruntime_disposition === "approved");
+      requires("disposition", (value) =>
+        value?.flowruntime_disposition === "accept" &&
+        Array.isArray(value?.dispositions) &&
+        value.dispositions.some(({ disposition }) => disposition === "accept") &&
+        value?.approval === "approved" &&
+        value?.approval_receipt?.schema === "flow.review-approval/v1" &&
+        value.approval_receipt.decision === "approve" &&
+        value?.disposition_receipt?.accepted === true &&
+        value?.approval_command_receipt?.accepted === true);
       requires("stale_action", (value) => value?.rejected === true);
       requires("rebuild", (value) => value?.identity_stable === true);
       return;
@@ -1951,11 +2191,37 @@ function evaluateScenarioProof(receipt, definition, observationsByKind) {
       requires("negative_force", (value) => value?.rejected === true);
       return;
     case "projection_rebuild_readers":
-      requires("query", (value) => value?.observed === true);
-      requires("watch", (value) => value?.observed === true);
-      requires("rebuild", (value) => value?.without_mutation_lock === true);
-      requires("views", (value) => value?.count >= 2);
-      requires("latency", (value) => Array.isArray(value?.samples) && value.samples.length >= 2);
+      requires("query", (value) => value?.observed === true &&
+        value?.provenance === "public_process");
+      requires("watch", (value) => value?.observed === true &&
+        value?.provenance === "public_process");
+      requires("rebuild", (value) => {
+        const ownerLock = value?.owner_mutation_lock;
+        const inspectObservations = value?.inspect_runtime_lock_observations;
+        const releasedLock = value?.external_mutation_lock;
+        return value?.without_mutation_lock === true &&
+          LIVE_PROJECTION_PROVENANCES.has(value?.provenance) &&
+          ownerLock?.held === true &&
+          ownerLock?.inspect_runtime_open === true &&
+          LIVE_PROJECTION_PROVENANCES.has(ownerLock?.provenance) &&
+          Array.isArray(inspectObservations) &&
+          inspectObservations.length >= 2 &&
+          inspectObservations.every((observation) =>
+            observation?.available === true &&
+            observation?.held === true &&
+            LIVE_PROJECTION_PROVENANCES.has(observation?.provenance)) &&
+          releasedLock?.available === true &&
+          releasedLock?.held === false &&
+          LIVE_PROJECTION_PROVENANCES.has(releasedLock?.provenance) &&
+          value?.owner_lock_release_observed === true &&
+          value?.owner_authority_watermark?.stable === true &&
+          value?.owner_authority_watermark?.delta === null;
+      });
+      requires("views", (value) => value?.count >= 2 &&
+        LIVE_PROJECTION_PROVENANCES.has(value?.provenance));
+      requires("latency", (value) => Array.isArray(value?.samples) &&
+        value.samples.length >= 2 &&
+        LIVE_PROJECTION_PROVENANCES.has(value?.provenance));
       return;
     case "suspended_run_admission":
       requires("suspended", (value) => value?.observed === true);
@@ -2365,6 +2631,15 @@ function sameRelease(left, right) {
     left.candidate_tree_sha === right.candidate_tree_sha &&
     left.release_content_digest === right.release_content_digest &&
     left.pinned_git_tree_sha === right.pinned_git_tree_sha &&
+    left.release_content_bytes_sha256 === right.release_content_bytes_sha256;
+}
+
+function sameLandingRelease(left, right) {
+  return isRecord(left) && isRecord(right) &&
+    left.release_id === right.release_id &&
+    left.implementation === right.implementation &&
+    left.candidate_tree_sha === right.candidate_tree_sha &&
+    left.release_content_digest === right.release_content_digest &&
     left.release_content_bytes_sha256 === right.release_content_bytes_sha256;
 }
 

@@ -12,6 +12,7 @@ import {
   createIssue46LiveSupport,
 } from "../src/host-recovery-live-support.mjs";
 import {
+  ownerWatermarkObservation,
   runProjectionRebuildReaderSupport,
   runSuspendedRunAdmissionSupport,
 } from "../src/host-recovery-reader-support.mjs";
@@ -63,7 +64,7 @@ test("projection reader support uses public query/watch and a read-only rebuild"
   assert.equal(result.execution_kind, "live_public_process");
   assert.equal(result.provenance.query, "public_process");
   assert.equal(result.provenance.watch, "public_process");
-  assert.equal(result.provenance.rebuild, "deterministic_supporting_check");
+  assert.equal(result.provenance.rebuild, "native_provider");
   assert.equal(result.seed.provenance, "deterministic_supporting_check");
   assert.deepEqual(result.commands.map(({ command_kind }) => command_kind), [
     "start", "query", "watch", "stop",
@@ -71,17 +72,19 @@ test("projection reader support uses public query/watch and a read-only rebuild"
   assert.equal(result.proof.query.observed, true);
   assert.equal(result.proof.watch.observed, true);
   assert.equal(result.proof.rebuild.without_mutation_lock, true);
+  assert.equal(result.proof.rebuild.external_mutation_lock.held, false);
+  assert.equal(result.proof.rebuild.external_mutation_lock.provenance, "native_provider");
   assert.equal(result.proof.rebuild.mutation_lock_acquired, false);
   assert.equal(result.proof.rebuild.projection_identity_stable, true);
   assert.ok(result.proof.views.count >= 2);
   assert.ok(result.proof.latency.samples.length >= 2);
-  assert.ok(result.proof.latency.history_entries >= 2);
+  assert.ok(result.proof.latency.history_entries >= 6);
   assert.equal(result.cleanup.disposition, "complete");
   assert.deepEqual(result.cleanup.unresolved_obligations, []);
 
   assert.equal(result.outputs.query.proof.query.provenance, "public_process");
   assert.equal(result.outputs.query.proof.rebuild.provenance,
-    "deterministic_supporting_check");
+    "native_provider");
   assert.equal(result.outputs.watch.proof.watch.provenance, "public_process");
 });
 
@@ -136,4 +139,17 @@ test("suspended admission support refuses an actual reboot request", async (t) =
   assert.equal(result.result.reason, "actual_reboot_deferred");
   assert.equal(result.outputs.query, null);
   assert.equal(result.cleanup.disposition, "complete");
+});
+
+test("watermark drift records the explicit owner-movement rejection reason", () => {
+  const before = `sha256:${"a".repeat(64)}`;
+  const after = `sha256:${"b".repeat(64)}`;
+  const observation = ownerWatermarkObservation(before, after);
+  assert.equal(observation.stable, false);
+  assert.deepEqual(observation.delta, {
+    before,
+    after,
+    authorized: false,
+    reason: "projection_rebuild_read_does_not_authorize_owner_watermark_movement",
+  });
 });

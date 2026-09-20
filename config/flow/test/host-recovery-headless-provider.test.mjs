@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -106,7 +108,23 @@ test("headless provider derives eight forms from real Flow projections and the o
       legal_actions: projection.legal_actions,
     },
   })}\n`);
+  await writeFile(join(inputRoot, "tuicr.json"), `${JSON.stringify({
+    schema: "tuicr.review-consumer-observation/v1",
+    consumer: "tuicr",
+    started: true,
+    watermark: projection.watermark,
+    legal_actions: projection.legal_actions,
+    list: { session_id: "tuicr:provider-test", review_id: null },
+    comments: { session_id: "tuicr:provider-test", review_id: null, count: 0 },
+  })}\n`);
   await writeFile(join(inputRoot, "release-evidence.json"), `${JSON.stringify(releaseEvidence)}\n`);
+  await writeReceiptManifest(inputRoot, [
+    ["status.json", "status"],
+    ["projection.json", "query"],
+    ["candidate.json", "query"],
+    ["review.log", "query"],
+    ["tuicr.json", "tuicr"],
+  ]);
 
   const result = await execFileAsync(process.execPath, [
     PROVIDER,
@@ -126,6 +144,8 @@ test("headless provider derives eight forms from real Flow projections and the o
     assert.ok(Array.isArray(capture.legal_actions));
     assert.equal(capture.legibility, "pass");
     assert.equal(capture.source.provenance, "public_process");
+    assert.equal(capture.value.persisted_rendered_bytes, true);
+    assert.equal(capture.value.source_bytes_sha256, capture.value.rendered_bytes_sha256);
   }
   assert.equal(provider.captures.find(({ kind }) => kind === "graph").watermark,
     projection.views.graph.authority_watermark);
@@ -218,6 +238,7 @@ test("headless provider fails closed when a required projection form is absent",
     watermark: `sha256:${"a".repeat(64)}`,
     legal_actions: [],
   }));
+  await writeReceiptManifest(inputRoot, [["status.json", "status"]]);
 
   await assert.rejects(
     execFileAsync(process.execPath, [PROVIDER, "--input-root", inputRoot], {
@@ -227,3 +248,99 @@ test("headless provider fails closed when a required projection form is absent",
     (error) => error?.code === 1 && /candidate|checkpoint|review|graph|timeline|tuicr/u.test(error.stderr),
   );
 });
+
+test("headless provider rejects a persisted stdout receipt digest drift", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-headless-provider-receipt-drift-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const inputRoot = join(root, "captured");
+  await mkdir(inputRoot, { recursive: true, mode: 0o700 });
+  await writeFile(join(inputRoot, "release-evidence.json"), JSON.stringify({
+    release_id: "flow-release-test/v1",
+    route: "headless_text",
+  }));
+  await writeFile(join(inputRoot, "status.json"), JSON.stringify({
+    schema: "flow.runtime-runner-status/v1",
+    watermark: `sha256:${"a".repeat(64)}`,
+    legal_actions: [],
+  }));
+  await writeFile(join(inputRoot, "public-command-receipts.json"), JSON.stringify({
+    schema: "flow.headless-public-receipts/v1",
+    receipts: [{
+      path: "status.json",
+      provenance: "public_process",
+      command_id: "fixture:status",
+      command_kind: "status",
+      stdout_sha256: "0".repeat(64),
+      persisted_sha256: "0".repeat(64),
+    }],
+  }));
+  await assert.rejects(
+    execFileAsync(process.execPath, [PROVIDER, "--input-root", inputRoot], {
+      cwd: WORKTREE,
+      encoding: "utf8",
+    }),
+    (error) => error?.code === 1 && /digest|receipt/u.test(error.stderr),
+  );
+});
+
+test("headless provider rejects a composed Tuicr component detached from its stdout receipt", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-headless-provider-component-drift-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const inputRoot = join(root, "captured");
+  await mkdir(inputRoot, { recursive: true, mode: 0o700 });
+  await writeFile(join(inputRoot, "release-evidence.json"), JSON.stringify({
+    release_id: "flow-release-test/v1",
+    route: "headless_text",
+  }));
+  const consumerBytes = Buffer.from(JSON.stringify({
+    schema: "tuicr.review-consumer-observation/v1",
+    consumer: "tuicr",
+    started: true,
+  }));
+  const componentBytes = Buffer.from("public stdout\n");
+  await writeFile(join(inputRoot, "consumer.json"), consumerBytes);
+  await writeFile(join(inputRoot, "list.stdout.log"), componentBytes);
+  const componentSha = createHash("sha256").update(componentBytes).digest("hex");
+  await writeFile(join(inputRoot, "public-command-receipts.json"), `${JSON.stringify({
+    schema: "flow.headless-public-receipts/v1",
+    receipts: [{
+      path: "consumer.json",
+      provenance: "composed",
+      persisted_sha256: createHash("sha256").update(consumerBytes).digest("hex"),
+      components: [{
+        path: "list.stdout.log",
+        sha256: componentSha,
+        stdout_sha256: "0".repeat(64),
+        command_id: "tuicr:list",
+        command_kind: "headless_tuicr_list",
+      }],
+    }],
+  }, null, 2)}\n`);
+  await assert.rejects(
+    execFileAsync(process.execPath, [PROVIDER, "--input-root", inputRoot], {
+      cwd: WORKTREE,
+      encoding: "utf8",
+    }),
+    (error) => error?.code === 1 && /originating stdout receipt|component/u.test(error.stderr),
+  );
+});
+
+async function writeReceiptManifest(inputRoot, entries) {
+  const receipts = [];
+  for (const [path, commandKind] of entries) {
+    const bytes = await readFile(join(inputRoot, path));
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    receipts.push({
+      path,
+      provenance: "public_process",
+      command_id: `fixture:${commandKind}:${path}`,
+      command_kind: commandKind,
+      stdout_sha256: sha256,
+      persisted_sha256: sha256,
+    });
+  }
+  await writeFile(join(inputRoot, "public-command-receipts.json"), `${JSON.stringify({
+    schema: "flow.headless-public-receipts/v1",
+    receipts,
+  }, null, 2)}\n`);
+}

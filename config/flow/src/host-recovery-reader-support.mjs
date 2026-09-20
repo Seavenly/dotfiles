@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { isAbsolute, join } from "node:path";
 
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
@@ -42,6 +43,9 @@ const PROJECTION_WATCH = Object.freeze({
 });
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_LATENCY_MS = 300_000;
+const MIN_HISTORY_ENTRIES = 6;
+const require = createRequire(import.meta.url);
+let databaseSyncConstructor = null;
 
 export class HostRecoveryReaderSupportError extends Error {
   constructor(code, message, options = {}) {
@@ -54,9 +58,10 @@ export class HostRecoveryReaderSupportError extends Error {
 /**
  * Qualify query/watch and projection reconstruction against one disposable
  * authority.  Public query and watch observations remain public-process
- * evidence.  The read-only reopen and the optional history seed are reported
- * separately as deterministic supporting evidence and never relabelled as a
- * host process proof.
+ * evidence. The deterministic history seed is supporting setup only. The
+ * production inspect-runtime rebuild, external mutation-lock observation,
+ * views, and latency remain native-provider evidence and are never relabelled
+ * as supporting-only proof.
  *
  * `publicCommandRunner` must execute the pinned public launcher and return
  * `{ command, output }`, where `output` is the parsed JSON emitted by that
@@ -114,6 +119,16 @@ export async function runProjectionRebuildReaderSupport(options = {}) {
     assertPublicProjection(watch.output, "watch");
 
     const rebuilt = await rebuildReadOnlyViews(context, options, seed);
+    // Rebuild/read inspection is intentionally performed while the public
+    // mutate-mode owner is still live. Release it only after the inspect
+    // runtimes have closed, then observe the released lock separately.
+    await stopSupportOwner(context, options, commands, ownerStarted, () => {
+      ownerStarted = false;
+    });
+    rebuilt.external_mutation_lock = await observeMutationLockExternally(
+      join(context.isolation.authority_directory, "authority.lock.sqlite"),
+    );
+    rebuilt.owner_lock_release_observed = rebuilt.external_mutation_lock.held === false;
     proof = makeProjectionProof({ query, watch, rebuilt, seed });
     const publicOutputs = {
       query: attachProof(query.output, {
@@ -129,15 +144,14 @@ export async function runProjectionRebuildReaderSupport(options = {}) {
       proof.watch.observed === true &&
       proof.rebuild.without_mutation_lock === true &&
       proof.views.count >= 2 &&
-      proof.latency.samples.length >= 2;
+      proof.latency.samples.length >= 2 &&
+      proof.latency.history_entries >= MIN_HISTORY_ENTRIES &&
+      proof.rebuild.external_mutation_lock?.held === false;
     if (!complete) {
       reason = "projection_rebuild_proof_incomplete";
     } else {
       status = "pass";
     }
-    await stopSupportOwner(context, options, commands, ownerStarted, () => {
-      ownerStarted = false;
-    });
     return readerSupportResult({
       context,
       startedAt,
@@ -485,7 +499,7 @@ async function runHistorySeed(context, options) {
 }
 
 /**
- * Seed two active checkpoint runs into a fresh isolated authority.  This is
+ * Seed a bounded history of completed checkpoint runs into a fresh isolated authority.  This is
  * intentionally a supporting setup only. It never crosses into the public
  * observation fields and refuses to touch a pre-existing authority database.
  */
@@ -524,7 +538,7 @@ export function seedProjectionHistory({ isolation, environment } = {}) {
       autonomous: false,
     });
     const runIds = [];
-    for (const fingerprintDigit of ["7", "8"]) {
+    for (const fingerprintDigit of ["3", "4", "5", "6", "7", "8"]) {
       const proposal = readerHistoryProposal({ bootId, fingerprintDigit });
       const prepared = runtime.prepare(proposal);
       if (prepared?.schema !== "flow.prepared-run/v1") {
@@ -547,10 +561,24 @@ export function seedProjectionHistory({ isolation, environment } = {}) {
         };
       }
       runIds.push(launch.run_id);
+      const projection = runtime.query({ run_id: launch.run_id });
+      const approval = projection?.legal_actions?.find(({ type, decision }) =>
+        type === "checkpoint_decision" && decision === "approve") ??
+        projection?.legal_actions?.find(({ type }) => type === "checkpoint_decision");
+      const completion = approval === undefined ? null : runtime.command(approval);
+      if (!approval || completion?.accepted !== true) {
+        return {
+          status: "blocked",
+          reason: "history_seed_completion_failed",
+          provenance: "deterministic_supporting_check",
+          run_ids: runIds,
+          history_entries: runIds.length,
+        };
+      }
     }
     return {
-      status: runIds.length === 2 ? "pass" : "blocked",
-      reason: runIds.length === 2 ? null : "history_seed_incomplete",
+      status: runIds.length >= MIN_HISTORY_ENTRIES ? "pass" : "blocked",
+      reason: runIds.length >= MIN_HISTORY_ENTRIES ? null : "history_seed_incomplete",
       provenance: "deterministic_supporting_check",
       run_ids: runIds,
       history_entries: runIds.length,
@@ -576,6 +604,9 @@ async function rebuildReadOnlyViews(context, options, seed) {
   try {
     const beforeStart = performance.now();
     first = createRuntime(runtimeOptions);
+    const beforeLock = await observeMutationLockExternally(
+      join(context.isolation.authority_directory, "authority.lock.sqlite"),
+    );
     const before = await collectViews(first, context.timeoutMs);
     const beforeDuration = elapsedMs(beforeStart);
     const beforeMutationAuthority = flowRuntimeMutationAuthority(first);
@@ -584,6 +615,9 @@ async function rebuildReadOnlyViews(context, options, seed) {
 
     const afterStart = performance.now();
     second = createRuntime(runtimeOptions);
+    const afterLock = await observeMutationLockExternally(
+      join(context.isolation.authority_directory, "authority.lock.sqlite"),
+    );
     const after = await collectViews(second, context.timeoutMs);
     const afterDuration = elapsedMs(afterStart);
     const afterMutationAuthority = flowRuntimeMutationAuthority(second);
@@ -594,27 +628,47 @@ async function rebuildReadOnlyViews(context, options, seed) {
     const afterIdentities = projectionIdentities(after.views);
     const identityStable = JSON.stringify(beforeIdentities) ===
       JSON.stringify(afterIdentities);
+    const ownerWatermarkBefore = extractWatermark(before.host);
+    const ownerWatermarkAfter = extractWatermark(after.host);
+    const ownerAuthorityWatermark = ownerWatermarkObservation(
+      ownerWatermarkBefore,
+      ownerWatermarkAfter,
+    );
     const mutationLockObserved = typeof beforeMutationAuthority === "boolean" &&
       typeof afterMutationAuthority === "boolean";
     const mutationLockAcquired = mutationLockObserved &&
       (beforeMutationAuthority === true || afterMutationAuthority === true);
-    const noMutationLock = mutationLockObserved &&
+    const ownerMutationLockHeld = beforeLock.held === true || afterLock.held === true;
+    const noMutationLock = mutationLockObserved && ownerMutationLockHeld &&
       beforeMutationAuthority === false &&
-      afterMutationAuthority === false;
+      afterMutationAuthority === false &&
+      ownerAuthorityWatermark.stable === true;
     const historyEntries = Math.max(
       before.host?.runs?.length ?? 0,
       after.host?.runs?.length ?? 0,
     );
     return {
       status: noMutationLock && identityStable && before.views.length >= 2 &&
-        historyEntries >= 2 ? "pass" : "blocked",
+        historyEntries >= MIN_HISTORY_ENTRIES ? "pass" : "blocked",
       reason: noMutationLock && identityStable && before.views.length >= 2 &&
-        historyEntries >= 2 ? null : "projection_rebuild_support_incomplete",
+        historyEntries >= MIN_HISTORY_ENTRIES ? null : "projection_rebuild_support_incomplete",
       before,
       after,
       without_mutation_lock: noMutationLock,
       mutation_lock_acquired: mutationLockAcquired,
       mutation_lock_observed: mutationLockObserved,
+      // This is the discriminating observation taken while the inspect
+      // runtime was open and the mutate-mode owner held the SQLite lock. The
+      // caller replaces external_mutation_lock with the post-owner release
+      // observation before emitting the public proof.
+      external_mutation_lock: afterLock,
+      owner_mutation_lock: {
+        held: ownerMutationLockHeld,
+        provenance: "native_provider",
+        inspect_runtime_open: true,
+      },
+      owner_authority_watermark: ownerAuthorityWatermark,
+      inspect_runtime_lock_observations: [beforeLock, afterLock],
       projection_identity_stable: identityStable,
       rebuild_count: 1,
       views: {
@@ -628,7 +682,7 @@ async function rebuildReadOnlyViews(context, options, seed) {
         seed_history_entries: seed?.history_entries ?? 0,
         max_latency_ms: Math.max(beforeDuration, afterDuration),
       },
-      provenance: "deterministic_supporting_check",
+      provenance: "native_provider",
     };
   } finally {
     if (first !== null) await closeRuntime(first).catch(() => {});
@@ -660,6 +714,45 @@ async function collectViews(runtime, timeoutMs) {
   return { host, inbox, views };
 }
 
+async function observeMutationLockExternally(lockPath, timeoutMs = 2_000) {
+  const evidence = {
+    method: "sqlite_begin_immediate",
+    path_ref: "isolation/authority/authority.lock.sqlite",
+    held: null,
+      available: false,
+      error: null,
+      provenance: "native_provider",
+  };
+  if (!existsSync(lockPath)) {
+    return { ...evidence, error: "mutation_lock_database_missing" };
+  }
+  const deadline = Date.now() + timeoutMs;
+  let last = evidence;
+  while (Date.now() <= deadline) {
+    let database = null;
+    try {
+      databaseSyncConstructor ??= require("node:sqlite").DatabaseSync;
+      database = new databaseSyncConstructor(lockPath);
+      database.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE; ROLLBACK;");
+      return { ...evidence, available: true, held: false };
+    } catch (error) {
+      last = {
+        ...evidence,
+        available: true,
+        held: error?.errcode === 5 || /database is locked/u.test(error?.message ?? "")
+          ? true
+          : null,
+        error: error?.message ?? String(error),
+      };
+      if (last.held !== true) return last;
+    } finally {
+      database?.close();
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  return last;
+}
+
 function makeProjectionProof({ query, watch, rebuilt, seed }) {
   const queryWatermark = extractWatermark(query.output);
   const watchWatermark = extractWatermark(watch.output);
@@ -678,6 +771,11 @@ function makeProjectionProof({ query, watch, rebuilt, seed }) {
       without_mutation_lock: rebuilt.without_mutation_lock === true,
       mutation_lock_acquired: rebuilt.mutation_lock_acquired === true,
       mutation_lock_observed: rebuilt.mutation_lock_observed === true,
+      external_mutation_lock: rebuilt.external_mutation_lock,
+      owner_mutation_lock: rebuilt.owner_mutation_lock,
+      inspect_runtime_lock_observations: rebuilt.inspect_runtime_lock_observations,
+      owner_lock_release_observed: rebuilt.owner_lock_release_observed === true,
+      owner_authority_watermark: rebuilt.owner_authority_watermark,
       projection_identity_stable: rebuilt.projection_identity_stable === true,
       rebuild_count: rebuilt.rebuild_count,
       provenance: rebuilt.provenance,
@@ -717,7 +815,7 @@ function readerSupportResult({
     provenance: {
       query: "public_process",
       watch: "public_process",
-      rebuild: "deterministic_supporting_check",
+      rebuild: "native_provider",
       history_seed: seed?.provenance ?? "none",
     },
     commands,
@@ -918,9 +1016,33 @@ function projectionIdentities(views) {
 function durableProjectionIdentity(value) {
   if (Array.isArray(value)) return value.map(durableProjectionIdentity);
   if (!isRecord(value)) return value;
+  const volatile = new Set([
+    "current",
+    "observed_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+    "execution_time",
+  ]);
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => key !== "current")
+    .filter(([key]) => !volatile.has(key))
     .map(([key, nested]) => [key, durableProjectionIdentity(nested)]));
+}
+
+export function ownerWatermarkObservation(before, after) {
+  const changed = before !== after;
+  return {
+    before,
+    after,
+    stable: typeof before === "string" && before.length > 0 &&
+      before === after,
+    delta: changed ? {
+      before,
+      after,
+      authorized: false,
+      reason: "projection_rebuild_read_does_not_authorize_owner_watermark_movement",
+    } : null,
+  };
 }
 
 function timedRuntimeQuery(runtime, request, kind) {

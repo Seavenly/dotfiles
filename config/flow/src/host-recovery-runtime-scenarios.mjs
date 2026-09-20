@@ -615,6 +615,7 @@ async function runNativeBackupRestoreProbe(context, { probe, startedAt }) {
       makeObservation("loss", proof.loss, [output], "native_backup_restore_probe"),
       makeObservation("restore", proof.restore, [output], "native_backup_restore_probe"),
       makeObservation("reconciliation", proof.reconciliation, [output], "native_backup_restore_probe"),
+      makeObservation("drovr_status", proof.drovr_status, [output], "native_backup_restore_probe"),
       makeObservation("admission", proof.admission, [output], "native_backup_restore_probe"),
     ];
     if (providerResult.ok) validateBackupFacts(observations, providerResult.value);
@@ -779,6 +780,14 @@ function validateBackupFacts(observations, provider) {
        typeof admission.result_digest !== "string" || admission.explicit !== true)) {
     admission.retained_result_admitted = false;
   }
+  const drovrStatus = byKind.get("drovr_status");
+  if (isRecord(drovrStatus) &&
+      (drovrStatus.observed !== true || drovrStatus.command !== "drovr status" ||
+       typeof drovrStatus.turn_id !== "string" || drovrStatus.turn_id.length === 0 ||
+       drovrStatus.status !== "working" || drovrStatus.provenance !== "public_process" ||
+       !isDigest(drovrStatus.output_digest))) {
+    drovrStatus.observed = false;
+  }
 }
 
 /** Read query/watch projections while rebuilding disposable views. */
@@ -901,6 +910,25 @@ function validateProjectionFacts(observations, maxLatencyMs) {
       (rebuild.without_mutation_lock !== true ||
        rebuild.mutation_lock_acquired !== false ||
        rebuild.projection_identity_stable !== true ||
+       !["native_provider", "production_runtime"].includes(rebuild.provenance) ||
+       rebuild.owner_mutation_lock?.held !== true ||
+       rebuild.owner_mutation_lock?.inspect_runtime_open !== true ||
+       !["native_provider", "production_runtime"].includes(
+         rebuild.owner_mutation_lock?.provenance,
+       ) ||
+       !Array.isArray(rebuild.inspect_runtime_lock_observations) ||
+       rebuild.inspect_runtime_lock_observations.length < 2 ||
+       rebuild.inspect_runtime_lock_observations.some((observation) =>
+         observation?.available !== true || observation?.held !== true ||
+         !["native_provider", "production_runtime"].includes(observation.provenance)) ||
+       rebuild.external_mutation_lock?.available !== true ||
+       rebuild.external_mutation_lock?.held !== false ||
+       !["native_provider", "production_runtime"].includes(
+         rebuild.external_mutation_lock?.provenance,
+       ) ||
+       rebuild.owner_lock_release_observed !== true ||
+       rebuild.owner_authority_watermark?.stable !== true ||
+       rebuild.owner_authority_watermark?.delta !== null ||
        !Number.isSafeInteger(rebuild.rebuild_count) || rebuild.rebuild_count < 1)) {
     rebuild.without_mutation_lock = false;
   }
@@ -1800,6 +1828,7 @@ function assertionObservationKind(scenarioId, assertionId) {
       destructive_loss: "loss",
       restore: "restore",
       six_domain_reconciliation: "reconciliation",
+      public_drovr_status_observation: "drovr_status",
       retained_result_admission: "admission",
     },
     projection_rebuild_readers: {
@@ -1837,6 +1866,12 @@ function proofPasses(scenarioId, assertionId, value) {
     if (assertionId === "destructive_loss") return value.destructive_loss === true;
     if (assertionId === "restore") return value.restored === true;
     if (assertionId === "six_domain_reconciliation") return value.domains_reconciled === 6;
+    if (assertionId === "public_drovr_status_observation") {
+      return value.observed === true && value.command === "drovr status" &&
+        typeof value.turn_id === "string" && value.turn_id.length > 0 &&
+        value.status === "working" && value.provenance === "public_process" &&
+        isDigest(value.output_digest);
+    }
     if (assertionId === "retained_result_admission") return value.retained_result_admitted === true;
   }
   if (scenarioId === "projection_rebuild_readers") {

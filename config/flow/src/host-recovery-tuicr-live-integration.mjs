@@ -739,6 +739,16 @@ function collectSessionComments(session) {
 /** Project the real integration output into the existing operator-driver seam. */
 function projectOperatorInputs({ scenario, tuiSeed, producer }) {
   const approved = scenario.captures?.find(({ kind }) => kind === "review-approved")?.value;
+  const disposition = scenario.observations?.find(({ kind }) => kind === "disposition")?.content;
+  const review = approved === undefined || approved === null
+    ? null
+    : {
+        ...approved,
+        ...(disposition === undefined ? {} : {
+          disposition_receipt: disposition.disposition_receipt,
+          approval_command_receipt: disposition.approval_command_receipt,
+        }),
+      };
   const consumer = scenario.consumer;
   return {
     producer_exit: scenario.producer_exit?.content ?? producer?.producer_exit ?? null,
@@ -761,7 +771,8 @@ function projectOperatorInputs({ scenario, tuiSeed, producer }) {
         raw_digest: canonicalDigest(consumer.comments),
       },
     },
-    review: approved ?? null,
+    review,
+    assertions: scenario.assertions ?? null,
     stale_action: scenario.stale_action?.content ?? null,
     rebuild: scenario.rebuild?.content ?? null,
   };

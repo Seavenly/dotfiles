@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { watch } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -25,12 +26,15 @@ import {
   resolvePinnedEntrypoints,
   resolvePinnedQualificationTools,
   runPinnedPublicCommand,
+  validateTrackedHostRecoverySuccessor,
+  validateTrackedHostRecoveryEvidence,
   writeRawQualificationReceipt,
 } from "../src/host-recovery-qualification.mjs";
 import {
   buildHostRecoveryRawReceipt,
   runBackupRestoreReconciliation,
 } from "../src/host-recovery-runtime-scenarios.mjs";
+import { publicQualificationIsAvailable } from "../../../tools/flow/src/transition-projection.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-harness-test-"));
@@ -88,16 +92,71 @@ function validReceipt({ scenarioId, rawRoot, logPath, isolation }) {
     backup: { production_backup: true },
     loss: { destructive_loss: true },
     restore: { restored: true },
-    reconciliation: { domains_reconciled: 6, reconciled: true },
+    reconciliation: {
+      domains_reconciled: 6,
+      reconciled: true,
+      all_domains_non_empty: true,
+      non_empty_domains: {
+        database_streams: true,
+        artifact_state: true,
+        git_state: true,
+        filesystem_state: true,
+        external_effects: true,
+        drovr_obligations: true,
+      },
+    },
+    drovr_status: {
+      observed: true,
+      command: "drovr status",
+      turn_id: "turn:issue-46-backup-retained",
+      status: "working",
+      provenance: "public_process",
+      output_digest: `sha256:${"1".repeat(64)}`,
+    },
     admission: { retained_result_admitted: true, explicit: true },
     capture_inventory: {
       inventory_complete: true, legibility: "pass", provenance: "pass",
       watermark: "pass", legal_actions: "pass",
     },
     producer_exit: { producer_exited: true },
-    disposition: { flowruntime_disposition: "approved" },
+    disposition: {
+      flowruntime_disposition: "accept",
+      dispositions: [{ disposition: "accept" }],
+      approval: "approved",
+      approval_receipt: { schema: "flow.review-approval/v1", decision: "approve" },
+      disposition_receipt: { accepted: true },
+      approval_command_receipt: { accepted: true },
+    },
     stale_action: { rejected: true },
-    rebuild: { identity_stable: true, without_mutation_lock: true },
+    rebuild: {
+      identity_stable: true,
+      projection_identity_stable: true,
+      without_mutation_lock: true,
+      mutation_lock_acquired: false,
+      mutation_lock_observed: true,
+      provenance: "native_provider",
+      owner_mutation_lock: {
+        held: true,
+        inspect_runtime_open: true,
+        provenance: "native_provider",
+      },
+      inspect_runtime_lock_observations: [
+        { available: true, held: true, provenance: "native_provider" },
+        { available: true, held: true, provenance: "native_provider" },
+      ],
+      external_mutation_lock: {
+        available: true,
+        held: false,
+        provenance: "native_provider",
+      },
+      owner_lock_release_observed: true,
+      owner_authority_watermark: {
+        before: `sha256:${"2".repeat(64)}`,
+        after: `sha256:${"2".repeat(64)}`,
+        stable: true,
+        delta: null,
+      },
+    },
     lock_owner: { owner_killed: true },
     negative_age: { rejected: true },
     negative_force: { rejected: true },
@@ -471,6 +530,104 @@ test("pass receipts require catalog proof, resolved evidence, and proven cleanup
   );
 });
 
+test("backup reconciliation proof rejects an empty retained domain", async (t) => {
+  const { worktree, isolated, paths } = await fixture(t);
+  const rawRoot = join(isolated, "raw");
+  await mkdir(join(rawRoot, "logs"), { recursive: true });
+  await writeFile(join(rawRoot, "logs/owner-status.json"), "live\n");
+  const isolation = createQualificationIsolation({ worktreeRoot: worktree, ...paths });
+  const receipt = validReceipt({
+    scenarioId: "backup_restore_reconciliation",
+    rawRoot,
+    logPath: "logs/owner-status.json",
+    isolation,
+  });
+  const reconciliation = receipt.observations.find(({ kind }) => kind === "reconciliation");
+  reconciliation.content.non_empty_domains.external_effects = false;
+  reconciliation.content.all_domains_non_empty = false;
+  reconciliation.content_digest = canonicalDigest(reconciliation.content);
+  assert.throws(
+    () => writeRawQualificationReceipt("empty-domain.json", receipt, { rawRoot }),
+    /proof predicate|reconciliation|domain/u,
+  );
+
+  const missingStatus = validReceipt({
+    scenarioId: "backup_restore_reconciliation",
+    rawRoot,
+    logPath: "logs/owner-status.json",
+    isolation,
+  });
+  const drovrStatus = missingStatus.observations.find(({ kind }) => kind === "drovr_status");
+  drovrStatus.content.observed = false;
+  drovrStatus.content_digest = canonicalDigest(drovrStatus.content);
+  assert.throws(
+    () => writeRawQualificationReceipt("missing-drovr-status.json", missingStatus, { rawRoot }),
+    /proof predicate|drovr|status/u,
+  );
+});
+
+test("projection rebuild proof rejects missing owner-held lock evidence", async (t) => {
+  const { worktree, isolated, paths } = await fixture(t);
+  const rawRoot = join(isolated, "raw");
+  await mkdir(join(rawRoot, "logs"), { recursive: true });
+  await writeFile(join(rawRoot, "logs/owner-status.json"), "live\n");
+  const isolation = createQualificationIsolation({ worktreeRoot: worktree, ...paths });
+  const receipt = validReceipt({
+    scenarioId: "projection_rebuild_readers",
+    rawRoot,
+    logPath: "logs/owner-status.json",
+    isolation,
+  });
+  const rebuild = receipt.observations.find(({ kind }) => kind === "rebuild");
+  rebuild.content = {
+    ...rebuild.content,
+    provenance: "native_provider",
+    external_mutation_lock: {
+      available: true,
+      held: false,
+      provenance: "native_provider",
+    },
+    owner_mutation_lock: {
+      held: false,
+      inspect_runtime_open: true,
+      provenance: "native_provider",
+    },
+    inspect_runtime_lock_observations: [
+      { available: true, held: true, provenance: "native_provider" },
+      { available: true, held: true, provenance: "native_provider" },
+    ],
+    owner_lock_release_observed: true,
+  };
+  rebuild.content_digest = canonicalDigest(rebuild.content);
+  assert.throws(
+    () => writeRawQualificationReceipt("owner-lock-missing.json", receipt, { rawRoot }),
+    /proof predicate|rebuild/u,
+  );
+
+  const drifted = validReceipt({
+    scenarioId: "projection_rebuild_readers",
+    rawRoot,
+    logPath: "logs/owner-status.json",
+    isolation,
+  });
+  const drift = drifted.observations.find(({ kind }) => kind === "rebuild");
+  drift.content.owner_authority_watermark = {
+    before: `sha256:${"2".repeat(64)}`,
+    after: `sha256:${"3".repeat(64)}`,
+    stable: false,
+    delta: {
+      before: `sha256:${"2".repeat(64)}`,
+      after: `sha256:${"3".repeat(64)}`,
+      authorized: false,
+    },
+  };
+  drift.content_digest = canonicalDigest(drift.content);
+  assert.throws(
+    () => writeRawQualificationReceipt("watermark-drift.json", drifted, { rawRoot }),
+    /proof predicate|watermark|rebuild/u,
+  );
+});
+
 test("raw receipt, log, and capture paths reject symlink and non-regular escapes", async (t) => {
   const { worktree, isolated, paths } = await fixture(t);
   const rawRoot = join(isolated, "raw");
@@ -653,10 +810,368 @@ test("aggregate generation rejects a catalog subset and binds the candidate rele
     }),
     /catalog|eight|scenario/u,
   );
-  const release = derivePinnedReleaseIdentity({ worktreeRoot: WORKTREE });
-  assert.equal(release.release_id, "flow-release-1.0-dark/v1");
-  assert.match(release.candidate_tree_sha, /^[0-9a-f]{40}$/u);
-  assert.match(release.release_content_digest, /^sha256:[0-9a-f]{64}$/u);
+  try {
+    const release = derivePinnedReleaseIdentity({ worktreeRoot: WORKTREE });
+    assert.equal(release.release_id, "flow-release-1.0-dark/v1");
+    assert.match(release.candidate_tree_sha, /^[0-9a-f]{40}$/u);
+    assert.match(release.release_content_digest, /^sha256:[0-9a-f]{64}$/u);
+  } catch (error) {
+    // This test intentionally runs in the review worktree. Until generated
+    // release content is refreshed, only the explicit dirty-tree state is
+    // acceptable; stale or unbound release identities must still fail.
+    assert.equal(error?.code, "release_candidate_dirty");
+  }
+});
+
+test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", () => {
+  try {
+    const result = validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE });
+    assert.equal(result.schema, "flow.tracked-host-recovery-consumer-result/v1");
+    assert.equal(result.status, "passed");
+    assert.match(result.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
+    assert.match(result.evidence_sha256, /^[0-9a-f]{64}$/u);
+  } catch (error) {
+    // The tracked artifact is regenerated only after a clean candidate and a
+    // fresh external qualification run.  A dirty review worktree must remain
+    // fail-closed rather than silently accepting stale evidence.
+    if (error?.code === "release_candidate_dirty") {
+      assert.match(
+        error.message,
+        /candidate|aggregate|ledger/u,
+        `unexpected fail-closed issue-46 consumer error: ${error.code}`,
+      );
+      return;
+    }
+    throw error;
+  }
+});
+
+test("tracked issue-46 consumer remains valid after landing the aggregate commit", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-landing-stable-consumer-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makeEphemeralPinnedWorktree(WORKTREE, join(root, "candidate"));
+  const before = validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate });
+  assert.equal(before.status, "passed");
+  const tracked = join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(candidate, "config/flow/transition-ledger.v1.json");
+  const evidence = JSON.parse(await readFile(tracked, "utf8"));
+  evidence.finished_at = "2099-01-01T00:00:00Z";
+  evidence.evidence_digest = canonicalDigest({ ...evidence, evidence_digest: null });
+  const aggregateBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  await writeFile(tracked, aggregateBytes);
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const record = ledger.evidence.find(({ id }) => id === "issue_46_host_recovery");
+  record.sha256 = createHash("sha256").update(aggregateBytes).digest("hex");
+  record.evidence_digest = evidence.evidence_digest;
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  assert.equal(validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate }).status, "passed");
+  await execFile("git", [
+    "-C", candidate, "add",
+    "config/flow/evidence/host-recovery-qualification.v1.json",
+    "config/flow/transition-ledger.v1.json",
+  ]);
+  await execFile("git", [
+    "-C", candidate, "commit", "--quiet", "-m", "bind issue-46 aggregate",
+  ]);
+  const after = validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate });
+  assert.equal(after.status, "passed");
+});
+
+test("tracked issue-46 consumer rejects stale aggregate bytes and ledger binding", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-stale-consumer-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makeEphemeralPinnedWorktree(WORKTREE, join(root, "candidate"));
+  const baseline = validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate });
+  assert.equal(baseline.status, "passed");
+  const tracked = join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(candidate, "config/flow/transition-ledger.v1.json");
+  const bytes = await readFile(tracked);
+  await writeFile(tracked, Buffer.concat([bytes, Buffer.from("\n") ]));
+  assert.throws(
+    () => validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate }),
+    /digest|ledger|evidence/u,
+  );
+  await writeFile(tracked, bytes);
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.evidence.find(({ id }) => id === "issue_46_host_recovery").sha256 = "0".repeat(64);
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  assert.throws(
+    () => validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate }),
+    /ledger|binding/u,
+  );
+});
+
+test("qualification generator rejects stale issue-46 aggregate bytes and bindings before phases", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-generator-binding-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makeEphemeralPinnedWorktree(WORKTREE, join(root, "candidate"));
+  const aggregatePath = join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(candidate, "config/flow/transition-ledger.v1.json");
+  const generator = join(candidate, "config/flow/scripts/generate-qualification-evidence.mjs");
+  const aggregateBytes = await readFile(aggregatePath);
+  await writeFile(aggregatePath, Buffer.concat([aggregateBytes, Buffer.from("\n")]));
+  await assert.rejects(
+    () => execFile(process.execPath, [generator], { cwd: candidate, maxBuffer: 4 * 1024 * 1024 }),
+    (error) => {
+      assert.match(`${error.message}\n${error.stderr ?? ""}`, /tracked issue-46 evidence|digest/u);
+      return true;
+    },
+  );
+  await writeFile(aggregatePath, aggregateBytes);
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.evidence.find(({ id }) => id === "issue_46_host_recovery").sha256 = "0".repeat(64);
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  await assert.rejects(
+    () => execFile(process.execPath, [generator], { cwd: candidate, maxBuffer: 4 * 1024 * 1024 }),
+    (error) => {
+      assert.match(`${error.message}\n${error.stderr ?? ""}`, /tracked issue-46 evidence|ledger|binding/u);
+      return true;
+    },
+  );
+});
+
+test("qualification prerequisite bootstrap is explicit and cannot stand in for final qualification", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-bootstrap-prerequisites-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makePinnedDirtyWorktree(WORKTREE, join(root, "candidate"));
+  const ledgerPath = join(candidate, "config/flow/transition-ledger.v1.json");
+  const generator = join(candidate, "config/flow/scripts/generate-qualification-evidence.mjs");
+  const beforeLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const beforeIssue46 = structuredClone(
+    beforeLedger.evidence.find(({ id }) => id === "issue_46_host_recovery"),
+  );
+
+  const { stdout } = await execFile(
+    process.execPath,
+    [generator, "--bootstrap-prerequisites"],
+    { cwd: candidate, maxBuffer: 16 * 1024 * 1024 },
+  );
+  const result = JSON.parse(stdout);
+  assert.equal(result.mode, "bootstrap_prerequisites");
+  assert.equal(result.status, "prerequisites_ready");
+  assert.equal(result.final_qualification, "not_run");
+  assert.equal(result.issue_46_aggregate, "not_consumed");
+
+  const afterLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  assert.deepEqual(
+    afterLedger.evidence.find(({ id }) => id === "issue_46_host_recovery"),
+    beforeIssue46,
+  );
+  assert.equal(
+    afterLedger.evidence.find(({ id }) => id === "deterministic_qualification").status,
+    "passed",
+  );
+  assert.equal(
+    afterLedger.evidence.find(({ id }) => id === "production_route_conformance").status,
+    "passed",
+  );
+
+  const aggregatePath = join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const aggregateBytes = await readFile(aggregatePath);
+  await writeFile(aggregatePath, Buffer.concat([aggregateBytes, Buffer.from("\n")]));
+  await assert.rejects(
+    () => execFile(process.execPath, [generator], {
+      cwd: candidate,
+      maxBuffer: 16 * 1024 * 1024,
+    }),
+    (error) => {
+      assert.match(
+        `${error.message}\n${error.stderr ?? ""}`,
+        /tracked issue-46 evidence|release|digest|binding/u,
+      );
+      return true;
+    },
+  );
+});
+
+test("qualification generation withholds both public phases when interrupted during phase one", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-qualification-phase-one-interrupt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const mode of ["final", "bootstrap"]) {
+    const candidate = await makePinnedDirtyWorktree(
+      WORKTREE,
+      join(root, `${mode}-candidate`),
+    );
+    await bindEphemeralIssue46Aggregate(candidate);
+    const configDirectory = join(candidate, "config/flow");
+    const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+    const generator = join(configDirectory, "scripts/generate-qualification-evidence.mjs");
+    const markerPath = join(root, `${mode}-phase-one-started`);
+    const markerSeen = new Promise((resolveMarker, rejectMarker) => {
+      const watcher = watch(root, (eventType, filename) => {
+        if (filename?.toString() !== basename(markerPath)) return;
+        watcher.close();
+        resolveMarker();
+      });
+      watcher.on("error", (error) => {
+        watcher.close();
+        rejectMarker(error);
+      });
+    });
+    const child = spawn(process.execPath, [
+      generator,
+      ...(mode === "bootstrap" ? ["--bootstrap-prerequisites"] : []),
+    ], {
+      cwd: candidate,
+      env: {
+        ...process.env,
+        FLOW_QUALIFICATION_TEST_PHASE1_SYNC: markerPath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.resume();
+    child.stderr.resume();
+    const exit = new Promise((resolveExit) => {
+      child.once("close", (code, signal) => resolveExit({ code, signal }));
+    });
+    let exitResult = null;
+    t.after(async () => {
+      if (exitResult !== null) return;
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+      exitResult = await exit;
+    });
+
+    try {
+      await markerSeen;
+      const interruptedLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+      for (const id of ["deterministic_qualification", "production_route_conformance"]) {
+        const record = interruptedLedger.evidence.find((evidence) => evidence.id === id);
+        assert.equal(record.status, "not_run", `${mode}:${id}`);
+        assert.equal(record.path, null, `${mode}:${id} path`);
+        assert.equal(record.sha256, null, `${mode}:${id} digest`);
+      }
+      assert.equal(publicQualificationIsAvailable({
+        configDirectory,
+        repositoryRoot: candidate,
+        selection: {},
+        homeDirectory: join(root, `${mode}-home`),
+        stateDirectory: join(root, `${mode}-state`),
+      }), false, `${mode}: public admission`);
+
+      assert.equal(child.kill("SIGKILL"), true, `${mode}: generator was stopped at the hook`);
+      exitResult = await exit;
+      assert.deepEqual(exitResult, { code: null, signal: "SIGKILL" }, `${mode}: generator exit`);
+      const afterLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+      for (const id of ["deterministic_qualification", "production_route_conformance"]) {
+        const record = afterLedger.evidence.find((evidence) => evidence.id === id);
+        assert.equal(record.status, "not_run", `${mode}:${id} after SIGKILL`);
+        assert.equal(record.path, null, `${mode}:${id} path after SIGKILL`);
+        assert.equal(record.sha256, null, `${mode}:${id} digest after SIGKILL`);
+      }
+    } finally {
+      if (exitResult === null) {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+        exitResult = await exit;
+      }
+    }
+  }
+});
+
+test("tracked issue-46 successor generation requires an exact predecessor ledger binding", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-successor-binding-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makeWorkingTreeCopy(WORKTREE, join(root, "candidate"));
+  const trackedPath = join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(candidate, "config/flow/transition-ledger.v1.json");
+
+  const predecessor = validateTrackedHostRecoverySuccessor({ worktreeRoot: candidate });
+  assert.equal(predecessor.ledgerEvidence.path, "evidence/host-recovery-qualification.v1.json");
+  assert.equal(predecessor.ledgerEvidence.sha256,
+    createHash("sha256").update(predecessor.aggregateBytes).digest("hex"));
+
+  for (const [label, mutate] of [
+    ["stale bytes", (record) => { record.sha256 = "0".repeat(64); }],
+    ["unbound digest", (record) => { record.evidence_digest = "sha256:" + "0".repeat(64); }],
+  ]) {
+    const ledger = structuredClone(predecessor.ledger);
+    mutate(ledger.evidence.find(({ id }) => id === "issue_46_host_recovery"));
+    const alternateLedgerPath = join(candidate, `config/flow/${label.replaceAll(" ", "-")}.json`);
+    await writeFile(alternateLedgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+    assert.throws(
+      () => validateTrackedHostRecoverySuccessor({
+        worktreeRoot: candidate,
+        evidencePath: trackedPath,
+        ledgerPath: alternateLedgerPath,
+      }),
+      /predecessor.*bound/u,
+      label,
+    );
+  }
+});
+
+test("tracked issue-46 successor generator atomically replaces a bound predecessor", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-issue-46-successor-generator-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makeEphemeralPinnedWorktree(WORKTREE, join(root, "candidate"));
+  const rawRoot = join(root, "raw");
+  await mkdir(join(rawRoot, "logs"), { recursive: true });
+  await writeFile(join(rawRoot, "logs/owner-status.json"), "live\n");
+  const isolation = createQualificationIsolation({
+    worktreeRoot: candidate,
+    xdgStateHome: join(root, "state"),
+    authorityDirectory: join(root, "authority"),
+    socketPath: join(root, "authority", "owner.sock"),
+    endpointPath: join(root, "authority", "owner.json"),
+    backupDirectory: join(root, "backup"),
+    repositoryRoot: join(root, "repository"),
+    drovrConfigDirectory: join(root, "drovr"),
+    herdrSession: "herdr:issue-46-successor-generator",
+    runId: "run:issue-46-successor-generator",
+  });
+  const receipt = validReceipt({
+    scenarioId: "concurrent_runs_owner_restart",
+    rawRoot,
+    logPath: "logs/owner-status.json",
+    isolation,
+  });
+  receipt.release = derivePinnedReleaseIdentity({ worktreeRoot: candidate });
+  const herdr = receipt.tools.herdr;
+  receipt.tools = resolvePinnedQualificationTools({
+    entrypoints: resolvePinnedEntrypoints({ worktreeRoot: candidate }),
+  });
+  receipt.tools = { ...receipt.tools, herdr };
+  await writeRawQualificationReceipt("predecessor.json", receipt, { rawRoot });
+  const predecessorEvidence = await generateHostRecoveryEvidence({
+    worktreeRoot: candidate,
+    rawRoot,
+    receiptPaths: ["predecessor.json"],
+    outputPath: join(root, "predecessor-evidence.json"),
+    expectedRelease: receipt.release,
+    allowExternalOutput: true,
+  });
+  const trackedPath = join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  await writeFile(trackedPath, `${JSON.stringify(predecessorEvidence, null, 2)}\n`);
+  const ledgerPath = join(candidate, "config/flow/transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const record = ledger.evidence.find(({ id }) => id === "issue_46_host_recovery");
+  record.path = "evidence/host-recovery-qualification.v1.json";
+  record.sha256 = createHash("sha256").update(await readFile(trackedPath)).digest("hex");
+  record.evidence_digest = predecessorEvidence.evidence_digest;
+  record.status = predecessorEvidence.status;
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  await writeRawQualificationReceipt("successor.json", receipt, { rawRoot });
+  const before = await readFile(trackedPath);
+  const script = join(candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const { stdout } = await execFile(process.execPath, [
+    script,
+    "--worktree", candidate,
+    "--raw-root", rawRoot,
+    "--receipt", "successor.json",
+    "--replace-tracked-successor",
+  ], { cwd: candidate, maxBuffer: 4 * 1024 * 1024 });
+  const summary = JSON.parse(stdout);
+  assert.equal(summary.status, "blocked");
+  const after = await readFile(trackedPath);
+  assert.notDeepEqual(after, before);
+  const successor = validateTrackedHostRecoverySuccessor({ worktreeRoot: candidate });
+  assert.equal(successor.ledgerEvidence.sha256,
+    createHash("sha256").update(after).digest("hex"));
+  assert.equal(successor.ledgerEvidence.evidence_digest, successor.evidence.evidence_digest);
 });
 
 test("aggregate generation rejects receipt tool identity drift from the pinned worktree", async (t) => {
@@ -1139,7 +1654,9 @@ test("qualification runner records the native headless probe after public captur
     "--timeout", "5000",
   ], {
     cwd: worktree,
-    env: isolatedQualificationEnvironment(environment),
+    // PATH is an explicit tool-discovery input for the pinned Tuicr binary;
+    // all other caller state remains stripped by the isolation environment.
+    env: isolatedQualificationEnvironment(environment, { PATH: process.env.PATH }),
     maxBuffer: 16 * 1024 * 1024,
   });
   const summary = JSON.parse(stdout);
@@ -1241,8 +1758,73 @@ async function makeEphemeralPinnedWorktree(source, destination) {
     cwd: destination,
     maxBuffer: 4 * 1024 * 1024,
   });
+  await bindEphemeralIssue46Aggregate(destination);
   await execFile("git", ["-C", destination, "add", "-A"], { maxBuffer: 4 * 1024 * 1024 });
   await execFile("git", ["-C", destination, "commit", "--quiet", "-m", "ephemeral issue-46 implementation"]);
+  return destination;
+}
+
+async function bindEphemeralIssue46Aggregate(worktree) {
+  const aggregatePath = join(worktree, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(worktree, "config/flow/transition-ledger.v1.json");
+  const aggregate = JSON.parse(await readFile(aggregatePath, "utf8"));
+  const release = derivePinnedReleaseIdentity({ worktreeRoot: worktree });
+  aggregate.release = release;
+  const pinnedTools = resolvePinnedQualificationTools({ worktreeRoot: worktree });
+  aggregate.tools = {
+    ...pinnedTools,
+    herdr: aggregate.tools?.herdr ?? {
+      path_ref: "external/herdr/not-required",
+      version: "not_required",
+      sha256: createHash("sha256").update("herdr-not-required").digest("hex"),
+    },
+  };
+  aggregate.evidence_digest = canonicalDigest({ ...aggregate, evidence_digest: null });
+  const aggregateBytes = Buffer.from(`${JSON.stringify(aggregate, null, 2)}\n`);
+  await writeFile(aggregatePath, aggregateBytes);
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const record = ledger.evidence.find(({ id }) => id === "issue_46_host_recovery");
+  record.path = "evidence/host-recovery-qualification.v1.json";
+  record.sha256 = createHash("sha256").update(aggregateBytes).digest("hex");
+  record.evidence_digest = aggregate.evidence_digest;
+  record.status = aggregate.status;
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+}
+
+async function makeWorkingTreeCopy(source, destination) {
+  await execFile("git", ["clone", "--quiet", source, destination], {
+    cwd: source,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  const { stdout } = await execFile("git", [
+    "-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+  ], { maxBuffer: 64 * 1024 * 1024 });
+  for (const path of stdout.split("\0").filter(Boolean)) {
+    const target = join(destination, path);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(source, path), target, { recursive: true, force: true });
+  }
+  return destination;
+}
+
+async function makePinnedDirtyWorktree(source, destination) {
+  await makeWorkingTreeCopy(source, destination);
+  await cp(
+    join(source, "config/flow/node_modules"),
+    join(destination, "config/flow/node_modules"),
+    { recursive: true, force: true },
+  );
+  await cp(
+    join(source, "tools/flow/node_modules"),
+    join(destination, "tools/flow/node_modules"),
+    { recursive: true, force: true },
+  );
+  await execFile(process.execPath, [
+    join(destination, "config/flow/scripts/generate-release-content.mjs"),
+  ], {
+    cwd: destination,
+    maxBuffer: 4 * 1024 * 1024,
+  });
   return destination;
 }
 

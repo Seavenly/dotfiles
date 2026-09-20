@@ -1,17 +1,18 @@
 import { createHash } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import {
   chmod,
   lstat,
   mkdir,
   readdir,
   readFile,
+  writeFile,
   rm,
 } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   assertExternalQualificationRoot,
@@ -22,23 +23,44 @@ import {
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
 import {
   acquireResourceLock,
+  writeRecord,
   readResourceLock,
   releaseAbsentRegistryLock,
   resourceLockPath,
   resourceLockProjection,
+  stateDirectory,
 } from "../../../tools/drovr/src/registry.mjs";
 import {
   closeFlowRuntime,
   createFlowRuntime,
 } from "./runtime.mjs";
+import { flowRuntimeAuthority } from "./production-runtime.mjs";
+import { getArtifactAuthority } from "../../../tools/flow/src/work-authority.mjs";
+import {
+  createFlowRuntime as createCoreFlowRuntime,
+  stopAutonomousFlowRuntime,
+} from "../../../tools/flow/src/flow-runtime.mjs";
+import { createDrovrDelegatedAgentPort } from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
+import { createProductionComposition } from "./production-composition.mjs";
 
 const execFileAsync = promisify(execFile);
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const LOCK_SCHEMA = "drovr.registry-lock/v1";
 const SUPPORT_SCHEMA = "flow.host-recovery-live-support/v1";
+const DROVR_CLI_PATH = fileURLToPath(new URL("../../../tools/drovr/src/cli.mjs", import.meta.url));
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 300_000;
+const DROVR_STATUS_ENVIRONMENT_KEYS = new Set([
+  "CI",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "NO_COLOR",
+  "PATH",
+  "TERM",
+  "TZ",
+]);
 
 export class LiveSupportConfigurationError extends Error {
   constructor(code, message, options = {}) {
@@ -477,6 +499,7 @@ export async function runProductionBackupRestoreProbe({
   drovrConfigDirectory,
   rawRoot,
   env = {},
+  drovrStatusRunner = undefined,
 } = {}) {
   const inputs = {
     authorityDirectory,
@@ -501,15 +524,42 @@ export async function runProductionBackupRestoreProbe({
   })) {
     assertDisposableRoot(path, name);
   }
+  const statusSandboxDirectory = join(drovrConfigDirectory, "status-sandbox");
+  assertDisposableRoot(statusSandboxDirectory, "drovrStatusSandboxDirectory");
   await mkdir(rawRoot, { recursive: true, mode: 0o700 });
   const environment = {
-    ...env,
-    HOME: env.HOME ?? join(dirname(authorityDirectory), "home"),
-    XDG_STATE_HOME: env.XDG_STATE_HOME ?? join(dirname(authorityDirectory), "state"),
+    ...sanitizedDrovrStatusEnvironment(env, statusSandboxDirectory),
     FLOW_AUTHORITY_DIRECTORY: authorityDirectory,
     FLOW_BACKUP_DIRECTORY: backupDirectory,
     FLOW_REPOSITORY_ROOT: repositoryRoot,
     DROVR_CONFIG_DIR: drovrConfigDirectory,
+  };
+  const drovrSeed = await seedDrovrObligationState(stateDirectory(environment));
+  // Direct registry writes are setup-only. The production qualification must
+  // observe that setup through the pinned public `drovr status` command; a
+  // closure over the seed would merely compare fabricated state to itself.
+  const statusRunner = drovrStatusRunner ?? ((request = {}) =>
+    runPinnedDrovrStatus(request.env ?? environment));
+  const backupOperationContract = "flow.operation/issue-46-backup-seed/v1";
+  const backupOperationRegistration = {
+    [backupOperationContract]: {
+      classification: "caller_idempotent",
+      invoke(intent) {
+        return {
+          schema: "flow.effect-receipt/v1",
+          effect_id: intent.effect_id,
+          idempotency_key: intent.idempotency_key,
+          outcome: "succeeded",
+          provider_receipt: {
+            schema: "flow.provider-receipt/v1",
+            record: "issue-46-backup-seed",
+            operation_effect_id: intent.effect_id,
+            provider_receipt_id: `backup-seed:${intent.effect_id}`,
+            outcome: "succeeded",
+          },
+        };
+      },
+    },
   };
   let runtime = null;
   let restoreRuntime = null;
@@ -518,10 +568,43 @@ export async function runProductionBackupRestoreProbe({
   let loss = null;
   let cleanup;
   try {
+    const drovrStatus = statusRunner({
+      command: "status",
+      args: ["status"],
+      env: environment,
+    });
+    if (drovrStatus instanceof Promise) {
+      throw new LiveSupportConfigurationError(
+        "backup_drovr_observation_async",
+        "Drovr status observation must return the synchronous public CLI result",
+      );
+    }
+    const observedTurns = [
+      ...(drovrStatus?.result?.active_turns ?? []),
+      ...(drovrStatus?.result?.turns ?? []),
+    ];
+    const observedSeed = observedTurns.find(({ id }) => id === drovrSeed.turn_id);
+    if (drovrStatus?.schema !== "drovr.command/v1" ||
+        drovrStatus.command !== "status" || drovrStatus.ok !== true ||
+        observedSeed?.id !== drovrSeed.turn_id || observedSeed.status !== "working") {
+      return productionBackupBlock("backup_drovr_seed_not_observed_by_public_status", {
+        drovr_status: drovrStatus,
+        drovr_seed: drovrSeed.setup,
+      });
+    }
     runtime = createFlowRuntime({
       env: environment,
       authorityDirectory,
+      authorityOptions: { drovrStatusRunner: statusRunner },
+      registeredOperations: backupOperationRegistration,
       autonomous: false,
+    });
+    await seedRetainedBackupState({
+      runtime,
+      authorityDirectory,
+      operationContract: backupOperationContract,
+      operationRegistration: backupOperationRegistration,
+      environment,
     });
     backup = runtime.command({ type: "backup_create" });
     if (backup?.accepted !== true || !isRecord(backup.manifest) ||
@@ -561,6 +644,7 @@ export async function runProductionBackupRestoreProbe({
     restoreRuntime = createFlowRuntime({
       env: environment,
       authorityDirectory,
+      authorityOptions: { drovrStatusRunner: statusRunner },
       autonomous: false,
     });
     const restored = restoreRuntime.command({ type: "restore", manifest });
@@ -593,6 +677,7 @@ export async function runProductionBackupRestoreProbe({
     const admitted = restoreRuntime.command(admissionAction);
     const admittedProjection = restoreRuntime.query({ schema: "flow.query/v1", query: "restore" });
     const providerReceipt = backup.receipt?.provider_receipt;
+    const nonEmptyDomains = backupEvidenceDomainPopulation(manifest);
     const provider = {
       schema: "flow.filesystem-backup/v1",
       status: "available",
@@ -625,9 +710,19 @@ export async function runProductionBackupRestoreProbe({
       reconciliation: {
         domains_reconciled: domains.filter(({ status }) => status === "reconciled").length,
         complete: reconciliation?.complete === true,
+        non_empty_domains: nonEmptyDomains,
+        all_domains_non_empty: Object.values(nonEmptyDomains).every(Boolean),
         manifest_digest: reconciliation?.manifest_digest ?? null,
         domains,
         watermark: reconciled.authority_watermark,
+      },
+      drovr_status: {
+        observed: true,
+        command: "drovr status",
+        turn_id: drovrSeed.turn_id,
+        status: observedSeed.status,
+        provenance: "public_process",
+        output_digest: canonicalDigest(drovrStatus),
       },
       admission: {
         retained_result_admitted: admitted.accepted === true && admittedProjection.state === "admitted",
@@ -640,12 +735,15 @@ export async function runProductionBackupRestoreProbe({
     const status = proof.backup.production_backup && proof.loss.destructive_loss &&
       proof.loss.disposable_only && proof.loss.protected_state_intact &&
       proof.restore.restored && proof.reconciliation.domains_reconciled === 6 &&
-      proof.reconciliation.complete && proof.admission.retained_result_admitted
+      proof.reconciliation.complete && proof.reconciliation.all_domains_non_empty &&
+      proof.admission.retained_result_admitted
       ? "pass"
       : "blocked";
     closeFlowRuntime(restoreRuntime);
     restoreRuntime = null;
-    cleanup = await completeAuthorityCleanup(authorityDirectory);
+    cleanup = await completeAuthorityCleanup(authorityDirectory, {
+      statusSandboxDirectory,
+    });
     return {
       schema: "flow.production-backup-live-observation/v1",
       status,
@@ -668,20 +766,343 @@ export async function runProductionBackupRestoreProbe({
     if (restoreRuntime !== null) {
       closeFlowRuntime(restoreRuntime);
       try {
-        await completeAuthorityCleanup(authorityDirectory);
+        await completeAuthorityCleanup(authorityDirectory, {
+          statusSandboxDirectory,
+        });
       } catch {
         // The returned proof remains truthful; the caller retains the exact
         // authority path as an explicit cleanup obligation.
       }
     }
-    if (await pathExists(authorityDirectory)) {
+    if (await pathExists(authorityDirectory) || await pathExists(statusSandboxDirectory)) {
       try {
-        await completeAuthorityCleanup(authorityDirectory);
+        await completeAuthorityCleanup(authorityDirectory, {
+          statusSandboxDirectory,
+        });
       } catch {
         // Preserve a blocked result; the caller owns the retained exact path.
       }
     }
   }
+}
+
+function backupEvidenceDomainPopulation(manifest) {
+  return {
+    database_streams: Array.isArray(manifest?.replacement_authority?.database_streams) &&
+      manifest.replacement_authority.database_streams.length > 0,
+    artifact_state: Array.isArray(manifest?.artifacts) && manifest.artifacts.length > 0,
+    git_state: isRecord(manifest?.replacement_authority?.git_state) &&
+      typeof manifest.replacement_authority.git_state.commit === "string" &&
+      typeof manifest.replacement_authority.git_state.tree === "string",
+    filesystem_state: Array.isArray(manifest?.replacement_authority?.filesystem_state) &&
+      manifest.replacement_authority.filesystem_state.length > 0,
+    external_effects: Array.isArray(manifest?.external_pointers) &&
+      manifest.external_pointers.length > 0,
+    drovr_obligations: Array.isArray(manifest?.drovr_obligations) &&
+      manifest.drovr_obligations.length > 0,
+  };
+}
+
+async function seedDrovrObligationState(registryDirectory) {
+  const turnId = "turn:issue-46-backup-retained";
+  const authorityWatermark = {
+    schema: "drovr.registry-authority-watermark/v1",
+    generation: `sha256:${"b".repeat(64)}`,
+    registry_sha256: `sha256:${"c".repeat(64)}`,
+  };
+  const receipt = {
+    schema: "flow.drovr-handoff-receipt/v1",
+    turn_id: turnId,
+    disposition: "handoff",
+    durable_holder: "issue-46-retained-backup",
+    handoff_receipt_id: "handoff:issue-46-retained-backup",
+    outcome: "handed_off",
+  };
+  await writeRecord(registryDirectory, "turns", {
+    schema: "drovr.turn/v1",
+    id: turnId,
+    task_id: "task:issue-46-backup",
+    agent_id: "agent:issue-46-backup",
+    // This active turn is the retained obligation which the real public
+    // status command must expose. The direct registry write is setup-only.
+    status: "working",
+    inputs: [{ sequence: 1, text: "retained backup obligation" }],
+    receipt,
+  });
+  return {
+    status: {
+      schema: "drovr.command/v1",
+      command: "status",
+      ok: true,
+      result: {
+        authority_watermark: authorityWatermark,
+        agents: [],
+        turns: [{
+          id: turnId,
+          task_id: "task:issue-46-backup",
+          agent_id: "agent:issue-46-backup",
+          status: "working",
+          receipt,
+        }],
+      },
+    },
+    turn_id: turnId,
+    setup: {
+      method: "direct_registry_write_setup_only",
+      turn_id: turnId,
+      expected_status: "working",
+    },
+  };
+}
+
+function runPinnedDrovrStatus(environment) {
+  const stdout = execFileSync(process.execPath, [DROVR_CLI_PATH, "status"], {
+    cwd: dirname(DROVR_CLI_PATH),
+    env: {
+      ...environment,
+    },
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new LiveSupportConfigurationError(
+      "backup_drovr_observation_invalid",
+      `pinned drovr status returned invalid JSON: ${error.message}`,
+    );
+  }
+}
+
+function sanitizedDrovrStatusEnvironment(input, statusSandboxDirectory) {
+  const inherited = Object.fromEntries(
+    Object.entries(input ?? {}).filter(([key, value]) =>
+      DROVR_STATUS_ENVIRONMENT_KEYS.has(key) && typeof value === "string"),
+  );
+  const privateRoot = resolve(statusSandboxDirectory);
+  return {
+    ...inherited,
+    HOME: join(privateRoot, "drovr-status-home"),
+    TMPDIR: join(privateRoot, "drovr-status-tmp"),
+    XDG_STATE_HOME: join(privateRoot, "drovr-status-state"),
+  };
+}
+
+async function seedRetainedBackupState({
+  runtime,
+  authorityDirectory,
+  operationContract,
+  operationRegistration,
+  environment,
+}) {
+  const authority = flowRuntimeAuthority(runtime);
+  const artifactAuthority = getArtifactAuthority({ runAuthority: authority });
+  if (artifactAuthority?.schema !== "work.artifact-authority/v1") {
+    throw new LiveSupportConfigurationError(
+      "backup_artifact_authority_unavailable",
+      "production backup qualification could not access the retained artifact authority",
+    );
+  }
+  const artifactBytes = Buffer.from("issue-46 retained artifact\n", "utf8");
+  const artifactDigest = `sha256:${createHash("sha256").update(artifactBytes).digest("hex")}`;
+  const artifactDirectory = join(authorityDirectory, "artifacts");
+  await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(join(artifactDirectory, artifactDigest.slice("sha256:".length)), artifactBytes, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  const artifactReceipt = artifactAuthority.command({
+    schema: "work.artifact-record-command/v1",
+    command_id: `artifact-record:${artifactDigest}`,
+    type: "artifact_record",
+    contract: "work.artifact/v1",
+    subject_id: artifactDigest,
+    expected_generation: 0,
+    artifact: {
+      digest: artifactDigest,
+      artifact_schema: "flow.issue-46-retained-artifact/v1",
+      size: artifactBytes.length,
+      provenance: {
+        producer: { run_id: "run:issue-46-backup-seed", evidence: artifactDigest },
+        validator: { contract: "flow.issue-46-backup-validator/v1", receipt: artifactDigest },
+      },
+      classification: "internal",
+      retention: "durable_handoff",
+      pins: [{ holder: "run", id: "run:issue-46-backup-seed" }],
+    },
+    bytes_base64: artifactBytes.toString("base64"),
+  });
+  if (artifactReceipt?.accepted !== true) {
+    throw new LiveSupportConfigurationError(
+      "backup_artifact_seed_rejected",
+      "production backup qualification could not retain its artifact seed",
+    );
+  }
+
+  const seedRuntime = createCoreFlowRuntime({
+    runAuthority: authority,
+    ...(() => {
+      const composition = createProductionComposition({
+        delegatedAgentPort: createDrovrDelegatedAgentPort({
+          dependencies: { env: environment },
+        }),
+        env: environment,
+        authorityDirectory,
+        legacyRoots: {},
+        authorityOptions: {},
+        registeredOperations: operationRegistration,
+      });
+      return {
+        registeredOperations: composition.operations,
+        registeredAuthorities: composition.authorities,
+        predefinedDefinitions: composition.definitions,
+        delegateOutputValidators: composition.validators,
+      };
+    })(),
+    autonomous: true,
+  });
+  try {
+    const authorityProjection = seedRuntime.query({});
+    const bootId = authorityProjection?.authority_boot_id;
+    if (typeof bootId !== "string" || bootId.length === 0) {
+      throw new LiveSupportConfigurationError(
+        "backup_external_effect_boot_identity_unavailable",
+        "production backup qualification could not observe the authority boot identity",
+      );
+    }
+    const registered = seedRuntime.prepare(backupSeedProposal({
+      contract: operationContract,
+      bootId,
+    }));
+    if (registered?.schema !== "flow.prepared-run/v1") {
+      throw new LiveSupportConfigurationError(
+        "backup_external_effect_prepare_rejected",
+        "production backup qualification could not prepare its external-effect seed",
+      );
+    }
+    const launch = seedRuntime.launch(confirmedBackupLaunchRequest(registered));
+    if (launch?.schema !== "flow.launch-receipt/v1") {
+      throw new LiveSupportConfigurationError(
+        "backup_external_effect_launch_rejected",
+        "production backup qualification could not launch its external-effect seed",
+      );
+    }
+    const action = seedRuntime.query({ run_id: launch.run_id }).legal_actions?.find(({ type }) =>
+      type === "operation_execute");
+    if (!action || seedRuntime.command(action)?.accepted !== true) {
+      throw new LiveSupportConfigurationError(
+        "backup_external_effect_command_rejected",
+        "production backup qualification could not settle its external-effect seed",
+      );
+    }
+    const settled = await waitForSettledEffect(seedRuntime, launch.run_id);
+    if (settled?.effects?.[0]?.status !== "succeeded" ||
+        settled.effects[0].receipt?.provider_receipt?.provider_receipt_id === undefined ||
+        settled.effects[0].receipt?.provider_receipt?.record !== "issue-46-backup-seed") {
+      throw new LiveSupportConfigurationError(
+        "backup_external_effect_unsettled",
+        "production backup qualification external-effect seed did not settle with a receipt",
+      );
+    }
+  } finally {
+    stopAutonomousFlowRuntime(seedRuntime);
+  }
+}
+
+function backupSeedProposal({ contract, bootId }) {
+  return {
+    schema: "flow.dynamic-plan-proposal/v1",
+    graph: {
+      schema: "flow.run-plan/v1",
+      cards: [{
+        id: "seed-external-effect",
+        executor: { kind: "operation", contract, effect_classification: "caller_idempotent" },
+        dependencies: [],
+        inputs: { value: "issue-46-retained-external-effect" },
+        outputs: ["receipt"],
+        success_criteria: ["receipt:succeeded"],
+        validators: ["flow.validator/operation-receipt/v1"],
+        data_references: [],
+        evidence_references: [],
+        route: { adapter: "issue-46-backup-seed" },
+        limits: { max_attempts: 1 },
+        resource_claims: [{ kind: "issue-46-backup-effect", id: "retained" }],
+        recovery: "caller_idempotent",
+      }],
+    },
+    requested_authority: {
+      commands: ["operation_execute"],
+      capabilities: [],
+      mutations: [contract],
+    },
+    explicit_facts: {
+      catalog_fingerprint: `sha256:${"d".repeat(64)}`,
+      route_snapshot: { watermark: `sha256:${"e".repeat(64)}`, bindings: [] },
+      capability_envelopes: [],
+      operation_contracts: [contract],
+      validator_contracts: ["flow.validator/operation-receipt/v1"],
+      block_observations: [],
+      time_facts: [
+        {
+          schema: "flow.time-fact/v1",
+          kind: "wall_clock",
+          value_ms: Date.now(),
+          uncertainty_ms: 0,
+          clock_source_id: "wall:issue-46-backup-seed",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "suspend_excluding_monotonic",
+          value_ns: `${BigInt(Date.now()) * 1_000_000n}`,
+          uncertainty_ns: "0",
+          clock_source_id: "mono:issue-46-backup-seed",
+        },
+        { schema: "flow.time-fact/v1", kind: "boot", boot_id: bootId },
+        { schema: "flow.time-fact/v1", kind: "clock_source", identity: "clockset:issue-46-backup-seed:v1" },
+      ],
+      subject_generations: [],
+      elapsed_seconds: 0,
+      limits: {
+        max_cards: 1,
+        max_revisions: 0,
+        max_cards_per_revision: 0,
+        max_capabilities: 0,
+        max_resources: 1,
+        max_elapsed_seconds: 300,
+      },
+      resource_claims: [{ kind: "issue-46-backup-effect", id: "retained" }],
+    },
+  };
+}
+
+function confirmedBackupLaunchRequest(prepared) {
+  return {
+    prepared,
+    confirmation: {
+      schema: "flow.dynamic-plan-confirmation-decision/v1",
+      decision: "accept",
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    },
+    closed_facts: {
+      schema: "flow.closed-fact-observation/v1",
+      bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts),
+    },
+  };
+}
+
+async function waitForSettledEffect(runtime, runId) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const projection = runtime.query({ run_id: runId });
+    if (["succeeded", "failed", "uncertain", "cancelled"].includes(projection?.effects?.[0]?.status)) {
+      return projection;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  }
+  return runtime.query({ run_id: runId });
 }
 
 function productionBackupBlock(reason, details = {}) {
@@ -695,17 +1116,34 @@ function productionBackupBlock(reason, details = {}) {
   };
 }
 
-async function completeAuthorityCleanup(authorityDirectory) {
-  await removeExactDirectory(authorityDirectory);
+async function completeAuthorityCleanup(authorityDirectory, {
+  statusSandboxDirectory = undefined,
+} = {}) {
+  const ownedResources = [
+    { kind: "isolated_authority", identity_ref: authorityDirectory },
+    ...(statusSandboxDirectory === undefined
+      ? []
+      : [{ kind: "isolated_drovr_status_sandbox", identity_ref: statusSandboxDirectory }]),
+  ];
+  for (const resource of ownedResources) {
+    if (await pathExists(resource.identity_ref)) {
+      await removeExactDirectory(resource.identity_ref);
+    }
+    if (await pathExists(resource.identity_ref)) {
+      throw new LiveSupportConfigurationError(
+        "destructive_cleanup_unproven",
+        `owned cleanup resource remains after removal: ${resource.identity_ref}`,
+      );
+    }
+  }
   return {
     disposition: "complete",
-    owned_resources: [{ kind: "isolated_authority", identity_ref: authorityDirectory }],
-    resource_dispositions: [{
-      kind: "isolated_authority",
-      identity_ref: authorityDirectory,
+    owned_resources: ownedResources,
+    resource_dispositions: ownedResources.map((resource) => ({
+      ...resource,
       disposition: "removed",
       proof: "absent_after_cleanup",
-    }],
+    })),
     unresolved_obligations: [],
     completed_at: new Date().toISOString(),
   };
@@ -865,7 +1303,7 @@ function headlessCaptureSources({ commandResults, isolation }) {
     ["review", byKind.get("query")?.review ?? byKind.get("query")?.review_projection ?? byKind.get("query")],
     ["graph", byKind.get("query")?.views?.graph],
     ["timeline", byKind.get("query")?.views?.timeline],
-    ["tuicr", byKind.get("query")?.tuicr ?? byKind.get("query")?.review_inbox],
+    ["tuicr", byKind.get("query")?.tuicr],
   ]);
   const missing = [...values.entries()]
     .filter(([, value]) => value === undefined || value === null)
@@ -1053,6 +1491,7 @@ function observeSuspendedAdmissionFacts({ commandResults, actualReboot = false }
 }
 
 async function negativeTakeoverAttempt({ registryDirectory, resourceKey, operation, mode }) {
+  const requestedOption = mode === "age" ? "staleAfterMs" : "force";
   try {
     await acquireResourceLock(registryDirectory, resourceKey, {
       operation,
@@ -1063,6 +1502,7 @@ async function negativeTakeoverAttempt({ registryDirectory, resourceKey, operati
     });
     return {
       action: mode === "age" ? "age_takeover" : "force_takeover",
+      requested_option: requestedOption,
       rejected: false,
       accepted: true,
       mutated: true,
@@ -1073,6 +1513,7 @@ async function negativeTakeoverAttempt({ registryDirectory, resourceKey, operati
     const projection = await resourceLockProjection(registryDirectory);
     return {
       action: mode === "age" ? "age_takeover" : "force_takeover",
+      requested_option: requestedOption,
       rejected: true,
       accepted: false,
       mutated: false,
@@ -1082,6 +1523,9 @@ async function negativeTakeoverAttempt({ registryDirectory, resourceKey, operati
         ? `sha256:${projection.authority_watermark.generation.slice("sha256:".length)}`
         : `sha256:${"0".repeat(64)}`,
       operation_id: operation.id,
+      api_rejection: error?.outcome === "invalid_arguments" &&
+        error?.details?.unsupported_options?.includes(requestedOption) === true,
+      unsupported_options: error?.details?.unsupported_options ?? [],
     };
   }
 }

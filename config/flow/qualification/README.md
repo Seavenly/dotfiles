@@ -40,6 +40,32 @@ node config/flow/scripts/generate-host-recovery-evidence.mjs \
   --receipt concurrent_runs_owner_restart.json
 ```
 
+Release qualification is fail-closed on the exact tracked issue-46 aggregate.
+When governed release content changes, use this order:
+
+1. Regenerate release content.
+2. Run the explicit prerequisite bootstrap:
+   `node config/flow/scripts/generate-qualification-evidence.mjs --bootstrap-prerequisites`.
+   This records only the phase 1/2 prerequisites needed by the public
+   headless and Tuicr routes. It reports `prerequisites_ready`, does not claim
+   final qualification, and does not consume or rewrite the issue-46 aggregate.
+3. Rerun all eight live scenarios under one shared isolation identity.
+4. Replace the tracked aggregate through the guarded successor generator.
+5. Run `node config/flow/scripts/generate-qualification-evidence.mjs` with no
+   arguments for strict final qualification.
+
+The default final invocation always validates the aggregate bytes,
+transition-ledger binding, release identity, current tools, and passed status
+before it regenerates the two qualification phases. It fails closed on stale
+or unbound issue-46 evidence; the explicit bootstrap mode cannot bypass or
+stand in for that final consumer.
+
+Every invocation first withdraws both public qualification phase records by
+setting them to `not_run` with no passed evidence identity. A phase is
+published as `passed` only after every command in that phase completes and its
+evidence bytes are written. Interruption, timeout, or process loss therefore
+leaves public transition projection and admission withheld.
+
 The generator keeps deterministic supporting checks separate from live public
 or native-provider scenarios. Missing scenario receipts keep aggregate status
 `blocked`. Actual reboot and expanded macOS visuals remain `not_run` for issue

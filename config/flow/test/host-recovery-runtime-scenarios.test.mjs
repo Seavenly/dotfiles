@@ -328,6 +328,14 @@ test("backup restore driver records disposable loss, six-domain reconciliation, 
           "filesystem_state", "external_effects", "drovr_obligations",
         ].map((domain) => ({ domain, status: "reconciled" })),
       },
+      drovr_status: {
+        observed: true,
+        command: "drovr status",
+        turn_id: "turn:issue-46-backup-retained",
+        status: "working",
+        provenance: "public_process",
+        output_digest: DIGEST,
+      },
       admission: {
         retained_result_admitted: true,
         manifest_digest: manifest,
@@ -346,7 +354,7 @@ test("backup restore driver records disposable loss, six-domain reconciliation, 
 
   assert.equal(result.result.disposition, "pass");
   assert.deepEqual(result.observations.map(({ kind }) => kind), [
-    "backup", "loss", "restore", "reconciliation", "admission",
+    "backup", "loss", "restore", "reconciliation", "drovr_status", "admission",
   ]);
   assert.equal(result.observations.find(({ kind }) => kind === "reconciliation")
     .content.domains_reconciled, 6);
@@ -369,6 +377,28 @@ test("projection reader driver proves multiple views and bounded history latency
           mutation_lock_acquired: false,
           projection_identity_stable: true,
           rebuild_count: 2,
+          provenance: "native_provider",
+          owner_mutation_lock: {
+            held: true,
+            inspect_runtime_open: true,
+            provenance: "native_provider",
+          },
+          inspect_runtime_lock_observations: [
+            { available: true, held: true, provenance: "native_provider" },
+            { available: true, held: true, provenance: "native_provider" },
+          ],
+          external_mutation_lock: {
+            available: true,
+            held: false,
+            provenance: "native_provider",
+          },
+          owner_lock_release_observed: true,
+          owner_authority_watermark: {
+            before: queryWatermark,
+            after: queryWatermark,
+            stable: true,
+            delta: null,
+          },
         },
         views: {
           count: 3,

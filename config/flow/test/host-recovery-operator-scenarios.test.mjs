@@ -397,7 +397,7 @@ test("tuicr driver requires explicit producer absence, disposition, stale reject
   const fixtureData = await fixture(t);
   const reviewId = "review:sha256:test:1";
   const before = {
-    schema: "work.review-projection/v1",
+    schema: "flow.review-projection/v1",
     review_id: reviewId,
     candidate_fingerprint: WATERMARK,
     lifecycle_generation: 1,
@@ -442,22 +442,38 @@ test("tuicr driver requires explicit producer absence, disposition, stale reject
         comments: { session_id: "tuicr:issue-46", review_id: reviewId, comments: [], watermark: WATERMARK },
       },
       flowruntime_review: {
-        schema: "work.review-projection/v1",
+        schema: "flow.review-projection/v1",
         review_id: reviewId,
         candidate_fingerprint: WATERMARK,
         lifecycle_generation: 1,
         review_generation: 4,
-        disposition: "accept",
+        dispositions: [{
+          schema: "flow.review-disposition/v1",
+          disposition: "accept",
+          accepted: true,
+          watermark: WATERMARK,
+        }],
         approval: "approved",
-        flowruntime_disposition: "approved",
-        disposition_event: { accepted: true, watermark: WATERMARK },
-        approval_event: { accepted: true, watermark: WATERMARK },
+        approval_receipt: {
+          schema: "flow.review-approval/v1",
+          decision: "approve",
+          accepted: true,
+          watermark: WATERMARK,
+        },
+        disposition_receipt: { accepted: true, watermark: WATERMARK },
+        approval_command_receipt: { accepted: true, watermark: WATERMARK },
         watermark: WATERMARK,
         legal_actions: [{ type: "review_integration", expected_watermark: WATERMARK }],
         review_started_at: "2026-09-17T10:00:00.200Z",
       },
       owner_restart_rebuild: { before, after, identity_stable: true, watermark: WATERMARK, legal_actions: [] },
     }),
+    scenarioAssertions: {
+      producer_exit_before_review: true,
+      flowruntime_disposition_and_approval: true,
+      stale_action_rejection: true,
+      projection_rebuild_identity: true,
+    },
     cleanupRunner: async () => cleanupComplete(),
   });
 
@@ -466,8 +482,62 @@ test("tuicr driver requires explicit producer absence, disposition, stale reject
     "producer_exit", "disposition", "stale_action", "rebuild",
   ]);
   assert.equal(result.observations.find(({ kind }) => kind === "stale_action").content.rejected, true);
+  assert.equal(result.observations.find(({ kind }) => kind === "disposition").content.scenario_assertions.flowruntime_disposition_and_approval, true);
   await assertCaptureFiles(result, fixtureData.rawRoot);
   assert.equal(result.captures.length >= 3, true);
+});
+
+test("tuicr operator gate blocks false and missing native scenario assertions", async (t) => {
+  for (const scenarioAssertions of [
+    undefined,
+    {
+      producer_exit_before_review: true,
+      flowruntime_disposition_and_approval: false,
+      stale_action_rejection: true,
+      projection_rebuild_identity: true,
+    },
+  ]) {
+    const fixtureData = await fixture(t);
+    const reviewId = "review:scenario-assertion-gate";
+    const inbox = {
+      schema: "flow.review-inbox-projection/v1",
+      watermark: WATERMARK,
+      items: [{
+        review_id: reviewId,
+        candidate_fingerprint: WATERMARK,
+        lifecycle_generation: 1,
+        legal_actions: [],
+      }],
+    };
+    const result = await runTuicrReviewAfterProducerExit({
+      entrypoints: fixtureData.entrypoints,
+      isolation: fixtureData.isolation,
+      rawRoot: fixtureData.rawRoot,
+      commandRunner: runnerFor({
+        query: commandResult("query", inbox),
+        watch: commandResult("watch", inbox),
+      }),
+      toolRunner: toolFor({
+        producer_exit: {
+          producer_exited: true,
+          process_absence: { status: "absent", process_identity: "producer:gate" },
+          producer_exited_at: TIMESTAMP,
+        },
+        tuicr_consumer: {
+          consumer: "tuicr",
+          started: true,
+          list: { session_id: "tuicr:gate", review_id: reviewId },
+          comments: { session_id: "tuicr:gate", review_id: reviewId },
+        },
+        flowruntime_review: {},
+      }),
+      ...(scenarioAssertions === undefined ? {} : { scenarioAssertions }),
+      cleanupRunner: async () => cleanupComplete(),
+    });
+    assert.equal(result.result.disposition, "blocked");
+    assert.equal(result.result.reason, "scenario_assertion_failed");
+    assert.equal(result.assertions.every(({ disposition }) => disposition === "not_observed"), true);
+  }
 });
 
 test("Drovr lock driver proves process absence, exact recovery action, and negative takeover outcomes", async (t) => {
@@ -487,7 +557,7 @@ test("Drovr lock driver proves process absence, exact recovery action, and negat
     watermark: lockWatermark,
     legal_actions: ["release_absent_registry_lock"],
   };
-  const rejection = (action) => ({
+  const rejection = (action, requestedOption) => ({
     schema: "flow.rejection/v1",
     operation: "command",
     code: "registry_lock_recovery_evidence_invalid",
@@ -495,6 +565,9 @@ test("Drovr lock driver proves process absence, exact recovery action, and negat
     rejected: true,
     accepted: false,
     mutated: false,
+    requested_option: requestedOption,
+    api_rejection: true,
+    unsupported_options: [requestedOption],
     authority_watermark: lockWatermark,
     legal_next_actions: ["status"],
   });
@@ -518,8 +591,8 @@ test("Drovr lock driver proves process absence, exact recovery action, and negat
       authority_watermark: lockWatermark,
       legal_next_actions: ["acquire_registry_lock"],
     },
-    negative_age: rejection("age_takeover"),
-    negative_force: rejection("force_takeover"),
+    negative_age: rejection("age_takeover", "staleAfterMs"),
+    negative_force: rejection("force_takeover", "force"),
   };
   const result = await runDrovrRegistryLockReconciliation({
     entrypoints: fixtureData.entrypoints,

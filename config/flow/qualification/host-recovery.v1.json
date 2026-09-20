@@ -74,6 +74,7 @@
         "destructive_disposable_state_loss",
         "restore",
         "six_domain_reconciliation",
+        "public_drovr_status_observation",
         "retained_result_admission"
       ],
       "required_assertion_ids": [
@@ -81,11 +82,12 @@
         "destructive_loss",
         "restore",
         "six_domain_reconciliation",
+        "public_drovr_status_observation",
         "retained_result_admission"
       ],
       "proof_predicate": "backup_restore_reconciliation",
       "required_command_kinds": ["native_backup_restore_probe"],
-      "required_observation_kinds": ["backup", "loss", "restore", "reconciliation", "admission"],
+      "required_observation_kinds": ["backup", "loss", "restore", "reconciliation", "drovr_status", "admission"],
       "public_command_kinds": ["native_backup_restore_probe"]
     },
     {

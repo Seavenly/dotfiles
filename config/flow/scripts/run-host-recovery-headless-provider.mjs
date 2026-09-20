@@ -32,6 +32,7 @@ const RELEASE_EVIDENCE_NAMES = new Set([
   "release-evidence.json",
   "release-evidence.v1.json",
 ]);
+const RECEIPT_MANIFEST_NAME = "public-command-receipts.json";
 
 export class HeadlessProviderError extends Error {
   constructor(code, message, details = {}) {
@@ -53,12 +54,13 @@ export async function deriveHeadlessProvider({
   releaseEvidence = undefined,
 } = {}) {
   const root = await assertInputRoot(inputRoot);
-  const files = await collectInputFiles(root);
+  const receipts = await loadPublicReceiptManifest(root);
+  const files = await collectInputFiles(root, receipts.supporting_paths);
   const evidence = await loadReleaseEvidence(root, releaseEvidence);
   const records = [];
   for (const file of files) {
     if (RELEASE_EVIDENCE_NAMES.has(file.name)) continue;
-    records.push(...await readPublicRecords(file, root));
+    records.push(...await readPublicRecords(file, root, receipts.by_path));
   }
   const captures = [];
   const missing = [];
@@ -77,6 +79,7 @@ export async function deriveHeadlessProvider({
       { missing_forms: missing, source_count: records.length },
     );
   }
+  validateDistinctRenderedSources(captures);
   const captureDigests = captures.map(({ sha256 }) => sha256);
   if (new Set(captureDigests).size !== captures.length) {
     throw new HeadlessProviderError(
@@ -205,7 +208,7 @@ async function assertInputRoot(inputRoot) {
   return root;
 }
 
-async function collectInputFiles(root) {
+async function collectInputFiles(root, supportingPaths = new Set()) {
   const files = [];
   await walk(root, "");
   if (files.length === 0) {
@@ -233,7 +236,9 @@ async function collectInputFiles(root) {
       if (info.isDirectory()) {
         await walk(path, relativePath);
       } else if (info.isFile() && INPUT_FILE.test(entry.name) &&
-                 !RELEASE_EVIDENCE_NAMES.has(entry.name)) {
+                 !RELEASE_EVIDENCE_NAMES.has(entry.name) &&
+                 entry.name !== RECEIPT_MANIFEST_NAME &&
+                 !supportingPaths.has(relativePath)) {
         const bytes = await readFile(path);
         files.push({
           name: entry.name,
@@ -245,6 +250,116 @@ async function collectInputFiles(root) {
       }
     }
   }
+}
+
+async function loadPublicReceiptManifest(root) {
+  const path = resolve(root, RECEIPT_MANIFEST_NAME);
+  let value;
+  try {
+    value = parseJson(await readFile(path), RECEIPT_MANIFEST_NAME);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new HeadlessProviderError(
+        "headless_capture_receipt_missing",
+        `headless captures require ${RECEIPT_MANIFEST_NAME} binding each persisted public log`,
+      );
+    }
+    throw error;
+  }
+  if (!isRecord(value) || value.schema !== "flow.headless-public-receipts/v1" ||
+      !Array.isArray(value.receipts) || value.receipts.length === 0) {
+    throw new HeadlessProviderError(
+      "headless_capture_receipt_invalid",
+      "headless public receipt manifest is invalid",
+    );
+  }
+  const byPath = new Map();
+  const supportingPaths = new Set();
+  for (const receipt of value.receipts) {
+    if (!isRecord(receipt) || typeof receipt.path !== "string" ||
+        isAbsolute(receipt.path) || byPath.has(receipt.path) ||
+        !["public_process", "composed"].includes(receipt.provenance) ||
+        !DIGEST.test(`sha256:${receipt.persisted_sha256 ?? ""}`)) {
+      throw new HeadlessProviderError(
+        "headless_capture_receipt_invalid",
+        "headless public receipt manifest contains an invalid capture binding",
+      );
+    }
+    const persistedPath = resolve(root, receipt.path);
+    if (!persistedPath.startsWith(`${root}${sep}`)) {
+      throw new HeadlessProviderError(
+        "headless_capture_receipt_path_invalid",
+        `headless public receipt path escapes the input root: ${receipt.path}`,
+      );
+    }
+    let persistedBytes;
+    try {
+      persistedBytes = await readFile(persistedPath);
+    } catch (error) {
+      throw new HeadlessProviderError(
+        "headless_capture_receipt_log_missing",
+        `persisted headless capture is unavailable: ${receipt.path}: ${error.code ?? error.message}`,
+      );
+    }
+    const persistedSha = bytesDigest(persistedBytes);
+    if (persistedSha !== receipt.persisted_sha256) {
+      throw new HeadlessProviderError(
+        "headless_capture_receipt_digest_mismatch",
+        `persisted headless capture does not match its command receipt: ${receipt.path}`,
+      );
+    }
+    if (receipt.provenance === "public_process" && receipt.stdout_sha256 !== persistedSha) {
+      throw new HeadlessProviderError(
+        "headless_capture_stdout_digest_mismatch",
+        `public command stdout receipt does not match persisted capture: ${receipt.path}`,
+      );
+    }
+    if (receipt.provenance === "composed") {
+      if (!Array.isArray(receipt.components) || receipt.components.length === 0) {
+        throw new HeadlessProviderError(
+          "headless_capture_composed_receipt_missing",
+          `composed capture has no public command component receipts: ${receipt.path}`,
+        );
+      }
+      for (const component of receipt.components) {
+        if (!isRecord(component) || typeof component.path !== "string" ||
+            isAbsolute(component.path) ||
+            !/^[0-9a-f]{64}$/u.test(component.sha256 ?? "") ||
+            !/^(?:sha256:)?[0-9a-f]{64}$/u.test(component.stdout_sha256 ?? "") ||
+            component.sha256 !== component.stdout_sha256.replace(/^sha256:/u, "")) {
+          throw new HeadlessProviderError(
+            "headless_capture_composed_receipt_invalid",
+            `composed capture component is not bound to its originating stdout receipt: ${receipt.path}`,
+          );
+        }
+        const componentPath = resolve(root, component.path);
+        if (!componentPath.startsWith(`${root}${sep}`)) {
+          throw new HeadlessProviderError(
+            "headless_capture_receipt_path_invalid",
+            `headless command component escapes the input root: ${component.path}`,
+          );
+        }
+        const componentBytes = await readFile(componentPath).catch((error) => {
+          throw new HeadlessProviderError(
+            "headless_capture_receipt_log_missing",
+            `persisted command component is unavailable: ${component.path}: ${error.code ?? error.message}`,
+          );
+        });
+        if (bytesDigest(componentBytes) !== component.sha256) {
+          throw new HeadlessProviderError(
+            "headless_capture_receipt_digest_mismatch",
+            `persisted command component does not match its receipt: ${component.path}`,
+          );
+        }
+        supportingPaths.add(component.path);
+      }
+    }
+    byPath.set(receipt.path, Object.freeze({
+      ...receipt,
+      supporting_paths: receipt.components?.map(({ path }) => path) ?? [],
+    }));
+  }
+  return { by_path: byPath, supporting_paths: supportingPaths };
 }
 
 async function loadReleaseEvidence(root, supplied) {
@@ -294,13 +409,20 @@ async function loadReleaseEvidence(root, supplied) {
   return redactReleaseEvidence(value);
 }
 
-async function readPublicRecords(file, root) {
+async function readPublicRecords(file, root, receiptByPath) {
+  const receipt = receiptByPath.get(file.relative_path);
+  if (!receipt) {
+    throw new HeadlessProviderError(
+      "headless_capture_receipt_missing",
+      `no persisted public command receipt binds ${file.relative_path}`,
+    );
+  }
   const text = file.bytes.toString("utf8");
   const records = [];
   if (file.name.endsWith(".json")) {
     const parsed = parseJson(file.bytes, file.relative_path);
     for (const value of flattenRecords(parsed)) {
-      records.push(record(value, file, root, null));
+      records.push(record(value, file, root, null, receipt));
     }
     return records;
   }
@@ -317,26 +439,44 @@ async function readPublicRecords(file, root) {
       continue;
     }
     for (const value of flattenRecords(parsed)) {
-      records.push(record(value, file, root, lineNumber));
+      records.push(record(value, file, root, lineNumber, receipt));
     }
   }
   return records;
 }
 
 function flattenRecords(value) {
-  if (Array.isArray(value)) return value.flatMap(flattenRecords);
-  if (!isRecord(value)) return [];
-  if (isRecord(value.output)) {
-    return [{
-      value: value.output,
-      command_kind: typeof value.command_kind === "string" ? value.command_kind : null,
-      source_provenance: value.provenance ?? "public_process",
-    }];
+  return flatten(value, {
+    command_kind: null,
+    source_provenance: "public_process",
+  });
+
+  function flatten(current, inherited) {
+    if (Array.isArray(current)) return current.flatMap((item) => flatten(item, inherited));
+    if (!isRecord(current)) return [];
+    const metadata = {
+      command_kind: typeof current.command_kind === "string"
+        ? current.command_kind
+        : inherited.command_kind,
+      // Provenance comes only from the persisted command receipt. A field in
+      // the captured JSON is public data, not provenance authority.
+      source_provenance: inherited.source_provenance,
+    };
+    const records = PUBLIC_SCHEMA.test(current.schema ?? "")
+      ? [{ value: current, ...metadata }]
+      : [];
+    for (const [key, child] of Object.entries(current)) {
+      if (key === "schema" || key === "output") continue;
+      records.push(...flatten(child, metadata));
+    }
+    if (isRecord(current.output)) {
+      records.push(...flatten(current.output, metadata));
+    }
+    return records;
   }
-  return [{ value, command_kind: null, source_provenance: "public_process" }];
 }
 
-function record(value, file, root, line) {
+function record(value, file, root, line, receipt) {
   const unwrapped = isRecord(value) && Object.hasOwn(value, "value") &&
     isRecord(value.value)
     ? value
@@ -344,12 +484,19 @@ function record(value, file, root, line) {
   return {
     value: unwrapped.value,
     command_kind: unwrapped.command_kind,
-    source_provenance: unwrapped.source_provenance,
+    source_provenance: receipt.provenance,
     source: {
       path: relative(root, file.path).split(sep).join("/"),
       line,
       sha256: file.sha256,
-      provenance: "public_process",
+      provenance: receipt.provenance,
+      receipt: {
+        command_id: receipt.command_id ?? null,
+        command_kind: receipt.command_kind ?? null,
+        stdout_sha256: receipt.stdout_sha256 ?? null,
+        persisted_sha256: receipt.persisted_sha256,
+        components: receipt.components ?? [],
+      },
     },
     raw_text: file.bytes.toString("utf8"),
   };
@@ -381,71 +528,31 @@ function deriveCandidate(kind, item) {
       legal_actions: exactLegalActions(value) ?? [],
     };
   } else if (kind === "checkpoint") {
-    const operator = value.views?.operator;
+    const operator = value.schema === "flow.operator-projection/v1"
+      ? value
+      : value.views?.operator;
     const checkpoints = Array.isArray(value.checkpoints)
       ? value.checkpoints
       : operator?.checkpoints;
-    if (Array.isArray(checkpoints) && checkpoints.length > 0) {
-      projection = operator ?? value;
-    } else {
-      const review = firstInboxItem(value);
-      if (review === null) return null;
-      projection = derivedInboxProjection("flow.checkpoint-text-projection/v1", value, review, {
-        checkpoint: review.status,
-        review_id: review.review_id,
-        candidate_id: review.candidate_id,
-      });
-    }
+    if (!isRecord(operator) || operator.schema !== "flow.operator-projection/v1" ||
+        !Array.isArray(checkpoints) || checkpoints.length === 0) return null;
+    projection = operator;
   } else if (kind === "candidate") {
-    if (value.schema !== "work.review-candidate-projection/v1" &&
-        !(typeof value.candidate_fingerprint === "string" &&
-          (typeof value.candidate_id === "string" || typeof value.subject_id === "string"))) {
-      const review = firstInboxItem(value);
-      if (review === null || !isRecord(review.candidate)) return null;
-      projection = derivedInboxProjection("flow.candidate-text-projection/v1", value, review, {
-        candidate_id: review.candidate_id,
-        candidate_fingerprint: review.candidate_fingerprint,
-        candidate: review.candidate,
-      });
-    }
+    if (value.schema !== "work.review-candidate-projection/v1") return null;
   } else if (kind === "review") {
-    if (!["flow.review-inbox-projection/v1", "flow.review-projection/v1"].includes(value.schema) &&
-        typeof value.review_id !== "string") return null;
+    if (!["flow.review-inbox-projection/v1", "flow.review-projection/v1"].includes(value.schema)) {
+      return null;
+    }
   } else if (kind === "graph") {
     projection = value.schema === "flow.graph-projection/v1" ? value : value.views?.graph;
-    if (!isRecord(projection) || projection.schema !== "flow.graph-projection/v1") {
-      const review = firstInboxItem(value);
-      if (review === null) return null;
-      projection = derivedInboxProjection("flow.graph-projection/v1", value, review, {
-        nodes: [
-          { id: review.candidate_id, kind: "candidate" },
-          { id: review.review_id, kind: "review", status: review.status },
-        ],
-        edges: [{ from: review.candidate_id, to: review.review_id, kind: "review_of" }],
-      });
-    }
+    if (!isRecord(projection) || projection.schema !== "flow.graph-projection/v1") return null;
   } else if (kind === "timeline") {
     projection = value.schema === "flow.timeline-projection/v1" ? value : value.views?.timeline;
-    if (!isRecord(projection) || projection.schema !== "flow.timeline-projection/v1") {
-      const review = firstInboxItem(value);
-      if (review === null) return null;
-      projection = derivedInboxProjection("flow.timeline-projection/v1", value, review, {
-        events: [{
-          kind: "review",
-          subject_id: review.review_id,
-          status: review.status,
-          lifecycle_generation: review.lifecycle_generation,
-        }],
-      });
-    }
+    if (!isRecord(projection) || projection.schema !== "flow.timeline-projection/v1") return null;
   } else if (kind === "tuicr") {
-    if (!["flow.review-inbox-projection/v1", "flow.review-projection/v1"].includes(value.schema) &&
-        typeof value.review_id !== "string") return null;
-    projection = {
-      schema: "tuicr.review-text-projection/v1",
-      review: value,
-      consumer: "tuicr",
-    };
+    if (!["tuicr.review-consumer-observation/v1", "tuicr.review-projection/v1"].includes(value.schema)) {
+      return null;
+    }
   } else if (kind === "terminal") {
     if (item.command_kind !== "status" && !item.source.path.endsWith(".log")) return null;
     projection = {
@@ -465,6 +572,8 @@ function deriveCandidate(kind, item) {
     projection,
     watermark: projectionWatermark,
     legal_actions: legalActions,
+    rendered_bytes_sha256: item.source.receipt.persisted_sha256,
+    persisted_rendered_bytes: item.source.receipt.persisted_sha256 === item.source.sha256,
   };
 }
 
@@ -475,6 +584,9 @@ function makeCapture(kind, candidate) {
     source: candidate.item.source,
     source_schema: candidate.item.value.schema,
     source_provenance: candidate.item.source_provenance,
+    source_bytes_sha256: candidate.item.source.sha256,
+    rendered_bytes_sha256: candidate.rendered_bytes_sha256,
+    persisted_rendered_bytes: candidate.persisted_rendered_bytes === true,
     projection: candidate.projection,
     watermark: candidate.watermark,
     legal_actions: candidate.legal_actions,
@@ -525,20 +637,21 @@ function exactWatermark(value) {
   return null;
 }
 
-function firstInboxItem(value) {
-  return value.schema === "flow.review-inbox-projection/v1" &&
-      Array.isArray(value.items) && isRecord(value.items[0])
-    ? value.items[0]
-    : null;
-}
-
-function derivedInboxProjection(schema, inbox, review, fields) {
-  return {
-    schema,
-    ...fields,
-    watermark: exactWatermark(inbox),
-    legal_actions: Array.isArray(review.legal_actions) ? review.legal_actions : [],
-  };
+function validateDistinctRenderedSources(captures) {
+  for (const capture of captures) {
+    if (capture.value.persisted_rendered_bytes !== true ||
+        !["public_process", "composed"].includes(capture.value.source_provenance) ||
+        capture.value.source_bytes_sha256 !== capture.value.rendered_bytes_sha256 ||
+        capture.value.source?.receipt?.persisted_sha256 !== capture.value.rendered_bytes_sha256 ||
+        capture.value.source_provenance === "composed" &&
+          (!Array.isArray(capture.value.source.receipt.components) ||
+           capture.value.source.receipt.components.length === 0)) {
+      throw new HeadlessProviderError(
+        "headless_rendered_bytes_unproven",
+        `headless ${capture.kind} capture is not bound to persisted public output bytes`,
+      );
+    }
+  }
 }
 
 function exactLegalActions(value) {

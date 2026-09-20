@@ -148,7 +148,11 @@ for (const status of ["failed", "blocked", "not_run"]) {
       phase2.path = null;
       phase2.sha256 = null;
     } else {
-      const evidencePath = join(configDirectory, phase2.path);
+      const evidencePath = join(
+        configDirectory,
+        phase2.path ?? "evidence/production-route-conformance.v1.json",
+      );
+      phase2.path = phase2.path ?? "evidence/production-route-conformance.v1.json";
       const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
       evidence.status = status;
       const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);

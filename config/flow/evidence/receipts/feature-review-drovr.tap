@@ -2,1599 +2,1599 @@ TAP version 13
 # Subtest: DelegatedAgentPort exposes the exact compatible lifecycle description
 ok 1 - DelegatedAgentPort exposes the exact compatible lifecycle description
   ---
-  duration_ms: 96.944688
+  duration_ms: 81.997855
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort projects missing compatibility as a typed block
 ok 2 - DelegatedAgentPort projects missing compatibility as a typed block
   ---
-  duration_ms: 54.758079
+  duration_ms: 51.168153
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort rejects a description that omits required compatibility
 ok 3 - DelegatedAgentPort rejects a description that omits required compatibility
   ---
-  duration_ms: 34.563746
+  duration_ms: 37.029628
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort rejects self-authored compatibility without qualified facts
 ok 4 - DelegatedAgentPort rejects self-authored compatibility without qualified facts
   ---
-  duration_ms: 44.635962
+  duration_ms: 29.926849
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort exposes the complete authority-derived lifecycle
 ok 5 - DelegatedAgentPort exposes the complete authority-derived lifecycle
   ---
-  duration_ms: 25.614903
+  duration_ms: 25.508816
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort requires an exact payload digest for dispatch and send
 ok 6 - DelegatedAgentPort requires an exact payload digest for dispatch and send
   ---
-  duration_ms: 29.833726
+  duration_ms: 32.743771
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort preserves a competing registry owner watermark and actions
 ok 7 - DelegatedAgentPort preserves a competing registry owner watermark and actions
   ---
-  duration_ms: 19.698224
+  duration_ms: 24.49119
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort preserves owner-loss recovery evidence
 ok 8 - DelegatedAgentPort preserves owner-loss recovery evidence
   ---
-  duration_ms: 0.487474
+  duration_ms: 0.510386
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort preserves recovery-evidence mismatch watermark and actions
 ok 9 - DelegatedAgentPort preserves recovery-evidence mismatch watermark and actions
   ---
-  duration_ms: 0.482034
+  duration_ms: 0.574405
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort preserves release-failure watermark and actions
 ok 10 - DelegatedAgentPort preserves release-failure watermark and actions
   ---
-  duration_ms: 0.478046
+  duration_ms: 0.540192
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort blocks detected registry lock ownership loss
 ok 11 - DelegatedAgentPort blocks detected registry lock ownership loss
   ---
-  duration_ms: 0.33424
+  duration_ms: 0.32899
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort sanitizes malformed registry-lock details without authority
 ok 12 - DelegatedAgentPort sanitizes malformed registry-lock details without authority
   ---
-  duration_ms: 0.230316
+  duration_ms: 0.229736
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort does not treat a partial registry watermark as lock authority
 ok 13 - DelegatedAgentPort does not treat a partial registry watermark as lock authority
   ---
-  duration_ms: 0.224506
+  duration_ms: 0.235357
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort does not expose internal registry recovery verbs
 ok 14 - DelegatedAgentPort does not expose internal registry recovery verbs
   ---
-  duration_ms: 0.266314
+  duration_ms: 0.279338
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort keeps absent-owner lock release operator-only
 ok 15 - DelegatedAgentPort keeps absent-owner lock release operator-only
   ---
-  duration_ms: 0.370738
+  duration_ms: 0.362932
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort preserves a bare-lock abandonment subject
 ok 16 - DelegatedAgentPort preserves a bare-lock abandonment subject
   ---
-  duration_ms: 0.300968
+  duration_ms: 0.444784
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort closes bare-lock action without a valid subject
 ok 17 - DelegatedAgentPort closes bare-lock action without a valid subject
   ---
-  duration_ms: 0.275201
+  duration_ms: 0.290239
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort proves caller-key absence and fails conflicts closed
 ok 18 - DelegatedAgentPort proves caller-key absence and fails conflicts closed
   ---
-  duration_ms: 0.548888
+  duration_ms: 1.976284
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort projects the durable retirement receipt
 ok 19 - DelegatedAgentPort projects the durable retirement receipt
   ---
-  duration_ms: 0.368483
+  duration_ms: 0.417143
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort points launch_binding_missing at the exact agent retirement
 ok 20 - DelegatedAgentPort points launch_binding_missing at the exact agent retirement
   ---
-  duration_ms: 24.865443
+  duration_ms: 27.10703
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort points launch_binding_stale at the exact agent retirement
 ok 21 - DelegatedAgentPort points launch_binding_stale at the exact agent retirement
   ---
-  duration_ms: 20.975381
+  duration_ms: 25.684744
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort keeps a fresh description conflict refreshable
 ok 22 - DelegatedAgentPort keeps a fresh description conflict refreshable
   ---
-  duration_ms: 31.145759
+  duration_ms: 27.109284
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort never recommends retirement without registry evidence
 ok 23 - DelegatedAgentPort never recommends retirement without registry evidence
   ---
-  duration_ms: 20.501593
+  duration_ms: 22.829499
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort closes legal actions around unproven delivery and agent loss
 ok 24 - DelegatedAgentPort closes legal actions around unproven delivery and agent loss
   ---
-  duration_ms: 0.612375
+  duration_ms: 0.611573
   type: 'test'
   ...
 # Subtest: Drovr conformance rejects missing advertised features and recovers after repair
 ok 25 - Drovr conformance rejects missing advertised features and recovers after repair
   ---
-  duration_ms: 36.481863
+  duration_ms: 38.461554
   type: 'test'
   ...
 # Subtest: Drovr conformance rejects weakened advertised features and recovers after repair
 ok 26 - Drovr conformance rejects weakened advertised features and recovers after repair
   ---
-  duration_ms: 34.315746
+  duration_ms: 46.542496
   type: 'test'
   ...
 # Subtest: Drovr conformance rejects contradictory advertised features and recovers after repair
 ok 27 - Drovr conformance rejects contradictory advertised features and recovers after repair
   ---
-  duration_ms: 38.599459
+  duration_ms: 44.336266
   type: 'test'
   ...
 # Subtest: Drovr conformance rejects contradictory availability advertised features and recovers after repair
 ok 28 - Drovr conformance rejects contradictory availability advertised features and recovers after repair
   ---
-  duration_ms: 36.065721
+  duration_ms: 38.210056
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort classifies an unpinned Flow contract as a repairable local failure
 ok 29 - DelegatedAgentPort classifies an unpinned Flow contract as a repairable local failure
   ---
-  duration_ms: 0.363465
+  duration_ms: 0.299395
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort classifies an unreadable Flow contract as a repairable local failure
 ok 30 - DelegatedAgentPort classifies an unreadable Flow contract as a repairable local failure
   ---
-  duration_ms: 0.194191
+  duration_ms: 0.198488
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort classifies an unreadable projection schema as a repairable local failure
 ok 31 - DelegatedAgentPort classifies an unreadable projection schema as a repairable local failure
   ---
-  duration_ms: 3.116068
+  duration_ms: 1.480465
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort retries a failed local validator load after repair
 ok 32 - DelegatedAgentPort retries a failed local validator load after repair
   ---
-  duration_ms: 2.586546
+  duration_ms: 2.574663
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort blocks internally contradictory launch authority
 ok 33 - DelegatedAgentPort blocks internally contradictory launch authority
   ---
-  duration_ms: 21.576576
+  duration_ms: 20.59692
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort rejects authority dimensions that contradict capability
 ok 34 - DelegatedAgentPort rejects authority dimensions that contradict capability
   ---
-  duration_ms: 24.002393
+  duration_ms: 23.239609
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort rejects a self-consistent description for another launch
 ok 35 - DelegatedAgentPort rejects a self-consistent description for another launch
   ---
-  duration_ms: 23.73577
+  duration_ms: 18.485745
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort turns malformed feature entries into a typed block
 ok 36 - DelegatedAgentPort turns malformed feature entries into a typed block
   ---
-  duration_ms: 16.407432
+  duration_ms: 18.07849
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort classifies a forged description digest as contradictory
 ok 37 - DelegatedAgentPort classifies a forged description digest as contradictory
   ---
-  duration_ms: 16.605959
+  duration_ms: 17.242259
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort sanitizes malformed descriptions into a typed block
 ok 38 - DelegatedAgentPort sanitizes malformed descriptions into a typed block
   ---
-  duration_ms: 23.18611
+  duration_ms: 25.696335
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort rejects a self-consistent description missing capacity when advertised
 ok 39 - DelegatedAgentPort rejects a self-consistent description missing capacity when advertised
   ---
-  duration_ms: 21.941031
+  duration_ms: 24.536684
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort rejects a self-consistent description missing capacity when synthetically supported
 ok 40 - DelegatedAgentPort rejects a self-consistent description missing capacity when synthetically supported
   ---
-  duration_ms: 15.576301
+  duration_ms: 27.268901
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort classifies invalid launch selectors as caller input
 ok 41 - DelegatedAgentPort classifies invalid launch selectors as caller input
   ---
-  duration_ms: 0.391375
+  duration_ms: 0.299615
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort reports unavailable descriptions without inventing authority
 ok 42 - DelegatedAgentPort reports unavailable descriptions without inventing authority
   ---
-  duration_ms: 18.969483
+  duration_ms: 26.107146
   type: 'test'
   ...
 # Subtest: DelegatedAgentPort exposes repair actions for invalid Drovr configuration
 ok 43 - DelegatedAgentPort exposes repair actions for invalid Drovr configuration
   ---
-  duration_ms: 14.370546
+  duration_ms: 16.85964
   type: 'test'
   ...
 # Subtest: feature/v1 verify selection prepares an honest candidate plan
 ok 44 - feature/v1 verify selection prepares an honest candidate plan
   ---
-  duration_ms: 29.327367
+  duration_ms: 30.824413
   type: 'test'
   ...
-# (node:2416047) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (node:355806) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: feature/v1 prepares and launches without future candidate identities
 ok 45 - feature/v1 prepares and launches without future candidate identities
   ---
-  duration_ms: 68.196164
+  duration_ms: 119.825472
   type: 'test'
   ...
 # Subtest: feature/v1 carries the exact capture policy into seal finalization
 ok 46 - feature/v1 carries the exact capture policy into seal finalization
   ---
-  duration_ms: 6.775282
+  duration_ms: 6.773799
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free preparation accepts an explicit capture policy
 ok 47 - feature/v1 identity-free preparation accepts an explicit capture policy
   ---
-  duration_ms: 6.497177
+  duration_ms: 6.185549
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free custom policy derives the exact seal publication
 ok 48 - feature/v1 identity-free custom policy derives the exact seal publication
   ---
-  duration_ms: 1290.038886
+  duration_ms: 1332.547023
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free preparation requires starting Git facts
 ok 49 - feature/v1 identity-free preparation requires starting Git facts
   ---
-  duration_ms: 0.801497
+  duration_ms: 0.820782
   type: 'test'
   ...
 # Subtest: dynamic result-binding declarations have canonical order
 ok 50 - dynamic result-binding declarations have canonical order
   ---
-  duration_ms: 11.373739
+  duration_ms: 11.382825
   type: 'test'
   ...
 # Subtest: feature/v1 prepares an exact bounded critique repair template
 ok 51 - feature/v1 prepares an exact bounded critique repair template
   ---
-  duration_ms: 17.541264
+  duration_ms: 17.5553
   type: 'test'
   ...
 # Subtest: feature/v1 repairs preserve every authority-bearing card field
 ok 52 - feature/v1 repairs preserve every authority-bearing card field
   ---
-  duration_ms: 7.11335
+  duration_ms: 7.114882
   type: 'test'
   ...
 # Subtest: feature/v1 repairs rebind every seal evidence reference by card identity
 ok 53 - feature/v1 repairs rebind every seal evidence reference by card identity
   ---
-  duration_ms: 7.344166
+  duration_ms: 7.251515
   type: 'test'
   ...
 # Subtest: feature/v1 rejects an upstream repair that leaves the evidence closure without a replacement
 ok 54 - feature/v1 rejects an upstream repair that leaves the evidence closure without a replacement
   ---
-  duration_ms: 0.998412
+  duration_ms: 1.010263
   type: 'test'
   ...
 # Subtest: feature/v1 does not admit a seal repair that drops seal evidence
 ok 55 - feature/v1 does not admit a seal repair that drops seal evidence
   ---
-  duration_ms: 0.816965
+  duration_ms: 0.843012
   type: 'test'
   ...
 # Subtest: feature/v1 legacy seal repairs preserve operation evidence references
 ok 56 - feature/v1 legacy seal repairs preserve operation evidence references
   ---
-  duration_ms: 4.408194
+  duration_ms: 4.430325
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free repair binds the replacement capture authority scope
 ok 57 - feature/v1 identity-free repair binds the replacement capture authority scope
   ---
-  duration_ms: 6.104799
+  duration_ms: 5.978765
   type: 'test'
   ...
 # Subtest: feature/v1 exposes a stale-safe repair action and recovers the blocked seal
 ok 58 - feature/v1 exposes a stale-safe repair action and recovers the blocked seal
   ---
-  duration_ms: 1523.512629
+  duration_ms: 1586.73504
   type: 'test'
   ...
 # Subtest: feature/v1 rejects repair scope expansion without its exact checkpoint
 ok 59 - feature/v1 rejects repair scope expansion without its exact checkpoint
   ---
-  duration_ms: 1.099028
+  duration_ms: 1.205294
   type: 'test'
   ...
 # Subtest: feature/v1 derives expansion from added cards, resources, and limits instead of the caller flag
 ok 60 - feature/v1 derives expansion from added cards, resources, and limits instead of the caller flag
   ---
-  duration_ms: 5.737328
+  duration_ms: 5.96504
   type: 'test'
   ...
 # Subtest: feature/v1 checkpoints an unrelated added capture card
 ok 61 - feature/v1 checkpoints an unrelated added capture card
   ---
-  duration_ms: 5.361622
+  duration_ms: 6.114497
   type: 'test'
   ...
 # Subtest: feature/v1 applies a closed target and evidence contract for every repair kind
 ok 62 - feature/v1 applies a closed target and evidence contract for every repair kind
   ---
-  duration_ms: 2.312648
+  duration_ms: 2.354134
   type: 'test'
   ...
 # Subtest: feature/v1 admits serialized slice and completeness repairs with explicit identities
 ok 63 - feature/v1 admits serialized slice and completeness repairs with explicit identities
   ---
-  duration_ms: 696.768463
+  duration_ms: 755.301545
   type: 'test'
   ...
 # Subtest: feature/v1 gates repair expansion behind an exact checkpoint
 ok 64 - feature/v1 gates repair expansion behind an exact checkpoint
   ---
-  duration_ms: 2786.524975
+  duration_ms: 2844.731227
   type: 'test'
   ...
 # Subtest: feature/v1 preserves chronological decline and expansion-decline outcomes
 ok 65 - feature/v1 preserves chronological decline and expansion-decline outcomes
   ---
-  duration_ms: 1508.982909
+  duration_ms: 1568.540606
   type: 'test'
   ...
 # Subtest: feature/v1 requires registered authority providers
 ok 66 - feature/v1 requires registered authority providers
   ---
-  duration_ms: 2.598277
+  duration_ms: 3.126577
   type: 'test'
   ...
 # Subtest: feature/v1 requires discriminating evidence at preparation
 ok 67 - feature/v1 requires discriminating evidence at preparation
   ---
-  duration_ms: 3.950083
+  duration_ms: 4.575584
   type: 'test'
   ...
 # Subtest: feature/v1 requires one explicit non-destructive assertion and serialized test slices
 ok 68 - feature/v1 requires one explicit non-destructive assertion and serialized test slices
   ---
-  duration_ms: 2.786957
+  duration_ms: 3.215813
   type: 'test'
   ...
 # Subtest: feature/v1 test mode prepares an honest failure-proving slice
 ok 69 - feature/v1 test mode prepares an honest failure-proving slice
   ---
-  duration_ms: 5.337437
+  duration_ms: 6.637266
   type: 'test'
   ...
 # Subtest: feature/v1 serialized slices own the brief acceptance exactly once
     # Subtest: omitted slice acceptance
     ok 1 - omitted slice acceptance
       ---
-      duration_ms: 0.629416
+      duration_ms: 0.692404
       type: 'test'
       ...
     # Subtest: uncovered brief criterion
     ok 2 - uncovered brief criterion
       ---
-      duration_ms: 0.379774
+      duration_ms: 0.426181
       type: 'test'
       ...
     # Subtest: duplicate ownership
     ok 3 - duplicate ownership
       ---
-      duration_ms: 0.378351
+      duration_ms: 0.386567
       type: 'test'
       ...
     # Subtest: out-of-brief criterion
     ok 4 - out-of-brief criterion
       ---
-      duration_ms: 0.368743
+      duration_ms: 0.368132
       type: 'test'
       ...
     1..4
 ok 70 - feature/v1 serialized slices own the brief acceptance exactly once
   ---
-  duration_ms: 2.09783
+  duration_ms: 2.238671
   type: 'test'
   ...
 # Subtest: feature/v1 rejects unreachable serialized safe baselines during preparation
     # Subtest: more than one verify slice
     ok 1 - more than one verify slice
       ---
-      duration_ms: 0.429156
+      duration_ms: 0.430658
       type: 'test'
       ...
     # Subtest: verify slice after a test slice
     ok 2 - verify slice after a test slice
       ---
-      duration_ms: 0.377891
+      duration_ms: 0.389462
       type: 'test'
       ...
     # Subtest: baseline does not select the current workspace
     ok 3 - baseline does not select the current workspace
       ---
-      duration_ms: 1.082287
+      duration_ms: 1.210925
       type: 'test'
       ...
     1..3
 ok 71 - feature/v1 rejects unreachable serialized safe baselines during preparation
   ---
-  duration_ms: 2.125641
+  duration_ms: 2.343666
   type: 'test'
   ...
 # Subtest: workspace effect authority rejects stale and contradictory claim facts
 ok 72 - workspace effect authority rejects stale and contradictory claim facts
   ---
-  duration_ms: 0.168913
+  duration_ms: 0.16747
   type: 'test'
   ...
 # Subtest: feature/v1 test-only selection needs no verify baseline
 ok 73 - feature/v1 test-only selection needs no verify baseline
   ---
-  duration_ms: 5.032241
+  duration_ms: 5.816294
   type: 'test'
   ...
 # Subtest: feature/v1 serializes mixed slices and keeps setup out of evidence
 ok 74 - feature/v1 serializes mixed slices and keeps setup out of evidence
   ---
-  duration_ms: 7.160346
+  duration_ms: 8.025691
   type: 'test'
   ...
 # Subtest: feature/v1 setup requires explicit slices and serializes verify setup
 ok 75 - feature/v1 setup requires explicit slices and serializes verify setup
   ---
-  duration_ms: 5.764086
+  duration_ms: 6.114427
   type: 'test'
   ...
 # Subtest: feature/v1 test mode rejects broken or unrelated failures
 ok 76 - feature/v1 test mode rejects broken or unrelated failures
   ---
-  duration_ms: 0.930054
+  duration_ms: 0.923673
   type: 'test'
   ...
 # Subtest: feature/v1 verify rejects an unchanged promoted workspace
 ok 77 - feature/v1 verify rejects an unchanged promoted workspace
   ---
-  duration_ms: 0.421141
+  duration_ms: 0.416553
   type: 'test'
   ...
 # Subtest: feature/v1 test mode proves failure before apply and seals a candidate
 ok 78 - feature/v1 test mode proves failure before apply and seals a candidate
   ---
-  duration_ms: 3019.962641
+  duration_ms: 3104.341368
   type: 'test'
   ...
 # Subtest: feature/v1 test-only mode seals from current intended-failure evidence
 ok 79 - feature/v1 test-only mode seals from current intended-failure evidence
   ---
-  duration_ms: 2573.998012
+  duration_ms: 2650.721999
   type: 'test'
   ...
 # Subtest: feature/v1 test receipts reject unrelated and broken-environment failures
     # Subtest: unrelated
     ok 1 - unrelated
       ---
-      duration_ms: 278.799913
+      duration_ms: 288.608046
       type: 'test'
       ...
     # Subtest: broken_environment
     ok 2 - broken_environment
       ---
-      duration_ms: 276.842003
+      duration_ms: 286.456527
       type: 'test'
       ...
     # Subtest: stale_epoch
     ok 3 - stale_epoch
       ---
-      duration_ms: 291.587313
+      duration_ms: 280.685808
       type: 'test'
       ...
     1..3
 ok 80 - feature/v1 test receipts reject unrelated and broken-environment failures
   ---
-  duration_ms: 847.735186
+  duration_ms: 856.312923
   type: 'test'
   ...
 # Subtest: feature/v1 rejects invalid test receipts before writer admission and recovers
 ok 81 - feature/v1 rejects invalid test receipts before writer admission and recovers
   ---
-  duration_ms: 345.865171
+  duration_ms: 355.08859
   type: 'test'
   ...
 # Subtest: feature/v1 mixed mode rejects invalid test-slice receipts despite a valid baseline
     # Subtest: unrelated
     ok 1 - unrelated
       ---
-      duration_ms: 311.978972
+      duration_ms: 319.600942
       type: 'test'
       ...
     # Subtest: broken_environment
     ok 2 - broken_environment
       ---
-      duration_ms: 311.939538
+      duration_ms: 316.467542
       type: 'test'
       ...
     # Subtest: stale_epoch
     ok 3 - stale_epoch
       ---
-      duration_ms: 310.198048
+      duration_ms: 310.304074
       type: 'test'
       ...
     # Subtest: missing
     ok 4 - missing
       ---
-      duration_ms: 308.537751
+      duration_ms: 317.898796
       type: 'test'
       ...
     1..4
 ok 82 - feature/v1 mixed mode rejects invalid test-slice receipts despite a valid baseline
   ---
-  duration_ms: 1243.237421
+  duration_ms: 1264.886651
   type: 'test'
   ...
 # Subtest: feature/v1 mixed mode requires every slice verification receipt
 ok 83 - feature/v1 mixed mode requires every slice verification receipt
   ---
-  duration_ms: 1208.495605
+  duration_ms: 1227.30949
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free mixed mode carries the canonical workspace binding through seal
 ok 84 - feature/v1 identity-free mixed mode carries the canonical workspace binding through seal
   ---
-  duration_ms: 4554.441611
+  duration_ms: 4690.988736
   type: 'test'
   ...
 # Subtest: feature/v1 slice verification rejects stale, foreign, or incomplete receipts
     # Subtest: stale_epoch
     ok 1 - stale_epoch
       ---
-      duration_ms: 1199.743967
+      duration_ms: 1222.305552
       type: 'test'
       ...
     # Subtest: wrong_operation
     ok 2 - wrong_operation
       ---
-      duration_ms: 1187.369252
+      duration_ms: 1223.55584
       type: 'test'
       ...
     # Subtest: missing_verdict
     ok 3 - missing_verdict
       ---
-      duration_ms: 1176.341156
+      duration_ms: 1201.479898
       type: 'test'
       ...
     # Subtest: wrong_acceptance
     ok 4 - wrong_acceptance
       ---
-      duration_ms: 1190.214208
+      duration_ms: 1207.882179
       type: 'test'
       ...
     # Subtest: setup_only
     ok 5 - setup_only
       ---
-      duration_ms: 1191.484874
+      duration_ms: 1195.163536
       type: 'test'
       ...
     1..5
 ok 85 - feature/v1 slice verification rejects stale, foreign, or incomplete receipts
   ---
-  duration_ms: 5945.817872
+  duration_ms: 6051.135051
   type: 'test'
   ...
 # Subtest: feature/v1 slice verification rejects malformed discriminators
     # Subtest: missing_discriminator
     ok 1 - missing_discriminator
       ---
-      duration_ms: 1181.452594
+      duration_ms: 1200.095582
       type: 'test'
       ...
     # Subtest: malformed_discriminator
     ok 2 - malformed_discriminator
       ---
-      duration_ms: 1184.641777
+      duration_ms: 1205.703811
       type: 'test'
       ...
     # Subtest: undistinguished_discriminator
     ok 3 - undistinguished_discriminator
       ---
-      duration_ms: 1187.833523
+      duration_ms: 1201.948086
       type: 'test'
       ...
     # Subtest: stale_discriminator
     ok 4 - stale_discriminator
       ---
-      duration_ms: 1187.410821
+      duration_ms: 1193.113325
       type: 'test'
       ...
     1..4
 ok 86 - feature/v1 slice verification rejects malformed discriminators
   ---
-  duration_ms: 4741.887412
+  duration_ms: 4801.470623
   type: 'test'
   ...
 # Subtest: feature/v1 setup evidence cannot substitute for test slice evidence
 ok 87 - feature/v1 setup evidence cannot substitute for test slice evidence
   ---
-  duration_ms: 388.916994
+  duration_ms: 400.167342
   type: 'test'
   ...
 # Subtest: feature/v1 attributes mutation to the authority-owned apply card
 ok 88 - feature/v1 attributes mutation to the authority-owned apply card
   ---
-  duration_ms: 331.216861
+  duration_ms: 341.438911
   type: 'test'
   ...
 # Subtest: feature/v1 rejects aggregate verification from a stale mutation epoch
 ok 89 - feature/v1 rejects aggregate verification from a stale mutation epoch
   ---
-  duration_ms: 1741.109584
+  duration_ms: 1782.975656
   type: 'test'
   ...
 # Subtest: feature/v1 test operation recovery reuses the current intent once
 ok 90 - feature/v1 test operation recovery reuses the current intent once
   ---
-  duration_ms: 471.264488
+  duration_ms: 474.645173
   type: 'test'
   ...
 # Subtest: feature/v1 mixed slices serialize each writer and retain operation ownership
 ok 91 - feature/v1 mixed slices serialize each writer and retain operation ownership
   ---
-  duration_ms: 4410.581806
+  duration_ms: 4516.536669
   type: 'test'
   ...
 # Subtest: feature/v1 mixed evidence has deterministic materialization order
 ok 92 - feature/v1 mixed evidence has deterministic materialization order
   ---
-  duration_ms: 1154.373815
+  duration_ms: 1171.773218
   type: 'test'
   ...
 # Subtest: feature/v1 replacement critique binds and seals the captured candidate
 ok 93 - feature/v1 replacement critique binds and seals the captured candidate
   ---
-  duration_ms: 1163.438633
+  duration_ms: 1206.989774
   type: 'test'
   ...
 # Subtest: feature/v1 seal rejects provider critique that selects apply evidence
 ok 94 - feature/v1 seal rejects provider critique that selects apply evidence
   ---
-  duration_ms: 1130.077306
+  duration_ms: 1162.529059
   type: 'test'
   ...
 # Subtest: feature/v1 serialized slices advance honest workspace snapshots
 ok 95 - feature/v1 serialized slices advance honest workspace snapshots
   ---
-  duration_ms: 4434.436065
+  duration_ms: 4549.922069
   type: 'test'
   ...
 # Subtest: feature/v1 serialized slices reject stale, skipped, and reordered snapshots
     # Subtest: stale
     ok 1 - stale
       ---
-      duration_ms: 953.129521
+      duration_ms: 991.999294
       type: 'test'
       ...
     # Subtest: skip
     ok 2 - skip
       ---
-      duration_ms: 4291.092566
+      duration_ms: 4366.43975
       type: 'test'
       ...
     # Subtest: reordered
     ok 3 - reordered
       ---
-      duration_ms: 4276.094629
+      duration_ms: 4367.604119
       type: 'test'
       ...
     1..3
 ok 96 - feature/v1 serialized slices reject stale, skipped, and reordered snapshots
   ---
-  duration_ms: 9520.787229
+  duration_ms: 9726.537779
   type: 'test'
   ...
 # Subtest: feature/v1 fences apply behind the exact workspace writer
 ok 97 - feature/v1 fences apply behind the exact workspace writer
   ---
-  duration_ms: 188.654612
+  duration_ms: 190.510221
   type: 'test'
   ...
 # Subtest: feature/v1 seals with an explicit non-destructive compensating assertion
 ok 98 - feature/v1 seals with an explicit non-destructive compensating assertion
   ---
-  duration_ms: 1191.220304
+  duration_ms: 1225.407333
   type: 'test'
   ...
 # Subtest: durable ReviewAuthority accepts a human session command through FlowRuntime
 ok 99 - durable ReviewAuthority accepts a human session command through FlowRuntime
   ---
-  duration_ms: 2321.597106
+  duration_ms: 2399.390288
   type: 'test'
   ...
 # Subtest: feature/v1 cancellation stops admission without sealing a candidate
 ok 100 - feature/v1 cancellation stops admission without sealing a candidate
   ---
-  duration_ms: 88.835774
+  duration_ms: 90.754661
   type: 'test'
   ...
 # Subtest: feature/v1 rechecks current route, resource, and generation providers on absent launch
 ok 101 - feature/v1 rechecks current route, resource, and generation providers on absent launch
   ---
-  duration_ms: 115.740358
+  duration_ms: 114.946877
   type: 'test'
   ...
 # Subtest: feature/v1 reboot admission rechecks the current shipped resource provider
 ok 102 - feature/v1 reboot admission rechecks the current shipped resource provider
   ---
-  duration_ms: 67.809036
+  duration_ms: 67.786084
   type: 'test'
   ...
 # Subtest: feature/v1 verify executes and seals one durable local candidate
 ok 103 - feature/v1 verify executes and seals one durable local candidate
   ---
-  duration_ms: 3014.384738
+  duration_ms: 3071.490067
   type: 'test'
   ...
 # Subtest: feature/v1 fences a sealed candidate after post-seal workspace movement
 ok 104 - feature/v1 fences a sealed candidate after post-seal workspace movement
   ---
-  duration_ms: 1220.921154
+  duration_ms: 1263.803604
   type: 'test'
   ...
 # Subtest: feature/v1 blocks review currency for unresolved or dirty workspace state
     # Subtest: effect_outcome_uncertain
     ok 1 - effect_outcome_uncertain
       ---
-      duration_ms: 1193.973879
+      duration_ms: 1235.528638
       type: 'test'
       ...
     # Subtest: workspace_dirty
     ok 2 - workspace_dirty
       ---
-      duration_ms: 1189.043567
+      duration_ms: 1230.554046
       type: 'test'
       ...
     1..2
 ok 105 - feature/v1 blocks review currency for unresolved or dirty workspace state
   ---
-  duration_ms: 2383.352117
+  duration_ms: 2466.450717
   type: 'test'
   ...
 # Subtest: feature/v1 blocks review currency when retained artifact bytes disappear
 ok 106 - feature/v1 blocks review currency when retained artifact bytes disappear
   ---
-  duration_ms: 1197.216852
+  duration_ms: 1221.911911
   type: 'test'
   ...
 # Subtest: feature/v1 blocks review currency when exact Git retention disappears
 ok 107 - feature/v1 blocks review currency when exact Git retention disappears
   ---
-  duration_ms: 1179.675958
+  duration_ms: 1209.423356
   type: 'test'
   ...
 # Subtest: feature/v1 fails closed when Git retention observation throws
 ok 108 - feature/v1 fails closed when Git retention observation throws
   ---
-  duration_ms: 1189.312857
+  duration_ms: 1226.252579
   type: 'test'
   ...
 # Subtest: feature/v1 blocks review currency when Git retention identity mismatches
 ok 109 - feature/v1 blocks review currency when Git retention identity mismatches
   ---
-  duration_ms: 1192.467728
+  duration_ms: 1197.213648
   type: 'test'
   ...
 # Subtest: feature/v1 blocks review currency when the exact handoff is inactive
 ok 110 - feature/v1 blocks review currency when the exact handoff is inactive
   ---
-  duration_ms: 1198.828691
+  duration_ms: 1234.007719
   type: 'test'
   ...
 # Subtest: feature/v1 derives finalization from the captured candidate
 ok 111 - feature/v1 derives finalization from the captured candidate
   ---
-  duration_ms: 953.391417
+  duration_ms: 989.408109
   type: 'test'
   ...
 # Subtest: feature/v1 derives candidate identity from captured bindings
 ok 112 - feature/v1 derives candidate identity from captured bindings
   ---
-  duration_ms: 1166.244556
+  duration_ms: 1187.691192
   type: 'test'
   ...
 # Subtest: legacy feature replay rejects critique receipts that select apply evidence
 ok 113 - legacy feature replay rejects critique receipts that select apply evidence
   ---
-  duration_ms: 995.906425
+  duration_ms: 1001.82351
   type: 'test'
   ...
 # Subtest: legacy feature-critique receipts are accepted and replay unchanged
 ok 114 - legacy feature-critique receipts are accepted and replay unchanged
   ---
-  duration_ms: 1056.003814
+  duration_ms: 1063.651436
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free repair captures and consumes a fresh candidate
 ok 115 - feature/v1 identity-free repair captures and consumes a fresh candidate
   ---
-  duration_ms: 1999.251442
+  duration_ms: 2030.13999
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free repair rejects remapping to a pre-repair capture
 ok 116 - feature/v1 identity-free repair rejects remapping to a pre-repair capture
   ---
-  duration_ms: 72.337343
+  duration_ms: 75.968486
   type: 'test'
   ...
 # Subtest: feature/v1 identity-free seal repair preserves every operation evidence binding
 ok 117 - feature/v1 identity-free seal repair preserves every operation evidence binding
   ---
-  duration_ms: 70.757203
+  duration_ms: 72.037647
   type: 'test'
   ...
 # Subtest: feature/v1 captures and publishes a candidate from a real Git workspace
 ok 118 - feature/v1 captures and publishes a candidate from a real Git workspace
   ---
-  duration_ms: 1241.627746
+  duration_ms: 1272.995758
   type: 'test'
   ...
 # Subtest: feature/v1 rejects Git or artifact drift after capture
     # Subtest: rejects git drift
     ok 1 - rejects git drift
       ---
-      duration_ms: 1197.131434
+      duration_ms: 1221.780257
       type: 'test'
       ...
     # Subtest: rejects artifact drift
     ok 2 - rejects artifact drift
       ---
-      duration_ms: 1195.670465
+      duration_ms: 1222.559994
       type: 'test'
       ...
     1..2
 ok 119 - feature/v1 rejects Git or artifact drift after capture
   ---
-  duration_ms: 2393.149222
+  duration_ms: 2444.740362
   type: 'test'
   ...
 # Subtest: feature/v1 durable reopen preserves the exact real Git capture and seal
 ok 120 - feature/v1 durable reopen preserves the exact real Git capture and seal
   ---
-  duration_ms: 1261.727233
+  duration_ms: 1303.24269
   type: 'test'
   ...
 # Subtest: feature/v1 durable reopen after capture preserves the next exact action
 ok 121 - feature/v1 durable reopen after capture preserves the next exact action
   ---
-  duration_ms: 326.897683
+  duration_ms: 339.603088
   type: 'test'
   ...
 # Subtest: feature/v1 delegate dispatch crash retains the exact claim and recovery boundary
 ok 122 - feature/v1 delegate dispatch crash retains the exact claim and recovery boundary
   ---
-  duration_ms: 233.510179
+  duration_ms: 246.303317
   type: 'test'
   ...
 # Subtest: feature/v1 post-commit crash reopens the exact sealed candidate and handoff
 ok 123 - feature/v1 post-commit crash reopens the exact sealed candidate and handoff
   ---
-  duration_ms: 1053.448166
+  duration_ms: 1077.032387
   type: 'test'
   ...
 # Subtest: feature/v1 recovers a crash before capture settlement without partial evidence
 ok 124 - feature/v1 recovers a crash before capture settlement without partial evidence
   ---
-  duration_ms: 550.152407
+  duration_ms: 559.359826
   type: 'test'
   ...
 # Subtest: feature/v1 adopts the exact capture after a crash before settlement
 ok 125 - feature/v1 adopts the exact capture after a crash before settlement
   ---
-  duration_ms: 672.23762
+  duration_ms: 687.775814
   type: 'test'
   ...
 # Subtest: feature/v1 late capture after cancellation remains unusable evidence
 ok 126 - feature/v1 late capture after cancellation remains unusable evidence
   ---
-  duration_ms: 347.907378
+  duration_ms: 361.487685
   type: 'test'
   ...
 # Subtest: feature/v1 rejects a capture that does not advance the workspace fence
 ok 127 - feature/v1 rejects a capture that does not advance the workspace fence
   ---
-  duration_ms: 412.558389
+  duration_ms: 426.683517
   type: 'test'
   ...
 # Subtest: durable review target observation rejects a partial movement adapter at construction
 ok 128 - durable review target observation rejects a partial movement adapter at construction
   ---
-  duration_ms: 0.589673
+  duration_ms: 0.609281
   type: 'test'
   ...
 # Subtest: feature/v1 seal rejects invalid verification and publication evidence
     # Subtest: verification omits an accepted criterion
     ok 1 - verification omits an accepted criterion
       ---
-      duration_ms: 547.26862
+      duration_ms: 564.80982
       type: 'test'
       ...
     # Subtest: verification contains a non-passed verdict
     ok 2 - verification contains a non-passed verdict
       ---
-      duration_ms: 551.903153
+      duration_ms: 568.804637
       type: 'test'
       ...
     # Subtest: verification contains a missing verdict
     ok 3 - verification contains a missing verdict
       ---
-      duration_ms: 548.002021
+      duration_ms: 567.911249
       type: 'test'
       ...
     # Subtest: verification does not distinguish the safe baseline
     ok 4 - verification does not distinguish the safe baseline
       ---
-      duration_ms: 548.073643
+      duration_ms: 578.748685
       type: 'test'
       ...
     # Subtest: verification discriminator names a stale post-mutation state
     ok 5 - verification discriminator names a stale post-mutation state
       ---
-      duration_ms: 557.635351
+      duration_ms: 565.385427
       type: 'test'
       ...
     # Subtest: critique contains a blocking finding
     ok 6 - critique contains a blocking finding
       ---
-      duration_ms: 1143.822392
+      duration_ms: 1162.652156
       type: 'test'
       ...
     # Subtest: verification evidence is stale against workspace and authority
     ok 7 - verification evidence is stale against workspace and authority
       ---
-      duration_ms: 567.081626
+      duration_ms: 576.214856
       type: 'test'
       ...
     # Subtest: delegate self-report cannot replace an absent verify receipt
     ok 8 - delegate self-report cannot replace an absent verify receipt
       ---
-      duration_ms: 555.410176
+      duration_ms: 565.650699
       type: 'test'
       ...
     # Subtest: feature seal omits the ReviewAuthority candidate
     ok 9 - feature seal omits the ReviewAuthority candidate
       ---
-      duration_ms: 1127.867018
+      duration_ms: 1192.467318
       type: 'test'
       ...
     1..9
 ok 129 - feature/v1 seal rejects invalid verification and publication evidence
   ---
-  duration_ms: 6148.107644
+  duration_ms: 6343.711275
   type: 'test'
   ...
 # Subtest: feature/v1 seal rollback keeps all authorities unpromoted and exposes exact recovery
 ok 130 - feature/v1 seal rollback keeps all authorities unpromoted and exposes exact recovery
   ---
-  duration_ms: 1475.411282
+  duration_ms: 1542.571215
   type: 'test'
   ...
-# (node:2416048) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (node:355807) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 # (Use `node --trace-warnings ...` to show where the warning was created)
 # Subtest: review/v1 rejects a minimal self-digest candidate before launch
 ok 131 - review/v1 rejects a minimal self-digest candidate before launch
   ---
-  duration_ms: 3.830253
+  duration_ms: 4.111894
   type: 'test'
   ...
 # Subtest: review/v1 reports invalid urgency_floor as typed caller input
 ok 132 - review/v1 reports invalid urgency_floor as typed caller input
   ---
-  duration_ms: 1.025983
+  duration_ms: 1.328132
   type: 'test'
   ...
 # Subtest: review/v1 prepares an exact GitHub snapshot with an optional pending-review checkpoint
 ok 133 - review/v1 prepares an exact GitHub snapshot with an optional pending-review checkpoint
   ---
-  duration_ms: 19.099502
+  duration_ms: 19.525804
   type: 'test'
   ...
 # Subtest: review/v1 rejects unversioned or aliased pending-review requests
 ok 134 - review/v1 rejects unversioned or aliased pending-review requests
   ---
-  duration_ms: 2.450374
+  duration_ms: 2.46976
   type: 'test'
   ...
 # Subtest: declining the exact GitHub pending-review checkpoint completes locally without Forge mutation
 ok 135 - declining the exact GitHub pending-review checkpoint completes locally without Forge mutation
   ---
-  duration_ms: 629.306829
+  duration_ms: 698.855919
   type: 'test'
   ...
 # Subtest: accepting the exact GitHub checkpoint creates one unsubmitted pending review only
 ok 136 - accepting the exact GitHub checkpoint creates one unsubmitted pending review only
   ---
-  duration_ms: 893.350123
+  duration_ms: 899.142856
   type: 'test'
   ...
 # Subtest: GitHub checkpoint exposes and binds the exact rendered pending-review draft
 ok 137 - GitHub checkpoint exposes and binds the exact rendered pending-review draft
   ---
-  duration_ms: 841.489706
+  duration_ms: 827.346236
   type: 'test'
   ...
 # Subtest: durable RunAuthority requires the declarative GitHub checkpoint binding
 ok 138 - durable RunAuthority requires the declarative GitHub checkpoint binding
   ---
-  duration_ms: 448.21981
+  duration_ms: 473.099358
   type: 'test'
   ...
 # Subtest: GitHub draft pre-render uses the lifecycle operation effect identity
 ok 139 - GitHub draft pre-render uses the lifecycle operation effect identity
   ---
-  duration_ms: 626.282563
+  duration_ms: 648.754404
   type: 'test'
   ...
 # Subtest: generic operation identity requires explicit operation identity fields
 ok 140 - generic operation identity requires explicit operation identity fields
   ---
-  duration_ms: 0.235627
+  duration_ms: 0.22166
   type: 'test'
   ...
 # Subtest: durable FlowRuntime reopens the exact GitHub semantic review projection
 ok 141 - durable FlowRuntime reopens the exact GitHub semantic review projection
   ---
-  duration_ms: 837.50664
+  duration_ms: 849.512675
   type: 'test'
   ...
 # Subtest: reopened FlowRuntime recovers a pending intent with its durable exact draft binding
 ok 142 - reopened FlowRuntime recovers a pending intent with its durable exact draft binding
   ---
-  duration_ms: 1184.551369
+  duration_ms: 1194.280971
   type: 'test'
   ...
 # Subtest: GitHub pending creation requires complete provider identity evidence
 ok 143 - GitHub pending creation requires complete provider identity evidence
   ---
-  duration_ms: 647.185771
+  duration_ms: 663.216157
   type: 'test'
   ...
 # Subtest: an unrelated pending GitHub review is preserved and cannot satisfy this flow
 ok 144 - an unrelated pending GitHub review is preserved and cannot satisfy this flow
   ---
-  duration_ms: 780.792846
+  duration_ms: 813.149795
   type: 'test'
   ...
 # Subtest: an ambiguous GitHub receipt stays one-shot uncertain without reposting
 ok 145 - an ambiguous GitHub receipt stays one-shot uncertain without reposting
   ---
-  duration_ms: 1035.185693
+  duration_ms: 1064.900603
   type: 'test'
   ...
 # Subtest: GitHub target movement before mutation blocks with zero creation calls
 ok 146 - GitHub target movement before mutation blocks with zero creation calls
   ---
-  duration_ms: 658.25305
+  duration_ms: 673.309702
   type: 'test'
   ...
 # Subtest: Forge target-moved error codes cannot invalidate without snapshot movement
 ok 147 - Forge target-moved error codes cannot invalidate without snapshot movement
   ---
-  duration_ms: 663.545704
+  duration_ms: 684.593615
   type: 'test'
   ...
 # Subtest: initial GitHub target movement is durable across restart before recovery
 ok 148 - initial GitHub target movement is durable across restart before recovery
   ---
-  duration_ms: 741.853107
+  duration_ms: 783.639027
   type: 'test'
   ...
 # Subtest: GitHub snapshot revalidation requires an explicit open state
 ok 149 - GitHub snapshot revalidation requires an explicit open state
   ---
-  duration_ms: 646.694148
+  duration_ms: 671.815542
   type: 'test'
   ...
 # Subtest: GitHub snapshot revalidation requires an explicit target authority watermark
 ok 150 - GitHub snapshot revalidation requires an explicit target authority watermark
   ---
-  duration_ms: 657.445523
+  duration_ms: 690.234333
   type: 'test'
   ...
 # Subtest: non-canonical GitHub snapshots become typed observation evidence
 ok 151 - non-canonical GitHub snapshots become typed observation evidence
   ---
-  duration_ms: 638.918883
+  duration_ms: 657.919818
   type: 'test'
   ...
 # Subtest: missing GitHub target watermark is observation-incomplete, never target-moved
 ok 152 - missing GitHub target watermark is observation-incomplete, never target-moved
   ---
-  duration_ms: 666.771525
+  duration_ms: 692.143142
   type: 'test'
   ...
 # Subtest: Forge pending-review listing requires one explicit complete page
 ok 153 - Forge pending-review listing requires one explicit complete page
   ---
-  duration_ms: 1279.700167
+  duration_ms: 1322.495075
   type: 'test'
   ...
 # Subtest: Forge Adapter exposes only the canonical three provider methods
 ok 154 - Forge Adapter exposes only the canonical three provider methods
   ---
-  duration_ms: 644.882339
+  duration_ms: 658.323566
   type: 'test'
   ...
 # Subtest: GitHub target movement during recovery remains indeterminate without reposting
 ok 155 - GitHub target movement during recovery remains indeterminate without reposting
   ---
-  duration_ms: 844.699617
+  duration_ms: 854.537692
   type: 'test'
   ...
 # Subtest: GitHub target movement invalidates semantic review authority without losing history
 ok 156 - GitHub target movement invalidates semantic review authority without losing history
   ---
-  duration_ms: 882.750208
+  duration_ms: 896.853562
   type: 'test'
   ...
 # Subtest: FlowRuntime launch rechecks candidate fingerprint and owning seal watermark
 ok 157 - FlowRuntime launch rechecks candidate fingerprint and owning seal watermark
   ---
-  duration_ms: 100.96872
+  duration_ms: 102.024246
   type: 'test'
   ...
 # Subtest: review/v1 absent launch rechecks the current shipped route provider
 ok 158 - review/v1 absent launch rechecks the current shipped route provider
   ---
-  duration_ms: 56.805826
+  duration_ms: 57.437155
   type: 'test'
   ...
 # Subtest: delegate execution rejects caller-forged authority evidence
 ok 159 - delegate execution rejects caller-forged authority evidence
   ---
-  duration_ms: 6.258364
+  duration_ms: 5.980889
   type: 'test'
   ...
 # Subtest: review/v1 prepares one exact local candidate with isolated lenses and a critic
 ok 160 - review/v1 prepares one exact local candidate with isolated lenses and a critic
   ---
-  duration_ms: 14.981297
+  duration_ms: 15.274431
   type: 'test'
   ...
 # Subtest: review artifacts are deterministic and preserve findings, provenance, and watermark
 ok 161 - review artifacts are deterministic and preserve findings, provenance, and watermark
   ---
-  duration_ms: 6.788538
+  duration_ms: 6.756057
   type: 'test'
   ...
 # Subtest: ReviewAuthority replays exact records, fences target and lifecycle drift, and exposes a watermarked watch
 ok 162 - ReviewAuthority replays exact records, fences target and lifecycle drift, and exposes a watermarked watch
   ---
-  duration_ms: 19.253789
+  duration_ms: 19.484878
   type: 'test'
   ...
 # Subtest: in-memory ReviewAuthority replays fallback delegate evidence through query, watch, and rebuild
 ok 163 - in-memory ReviewAuthority replays fallback delegate evidence through query, watch, and rebuild
   ---
-  duration_ms: 7.279026
+  duration_ms: 7.367731
   type: 'test'
   ...
 # Subtest: public review actions start an exact expected-generation session
 ok 164 - public review actions start an exact expected-generation session
   ---
-  duration_ms: 8.619833
+  duration_ms: 9.063405
   type: 'test'
   ...
 # Subtest: ReviewAuthority rejects self-supersession without appending and rejects it on replay
 ok 165 - ReviewAuthority rejects self-supersession without appending and rejects it on replay
   ---
-  duration_ms: 25.382983
+  duration_ms: 26.294824
   type: 'test'
   ...
 # Subtest: review comments, dispositions, approval, and integration are generation fenced
 ok 166 - review comments, dispositions, approval, and integration are generation fenced
   ---
-  duration_ms: 49.650078
+  duration_ms: 52.025081
   type: 'test'
   ...
 # Subtest: review eligibility and legal actions stay in parity across direct and durable rebuilds
 ok 167 - review eligibility and legal actions stay in parity across direct and durable rebuilds
   ---
-  duration_ms: 11.006779
+  duration_ms: 11.657995
   type: 'test'
   ...
 # Subtest: finding dispositions require a surfaced finding in command and replay paths
 ok 168 - finding dispositions require a surfaced finding in command and replay paths
   ---
-  duration_ms: 19.676753
+  duration_ms: 20.804525
   type: 'test'
   ...
 # Subtest: review supersession remains terminal after integration across projection rebuilds
 ok 169 - review supersession remains terminal after integration across projection rebuilds
   ---
-  duration_ms: 15.514076
+  duration_ms: 15.131726
   type: 'test'
   ...
 # Subtest: ReviewAuthority rejects untyped or extra integration evidence
 ok 170 - ReviewAuthority rejects untyped or extra integration evidence
   ---
-  duration_ms: 12.878418
+  duration_ms: 12.795765
   type: 'test'
   ...
 # Subtest: human review mutation admission rejects aliases, mixed forms, unknown props, and loose replacements
 ok 171 - human review mutation admission rejects aliases, mixed forms, unknown props, and loose replacements
   ---
-  duration_ms: 20.369358
+  duration_ms: 19.805822
   type: 'test'
   ...
 # Subtest: direct local review subject queries expose the initial session action
 ok 172 - direct local review subject queries expose the initial session action
   ---
-  duration_ms: 5.514876
+  duration_ms: 5.421522
   type: 'test'
   ...
 # Subtest: review inbox watermark audits every candidate and review subject stream
 ok 173 - review inbox watermark audits every candidate and review subject stream
   ---
-  duration_ms: 7.127305
+  duration_ms: 6.890737
   type: 'test'
   ...
 # Subtest: review inbox ordering uses canonical raw string order across rebuilds
 ok 174 - review inbox ordering uses canonical raw string order across rebuilds
   ---
-  duration_ms: 0.586427
+  duration_ms: 0.519803
   type: 'test'
   ...
 # Subtest: review inbox watermark changes when a fresh visible observation changes
 ok 175 - review inbox watermark changes when a fresh visible observation changes
   ---
-  duration_ms: 0.324061
+  duration_ms: 0.321136
   type: 'test'
   ...
 # Subtest: ReviewAuthority serializes same-watermark writers and preserves stale history
 ok 176 - ReviewAuthority serializes same-watermark writers and preserves stale history
   ---
-  duration_ms: 7.41099
+  duration_ms: 6.910533
   type: 'test'
   ...
 # Subtest: durable review fold chains event watermarks and rebuilds artifacts after restart
 ok 177 - durable review fold chains event watermarks and rebuilds artifacts after restart
   ---
-  duration_ms: 7.484166
+  duration_ms: 7.267194
   type: 'test'
   ...
 # Subtest: durable review fold maps malformed and replay-corrupt events to integrity failures
 ok 178 - durable review fold maps malformed and replay-corrupt events to integrity failures
   ---
-  duration_ms: 0.209478
+  duration_ms: 0.199379
   type: 'test'
   ...
 # Subtest: durable review fold migration preserves pre-human streams and detects post-upgrade tampering
 ok 179 - durable review fold migration preserves pre-human streams and detects post-upgrade tampering
   ---
-  duration_ms: 38.662856
+  duration_ms: 36.685389
   type: 'test'
   ...
 # Subtest: review fold migration covers legacy target branches and preserves other review streams
 ok 180 - review fold migration covers legacy target branches and preserves other review streams
   ---
-  duration_ms: 33.068833
+  duration_ms: 33.622922
   type: 'test'
   ...
 # Subtest: review replay validates the first recorded event body before its watermark
 ok 181 - review replay validates the first recorded event body before its watermark
   ---
-  duration_ms: 2.145537
+  duration_ms: 1.750215
   type: 'test'
   ...
 # Subtest: receipt-less legacy review records replay only with exact semantic and artifact bindings
 ok 182 - receipt-less legacy review records replay only with exact semantic and artifact bindings
   ---
-  duration_ms: 5.890893
+  duration_ms: 6.103918
   type: 'test'
   ...
 # Subtest: GitHub review replay validates the first recorded event body before its watermark
 ok 183 - GitHub review replay validates the first recorded event body before its watermark
   ---
-  duration_ms: 2.455553
+  duration_ms: 2.523569
   type: 'test'
   ...
 # Subtest: GitHub review replay rejects every local transition after its initial record
 ok 184 - GitHub review replay rejects every local transition after its initial record
   ---
-  duration_ms: 6.807622
+  duration_ms: 6.837067
   type: 'test'
   ...
 # Subtest: GitHub reviews stay automated in the inbox and reject local human actions
 ok 185 - GitHub reviews stay automated in the inbox and reject local human actions
   ---
-  duration_ms: 1.658435
+  duration_ms: 1.685214
   type: 'test'
   ...
 # Subtest: review replay requires exactly one validated initial record before transitions
 ok 186 - review replay requires exactly one validated initial record before transitions
   ---
-  duration_ms: 3.659084
+  duration_ms: 3.738892
   type: 'test'
   ...
 # Subtest: review target transition replay validates envelopes, ordering, and receipt bindings
 ok 187 - review target transition replay validates envelopes, ordering, and receipt bindings
   ---
-  duration_ms: 11.019071
+  duration_ms: 11.026975
   type: 'test'
   ...
 # Subtest: human review replay validates every nested event shape before folding
 ok 188 - human review replay validates every nested event shape before folding
   ---
-  duration_ms: 11.932405
+  duration_ms: 12.035025
   type: 'test'
   ...
 # Subtest: human review replay binds each event to the prior watermark and generation
 ok 189 - human review replay binds each event to the prior watermark and generation
   ---
-  duration_ms: 8.70463
+  duration_ms: 8.86682
   type: 'test'
   ...
 # Subtest: review candidate terminal compatibility events replay deterministically and fence recorded currency
 ok 190 - review candidate terminal compatibility events replay deterministically and fence recorded currency
   ---
-  duration_ms: 1.985721
+  duration_ms: 1.998836
   type: 'test'
   ...
 # Subtest: review candidate replay rejects malformed terminal payloads with typed integrity failures
 ok 191 - review candidate replay rejects malformed terminal payloads with typed integrity failures
   ---
-  duration_ms: 0.500888
+  duration_ms: 0.495259
   type: 'test'
   ...
 # Subtest: ReviewAuthority invalidates a recorded review when the target moves
 ok 192 - ReviewAuthority invalidates a recorded review when the target moves
   ---
-  duration_ms: 49.072768
+  duration_ms: 51.597789
   type: 'test'
   ...
 # Subtest: ReviewAuthority invalidates and refreshes review currency on mutation-epoch movement
 ok 193 - ReviewAuthority invalidates and refreshes review currency on mutation-epoch movement
   ---
-  duration_ms: 24.885411
+  duration_ms: 25.417688
   type: 'test'
   ...
 # Subtest: ReviewAuthority exposes a blocked candidate for uncertain retained bytes
 ok 194 - ReviewAuthority exposes a blocked candidate for uncertain retained bytes
   ---
-  duration_ms: 0.658099
+  duration_ms: 0.626912
   type: 'test'
   ...
 # Subtest: ReviewAuthority keeps terminal candidate lifecycle out of current currency
 ok 195 - ReviewAuthority keeps terminal candidate lifecycle out of current currency
   ---
-  duration_ms: 1.367426
+  duration_ms: 1.394886
   type: 'test'
   ...
 # Subtest: FlowRuntime fences an existing local review after a terminal candidate transition without observations
 ok 196 - FlowRuntime fences an existing local review after a terminal candidate transition without observations
   ---
-  duration_ms: 9.351559
+  duration_ms: 9.99909
   type: 'test'
   ...
 # Subtest: ReviewAuthority fences an existing review when its candidate is terminal
 ok 197 - ReviewAuthority fences an existing review when its candidate is terminal
   ---
-  duration_ms: 0.84656
+  duration_ms: 0.896542
   type: 'test'
   ...
 # Subtest: ReviewAuthority blocks candidate currency for exact handoff pin and observation failures
 ok 198 - ReviewAuthority blocks candidate currency for exact handoff pin and observation failures
   ---
-  duration_ms: 2.469798
+  duration_ms: 2.634565
   type: 'test'
   ...
 # Subtest: ReviewAuthority accepts fingerprint-only and lifecycle-only target movement
 ok 199 - ReviewAuthority accepts fingerprint-only and lifecycle-only target movement
   ---
-  duration_ms: 22.039825
+  duration_ms: 22.131725
   type: 'test'
   ...
 # Subtest: ReviewAuthority fences concurrent invalidations and preserves rebuilt stale history
 ok 200 - ReviewAuthority fences concurrent invalidations and preserves rebuilt stale history
   ---
-  duration_ms: 14.595772
+  duration_ms: 14.093902
   type: 'test'
   ...
 # Subtest: ReviewAuthority rejects a non-canonical first-record command id
 ok 201 - ReviewAuthority rejects a non-canonical first-record command id
   ---
-  duration_ms: 1.098177
+  duration_ms: 0.980908
   type: 'test'
   ...
 # Subtest: ReviewAuthority never writes a null digest for non-plain commands
 ok 202 - ReviewAuthority never writes a null digest for non-plain commands
   ---
-  duration_ms: 4.778299
+  duration_ms: 5.155489
   type: 'test'
   ...
 # Subtest: ReviewAuthority converts malformed settled evidence into a typed rejection
 ok 203 - ReviewAuthority converts malformed settled evidence into a typed rejection
   ---
-  duration_ms: 1.953202
+  duration_ms: 1.19141
   type: 'test'
   ...
 # Subtest: ReviewAuthority rejects a summary mutation that retains original delegate evidence
 ok 204 - ReviewAuthority rejects a summary mutation that retains original delegate evidence
   ---
-  duration_ms: 1.031292
+  duration_ms: 0.943921
   type: 'test'
   ...
 # Subtest: ReviewAuthority binds the exact candidate seal at its command boundary
 ok 205 - ReviewAuthority binds the exact candidate seal at its command boundary
   ---
-  duration_ms: 1.485415
+  duration_ms: 1.443326
   type: 'test'
   ...
 # Subtest: ReviewAuthority rejects a structurally valid record without the settled source run intent
 ok 206 - ReviewAuthority rejects a structurally valid record without the settled source run intent
   ---
-  duration_ms: 0.679659
+  duration_ms: 0.62592
   type: 'test'
   ...
 # Subtest: review evidence rejects malformed or duplicate findings and incomplete lens joins
 ok 207 - review evidence rejects malformed or duplicate findings and incomplete lens joins
   ---
-  duration_ms: 0.357493
+  duration_ms: 0.345181
   type: 'test'
   ...
 # Subtest: trusted review parsing rejects unsafe finding text and incomplete coverage
 ok 208 - trusted review parsing rejects unsafe finding text and incomplete coverage
   ---
-  duration_ms: 0.250635
+  duration_ms: 0.203908
   type: 'test'
   ...
 # Subtest: trusted review validator uses the card lens context
 ok 209 - trusted review validator uses the card lens context
   ---
-  duration_ms: 0.161589
+  duration_ms: 0.14051
   type: 'test'
   ...
 # Subtest: trusted review validator bounds Markdown-controlled cap reasons
 ok 210 - trusted review validator bounds Markdown-controlled cap reasons
   ---
-  duration_ms: 0.63084
+  duration_ms: 0.599732
   type: 'test'
   ...
 # Subtest: review coverage preserves every lens terminal disposition and stays incomplete
 ok 211 - review coverage preserves every lens terminal disposition and stays incomplete
   ---
-  duration_ms: 0.291251
+  duration_ms: 0.272485
   type: 'test'
   ...
 # Subtest: review coverage ignores opaque evidence.coverage and requires canonical participant shape
 ok 212 - review coverage ignores opaque evidence.coverage and requires canonical participant shape
   ---
-  duration_ms: 0.16083
+  duration_ms: 0.15102
   type: 'test'
   ...
 # Subtest: review delegate coverage cannot be upgraded by an authority disposition
 ok 213 - review delegate coverage cannot be upgraded by an authority disposition
   ---
-  duration_ms: 0.307971
+  duration_ms: 0.30209
   type: 'test'
   ...
 # Subtest: equal-rank authority coverage reason overrides delegate self-report
 ok 214 - equal-rank authority coverage reason overrides delegate self-report
   ---
-  duration_ms: 0.085999
+  duration_ms: 0.082443
   type: 'test'
   ...
 # Subtest: FlowRuntime reserves the trusted review validator against an always-true injection
 ok 215 - FlowRuntime reserves the trusted review validator against an always-true injection
   ---
-  duration_ms: 554.478299
+  duration_ms: 559.293132
   type: 'test'
   ...
 # Subtest: review projection preserves legacy recorded artifacts across later event folds
 ok 216 - review projection preserves legacy recorded artifacts across later event folds
   ---
-  duration_ms: 2.541813
+  duration_ms: 2.673887
   type: 'test'
   ...
 # Subtest: implicit single-line finding anchors reject reversed end columns
 ok 217 - implicit single-line finding anchors reject reversed end columns
   ---
-  duration_ms: 0.153545
+  duration_ms: 0.168914
   type: 'test'
   ...
 # Subtest: review urgency presets retain native urgency and filter below the selected floor
 ok 218 - review urgency presets retain native urgency and filter below the selected floor
   ---
-  duration_ms: 0.805904
+  duration_ms: 0.832754
   type: 'test'
   ...
 # Subtest: review finding identity deduplicates sources while preserving anchors and general findings
 ok 219 - review finding identity deduplicates sources while preserving anchors and general findings
   ---
-  duration_ms: 0.591136
+  duration_ms: 0.590936
   type: 'test'
   ...
 # Subtest: review orientation and diagrams stay human-facing and out of critic evidence
 ok 220 - review orientation and diagrams stay human-facing and out of critic evidence
   ---
-  duration_ms: 0.438172
+  duration_ms: 0.472425
   type: 'test'
   ...
 # Subtest: review cap preserves semantic overflow and renders deterministic urgency order
 ok 221 - review cap preserves semantic overflow and renders deterministic urgency order
   ---
-  duration_ms: 1.004302
+  duration_ms: 1.039287
   type: 'test'
   ...
 # Subtest: durable ReviewAuthority fails closed when its source intent is missing
 ok 222 - durable ReviewAuthority fails closed when its source intent is missing
   ---
-  duration_ms: 6.826657
+  duration_ms: 7.275219
   type: 'test'
   ...
 # Subtest: durable GitHub ReviewAuthority rejects forged source identity and evidence
 ok 223 - durable GitHub ReviewAuthority rejects forged source identity and evidence
   ---
-  duration_ms: 3.249114
+  duration_ms: 3.763678
   type: 'test'
   ...
 # Subtest: in-memory GitHub ReviewAuthority fails closed without a source intent reader
 ok 224 - in-memory GitHub ReviewAuthority fails closed without a source intent reader
   ---
-  duration_ms: 0.542245
+  duration_ms: 0.623416
   type: 'test'
   ...
 # Subtest: review/v1 runs every enabled lens and a fresh critic through FlowRuntime
 ok 225 - review/v1 runs every enabled lens and a fresh critic through FlowRuntime
   ---
-  duration_ms: 6065.416684
+  duration_ms: 6254.968606
   type: 'test'
   ...
 1..225
@@ -1605,4 +1605,4 @@ ok 225 - review/v1 runs every enabled lens and a fresh critic through FlowRuntim
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 96327.805923
+# duration_ms 98813.055307

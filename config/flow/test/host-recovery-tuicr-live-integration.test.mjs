@@ -10,6 +10,9 @@ import {
 import {
   runTuicrLiveIntegration,
 } from "../src/host-recovery-tuicr-live-integration.mjs";
+import {
+  adaptTuicrLiveProbeResult,
+} from "../scripts/run-host-recovery-qualification.mjs";
 
 const WORKTREE = resolve(import.meta.dirname, "../../..");
 
@@ -63,13 +66,16 @@ test("issue-46 tuicr runs after a real producer exits and survives owner rebuild
     assert.equal(result.operator_inputs.consumer.list.review_id, result.producer.review_id);
     assert.equal(result.operator_inputs.consumer.comments.review_id, result.producer.review_id);
     assert.equal(result.operator_inputs.review.approval, "approved");
+    assert.equal(result.operator_inputs.review.disposition_receipt.accepted, true);
+    assert.equal(result.operator_inputs.review.approval_command_receipt.accepted, true);
+    assert.equal(result.operator_inputs.assertions.flowruntime_disposition_and_approval, true);
 
     const observations = new Map(
       result.scenario.observations.map((observation) => [observation.kind, observation.content]),
     );
     assert.equal(observations.get("producer_exit").producer_exited, true);
     assert.equal(observations.get("producer_exit").process_absence.status, "absent");
-    assert.equal(observations.get("disposition").flowruntime_disposition, "approved");
+    assert.equal(observations.get("disposition").flowruntime_disposition, "accept");
     assert.equal(observations.get("disposition").approval, "approved");
     assert.equal(observations.get("stale_action").rejected, true);
     assert.equal(observations.get("stale_action").mutated, false);
@@ -83,6 +89,69 @@ test("issue-46 tuicr runs after a real producer exits and survives owner rebuild
     assert.equal(result.cleanup.disposition, "complete");
     assert.deepEqual(result.cleanup.unresolved_obligations, []);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("tuicr qualification adapter blocks false and missing scenario assertions", async () => {
+  for (const assertions of [
+    undefined,
+    {
+      producer_exit_before_review: true,
+      flowruntime_disposition_and_approval: false,
+      stale_action_rejection: true,
+      projection_rebuild_identity: true,
+    },
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), "flow-tuicr-adapter-assertions-"));
+    const isolation = createQualificationIsolation({
+      worktreeRoot: WORKTREE,
+      xdgStateHome: join(root, "state"),
+      authorityDirectory: join(root, "authority"),
+      socketPath: join(root, "authority", "owner.sock"),
+      endpointPath: join(root, "authority", "owner.json"),
+      backupDirectory: join(root, "backup"),
+      repositoryRoot: join(root, "repository"),
+      drovrConfigDirectory: join(root, "drovr"),
+      qualificationWorkspace: join(root, "workspace"),
+      herdrSession: "issue-46-tuicr-adapter-assertions",
+      runId: "run:issue-46-tuicr-adapter-assertions",
+    });
+    const rawRoot = join(root, "raw");
+    const command = {
+      id: "native-tuicr-assertion-gate",
+      command_kind: "native_tuicr_live_probe",
+      started_at: "2026-09-20T17:00:00.000Z",
+      finished_at: "2026-09-20T17:00:00.001Z",
+      exit_code: 0,
+      signal: null,
+      timed_out: false,
+      logs: { stdout: { sha256: "a".repeat(64) }, stderr: { sha256: "b".repeat(64) } },
+    };
+    const output = {
+      schema: "flow.host-recovery-tuicr-live-integration/v1",
+      scenario_id: "tuicr_review_after_producer_exit",
+      status: "pass",
+      scenario: {
+        status: "pass",
+        observations: ["producer_exit", "disposition", "stale_action", "rebuild"].map((kind) => ({
+          kind,
+          content: { observed: true },
+        })),
+        ...(assertions === undefined ? {} : { assertions }),
+      },
+      cleanup: { disposition: "complete", unresolved_obligations: [] },
+    };
+    const result = adaptTuicrLiveProbeResult({ output, command, rawRoot, isolation });
+    assert.equal(result.result.disposition, "blocked");
+    assert.equal(result.result.reason, "scenario_assertion_failed");
+    const adaptedById = new Map(result.assertions.map((assertion) => [assertion.id, assertion.disposition]));
+    if (assertions === undefined) {
+      assert.equal([...adaptedById.values()].every((disposition) => disposition === "not_observed"), true);
+    } else {
+      assert.equal(adaptedById.get("flowruntime_disposition_and_approval"), "not_observed");
+      assert.equal(adaptedById.get("producer_exit_before_review"), "pass");
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

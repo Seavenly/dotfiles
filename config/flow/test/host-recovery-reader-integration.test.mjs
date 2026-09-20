@@ -95,7 +95,7 @@ function cleanup() {
   };
 }
 
-test("projection adapter preserves public and deterministic provenance", async (t) => {
+test("projection adapter preserves public and native-provider provenance", async (t) => {
   const value = await fixture(t, "projection");
   const support = {
     schema: "flow.host-recovery-reader-support/v1",
@@ -109,19 +109,36 @@ test("projection adapter preserves public and deterministic provenance", async (
         without_mutation_lock: true,
         mutation_lock_acquired: false,
         mutation_lock_observed: true,
+        external_mutation_lock: { held: false, provenance: "native_provider" },
+        owner_mutation_lock: {
+          held: true,
+          inspect_runtime_open: true,
+          provenance: "native_provider",
+        },
+        inspect_runtime_lock_observations: [
+          { available: true, held: true, provenance: "native_provider" },
+          { available: true, held: true, provenance: "native_provider" },
+        ],
+        owner_lock_release_observed: true,
+        owner_authority_watermark: {
+          before: "sha256:" + "3".repeat(64),
+          after: "sha256:" + "3".repeat(64),
+          stable: true,
+          delta: null,
+        },
         projection_identity_stable: true,
         rebuild_count: 1,
-        provenance: "deterministic_supporting_check",
+        provenance: "native_provider",
       },
       views: {
         count: 2,
         view_ids: ["flow:run-index", "flow:review-inbox"],
-        provenance: "deterministic_supporting_check",
+        provenance: "native_provider",
       },
       latency: {
         samples: [4, 6],
         history_entries: 2,
-        provenance: "deterministic_supporting_check",
+        provenance: "native_provider",
       },
     },
     seed: { provenance: "deterministic_supporting_check", history_entries: 2 },
@@ -150,8 +167,39 @@ test("projection adapter preserves public and deterministic provenance", async (
     "query", "watch", "rebuild", "views", "latency",
   ]);
   assert.equal(result.observations[0].content.provenance, "public_process");
-  assert.equal(result.observations[2].content.provenance, "deterministic_supporting_check");
+  assert.equal(result.observations[2].content.provenance, "native_provider");
   assert.equal(result.captures[0].provenance, "native_provider");
+});
+
+test("projection adapter rejects supporting-only rebuild proof", async (t) => {
+  const value = await fixture(t, "projection-supporting-only");
+  const support = {
+    schema: "flow.host-recovery-reader-support/v1",
+    result: { disposition: "pass", reason: null },
+    started_at: "2026-09-17T10:00:00.000Z",
+    finished_at: "2026-09-17T10:00:00.010Z",
+    proof: {
+      query: { observed: true, watermark: "sha256:" + "1".repeat(64), provenance: "public_process" },
+      watch: { observed: true, watermark: "sha256:" + "2".repeat(64), provenance: "public_process" },
+      rebuild: {
+        without_mutation_lock: true,
+        external_mutation_lock: { held: false, provenance: "deterministic_supporting_check" },
+        provenance: "deterministic_supporting_check",
+      },
+      views: { count: 2, provenance: "deterministic_supporting_check" },
+      latency: { samples: [4, 6], provenance: "deterministic_supporting_check" },
+    },
+  };
+  const result = adaptProjectionReaderProbeResult({
+    support,
+    command: command("native_projection_reader_probe"),
+    cleanup: cleanup(),
+    isolation: value.isolation,
+    rawRoot: value.rawRoot,
+  });
+
+  assert.equal(result.result.disposition, "blocked");
+  assert.equal(result.result.reason, "projection_rebuild_provenance_invalid");
 });
 
 test("suspended adapter retains deterministic boot and issue-47 deferral", async (t) => {

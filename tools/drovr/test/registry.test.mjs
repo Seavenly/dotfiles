@@ -59,6 +59,27 @@ test("registry reads reject unsafe directory permissions without repairing them"
   assert.equal((await stat(registryDirectory)).mode & 0o777, 0o755);
 });
 
+test("resource lock acquisition explicitly rejects age and force takeover options", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "drovr-registry-closed-options-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const registryDirectory = join(scratch, "drovr");
+  for (const [option, value] of [["staleAfterMs", 0], ["force", true]]) {
+    await assert.rejects(
+      acquireResourceLock(registryDirectory, `resource-${option}`, {
+        operationId: `operation-${option}`,
+        authorityId: `authority-${option}`,
+        [option]: value,
+      }),
+      (error) => {
+        assert.equal(error.outcome, "invalid_arguments");
+        assert.deepEqual(error.details.unsupported_options, [option]);
+        assert.deepEqual(error.details.legal_next_actions, ["status", "reconcile_registry_lock"]);
+        return true;
+      },
+    );
+  }
+});
+
 test("registry reads reject unsafe record-directory permissions", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "drovr-record-permissions-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
