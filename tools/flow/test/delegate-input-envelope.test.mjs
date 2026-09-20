@@ -17,6 +17,8 @@ import {
 import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
 import { dispatchDelegateEffect } from "../src/delegate-effects.mjs";
+import { createDrovrDelegatedAgentPort } from
+  "../src/drovr-delegated-agent-port.mjs";
 import {
   compileDynamicPlan,
   compilePredefinedFlowSelection,
@@ -29,6 +31,8 @@ import {
 import { confirmedLaunchRequest } from
   "../test-support/dynamic-checkpoint.mjs";
 import { supportedDescription } from
+  "../test-support/delegated-agent-description.mjs";
+import { repositoryDrovrDependencies } from
   "../test-support/delegated-agent-description.mjs";
 import {
   createFixedTimeDurableRunAuthority as createDurableRunAuthority,
@@ -180,6 +184,248 @@ test("delegate dispatch fails closed when authority output requirements are miss
   assert.equal(observations[0].provider_observation.stage,
     "delegate_effect_materialization");
   assert.equal(observations[0].provider_observation.retryable, false);
+});
+
+test("injected dispatch proof remains indeterminate", async () => {
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "read-only",
+    },
+    caller_metadata: { owner: "issue-46-proven-invalid-arguments" },
+  }, {});
+  const observations = [];
+  const dispatches = [];
+  const intent = {
+    schema: "flow.effect-intent/v1",
+    effect_kind: "delegate",
+    effect_id: "effect:proven-invalid-arguments",
+    idempotency_key: "delegate:proven-invalid-arguments",
+    attempt_id: "attempt:proven-invalid-arguments",
+    card_id: "delegate-proven-invalid-arguments",
+    classification: "caller_idempotent",
+    operation_contract: "flow.delegated-agent-port/v1",
+    route_binding: {
+      agent_id: "agent:proven-invalid-arguments",
+      configuration_watermark: description.watermark.content_sha256,
+      description_digest: description.description_digest,
+      launch_comparison_key: description.comparison_keys.launch,
+    },
+    delegate_input: {
+      description,
+      prompt: "A secret-free prompt that must only be represented by a digest",
+    },
+    delegate_output_schemas: ["validated_output"],
+    delegate_validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
+    capability_envelopes: [],
+    resource_claims: [],
+    required_authority_bindings: [],
+  };
+  const port = {
+    async discover() { return { status: "proven_absent" }; },
+    async dispatch(request) {
+      dispatches.push(request);
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "dispatch",
+        status: "blocked",
+        watermark: null,
+        delegation: null,
+        turn: null,
+        compatibility: {
+          contract: "flow.delegated-agent-port/v1",
+          code: "invalid_arguments",
+        },
+        dispatch_proof: {
+          schema: "drovr.dispatch-proof/v1",
+          stage: "pre_dispatch_validation",
+          native_dispatch_started: false,
+          turn_created: false,
+          effect_created: false,
+        },
+        legal_next_actions: ["repair_request"],
+      };
+    },
+  };
+  const runAuthority = {
+    async invokeEffect(effectiveIntent, { invoke }) {
+      return invoke(effectiveIntent);
+    },
+    async recordEffectObservation(_intent, observation) {
+      observations.push(observation);
+    },
+  };
+
+  dispatchDelegateEffect(intent, port, new Map(), runAuthority);
+  await until(() => observations.length === 1);
+
+  assert.equal(dispatches.length, 1);
+  assert.equal(observations[0].presence, "indeterminate");
+  const failure = observations[0].provider_observation;
+  assert.equal(failure.drovr.outcome, "invalid_arguments");
+  assert.equal(failure.drovr.classification, "unproven");
+  assert.equal(Object.hasOwn(failure, "absence_proven"), false);
+  assert.deepEqual(failure.request_envelope.fields_present, [
+    "description",
+    "prompt",
+  ]);
+  assert.match(failure.request_envelope.envelope_digest, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(failure.request_envelope.payload_sha256, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(Object.hasOwn(failure.request_envelope, "prompt"), false);
+  assert.equal(Object.hasOwn(failure, "credentials"), false);
+});
+
+test("genuine local Drovr pre-dispatch invalid arguments prove exact absence", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-delegate-proof-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const dependencies = repositoryDrovrDependencies({
+    HOME: scratch,
+    XDG_STATE_HOME: join(scratch, "state"),
+  });
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "read-only",
+    },
+    caller_metadata: { owner: "issue-46-genuine-pre-dispatch" },
+  }, dependencies);
+  const observations = [];
+  const intent = {
+    schema: "flow.effect-intent/v1",
+    effect_kind: "delegate",
+    effect_id: "effect:genuine-pre-dispatch",
+    idempotency_key: "delegate:genuine-pre-dispatch",
+    attempt_id: "attempt:genuine-pre-dispatch",
+    card_id: "delegate-genuine-pre-dispatch",
+    classification: "caller_idempotent",
+    operation_contract: "flow.delegated-agent-port/v1",
+    route_binding: {
+      agent_id: "agent:missing-genuine-pre-dispatch",
+      configuration_watermark: description.watermark.content_sha256,
+      description_digest: description.description_digest,
+      launch_comparison_key: description.comparison_keys.launch,
+    },
+    delegate_input: {
+      description,
+      prompt: "A secret-free prompt represented by a digest",
+    },
+    delegate_output_schemas: ["validated_output"],
+    delegate_validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
+    capability_envelopes: [],
+    resource_claims: [],
+    required_authority_bindings: [],
+  };
+  const runAuthority = {
+    async invokeEffect(effectiveIntent, { invoke }) {
+      return invoke(effectiveIntent);
+    },
+    async recordEffectObservation(_intent, observation) {
+      observations.push(observation);
+    },
+  };
+
+  dispatchDelegateEffect(
+    intent,
+    createDrovrDelegatedAgentPort({ dependencies }),
+    new Map(),
+    runAuthority,
+  );
+  await until(() => observations.length === 1);
+
+  assert.equal(observations[0].presence, "absent");
+  const failure = observations[0].provider_observation;
+  assert.equal(failure.drovr.outcome, "invalid_arguments");
+  assert.equal(failure.drovr.classification, "pre_dispatch_validation");
+  assert.equal(failure.absence_proven, true);
+  assert.deepEqual(failure.request_envelope.fields_present, [
+    "description",
+    "prompt",
+  ]);
+  assert.match(failure.request_envelope.envelope_digest, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(Object.hasOwn(failure.request_envelope, "prompt"), false);
+});
+
+test("provider-side invalid arguments remain indeterminate after restart reconciliation", async () => {
+  const description = await supportedDescription({
+    schema: "drovr.delegated-agent-description-request/v1",
+    launch: {
+      harness: "codex",
+      role: "reviewer",
+      model: "gpt-5.6",
+      effort: "high",
+      capability: "read-only",
+    },
+    caller_metadata: { owner: "issue-46-provider-invalid-arguments" },
+  }, {});
+  const observations = [];
+  let dispatchCount = 0;
+  const intent = {
+    schema: "flow.effect-intent/v1",
+    effect_kind: "delegate",
+    effect_id: "effect:provider-invalid-arguments",
+    idempotency_key: "delegate:provider-invalid-arguments",
+    attempt_id: "attempt:provider-invalid-arguments",
+    card_id: "delegate-provider-invalid-arguments",
+    classification: "reconcilable",
+    operation_contract: "flow.delegated-agent-port/v1",
+    route_binding: {
+      agent_id: "agent:provider-invalid-arguments",
+      configuration_watermark: description.watermark.content_sha256,
+      description_digest: description.description_digest,
+      launch_comparison_key: description.comparison_keys.launch,
+    },
+    delegate_input: {
+      description,
+      prompt: "Provider invalid arguments must retain the claim",
+    },
+    delegate_output_schemas: ["validated_output"],
+    delegate_validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
+    capability_envelopes: [],
+    resource_claims: [],
+    required_authority_bindings: [],
+  };
+  const port = {
+    async discover() { return { status: "proven_absent" }; },
+    async dispatch() {
+      dispatchCount += 1;
+      return {
+        schema: "flow.delegated-agent-lifecycle-projection/v1",
+        operation: "dispatch",
+        status: "blocked",
+        watermark: null,
+        delegation: null,
+        turn: null,
+        compatibility: {
+          contract: "flow.delegated-agent-port/v1",
+          code: "invalid_arguments",
+        },
+        legal_next_actions: ["reconcile_delegated_runtime"],
+      };
+    },
+  };
+  const runAuthority = {
+    async invokeEffect(effectiveIntent, { invoke }) {
+      return invoke(effectiveIntent);
+    },
+    async recordEffectObservation(_intent, observation) {
+      observations.push(observation);
+    },
+  };
+
+  dispatchDelegateEffect(intent, port, new Map(), runAuthority);
+  await until(() => observations.length === 1);
+  assert.equal(dispatchCount, 1);
+  assert.equal(observations[0].presence, "indeterminate");
+  assert.equal(observations[0].provider_observation.drovr.classification, "unproven");
+  assert.equal(Object.hasOwn(observations[0].provider_observation, "absence_proven"), false);
 });
 
 test("delegate envelope rejects unknown fields and duplicate nested values", () => {

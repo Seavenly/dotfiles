@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -129,7 +129,7 @@ test("release content validates from a fresh clone without synthesized Git objec
   assert.equal(projection.schema, "flow.transition-projection/v1");
 });
 
-test("release-content generator excludes ignored files beneath governed prefixes", async (t) => {
+test("release-content generator excludes ignored files and pins npm across an untrusted clone cwd", async (t) => {
   const { clonedRepository } =
     await copyReleaseCandidateToFreshClone(t, "ignored-release-content");
   const ignoredPath = "tools/flow/.DS_Store";
@@ -139,15 +139,41 @@ test("release-content generator excludes ignored files beneath governed prefixes
     encoding: "utf8",
   }).trim(), ignoredPath);
 
+  const pathEntries = (process.env.PATH ?? "").split(delimiter);
+  const miseShimDirectory = pathEntries.find((entry) =>
+    entry.endsWith(`${sep}mise${sep}shims`));
+  assert.ok(miseShimDirectory,
+    "regression requires the mise shim path to remain on PATH");
   await execFileAsync(process.execPath, [
     "config/flow/scripts/generate-release-content.mjs",
-  ], { cwd: clonedRepository, env: process.env });
+  ], {
+    cwd: clonedRepository,
+    env: {
+      ...process.env,
+      PATH: [miseShimDirectory, ...pathEntries.filter((entry) =>
+        entry !== miseShimDirectory)].join(delimiter),
+      MISE_TRUSTED_CONFIG_PATHS: "",
+    },
+  });
 
   const generated = JSON.parse(await readFile(join(
     clonedRepository,
     "config/flow/evidence/release-content.v1.json",
   ), "utf8"));
   assert.equal(generated.files.some(({ path }) => path === ignoredPath), false);
+  const generatedPhase2 = JSON.parse(await readFile(join(
+    clonedRepository,
+    "config/flow/evidence/production-route-conformance.v1.json",
+  ), "utf8"));
+  const pinnedNpm = join(
+    dirname(process.execPath),
+    process.platform === "win32" ? "npm.cmd" : "npm",
+  );
+  assert.equal(generatedPhase2.environment.npm, execFileSync(
+    pinnedNpm,
+    ["--version"],
+    { cwd: clonedRepository, encoding: "utf8" },
+  ).trim());
 });
 
 test("Git tree derivation matches Git's nested object hashing and detects tampering", async (t) => {

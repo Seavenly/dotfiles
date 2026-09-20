@@ -22,6 +22,7 @@ import { createRejection } from "../../../tools/flow/src/rejection.mjs";
 import {
   closeOwnedFlowRuntime,
   createProductionRunAuthority,
+  productionAuthorityDirectory,
   releaseProductionRunAuthority,
   rememberRuntimeAuthority,
   flowRuntimeMutationAuthority,
@@ -39,10 +40,12 @@ import {
 import {
   publicQualificationIsAvailable,
 } from "../../../tools/flow/src/transition-projection.mjs";
+import {
+  qualificationRepositoryRootFor,
+} from "./owner-runtime-binding.mjs";
 
 const RUNNER_CAPACITY_LIMIT = 64;
 const FLOW_CONFIG_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..");
-const FLOW_REPOSITORY_ROOT = join(FLOW_CONFIG_DIRECTORY, "../..");
 const RUNNER_CAPACITY_ENV = Object.freeze({
   delegateCapacity: "FLOW_RUNNER_DELEGATE_CAPACITY",
   operationCapacity: "FLOW_RUNNER_OPERATION_CAPACITY",
@@ -57,7 +60,7 @@ export function createFlowRuntime({
   registeredAuthorities = {},
   predefinedDefinitions = {},
   legacyAdapter = null,
-  legacyRoots = defaultLegacyRoots(env),
+  legacyRoots = undefined,
   runAuthority = undefined,
   authorityDirectory = undefined,
   authorityOptions = {},
@@ -75,14 +78,23 @@ export function createFlowRuntime({
   const coreRunnerOptions = runnerErrorSink === undefined
     ? resolvedRunnerOptions
     : { ...resolvedRunnerOptions, onError: runnerErrorSink };
+  const resolvedAuthorityDirectory = authorityDirectory ??
+    productionAuthorityDirectory(env);
   const adapter = legacyAdapter ?? new FilesystemLegacyCompatibilityAdapter({
-    legacyRoots,
+    legacyRoots: legacyRoots === undefined
+      ? defaultLegacyRoots(env)
+      : legacyRoots,
   });
   const delegationPort = delegatedAgentPort ?? createDrovrDelegatedAgentPort({
     dependencies: { env },
   });
   const composition = createProductionComposition({
     delegatedAgentPort: delegationPort,
+    env,
+    authorityDirectory: resolvedAuthorityDirectory,
+    // Default compatibility roots are ambient legacy state. Only caller
+    // supplied roots are eligible for an isolated production backup.
+    legacyRoots: legacyRoots === undefined ? {} : legacyRoots,
     authorityOptions,
     registeredOperations,
     registeredAuthorities,
@@ -102,9 +114,12 @@ export function createFlowRuntime({
     authority = ownsAuthority
       ? createProductionRunAuthority({
           env,
-          authorityDirectory,
+          authorityDirectory: resolvedAuthorityDirectory,
           authorityOptions: composition.authorityOptions,
-          authorityOptionsIdentitySource: authorityOptions,
+          authorityOptionsIdentitySource: productionAuthorityOptionsIdentity({
+            env,
+            authorityOptions,
+          }),
         })
       : runAuthority;
     authorityLeaseAcquired = ownsAuthority;
@@ -372,9 +387,18 @@ function publicReplacementGate({
 
   let qualificationAvailable = false;
   try {
+    const qualificationRepositoryRoot = qualificationRepositoryRootFor({
+      env,
+      configDirectory,
+    });
     qualificationAvailable = publicQualificationIsAvailable({
       configDirectory,
-      repositoryRoot: env.FLOW_REPOSITORY_ROOT ?? FLOW_REPOSITORY_ROOT,
+      // The governed release bytes live beside the configured Flow authority,
+      // while FLOW_REPOSITORY_ROOT is an explicit disposable repository
+      // boundary for production backup/restore. Qualification must remain
+      // bound to the configured launcher tree even when the public runtime is
+      // isolated against a different repository.
+      repositoryRoot: qualificationRepositoryRoot,
       selection,
       homeDirectory: env.HOME ?? homedir(),
       stateDirectory: env.XDG_STATE_HOME ??
@@ -501,6 +525,21 @@ function defaultLegacyRoots(env) {
   return {
     claudeRuns: join(home, ".agent-teams", "runs"),
     hermesRuns: join(stateHome, "agent-flow", "runs"),
+  };
+}
+
+function productionAuthorityOptionsIdentity({ env, authorityOptions }) {
+  if (env.FLOW_BACKUP_DIRECTORY === undefined ||
+      authorityOptions.backupRestoreDirectory !== undefined) {
+    return authorityOptions;
+  }
+  return {
+    ...authorityOptions,
+    backupRestoreDirectory: env.FLOW_BACKUP_DIRECTORY,
+    ...(env.FLOW_REPOSITORY_ROOT === undefined ||
+        authorityOptions.backupRestoreRepositoryRoot !== undefined ? {} : {
+          backupRestoreRepositoryRoot: env.FLOW_REPOSITORY_ROOT,
+        }),
   };
 }
 

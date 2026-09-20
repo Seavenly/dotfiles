@@ -4,6 +4,7 @@ import net from "node:net";
 import { writeFileSync } from "node:fs";
 import {
   access,
+  cp,
   chmod,
   lstat,
   mkdir,
@@ -24,6 +25,7 @@ import {
   createFlowOwner,
   flowOwnerPaths,
   readProcessStartIdentity,
+  runFlowOwnerProcess,
   startFlowOwner,
   statusFlowOwner,
   stopFlowOwner,
@@ -47,6 +49,100 @@ const PUBLIC_OWNER_RUNTIME_MODULE = resolve(
   "../test-support/public-owner-runtime.mjs",
 );
 const FLOW_CLI_ENTRYPOINT = resolve(import.meta.dirname, "../src/cli.mjs");
+
+test("detached owner rejects copied config until an explicit governed qualification root is bound", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { production: true });
+  const copiedConfig = join(fixture.env.HOME, "copied-flow");
+  await cp(resolve(import.meta.dirname, ".."), copiedConfig, {
+    recursive: true,
+    filter: (source) => !source.split("/").includes("node_modules"),
+  });
+  fixture.env.FLOW_CONFIG_DIRECTORY = copiedConfig;
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+
+  await assert.rejects(
+    startDetachedFixture(fixture),
+    (error) => error?.code === "owner_runtime_binding_unavailable",
+  );
+
+  fixture.env.FLOW_QUALIFICATION_REPOSITORY_ROOT = resolve(
+    import.meta.dirname,
+    "../../..",
+  );
+  const started = await startDetachedFixture(fixture);
+  assert.equal(started.state, "running");
+  assert.equal(
+    started.runtime_binding.qualification_repository_root,
+    fixture.env.FLOW_QUALIFICATION_REPOSITORY_ROOT,
+  );
+});
+
+test("detached public owner binds qualification to governed tree, not backup repository", async (t) => {
+  const fixture = await disposableOwnerFixture(t, { production: true });
+  fixture.env.FLOW_CONFIG_DIRECTORY = resolve(import.meta.dirname, "..");
+  fixture.env.FLOW_QUALIFICATION_REPOSITORY_ROOT = resolve(
+    import.meta.dirname,
+    "../../..",
+  );
+  fixture.env.FLOW_REPOSITORY_ROOT = fixture.repository;
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+
+  const started = await startDetachedFixture(fixture);
+  assert.equal(started.state, "running");
+  assert.equal(started.runtime_binding.config_directory,
+    fixture.env.FLOW_CONFIG_DIRECTORY);
+  assert.equal(started.runtime_binding.qualification_repository_root,
+    fixture.env.FLOW_QUALIFICATION_REPOSITORY_ROOT);
+  assert.equal(started.runtime_binding.runtime_module_path,
+    fixture.env.FLOW_OWNER_RUNTIME_MODULE);
+  assert.match(started.runtime_binding.runtime_module_sha256, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(started.runtime_binding.release_content_digest, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(started.runtime_binding.release_content_bytes_sha256, /^sha256:[0-9a-f]{64}$/u);
+
+  const status = await statusFlowOwner({ ...fixture.paths, env: fixture.env });
+  assert.deepEqual(status.runtime_binding, started.runtime_binding);
+});
+
+test("detached child rejects a stale runtime binding before runtime construction", async (t) => {
+  const fixture = await disposableOwnerFixture(t);
+  fixture.env.FLOW_CONFIG_DIRECTORY = resolve(import.meta.dirname, "..");
+  fixture.env.FLOW_QUALIFICATION_REPOSITORY_ROOT = resolve(
+    import.meta.dirname,
+    "../../..",
+  );
+  fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
+  fixture.env.FLOW_OWNER_RUNTIME_BINDING = JSON.stringify({
+    schema: "flow.owner-runtime-binding/v1",
+    runtime_module_path: fixture.env.FLOW_OWNER_RUNTIME_MODULE,
+    runtime_module_sha256: `sha256:${"0".repeat(64)}`,
+    config_directory: fixture.env.FLOW_CONFIG_DIRECTORY,
+    config_directory_sha256: `sha256:${"0".repeat(64)}`,
+    qualification_repository_root: fixture.env.FLOW_QUALIFICATION_REPOSITORY_ROOT,
+    release_content_digest: `sha256:${"0".repeat(64)}`,
+    release_content_bytes_sha256: `sha256:${"0".repeat(64)}`,
+  });
+  const runtime = authorizedRuntime({
+    prepare: async () => ({}),
+    launch: async () => ({}),
+    command: async () => ({}),
+    query: async () => ({}),
+    watch: async () => ({
+      async next() { return { done: true, value: undefined }; },
+      async return() { return { done: true, value: undefined }; },
+      [Symbol.asyncIterator]() { return this; },
+    }),
+  });
+
+  await assert.rejects(
+    runFlowOwnerProcess({
+      env: fixture.env,
+      runtime,
+      ...fixture.paths,
+      installSignalHandlers: false,
+    }),
+    (error) => error?.code === "owner_runtime_binding_mismatch",
+  );
+});
 
 test("client process exit does not stop the detached owner or its autonomous run", async (t) => {
   const fixture = await disposableOwnerFixture(t);

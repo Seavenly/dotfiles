@@ -2,55 +2,55 @@ TAP version 13
 # Subtest: release content binds the governed candidate tree and declared base
 ok 1 - release content binds the governed candidate tree and declared base
   ---
-  duration_ms: 5.065332
+  duration_ms: 5.197937
   type: 'test'
   ...
 # Subtest: release content validates from a fresh clone without synthesized Git objects
 ok 2 - release content validates from a fresh clone without synthesized Git objects
   ---
-  duration_ms: 1014.336941
+  duration_ms: 1055.218928
   type: 'test'
   ...
-# Subtest: release-content generator excludes ignored files beneath governed prefixes
-ok 3 - release-content generator excludes ignored files beneath governed prefixes
+# Subtest: release-content generator excludes ignored files and pins npm across an untrusted clone cwd
+ok 3 - release-content generator excludes ignored files and pins npm across an untrusted clone cwd
   ---
-  duration_ms: 923.996741
+  duration_ms: 1062.589805
   type: 'test'
   ...
 # Subtest: Git tree derivation matches Git's nested object hashing and detects tampering
 ok 4 - Git tree derivation matches Git's nested object hashing and detects tampering
   ---
-  duration_ms: 18.721922
+  duration_ms: 17.46377
   type: 'test'
   ...
 # Subtest: transition query rejects a release manifest with a missing governed file
 ok 5 - transition query rejects a release manifest with a missing governed file
   ---
-  duration_ms: 73.276954
+  duration_ms: 83.910712
   type: 'test'
   ...
 # Subtest: transition query rejects candidate-tree bytes that differ from the worktree
 ok 6 - transition query rejects candidate-tree bytes that differ from the worktree
   ---
-  duration_ms: 895.246895
+  duration_ms: 961.636775
   type: 'test'
   ...
 # Subtest: transition query rejects a wrong or unavailable candidate tree binding
 ok 7 - transition query rejects a wrong or unavailable candidate tree binding
   ---
-  duration_ms: 212.730956
+  duration_ms: 223.348839
   type: 'test'
   ...
 # Subtest: transition query rejects an evidence symlink outside authority
 ok 8 - transition query rejects an evidence symlink outside authority
   ---
-  duration_ms: 66.751453
+  duration_ms: 71.796501
   type: 'test'
   ...
 # Subtest: release-content reader rejects an external symlink before reading it
 ok 9 - release-content reader rejects an external symlink before reading it
   ---
-  duration_ms: 1.292317
+  duration_ms: 1.179147
   type: 'test'
   ...
 1..9
@@ -61,4 +61,4 @@ ok 9 - release-content reader rejects an external symlink before reading it
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 3257.890421
+# duration_ms 3527.528895

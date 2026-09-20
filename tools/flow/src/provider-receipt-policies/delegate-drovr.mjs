@@ -4,7 +4,10 @@ export const DELEGATE_FAILURE_OBSERVATION_SCHEMA =
   "flow.delegate-failure-observation/v1";
 
 export const DELEGATE_FAILURE_OBSERVATION_FIELDS = Object.freeze([
+  "absence_proven",
   "code",
+  "drovr",
+  "request_envelope",
   "retryable",
   "resource_projection",
   "schema",
@@ -158,6 +161,7 @@ export const DELEGATE_REQUIRED_RECEIPT_FIELDS = new Map([
 
 export const DELEGATE_NESTED_FIELDS = new Set([
   "agent_id",
+  "absence_proven",
   "authority",
   "authority_watermark",
   "authority_terminal_disposition",
@@ -167,6 +171,7 @@ export const DELEGATE_NESTED_FIELDS = new Set([
   "correlated_output",
   "delivery_proof",
   "delegation",
+  "classification",
   "description_digest",
   "durable_holder",
   "evidence",
@@ -186,12 +191,17 @@ export const DELEGATE_NESTED_FIELDS = new Set([
   "contract",
   "subject_id",
   "operation",
+  "effect_created",
+  "envelope_digest",
+  "field_digests",
+  "fields_present",
   "launch_comparison_key",
   "launch_binding",
   "legal_next_actions",
   "managed_agent_binding",
   "managed_runtime_evidence_digest",
   "message",
+  "native_dispatch_started",
   "ordered_inputs",
   "owner",
   "payload_sha256",
@@ -214,6 +224,8 @@ export const DELEGATE_NESTED_FIELDS = new Set([
   "native_session",
   "workspace",
   "workspace_claim",
+  "turn_created",
+  "outcome",
   "validated_output",
   "validator_receipts",
 ]);

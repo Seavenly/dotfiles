@@ -33,6 +33,9 @@ import {
   productionRouteConformanceSessionBinding,
   productionRouteConformanceSessionBytes,
 } from "../../../tools/flow/src/qualification-phase2-session.mjs";
+import {
+  validateTrackedHostRecoveryEvidence,
+} from "../src/host-recovery-qualification.mjs";
 
 const configDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(configDirectory, "../..");
@@ -47,6 +50,8 @@ const phase2EvidencePath = join(
   configDirectory,
   "evidence/production-route-conformance.v1.json",
 );
+const invocationMode = parseInvocationMode(process.argv.slice(2));
+const bootstrapPrerequisites = invocationMode === "bootstrap_prerequisites";
 
 const ledger = readJson(ledgerPath);
 const evidenceTemplate = readJson(evidencePath);
@@ -55,131 +60,178 @@ const releaseContent = JSON.parse(releaseContentBytes);
 const releaseManifest = readJson(manifestPath);
 const phase1Record = requireLedgerEvidence(ledger, "deterministic_qualification");
 const phase2Record = requireLedgerEvidence(ledger, "production_route_conformance");
+if (!bootstrapPrerequisites) {
+  requirePassedLedgerEvidence(ledger, "issue_46_host_recovery");
+  try {
+    validateTrackedHostRecoveryEvidence({ worktreeRoot: repositoryRoot });
+  } catch (error) {
+    throw new Error(
+      `release qualification requires exact tracked issue-46 evidence: ${error.message}`,
+      { cause: error },
+    );
+  }
+}
 const contentDigest = `sha256:${sha256(releaseContentBytes)}`;
 const manifestDigest = `sha256:${sha256(readFileSync(manifestPath))}`;
 
-await beginQualificationGeneration();
-const phase1Results = DETERMINISTIC_QUALIFICATION_COMMANDS.map(
-  (command) => runCommand(command),
-);
-for (const { command, receiptBytes } of phase1Results) {
-  writeContainedReceipt(command.receipt_path, receiptBytes);
+beginQualificationGeneration({ preserveIssue46: bootstrapPrerequisites });
+try {
+  pauseForTestPhase1IfRequested();
+  const phase1Results = DETERMINISTIC_QUALIFICATION_COMMANDS.map(
+    (command) => runCommand(command),
+  );
+  for (const { command, receiptBytes } of phase1Results) {
+    writeContainedReceipt(command.receipt_path, receiptBytes);
+  }
+
+  const phase1Commands = recipeCommands(phase1Results);
+  const phase1CapturedAt = utcNow();
+  const qualification = {
+    ...evidenceTemplate,
+    schema: "flow.transition-qualification-evidence/v1",
+    release_id: ledger.release.id,
+    qualification_base_commit: ledger.release.qualification_base_commit,
+    candidate_tree_sha: releaseContent.git_binding.candidate_tree_sha,
+    release_content_digest: releaseContent.content_digest,
+    status: "passed",
+    scope: DETERMINISTIC_QUALIFICATION_SCOPE,
+    contracts: [
+      "flow.launch-policy/v1",
+      "flow.launch-selection/v1",
+      "flow.launch-rejection/v1",
+      "flow.release-manifest/v1",
+      "flow.transition-ledger/v1",
+      "flow.transition-projection/v1",
+      "flow.production-route-conformance-evidence/v1",
+    ],
+    assertions: DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+    recipe: {
+      schema: "flow.deterministic-qualification-recipe/v1",
+      digest: canonicalDigest(phase1Commands),
+      commands: phase1Commands,
+    },
+    captured_at: phase1CapturedAt,
+    environment: qualificationEnvironment(),
+  };
+  const qualificationBytes = Buffer.from(`${JSON.stringify(qualification, null, 2)}\n`);
+  writeAtomic(evidencePath, qualificationBytes);
+  phase1Record.path = relative(configDirectory, evidencePath);
+  phase1Record.sha256 = sha256(qualificationBytes);
+  phase1Record.status = "passed";
+  refreshAndWriteLedger(utcNow(), { preserveIssue46: bootstrapPrerequisites });
+
+  const phase2Results = runProductionRouteConformancePhase();
+  for (const { command, receiptBytes } of phase2Results) {
+    writeContainedReceipt(command.receipt_path, receiptBytes);
+  }
+  const phase2Commands = recipeCommands(phase2Results);
+  const phase2CapturedAt = utcNow();
+  const phase2Evidence = createProductionRouteConformanceEvidence({
+    releaseId: ledger.release.id,
+    qualificationBaseCommit: ledger.release.qualification_base_commit,
+    candidateTreeSha: releaseContent.git_binding.candidate_tree_sha,
+    releaseContentDigest: releaseContent.content_digest,
+    status: "passed",
+    phase1EvidenceSha256: phase1Record.sha256,
+    recipe: {
+      schema: "flow.production-route-conformance-recipe/v1",
+      digest: canonicalDigest(phase2Commands),
+      commands: phase2Commands,
+    },
+    capturedAt: phase2CapturedAt,
+    environment: qualificationEnvironment(),
+  });
+  const phase2EvidenceBytes = Buffer.from(
+    `${JSON.stringify(phase2Evidence, null, 2)}\n`,
+  );
+  writeAtomic(phase2EvidencePath, phase2EvidenceBytes);
+  phase2Record.path = relative(configDirectory, phase2EvidencePath);
+  phase2Record.sha256 = sha256(phase2EvidenceBytes);
+  phase2Record.status = "passed";
+  refreshAndWriteLedger(utcNow(), { preserveIssue46: bootstrapPrerequisites });
+
+  process.stdout.write(`${JSON.stringify({
+    mode: bootstrapPrerequisites ? "bootstrap_prerequisites" : "final_qualification",
+    status: bootstrapPrerequisites ? "prerequisites_ready" : "passed",
+    final_qualification: bootstrapPrerequisites ? "not_run" : "passed",
+    issue_46_aggregate: bootstrapPrerequisites ? "not_consumed" : "validated",
+    phase1: {
+      path: relative(repositoryRoot, evidencePath),
+      evidence_sha256: phase1Record.sha256,
+      candidate_tree_sha: qualification.candidate_tree_sha,
+      release_content_digest: qualification.release_content_digest,
+      commands: phase1Commands.map(({ id, tests, passed, receipt_sha256 }) => ({
+        id,
+        tests,
+        passed,
+        receipt_sha256,
+      })),
+    },
+    phase2: {
+      path: relative(repositoryRoot, phase2EvidencePath),
+      evidence_sha256: phase2Record.sha256,
+      commands: phase2Commands.map(({ id, tests, passed, receipt_sha256 }) => ({
+        id,
+        tests,
+        passed,
+        receipt_sha256,
+      })),
+    },
+  }, null, 2)}\n`);
+} catch (error) {
+  resetQualificationAfterFailure({ preserveIssue46: bootstrapPrerequisites });
+  throw error;
 }
 
-const phase1Commands = recipeCommands(phase1Results);
-const phase1CapturedAt = utcNow();
-const qualification = {
-  ...evidenceTemplate,
-  schema: "flow.transition-qualification-evidence/v1",
-  release_id: ledger.release.id,
-  qualification_base_commit: ledger.release.qualification_base_commit,
-  candidate_tree_sha: releaseContent.git_binding.candidate_tree_sha,
-  release_content_digest: releaseContent.content_digest,
-  status: "passed",
-  scope: DETERMINISTIC_QUALIFICATION_SCOPE,
-  contracts: [
-    "flow.launch-policy/v1",
-    "flow.launch-selection/v1",
-    "flow.launch-rejection/v1",
-    "flow.release-manifest/v1",
-    "flow.transition-ledger/v1",
-    "flow.transition-projection/v1",
-    "flow.production-route-conformance-evidence/v1",
-  ],
-  assertions: DETERMINISTIC_QUALIFICATION_ASSERTIONS,
-  recipe: {
-    schema: "flow.deterministic-qualification-recipe/v1",
-    digest: canonicalDigest(phase1Commands),
-    commands: phase1Commands,
-  },
-  captured_at: phase1CapturedAt,
-  environment: qualificationEnvironment(),
-};
-const qualificationBytes = Buffer.from(`${JSON.stringify(qualification, null, 2)}\n`);
-writeAtomic(evidencePath, qualificationBytes);
-phase1Record.path = relative(configDirectory, evidencePath);
-phase1Record.sha256 = sha256(qualificationBytes);
-phase1Record.status = "passed";
-refreshAndWriteLedger(utcNow());
-
-const phase2Results = runProductionRouteConformancePhase();
-for (const { command, receiptBytes } of phase2Results) {
-  writeContainedReceipt(command.receipt_path, receiptBytes);
-}
-const phase2Commands = recipeCommands(phase2Results);
-const phase2CapturedAt = utcNow();
-const phase2Evidence = createProductionRouteConformanceEvidence({
-  releaseId: ledger.release.id,
-  qualificationBaseCommit: ledger.release.qualification_base_commit,
-  candidateTreeSha: releaseContent.git_binding.candidate_tree_sha,
-  releaseContentDigest: releaseContent.content_digest,
-  status: "passed",
-  phase1EvidenceSha256: phase1Record.sha256,
-  recipe: {
-    schema: "flow.production-route-conformance-recipe/v1",
-    digest: canonicalDigest(phase2Commands),
-    commands: phase2Commands,
-  },
-  capturedAt: phase2CapturedAt,
-  environment: qualificationEnvironment(),
-});
-const phase2EvidenceBytes = Buffer.from(
-  `${JSON.stringify(phase2Evidence, null, 2)}\n`,
-);
-writeAtomic(phase2EvidencePath, phase2EvidenceBytes);
-phase2Record.path = relative(configDirectory, phase2EvidencePath);
-phase2Record.sha256 = sha256(phase2EvidenceBytes);
-phase2Record.status = "passed";
-refreshAndWriteLedger(utcNow());
-
-process.stdout.write(`${JSON.stringify({
-  phase1: {
-    path: relative(repositoryRoot, evidencePath),
-    evidence_sha256: phase1Record.sha256,
-    candidate_tree_sha: qualification.candidate_tree_sha,
-    release_content_digest: qualification.release_content_digest,
-    commands: phase1Commands.map(({ id, tests, passed, receipt_sha256 }) => ({
-      id,
-      tests,
-      passed,
-      receipt_sha256,
-    })),
-  },
-  phase2: {
-    path: relative(repositoryRoot, phase2EvidencePath),
-    evidence_sha256: phase2Record.sha256,
-    commands: phase2Commands.map(({ id, tests, passed, receipt_sha256 }) => ({
-      id,
-      tests,
-      passed,
-      receipt_sha256,
-    })),
-  },
-}, null, 2)}\n`);
-
-async function beginQualificationGeneration() {
+function beginQualificationGeneration({ preserveIssue46 = false } = {}) {
   const recordedAt = utcNow();
+  resetQualificationState(recordedAt);
+  refreshAndWriteLedger(recordedAt, { preserveIssue46 });
+}
+
+function resetQualificationState(capturedAt) {
   phase1Record.path = null;
   phase1Record.sha256 = null;
   phase1Record.status = "not_run";
   phase2Record.path = null;
   phase2Record.sha256 = null;
   phase2Record.status = "not_run";
-  refreshAndWriteLedger(recordedAt);
-
-  const evidence = createProductionRouteConformanceEvidence({
+  const phase2Evidence = createProductionRouteConformanceEvidence({
     releaseId: ledger.release.id,
     qualificationBaseCommit: ledger.release.qualification_base_commit,
     candidateTreeSha: releaseContent.git_binding.candidate_tree_sha,
     releaseContentDigest: releaseContent.content_digest,
-    capturedAt: recordedAt,
+    capturedAt,
     environment: qualificationEnvironment(),
   });
-  const bytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
-  writeAtomic(phase2EvidencePath, bytes);
-  phase2Record.path = relative(configDirectory, phase2EvidencePath);
-  phase2Record.sha256 = sha256(bytes);
-  refreshAndWriteLedger(utcNow());
+  writeAtomic(
+    phase2EvidencePath,
+    Buffer.from(`${JSON.stringify(phase2Evidence, null, 2)}\n`),
+  );
+}
+
+function resetQualificationAfterFailure({ preserveIssue46 = false } = {}) {
+  resetQualificationState(utcNow());
+  refreshAndWriteLedger(utcNow(), { preserveIssue46 });
+}
+
+function pauseForTestPhase1IfRequested() {
+  const synchronizationPath = process.env.FLOW_QUALIFICATION_TEST_PHASE1_SYNC;
+  if (synchronizationPath === undefined) return;
+  const markerPath = resolve(synchronizationPath);
+  const temporaryRoot = resolve(tmpdir());
+  if (!isAbsolute(synchronizationPath) ||
+      (markerPath !== temporaryRoot &&
+       !markerPath.startsWith(`${temporaryRoot}${sep}`))) {
+    throw new Error(
+      "qualification phase-one test synchronization must be an absolute path under the temporary root",
+    );
+  }
+  writeFileSync(markerPath, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+  // This hook only suspends a test process after public evidence has been
+  // withdrawn. It grants no runtime authority and is never used by the
+  // qualification phases themselves.
+  process.kill(process.pid, "SIGSTOP");
 }
 
 function runProductionRouteConformancePhase() {
@@ -235,6 +287,11 @@ function runProductionRouteConformancePhase() {
     const env = {
       ...process.env,
       FLOW_CONFIG_DIRECTORY: phase2ConfigDirectory,
+      // The phase-two authority is a disposable copy of config/flow, but
+      // qualification must remain bound to the exact governed release tree.
+      // Never infer this from the copied config or the disposable backup
+      // repository.
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: repositoryRoot,
       FLOW_REPOSITORY_ROOT: repositoryRoot,
       FLOW_PRODUCTION_ROUTE_CONFORMANCE_PROCESS: "1",
     };
@@ -251,7 +308,7 @@ function runProductionRouteConformancePhase() {
   }
 }
 
-function refreshAndWriteLedger(recordedAt) {
+function refreshAndWriteLedger(recordedAt, { preserveIssue46 = false } = {}) {
   const catalogBytes = readFileSync(join(configDirectory, "contracts/catalog.v1.json"));
   const catalog = JSON.parse(catalogBytes);
   const inventoryBytes = readFileSync(join(configDirectory, "legacy-baselines.v1.json"));
@@ -272,7 +329,10 @@ function refreshAndWriteLedger(recordedAt) {
   ledger.environment_fingerprint.qualification =
     "two_phase_public_route_conformance";
   ledger.recorded_at = recordedAt;
-  for (const evidence of ledger.evidence) evidence.recorded_at = recordedAt;
+  for (const evidence of ledger.evidence) {
+    if (preserveIssue46 && evidence.id === "issue_46_host_recovery") continue;
+    evidence.recorded_at = recordedAt;
+  }
   const records = new Map(ledger.evidence.map((evidence) => [evidence.id, evidence]));
   bindStaticEvidence(records.get("public_contract_catalog"),
     "contracts/catalog.v1.json", sha256(catalogBytes));
@@ -294,10 +354,30 @@ function bindStaticEvidence(record, path, sha256Value) {
   record.status = "passed";
 }
 
+function parseInvocationMode(args) {
+  if (args.length === 0) return "final_qualification";
+  if (args.length === 1 && args[0] === "--bootstrap-prerequisites") {
+    return "bootstrap_prerequisites";
+  }
+  throw new Error(
+    "unsupported qualification invocation; use no arguments for strict final qualification or --bootstrap-prerequisites for prerequisite bootstrap",
+  );
+}
+
 function requireLedgerEvidence(ledger, id) {
   const record = ledger.evidence.find((evidence) => evidence.id === id);
   if (record === undefined) throw new Error(`missing transition evidence record: ${id}`);
   return record;
+}
+
+function requirePassedLedgerEvidence(ledger, id) {
+  const existing = ledger.evidence.find((evidence) => evidence.id === id);
+  if (existing === undefined || existing.status !== "passed" ||
+      typeof existing.path !== "string" || typeof existing.sha256 !== "string" ||
+      typeof existing.evidence_digest !== "string") {
+    throw new Error(`release qualification requires passed ledger evidence: ${id}`);
+  }
+  return existing;
 }
 
 function recipeCommands(results) {
@@ -342,6 +422,11 @@ function writeAtomic(path, bytes) {
 }
 
 function runCommand(command, env = process.env, { phase2Session = null } = {}) {
+  const commandEnvironment = { ...env };
+  // A generator invoked from node:test must not make its qualification
+  // children believe they are nested tests.  This is an execution-context
+  // marker, not part of the qualification environment.
+  delete commandEnvironment.NODE_TEST_CONTEXT;
   let sessionDescriptor = null;
   if (phase2Session !== null) {
     const tokenPath = join(
@@ -361,7 +446,7 @@ function runCommand(command, env = process.env, { phase2Session = null } = {}) {
       cwd: repositoryRoot,
       encoding: "utf8",
       maxBuffer: 128 * 1024 * 1024,
-      env,
+      env: commandEnvironment,
       ...(sessionDescriptor === null ? {} : {
         stdio: ["ignore", "pipe", "pipe", sessionDescriptor],
       }),

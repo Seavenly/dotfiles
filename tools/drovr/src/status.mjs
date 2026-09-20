@@ -84,6 +84,10 @@ export async function statusReport(filters = {}, dependencies = {}) {
           status: turn.status,
           input_count: turn.inputs.length,
           created_at: turn.created_at,
+          ...(turn.receipt === undefined ? {} : { receipt: turn.receipt }),
+          ...(turn.settlement_receipt === undefined
+            ? {}
+            : { settlement_receipt: turn.settlement_receipt }),
         })),
       blocked_events: blocks
         .filter(({ status }) => ["open", "acknowledged"].includes(status))

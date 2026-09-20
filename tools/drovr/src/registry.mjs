@@ -506,6 +506,21 @@ export function recoverAbsentRegistryOperation(operation) {
 }
 
 function normalizeLockOptions(key, options = {}) {
+  const unsupportedTakeoverOptions = ["staleAfterMs", "force"]
+    .filter((name) => Object.hasOwn(options, name));
+  if (unsupportedTakeoverOptions.length > 0) {
+    throw new DrovrError(
+      "registry lock acquisition does not support age or generic force takeover",
+      {
+        code: 2,
+        outcome: "invalid_arguments",
+        details: {
+          unsupported_options: unsupportedTakeoverOptions,
+          legal_next_actions: ["status", "reconcile_registry_lock"],
+        },
+      },
+    );
+  }
   const operation = options.operation ?? {};
   const owner = options.owner ?? {};
   const operationId =

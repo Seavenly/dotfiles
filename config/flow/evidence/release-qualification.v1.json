@@ -2,7 +2,7 @@
   "schema": "flow.transition-qualification-evidence/v1",
   "release_id": "flow-release-1.0-dark/v1",
   "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
-  "release_content_digest": "sha256:aef823af8211b58dba2c988e765e40592f0e0bded02c99f1f58ce114be3323b8",
+  "release_content_digest": "sha256:e0d98617d7c6bb78ec4f1b1345c7c6c6f2245291d5d165aa505d934f9f277e9f",
   "status": "passed",
   "scope": "deterministic_route_and_host_fault_conformance",
   "contracts": [
@@ -95,14 +95,14 @@
   },
   "recipe": {
     "schema": "flow.deterministic-qualification-recipe/v1",
-    "digest": "sha256:4a0807e6298acc0c0d34f2473be99e622baf7cb33ee6e7307b6ee5ded69b778c",
+    "digest": "sha256:7a3b9bbab3eac6136b8d8c790b2270f8d8eeeff741221719599b12380b200862",
     "commands": [
       {
         "id": "launch_selector",
         "command": "node --test tools/flow/test/launch-selector.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/launch-selector.tap",
-        "receipt_sha256": "3ab41768a8efeabf7272e3df0dd7e062fec1d4bba47acc989b241d6860cacfaa",
+        "receipt_sha256": "9275f394ac58ab11eacb9775511a77445b8fb6e401032aad526831c46cc07ca9",
         "status": "passed",
         "exit_code": 0,
         "tests": 20,
@@ -117,7 +117,7 @@
         "command": "node --test --test-name-pattern='release content binds|release content validates from a fresh clone|release-content generator excludes ignored files|Git tree derivation matches|release manifest with a missing governed file|candidate-tree bytes|wrong or unavailable candidate tree binding|evidence symlink outside authority|external symlink before reading' tools/flow/test/transition-projection.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/release-tree-integrity.tap",
-        "receipt_sha256": "623913fb940f6c28e618c8f0c031302efa9a0105fccf892b57c84121a8662e78",
+        "receipt_sha256": "25dc7912ce9ac08ec9703443196dfeb06254259170d49ea0b0e5e550def6a77c",
         "status": "passed",
         "exit_code": 0,
         "tests": 9,
@@ -132,7 +132,7 @@
         "command": "node --test tools/flow/test/contract-catalog.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/contract-catalog.tap",
-        "receipt_sha256": "7351e42a82d6b2e372b54ab30c99e91b9f0f58720744c86ed2f0d2fd4d6bcef8",
+        "receipt_sha256": "447c4b841cc98788c5534db9f84202d7f1a187e612d88b7c6eee3af804c62ad7",
         "status": "passed",
         "exit_code": 0,
         "tests": 20,
@@ -147,7 +147,7 @@
         "command": "node --test tools/flow/test/feature-flow.test.mjs tools/flow/test/review-flow.test.mjs tools/flow/test/delegated-agent-port.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/feature-review-drovr.tap",
-        "receipt_sha256": "6cfb955806c160ed1b8a2d19ee2e33baf94829d275dc482f19cb2a58aa3f25d8",
+        "receipt_sha256": "6deb64d5686aca8a1021351fea4c898584027171965b56689378a2ec44d17b44",
         "status": "passed",
         "exit_code": 0,
         "tests": 264,
@@ -162,7 +162,7 @@
         "command": "node --test --test-name-pattern='default FlowRuntime is durable|default production work evidence fails closed|production reboot observation|production critique evidence is strict' config/flow/test/production-runtime.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/production-runtime-reboot.tap",
-        "receipt_sha256": "fe824a72e8a7de04d16e114693e5c1691dbd595e23e872f131947a5be717cfa9",
+        "receipt_sha256": "7d7b1d323348e4b4633a04796da9ecb99c9ac0b9fd1b9a2cfe61e78140bc463a",
         "status": "passed",
         "exit_code": 0,
         "tests": 6,
@@ -177,7 +177,7 @@
         "command": "node --test --test-name-pattern='public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra|public module imports cannot mint|public admission withholds qualification captured' config/flow/test/runtime.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/public-host-negative-routes.tap",
-        "receipt_sha256": "57a85f5b80d908078eaf13b7b36010bf944636e02a11cbd24252b6aa1b6ce632",
+        "receipt_sha256": "64d70965576c5ec4e5c3dfd1dca839bb674432cf81d3b0b56e7d74b1b9478d1b",
         "status": "passed",
         "exit_code": 0,
         "tests": 20,
@@ -192,11 +192,11 @@
         "command": "node --test --test-skip-pattern='public host (?:rebuilds the review inbox after the producing client exits|supersedes a production review and rejects stale follow-up actions)' config/flow/test/host-lifecycle.test.mjs config/flow/test/public-process.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/host-fault-reboot.tap",
-        "receipt_sha256": "14340ca14901e3907ef95f8348d02dd2c5f216d8ef51c54af6c760aad115654a",
+        "receipt_sha256": "ce911b91eaf24c85bc92daee928d2ab3957d0a65cb3be93631c4ca22d8856969",
         "status": "passed",
         "exit_code": 0,
-        "tests": 33,
-        "passed": 33,
+        "tests": 36,
+        "passed": 36,
         "failed": 0,
         "cancelled": 0,
         "skipped": 0,
@@ -207,7 +207,7 @@
         "command": "node --test config/flow/test/schema-contracts.test.mjs",
         "working_directory": ".",
         "receipt_path": "evidence/receipts/schema-contracts.tap",
-        "receipt_sha256": "ef82f3022102c8934562391b6583cfc177e368567ff2225cf8242aee507c2eaf",
+        "receipt_sha256": "3b802035200be96bdf5668434b72f7ea766965cc4cd3982d91a54b06af71b846",
         "status": "passed",
         "exit_code": 0,
         "tests": 12,
@@ -250,7 +250,7 @@
       "status": "not_run"
     }
   ],
-  "captured_at": "2026-09-20T17:38:06Z",
+  "captured_at": "2026-09-20T20:52:44Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",
@@ -258,5 +258,5 @@
     "npm": "10.9.8",
     "git": "2.53.0"
   },
-  "candidate_tree_sha": "786dbef7f949f3981bb1de4d2163da9904282d1a"
+  "candidate_tree_sha": "7ef9ad7553320e6f277ecf279735d8f40f41fb72"
 }

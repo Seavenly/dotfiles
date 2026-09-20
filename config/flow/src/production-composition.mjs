@@ -46,6 +46,9 @@ import {
   validateFeatureCriterionEvidence,
   validateFeatureCritiqueOutput,
 } from "./production-feature-operations.mjs";
+import {
+  createProductionBackupRestoreAdapter,
+} from "./production-backup-restore.mjs";
 
 const PREPARATION_SCHEMA = "flow.feature-preparation-request/v1";
 const BRIEF_SCHEMA = "flow.feature-brief/v1";
@@ -68,6 +71,9 @@ const TIME_OBSERVATION_UNCERTAINTY_NS =
  */
 export function createProductionComposition({
   delegatedAgentPort,
+  env = process.env,
+  authorityDirectory = undefined,
+  legacyRoots = {},
   authorityOptions = {},
   registeredOperations = {},
   registeredAuthorities = {},
@@ -103,6 +109,13 @@ export function createProductionComposition({
   const hostIdentity = hostIdentityAdapter.observe();
   const timeObservationAdapter = authorityOptions.timeObservationAdapter ??
     createTimeAdapter(hostIdentity);
+  const backupRestoreAdapter = authorityOptions.backupRestoreAdapter ??
+    configuredBackupRestoreAdapter({
+      env,
+      authorityDirectory,
+      authorityOptions,
+      legacyRoots,
+    });
   let operations;
 
   const productionAuthorityOptions = {
@@ -118,6 +131,7 @@ export function createProductionComposition({
       createWorkEvidenceAdapter(),
     runOwnershipAdapter: authorityOptions.runOwnershipAdapter ??
       createTopLevelRunOwnershipAdapter(),
+    backupRestoreAdapter,
   };
   const featureOperations = createProductionFeatureOperations({
     resolveWorkspace: resolveProductionWorkspace,
@@ -432,6 +446,46 @@ export class ProductionPreparationError extends Error {
     if (options.compatibility !== undefined) {
       this.compatibility = freezeCanonical(options.compatibility);
     }
+  }
+}
+
+function configuredBackupRestoreAdapter({
+  env,
+  authorityDirectory,
+  authorityOptions,
+  legacyRoots,
+}) {
+  const backupDirectory = authorityOptions.backupRestoreDirectory ??
+    env.FLOW_BACKUP_DIRECTORY;
+  const repositoryRoot = authorityOptions.backupRestoreRepositoryRoot ??
+    env.FLOW_REPOSITORY_ROOT;
+  const drovrStatusRunner = authorityOptions.drovrStatusRunner ?? null;
+  if (typeof backupDirectory !== "string" ||
+      !backupDirectory.startsWith("/") ||
+      typeof repositoryRoot !== "string" || !repositoryRoot.startsWith("/") ||
+      typeof authorityDirectory !== "string" ||
+      !authorityDirectory.startsWith("/") ||
+      typeof env?.DROVR_CONFIG_DIR !== "string" ||
+      !env.DROVR_CONFIG_DIR.startsWith("/") ||
+      drovrStatusRunner !== null && typeof drovrStatusRunner !== "function" ||
+      drovrStatusRunner === null &&
+        (typeof env.XDG_STATE_HOME !== "string" ||
+         !env.XDG_STATE_HOME.startsWith("/"))) {
+    return null;
+  }
+  try {
+    return createProductionBackupRestoreAdapter({
+      authorityDirectory,
+      backupDirectory,
+      repositoryRoot,
+      legacyRoots,
+      env,
+      drovrStatusRunner,
+    });
+  } catch {
+    // Invalid or unsafe explicit provider configuration retains the generic
+    // null-adapter's fail-closed public behavior.
+    return null;
   }
 }
 

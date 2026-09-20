@@ -2,121 +2,121 @@ TAP version 13
 # Subtest: repeated selection keeps the frozen legacy implementation as the default
 ok 1 - repeated selection keeps the frozen legacy implementation as the default
   ---
-  duration_ms: 5.5498
+  duration_ms: 5.944101
   type: 'test'
   ...
 # Subtest: explicit dark opt-in selects the exact qualified feature verify route
 ok 2 - explicit dark opt-in selects the exact qualified feature verify route
   ---
-  duration_ms: 1.392793
+  duration_ms: 1.127019
   type: 'test'
   ...
 # Subtest: dark opt-in returns a typed disabled outcome for feature test
 ok 3 - dark opt-in returns a typed disabled outcome for feature test
   ---
-  duration_ms: 0.726096
+  duration_ms: 0.682685
   type: 'test'
   ...
 # Subtest: explicit dark opt-in selects the exact local review route
 ok 4 - explicit dark opt-in selects the exact local review route
   ---
-  duration_ms: 1.423378
+  duration_ms: 1.424823
   type: 'test'
   ...
 # Subtest: dark opt-in classifies feature/test as disabled
 ok 5 - dark opt-in classifies feature/test as disabled
   ---
-  duration_ms: 0.746142
+  duration_ms: 0.759548
   type: 'test'
   ...
 # Subtest: dark opt-in classifies feature/mixed as disabled
 ok 6 - dark opt-in classifies feature/mixed as disabled
   ---
-  duration_ms: 0.533989
+  duration_ms: 0.509655
   type: 'test'
   ...
 # Subtest: dark opt-in classifies spike/quick as disabled
 ok 7 - dark opt-in classifies spike/quick as disabled
   ---
-  duration_ms: 0.597789
+  duration_ms: 0.54435
   type: 'test'
   ...
 # Subtest: dark opt-in classifies spike/deep as disabled
 ok 8 - dark opt-in classifies spike/deep as disabled
   ---
-  duration_ms: 0.630079
+  duration_ms: 0.610963
   type: 'test'
   ...
 # Subtest: dark opt-in classifies epic/default as disabled
 ok 9 - dark opt-in classifies epic/default as disabled
   ---
-  duration_ms: 0.827604
+  duration_ms: 0.646039
   type: 'test'
   ...
 # Subtest: dark opt-in classifies review/github as unsupported
 ok 10 - dark opt-in classifies review/github as unsupported
   ---
-  duration_ms: 0.714014
+  duration_ms: 0.681003
   type: 'test'
   ...
 # Subtest: dark opt-in classifies tracker/github as unsupported
 ok 11 - dark opt-in classifies tracker/github as unsupported
   ---
-  duration_ms: 0.67369
+  duration_ms: 0.807597
   type: 'test'
   ...
 # Subtest: dark opt-in classifies tracker/jira as unsupported
 ok 12 - dark opt-in classifies tracker/jira as unsupported
   ---
-  duration_ms: 0.828245
+  duration_ms: 0.608337
   type: 'test'
   ...
 # Subtest: dark opt-in classifies forge/default as unsupported
 ok 13 - dark opt-in classifies forge/default as unsupported
   ---
-  duration_ms: 0.617174
+  duration_ms: 0.487804
   type: 'test'
   ...
 # Subtest: dark opt-in classifies publication/default as unsupported
 ok 14 - dark opt-in classifies publication/default as unsupported
   ---
-  duration_ms: 0.694096
+  duration_ms: 0.529952
   type: 'test'
   ...
 # Subtest: dark opt-in classifies merge/default as unsupported
 ok 15 - dark opt-in classifies merge/default as unsupported
   ---
-  duration_ms: 2.668327
+  duration_ms: 1.415985
   type: 'test'
   ...
 # Subtest: dark opt-in classifies push/default as unsupported
 ok 16 - dark opt-in classifies push/default as unsupported
   ---
-  duration_ms: 0.704937
+  duration_ms: 1.498287
   type: 'test'
   ...
 # Subtest: dark opt-in classifies remote/mutation as unsupported
 ok 17 - dark opt-in classifies remote/mutation as unsupported
   ---
-  duration_ms: 0.650366
+  duration_ms: 0.416211
   type: 'test'
   ...
 # Subtest: dark opt-in classifies unknown/unknown as unsupported
 ok 18 - dark opt-in classifies unknown/unknown as unsupported
   ---
-  duration_ms: 0.650857
+  duration_ms: 0.872157
   type: 'test'
   ...
 # Subtest: dark opt-in rejects an unknown release scope
 ok 19 - dark opt-in rejects an unknown release scope
   ---
-  duration_ms: 0.958156
+  duration_ms: 0.594393
   type: 'test'
   ...
 # Subtest: dark opt-in rejects a malformed route with a schema-valid typed outcome
 ok 20 - dark opt-in rejects a malformed route with a schema-valid typed outcome
   ---
-  duration_ms: 0.825591
+  duration_ms: 0.545091
   type: 'test'
   ...
 1..20
@@ -127,4 +127,4 @@ ok 20 - dark opt-in rejects a malformed route with a schema-valid typed outcome
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 61.57124
+# duration_ms 57.512467

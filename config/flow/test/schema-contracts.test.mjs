@@ -52,6 +52,7 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "flow.launch-rejection.v1.schema.json",
     "flow.transition-qualification-evidence.v1.schema.json",
     "flow.production-route-conformance-evidence.v1.schema.json",
+    "flow.host-recovery-qualification-evidence.v1.schema.json",
     "flow.release-content.v1.schema.json",
     "flow.time-fact.v1.schema.json",
     "flow.subject-generation.v1.schema.json",

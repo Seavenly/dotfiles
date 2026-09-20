@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { createServer } from "node:net";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
@@ -23,6 +35,8 @@ import {
 import { deriveDelegatedAgentResourceKey } from
   "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
 import { createProductionComposition } from "../src/production-composition.mjs";
+import { createProductionBackupRestoreAdapter } from
+  "../src/production-backup-restore.mjs";
 import { validateFeatureCritiqueOutput } from
   "../src/production-feature-operations.mjs";
 
@@ -142,6 +156,41 @@ function registryWatermark() {
   };
 }
 
+test("production feature binds copied config to the explicit governed qualification root", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-qualified-config-"));
+  const configDirectory = join(scratch, "flow");
+  const state = join(scratch, "state");
+  const repository = join(scratch, "repository");
+  const governedConfigDirectory = fileURLToPath(new URL("..", import.meta.url));
+  const governedRepositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await cp(governedConfigDirectory, configDirectory, {
+    recursive: true,
+    filter: (source) => !source.split("/").includes("node_modules"),
+  });
+  await initializeRepository(repository);
+
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: state,
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: repository,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: governedRepositoryRoot,
+    },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const prepared = await runtime.prepare(preparationRequest(
+    repository,
+    "brief:explicit-governed-qualification-root",
+  ));
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  assert.notEqual(prepared.code, "qualification_withheld", JSON.stringify(prepared));
+});
+
 test("default FlowRuntime is durable and autonomous", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-production-runtime-"));
   const state = join(scratch, "state");
@@ -167,6 +216,377 @@ test("default FlowRuntime is durable and autonomous", async (t) => {
 
   await stat(join(state, "flow", "authority.sqlite"));
   assert.equal(statusFlowRuntime(runtime).state, "running");
+});
+
+test("production backup_create records a durable provider receipt", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-backup-"));
+  const state = join(scratch, "state");
+  const backupDirectory = join(scratch, "backup-store");
+  const repository = await createCommittedRepository(scratch, "backup");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: state,
+      FLOW_BACKUP_DIRECTORY: backupDirectory,
+      FLOW_REPOSITORY_ROOT: repository,
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const result = runtime.command({ type: "backup_create" });
+
+  assert.equal(result.accepted, true, JSON.stringify(result));
+  assert.equal(result.receipt.provider_receipt.provider,
+    "flow.filesystem-backup/v1");
+  const projection = runtime.query({ schema: "flow.query/v1", query: "backup" });
+  assert.equal(projection.state, "completed");
+  assert.equal(projection.receipt.provider_receipt.provider,
+    "flow.filesystem-backup/v1");
+});
+
+test("production backup composition requires an isolated absolute Drovr config", () => {
+  const baseEnv = {
+    HOME: "/tmp/flow-production-composition-isolation",
+    XDG_STATE_HOME: "/tmp/flow-production-composition-isolation/state",
+    FLOW_BACKUP_DIRECTORY: "/tmp/flow-production-composition-isolation/backups",
+    FLOW_REPOSITORY_ROOT: "/tmp/flow-production-composition-isolation/repository",
+  };
+  for (const [label, configDirectory] of [
+    ["missing", undefined],
+    ["relative", "drovr/config"],
+  ]) {
+    const env = { ...baseEnv };
+    if (configDirectory !== undefined) env.DROVR_CONFIG_DIR = configDirectory;
+    const composition = createProductionComposition({
+      delegatedAgentPort: supportedDelegatedAgentPort(),
+      env,
+      authorityDirectory: `${baseEnv.XDG_STATE_HOME}/flow`,
+    });
+    assert.equal(
+      composition.authorityOptions.backupRestoreAdapter,
+      null,
+      label,
+    );
+  }
+});
+
+test("production backup snapshots WAL-backed authority streams logically", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-logical-backup-"));
+  const state = join(scratch, "state");
+  const backupDirectory = join(scratch, "backup-store");
+  const repository = await createCommittedRepository(scratch, "logical-backup");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: state,
+      FLOW_BACKUP_DIRECTORY: backupDirectory,
+      FLOW_REPOSITORY_ROOT: repository,
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const backup = runtime.command({ type: "backup_create" });
+  assert.equal(backup.accepted, true, JSON.stringify(backup));
+  const snapshotPath = join(
+    backupDirectory,
+    backup.manifest.manifest_digest.slice("sha256:".length),
+    "snapshot.json",
+  );
+  const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+
+  assert.equal(typeof snapshot.database_snapshot, "object");
+  assert.equal(snapshot.database_snapshot.schema,
+    "flow.filesystem-backup-database-snapshot/v1");
+  assert.match(snapshot.database_snapshot.identity, /^sha256:[0-9a-f]{64}$/);
+  assert.ok(snapshot.database_snapshot.streams.length > 0);
+  assert.ok(snapshot.database_snapshot.events.length > 0);
+  await assert.rejects(
+    readFile(join(
+      backupDirectory,
+      backup.manifest.manifest_digest.slice("sha256:".length),
+      "database",
+      "authority.sqlite",
+    )),
+  );
+});
+
+test("production backup binds isolated Drovr retirement evidence and blocks active turns", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-drovr-backup-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const retiredRepository = await createCommittedRepository(scratch, "drovr-retired");
+  const retiredStatus = drovrStatusFixture({
+    agents: [{
+      id: "agent-retired",
+      lifecycle_status: "retired",
+      cleanup_receipt: {
+        schema: "drovr.agent-retirement-receipt/v1",
+        agent_id: "agent-retired",
+        recorded_at: "2026-09-17T10:00:00.000Z",
+        proof: "exact_absence",
+        observation: { evidence: "absent" },
+        pane: { pane_id: null, before: null, after: { evidence: "absent" } },
+        interrupted_turns: [{ id: "turn-retired", status: "interrupted" }],
+      },
+    }],
+    turns: [{
+      id: "turn-retired",
+      agent_id: "agent-retired",
+      status: "interrupted",
+    }],
+  });
+  const retiredRuntime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "retired-state"),
+      FLOW_BACKUP_DIRECTORY: join(scratch, "retired-backups"),
+      FLOW_REPOSITORY_ROOT: retiredRepository,
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+    authorityOptions: {
+      drovrStatusRunner: () => retiredStatus,
+    },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(retiredRuntime));
+
+  const retired = retiredRuntime.command({ type: "backup_create" });
+
+  assert.equal(retired.accepted, true, JSON.stringify(retired));
+  assert.deepEqual(retired.manifest.drovr_obligations.map(({ turn_id, disposition }) => ({
+    turn_id,
+    disposition,
+  })), [{ turn_id: "turn-retired", disposition: "retire" }]);
+  assert.equal(
+    retired.manifest.drovr_obligations[0].receipt.schema,
+    "flow.drovr-retirement-receipt/v1",
+  );
+  assert.equal(retired.manifest.drovr_obligations[0].receipt.agent_id,
+    "agent-retired");
+
+  const activeRepository = await createCommittedRepository(scratch, "drovr-active");
+  const activeRuntime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "active-state"),
+      FLOW_BACKUP_DIRECTORY: join(scratch, "active-backups"),
+      FLOW_REPOSITORY_ROOT: activeRepository,
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+    authorityOptions: {
+      drovrStatusRunner: () => drovrStatusFixture({
+        active_turns: [{
+          id: "turn-active",
+          agent_id: "agent-active",
+          task_id: "task-active",
+          status: "working",
+        }],
+      }),
+    },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(activeRuntime));
+
+  const blocked = activeRuntime.command({ type: "backup_create" });
+
+  assert.equal(blocked.schema, "flow.rejection/v1", JSON.stringify(blocked));
+  assert.equal(blocked.code, "backup_drovr_obligation_unsettled");
+});
+
+test("production backup binds a Drovr handoff receipt to a handoff obligation", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-drovr-handoff-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "drovr-handoff");
+  const status = drovrStatusFixture({
+    turns: [{
+      id: "turn-handoff",
+      agent_id: "agent-handoff",
+      status: "completed",
+      receipt: {
+        schema: "flow.drovr-handoff-receipt/v1",
+        turn_id: "turn-handoff",
+        disposition: "handoff",
+        durable_holder: "holder:registry",
+        handoff_receipt_id: "handoff/turn-handoff",
+        outcome: "handed_off",
+      },
+    }],
+  });
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_BACKUP_DIRECTORY: join(scratch, "backups"),
+      FLOW_REPOSITORY_ROOT: repository,
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+    authorityOptions: { drovrStatusRunner: () => status },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const result = runtime.command({ type: "backup_create" });
+
+  assert.equal(result.accepted, true, JSON.stringify(result));
+  assert.deepEqual(result.manifest.drovr_obligations, [{
+    turn_id: "turn-handoff",
+    disposition: "handoff",
+    durable_holder: "holder:registry",
+    receipt: status.result.turns[0].receipt,
+  }]);
+});
+
+test("production backup succeeds while the public owner endpoint is live", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-live-owner-backup-"));
+  const state = join(scratch, "state");
+  const authorityDirectory = join(state, "flow");
+  const repository = await createCommittedRepository(scratch, "live-owner-backup");
+  const socketPath = join(authorityDirectory, "owner.sock");
+  await mkdir(authorityDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(join(authorityDirectory, "owner.json"), "{}\n");
+  await writeFile(join(authorityDirectory, "owner-errors.json"), "{}\n");
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: state,
+      FLOW_BACKUP_DIRECTORY: join(scratch, "backups"),
+      FLOW_REPOSITORY_ROOT: repository,
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+    authorityOptions: { drovrStatusRunner: () => drovrStatusFixture() },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const backup = runtime.command({ type: "backup_create" });
+
+  assert.equal(backup.accepted, true, JSON.stringify(backup));
+});
+
+test("production backup rejects a legacy root reached through an ancestor symlink", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-legacy-ancestor-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "legacy-ancestor");
+  const external = join(scratch, "external");
+  const alias = join(scratch, "alias");
+  await mkdir(join(external, "legacy"), { recursive: true });
+  await symlink(external, alias, "dir");
+
+  assert.throws(() => createProductionBackupRestoreAdapter({
+    authorityDirectory: join(scratch, "authority"),
+    backupDirectory: join(scratch, "backups"),
+    repositoryRoot: repository,
+    legacyRoots: { isolated: join(alias, "legacy") },
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+    },
+  }), (error) => error?.code === "backup_path_symlink");
+});
+
+test("production restore rebuilds isolated authority after disposable loss", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-restore-"));
+  const state = join(scratch, "state");
+  const backupDirectory = join(scratch, "backup-store");
+  const repository = await createCommittedRepository(scratch, "restore");
+  const legacyRoot = join(scratch, "legacy");
+  const legacyFile = join(legacyRoot, "retained.json");
+  await mkdir(legacyRoot, { recursive: true });
+  await chmod(legacyRoot, 0o700);
+  await writeFile(legacyFile, "retained\n");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const env = {
+    HOME: scratch,
+    XDG_STATE_HOME: state,
+    FLOW_BACKUP_DIRECTORY: backupDirectory,
+    FLOW_REPOSITORY_ROOT: repository,
+    DROVR_CONFIG_DIR: repositoryDrovrDependencies().env.DROVR_CONFIG_DIR,
+  };
+
+  const firstRuntime = createFlowRuntime({
+    env,
+    legacyRoots: { isolated: legacyRoot },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  const backup = firstRuntime.command({ type: "backup_create" });
+  assert.equal(backup.accepted, true, JSON.stringify(backup));
+  const manifest = backup.manifest;
+  closeFlowRuntime(firstRuntime);
+
+  await rm(join(state, "flow"), { recursive: true, force: true });
+  await rm(legacyFile, { force: true });
+
+  const runtime = createFlowRuntime({
+    env,
+    legacyRoots: { isolated: legacyRoot },
+    delegatedAgentPort: supportedDelegatedAgentPort(),
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const restored = runtime.command({ type: "restore", manifest });
+  assert.equal(restored.accepted, true, JSON.stringify(restored));
+  assert.equal(await readFile(legacyFile, "utf8"), "retained\n");
+
+  await rm(legacyFile, { force: true });
+  const retryAdapter = createProductionBackupRestoreAdapter({
+    authorityDirectory: join(state, "flow"),
+    backupDirectory,
+    repositoryRoot: repository,
+    legacyRoots: { isolated: legacyRoot },
+    env,
+  });
+  const retry = retryAdapter.restore({
+    manifest,
+    intent: {
+      operation_id: "restore-retry",
+      idempotency_key: "restore-retry",
+    },
+  });
+  assert.equal(retry.manifest_digest, manifest.manifest_digest);
+  assert.equal(await readFile(legacyFile, "utf8"), "retained\n");
+
+  const barrier = runtime.query({ schema: "flow.query/v1", query: "restore" });
+  assert.equal(barrier.active, true);
+  assert.equal(barrier.state, "reconciling");
+
+  const reconciliation = runtime.command(barrier.legal_actions[0]);
+  assert.equal(reconciliation.accepted, true, JSON.stringify(reconciliation));
+  assert.equal(reconciliation.reconciliation.complete, true,
+    JSON.stringify(reconciliation));
+  const ready = runtime.query({ schema: "flow.query/v1", query: "restore" });
+  assert.equal(ready.state, "ready");
+
+  const admission = runtime.command(ready.legal_actions[0]);
+  assert.equal(admission.accepted, true, JSON.stringify(admission));
+  const admitted = runtime.query({ schema: "flow.query/v1", query: "restore" });
+  assert.equal(admitted.active, false);
+  assert.equal(admitted.state, "admitted");
 });
 
 test("default production work evidence fails closed without authoritative bytes", () => {
@@ -657,6 +1077,10 @@ test("production feature runs a real Git mutation through a local candidate", as
       } : {}),
       ...(typeof process.env.FLOW_REPOSITORY_ROOT === "string" ? {
         FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT,
+      } : {}),
+      ...(typeof process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT === "string" ? {
+        FLOW_QUALIFICATION_REPOSITORY_ROOT:
+          process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT,
       } : {}),
     },
     delegatedAgentPort,
@@ -1586,6 +2010,33 @@ function supportedDelegatedAgentPort() {
         },
         legal_next_actions: ["bind_exact_launch_description"],
       };
+    },
+  };
+}
+
+function drovrStatusFixture({
+  authority_watermark = {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    generation: `sha256:${"a".repeat(64)}`,
+    registry_sha256: `sha256:${"b".repeat(64)}`,
+  },
+  turns = [],
+  active_turns = [],
+  agents = [],
+} = {}) {
+  return {
+    schema: "drovr.command/v1",
+    command: "status",
+    ok: true,
+    result: {
+      status: "completed",
+      authority_watermark,
+      turns,
+      active_turns,
+      agents,
+      blocked_events: [],
+      warnings: [],
     },
   };
 }
