@@ -7,12 +7,23 @@
 //   <run_dir>/out/orientation.md   (optional)
 //
 // Writes:
-//   <run_dir>/out/review.md
-//   <run_dir>/out/review.html
+//   <run_dir>/out/review.md          — LOCAL report: every finding, each marked
+//                                      "in draft" or "local only: <reason>"
+//   <run_dir>/out/review.html        — same, as HTML
+//   <run_dir>/out/draft-review.json  — author-facing payload, ONLY when the
+//                                      publication gate passes; otherwise
+//   <run_dir>/out/draft-blocked.json — why no draft was written
 //
-// Applies the urgency floor and per-tier caps from brief.config at render
-// time. Critic's comments.json is the full validated set (no caps); this
-// script owns the policy cut.
+// comments.json is the full validated set (no caps); this script owns the
+// policy cut, and the cut applies to the DRAFT only. The local report always
+// shows everything, so an urgency floor or a cap never works as a silent
+// strike. Draft selection, in order: pre-existing findings are local only;
+// the urgency floor; per-tier caps; then the global max_comments budget, which
+// criticals and importants are exempt from.
+//
+// Per-finding fields: id, path, line, side, tier, lens, body (author-facing),
+// evidence (local only — never posted), confidence (0-1, optional),
+// pre_existing (bool, optional), draft (false = hold out of the draft).
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -65,10 +76,16 @@ function main() {
   const reviewHtmlPath = path.join(runDir, "out", "review.html");
   const draftPath = path.join(runDir, "out", "draft-review.json");
 
+  const draftBlockedPath = path.join(runDir, "out", "draft-blocked.json");
+
+  // A draft from an earlier render must never survive a failed one: remove it
+  // before doing anything else, and write the new one only after the gate.
+  for (const p of [draftPath, draftBlockedPath]) fs.rmSync(p, { force: true });
+
   const brief = parseFrontmatter(fs.readFileSync(briefPath, "utf8"));
   const comments = JSON.parse(fs.readFileSync(commentsPath, "utf8"));
   const orientation = fs.existsSync(orientationPath)
-    ? fs.readFileSync(orientationPath, "utf8").trim()
+    ? trimOrientation(fs.readFileSync(orientationPath, "utf8"))
     : null;
   const diagrams = loadDiagrams(diagramsDir);
 
@@ -82,11 +99,16 @@ function main() {
   };
   const maxComments = (brief.config && brief.config.max_comments) || 20;
 
-  const policy = applyPolicy(comments.inline || [], urgency, perTierCaps);
-  // General (non-anchorable) findings obey the same urgency floor + per-tier
-  // caps, but never become inline code comments — they render into a body
+  // General (non-anchorable) findings obey the same policy and share the same
+  // budget, but never become inline code comments — they render into a body
   // section and the posted review body.
-  const generalPolicy = applyPolicy(comments.general || [], urgency, perTierCaps);
+  const policy = applyPolicy(
+    comments.inline || [],
+    comments.general || [],
+    urgency,
+    perTierCaps,
+    maxComments
+  );
 
   const ctx = {
     prNumber: brief.pr_number,
@@ -103,72 +125,191 @@ function main() {
     cluster: comments.cluster || null,
     orientation,
     diagrams,
+    // Local report: every finding by tier, each carrying `excluded` (null when
+    // it is in the draft). Draft: only the included subset.
+    all: policy.all,
+    generalAll: policy.generalAll,
+    preExisting: policy.preExisting,
     kept: policy.kept,
-    droppedByUrgency: policy.droppedByUrgency,
-    droppedByCap: policy.droppedByCap,
+    generalKept: policy.generalKept,
+    excludedCounts: policy.excludedCounts,
+    totalFindings: policy.totalFindings,
     totalKept: policy.totalKept,
-    generalKept: generalPolicy.kept,
-    generalTotalKept: generalPolicy.totalKept,
     maxComments,
     perTierCaps,
+    draftBlocked: null,
   };
+
+  // Publication gate. Anything that fails here means NO draft payload exists —
+  // the local report still renders so the problem can be fixed at the source
+  // (comments.json) and re-rendered.
+  const draft = renderDraft(ctx);
+  const secretHits = scanForSecrets(draft);
+  if (secretHits.length > 0) {
+    ctx.draftBlocked = {
+      reason: "possible secret in author-facing text",
+      hits: secretHits,
+    };
+  }
 
   fs.writeFileSync(reviewMdPath, renderMarkdown(ctx));
   fs.writeFileSync(reviewHtmlPath, renderHtml(ctx));
-  fs.writeFileSync(draftPath, JSON.stringify(renderDraft(ctx), null, 2));
+  if (ctx.draftBlocked) {
+    fs.writeFileSync(draftBlockedPath, JSON.stringify(ctx.draftBlocked, null, 2));
+  } else {
+    fs.writeFileSync(draftPath, JSON.stringify(draft, null, 2));
+  }
 
   // Stdout for the lead to copy into the wrap-up message.
   process.stdout.write(
     JSON.stringify({
       review_md: reviewMdPath,
       review_html: reviewHtmlPath,
-      draft_review: draftPath,
+      draft_review: ctx.draftBlocked ? null : draftPath,
+      draft_blocked: ctx.draftBlocked,
       review_md_url: hostFileUrl(reviewMdPath),
       review_html_url: hostFileUrl(reviewHtmlPath),
       file_url: hostFileUrl(reviewHtmlPath),
-      counts: tierCounts(policy.kept),
-      total: policy.totalKept,
-      general_counts: tierCounts(generalPolicy.kept),
-      general_total: generalPolicy.totalKept,
+      counts: tierCounts(policy.all),
+      draft_counts: tierCounts(policy.kept),
+      general_counts: tierCounts(policy.generalKept),
+      pre_existing: policy.preExisting.length,
+      total_findings: policy.totalFindings,
+      draft_total: policy.totalKept,
+      excluded: policy.excludedCounts,
     }) + "\n"
   );
 }
 
 // ---------- policy ----------
 
-function applyPolicy(inline, urgency, perTierCaps) {
+const EXCLUDE_LABEL = {
+  manual: () => "held back by the reviewer",
+  urgency: (ctx) => `below the \`${ctx.urgency}\` urgency floor`,
+  tier_cap: (ctx, tier) => `over the ${tier} cap (${ctx.perTierCaps[tier]})`,
+  budget: (ctx) => `over the max_comments budget (${ctx.maxComments})`,
+};
+
+// Decides which findings go in the draft. Nothing is removed: every finding is
+// returned in `all`/`generalAll` with `excluded` set to a reason code or null.
+function applyPolicy(inline, general, urgency, perTierCaps, maxComments) {
   const allowed = URGENCY_TIERS[urgency] || TIER_ORDER;
+  const tag = (list, kind) =>
+    list.map((c) => ({ ...c, kind, excluded: null }));
+  const findings = [...tag(inline, "inline"), ...tag(general, "general")];
 
+  // Pre-existing bugs are real but not this PR's doing: local only, and they
+  // never count toward the draft or the posture.
+  const preExisting = findings.filter((c) => c.pre_existing);
+  const candidates = findings.filter((c) => !c.pre_existing && TIER_ORDER.includes(c.tier));
+
+  // Within a tier, higher-confidence findings win the caps. Missing
+  // confidence sorts as neutral; the sort is stable so critic order is the
+  // tie-break.
+  const conf = (c) => (typeof c.confidence === "number" ? c.confidence : 0.5);
   const byTier = Object.fromEntries(TIER_ORDER.map((t) => [t, []]));
-  for (const c of inline) {
-    if (byTier[c.tier]) byTier[c.tier].push(c);
-  }
+  for (const c of candidates) byTier[c.tier].push(c);
+  for (const t of TIER_ORDER) byTier[t].sort((a, b) => conf(b) - conf(a));
 
-  const kept = {};
-  const droppedByUrgency = {};
-  const droppedByCap = {};
-
+  // Criticals and importants are exempt from the budget, so it is spent on
+  // them first and the remainder goes to lower tiers in tier order.
+  let budget = maxComments;
   for (const tier of TIER_ORDER) {
-    if (!allowed.includes(tier)) {
-      droppedByUrgency[tier] = byTier[tier].length;
-      kept[tier] = [];
-      continue;
-    }
+    const exempt = tier === "critical" || tier === "important";
     const cap = perTierCaps[tier];
-    if (cap != null && byTier[tier].length > cap) {
-      droppedByCap[tier] = byTier[tier].length - cap;
-      kept[tier] = byTier[tier].slice(0, cap);
-    } else {
-      kept[tier] = byTier[tier];
+    let inTier = 0;
+    for (const c of byTier[tier]) {
+      if (c.draft === false) c.excluded = "manual";
+      else if (!allowed.includes(tier)) c.excluded = "urgency";
+      else if (cap != null && inTier >= cap) c.excluded = "tier_cap";
+      else if (!exempt && budget <= 0) c.excluded = "budget";
+      else {
+        inTier++;
+        budget--;
+      }
     }
   }
 
-  const totalKept = TIER_ORDER.reduce((n, t) => n + kept[t].length, 0);
-  return { kept, droppedByUrgency, droppedByCap, totalKept };
+  const split = (kind, keep) =>
+    Object.fromEntries(
+      TIER_ORDER.map((t) => [
+        t,
+        byTier[t].filter((c) => c.kind === kind && (!keep || !c.excluded)),
+      ])
+    );
+  const all = split("inline", false);
+  const generalAll = split("general", false);
+  const kept = split("inline", true);
+  const generalKept = split("general", true);
+
+  const excludedCounts = {};
+  for (const c of candidates) {
+    if (!c.excluded) continue;
+    excludedCounts[c.excluded] = excludedCounts[c.excluded] || {};
+    excludedCounts[c.excluded][c.tier] = (excludedCounts[c.excluded][c.tier] || 0) + 1;
+  }
+
+  const count = (m) => TIER_ORDER.reduce((n, t) => n + m[t].length, 0);
+  return {
+    all,
+    generalAll,
+    preExisting,
+    kept,
+    generalKept,
+    excludedCounts,
+    totalFindings: candidates.length,
+    totalKept: count(kept) + count(generalKept),
+  };
 }
 
-function tierCounts(kept) {
-  return Object.fromEntries(TIER_ORDER.map((t) => [t, kept[t].length]));
+function tierCounts(byTier) {
+  return Object.fromEntries(TIER_ORDER.map((t) => [t, byTier[t].length]));
+}
+
+function excludedNote(ctx, c) {
+  return c.excluded ? EXCLUDE_LABEL[c.excluded](ctx, c.tier) : null;
+}
+
+// ---------- publication gate ----------
+
+// Deterministic, conservative patterns for credentials that must never reach
+// a PR. A hit blocks the draft; the fix is to edit the finding in
+// comments.json (describe the secret's location, never quote it) and
+// re-render. Patterns are deliberately specific to keep false blocks rare.
+const SECRET_PATTERNS = [
+  ["private key block", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ["AWS access key id", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,})\b/],
+  ["Slack token", /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/],
+  ["Stripe live key", /\b[sr]k_live_[A-Za-z0-9]{16,}\b/],
+  ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
+  ["JWT", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+  [
+    "credential assignment",
+    /\b(?:api[_-]?key|secret|token|passw(?:or)?d|client[_-]?secret)\b["']?\s*[:=]\s*["'][^"'\s]{16,}["']/i,
+  ],
+];
+
+function scanForSecrets(draft) {
+  const fields = [["review body", draft.body]];
+  draft.comments.forEach((c) =>
+    fields.push([`inline comment at ${c.path}:${c.line}`, c.body])
+  );
+  const hits = [];
+  for (const [where, text] of fields) {
+    for (const [name, re] of SECRET_PATTERNS) {
+      if (re.test(text || "")) hits.push({ where, pattern: name });
+    }
+  }
+  return hits;
+}
+
+// The orientation agent sometimes prefixes its answer with working notes
+// ("I have enough context now…"). Keep only the templated section.
+function trimOrientation(raw) {
+  const text = raw.trim();
+  const i = text.indexOf("## Orientation");
+  return i > 0 ? text.slice(i) : text;
 }
 
 // ---------- diagrams ----------
@@ -217,16 +358,26 @@ function renderMarkdown(ctx) {
   if (ctx.postureRationale) out.push(ctx.postureRationale);
   out.push("");
 
+  if (ctx.draftBlocked) {
+    out.push(`> **⚠ Draft blocked: ${ctx.draftBlocked.reason}.** No \`draft-review.json\` was written.`);
+    for (const h of ctx.draftBlocked.hits) {
+      out.push(`> - ${h.pattern} in ${h.where}`);
+    }
+    out.push("> Edit the finding in `comments.json` (describe where the secret is, never quote it) and re-render.");
+    out.push("");
+  }
+
+  out.push(
+    `_Local report: all ${ctx.totalFindings} finding(s); ${ctx.totalKept} go in the draft. Findings marked **local only** are not posted._`
+  );
   if (ctx.urgency !== "standard") {
     const scope =
       ctx.urgency === "hotfix"
         ? "criticals only"
         : "criticals + importants only";
-    out.push(
-      `> _Urgency was set to **${ctx.urgency}**, so this review reports ${scope}. Re-run with \`--urgency standard\` for a deeper pass._`
-    );
-    out.push("");
+    out.push(`_Urgency **${ctx.urgency}**: the draft carries ${scope}._`);
   }
+  out.push("");
 
   if (ctx.orientation) {
     out.push(ctx.orientation);
@@ -275,75 +426,82 @@ function renderMarkdown(ctx) {
     out.push("");
   }
 
-  for (const tier of TIER_ORDER) {
-    const list = ctx.kept[tier];
-    if (list.length === 0) continue;
-    out.push(`## ${TIER_TITLES[tier]} (${list.length})\n`);
-    for (const c of list) {
-      const lensTag = c.lens ? ` — [${c.lens}]` : "";
-      const ghLink = ctx.headSha && ctx.repo
-        ? ` ([github](https://github.com/${ctx.repo}/blob/${ctx.headSha}/${c.path}#L${c.line}))`
-        : "";
-      out.push(`**\`${c.path}:${c.line}\`**${lensTag}${ghLink}`);
-      out.push("");
-      out.push(c.body);
-      out.push("");
-      out.push("---");
+  const mdLoc = (c) => {
+    if (!c.path) return "";
+    if (!c.line) return `\`${c.path}\``;
+    const gh = ctx.headSha && ctx.repo
+      ? ` ([github](https://github.com/${ctx.repo}/blob/${ctx.headSha}/${c.path}#L${c.line}))`
+      : "";
+    return `\`${c.path}:${c.line}\`${gh}`;
+  };
+  const mdFinding = (c, head) => {
+    const note = excludedNote(ctx, c);
+    out.push(head + (note ? `  ·  _local only: ${note}_` : ""));
+    out.push("");
+    out.push(c.body);
+    out.push("");
+    if (c.evidence) {
+      out.push(`> _Evidence (local only):_ ${c.evidence.replace(/\n/g, "\n> ")}`);
       out.push("");
     }
+    out.push("---");
+    out.push("");
+  };
+  const lensTag = (c) => (c.lens ? ` — [${c.lens}]` : "");
+  const inDraft = (list) => list.filter((c) => !c.excluded).length;
+
+  for (const tier of TIER_ORDER) {
+    const list = ctx.all[tier];
+    if (list.length === 0) continue;
+    out.push(`## ${TIER_TITLES[tier]} (${list.length}, ${inDraft(list)} in draft)\n`);
+    for (const c of list) mdFinding(c, `**${mdLoc(c)}**${lensTag(c)}`);
   }
 
   // General (non-anchorable) findings — real issues that don't sit on a diff
   // line, so they are body prose here and in the posted review, never inline.
-  const generalFlat = TIER_ORDER.flatMap((t) => (ctx.generalKept[t] || []));
+  const generalFlat = TIER_ORDER.flatMap((t) => ctx.generalAll[t]);
   if (generalFlat.length > 0) {
-    out.push(`## General comments (${generalFlat.length})\n`);
+    out.push(`## General comments (${generalFlat.length}, ${inDraft(generalFlat)} in draft)\n`);
     out.push(
       "_Not anchored to a diff line — whole-file / absent-code / outside-the-hunk findings._\n"
     );
-    for (const tier of TIER_ORDER) {
-      for (const c of ctx.generalKept[tier] || []) {
-        const lensTag = c.lens ? ` — [${c.lens}]` : "";
-        const loc = c.path
-          ? (c.line
-              ? (ctx.headSha && ctx.repo
-                  ? `\`${c.path}:${c.line}\` ([github](https://github.com/${ctx.repo}/blob/${ctx.headSha}/${c.path}#L${c.line}))`
-                  : `\`${c.path}:${c.line}\``)
-              : `\`${c.path}\``)
-          : "";
-        out.push(`**[${tier}]**${lensTag}${loc ? ` ${loc}` : ""}`);
-        out.push("");
-        out.push(c.body);
-        out.push("");
-        out.push("---");
-        out.push("");
-      }
+    for (const c of generalFlat) {
+      const loc = mdLoc(c);
+      mdFinding(c, `**[${c.tier}]**${lensTag(c)}${loc ? ` ${loc}` : ""}`);
     }
   }
 
-  const hadDrops =
-    anyPositive(ctx.droppedByUrgency) || anyPositive(ctx.droppedByCap);
-  if (hadDrops) {
-    out.push("## Cap report\n");
-    out.push(
-      `- \`max_comments\`: ${ctx.maxComments}, included: ${ctx.totalKept}`
-    );
-    for (const tier of TIER_ORDER) {
-      if (ctx.droppedByUrgency[tier]) {
-        out.push(
-          `- dropped ${ctx.droppedByUrgency[tier]} \`${tier}\` finding(s) by urgency floor (\`${ctx.urgency}\`)`
-        );
-      }
-      if (ctx.droppedByCap[tier]) {
-        out.push(
-          `- dropped ${ctx.droppedByCap[tier]} \`${tier}\` finding(s) by per-tier cap (${ctx.perTierCaps[tier]})`
-        );
-      }
+  if (ctx.preExisting.length > 0) {
+    out.push(`## Pre-existing (${ctx.preExisting.length}, local only)\n`);
+    out.push("_Real issues this PR did not introduce. Never posted, never counted toward the verdict; file separately if worth fixing._\n");
+    for (const c of ctx.preExisting) {
+      const loc = mdLoc(c);
+      mdFinding({ ...c, excluded: null }, `**[${c.tier}]**${lensTag(c)}${loc ? ` ${loc}` : ""}`);
     }
+  }
+
+  const capLines = capReportLines(ctx);
+  if (capLines.length > 0) {
+    out.push("## Cap report\n");
+    out.push(`- draft: ${ctx.totalKept} of ${ctx.totalFindings} finding(s); \`max_comments\` ${ctx.maxComments} (criticals and importants exempt)`);
+    for (const l of capLines) out.push(`- ${l}`);
     out.push("");
   }
 
   return out.join("\n");
+}
+
+// One line per (reason, tier) with a non-zero exclusion count.
+function capReportLines(ctx) {
+  const lines = [];
+  for (const [reason, byTier] of Object.entries(ctx.excludedCounts)) {
+    for (const tier of TIER_ORDER) {
+      if (byTier[tier]) {
+        lines.push(`${byTier[tier]} \`${tier}\` kept local: ${EXCLUDE_LABEL[reason](ctx, tier)}`);
+      }
+    }
+  }
+  return lines;
 }
 
 // ---------- github reviews api payload ----------
@@ -375,21 +533,23 @@ function renderDraft(ctx) {
 
   // General (non-anchorable) findings go in the review BODY, never as inline
   // comments — an inline comment off a diff line 422s the whole review.
-  const generalFlat = TIER_ORDER.flatMap((t) => (ctx.generalKept[t] || []));
+  // `id` markers are invisible on GitHub; they let a follow-up review map a
+  // posted comment back to the finding it came from.
+  const idMarker = (c) => (c.id ? `\n\n<!-- review-flow:${c.id} -->` : "");
+
+  const generalFlat = TIER_ORDER.flatMap((t) => ctx.generalKept[t]);
   if (generalFlat.length > 0) {
     const gLines = ["## General comments"];
-    for (const tier of TIER_ORDER) {
-      for (const c of ctx.generalKept[tier] || []) {
-        const lensTag = c.lens ? ` [${c.lens}]` : "";
-        const loc = c.path ? ` \`${c.path}${c.line ? `:${c.line}` : ""}\`` : "";
-        gLines.push(`- **[${tier}]**${lensTag}${loc} — ${c.body}`);
-      }
+    for (const c of generalFlat) {
+      const lensTag = c.lens ? ` [${c.lens}]` : "";
+      const loc = c.path ? ` \`${c.path}${c.line ? `:${c.line}` : ""}\`` : "";
+      gLines.push(`- **[${c.tier}]**${lensTag}${loc} — ${c.body}${idMarker(c)}`);
     }
     bodyParts.push(gLines.join("\n"));
   }
 
-  const dropNotes = capDropSummary(ctx);
-  if (dropNotes) bodyParts.push(dropNotes);
+  // No cap report here: which findings stayed local is the reviewer's
+  // business, not the author's. It lives in review.md.
 
   const comments = [];
   for (const tier of TIER_ORDER) {
@@ -399,34 +559,19 @@ function renderDraft(ctx) {
         path: c.path,
         line: c.line,
         side: c.side || "RIGHT",
-        body: `**[${tier}]**${lensTag}\n\n${c.body}`,
+        body: `**[${tier}]**${lensTag}\n\n${c.body}${idMarker(c)}`,
       });
     }
   }
 
   return {
+    // Pin the review to the reviewed snapshot. If the head has moved, GitHub
+    // anchors against this commit instead of silently re-mapping lines.
+    ...(ctx.headSha ? { commit_id: ctx.headSha } : {}),
     body: bodyParts.join("\n\n"),
     comments,
     // event omitted on purpose — leaves the review in PENDING state.
   };
-}
-
-function capDropSummary(ctx) {
-  const lines = [];
-  for (const tier of TIER_ORDER) {
-    if (ctx.droppedByUrgency[tier]) {
-      lines.push(
-        `- ${ctx.droppedByUrgency[tier]} \`${tier}\` finding(s) dropped by urgency floor (\`${ctx.urgency}\`)`
-      );
-    }
-    if (ctx.droppedByCap[tier]) {
-      lines.push(
-        `- ${ctx.droppedByCap[tier]} \`${tier}\` finding(s) dropped by per-tier cap (${ctx.perTierCaps[tier]})`
-      );
-    }
-  }
-  if (lines.length === 0) return null;
-  return `<details><summary>Cap report — ${lines.length} note(s)</summary>\n\n${lines.join("\n")}\n</details>`;
 }
 
 // ---------- html ----------
@@ -438,25 +583,29 @@ function renderHtml(ctx) {
       : null;
   const prFilesUrl = ctx.prUrl ? `${ctx.prUrl}/files` : null;
 
-  const cards = (tier) =>
-    ctx.kept[tier]
-      .map((c, i) => renderCard(c, i, tier, ghBlobBase, prFilesUrl))
-      .join("\n");
+  const card = (c, i, t, prefix = "") =>
+    renderCard(c, i, t, ghBlobBase, prFilesUrl, excludedNote(ctx, c), prefix);
+  const inDraft = (list) => list.filter((c) => !c.excluded).length;
 
-  const tierSections = TIER_ORDER.filter((t) => ctx.kept[t].length > 0)
+  const tierSections = TIER_ORDER.filter((t) => ctx.all[t].length > 0)
     .map(
       (t) => `
     <section class="tier-section tier-${t}" id="tier-${t}">
-      <h2 class="tier-title"><span class="tier-title-bar"></span>${TIER_TITLES[t]} <span class="count">${ctx.kept[t].length}</span></h2>
-      ${cards(t)}
+      <h2 class="tier-title"><span class="tier-title-bar"></span>${TIER_TITLES[t]} <span class="count">${ctx.all[t].length}</span> <span class="draft-count">${inDraft(ctx.all[t])} in draft</span></h2>
+      ${ctx.all[t].map((c, i) => card(c, i, t)).join("\n")}
     </section>`
     )
     .join("");
 
-  const urgencyCallout =
+  const draftBlockedCallout = ctx.draftBlocked
+    ? `<div class="draft-blocked"><strong>⚠ Draft blocked: ${escapeHtml(ctx.draftBlocked.reason)}.</strong> No <code>draft-review.json</code> was written.<ul>${ctx.draftBlocked.hits.map((h) => `<li>${escapeHtml(h.pattern)} in ${escapeHtml(h.where)}</li>`).join("")}</ul>Edit the finding in <code>comments.json</code> (describe where the secret is, never quote it) and re-render.</div>`
+    : "";
+
+  const urgencyCallout = `<div class="urgency-callout">Local report: all ${ctx.totalFindings} finding(s); <strong>${ctx.totalKept}</strong> go in the draft. Cards marked <em>local only</em> are not posted.${
     ctx.urgency !== "standard"
-      ? `<div class="urgency-callout">Urgency: <strong>${escapeHtml(ctx.urgency)}</strong> — reports ${ctx.urgency === "hotfix" ? "criticals only" : "criticals + importants only"}. Re-run with <code>--urgency standard</code> for a deeper pass.</div>`
-      : "";
+      ? ` Urgency <strong>${escapeHtml(ctx.urgency)}</strong>: the draft carries ${ctx.urgency === "hotfix" ? "criticals only" : "criticals + importants only"}.`
+      : ""
+  }</div>`;
 
   const orientationBlock = ctx.orientation
     ? `<section class="orientation">${renderOrientationHtml(ctx.orientation)}</section>`
@@ -473,12 +622,20 @@ function renderHtml(ctx) {
 
   // General (non-anchorable) findings: real issues not on a diff line. Shown
   // as a distinct section so they read as body prose, not inline anchors.
-  const generalFlat = TIER_ORDER.flatMap((t) => (ctx.generalKept[t] || []));
+  const generalFlat = TIER_ORDER.flatMap((t) => ctx.generalAll[t]);
   const generalBlock = generalFlat.length
     ? `<section class="tier-section general-section" id="general">
-      <h2 class="tier-title"><span class="tier-title-bar"></span>General comments <span class="count">${generalFlat.length}</span></h2>
+      <h2 class="tier-title"><span class="tier-title-bar"></span>General comments <span class="count">${generalFlat.length}</span> <span class="draft-count">${inDraft(generalFlat)} in draft</span></h2>
       <p class="general-note">Not anchored to a diff line — whole-file / absent-code / outside-the-hunk findings.</p>
-      ${TIER_ORDER.flatMap((t) => (ctx.generalKept[t] || []).map((c, i) => renderCard(c, i, t, ghBlobBase, prFilesUrl))).join("\n")}
+      ${generalFlat.map((c, i) => card(c, i, c.tier, "g")).join("\n")}
+    </section>`
+    : "";
+
+  const preExistingBlock = ctx.preExisting.length
+    ? `<section class="tier-section general-section" id="pre-existing">
+      <h2 class="tier-title"><span class="tier-title-bar"></span>Pre-existing <span class="count">${ctx.preExisting.length}</span> <span class="draft-count">local only</span></h2>
+      <p class="general-note">Real issues this PR did not introduce. Never posted, never counted toward the verdict; file separately if worth fixing.</p>
+      ${ctx.preExisting.map((c, i) => card({ ...c, excluded: null }, i, c.tier, "p")).join("\n")}
     </section>`
     : "";
 
@@ -514,6 +671,7 @@ function renderHtml(ctx) {
       ${clusterBlock}
       ${tierSections}
       ${generalBlock}
+      ${preExistingBlock}
       ${capReportBlock}
     </div>
   </div>`
@@ -521,6 +679,7 @@ function renderHtml(ctx) {
   ${clusterBlock}
   ${tierSections}
   ${generalBlock}
+  ${preExistingBlock}
   ${capReportBlock}`;
 
   return `<!doctype html>
@@ -541,6 +700,7 @@ function renderHtml(ctx) {
       <span class="urgency-pill">urgency: ${escapeHtml(ctx.urgency)}</span>
     </div>
     ${ctx.postureRationale ? `<p class="rationale">${renderInlineMd(ctx.postureRationale)}</p>` : ""}
+    ${draftBlockedCallout}
     ${urgencyCallout}
     ${tierNav}
   </header>${bodyContent}
@@ -599,9 +759,9 @@ function renderLightbox() {
 }
 
 function renderTierNav(ctx) {
-  const items = TIER_ORDER.filter((t) => ctx.kept[t].length > 0).map(
+  const items = TIER_ORDER.filter((t) => ctx.all[t].length > 0).map(
     (t) =>
-      `<a href="#tier-${t}" class="tier-nav-item tier-nav-${t}"><span class="tier-nav-count">${ctx.kept[t].length}</span> ${TIER_TITLES[t].toLowerCase()}</a>`
+      `<a href="#tier-${t}" class="tier-nav-item tier-nav-${t}"><span class="tier-nav-count">${ctx.all[t].length}</span> ${TIER_TITLES[t].toLowerCase()}</a>`
   );
   if (items.length === 0) return "";
   return `<nav class="tier-nav" aria-label="Jump to tier">${items.join("")}</nav>`;
@@ -710,9 +870,9 @@ function inlineSvg(svg, title = "diagram") {
   return `<button type="button" class="diagram-svg-wrap" data-lightbox aria-label="Enlarge ${escapeHtml(title)}"><span class="diagram-expand-hint" aria-hidden="true">⤢ Click to enlarge</span>${s}</button>`;
 }
 
-function renderCard(c, idx, tier, ghBlobBase, prFilesUrl) {
-  const anchor = `c-${tier}-${idx}`;
-  const fileLabel = `${c.path}:${c.line}`;
+function renderCard(c, idx, tier, ghBlobBase, prFilesUrl, localNote = null, prefix = "") {
+  const anchor = `c-${prefix}${tier}-${idx}`;
+  const fileLabel = c.line ? `${c.path}:${c.line}` : `${c.path || "(no file)"}`;
   const fileLink = ghBlobBase
     ? `<a href="${ghBlobBase}/${c.path}#L${c.line}" class="file-link" target="_blank" rel="noopener">${escapeHtml(fileLabel)}</a>`
     : `<code class="file-link">${escapeHtml(fileLabel)}</code>`;
@@ -722,16 +882,24 @@ function renderCard(c, idx, tier, ghBlobBase, prFilesUrl) {
   const lensTag = c.lens
     ? `<span class="lens lens-${escapeHtml(c.lens)}">${escapeHtml(c.lens)}</span>`
     : "";
+  const localBadge = localNote
+    ? `<span class="local-badge" title="Not in the draft">local only · ${renderInlineMd(localNote)}</span>`
+    : "";
+  const evidence = c.evidence
+    ? `<details class="evidence"><summary>Evidence (local only)</summary><div>${renderInlineMd(c.evidence)}</div></details>`
+    : "";
   return `
-    <article class="card card-${tier}" id="${anchor}">
+    <article class="card card-${tier}${localNote ? " card-local" : ""}" id="${anchor}">
       <header class="card-head">
         <span class="tier-pill">${tier}</span>
         ${lensTag}
         <span class="loc">${fileLink}</span>
+        ${localBadge}
         ${prLink}
         <a href="#${anchor}" class="anchor" title="Link to this comment">#</a>
       </header>
       <div class="card-body">${renderInlineMd(c.body)}</div>
+      ${evidence}
     </article>`;
 }
 
@@ -818,32 +986,16 @@ function renderInlineMd(text) {
 }
 
 function renderCapReportHtml(ctx) {
-  if (!anyPositive(ctx.droppedByUrgency) && !anyPositive(ctx.droppedByCap)) {
-    return "";
-  }
+  const lines = capReportLines(ctx);
+  if (lines.length === 0) return "";
   const rows = [
-    `<li>max_comments: ${ctx.maxComments}, included: ${ctx.totalKept}</li>`,
+    `<li>draft: ${ctx.totalKept} of ${ctx.totalFindings} finding(s); max_comments ${ctx.maxComments} (criticals and importants exempt)</li>`,
+    ...lines.map((l) => `<li>${renderInlineMd(l)}</li>`),
   ];
-  for (const tier of TIER_ORDER) {
-    if (ctx.droppedByUrgency[tier]) {
-      rows.push(
-        `<li>dropped ${ctx.droppedByUrgency[tier]} <code>${tier}</code> finding(s) by urgency floor (<code>${escapeHtml(ctx.urgency)}</code>)</li>`
-      );
-    }
-    if (ctx.droppedByCap[tier]) {
-      rows.push(
-        `<li>dropped ${ctx.droppedByCap[tier]} <code>${tier}</code> finding(s) by per-tier cap (${ctx.perTierCaps[tier]})</li>`
-      );
-    }
-  }
   return `<footer class="cap-report"><h3>Cap report</h3><ul>${rows.join("")}</ul></footer>`;
 }
 
 // ---------- helpers ----------
-
-function anyPositive(obj) {
-  return Object.values(obj).some((n) => n > 0);
-}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -1085,6 +1237,15 @@ const CSS = `
   .card-body code { background: var(--panel-2); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; }
   .card-body strong { color: var(--text); font-weight: 600; }
   .card-body em { color: var(--text); font-style: italic; }
+  .draft-blocked { margin: 20px 0 0; padding: 12px 16px; background: var(--critical-bg); border-left: 3px solid var(--critical); border-radius: 4px; font-size: 13px; line-height: 1.6; }
+  .draft-blocked ul { margin: 6px 0; padding-left: 20px; }
+  .draft-count { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .card-local { opacity: 0.62; }
+  .card-local:hover { opacity: 1; }
+  .local-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--text); background: var(--panel-2); }
+  .evidence { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .evidence summary { cursor: pointer; }
+  .evidence div { margin-top: 6px; padding-left: 12px; border-left: 2px solid var(--border); line-height: 1.6; }
   .cap-report { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; line-height: 1.7; }
   .cap-report h3 { font-size: 12px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
   .cap-report ul { padding-left: 20px; margin: 0; }

@@ -9,7 +9,8 @@ export const meta = {
 }
 
 // args (built by the host command before launch):
-//   runDir, outDir, repoDir|null, diffPath, briefPath, priorReviewPath|null
+//   runDir, outDir, repoDir|null, diffPath, briefPath, prBodyPath,
+//   priorReviewPath|null, reviewGuidePath|null
 //   prNumber, prTitle, repo, prUrl, headSha
 //   urgency ('hotfix'|'fast'|'standard'), maxComments, lenses[], focus|null
 // args can arrive as a JSON-encoded string when launched by name — normalize.
@@ -48,7 +49,10 @@ const FINDINGS_SCHEMA = {
           line: { type: 'integer', description: 'true source-file line in the checked-out repo, NOT the diff running-count' },
           side: { type: 'string', enum: ['RIGHT', 'LEFT'] },
           tier: { type: 'string', enum: ['critical', 'important', 'recommended', 'nit'] },
-          body: { type: 'string' },
+          body: { type: 'string', description: 'author-facing text only: the issue and the fix. No process notes.' },
+          evidence: { type: 'string', description: 'local only, never posted: files read, searches run, what established the claim' },
+          confidence: { type: 'number', minimum: 0, maximum: 1, description: 'how sure you are the claim is true of the code' },
+          pre_existing: { type: 'boolean', description: 'true if the defect exists on the base branch and this PR did not introduce or worsen it' },
           anchorable: { type: 'boolean' },
         },
       },
@@ -89,21 +93,34 @@ const priorNote = a.priorReviewPath
   ? `**The PR's existing review conversation is primary input, not background.** ${a.priorReviewPath} holds this PR's review threads, author replies, and submitted reviews, with authors, timestamps, and each thread's resolved/outdated state. Read it before you enumerate anything. Do not raise a point an existing thread already made, and do not contradict a factual correction the author already supplied there. If a finding you want to keep overlaps a thread, name the thread and state what it left unanswered.`
   : `No prior review conversation was fetched for this PR, so thread overlap is *unknown* rather than absent — do not assert that a point is being raised for the first time.`
 
+// What the PR says it is for. Scope and intent claims are judged against this,
+// not against the reviewer's guess from the diff.
+const intentNote = `The PR's stated intent — description, linked issues, any ticket key — is at ${a.prBodyPath}. Read it before the diff. It can be empty ("no description"); do not invent intent it doesn't state.`
+
+// Repo-level review rules (severity definitions, skip rules, required checks).
+// They refine the doctrine below for this repo; they never lower the evidence bar.
+const guideNote = a.reviewGuidePath
+  ? `This repo has review guidance at ${a.reviewGuidePath}. Apply it: its severity definitions, skip rules and required checks override the generic rubric below for this repo. It does not relax the evidence rules.`
+  : ''
+
+// Where a finding's text goes. Anything the author should not see lives in
+// \`evidence\`, which the renderer shows locally and never posts.
+const authorFacingNote = `Write \`body\` for the PR author: the issue and the fix, nothing else. Put how you established it (files read, searches run, sibling files compared) in \`evidence\`. Never put process narration ("independent inspection agrees", "correction vs. the first draft", "not re-litigating X") in \`body\`. Never quote a secret, token or credential value in either field; describe where it is instead.`
+
 function reviewerPrompt(lens) {
   return `You are the **${lens}** reviewer for PR #${a.prNumber}: ${a.prTitle}.
 Read the full PR diff at ${a.diffPath}. Read the brief at ${a.briefPath}.
+${intentNote}
+${guideNote}
 ${repoNote}
 ${priorNote}
 
 Enumerate findings for the **${lens}** dimension only (${LENS_SCOPE[lens]}). Do not produce findings outside your lens — those belong to peers.
 ${lens === 'observability' ? OBSERVABILITY_DOCTRINE : ''}
 
-**Urgency: ${a.urgency}.** This caps what you produce:
-  - hotfix — merging ASAP. Only emit \`critical\` findings: things that ship a CVE-class bug, break the PR's documented happy path, or cause silent data loss. Do not produce important/recommended/nit. A hotfix review with zero findings is a valid output.
-  - fast — emit \`critical\` and \`important\` only. Skip recommended and nit. Do enough surrounding-code research to confirm importants, but don't chase polish.
-  - standard — emit all four tiers. Use surrounding code freely.
+Emit findings at every tier regardless of urgency. Urgency (${a.urgency}) only decides which tiers the posted draft carries; that cut is applied later, deterministically, and the local report shows everything. Be high-recall: report what you find, including findings you are unsure of, with an honest \`confidence\`. Downstream passes dedupe, verify and right-size — filtering here only hides findings from them.
 
-Within the tiers you're allowed to emit, be high-recall — list anything worth flagging. The critic will dedupe and right-size.
+If a defect you find exists on the base branch and this PR neither introduced nor worsened it, still report it, with \`pre_existing: true\`. It is kept out of the draft and the verdict.
 
 **Tier rubric — apply strictly.** Reviewers tend to inflate; the protected-tier rule is a floor on signal, not an escalator.
   - critical: ships a CVE-class security bug, breaks the PR's own documented happy path, or causes silent data loss/corruption. Would block merge in any reasonable team. If in doubt, it's not critical.
@@ -126,6 +143,9 @@ For each finding:
   - tier: your initial read; the critic may recategorize (most often downgrade)
   - body: one to three sentences. Quote the offending code or describe the missed case.
   - anchorable: true if you have a real file:line from the diff; false for meta/structural comments with no specific anchor.
+  - evidence, confidence, pre_existing: as described above.
+
+${authorFacingNote}
 
 Return your findings via the structured-output tool. Do not write any files.`
 }
@@ -204,7 +224,8 @@ const criticPrompt = `You are the review-flow critic for PR #${a.prNumber}. Oper
 
 Inputs:
 - Brief: ${a.briefPath}
-- Full PR diff: ${a.diffPath}
+- Stated intent (PR description, linked issues): ${a.prBodyPath}
+${a.reviewGuidePath ? `- Repo review guidance (severity definitions and skip rules override the generic rubric): ${a.reviewGuidePath}\n` : ''}- Full PR diff: ${a.diffPath}
 ${a.repoDir ? `- Checked-out head ref for verification: ${a.repoDir}` : '- No checkout available; verify against the diff only.'}
 ${a.priorReviewPath ? `- Prior review conversation (existing threads with resolved state + timestamps, author replies, submitted reviews): ${a.priorReviewPath}` : '- No prior review conversation was fetched; treat thread overlap as unknown, not absent.'}
 - Raw reviewer findings (JSON, each tagged with its \`lens\`):
@@ -220,7 +241,7 @@ Do the Mode B work: dedupe near-duplicates (keep the strongest framing; prefer t
 
 Do NOT apply urgency floors or numeric caps — those are deterministic policy applied later by the renderer. Keep everything that survives right-sizing.
 
-Write the full validated set as JSON to ${a.outDir}/comments.json — that file is your deliverable, read by the renderer. Shape: \`{ urgency, posture, posture_rationale, cluster, inline: [{path, line, side, tier, lens, body}] }\` (set urgency to "${a.urgency}"). Then return a summary via the structured-output tool: { posture, posture_rationale, cluster, counts: {critical, important, recommended, nit}, wroteCommentsJson: true }.`
+Write the full validated set as JSON to ${a.outDir}/comments.json — that file is your deliverable, read by the renderer. Shape: \`{ urgency, posture, posture_rationale, cluster, inline: [{id, path, line, side, tier, lens, body, evidence, confidence, pre_existing}], general: [{id, path?, line?, tier, lens, body, evidence, confidence, pre_existing}] }\` (set urgency to "${a.urgency}"). Give every finding a stable \`id\` ("f1", "f2", … in the order you write them). Findings a reviewer marked \`anchorable: false\`, or whose line is not in the diff but which are still real, go in \`general\` — do not force them onto a line and do not drop them. \`pre_existing\` findings are kept but never support the posture. ${authorFacingNote.replace('Write \`body\` for the PR author', 'Keep \`body\` for the PR author')} When you merge duplicates or change a tier, say so in \`evidence\`. Then return a summary via the structured-output tool: { posture, posture_rationale, cluster, counts: {critical, important, recommended, nit}, wroteCommentsJson: true }.`
 
 const summary = await agent(criticPrompt, {
   label: `critic:pr-${a.prNumber}`,
@@ -264,7 +285,7 @@ const verifierPrompt = `You are the **adversarial verifier** for PR #${a.prNumbe
 
 Your job is to **refute that set** — not to re-review the PR, and not to add findings. Adopt the stance of the PR author who is irritated by a wrong comment and is hunting for the one-line rebuttal that kills it. Anything that survives you should be something you tried and failed to break.
 
-Inputs: ${a.outDir}/comments.json (the finalized set), the brief at ${a.briefPath}, the diff at ${a.diffPath}${a.repoDir ? `, and the checked-out head ref at ${a.repoDir}` : ' (no checkout available — verify against the diff alone)'}.${a.priorReviewPath ? ` Prior review conversation: ${a.priorReviewPath}.` : ''}
+Inputs: ${a.outDir}/comments.json (the finalized set), the brief at ${a.briefPath}, the stated intent at ${a.prBodyPath}, the diff at ${a.diffPath}${a.repoDir ? `, and the checked-out head ref at ${a.repoDir}` : ' (no checkout available — verify against the diff alone)'}.${a.priorReviewPath ? ` Prior review conversation: ${a.priorReviewPath}.` : ''}
 
 **Hunt these three named failure classes first.** Each has already shipped a wrong finding; generic double-checking does not catch them.
 
@@ -283,7 +304,7 @@ Judge each finding on its own evidence, and each leg of a compound finding separ
 Then produce the corrected artifact. **Regenerate every derived field from the surviving set; never hand-patch it.** Posture, \`posture_rationale\`, the cluster/through-line, and the per-tier counts are all *computed* from the findings. If you strike or re-tier anything, a posture sentence or through-line that still asserts a withdrawn claim — or a count that no longer matches — is a defect in its own right, and re-editing it in place is how those go stale.
 
 1. Preserve the critic's set for audit: \`cp ${a.outDir}/comments.json ${a.outDir}/comments.pre-verify.json\`
-2. Write the corrected set to ${a.outDir}/comments.json, same shape: \`{ urgency, posture, posture_rationale, cluster, inline: [{path, line, side, tier, lens, body}] }\`, with urgency set to "${a.urgency}". Re-derive posture, rationale, cluster and counts from what survived — do not copy them forward from the critic.
+2. Write the corrected set to ${a.outDir}/comments.json, same shape as the critic's: \`{ urgency, posture, posture_rationale, cluster, inline: [...], general: [...] }\`, with urgency set to "${a.urgency}". Keep each surviving finding's \`id\`. Record what you did to a finding (strengthened from the installed source, down-tiered because the consequence is unobserved) in its \`evidence\`, never in \`body\`. Re-derive posture, rationale, cluster and counts from what survived — \`pre_existing\` findings never support the posture — do not copy them forward from the critic.
 3. Return via the structured-output tool: { posture, posture_rationale, cluster, counts: {critical, important, recommended, nit}, struck, downTiered, strengthened, rewroteCommentsJson: true }.
 ${hotfix ? '\n**Urgency is hotfix** — only criticals are in play. Be fast, but go deep on those: a false critical is the single most expensive finding this flow can ship.' : ''}`
 
@@ -326,4 +347,7 @@ return {
   cluster: finalSummary ? finalSummary.cluster : null,
   counts: (finalSummary && finalSummary.counts) || { critical: 0, important: 0, recommended: 0, nit: 0 },
   lensesRun: lensResults.map((l) => l.lens),
+  // Unfiltered reviewer output, for the host to persist to out/findings/ —
+  // the only record of what the critic and verifier removed.
+  rawFindings: lensResults,
 }

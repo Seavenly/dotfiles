@@ -14,17 +14,17 @@ feature_flow:
                               # (the --gated two-launch split)
 
 review_flow:
-  urgency: standard           # hotfix | fast | standard
-                              #   hotfix   — merging ASAP; report criticals only
-                              #              (CVE-class break / severe security). Skip
-                              #              important/recommended/nit entirely.
-                              #              Reviewers do shallow research; critic
-                              #              defaults posture to merge_ready_with_followups
-                              #              unless a real critical exists.
-                              #   fast     — needs review within ~1-2 hours; report
-                              #              criticals + importants. Skip recommended/nit.
-                              #   standard — normal review cycle (~1 day); all four tiers.
-  max_comments: 20            # global cap; criticals/important always included
+  urgency: standard           # hotfix | fast | standard — decides what the
+                              # DRAFT carries; reviewers always produce every
+                              # tier and the local review.md shows everything.
+                              #   hotfix   — draft: criticals only; skips
+                              #              orientation/diagrams; critic posture
+                              #              is binary (do_not_merge or
+                              #              merge_ready_with_followups).
+                              #   fast     — draft: criticals + importants.
+                              #   standard — draft: all four tiers (caps apply).
+  max_comments: 20            # draft budget across inline + general;
+                              # criticals/importants exempt (always posted)
   per_tier_caps:              # optional fine-grained override
     critical: null            # null = never cap criticals
     important: null           # null = never cap important

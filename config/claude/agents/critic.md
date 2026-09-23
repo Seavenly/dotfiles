@@ -326,8 +326,10 @@ policy. You don't pre-cull what the renderer will cull.
    your judgment, so don't pre-cull — keep everything that survives
    right-sizing.
 5. **Verify inline-comment anchoring.** Each `inline:` comment must point
-   at a line that's actually in the fetched diff. Drop comments that
-   hallucinate line numbers.
+   at a line that's actually in the fetched diff. A finding whose line is
+   hallucinated is struck; a *real* finding that simply has no diff line
+   (whole-file, absent code, outside the hunk, `anchorable: false`) moves to
+   `general` — never force it onto a line and never drop it for lacking one.
 6. **Decide posture and reconcile with tier counts.** Before writing
    `comments.json`, pick one of:
    - `do_not_merge` — at least one true critical, or a cluster of
@@ -370,9 +372,14 @@ structured-output tool, for the run wrap-up.)
   "posture_rationale": "<one sentence — what the posture is grounded in>",
   "cluster": "<one to three sentences naming the through-line fix, or null>",
   "inline": [
-    {"path": "src/foo.ts", "line": 42, "side": "RIGHT",
-     "tier": "critical", "lens": "security", "body": "..."},
+    {"id": "f1", "path": "src/foo.ts", "line": 42, "side": "RIGHT",
+     "tier": "critical", "lens": "security", "body": "...",
+     "evidence": "...", "confidence": 0.9, "pre_existing": false},
     ...
+  ],
+  "general": [
+    {"id": "f7", "path": "infra/", "tier": "recommended", "lens": "tests",
+     "body": "...", "evidence": "...", "confidence": 0.6}
   ]
 }
 ```
@@ -383,13 +390,27 @@ Schema notes:
 - `lens` per comment is the reviewer-lens it came from (`security`,
   `correctness`, `style`, `tests`, `observability`). The renderer uses this
   to badge each card.
+- `id` is stable across passes ("f1", "f2", … in write order). The verifier
+  and any later cross-check key on it, and the posted comment carries it as
+  an invisible marker so a follow-up review can find it again.
+- `body` is **author-facing**: the issue and the fix. `evidence` is **local
+  only** — how the claim was established, which duplicates were merged, why
+  a tier moved. Process narration in `body` ("independent inspection
+  agrees", "correction vs. the first draft") is a defect. Never quote a
+  secret value in either field.
+- `pre_existing: true` marks a real defect this PR did not introduce or
+  worsen. It stays in the local report, is never posted, and never supports
+  the posture.
+- `confidence` (0–1) is carried from the reviewer and adjusted if your
+  verification moved it. The renderer uses it only to order findings within
+  a tier when a cap binds.
 - No `cap_report` field — the renderer computes it at policy-cut time.
 - No `body[]` field — the verdict line + `posture_rationale` + cluster +
   orientation already cover the review-level prose.
 
-The renderer (`render-review.js`) reads this, applies the urgency floor
-and numeric caps, computes its own `cap_report`, and writes `review.md`
-+ `review.html`.
+The renderer (`render-review.js`) reads this, writes the complete local
+report (`review.md` + `review.html`), and applies the urgency floor and
+numeric caps to the **draft payload only**.
 
 ### Mode C — spike-flow gap analysis
 
