@@ -33,9 +33,15 @@ run; in the abstract you see:
   reading what the lead chose to write down.
 - (For review-flow) Project conventions: `CLAUDE.md`, `CONTRIBUTING.md`,
   style guides if present.
+- (For review-flow) The PR's **prior review conversation** — existing threads
+  with their resolved/outdated state, author replies, and submitted reviews —
+  when your spawn prompt names the file. This is **not** a team transcript and
+  **not** the narrative context this section tells you to resist: it is part of
+  the artifact under review, and the author's replies in it are evidence. Read
+  it.
 
 That's the complete input set. If you find yourself wanting more
-narrative context, resist it.
+narrative context about *how the team got here*, resist it.
 
 ## Per-flow mode
 
@@ -227,24 +233,80 @@ policy. You don't pre-cull what the renderer will cull.
      claim?" An input shape, a default value, or a call a few lines away
      often implies the opposite of what the finding asserts. If the artifact
      contradicts the finding, strike it.
-   - **Capability-absence claims** — "there is no API / no way / no flag to
-     do X." This is the single most fragile category against a fixed
-     knowledge cutoff: platforms add surface continuously, so an absence you
-     "know" from training may be false today. Treat every absence claim as a
-     hypothesis to verify, never a premise — confirm it against a primary
-     source (provider docs / CLI / SDK) or strike it.
+   - **Absence claims — require the search that establishes them.** This
+     covers "there is no API / no way / no flag to do X", the single most
+     fragile category against a fixed knowledge cutoff (platforms add surface
+     continuously, so an absence you "know" from training may be false today).
+     It equally covers in-repo absence: "nothing records which call failed",
+     "no marker distinguishes these two cases", "every sibling file has a test
+     except this one". Absence is the most expensive thing to assert and the
+     cheapest thing to disprove. Treat every absence claim as a hypothesis, and
+     let one survive only if its body **names the search that established it**
+     — the pattern grepped, the directory enumerated, the config read — or
+     it is downgraded to a question. The standard blind spot is machinery that
+     is present but *not in the source being read*: framework
+     auto-instrumentation, middleware, decorators, base classes, code
+     generation, and platform defaults all supply behavior that no line of the
+     diff mentions. Rule those out before you accept that nothing handles it.
    - **Mechanism / failure-mode claims** — "this fails at deploy/runtime
      because <named resource/API/library> behaves like M." Do not accept the
-     asserted mechanism from background knowledge; it is checkable in seconds
-     against a primary source (the CLI/SDK/provider source). An uncited
-     mechanism claim cannot survive above `recommended` — either cite the
-     primary source or down-tier it.
+     asserted mechanism from background knowledge; it is checkable against a
+     primary source (the CLI/SDK/provider source). An uncited mechanism claim
+     cannot survive above `recommended` — either cite the primary source or
+     down-tier it. **For a third-party library, the primary source is the
+     resolved dependency on disk** — the installed package source, the vendor
+     directory, the lockfile-pinned copy in the checkout — not its published
+     documentation and not the version range in the manifest. Frameworks
+     routinely vendor their own copy of a dependency, alias imports to it, or
+     patch it, so a manifest bump can be completely inert and documented
+     behavior can be wrong for the code that actually runs. Read the installed
+     source and cite the file you read. Expect this to *strengthen* findings as
+     often as it strikes them.
    - **Compound claims — rate each leg on its own evidence.** When a finding
      has multiple parts, verifying one leg (true) must **not** raise your
      confidence in a different, unverified leg, and must never justify
      removing a hedge on the unverified part. Confirm each leg independently
      or keep the hedge.
-3. **Right-size tier — downgrade as readily as you upgrade.** Reviewers
+   - **Unobserved consequences.** A finding whose mechanism is real but whose
+     user-visible effect would require a render, a specific device, a live
+     dependency, or an actual request — none of which happened. Do **not**
+     strike these merely for being unverified; the mechanism may be sound.
+     Reframe them as a question with the settling test named, and tier them
+     *below* findings verified end to end. An unverified consequence shipped at
+     the same tier as a verified defect invites a one-line dismissal that
+     discredits its neighbours — the cheap rebuttal lands on the whole
+     review, not just that comment.
+3. **Reconcile against the prior review conversation — every overlap gets an
+   explicit disposition.** When your spawn prompt names a prior-review file,
+   the PR already carries threads, author replies, and submitted reviews, and
+   the reviewers who produced these findings saw the diff *in isolation*. Their
+   findings will overlap that conversation, and silence is not a disposition: a
+   review that re-litigates settled ground loses standing on its genuinely new
+   findings, which is a far larger cost than the duplicate comment itself. For
+   each overlapping finding, pick one:
+   - **Duplicate — drop it.** An existing thread already makes the point.
+     Adding a second voice to an open thread is noise, not reinforcement.
+   - **Already settled — leave it alone.** The thread reached a resolution
+     and nothing in this diff reopens it. This includes a point the author
+     factually rebutted: if the rebuttal is correct, the finding is **struck**,
+     not re-raised.
+   - **Re-raise with new evidence.** Legitimate only when you can name the
+     prior thread *and* the specific point its closure did not address. State
+     both in the finding body so the re-raise reads as deliberate.
+
+   Two checks before you decide:
+   - **Chronology.** A reply that appears to answer an objection may *predate*
+     it. Compare timestamps before treating a rebuttal as responsive — that
+     is what distinguishes "answered, and I disagree" (leave it) from "never
+     answered" (re-raising is fair). A thread being marked resolved is not
+     evidence the objection was answered.
+   - **Authority vs. policy.** A closure of the form "the owner approved this"
+     settles *who consented*; it does not settle whether the practice matches
+     documented convention. Conflating the two produces either needless
+     capitulation or a re-raise that reads as overriding a human decision. Name
+     which of the two you are contesting — and contest the policy question
+     only, never the authority one.
+4. **Right-size tier — downgrade as readily as you upgrade.** Reviewers
    were instructed to be high-recall. Apply the rubric the reviewers
    were given:
    - **critical** = CVE-class bug, breaks the PR's documented happy path,
@@ -263,10 +325,10 @@ policy. You don't pre-cull what the renderer will cull.
    The renderer will apply the urgency floor and numeric caps on top of
    your judgment, so don't pre-cull — keep everything that survives
    right-sizing.
-4. **Verify inline-comment anchoring.** Each `inline:` comment must point
+5. **Verify inline-comment anchoring.** Each `inline:` comment must point
    at a line that's actually in the fetched diff. Drop comments that
    hallucinate line numbers.
-5. **Decide posture and reconcile with tier counts.** Before writing
+6. **Decide posture and reconcile with tier counts.** Before writing
    `comments.json`, pick one of:
    - `do_not_merge` — at least one true critical, or a cluster of
      importants the team should not ship.
@@ -279,7 +341,15 @@ policy. You don't pre-cull what the renderer will cull.
    picked. If `do_not_merge` is backed by one critical, you've
    over-classified. If `merge_ready_with_followups` is backed by 8
    criticals, you've under-classified. Iterate until they agree.
-6. **Surface the cluster, if there is one.** When multiple criticals or
+
+   **Posture, `posture_rationale`, the cluster and the tier counts are
+   *derived* from the surviving finding set — always recompute them from it,
+   never patch them in place.** If you strike or re-tier anything (including
+   late, after a first pass), regenerate all four in the same pass. A rationale
+   that still asserts a withdrawn claim, or a count that no longer matches the
+   list, is a defect in its own right and the most common way a corrected
+   review ships stale text.
+7. **Surface the cluster, if there is one.** When multiple criticals or
    importants share a single root cause and one design change resolves
    them, name the cluster. Example: "Five of the criticals collapse to
    one fix: ground the OAuth flow in JWKS-verified id tokens +

@@ -12,6 +12,59 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-09-11 - review run (sanitized)
+
+High-signal run: the review was posted, the author contested six of ten
+findings, and enough of that pushback was correct to be diagnostic. One
+finding was publicly retracted; four others had a refutable leg. Nearly all of
+it collapses into two failure classes already present in this ledger, now
+sharpened, plus one genuine orchestration gap (reviewers never saw the PR's
+existing review conversation).
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Mechanism claimed from docs/memory rather than the installed dependency | AVOID | workflows/review-flow-run.js (reviewer prompt) + agents/critic.md | applied - **sharpens** the 2026-07-17 primary-source rule: for a third-party library the primary source is the **resolved dependency on disk**, not published docs and not the manifest version range (frameworks vendor/alias/patch their own copy, so a bump can be inert) |
+| Unqualified claims of absence | AVOID | workflows/review-flow-run.js (reviewer prompt) + agents/critic.md | applied · **corroborates 2026-07-17 capability-absence and 2026-06-08 false-positive pass** - broadened from platform-capability absence to in-repo absence, and now requires the finding to *name the search that established it* or downgrade to a question; framework auto-instrumentation, middleware, decorators, base classes, codegen and platform defaults named as the standard blind spot |
+| Reviewing a change in isolation when a review conversation already exists | AVOID | commands/review-flow.md + workflows/review-flow-run.js + agents/critic.md | applied - orchestration fixed first per the retro's own guidance: the command now fetches prior threads (resolved state + timestamps + author replies + submitted reviews), passes `priorReviewPath`, and both reviewers and critic receive it; "not fetched" is explicitly *unknown* overlap, never a clean slate |
+| Consequence asserted without the runtime or visual verification it needs | AVOID | workflows/review-flow-run.js (reviewer prompt) + agents/critic.md | applied - a real mechanism whose user-visible effect was never observed (no render, no device, no live request) is reframed as a question with the settling test named and tiered below fully-verified defects, rather than struck or shipped at equal tier |
+| Hand-patching derived summary text after the finding set changes | AVOID | commands/review-flow.md + agents/critic.md | applied, **retargeted** from the workflow script - posture, rationale, cluster/through-line and counts are derived, so corrections go through the finding-set file and a re-render; the rendered artifacts are never edited in place |
+| Adversarial verification phase seeded with a *named* failure mode | ADD | workflows/review-flow-run.js + AGENT-TEAMS.md | applied - new third phase: one independent agent re-attacks the finalized set, seeded with the three named failure classes above plus a concrete retracted example, assigns keep/strengthen/down-tier/strike, then regenerates all derived fields. Fail-soft (the critic's set is already on disk and still renders) and preserved for audit |
+| Explicit disposition vocabulary for reconciling against prior threads | ADD | agents/critic.md | applied - new Mode B step: every overlap gets drop-as-duplicate, leave-as-settled, or re-raise while naming the prior thread and the point its closure left unanswered; silence is not a disposition |
+| Check reply chronology before treating a rebuttal as responsive | ADD | agents/critic.md | applied as part of the prior-conversation cluster - timestamp order separates "answered, and I disagree" from "never answered"; resolved state is not evidence the objection was answered |
+| Separate the authority question from the policy question | ADD | agents/critic.md | applied as part of the prior-conversation cluster - "the owner approved this" settles who consented, not whether the practice matches documented convention; contest the policy question only |
+| Pre-publication artifacts are cheap to rebuild; published ones are append-only | STRESS | commands/review-flow.md | applied · **corroborates the 2026-06-08 draft-hygiene append-not-repost rule** - front-load doubt before the publish step, since a posted wrong comment can only be corrected by appending a retraction |
+| Tier discipline under a filter | STRESS | agents/critic.md | **skipped - observed but not applied.** The retro itself flagged it low-confidence and asked for recurrence across runs with different consumers; the ledger shows no prior occurrence, and the evidence (a consumer dropping whole lower tiers) is as easily read as a preference for a tight review as systematic mis-tiering. Watching |
+
+Notes:
+- **No conflicts and no reverts.** The new standalone verification phase does
+  *not* reverse the 2026-07-17 decision to put an adversarial pass inside the
+  critic - that instruction is retained. It is corroboration-by-insufficiency:
+  the in-critic pass ran and still left a refutable leg in four of ten
+  findings, so a second *independent* pass was added alongside it rather than
+  in place of it. Worth tracking whether the redundancy earns its cost.
+- The "named failure mode" detail is the load-bearing part of that phase, not
+  the extra agent. The retro is explicit that generic "double-check your work"
+  instructions did not produce these catches; a phase seeded with a concrete
+  prior failure did.
+- Cross-PR case for each applied item: vendored/aliased/patched dependencies
+  are common in any framework-based repo; absence claims and
+  auto-instrumentation blind spots are generic LLM-reviewer failures already
+  twice-recorded here; almost every non-trivial PR carries prior review
+  conversation; unobserved visual/runtime consequences arise wherever review is
+  static; and derived-text drift follows mechanically from any late change to a
+  finding set.
+- The derived-text item was retargeted away from the workflow script the retro
+  guessed. The renderer already computes those fields deterministically - the
+  failure was a human-side correction path editing rendered output, so the rule
+  belongs with the conversation that owns rendering, and with the agents that
+  author the finding set.
+- Deliberately **not** encoded: "author pushback implies the finding was
+  wrong." The retro flags a counter-signal - one dismissal was confidently
+  wrong, and another was right about the broad claim while a narrowed version
+  survived. The verifier is instructed to treat pushback as evidence worth
+  checking, and explicitly told not to concede a finding merely because it is
+  contestable.
+
 ## 2026-07-24 - feature run (sanitized)
 
 The dominant signal was duplicated execution plus critic-driven architectural

@@ -10,7 +10,7 @@ a team of Claude Code subagents, orchestrated by **dynamic workflows** and
 run **entirely on the local machine** (no sandbox). Three flows:
 
 - `/feature-flow` — implement a feature: plan → per-slice test-or-verify loop → critic outer pass → PR-ready branch on a worktree.
-- `/review-flow` — review an open PR: parallel reviewers across lenses (security, correctness, style, tests, observability) → critic dedupes/right-sizes/anchors → rendered review.md/.html + optional pending draft on GitHub.
+- `/review-flow` — review an open PR: parallel reviewers across lenses (security, correctness, style, tests, observability) → critic dedupes/right-sizes/anchors → independent adversarial verify pass → rendered review.md/.html + optional pending draft on GitHub.
 - `/spike-flow` — investigate a question: researcher(s) → critic gap-analysis → optional in-repo prototype → spike report.
 
 Each flow is **two layers**: a thin interactive *command* (the front half)
@@ -186,8 +186,10 @@ State (host-local, not version-controlled):
 **End-to-end discipline:** the final test-mode slice drives the feature through the real wiring. For all-verify work, the final verification command or artifact evidence must cover the assembled path and blast radius.
 
 ### review-flow
-**Command:** validate PR (`gh`) → clone head ref + fetch diff into the run dir → brief → launch → on return, write `comments.json`, run `render-review.js`, optionally POST a pending draft.
-**Workflow (`review-flow-run.js`):** one reviewer per lens in `parallel(...)`, with orientation + diagrammer fired alongside but **un-barriered** (the critic starts as soon as the lens findings are in — it never waits on the diagrammer's possible multi-minute mermaid-cli bootstrap; side results are collected before the return). Both side agents are skipped on `--urgency hotfix`. Then critic Mode B (dedupe, spot-verify against the code and **strike** wrong findings, right-size tiers, verify anchoring, decide posture, name the cluster). Reviewers **return structured findings**; the critic **writes its own `comments.json`** (its deliverable, like plan.md/report.md) and returns a summary; the conversation just renders.
+**Command:** validate PR (`gh`) → clone head ref + fetch diff **and the PR's prior review conversation** (threads with resolved state + timestamps, author replies, submitted reviews) into the run dir → brief → launch → on return, run `render-review.js`, optionally POST a pending draft.
+**Workflow (`review-flow-run.js`):** one reviewer per lens in `parallel(...)`, with orientation + diagrammer fired alongside but **un-barriered** (the critic starts as soon as the lens findings are in — it never waits on the diagrammer's possible multi-minute mermaid-cli bootstrap; side results are collected before the return). Both side agents are skipped on `--urgency hotfix`. Then critic Mode B (dedupe, spot-verify against the code and **strike** wrong findings, right-size tiers, verify anchoring, decide posture, name the cluster). Then a third **Verify** phase: one independent adversarial agent re-attacks the finalized set, seeded with *named* failure classes to hunt (mechanism asserted from docs rather than the resolved dependency on disk; absence claimed without stating the search; consequences never actually observed). Generic "double-check" instructions do not catch these — the critic's own spot-verify pass demonstrably leaves them standing. It strikes/down-tiers/strengthens, then **regenerates** posture, rationale, cluster and counts from the surviving set. It is fail-soft: if it dies, the critic's set is already on disk and still renders.
+
+Reviewers **return structured findings**; the critic **writes its own `comments.json`** (its deliverable, like plan.md/report.md) and returns a summary; the verifier rewrites that file in place, preserving the critic's original as `comments.pre-verify.json`; the conversation just renders.
 **Policy is deterministic:** `render-review.js` applies the urgency floor (hotfix=criticals only, fast=+important, standard=all) and numeric per-tier caps, and emits review.md, review.html (blob-deep-linked), and draft-review.json. **No tests, no execution** — review is static. **Never auto-submit** — drafts stay PENDING.
 
 ### spike-flow

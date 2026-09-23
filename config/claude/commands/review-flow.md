@@ -1,9 +1,9 @@
 ---
-description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → rendered review.md/.html, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --max-comments N, --prepare-draft, --lenses security,correctness,style,tests,observability.
+description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → rendered review.md/.html, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --max-comments N, --prepare-draft, --lenses security,correctness,style,tests,observability.
 ---
 
 You run a review-flow: gather the PR locally, launch the `review-flow`
-dynamic workflow to do the parallel reviewer→critic pass, then render and
+dynamic workflow to do the parallel reviewer→critic→verify pass, then render and
 (optionally) post the result. The autonomous fan-out lives in the
 workflow; you handle the `gh`/`git`/render bookends and anything that
 needs to talk to the user.
@@ -57,8 +57,26 @@ mkdir -p "$repo_dir" && ( cd "$repo_dir" \
 live_head=$(gh pr view <pr> --repo <repo> --json headRefOid -q .headRefOid)
 ( cd "$repo_dir" && git fetch origin "$live_head" 2>/dev/null && git checkout -q "$live_head" \
   && gh pr diff <pr> --repo <repo> > "$out_dir/pr.diff" ) 2>/dev/null || true
+# Prior review conversation — threads with resolved/outdated state, author
+# replies, and submitted reviews. Timestamps are load-bearing: they are what
+# distinguish "answered, and I disagree" from "never answered".
+gh api graphql -f query='
+query($owner:String!,$repo:String!,$num:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$num){
+      reviewThreads(first:100){ nodes{ isResolved isOutdated path line
+        comments(first:50){ nodes{ author{login} createdAt body } } } }
+      comments(first:100){ nodes{ author{login} createdAt body } }
+      reviews(first:50){ nodes{ author{login} submittedAt state body } }
+    }
+  }
+}' -F owner=<owner> -F repo=<name> -F num=<pr> \
+  --jq '.data.repository.pullRequest' > "$out_dir/prior-review.json" \
+  2>"$out_dir/prior-review-error.log" || echo "prior-review fetch failed"
 ```
 Use `live_head` for `head_sha` in the brief — not the possibly-stale Step 2 value. If the clone failed, set `repoDir` to null in the launch args.
+
+**The prior review conversation is primary input, not background.** A PR often already carries threads where the author settled a topic or factually rebutted a claim. Reviewers handed only the diff will re-raise those, and a review that re-litigates settled ground loses standing on its valid findings. Pass `priorReviewPath` whenever the fetch produced real content. Set it to **null** if the fetch failed *or* the PR genuinely has no prior conversation (all three node lists empty) — the reviewers are told to treat "not fetched" as *unknown* overlap rather than *no* overlap, so never let a failed fetch read as a clean slate.
 
 Write `<run_dir>/brief.md` (always quote `pr_title`; PR titles contain YAML specials):
 ```markdown
@@ -98,6 +116,7 @@ Run the saved workflow by name, passing args as structured JSON:
 > { "runDir": "<run_dir>", "outDir": "<out_dir>",
 >   "repoDir": "<repo_dir or null>", "diffPath": "<out_dir>/pr.diff",
 >   "briefPath": "<run_dir>/brief.md",
+>   "priorReviewPath": "<out_dir>/prior-review.json or null",
 >   "prNumber": <num>, "prTitle": "<title>", "repo": "<owner/name>",
 >   "prUrl": "<url>", "headSha": "<live_head>",
 >   "urgency": "<urgency>", "maxComments": <n>,
@@ -111,7 +130,9 @@ input.
 
 ## Step 5 — Persist + render (after the workflow returns)
 
-The workflow returns `{ commentsPath, wroteCommentsJson, orientationMd, diagramsStatus, counts, postCritic, cluster, lensesRun }`.
+The workflow returns `{ commentsPath, wroteCommentsJson, orientationMd, diagramsStatus, counts, postCritic, postVerify, verify, cluster, lensesRun }`.
+
+`postVerify` and `verify: { struck, downTiered, strengthened }` come from the adversarial **Verify** phase, which rewrites `comments.json` from the set that survived it and leaves the critic's original at `$out_dir/comments.pre-verify.json`. `verify: null` means the verifier died and the critic's unverified set stands — say so in the wrap-up rather than presenting it as verified. `counts` and `cluster` always reflect the last pass that owned the finding set.
 
 The critic wrote `comments.json` itself (its deliverable), so you don't reconstruct it.
 1. Sanity-check: confirm `$out_dir/comments.json` exists and is valid JSON (`wroteCommentsJson` should be true). If missing/invalid, surface it — the critic likely died; re-run or fall back to raw findings.
@@ -121,8 +142,11 @@ The critic wrote `comments.json` itself (its deliverable), so you don't reconstr
    node ~/.claude/scripts/render-review.js "$run_dir"
    ```
    **Fail-soft:** if the script errors, log stderr to `$out_dir/render-error.log` and write a minimal fallback `review.md` from `comments.json` (verdict line + bulleted lists per tier). Don't abort.
+4. **Post-render corrections go through `comments.json`, never the rendered files.** If the finding set changes after rendering — a follow-up question, a user challenge, an author rebuttal that lands — edit `comments.json` and re-run the renderer. `review.md`, `review.html`, the verdict line, the through-line/cluster block and the cap report are all *derived*. Hand-patching them is how a review ends up asserting a retracted claim next to a stale count, and it takes several passes to chase every copy down. Re-derive posture, `posture_rationale` and cluster from the surviving set in the same edit: a correction that drops a finding but keeps the old through-line is not a correction.
 
 ## Step 6 — Optional pending draft
+
+**Everything up to this point is cheap to rebuild; everything after it costs credibility.** Re-running the workflow, re-rendering, striking a finding and recomputing the verdict are all free while the artifact is unpublished. Once a draft is visible to the author, a wrong comment can only be corrected by *appending* a retraction — you cannot quietly re-render it away, and a single retracted finding discounts its neighbours. Front-load the doubt: if you are not confident in the set, render it and show the user first, and post only on their go-ahead.
 
 If `prepare_draft` is true, the renderer already wrote `$out_dir/draft-review.json` with the post-cap comment set:
 1. **Validate every inline comment's anchor against the diff hunks before POST** — GitHub 422s the *entire* review if one comment can't anchor. Keep the anchorable ones; fold the rest into the review **body** as plain `file:line — note`. Surface the folded count.
@@ -135,7 +159,8 @@ If `prepare_draft` is true, the renderer already wrote `$out_dir/draft-review.js
 ```
 ✓ review-flow complete
   PR:        #<num> — <title>
-  verdict:   <postCritic>  ·  urgency: <urgency>
+  verdict:   <postVerify — or postCritic if the verifier died>  ·  urgency: <urgency>
+  verify:    struck <n>, down-tiered <n>, strengthened <n>   (or "⚠ verifier failed — critic's set unverified")
   markdown:  <run_dir>/out/review.md
   html:      file://<run_dir>/out/review.html
   draft:     <url | "not prepared">
