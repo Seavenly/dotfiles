@@ -24,6 +24,16 @@
 // Per-finding fields: id, path, line, side, tier, lens, body (author-facing),
 // evidence (local only — never posted), confidence (0-1, optional),
 // pre_existing (bool, optional), draft (false = hold out of the draft).
+//
+// Set-level fields written after the Claude passes (all optional):
+//   decisions[]     — judgment calls for the human; local only, never posted
+//   cross_check     — Codex cross-check status and counts
+//   contested[]     — {finding, rebuttal, evidence, resolution}: findings Codex
+//                     disputed. resolution "restore" puts the finding back in
+//                     the running; "strike" keeps it out; null keeps it out AND,
+//                     for a critical/important, blocks the draft until decided
+//   codex_raised[]  — findings only Codex raised; local only until the human
+//                     moves one into inline/general
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -102,9 +112,16 @@ function main() {
   // General (non-anchorable) findings obey the same policy and share the same
   // budget, but never become inline code comments — they render into a body
   // section and the posted review body.
+  // Contested findings the human restored rejoin the set; the rest stay out.
+  const contested = comments.contested || [];
+  const restored = contested.filter((x) => x.resolution === "restore").map((x) => x.finding);
+  const unresolvedSevere = contested.filter(
+    (x) => !x.resolution && ["critical", "important"].includes(x.finding.tier)
+  );
+
   const policy = applyPolicy(
-    comments.inline || [],
-    comments.general || [],
+    [...(comments.inline || []), ...restored.filter((f) => f.kind !== "general")],
+    [...(comments.general || []), ...restored.filter((f) => f.kind === "general")],
     urgency,
     perTierCaps,
     maxComments
@@ -137,17 +154,38 @@ function main() {
     totalKept: policy.totalKept,
     maxComments,
     perTierCaps,
+    decisions: comments.decisions || [],
+    crossCheck: comments.cross_check || null,
+    contested,
+    codexRaised: comments.codex_raised || [],
     draftBlocked: null,
   };
+  // The verdict was set by the Claude passes. If the cross-check moved a
+  // critical/important, say so rather than presenting a stale verdict as final.
+  const cc = ctx.crossCheck;
+  ctx.postureCaveat =
+    cc && cc.status === "applied" && cc.posture_affected
+      ? `posture set before the Codex cross-check, which changed or contested ${cc.severe_changes} critical/important finding(s); re-derive it if you accept those changes`
+      : null;
 
   // Publication gate. Anything that fails here means NO draft payload exists —
   // the local report still renders so the problem can be fixed at the source
   // (comments.json) and re-rendered.
   const draft = renderDraft(ctx);
   const secretHits = scanForSecrets(draft);
-  if (secretHits.length > 0) {
+  if (unresolvedSevere.length > 0) {
+    ctx.draftBlocked = {
+      reason: `${unresolvedSevere.length} contested critical/important finding(s) need your call`,
+      fix: "Decide each one: set its `contested[].resolution` to `restore` or `strike` in comments.json, then re-render.",
+      hits: unresolvedSevere.map((x) => ({
+        where: `${x.finding.id} (${x.finding.path || "general"}${x.finding.line ? `:${x.finding.line}` : ""})`,
+        pattern: `set contested[].resolution to "restore" or "strike" in comments.json`,
+      })),
+    };
+  } else if (secretHits.length > 0) {
     ctx.draftBlocked = {
       reason: "possible secret in author-facing text",
+      fix: "Edit the finding in comments.json to describe where the secret is, never quote it, then re-render.",
       hits: secretHits,
     };
   }
@@ -270,6 +308,19 @@ function excludedNote(ctx, c) {
   return c.excluded ? EXCLUDE_LABEL[c.excluded](ctx, c.tier) : null;
 }
 
+function crossCheckLine(cc) {
+  if (!cc) return null;
+  if (cc.status !== "applied") return `⚠ Codex cross-check ${cc.status}: ${cc.reason}`;
+  return `Codex cross-check (${cc.model}, ${cc.effort}, ${cc.duration_s}s): kept ${cc.kept}, strengthened ${cc.strengthened}, down-tiered ${cc.down_tiered}, contested ${cc.struck}, raised ${cc.raised}${cc.unreviewed ? `, ${cc.unreviewed} not reviewed` : ""}.`;
+}
+
+function crossCheckNote(c) {
+  const x = c.cross_check;
+  if (!x || x.disposition === "keep") return null;
+  const moved = x.from_tier ? ` (${x.from_tier} → ${c.tier})` : "";
+  return `Codex ${x.disposition.replace("_", "-")}${moved}: ${x.rationale}`;
+}
+
 // ---------- publication gate ----------
 
 // Deterministic, conservative patterns for credentials that must never reach
@@ -356,16 +407,20 @@ function renderMarkdown(ctx) {
     `**Verdict: ${ctx.postureLabel}**  ·  *urgency: ${ctx.urgency}*`
   );
   if (ctx.postureRationale) out.push(ctx.postureRationale);
+  if (ctx.postureCaveat) out.push(`_⚠ ${ctx.postureCaveat}._`);
   out.push("");
 
   if (ctx.draftBlocked) {
     out.push(`> **⚠ Draft blocked: ${ctx.draftBlocked.reason}.** No \`draft-review.json\` was written.`);
     for (const h of ctx.draftBlocked.hits) {
-      out.push(`> - ${h.pattern} in ${h.where}`);
+      out.push(`> - ${h.where}: ${h.pattern}`);
     }
-    out.push("> Edit the finding in `comments.json` (describe where the secret is, never quote it) and re-render.");
+    out.push(`> ${ctx.draftBlocked.fix}`);
     out.push("");
   }
+
+  const ccLine = crossCheckLine(ctx.crossCheck);
+  if (ccLine) out.push(`_${ccLine}_`);
 
   out.push(
     `_Local report: all ${ctx.totalFindings} finding(s); ${ctx.totalKept} go in the draft. Findings marked **local only** are not posted._`
@@ -381,6 +436,13 @@ function renderMarkdown(ctx) {
 
   if (ctx.orientation) {
     out.push(ctx.orientation);
+    out.push("");
+  }
+
+  if (ctx.decisions.length > 0) {
+    out.push(`## Decisions for you (${ctx.decisions.length})\n`);
+    out.push("_Judgment calls, not defects. Local only; never posted._\n");
+    for (const d of ctx.decisions) out.push(`- ${d}`);
     out.push("");
   }
 
@@ -444,6 +506,11 @@ function renderMarkdown(ctx) {
       out.push(`> _Evidence (local only):_ ${c.evidence.replace(/\n/g, "\n> ")}`);
       out.push("");
     }
+    const cx = crossCheckNote(c);
+    if (cx) {
+      out.push(`> _${cx}_`);
+      out.push("");
+    }
     out.push("---");
     out.push("");
   };
@@ -477,6 +544,33 @@ function renderMarkdown(ctx) {
     for (const c of ctx.preExisting) {
       const loc = mdLoc(c);
       mdFinding({ ...c, excluded: null }, `**[${c.tier}]**${lensTag(c)}${loc ? ` ${loc}` : ""}`);
+    }
+  }
+
+  if (ctx.contested.length > 0) {
+    out.push(`## Contested by Codex (${ctx.contested.length}, not in draft unless restored)\n`);
+    out.push("_The Claude passes kept these; Codex says the premise is false. Set `resolution` to `restore` or `strike` in comments.json and re-render._\n");
+    for (const x of ctx.contested) {
+      const c = x.finding;
+      const loc = mdLoc(c);
+      out.push(`**[${c.tier}] ${c.id}**${lensTag(c)}${loc ? ` ${loc}` : ""}  ·  _resolution: ${x.resolution || "undecided"}_`);
+      out.push("");
+      out.push(`**Claim:** ${c.body}`);
+      out.push("");
+      out.push(`**Codex:** ${x.rebuttal}`);
+      if (x.evidence) out.push(`\n> _Codex evidence:_ ${x.evidence}`);
+      out.push("");
+      out.push("---");
+      out.push("");
+    }
+  }
+
+  if (ctx.codexRaised.length > 0) {
+    out.push(`## Raised by Codex (${ctx.codexRaised.length}, unverified, local only)\n`);
+    out.push("_Only Codex found these and nothing has checked them. To post one, verify it and move it into `inline` or `general` in comments.json._\n");
+    for (const c of ctx.codexRaised) {
+      const loc = mdLoc(c);
+      mdFinding({ ...c, excluded: null }, `**[${c.tier}] ${c.id}**${loc ? ` ${loc}` : ""}`);
     }
   }
 
@@ -526,7 +620,8 @@ function renderDraft(ctx) {
     );
   }
 
-  if (ctx.orientation) bodyParts.push(ctx.orientation);
+  // Orientation, decisions, contested and Codex-raised findings are for the
+  // human reviewer; none of them go to the author.
   if (ctx.cluster) {
     bodyParts.push(`## The through-line\n${ctx.cluster}`);
   }
@@ -598,7 +693,7 @@ function renderHtml(ctx) {
     .join("");
 
   const draftBlockedCallout = ctx.draftBlocked
-    ? `<div class="draft-blocked"><strong>⚠ Draft blocked: ${escapeHtml(ctx.draftBlocked.reason)}.</strong> No <code>draft-review.json</code> was written.<ul>${ctx.draftBlocked.hits.map((h) => `<li>${escapeHtml(h.pattern)} in ${escapeHtml(h.where)}</li>`).join("")}</ul>Edit the finding in <code>comments.json</code> (describe where the secret is, never quote it) and re-render.</div>`
+    ? `<div class="draft-blocked"><strong>⚠ Draft blocked: ${escapeHtml(ctx.draftBlocked.reason)}.</strong> No <code>draft-review.json</code> was written.<ul>${ctx.draftBlocked.hits.map((h) => `<li>${escapeHtml(h.where)}: ${renderInlineMd(h.pattern)}</li>`).join("")}</ul>${renderInlineMd(ctx.draftBlocked.fix)}</div>`
     : "";
 
   const urgencyCallout = `<div class="urgency-callout">Local report: all ${ctx.totalFindings} finding(s); <strong>${ctx.totalKept}</strong> go in the draft. Cards marked <em>local only</em> are not posted.${
@@ -631,6 +726,36 @@ function renderHtml(ctx) {
     </section>`
     : "";
 
+  const ccLine = crossCheckLine(ctx.crossCheck);
+  const crossCheckCallout = ccLine ? `<div class="urgency-callout">${renderInlineMd(ccLine)}</div>` : "";
+
+  const decisionsBlock = ctx.decisions.length
+    ? `<section class="decisions"><h2>Decisions for you <span class="count">${ctx.decisions.length}</span></h2><p class="general-note">Judgment calls, not defects. Local only; never posted.</p><ul>${ctx.decisions.map((d) => `<li>${renderInlineMd(d)}</li>`).join("")}</ul></section>`
+    : "";
+
+  const contestedBlock = ctx.contested.length
+    ? `<section class="tier-section general-section" id="contested">
+      <h2 class="tier-title"><span class="tier-title-bar"></span>Contested by Codex <span class="count">${ctx.contested.length}</span> <span class="draft-count">not in draft unless restored</span></h2>
+      <p class="general-note">The Claude passes kept these; Codex says the premise is false. Set <code>resolution</code> to <code>restore</code> or <code>strike</code> in comments.json and re-render.</p>
+      ${ctx.contested.map((x, i) => {
+        const c = x.finding;
+        return `<article class="card card-${c.tier} card-contested" id="c-x${i}">
+        <header class="card-head"><span class="tier-pill">${c.tier}</span>${c.lens ? `<span class="lens">${escapeHtml(c.lens)}</span>` : ""}<span class="loc"><code class="file-link">${escapeHtml(c.path ? `${c.path}${c.line ? `:${c.line}` : ""}` : "general")}</code></span><span class="local-badge">resolution: ${escapeHtml(x.resolution || "undecided")}</span></header>
+        <div class="card-body"><p><strong>Claim:</strong> ${renderInlineMd(c.body)}</p><p><strong>Codex:</strong> ${renderInlineMd(x.rebuttal || "")}</p></div>
+        ${x.evidence ? `<details class="evidence"><summary>Codex evidence</summary><div>${renderInlineMd(x.evidence)}</div></details>` : ""}
+      </article>`;
+      }).join("\n")}
+    </section>`
+    : "";
+
+  const codexRaisedBlock = ctx.codexRaised.length
+    ? `<section class="tier-section general-section" id="codex-raised">
+      <h2 class="tier-title"><span class="tier-title-bar"></span>Raised by Codex <span class="count">${ctx.codexRaised.length}</span> <span class="draft-count">unverified, local only</span></h2>
+      <p class="general-note">Only Codex found these and nothing has checked them. To post one, verify it and move it into <code>inline</code> or <code>general</code> in comments.json.</p>
+      ${ctx.codexRaised.map((c, i) => card({ ...c, excluded: null }, i, c.tier, "cx")).join("\n")}
+    </section>`
+    : "";
+
   const preExistingBlock = ctx.preExisting.length
     ? `<section class="tier-section general-section" id="pre-existing">
       <h2 class="tier-title"><span class="tier-title-bar"></span>Pre-existing <span class="count">${ctx.preExisting.length}</span> <span class="draft-count">local only</span></h2>
@@ -658,13 +783,14 @@ function renderHtml(ctx) {
 
   const tierNav = renderTierNav(ctx);
 
-  const hasPreamble = Boolean(orientationBlock || diagramsBlock);
+  const hasPreamble = Boolean(orientationBlock || diagramsBlock || decisionsBlock);
 
   const bodyContent = hasPreamble
     ? `
   <div class="layout-grid">
     <aside class="preamble-col">
       ${orientationBlock}
+      ${decisionsBlock}
       ${diagramsBlock}
     </aside>
     <div class="comments-col">
@@ -672,14 +798,19 @@ function renderHtml(ctx) {
       ${tierSections}
       ${generalBlock}
       ${preExistingBlock}
+      ${contestedBlock}
+      ${codexRaisedBlock}
       ${capReportBlock}
     </div>
   </div>`
     : `
+  ${decisionsBlock}
   ${clusterBlock}
   ${tierSections}
   ${generalBlock}
   ${preExistingBlock}
+  ${contestedBlock}
+  ${codexRaisedBlock}
   ${capReportBlock}`;
 
   return `<!doctype html>
@@ -700,8 +831,10 @@ function renderHtml(ctx) {
       <span class="urgency-pill">urgency: ${escapeHtml(ctx.urgency)}</span>
     </div>
     ${ctx.postureRationale ? `<p class="rationale">${renderInlineMd(ctx.postureRationale)}</p>` : ""}
+    ${ctx.postureCaveat ? `<p class="posture-caveat">⚠ ${renderInlineMd(ctx.postureCaveat)}</p>` : ""}
     ${draftBlockedCallout}
     ${urgencyCallout}
+    ${crossCheckCallout}
     ${tierNav}
   </header>${bodyContent}
 </main>
@@ -763,6 +896,13 @@ function renderTierNav(ctx) {
     (t) =>
       `<a href="#tier-${t}" class="tier-nav-item tier-nav-${t}"><span class="tier-nav-count">${ctx.all[t].length}</span> ${TIER_TITLES[t].toLowerCase()}</a>`
   );
+  const generalCount = TIER_ORDER.reduce((n, t) => n + ctx.generalAll[t].length, 0);
+  if (generalCount) {
+    items.push(`<a href="#general" class="tier-nav-item"><span class="tier-nav-count">${generalCount}</span> general</a>`);
+  }
+  if (ctx.contested.length) {
+    items.push(`<a href="#contested" class="tier-nav-item"><span class="tier-nav-count">${ctx.contested.length}</span> contested</a>`);
+  }
   if (items.length === 0) return "";
   return `<nav class="tier-nav" aria-label="Jump to tier">${items.join("")}</nav>`;
 }
@@ -900,6 +1040,7 @@ function renderCard(c, idx, tier, ghBlobBase, prFilesUrl, localNote = null, pref
       </header>
       <div class="card-body">${renderInlineMd(c.body)}</div>
       ${evidence}
+      ${crossCheckNote(c) ? `<p class="cx-note">${renderInlineMd(crossCheckNote(c))}</p>` : ""}
     </article>`;
 }
 
@@ -1246,6 +1387,11 @@ const CSS = `
   .evidence { margin-top: 12px; font-size: 13px; color: var(--muted); }
   .evidence summary { cursor: pointer; }
   .evidence div { margin-top: 6px; padding-left: 12px; border-left: 2px solid var(--border); line-height: 1.6; }
+  .decisions { margin: 0 0 32px; padding: 16px 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .decisions h2 { font-size: 16px; margin: 0 0 6px; }
+  .decisions ul { margin: 8px 0 0; padding-left: 20px; line-height: 1.6; }
+  .posture-caveat { color: var(--important); font-size: 13px; margin: 8px 0 0; }
+  .cx-note { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
   .cap-report { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; line-height: 1.7; }
   .cap-report h3 { font-size: 12px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
   .cap-report ul { padding-left: 20px; margin: 0; }

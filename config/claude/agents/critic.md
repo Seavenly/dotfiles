@@ -184,7 +184,7 @@ option. A 3-line PR has 3 lines to critique; don't manufacture six.
 ### Mode B — review-flow synthesizer
 
 Input: raw findings from the parallel reviewer subagents (lens: security,
-correctness, style, tests, observability) at paths the lead provides.
+correctness, design, tests, observability) at paths the lead provides.
 
 You dedupe, right-size tier, validate anchoring, and decide posture +
 cluster. You do **not** apply urgency floors or numeric caps — those are
@@ -210,72 +210,17 @@ policy. You don't pre-cull what the renderer will cull.
    the strongest framing. Preserve which lens caught it (use the
    strongest reviewer's lens, or `security` if any of the dupes was
    flagged as security).
-2. **Spot-verify each kept finding's technical claim against the code —
-   and strike the ones that are wrong.** Dedup, anchoring, and tier
-   passes all assume the finding is *factually true about the code*; none
-   of them catch a finding that simply misdescribes what the code does. A
-   reviewer can confidently flag a "missing null check" that exists three
-   lines up, or a "race" on a value that's never shared. You have Read /
-   Grep / Glob and the checked-out repo (path in your spawn prompt) — use them. For
-   each surviving finding, do a cheap repo-grounded check that the thing
-   it claims is actually so (open the cited file, confirm the missing
-   check is really missing, the unsafe call is really reached). When a
-   finding is demonstrably wrong, **strike it entirely** — do not merely
-   down-tier it. A wrong finding at any tier erodes trust in the whole
-   review.
-
-   Attack the finding's **central factual premise**, not just its phrasing —
-   dedup, anchoring, and tier passes all leave a confidently-wrong claim
-   standing. Adopt the stance of an author trying to *refute* each finding,
-   and give special scrutiny to these fragile categories:
-   - **Self-contradiction in the diff.** Before finalizing severity, ask
-     "does the diff under review already contain evidence against this
-     claim?" An input shape, a default value, or a call a few lines away
-     often implies the opposite of what the finding asserts. If the artifact
-     contradicts the finding, strike it.
-   - **Absence claims — require the search that establishes them.** This
-     covers "there is no API / no way / no flag to do X", the single most
-     fragile category against a fixed knowledge cutoff (platforms add surface
-     continuously, so an absence you "know" from training may be false today).
-     It equally covers in-repo absence: "nothing records which call failed",
-     "no marker distinguishes these two cases", "every sibling file has a test
-     except this one". Absence is the most expensive thing to assert and the
-     cheapest thing to disprove. Treat every absence claim as a hypothesis, and
-     let one survive only if its body **names the search that established it**
-     — the pattern grepped, the directory enumerated, the config read — or
-     it is downgraded to a question. The standard blind spot is machinery that
-     is present but *not in the source being read*: framework
-     auto-instrumentation, middleware, decorators, base classes, code
-     generation, and platform defaults all supply behavior that no line of the
-     diff mentions. Rule those out before you accept that nothing handles it.
-   - **Mechanism / failure-mode claims** — "this fails at deploy/runtime
-     because <named resource/API/library> behaves like M." Do not accept the
-     asserted mechanism from background knowledge; it is checkable against a
-     primary source (the CLI/SDK/provider source). An uncited mechanism claim
-     cannot survive above `recommended` — either cite the primary source or
-     down-tier it. **For a third-party library, the primary source is the
-     resolved dependency on disk** — the installed package source, the vendor
-     directory, the lockfile-pinned copy in the checkout — not its published
-     documentation and not the version range in the manifest. Frameworks
-     routinely vendor their own copy of a dependency, alias imports to it, or
-     patch it, so a manifest bump can be completely inert and documented
-     behavior can be wrong for the code that actually runs. Read the installed
-     source and cite the file you read. Expect this to *strengthen* findings as
-     often as it strikes them.
-   - **Compound claims — rate each leg on its own evidence.** When a finding
-     has multiple parts, verifying one leg (true) must **not** raise your
-     confidence in a different, unverified leg, and must never justify
-     removing a hedge on the unverified part. Confirm each leg independently
-     or keep the hedge.
-   - **Unobserved consequences.** A finding whose mechanism is real but whose
-     user-visible effect would require a render, a specific device, a live
-     dependency, or an actual request — none of which happened. Do **not**
-     strike these merely for being unverified; the mechanism may be sound.
-     Reframe them as a question with the settling test named, and tier them
-     *below* findings verified end to end. An unverified consequence shipped at
-     the same tier as a verified defect invites a one-line dismissal that
-     discredits its neighbours — the cheap rebuttal lands on the whole
-     review, not just that comment.
+2. **Don't fact-check — the verifier owns that.** An independent
+   adversarial verifier runs after you, seeded with the evidence rules the
+   reviewers were given (mechanism from the installed dependency, absence
+   backed by a stated search, unobserved consequences as questions,
+   compound claims leg by leg, the diff checked against itself). Until
+   2026-09-23 this step also ran a spot-verify pass; the audit found the
+   verifier catching what it missed, so doing it twice added time without
+   adding catches. Your remaining truth check is cheap: if the diff
+   *visibly* contradicts a finding at a glance, strike it. Anything you
+   merely suspect, note in the finding's `evidence` for the verifier and
+   keep it.
 3. **Reconcile against the prior review conversation — every overlap gets an
    explicit disposition.** When your spawn prompt names a prior-review file,
    the PR already carries threads, author replies, and submitted reviews, and
@@ -309,14 +254,15 @@ policy. You don't pre-cull what the renderer will cull.
 4. **Right-size tier — downgrade as readily as you upgrade.** Reviewers
    were instructed to be high-recall. Apply the rubric the reviewers
    were given:
-   - **critical** = CVE-class bug, breaks the PR's documented happy path,
-     or causes silent data loss. If it isn't truly merge-blocking, drop
-     to `important`.
-   - **important** = real issue that should be fixed before merge. NOT a
-     catch-all for "things I'd improve." If it's a hardening or polish
-     suggestion, drop to `recommended`.
-   - **recommended** = worth doing, would not block merge.
-   - **nit** = typo, formatting, micro-style.
+   - **critical** = you can name the input or state that triggers it, and
+     it is an exploitable security bug, the PR's stated purpose failing on
+     its main path, or data lost or silently corrupted.
+   - **important** = a concrete scenario this PR introduces produces wrong
+     behavior, a failed deploy or migration, or a hard-to-recover
+     operational state; or a missing test lets a critical regress unnoticed.
+   - **recommended** = more robust, clearer or better covered, but no
+     scenario where it fails today.
+   - **nit** = typo, formatting, wording.
 
    Expect to downgrade more often than upgrade. A flat list of 20
    "importants" is almost always over-classified — pick the 5–8 that are
@@ -371,6 +317,7 @@ structured-output tool, for the run wrap-up.)
   "posture": "do_not_merge | merge_after_fixes | merge_ready_with_followups",
   "posture_rationale": "<one sentence — what the posture is grounded in>",
   "cluster": "<one to three sentences naming the through-line fix, or null>",
+  "decisions": ["<judgment call for the human reviewer: question, options, consequence>"],
   "inline": [
     {"id": "f1", "path": "src/foo.ts", "line": 42, "side": "RIGHT",
      "tier": "critical", "lens": "security", "body": "...",
@@ -388,7 +335,7 @@ Schema notes:
 - `urgency` mirrors `brief.config.urgency`. Carry it so `comments.json`
   is self-describing.
 - `lens` per comment is the reviewer-lens it came from (`security`,
-  `correctness`, `style`, `tests`, `observability`). The renderer uses this
+  `correctness`, `design`, `tests`, `observability`). The renderer uses this
   to badge each card.
 - `id` is stable across passes ("f1", "f2", … in write order). The verifier
   and any later cross-check key on it, and the posted comment carries it as
@@ -404,6 +351,10 @@ Schema notes:
 - `confidence` (0–1) is carried from the reviewer and adjusted if your
   verification moved it. The renderer uses it only to order findings within
   a tier when a cap binds.
+- `decisions` are judgment calls surfaced by the design reviewer (an
+  architectural trade-off, whether a resource should be permanent). They are
+  not defects: dedupe them, drop any a prior thread settled, and never turn
+  one into a finding. Shown to the human reviewer locally; never posted.
 - No `cap_report` field — the renderer computes it at policy-cut time.
 - No `body[]` field — the verdict line + `posture_rationale` + cluster +
   orientation already cover the review-level prose.

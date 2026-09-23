@@ -33,12 +33,19 @@ review_flow:
   reviewer_lenses:            # one reviewer subagent spawned per lens
     - security
     - correctness
-    - style
+    - design                  # fit and design: scope vs stated intent, sibling
+                              # house patterns, repo rules, rollout order; also
+                              # surfaces "decisions" for the human. Replaced
+                              # `style` (2 critical/important of 81, 2026-09).
     - tests
     - observability           # span/log practices; wide root span, debugging
                               # dimensions on the root span (see OBSERVABILITY.md).
                               # Findings are mostly recommended/important, so this
                               # lens contributes in fast/standard, not hotfix.
+  codex_cross_check: true     # cross-model check after the Claude verifier
+                              # (scripts/codex-cross-check.js: gpt-6-sol,
+                              # medium, read-only). --no-codex disables.
+  diagrams: false             # call-chain diagrams are opt-in (--diagrams)
 
 spike_flow:
   depth: deep                 # quick | deep

@@ -1,10 +1,10 @@
 ---
-description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → rendered review.md/.html, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --max-comments N, --prepare-draft, --lenses security,correctness,style,tests,observability.
+description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → Codex cross-model check → rendered review.md/.html, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --max-comments N, --prepare-draft, --lenses security,correctness,design,tests,observability, --no-codex, --diagrams.
 ---
 
 You run a review-flow: gather the PR locally, launch the `review-flow`
-dynamic workflow to do the parallel reviewer→critic→verify pass, then render and
-(optionally) post the result. The autonomous fan-out lives in the
+dynamic workflow to do the parallel reviewer→critic→verify pass, run the
+Codex cross-model check, then render and (optionally) post the result. The autonomous fan-out lives in the
 workflow; you handle the `gh`/`git`/render bookends and anything that
 needs to talk to the user.
 
@@ -24,7 +24,9 @@ User's invocation: `/review-flow $ARGUMENTS`
   - `standard` — the draft carries all four tiers (subject to caps).
 - **`--max-comments N`** — overrides `max_comments` (the draft budget; criticals and importants are exempt).
 - **`--prepare-draft`** → `prepare_draft: true` (post a PENDING review at the end). Usually unnecessary: the user normally decides after reading the render.
-- **`--lenses a,b,c`** → override `reviewer_lenses` (default from defaults.yaml).
+- **`--lenses a,b,c`** → override `reviewer_lenses` (default from defaults.yaml: security, correctness, design, tests, observability).
+- **`--no-codex`** → skip the Codex cross-check (Step 5). Default on.
+- **`--diagrams`** → also produce call-chain diagrams (off by default).
 
 If `$ARGUMENTS` is empty or `help`, explain usage (mention the three urgency tiers) and stop.
 
@@ -120,6 +122,8 @@ config:
   per_tier_caps: <from defaults>
   reviewer_lenses: <merged>
   prepare_draft: <merged>
+  codex: <true unless --no-codex>
+  diagrams: <true if --diagrams>
 focus: <optional>
 ---
 
@@ -145,7 +149,8 @@ Run the saved workflow by name, passing args as structured JSON:
 >   "prNumber": <num>, "prTitle": "<title>", "repo": "<owner/name>",
 >   "prUrl": "<url>", "headSha": "<head_sha>",
 >   "urgency": "<urgency>", "maxComments": <n>,
->   "lenses": ["security","correctness","style","tests","observability"], "focus": <focus|null> }
+>   "lenses": ["security","correctness","design","tests","observability"],
+>   "diagrams": <bool>, "focus": <focus|null> }
 > ```
 
 Do **not** regenerate the script ad-hoc — launch the saved
@@ -155,6 +160,8 @@ The run is autonomous — no mid-run input.
 **While it runs, wait.** Tell the user once that it launched and roughly how long it takes (typically 5–15 minutes), then stop until the completion notification. Do not poll or narrate progress, do not start your own parallel review or verification of the PR (a host-side pass racing the workflow has produced a wrong early answer that had to be retracted), and do not probe `comments.json` mid-run. `/workflows` shows live progress if the user wants it.
 
 ## Step 5 — Persist + render (after the workflow returns)
+
+If `codex` is enabled, run the preflight at launch time, not after the workflow: `codex login status` must exit 0. If it doesn't, say `⚠ Codex cross-check will be skipped: <reason>` in the launch message so the user can log in while the workflow runs.
 
 **Return contract.** The workflow returns:
 ```
@@ -167,25 +174,32 @@ The run is autonomous — no mid-run input.
 ```
 `comments.json` shape (the renderer's input; findings live under `inline` and `general`, not `comments`):
 ```
-{ urgency, posture, posture_rationale, cluster,
+{ urgency, posture, posture_rationale, cluster, decisions: [string],
   inline:  [{ id, path, line, side, tier, lens, body, evidence?, confidence?, pre_existing?, draft? }],
   general: [{ id, path?, line?, tier, lens, body, evidence?, confidence?, pre_existing?, draft? }] }
 ```
-`body` is author-facing; `evidence` is local only (how the claim was established — files read, searches run, which pass changed it) and never posted.
+After the cross-check it may also carry `cross_check`, `contested: [{finding, rebuttal, evidence, resolution}]` and `codex_raised: [finding]`. `body` is author-facing; `evidence` is local only (how the claim was established — files read, searches run, which pass changed it) and never posted.
 
 `postVerify` and `verify` come from the adversarial **Verify** phase, which rewrites `comments.json` from the set that survived it and leaves the critic's original at `$out_dir/comments.pre-verify.json`. `verify: null` means the verifier died and the critic's unverified set stands — say so in the wrap-up rather than presenting it as verified. `counts` and `cluster` always reflect the last pass that owned the finding set. Write each `rawFindings` entry to `$out_dir/findings/<lens>.json` before rendering — the workflow runtime can't write files, and without these the critic's and verifier's effect can't be measured.
 
 The critic wrote `comments.json` itself (its deliverable), so you don't reconstruct it.
 1. Sanity-check: confirm `$out_dir/comments.json` exists and is valid JSON. Trust the file over the `wroteCommentsJson` flag (the flag has been mis-parsed while the file was fine). If the file is missing/invalid, surface it — the critic likely died; re-run or fall back to raw findings.
-2. If `orientationMd` is non-null, write it to `$out_dir/orientation.md` (the renderer trims any preamble before `## Orientation`).
-3. Render (deterministic — writes the complete local report and, if the publication gate passes, the draft payload):
+2. If `orientationMd` is non-null, write it to `$out_dir/orientation.md` (the renderer trims any preamble before `## Orientation`). Orientation and `decisions` are for the user; neither is posted.
+3. **Codex cross-check** (unless `--no-codex`). A reviewer from a different model family re-attacks the finished set; a same-family checker tends to accept the same wrong claims the finders made. Run it in the foreground — it's a single call, typically a few minutes:
+   ```bash
+   node ~/.claude/scripts/codex-cross-check.js "$run_dir"
+   ```
+   It pins `gpt-6-sol` at `medium` effort, read-only, against the snapshot checkout, and applies Codex's verdicts deterministically: `keep` / `down_tier` / `strengthen` in place with provenance, `strike` → moved to `contested` (never deleted), plus up to 3 `codex_raised` findings kept local. It is fail-soft: on any failure it records `cross_check.status` and the reason, leaves the set untouched and exits 0. Audit trail: `out/codex/` (prompt, schema, raw verdict, log) and `out/comments.pre-codex.json`. Don't second-guess or re-run it from the host; report what it did.
+4. Render (deterministic — writes the complete local report and, if the publication gate passes, the draft payload):
    ```bash
    node ~/.claude/scripts/render-review.js "$run_dir"
    ```
-   Read its stdout JSON. `draft_blocked` non-null means **no draft exists** — surface each hit (`pattern in where`) and fix it in `comments.json` (describe where the secret is; never quote it), then re-render. `draft_total: 0` means there is nothing to post at this urgency; say so rather than offering an empty draft.
+   Read its stdout JSON. `draft_blocked` non-null means **no draft exists** — surface each hit and fix it at the source, then re-render:
+   - a possible secret → edit the finding in `comments.json` to describe where it is, never quote it;
+   - a contested critical/important → put Claude's claim and Codex's rebuttal in front of the user and let them decide; record it as `"resolution": "restore"` or `"strike"` on that `contested[]` entry. If the evidence is checkable in a minute (open the cited file), check it and give a recommendation, but the user decides. If a resolution moves a critical/important in or out, re-derive posture, rationale and cluster in the same edit. `draft_total: 0` means there is nothing to post at this urgency; say so rather than offering an empty draft.
    **Fail-soft:** if the script errors, log stderr to `$out_dir/render-error.log` and write a minimal fallback `review.md` from `comments.json` (verdict line + bulleted lists per tier). A failed render means **no draft** — never hand-build `draft-review.json`.
-4. **Post-render corrections go through `comments.json`, never the rendered files.** If the finding set changes after rendering — a follow-up question, a user challenge, an author rebuttal that lands — edit `comments.json` and re-run the renderer. `review.md`, `review.html`, `draft-review.json`, the verdict line, the through-line/cluster block and the cap report are all *derived*. Hand-patching them is how a review ends up asserting a retracted claim next to a stale count, and it takes several passes to chase every copy down. Re-derive posture, `posture_rationale` and cluster from the surviving set in the same edit: a correction that drops a finding but keeps the old through-line is not a correction. Keep correction notes ("changed after X") in `evidence`, never in `body`.
-5. **Filtering what gets posted** ("only criticals and importants", "just that one comment") is a draft-selection change, not a finding change: re-render with the brief's `urgency`/caps adjusted, or set `"draft": false` on findings in `comments.json` (they stay in the local report, marked "held back by the reviewer"). Do not delete findings to shape the draft.
+5. **Post-render corrections go through `comments.json`, never the rendered files.** If the finding set changes after rendering — a follow-up question, a user challenge, an author rebuttal that lands — edit `comments.json` and re-run the renderer. `review.md`, `review.html`, `draft-review.json`, the verdict line, the through-line/cluster block and the cap report are all *derived*. Hand-patching them is how a review ends up asserting a retracted claim next to a stale count, and it takes several passes to chase every copy down. Re-derive posture, `posture_rationale` and cluster from the surviving set in the same edit: a correction that drops a finding but keeps the old through-line is not a correction. Keep correction notes ("changed after X") in `evidence`, never in `body`.
+6. **Filtering what gets posted** ("only criticals and importants", "just that one comment") is a draft-selection change, not a finding change: re-render with the brief's `urgency`/caps adjusted, or set `"draft": false` on findings in `comments.json` (they stay in the local report, marked "held back by the reviewer"). Do not delete findings to shape the draft.
 
 ## Step 6 — Optional pending draft
 
@@ -206,6 +220,7 @@ When posting (because `prepare_draft` is true or the user asked after reading th
   PR:        #<num> — <title>  @ <head_sha:0:10>
   verdict:   <postVerify — or postCritic if the verifier died>  ·  urgency: <urgency>
   verify:    struck <n>, down-tiered <n>, strengthened <n>   (or "⚠ verifier failed — critic's set unverified")
+  codex:     kept <n>, strengthened <n>, down-tiered <n>, contested <n>, raised <n> · <duration>s   (or "⚠ skipped/failed: <reason>" or "off")
   markdown:  <run_dir>/out/review.md
   html:      file://<run_dir>/out/review.html
   draft:     <url | "not posted" | "⚠ blocked: <reason>">
@@ -220,3 +235,4 @@ The `html:` line MUST be a fully-qualified `file://` URL (clickable in modern te
 - `comments.json` missing/invalid (critic died before writing) → surface; re-run or fall back to raw findings in `out/findings/`.
 - `draft_blocked` / render failure → no draft; fix at the source and re-render.
 - Head moved before POST → do not post; offer a fresh run.
+- Codex missing / not logged in / timed out / invalid output → cross-check skipped or failed, Claude set renders as-is, wrap-up says why.

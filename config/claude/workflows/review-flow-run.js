@@ -1,10 +1,10 @@
 export const meta = {
   name: 'review-flow-run',
-  description: 'Execution engine for /review-flow (launched by the command, not run directly): parallel reviewers across lenses → critic dedupes/right-sizes/anchors/decides posture → independent adversarial verify pass. Returns a validated comment set the conversation renders into review.md/.html.',
+  description: 'Execution engine for /review-flow (launched by the command, not run directly): parallel reviewers across lenses → critic dedupes/reconciles/right-sizes/decides posture → independent adversarial verifier owns fact-checking. Returns a validated comment set the conversation cross-checks (Codex) and renders.',
   phases: [
-    { title: 'Review', detail: 'one reviewer per lens (+ orientation, diagrammer) in parallel' },
-    { title: 'Critique', detail: 'critic dedupes, verifies, right-sizes tiers, decides posture' },
-    { title: 'Verify', detail: 'independent adversarial pass over the finalized set, seeded with named failure classes' },
+    { title: 'Review', detail: 'one reviewer per lens (+ orientation, optional diagrammer) in parallel' },
+    { title: 'Critique', detail: 'critic dedupes, reconciles, right-sizes tiers, decides posture (no fact-checking)' },
+    { title: 'Verify', detail: 'independent adversarial pass: the single fact-check owner, seeded with the evidence rules' },
   ],
 }
 
@@ -12,7 +12,8 @@ export const meta = {
 //   runDir, outDir, repoDir|null, diffPath, briefPath, prBodyPath,
 //   priorReviewPath|null, reviewGuidePath|null
 //   prNumber, prTitle, repo, prUrl, headSha
-//   urgency ('hotfix'|'fast'|'standard'), maxComments, lenses[], focus|null
+//   urgency ('hotfix'|'fast'|'standard'), maxComments, lenses[], focus|null,
+//   diagrams (bool, opt-in)
 // args can arrive as a JSON-encoded string when launched by name — normalize.
 const a = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const hotfix = a.urgency === 'hotfix'
@@ -20,7 +21,7 @@ const hotfix = a.urgency === 'hotfix'
 const LENS_SCOPE = {
   security: 'auth, authz, input validation, secrets, injection, crypto, data exposure',
   correctness: 'logic bugs, edge cases, error handling, race conditions',
-  style: 'naming, structure, readability, project conventions',
+  design: 'fit and design: does the change do what its stated intent says, and no more; does it follow the patterns sibling code already uses; repo rules (CLAUDE.md, REVIEW.md); rollout, migration and deploy-order safety',
   tests: 'coverage gaps, weak assertions, missing edge case tests',
   observability: 'tracing/logging quality — wide root span vs micro-span confetti, debugging/filtering dimensions on the root span, signal on tricky-to-debug edge branches, silent catches, log hygiene (no secrets/PII, no unbounded-cardinality tags)',
 }
@@ -35,10 +36,41 @@ const OBSERVABILITY_DOCTRINE = `
   - **Log hygiene:** no secrets/tokens/full-bodies/PII in logs, no unbounded-cardinality values as span attributes, no per-iteration or every-layer log spam. Level should match consequence.
   - **Don't force it.** Trivial getters, mappers, and pass-throughs need nothing. Most findings here are \`recommended\` or \`important\` (e.g. a missing trail on a real error path); observability gaps are almost never \`critical\`. Calibrate to whether on-call could actually debug this in production from telemetry alone — judge against the project's existing instrumentation, and don't demand a telemetry stack a repo doesn't have.`
 
+// Handed only to the design reviewer. Replaces the old style lens, which
+// produced 2 critical/important findings out of 81 across 16 runs, while the
+// questions the human reviewer actually asked (is this in scope? is this
+// resource needed? does it match its siblings? what order does it deploy in?)
+// had no owner.
+const DESIGN_DOCTRINE = `
+**Design and fit — the bar for this lens:**
+  - **Scope against stated intent.** Read the stated intent first. Flag work the intent doesn't call for (unrequested resources, permanent machinery for a one-off job, speculative generality) and intent the diff doesn't deliver. Quote the intent line you are measuring against in \`evidence\`; if there is no description, frame scope concerns as questions.
+  - **House patterns.** Before judging a new file, open two or three siblings that do the same job (same directory, same kind of resource, same kind of migration) and compare: naming, structure, error handling, config shape, test layout. A divergence is a finding only when you can name the sibling it diverges from; list the siblings you read in \`evidence\`.
+  - **Repo rules.** A CLAUDE.md or REVIEW.md rule the diff breaks is a finding; cite the rule. A PR that makes a CLAUDE.md statement untrue is also a finding (the doc needs updating).
+  - **Rollout safety.** Deploy order across services, migration reversibility, backfills, feature-flag defaults: flag anything that breaks if the pieces ship in the wrong order.
+  - **Not your job:** formatting, import order, and naming taste that no repo rule or sibling convention backs. Linters and formatters own those.
+  - **Decisions for the human.** Some things are judgment calls, not defects: an architectural trade-off, whether a resource should outlive this project, which of two reasonable designs to prefer. Do not dress these up as findings. Return each as one line in \`decisions\`: the question, the options, and the consequence of each.`
+
+// Evidence rules. Reviewers are told to meet them up front; the verifier is
+// told to hunt violations of them. One copy, so the two can't drift apart.
+// Each rule exists because a finding that broke it was posted and had to be
+// retracted (see RETRO-LEDGER review entries 2026-06-08, 07-17, 09-11).
+const EVIDENCE_RULES = `
+**Evidence rules.** Each of these has already shipped a wrong finding.
+  1. **Mechanism comes from the installed code, not from memory or documentation.** A claim about how a named API, resource or library behaves (its network path, its failure mode, whether a capability exists at all) is checkable, so it cannot carry \`critical\`/\`important\` on background knowledge. For a third-party library the authority is the resolved dependency on disk in the checkout (installed package source, vendor directory, lockfile-pinned copy), not published docs and not the manifest's version range. Frameworks vendor, alias and patch their own copies, so a manifest bump can be inert and documented behavior can be wrong for the code that runs. Cite the file you read. If you can't reach it, lower the tier and say the mechanism is unverified. This cuts both ways: the installed source sometimes shows a finding is true and stronger than the docs suggest.
+  2. **Absence needs the search that established it.** "Nothing records which call failed", "no marker distinguishes these", "every sibling has a test except this one": absence is the most expensive thing to assert and the cheapest to disprove. State the search you ran (the pattern grepped, the directory enumerated, the config read), or make the finding a question. The usual blind spot is machinery that isn't in the source being read: framework auto-instrumentation, middleware, decorators, base classes, code generation, platform defaults.
+  3. **An unobserved consequence is a question, not a defect.** If the mechanism is visible but its effect needs a render, a device, a live dependency or a real request that never happened, say so, name the test that would settle it, and tier it below findings verified end to end.
+  4. **Rate each leg of a compound claim on its own evidence.** Verifying one part never raises confidence in another, and never justifies dropping a hedge on the unverified part.
+  5. **Check the diff against itself.** An input shape, a default, or a call a few lines away often implies the opposite of what a finding asserts.`
+
 const FINDINGS_SCHEMA = {
   type: 'object',
   required: ['findings'],
   properties: {
+    decisions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'design lens only: judgment calls for the human reviewer (question, options, consequence), not defects',
+    },
     findings: {
       type: 'array',
       items: {
@@ -115,26 +147,21 @@ ${guideNote}
 ${repoNote}
 ${priorNote}
 
-Enumerate findings for the **${lens}** dimension only (${LENS_SCOPE[lens]}). Do not produce findings outside your lens — those belong to peers.
-${lens === 'observability' ? OBSERVABILITY_DOCTRINE : ''}
+Enumerate findings for the **${lens}** dimension only (${LENS_SCOPE[lens] || lens}). Do not produce findings outside your lens — those belong to peers.
+${lens === 'observability' ? OBSERVABILITY_DOCTRINE : ''}${lens === 'design' ? DESIGN_DOCTRINE : ''}
 
 Emit findings at every tier regardless of urgency. Urgency (${a.urgency}) only decides which tiers the posted draft carries; that cut is applied later, deterministically, and the local report shows everything. Be high-recall: report what you find, including findings you are unsure of, with an honest \`confidence\`. Downstream passes dedupe, verify and right-size — filtering here only hides findings from them.
 
 If a defect you find exists on the base branch and this PR neither introduced nor worsened it, still report it, with \`pre_existing: true\`. It is kept out of the draft and the verdict.
 
-**Tier rubric — apply strictly.** Reviewers tend to inflate; the protected-tier rule is a floor on signal, not an escalator.
-  - critical: ships a CVE-class security bug, breaks the PR's own documented happy path, or causes silent data loss/corruption. Would block merge in any reasonable team. If in doubt, it's not critical.
-  - important: a real issue that should be fixed before merge — missing check on changed code, broken edge case the PR introduces, a test gap that lets a critical regress silently. NOT a catch-all for "things I'd improve."
-  - recommended: worth doing — refactor, hardening, naming, additional coverage, defensive polish. Would not block merge. Most "I'd write this differently" findings live here.
-  - nit: typo, formatting, single-word naming, doc-comment wording.
+**Tiers.** Tier by the consequence you can state, not by how strongly you feel about it.
+  - critical: you can name the input or state that makes it happen, and it is one of: an exploitable security bug, the PR's own stated purpose failing on its main path, or data lost or silently corrupted.
+  - important: you can name a concrete scenario this PR introduces that produces wrong behavior, a failed deploy or migration, or an operational state that is hard to recover from; or a missing test that would let a critical regress unnoticed.
+  - recommended: makes the code more robust, clearer or better covered, but you cannot name a scenario where it fails today.
+  - nit: typo, formatting, wording.
 
-**Calibrate to project blast radius.** Use what the repo tells you about what this app does and who its users are (CLAUDE.md, README, routes, data models). The same OAuth gap is "critical" in a payments backend and "recommended" on a marketing waitlist. If you downgrade severity because of context, say so in the finding body.
-
-**Don't assert mechanism from memory — and don't assert it from documentation either.** A claim about *how a named API, resource, or library behaves* — its network path, its failure mode, or whether a capability exists at all — is empirically checkable and must not carry \`critical\`/\`important\` severity on background knowledge alone. For a third-party library, the authority is **the resolved dependency on disk in the checked-out repo** (the installed package source, the vendor directory, the lockfile-pinned copy), not published documentation and not the version range in the manifest. Frameworks routinely vendor their own copy of a dependency, alias imports to it, or patch it — so a manifest bump can be completely inert, and documented behavior can be wrong for the code that actually runs. Read the installed source, cite the file you read, and if you can't reach it, down-tier and say the mechanism is unverified. This cuts both ways: the installed source sometimes shows a finding is true and *stronger* than you'd have stated from the docs.
-
-**Never claim absence without stating the search that established it.** "Nothing records which call failed", "no marker distinguishes these two cases", "every sibling file has a test except this one" — absence is the most expensive thing to assert and the cheapest thing to disprove. Either name the search you actually ran (the pattern you grepped, the directory you enumerated, the config you read) in the finding body, or downgrade the finding to a question. The standard blind spot is machinery that is present but *not in the source you're reading*: framework auto-instrumentation, middleware, decorators, base classes, code generation, and platform defaults all supply behavior that no line of the diff mentions. Rule those out before concluding that nothing handles it.
-
-**A consequence that needs a render, a device, or a live dependency is a question, not a defect.** If a mechanism is visible in the diff but its user-visible effect was never observed — nothing was rendered, no device was exercised, no request was actually issued — say so plainly, name the test that would settle it, and tier it below findings you verified end to end. An unverified consequence posted at the same tier as a verified defect invites a one-line dismissal that discredits its neighbors.
+Calibrate to blast radius, using what the repo says about what the app does and who uses it (CLAUDE.md, README, routes, data models): the same auth gap matters more in a payments backend than on a marketing waitlist. If context lowered a tier, say so in \`evidence\`.
+${EVIDENCE_RULES}
 
 For each finding:
   - path: file path
@@ -150,25 +177,26 @@ ${authorFacingNote}
 Return your findings via the structured-output tool. Do not write any files.`
 }
 
+// Orientation is for the human reviewer, not the PR author, and is never
+// posted. Across 11 sessions the reviewer never referred to the old
+// file-inventory orientation and instead asked for plain-language
+// explanations of unfamiliar code and for the decisions they should make.
 const orientationPrompt = `You are the **orientation researcher** for PR #${a.prNumber}: ${a.prTitle}.
-Brief the human reviewer on what this PR is and what the changed files are for, so they can read the rest of the review with context. Assume the reviewer is hopping in cold.
+Write a briefing for the human reviewer, who may be meeting this code for the first time. They need to understand what the code is for before they can judge the findings.
 
-Read in this order: ${a.briefPath} (focus, urgency); ${a.diffPath} (full diff); ${a.repoDir ? `${a.repoDir}/CLAUDE.md and ${a.repoDir}/README.md (whichever exist); the changed files themselves.` : 'the diff alone (no checkout available).'}
+Read in this order: ${a.prBodyPath} (stated intent); ${a.briefPath} (focus, urgency); ${a.diffPath} (full diff); ${a.repoDir ? `${a.repoDir}/CLAUDE.md and ${a.repoDir}/README.md (whichever exist), then the changed files and whatever they call.` : 'the diff alone (no checkout available).'}
 
-Return EXACTLY this markdown as your final message, and nothing else:
+Return exactly this markdown as your final message:
 
 ## Orientation
 
-**What this PR does.** <1-3 sentences in plain English. If the diff does something beyond the stated goal, say so in one phrase.>
+**What this code is for.** <2-4 sentences in plain language: what part of the system this touches, what it does for users or operators, and where it sits relative to its neighbours. No jargon the diff doesn't force.>
 
-**Files (<N> changed, +<adds>/-<dels>).**
-- \`<path>\` (new | modified | removed) — <one line: role/purpose>
-- ...
-- **Plus <N> support files**: <lockfile/config/generated names>. <one line on what they carry.>
+**What this PR changes.** <2-4 sentences: the change in behaviour, not a file list. If the diff does something beyond the stated intent, say so.>
 
-**Skim before reading.** <the 1-3 load-bearing files for the PR's stated goal>
+**Read these first.** <the 1-3 files that carry the change, one line each on why>
 
-Strict constraints: 300 words MAX. One line per file. Group support files (lockfiles, .gitignore, generated files, formatter configs, trivial bumps) into ONE combined line at the end. Small-PR fast path: if <100 lines across <5 substantive files, drop the Files list and put roles inline in "What this PR does", under 100 words, skip "Skim before reading". Don't restate findings. Don't speculate — say "purpose unclear" if so. No preamble, no closing.`
+Constraints: under 250 words. Don't restate review findings (a separate "decisions" section covers judgment calls). Say "unclear" rather than guess. Start your message with the heading; no preamble.`
 
 const diagrammerPrompt = `You are the diagrammer for PR #${a.prNumber}: ${a.prTitle}. Produce call-chain visualizations following your role definition.
 Your role refers to $BRIEF / $DIFF / $REPO / $OUT — for this run, substitute these absolute paths in every command:
@@ -188,7 +216,7 @@ const reviewerThunks = a.lenses.map((lens) => () =>
     phase: 'Review',
     agentType: 'researcher', // read-only discipline + citation reqs match a reviewer
     schema: FINDINGS_SCHEMA,
-  }).then((r) => ({ lens, findings: (r && r.findings) || [] }))
+  }).then((r) => ({ lens, findings: (r && r.findings) || [], decisions: (r && r.decisions) || [] }))
 )
 
 const sideThunks = []
@@ -199,10 +227,14 @@ if (!hotfix) {
     agent(orientationPrompt, { label: 'orientation', phase: 'Review', agentType: 'researcher', model: 'sonnet' })
       .then((md) => ({ kind: 'orientation', md }))
   )
-  sideThunks.push(() =>
-    agent(diagrammerPrompt, { label: 'diagrammer', phase: 'Review', agentType: 'diagrammer' })
-      .then((status) => ({ kind: 'diagrams', status }))
-  )
+  // Diagrams are opt-in (--diagrams): no reviewer referenced them across the
+  // audited runs.
+  if (a.diagrams) {
+    sideThunks.push(() =>
+      agent(diagrammerPrompt, { label: 'diagrammer', phase: 'Review', agentType: 'diagrammer' })
+        .then((status) => ({ kind: 'diagrams', status }))
+    )
+  }
 }
 
 // Fire the side jobs WITHOUT a barrier — the critic only needs the lens
@@ -215,7 +247,8 @@ const lensResults = lensRaw.filter((r) => r && r.findings)
 
 // Tag each finding with its lens for the critic, then hand the raw set over.
 const rawFindings = lensResults.flatMap((lr) => lr.findings.map((f) => ({ ...f, lens: lr.lens })))
-log(`reviewers returned ${rawFindings.length} raw findings across ${lensResults.length} lenses`)
+const rawDecisions = lensResults.flatMap((lr) => lr.decisions)
+log(`reviewers returned ${rawFindings.length} raw findings and ${rawDecisions.length} decisions across ${lensResults.length} lenses`)
 
 // ── Phase: Critique (single critic, Mode B) ────────────────────────
 phase('Critique')
@@ -235,13 +268,21 @@ ${JSON.stringify(rawFindings)}
 
 Urgency: **${a.urgency}** — apply the Mode B urgency rules from your role definition (in hotfix mode posture is binary: do_not_merge if any true critical exists, else merge_ready_with_followups).
 
-Do the Mode B work: dedupe near-duplicates (keep the strongest framing; prefer the security lens on ties); **spot-verify each kept finding's technical claim against the code and strike the ones that are wrong** (a wrong finding at any tier erodes trust) — attack each finding's central factual premise, and treat capability-absence and "fails-because-mechanism-M" claims as hypotheses: **any finding of the form "this will fail at deploy/runtime because <named resource/API/library> behaves like M" must carry a primary-source citation (CLI/SDK/provider source) to survive above \`recommended\`; strike or down-tier uncited mechanism/absence claims**; right-size tier (downgrade as readily as upgrade); verify each inline comment anchors to a real line in the diff (drop hallucinated line numbers); decide posture and reconcile it with the kept critical/important counts; name the cluster if multiple findings share one root-cause fix, else null.
+Do the Mode B work: dedupe near-duplicates (keep the strongest framing; prefer the security lens on ties); reconcile against prior threads (below); right-size tier (downgrade as readily as upgrade); check each inline comment anchors to a real line in the diff (strike hallucinated lines; move real-but-unanchorable findings to \`general\`); decide posture and reconcile it with the kept critical/important counts; name the cluster if multiple findings share one root-cause fix, else null.
+
+**Do not re-verify technical claims.** An independent verifier runs next and owns fact-checking, seeded with the evidence rules the reviewers were given. A second, weaker fact-check here adds time without adding catches. Your checks are cheap and structural: duplicates, overlap with prior threads, anchors, and tier against the rubric. If a finding is obviously contradicted by the diff at a glance, you may strike it; otherwise leave truth to the verifier and say in \`evidence\` what you suspect.
+
+Reviewer "decisions" (judgment calls for the human, not defects):
+\`\`\`json
+${JSON.stringify(rawDecisions)}
+\`\`\`
+Dedupe them, drop any a prior thread already settled, and write them to comments.json as \`decisions: [string]\`. They are shown to the human reviewer locally and never posted.
 
 **Reconcile against the prior review conversation** per the Mode B reconciliation step in your role definition. The reviewers saw the diff in isolation, so their findings will overlap threads that already exist. Every overlap needs an explicit disposition — drop as duplicate, leave alone as already-settled, or re-raise while naming the prior thread and the specific point its closure did not address. Check reply timestamps before treating an author rebuttal as responsive, and when a closure rests on "the owner approved this", separate the authority question from the policy question. Silently re-litigating settled ground costs the review standing on its valid findings.
 
 Do NOT apply urgency floors or numeric caps — those are deterministic policy applied later by the renderer. Keep everything that survives right-sizing.
 
-Write the full validated set as JSON to ${a.outDir}/comments.json — that file is your deliverable, read by the renderer. Shape: \`{ urgency, posture, posture_rationale, cluster, inline: [{id, path, line, side, tier, lens, body, evidence, confidence, pre_existing}], general: [{id, path?, line?, tier, lens, body, evidence, confidence, pre_existing}] }\` (set urgency to "${a.urgency}"). Give every finding a stable \`id\` ("f1", "f2", … in the order you write them). Findings a reviewer marked \`anchorable: false\`, or whose line is not in the diff but which are still real, go in \`general\` — do not force them onto a line and do not drop them. \`pre_existing\` findings are kept but never support the posture. ${authorFacingNote.replace('Write \`body\` for the PR author', 'Keep \`body\` for the PR author')} When you merge duplicates or change a tier, say so in \`evidence\`. Then return a summary via the structured-output tool: { posture, posture_rationale, cluster, counts: {critical, important, recommended, nit}, wroteCommentsJson: true }.`
+Write the full validated set as JSON to ${a.outDir}/comments.json — that file is your deliverable, read by the renderer. Shape: \`{ urgency, posture, posture_rationale, cluster, decisions: [string], inline: [{id, path, line, side, tier, lens, body, evidence, confidence, pre_existing}], general: [{id, path?, line?, tier, lens, body, evidence, confidence, pre_existing}] }\` (set urgency to "${a.urgency}"). Give every finding a stable \`id\` ("f1", "f2", … in the order you write them). Findings a reviewer marked \`anchorable: false\`, or whose line is not in the diff but which are still real, go in \`general\` — do not force them onto a line and do not drop them. \`pre_existing\` findings are kept but never support the posture. ${authorFacingNote.replace('Write \`body\` for the PR author', 'Keep \`body\` for the PR author')} When you merge duplicates or change a tier, say so in \`evidence\`. Then return a summary via the structured-output tool: { posture, posture_rationale, cluster, counts: {critical, important, recommended, nit}, wroteCommentsJson: true }.`
 
 const summary = await agent(criticPrompt, {
   label: `critic:pr-${a.prNumber}`,
@@ -287,11 +328,10 @@ Your job is to **refute that set** — not to re-review the PR, and not to add f
 
 Inputs: ${a.outDir}/comments.json (the finalized set), the brief at ${a.briefPath}, the stated intent at ${a.prBodyPath}, the diff at ${a.diffPath}${a.repoDir ? `, and the checked-out head ref at ${a.repoDir}` : ' (no checkout available — verify against the diff alone)'}.${a.priorReviewPath ? ` Prior review conversation: ${a.priorReviewPath}.` : ''}
 
-**Hunt these three named failure classes first.** Each has already shipped a wrong finding; generic double-checking does not catch them.
+You are the **only** pass that checks whether findings are true; the critic deliberately did not. Hunt violations of the evidence rules below, in the order given. Generic double-checking does not catch these; looking for each named failure does.
+${EVIDENCE_RULES}
 
-1. **Mechanism asserted from documentation or memory rather than from the installed code.** The concrete case this phase exists for: a finding claimed a dependency version bump changed production runtime behavior. The framework vendored its own copy of that dependency and aliased imports to it, so the bump was inert, the claim was false, the author refuted it in one line, and the finding had to be publicly retracted. For every finding resting on how a third-party library behaves, open the **resolved dependency on disk** (installed package source, vendor directory, lockfile-pinned copy) and confirm the behavior *there*. Published docs and the manifest version range are not sufficient evidence. This cuts both ways — reading the installed source sometimes shows a finding is true and **stronger** than stated, which is a \`strengthen\`, not a \`keep\`.
-2. **Unqualified claims of absence.** Any finding shaped like "nothing records X", "no marker distinguishes these", "there is no way to do Y", or "every sibling except this one does Z". Run the search yourself; enumerate the directory yourself. Check specifically for machinery that supplies the behavior without appearing in the diff: framework auto-instrumentation, middleware, decorators, base classes, code generation, platform defaults. If the thing exists, strike the finding. If it genuinely doesn't, rewrite the body so it states the search that establishes the absence.
-3. **Consequences that were never actually observed.** A finding whose mechanism is real but whose user-visible effect would require a render, a specific device, a live dependency, or a real request — none of which happened. Do **not** strike these merely for being unverified: reframe them as a question with the settling test named, and tier them below findings verified end to end.
+The concrete case behind rule 1: a finding claimed a dependency version bump changed production runtime behavior. The framework vendored its own copy of that dependency and aliased imports to it, so the bump was inert, the author refuted the claim in one line, and it had to be publicly retracted. So for every finding that rests on how a library behaves, open the installed copy and confirm the behavior there. For rule 2, run the search yourself: if the thing exists, strike the finding; if it genuinely doesn't, make sure the body states the search. For rule 3, don't strike merely for being unverified: reframe as a question with the settling test named, and tier it below verified findings.
 
 For every finding, assign exactly one disposition:
   - **keep** — you attacked the central premise and it held.
@@ -304,7 +344,7 @@ Judge each finding on its own evidence, and each leg of a compound finding separ
 Then produce the corrected artifact. **Regenerate every derived field from the surviving set; never hand-patch it.** Posture, \`posture_rationale\`, the cluster/through-line, and the per-tier counts are all *computed* from the findings. If you strike or re-tier anything, a posture sentence or through-line that still asserts a withdrawn claim — or a count that no longer matches — is a defect in its own right, and re-editing it in place is how those go stale.
 
 1. Preserve the critic's set for audit: \`cp ${a.outDir}/comments.json ${a.outDir}/comments.pre-verify.json\`
-2. Write the corrected set to ${a.outDir}/comments.json, same shape as the critic's: \`{ urgency, posture, posture_rationale, cluster, inline: [...], general: [...] }\`, with urgency set to "${a.urgency}". Keep each surviving finding's \`id\`. Record what you did to a finding (strengthened from the installed source, down-tiered because the consequence is unobserved) in its \`evidence\`, never in \`body\`. Re-derive posture, rationale, cluster and counts from what survived — \`pre_existing\` findings never support the posture — do not copy them forward from the critic.
+2. Write the corrected set to ${a.outDir}/comments.json, same shape as the critic's: \`{ urgency, posture, posture_rationale, cluster, decisions, inline: [...], general: [...] }\` (carry \`decisions\` forward unchanged), with urgency set to "${a.urgency}". Keep each surviving finding's \`id\`. Record what you did to a finding (strengthened from the installed source, down-tiered because the consequence is unobserved) in its \`evidence\`, never in \`body\`. Re-derive posture, rationale, cluster and counts from what survived — \`pre_existing\` findings never support the posture — do not copy them forward from the critic.
 3. Return via the structured-output tool: { posture, posture_rationale, cluster, counts: {critical, important, recommended, nit}, struck, downTiered, strengthened, rewroteCommentsJson: true }.
 ${hotfix ? '\n**Urgency is hotfix** — only criticals are in play. Be fast, but go deep on those: a false critical is the single most expensive finding this flow can ship.' : ''}`
 
@@ -337,7 +377,7 @@ return {
   commentsPath: `${a.outDir}/comments.json`,
   wroteCommentsJson: summary ? summary.wroteCommentsJson === true : false,
   orientationMd: orientation ? orientation.md : null,
-  diagramsStatus: diagrams ? diagrams.status : 'skipped (hotfix)',
+  diagramsStatus: diagrams ? diagrams.status : (hotfix ? 'skipped (hotfix)' : 'skipped (not requested; use --diagrams)'),
   postCritic: summary ? summary.posture : null,
   postVerify: verified ? verified.posture : null,
   verify: verified

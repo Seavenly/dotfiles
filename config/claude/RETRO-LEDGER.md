@@ -12,6 +12,40 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-09-23 - review-flow audit (not a retro; sanitized)
+
+A deliberate audit rather than a single-run retro: 17 review runs over eight
+weeks (run artifacts plus session transcripts), external research on
+AI code review, and an independent plan review by a different model family
+(Codex). Applied in two passes; a third (below) is deferred until it can be
+measured.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Urgency floor working as a silent strike (a `fast` run hid most kept findings; empty drafts; cluster text narrating hidden findings) | AVOID | scripts/render-review.js + workflow + command | applied - urgency now shapes only the draft; reviewers emit every tier; the local report shows every finding marked in-draft or local-only with the reason |
+| A displayed cap that was never enforced (`max_comments`) | AVOID | scripts/render-review.js | applied - real draft budget across inline + general, criticals/importants exempt, confidence orders findings within a tier |
+| Reviewing a snapshot nobody pinned (separate "live head" and "live diff" reads; shallow-clone checkout failing every run) | AVOID | commands/review-flow.md | applied - one snapshot record (head, base, diff digest, checkout SHA); detached checkout of the exact SHA; no-checkout is flagged visibly; draft carries `commit_id`; pre-POST head check aborts instead of patching |
+| Process narration and secrets in author-facing text | AVOID | workflow + agents/critic.md + renderer | applied - per-finding `evidence` (local only) separate from `body`; deterministic secret gate blocks the draft (never auto-redacts); orientation is never posted |
+| Findings with no diff line silently dropped | AVOID | workflow + agents/critic.md | applied - `general` wired end to end (it had never been populated) |
+| No owner for scope / fit / house-pattern / rollout-order questions | ADD | workflow (lens) + defaults.yaml | applied · **resolves the 2026-06-08 deferred "design/requirements lens"**, which recurred across several runs - `design` lens replaces `style` (style yielded 2 critical/important of 81); judgment calls come back as `decisions`, kept separate from defects |
+| Stated intent never reaching the agents | ADD | commands/review-flow.md + workflow | applied - PR description and linked issues fetched to `pr-body.md`; repo `REVIEW.md` passed when present |
+| Pre-existing defects mixed with the PR's own | ADD | schema + renderer | applied - `pre_existing` bucket, local only, never supports posture |
+| Two stacked truth-checks (critic spot-verify, then verifier) | STRESS | agents/critic.md + workflow | applied · **deliberately reverses the 2026-06-08 critic false-positive pass and the 2026-07-17 in-critic adversarial pass** - the verifier (added 2026-09-11) is now the single fact-check owner; the critic keeps only structural checks and a glance-level contradiction strike. Evidence: the verifier's catches were ones the critic had passed; newer-model guidance advises against stacked self-verification. Revert path: restore Mode B step 2 from git if post-verify retractions rise |
+| Same doctrine copied into three prompts | STRESS | workflow | applied - one `EVIDENCE_RULES` block shared by reviewers and verifier; the concrete retracted-finding example stays with the verifier (the load-bearing part per 2026-09-11) |
+| Self-filtering language in finder prompts ("if in doubt, it's not critical") | AVOID | workflow + agents/critic.md | applied - finders report with an honest `confidence`; tiers defined by a nameable consequence rather than by caution |
+| Same-family verification blind spot | ADD | scripts/codex-cross-check.js + command | applied - Codex cross-check after the Claude verifier; strikes become `contested` (never deleted) and block the draft while a contested critical/important is undecided; fail-soft; `--no-codex` |
+| Host racing the workflow (progress polling, parallel self-verification) | AVOID | commands/review-flow.md | applied - host waits; return contract and `comments.json` shape documented |
+| Orientation and diagrams unused | STRESS | workflow | applied - orientation re-aimed at the human reviewer ("what this code is for, what changed, what to read first"); diagrams opt-in (`--diagrams`) |
+
+Deferred (pass 3): a `--followup` re-review mode keyed on posted comment ids
+and old/new SHAs; a frozen replay corpus of past runs with resolution-rate
+tracking; size/risk routing (piloted against the corpus, never shortcutting
+infra/permissions/deploy changes).
+
+Watch: whether removing the critic's spot-verify raises post-verify
+retractions; whether the design lens yields surviving findings; Codex
+cross-check incremental catches versus its latency.
+
 ## 2026-09-11 - review run (sanitized)
 
 High-signal run: the review was posted, the author contested six of ten
