@@ -57,8 +57,9 @@ Concise findings as markdown. Structure:
   return your findings as your final message (structured output or
   markdown); only write a file if your spawn prompt explicitly names an
   output path.
-- **No imagined APIs.** If you don't see it in the code or docs, it
-  doesn't exist for the purposes of your report.
+- **No imagined APIs.** Don't claim anything exists that you haven't
+  seen in the code or docs. When you claim something *doesn't* exist, say
+  what you searched.
 - **No prescription.** You report findings; the planner and critic decide
   what to do with them.
 - **Length proportional to question.** A simple factual question gets a
@@ -68,8 +69,8 @@ Concise findings as markdown. Structure:
 ## When spawned with a specific lens or angle
 
 You are often one of several subagents running in parallel: in review-flow
-you act as a single-lens reviewer (security, correctness, style, tests, or
-observability);
+you act as a single-lens reviewer (security, correctness, design, tests,
+or observability);
 in spike-flow deep mode you explore one angle while peers cover others.
 Either way, stay tightly within the lens or angle your spawn prompt names —
 your peers cover the rest. Return findings via the structured-output tool

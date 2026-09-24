@@ -12,6 +12,20 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-09-24 - review-flow instruction trim (not a retro)
+
+Cut the instruction text each review run loads by roughly 60-90% per
+consumer without dropping a rule: host procedure moved into
+`review-flow-prep.js` / `review-flow-post.js`; review's critic split into its
+own `review-critic` persona (feature/spike keep `critic` without Mode B); the
+verifier runs persona-free, which removed a contradiction where it loaded
+"don't fact-check" guidance; shared rules rewritten tighter. Checked by a
+44-item rule inventory and an independent Codex intent diff, whose findings
+(hotfix posture exactness, prep head-stability, prior-fetch parsing,
+`commit_id` pinning, two dropped hints) were applied. Deliberate change: an
+existing pending review now stops the post (never delete-and-repost) instead
+of an improvised append.
+
 ## 2026-09-23 - review-flow audit (not a retro; sanitized)
 
 A deliberate audit rather than a single-run retro: 17 review runs over eight
