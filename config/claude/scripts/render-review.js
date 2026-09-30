@@ -5,6 +5,9 @@
 //   <run_dir>/brief.md
 //   <run_dir>/out/comments.json
 //   <run_dir>/out/orientation.md   (optional)
+//   <run_dir>/out/findings/<lens>.json, repo-rules/manifest.json,
+//     ci-annotations.json, unreviewable.json   (optional; the Coverage
+//     section, local report only, never in the draft)
 //
 // Writes:
 //   <run_dir>/out/review.md          — LOCAL report: every finding, each marked
@@ -98,6 +101,7 @@ function main() {
     ? trimOrientation(fs.readFileSync(orientationPath, "utf8"))
     : null;
   const diagrams = loadDiagrams(diagramsDir);
+  const coverage = loadCoverage(runDir, brief);
 
   const urgency =
     (brief.config && brief.config.urgency) || comments.urgency || "standard";
@@ -142,6 +146,8 @@ function main() {
     cluster: comments.cluster || null,
     orientation,
     diagrams,
+    coverage,
+    replay: brief.replay === true ? brief.comparison || true : null,
     // Local report: every finding by tier, each carrying `excluded` (null when
     // it is in the draft). Draft: only the included subset.
     all: policy.all,
@@ -215,6 +221,7 @@ function main() {
       total_findings: policy.totalFindings,
       draft_total: policy.totalKept,
       excluded: policy.excludedCounts,
+      coverage_gaps: coverageGaps(ctx.coverage),
     }) + "\n"
   );
 }
@@ -410,6 +417,16 @@ function renderMarkdown(ctx) {
   if (ctx.postureCaveat) out.push(`_⚠ ${ctx.postureCaveat}._`);
   out.push("");
 
+  if (ctx.replay) {
+    out.push(`> **Replay** of frozen revisions${typeof ctx.replay === "string" ? ` \`${ctx.replay}\`` : ""}: a manual regression run. Posting is disabled.`);
+    out.push("");
+  }
+  const gaps = coverageGaps(ctx.coverage);
+  if (gaps.length) {
+    out.push(`> **Coverage gaps:** ${gaps.join("; ")}. See Coverage below.`);
+    out.push("");
+  }
+
   if (ctx.draftBlocked) {
     out.push(`> **⚠ Draft blocked: ${ctx.draftBlocked.reason}.** No \`draft-review.json\` was written.`);
     for (const h of ctx.draftBlocked.hits) {
@@ -574,6 +591,8 @@ function renderMarkdown(ctx) {
     }
   }
 
+  if (ctx.coverage) out.push(...coverageMarkdown(ctx.coverage), "");
+
   const capLines = capReportLines(ctx);
   if (capLines.length > 0) {
     out.push("## Cap report\n");
@@ -714,6 +733,12 @@ function renderHtml(ctx) {
     : "";
 
   const capReportBlock = renderCapReportHtml(ctx);
+  const coverageBlock = ctx.coverage ? renderCoverageHtml(ctx.coverage) : "";
+  const htmlGaps = coverageGaps(ctx.coverage);
+  const coverageCallout = [
+    ctx.replay ? `<div class="urgency-callout"><strong>Replay</strong> of frozen revisions${typeof ctx.replay === "string" ? ` <code>${escapeHtml(ctx.replay)}</code>` : ""}: a manual regression run. Posting is disabled.</div>` : "",
+    htmlGaps.length ? `<div class="urgency-callout"><strong>Coverage gaps:</strong> ${htmlGaps.map(renderInlineMd).join("; ")}. See <a href="#coverage">Coverage</a>.</div>` : "",
+  ].join("");
 
   // General (non-anchorable) findings: real issues not on a diff line. Shown
   // as a distinct section so they read as body prose, not inline anchors.
@@ -800,6 +825,7 @@ function renderHtml(ctx) {
       ${preExistingBlock}
       ${contestedBlock}
       ${codexRaisedBlock}
+      ${coverageBlock}
       ${capReportBlock}
     </div>
   </div>`
@@ -811,6 +837,7 @@ function renderHtml(ctx) {
   ${preExistingBlock}
   ${contestedBlock}
   ${codexRaisedBlock}
+  ${coverageBlock}
   ${capReportBlock}`;
 
   return `<!doctype html>
@@ -833,6 +860,7 @@ function renderHtml(ctx) {
     ${ctx.postureRationale ? `<p class="rationale">${renderInlineMd(ctx.postureRationale)}</p>` : ""}
     ${ctx.postureCaveat ? `<p class="posture-caveat">⚠ ${renderInlineMd(ctx.postureCaveat)}</p>` : ""}
     ${draftBlockedCallout}
+    ${coverageCallout}
     ${urgencyCallout}
     ${crossCheckCallout}
     ${tierNav}
@@ -1136,6 +1164,136 @@ function renderCapReportHtml(ctx) {
   return `<footer class="cap-report"><h3>Cap report</h3><ul>${rows.join("")}</ul></footer>`;
 }
 
+// ---------- coverage (local report only) ----------
+
+const COVERAGE_STATUS = {
+  checked: "checked",
+  partial: "partial",
+  not_applicable: "not applicable",
+  not_checked: "not checked",
+};
+
+// Per-lens coverage from out/findings/<lens>.json plus the prep records (repo
+// rules, CI annotations, changed-file census). null when none of them exist
+// (runs from before coverage was recorded), so older reports are unchanged.
+function loadCoverage(runDir, brief) {
+  const outDir = path.join(runDir, "out");
+  const readJson = (p) => {
+    try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
+  };
+  const findingsDir = path.join(outDir, "findings");
+  const byLens = {};
+  if (fs.existsSync(findingsDir)) {
+    for (const f of fs.readdirSync(findingsDir).filter((x) => x.endsWith(".json"))) {
+      const j = readJson(path.join(findingsDir, f));
+      if (j) byLens[j.lens || f.replace(/\.json$/, "")] = j;
+    }
+  }
+  const census = readJson(path.join(outDir, "unreviewable.json"));
+  const rules = readJson(path.join(outDir, "repo-rules", "manifest.json"));
+  const ci = readJson(path.join(outDir, "ci-annotations.json"));
+  // unreviewable.json is written by every prep that records coverage, so its
+  // presence says a missing rules or CI record means "unavailable".
+  const prepRecorded = Boolean(census);
+  if (!Object.keys(byLens).length && !prepRecorded && !rules && !ci) return null;
+
+  let configured = brief.config && brief.config.reviewer_lenses;
+  if (typeof configured === "string") configured = configured.replace(/^\[|\]$/g, "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (!Array.isArray(configured)) configured = [];
+  const lensNames = [...new Set([...configured, ...Object.keys(byLens)])];
+  const lenses = lensNames.map((lens) => {
+    const j = byLens[lens];
+    if (!j) return { lens, status: "not run", basis: "The reviewer returned nothing; this lens was not reviewed.", gap: true };
+    const cov = j.coverage;
+    if (!cov || !cov.status) return { lens, status: "not reported", basis: "The reviewer returned no coverage record.", gap: false };
+    return {
+      lens,
+      status: COVERAGE_STATUS[cov.status] || cov.status,
+      basis: cov.basis || "",
+      gap: cov.status === "not_checked" || cov.status === "partial",
+    };
+  });
+  return { lenses, rules, rulesMissing: prepRecorded && !rules, ci, ciMissing: prepRecorded && !ci, census };
+}
+
+// Lenses with the same status and basis share one row.
+function coverageRows(cov) {
+  const rows = [];
+  for (const l of cov.lenses) {
+    const row = rows.find((r) => r.status === l.status && r.basis === l.basis);
+    if (row) row.lenses.push(l.lens);
+    else rows.push({ lenses: [l.lens], status: l.status, basis: l.basis });
+  }
+  return rows;
+}
+
+function coverageNotes(cov) {
+  const notes = [];
+  const short = (sha) => (sha ? `\`${sha.slice(0, 10)}\`` : "base");
+  if (cov.rules) {
+    const files = cov.rules.files.length ? cov.rules.files.map((f) => `\`${f}\``).join(", ") : "no rule files exist there";
+    notes.push(`Repo rules from base ${short(cov.rules.base_sha)}: ${files}.` +
+      (cov.rules.changed_by_pr.length ? ` The PR edits ${cov.rules.changed_by_pr.map((f) => `\`${f}\``).join(", ")}; reviewed as content, not rules.` : ""));
+  } else if (cov.rulesMissing) {
+    notes.push("Repo rules: unavailable (the base revision could not be read); reviewed without repo rules.");
+  }
+  if (cov.ci) {
+    const n = cov.ci.annotations.length;
+    notes.push(`CI annotations on this head: ${n || "none"} on changed files${n ? " (given to reviewers)" : ""}` +
+      (cov.ci.dropped ? `, ${cov.ci.dropped} elsewhere or over the cap left out` : "") +
+      (cov.ci.failed_runs ? `, ${cov.ci.failed_runs} check run(s) unreadable` : "") + ".");
+  } else if (cov.ciMissing) {
+    notes.push("CI annotations: not fetched.");
+  }
+  if (cov.census) {
+    const c = cov.census;
+    const listed = c.listed != null ? `${c.listed} changed file(s) listed` : "changed-file list unavailable";
+    notes.push(c.files.length
+      ? `Changed files: ${listed}; ${c.files.length} not reviewable from the diff: ${c.files.map((f) => `\`${f.path}\`: ${f.reason}`).join("; ")}.`
+      : `Changed files: ${listed}, all with a patch in the diff.`);
+    if (!c.list_complete) notes.push(`Changed-file list incomplete: ${c.note}.`);
+  }
+  return notes;
+}
+
+// Short phrases for the header callout; empty when coverage is complete.
+function coverageGaps(cov) {
+  if (!cov) return [];
+  const gaps = [];
+  const notRun = cov.lenses.filter((l) => l.status === "not run").map((l) => l.lens);
+  const partial = cov.lenses.filter((l) => l.gap && l.status !== "not run").map((l) => l.lens);
+  if (notRun.length) gaps.push(`lens not run: ${notRun.join(", ")}`);
+  if (partial.length) gaps.push(`partial or unchecked: ${partial.join(", ")}`);
+  if (cov.census && cov.census.files.length) gaps.push(`${cov.census.files.length} changed file(s) not reviewable from the diff`);
+  if (cov.census && !cov.census.list_complete) gaps.push("changed-file list incomplete");
+  if (cov.rulesMissing) gaps.push("repo rules unavailable");
+  return gaps;
+}
+
+function coverageMarkdown(cov) {
+  const cell = (t) => String(t).replace(/\|/g, "\\|").replace(/\n+/g, " ");
+  const out = ["## Coverage (local only)", ""];
+  const rows = coverageRows(cov);
+  if (rows.length) {
+    out.push("| Lens | Status | Basis |", "|---|---|---|");
+    for (const r of rows) out.push(`| ${r.lenses.join(", ")} | ${r.status} | ${cell(r.basis)} |`);
+    out.push("");
+  }
+  for (const n of coverageNotes(cov)) out.push(`- ${n}`);
+  return out;
+}
+
+function renderCoverageHtml(cov) {
+  const rows = coverageRows(cov);
+  const table = rows.length
+    ? `<table class="coverage-table"><thead><tr><th>Lens</th><th>Status</th><th>Basis</th></tr></thead><tbody>${rows
+        .map((r) => `<tr><td>${escapeHtml(r.lenses.join(", "))}</td><td><span class="cov-status cov-${r.status.replace(/\s+/g, "-")}">${escapeHtml(r.status)}</span></td><td>${renderInlineMd(r.basis)}</td></tr>`)
+        .join("")}</tbody></table>`
+    : "";
+  const notes = coverageNotes(cov);
+  return `<section class="coverage" id="coverage"><h2>Coverage</h2><p class="general-note">What each lens checked, and what the review could not see. Local only; never posted.</p>${table}${notes.length ? `<ul>${notes.map((n) => `<li>${renderInlineMd(n)}</li>`).join("")}</ul>` : ""}</section>`;
+}
+
 // ---------- helpers ----------
 
 function escapeHtml(s) {
@@ -1392,6 +1550,17 @@ const CSS = `
   .decisions ul { margin: 8px 0 0; padding-left: 20px; line-height: 1.6; }
   .posture-caveat { color: var(--important); font-size: 13px; margin: 8px 0 0; }
   .cx-note { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+  .coverage { margin: 44px 0 0; padding: 18px 22px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; line-height: 1.6; }
+  .coverage h2 { font-size: 16px; margin: 0 0 6px; }
+  .coverage-table { width: 100%; border-collapse: collapse; margin: 10px 0 4px; }
+  .coverage-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); }
+  .coverage-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .coverage-table td:first-child { white-space: nowrap; }
+  .cov-status { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 3px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .cov-partial, .cov-not-checked { color: var(--important); border-color: var(--important); }
+  .cov-not-run { color: var(--critical); border-color: var(--critical); }
+  .coverage ul { margin: 10px 0 0; padding-left: 20px; }
+  .coverage code { background: var(--panel-2); padding: 1px 5px; border-radius: 3px; }
   .cap-report { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; line-height: 1.7; }
   .cap-report h3 { font-size: 12px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
   .cap-report ul { padding-left: 20px; margin: 0; }

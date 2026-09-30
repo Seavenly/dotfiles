@@ -6,6 +6,8 @@
 //
 // Gates, all re-checked at post time (the user may ask to post long after the
 // render):
+//   0. the run is not a replay of frozen revisions (manual regression runs are
+//      never posted, whatever the live head is)
 //   1. a draft exists (no draft-blocked.json, no failed render)
 //   2. the PR head still equals the reviewed snapshot; a moved head can
 //      invalidate findings in ways a per-finding patch can't see
@@ -17,7 +19,7 @@
 // `event` stays omitted, so the review is PENDING until the user submits it.
 //
 // Exit codes: 0 posted (or dry-run passed) · 2 usage · 3 no draft ·
-// 4 head moved · 5 pending review exists · 6 POST failed.
+// 4 head moved · 5 pending review exists · 6 POST failed · 7 replay run.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -35,6 +37,13 @@ function main() {
   const repo = field("repo");
   const pr = field("pr_number");
 
+  // 0. Replay runs never post, dry run included. Either marker is enough.
+  const snapshotPath = path.join(outDir, "snapshot.json");
+  const snapReplay = fs.existsSync(snapshotPath) && JSON.parse(fs.readFileSync(snapshotPath, "utf8")).replay === true;
+  if (field("replay") === "true" || snapReplay) {
+    done(7, { error: "replay run of frozen revisions: posting is disabled", comparison: field("comparison") || null });
+  }
+
   // 1. Draft exists.
   if (fs.existsSync(path.join(outDir, "draft-blocked.json"))) {
     const b = JSON.parse(fs.readFileSync(path.join(outDir, "draft-blocked.json"), "utf8"));
@@ -44,7 +53,7 @@ function main() {
   const draft = JSON.parse(fs.readFileSync(draftPath, "utf8"));
 
   // 2. Head drift.
-  const snapshot = JSON.parse(fs.readFileSync(path.join(outDir, "snapshot.json"), "utf8"));
+  const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
   const live = gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]);
   if (live !== snapshot.head_sha) {
     const log = gh(["api", `repos/${repo}/compare/${snapshot.head_sha}...${live}`, "--jq", ".commits[].commit.message | split(\"\\n\")[0]"], true);

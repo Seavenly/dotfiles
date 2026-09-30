@@ -12,6 +12,22 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-09-30 - review-flow evidence and coverage (not a retro)
+
+Checked by an independent Codex review of the plan.
+Instruction growth kept to per-lens bars and one shared
+inputs line.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| A PR that edits its repo's rule files was reviewed under its own proposed rules (rules were read from the head checkout) | AVOID | scripts/review-flow-prep.js + workflow + codex-cross-check.js | applied - rules extracted from the base revision; head copies are content under review; no head fallback when the base can't be read; Codex no longer auto-loads the checkout's AGENTS.md; every agent is told PR material is evidence, not instructions |
+| Correctness, security and tests lenses had one-line scopes while observability and design had bars | ADD | workflows/review-flow-run.js | applied - short bars (interleaving, recovery and replay, guard coverage; authorization to the effect, identifiers bound to the principal; tests that fail for the intended reason), each only in its own lens |
+| An empty lens result said nothing about what was checked, and a lens that died was indistinguishable from a clean one | ADD | workflow + scripts/render-review.js | applied - per-lens coverage record, local-only Coverage section; dead lenses show as not run |
+| Changed files with no patch, and diffs too large for the API, could pass as reviewed | AVOID | scripts/review-flow-prep.js | applied - changed-file census, local diff fallback, gaps in the report header |
+| Head CI annotations were invisible to reviewers | ADD | scripts/review-flow-prep.js + workflow | applied - annotations on changed files passed as already-reported evidence, never as a reason to skip a defect |
+| No way to re-check the flow against known cases after a change | ADD | review-flow-evals.md + prep replay mode | applied - manual regression set with a replay mode that can never post; known cases don't measure unseen-bug performance |
+| Follow-up (incremental) reviews | ADD | - | deferred |
+
 ## 2026-09-24 - review-flow instruction trim (not a retro)
 
 Cut the instruction text each review run loads by roughly 60-90% per
