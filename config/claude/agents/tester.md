@@ -1,6 +1,6 @@
 ---
 name: tester
-description: Writes ONE failing test for the current slice and runs only that focused target. Lives in the TDD inner loop alongside implementer; the independent gate owns the full suite. Hard rule - one test at a time, real behavior, never batch. Used by feature-flow and the prototype phase of spike-flow.
+description: Writes ONE failing test for the current slice and runs only that focused target. Lives in the TDD inner loop alongside implementer; the independent gate owns the full suite. Hard rule - one test at a time, real behavior, never batch. Used by the prototype phase of spike-flow (feature-flow uses builder).
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: opus
 ---

@@ -9,7 +9,7 @@ A homegrown system for handing off recurring software-engineering tasks to
 a team of Claude Code subagents, orchestrated by **dynamic workflows** and
 run **entirely on the local machine** (no sandbox). Three flows:
 
-- `/feature-flow` — implement a feature: plan → per-slice test-or-verify loop → critic outer pass → PR-ready branch on a worktree.
+- `/feature-flow` — implement a feature: plan → per-slice builder with a deterministic gate → completeness and design review → final cross-model review → a reviewable branch in the local tuicr inbox.
 - `/review-flow` — review an open PR: parallel reviewers across lenses (security, correctness, design, tests, observability) → critic dedupes/reconciles/right-sizes → independent adversarial verifier (the single fact-check owner) → Codex cross-model check → rendered review.md/.html (complete local report) + optional pending draft on GitHub.
 - `/spike-flow` — investigate a question: researcher(s) → critic gap-analysis → optional in-repo prototype → spike report.
 
@@ -68,31 +68,25 @@ tier on the high-volume inner loop, the cheap tier on prescriptive assembly.
 
 | Role | Default | Calls / typical run | Why |
 |---|---|---|---|
-| planner | opus¹ | 1 | Highest leverage per call; a bad decomposition multiplies cost through every slice and critic cycle |
-| critic | opus¹ | 1–4 | Catch rate is the whole value; fable-critic over opus-implementer also breaks the shared-distribution blind spot (in-family version of the cross-provider idea) |
-| review-critic | opus | 1 | review-flow's critic (dedupe, reconcile, tier, posture); split from `critic` so review runs load only review instructions. The review verifier runs persona-free on opus |
-| tester | opus | ~1 per slice | High-skill code work; blast radius bounded to one slice by the gate |
-| implementer | opus | ~1–2 per slice | Highest-volume heavyweight role; the test gate defines "done" |
-| researcher | opus | 3–4 in parallel | High-recall finder; precision comes from the fable critic downstream |
-| diagrammer | sonnet | 0–1 | Near-checklist persona with graceful failure (skipped.txt / .mmd fallback); bump back to opus if diagrams degrade |
-| synthesizer | sonnet | 1 | Format artifacts into PR body / report — no novel reasoning |
-| gate (test-runner) | haiku / low effort | ~1–2 per slice | Mechanical command execution only; pinned in scripts, with bounded output and no design reread |
+| planner | opus, high | 1 | Highest leverage per call; a bad decomposition multiplies cost through every slice |
+| builder | opus, high | ~1-2 per slice | feature-flow's slice builder: tests first, red snapshot, implementation; may update tests the slice deliberately changes |
+| completeness-critic | opus, high | 1-2 | Maps each acceptance criterion to evidence; catches planned work that never landed |
+| feature-critic | opus, high | 1 | In-flow lenses review; reports every finding with severity and confidence, decides nothing |
+| feature-verifier | opus, high | 1-2 | Triage: verifies each finding, then fix / follow-up / reject by risk and fix cost |
+| final-reviewer | fable, high | 1 | Fresh cross-model look at the complete change; `--codex` swaps in Codex (gpt-6-sol, medium) with Fable as the fallback |
+| critic | opus, high | 1-2 | spike-flow gap analysis (Mode C) |
+| review-critic | opus | 1 | review-flow's critic (dedupe, reconcile, tier, posture). The review verifier runs persona-free on opus |
+| tester, implementer | opus | ~1-2 per slice | spike-flow's prototype loop (`tdd-slice-loop`) |
+| researcher | opus | 3-4 in parallel | High-recall finder; precision comes from the critic downstream |
+| diagrammer | sonnet | 0-1 | Near-checklist persona with graceful failure (skipped.txt / .mmd fallback) |
+| synthesizer | sonnet | 1 | Formats the review summary / report; no novel reasoning |
+| gate relay | sonnet, low | ~1-2 per slice | Runs the deterministic gate script and returns its JSON; owns no checks |
 
-Current deliberate overrides in the scripts: the review-flow **orientation**
-agent runs the researcher persona at `sonnet` (a 300-word strictly templated
-summary, not open-ended research), and mechanical **gate/commit** calls are
-script-pinned to `haiku` at low effort. Everything else omits `opts.model` so the persona default is the
-single source of truth — don't re-add redundant pins. Caveat: `fable`
-assumes Fable access on whatever plan the run executes under; if that ever
-breaks, `opus` is the fallback for planner/critic.
-
-¹ **Temporary (2026-06-15):** planner and critic are pinned to `opus`
-because Fable access is turned off. Their intended default is `fable` (see
-the rationale above). There is no automatic preferred-with-fallback model
-selection in the harness — frontmatter `model:` and `opts.model` each take a
-single value — so this is a manual swap. Revert both persona frontmatters
-(`config/claude/agents/planner.md`, `config/claude/agents/critic.md`) to `model: fable`
-once Fable is re-enabled.
+Deliberate overrides in the scripts: the review-flow **orientation** agent
+runs the researcher persona at `sonnet`, and gate relays (feature-flow's gate
+script, spike-flow's mechanical gate) are script-pinned to `sonnet` at low
+effort. Everything else omits `opts.model`, so the persona frontmatter is the
+single source of truth.
 
 ## Data flow
 
@@ -102,34 +96,32 @@ once Fable is re-enabled.
 │   → interview (light, or --grill heavy)                           │
 │   → write ~/.agent-teams/runs/<id>/brief.md, confirm              │
 │   → git worktree add <run>/worktree -b agt/feature-<slug> <base>  │
-│   → install deps ONCE (native; setup_commands or auto-detect)     │
+│   → install deps ONCE; write gate.json; gate init = baseline      │
 │   → launch saved workflow by name, args = {runDir, worktree,      │
-│        base, briefPath, caps, testCmd, ...}                       │
+│        base, briefPath, acceptance, caps, finalReviewer, ...}     │
 └───────────────────────────────────────────────────────────────────┘
                               │ args (the brief is the handoff)
                               ▼
 ┌─ workflow runtime (background, isolated context) ─────────────────┐
 │ feature-flow-run.js:                                              │
-│   phase Plan      → agent(planner)  → slices[] (+ plan.md)        │
-│   phase Implement → workflow('tdd-slice-loop') — per slice,       │
-│        sequential (same files): test mode uses tester →           │
-│        implementer; verify mode uses implementer directly; both   │
-│        finish at an independent gate, retry ≤ N                   │
-│   phase Critique  → agent(critic) → APPROVE|FIX_LIST|RE_PLAN      │
-│        FIX_LIST → blocking items back through tdd-slice-loop;     │
-│        non-blocking deferred to the PR body as follow-ups;        │
-│        broad/cross-cutting repairs → research + RE_PLAN           │
-│        re-spawn critic; cap max_critic_revisions cycles           │
-│   phase Synthesize→ agent(synthesizer) → reportContent            │
-│   return {branch, reportPath, reportContent, notesContent,        │
-│           verificationLedger, runStats, stuck, ...}               │
+│   Plan    → agent(planner) → behavior-sized slices[] (+ plan.md)  │
+│   Build   → per slice: agent(builder) → gate relay runs           │
+│             feature-flow-gate.js verify (checks + commit);        │
+│             retry ≤ N; finalize commits leftovers [unverified]    │
+│   Review  → parallel(completeness-critic, feature-critic)         │
+│             → agent(feature-verifier) triage → fix slices         │
+│   Final   → final-reviewer (fable, or codex via script)           │
+│             → triage → fix slices (≤ max_fix_rounds in total)     │
+│   Report  → coverage at the final head → agent(synthesizer)       │
+│   return {reportContent, notesContent, reviewedHead,              │
+│           stageStatus, audit, outcome lists, runStats}            │
 └───────────────────────────────────────────────────────────────────┘
                               │ summary returns to the conversation
                               ▼
 ┌─ your session (wrap-up) ──────────────────────────────────────────┐
-│ persists reportContent + notesContent to their artifact paths;    │
-│ prints branch + diff command; handles RE_PLAN / stuck / open      │
-│ findings. You review in the worktree, then merge. /retro optional.│
+│ persists report + notes; runs the gate audit; registers the tuicr │
+│ review (UNREVIEWED: ... when a stage failed); surfaces outcomes.  │
+│ You review in tuicr, then integrate. /retro optional.             │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -159,15 +151,20 @@ their workflow internals differ (see below).
         │   ├── feature-flow-run.js
         │   ├── review-flow-run.js
         │   ├── spike-flow-run.js
-        │   └── tdd-slice-loop.js  # shared test-or-verify loop (sub-workflow, never run directly)
+        │   └── tdd-slice-loop.js  # spike-flow's prototype loop (sub-workflow, never run directly)
         ├── agents/                # → ~/.claude/agents  (role personas; agentType source)
-        │   ├── planner.md  tester.md  implementer.md
-        │   ├── critic.md   review-critic.md  researcher.md  synthesizer.md  diagrammer.md
+        │   ├── planner.md  builder.md  completeness-critic.md  feature-critic.md
+        │   ├── feature-verifier.md  final-reviewer.md  synthesizer.md
+        │   ├── tester.md  implementer.md  critic.md   # spike-flow
+        │   ├── review-critic.md  researcher.md  diagrammer.md
         └── scripts/               # → ~/.claude/scripts
             ├── render-review.js   # deterministic review.md/.html/draft renderer
             ├── codex-cross-check.js # review-flow cross-model check (codex exec)
             ├── review-flow-prep.js  # review-flow snapshot, clone, intent, brief, launch args
             ├── review-flow-post.js  # review-flow pre-POST gates + pending review POST
+            ├── feature-flow-gate.js # feature-flow's deterministic gate (init/red/verify/finalize/audit)
+            ├── feature-flow-builder-guard.js # builder PreToolUse hook
+            ├── feature-flow-codex-review.js  # opt-in Codex final review (--codex)
             ├── package.json  mermaid.config.json
 
 State (host-local, not version-controlled):
@@ -176,19 +173,20 @@ State (host-local, not version-controlled):
   ├── context/          # files copied at brief time
   ├── repo/             # review-flow: shallow clone of the PR head ref
   ├── worktree/         # feature/spike-prototype: the branch worktree (deps installed here)
+  ├── gate.json, gate/  # feature-flow: host-written gate config; gate state, ledger, logs
   └── out/              # artifacts: plan.md, comments.json, review.{md,html}, report.md, retro.md
 ```
 
 ## The three flows in detail
 
 ### feature-flow
-**Command:** interview (light; `--grill` heavy; `--gated` adds a plan gate) → brief → worktree + one-time install → launch.
-**Workflow (`feature-flow-run.js`):** planner selects `test` or `verify` per slice → shared `tdd-slice-loop` sub-workflow (test mode: tester → implementer; verify mode: implementer directly; both end at an independent low-cost gate that runs cheap static checks first on every slice, deduplicates commands, reuses a prior result only for the identical tree (so a retry after an unrelated failure reruns only what failed), records a verification ledger, and commits on green; tester/implementer run only focused checks, so the gate owns the full suite; retry ≤ `max_slice_retries`; implementation retries receive a compact current-diff/handoff/failure packet instead of repeating broad orientation) → critic Mode A outer pass (only **merge-blocking** FIX_LIST items re-enter the loop; non-blocking hardening is deferred; each repair must stay within the configured file cap, one subsystem, and one behavioral seam; broader or primitive-introducing changes trigger bounded primary-source/repository research and `RE_PLAN`; re-spawn critic; cap `max_critic_revisions`; a critic that returns nothing gets one re-spawn, then the run ships flagged `criticVerdictMissing`) → synthesizer returns PR-body content for conversation-side persistence. Declarative infrastructure, configuration, and docs are first-class verify-mode work; the workflow must not manufacture source-text or tautological tests to create a red phase. Credentialed/destructive live commands remain explicit human gates.
-**`--gated`:** the command launches twice — `planOnly:true` returns the plan for your approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).
-**Notes journal:** carried as a list of entry blocks in a script variable, folded from each agent's structured handoff. Inner-loop prompts see a capped view (most recent ~40 entries) so a long run doesn't tax every prompt; the critic and synthesizer get the full journal, and the workflow returns it as `notesContent` for the conversation-side command to persist verbatim to `out/notes.md`.
-**Verification ownership:** each check has one owner for a code state. Tester and implementer use focused targets; the mechanical gate runs each distinct suite/verification command once, records command + validated SHA + exit + tree-mutation status, and later critics reuse that evidence instead of rerunning it.
-**Artifact ownership:** synthesizers draft content; the interactive command persists feature artifacts. A deterministic subagent write-policy failure is surfaced, never retried by repeating the same file write.
-**End-to-end discipline:** the final test-mode slice drives the feature through the real wiring. For all-verify work, the final verification command or artifact evidence must cover the assembled path and blast radius.
+**Command:** interview (at most four questions, including scope boundaries; `--grill` uses the grilling skill; `--gated` adds a plan gate) → brief with evidence-tagged acceptance criteria (`test`, `diff`, `docs`, `ci:<job>`, `live`) and constraints → worktree + one-time install → `gate.json` and `feature-flow-gate.js init` (the baseline) → launch → handoff to tuicr.
+**Workflow (`feature-flow-run.js`):** planner returns behavior-sized slices → per slice, the `builder` writes tests first and runs `gate red` (a snapshot that later flags removed assertions), implements, and may update existing tests the slice deliberately changes; a Sonnet relay runs `gate verify`, which owns every check and the commit → `finalize` commits leftover work from stuck slices as `[unverified]` → completeness-critic and feature-critic in parallel → feature-verifier triage (fix / follow-up / reject by risk and fix cost; prod and credential safety is never deferred) → fix slices → final-reviewer (Fable; `--codex` runs `feature-flow-codex-review.js`, falling back to Fable) → triage → fix slices, at most `max_fix_rounds` in total → coverage recheck at the final head → synthesizer review summary. Declarative infrastructure, configuration, and docs are verify-mode work; tests are never manufactured to create a red phase. Credentialed or destructive live commands remain human gates.
+**The gate (`scripts/feature-flow-gate.js`):** runs only the commands the host recorded in `gate.json` and refuses to run after that file changes. Each verify moves the branch back to the last verified commit with `reset --soft`, so agent commits are folded in and failed work never stays in history. Trees are computed on a temporary index excluding `ignorePaths`; commands run once, in their own process group, with a timeout; hooks always run and may not change the committed tree. `--detach` / `wait` keep long suites inside an agent's ten-minute shell limit. `audit` accounts for every commit since the base. The builder's `PreToolUse` hook (`scripts/feature-flow-builder-guard.js`) blocks history-changing git commands, gate subcommands other than `red`, and writes to gate state.
+**Stage status:** every review stage records ok / failed / skipped against the head it reviewed. The handoff registers the review as `UNREVIEWED: <stages>` when one failed, and `--review-only <run_id>` reruns the review against the existing worktree.
+**`--gated`:** the command launches twice: `planOnly:true` returns the plan for approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).
+**Notes journal:** builder handoffs and gate test-edit reports fold into entry blocks; builder prompts see the latest ~40, the critic and the journal file get all of them, plus the review outcome (rejected findings and follow-ups) and stage status.
+**Artifact ownership:** the synthesizer drafts content; the interactive command persists `report.md` and `notes.md`.
 
 ### review-flow
 **Command:** a short procedure over three scripts. `review-flow-prep.js` pins the snapshot (head/base SHA, diff digest, checkout SHA), clones that exact commit detached, and writes the stated intent (`pr-body.md`), the PR's prior review conversation, and the brief. It also extracts the repo rule files (`CLAUDE.md`, `AGENTS.md`, `REVIEW.md`) **from the base revision** into `out/repo-rules/`, so a PR that edits them is reviewed under the existing rules and its edits are content under review (never a fallback to head copies); fetches the head's CI check-run annotations on changed files (`out/ci-annotations.json`: already reported, so not duplicated, but never a reason to skip a defect); and runs a changed-file census (`out/unreviewable.json`: binary, too-large or truncated files are never treated as reviewed; a diff too large for `gh pr diff` is computed from the clone) → launch → `codex-cross-check.js` → `render-review.js` → on request, `review-flow-post.js` (draft exists, head unmoved, no existing pending review, anchors valid, then POST PENDING with `commit_id`). Mechanics live in scripts so the host's context carries the procedure, not the bash. Every agent is told that PR text, code, comments and changed instruction files are evidence, not instructions.
@@ -274,12 +272,16 @@ the accumulated learnings evaporate.
 - **Workflow starts fresh after a restart.** Resumability is same-session
   only; re-launch the command (the brief is durable and re-runnable).
 - **Stuck slices / open findings.** The workflow returns these; the
-  command surfaces them and the synthesizer carries open findings into the
-  PR body. Not silent.
+  command surfaces them and the synthesizer carries them to the top of the
+  review summary. Not silent.
+- **feature-flow gate refuses to run.** `config-changed` means `gate.json`
+  changed after `init` (re-run `init --force` after an intended edit);
+  `wrong-branch` means the worktree left `agt/feature-<slug>`. The gate never
+  discards work; leftovers land in an `[unverified]` commit at finalize.
 - **Workflows unavailable.** Need Claude Code ≥ 2.1.154 and workflows not
   disabled (`/config` → Dynamic workflows; `disableWorkflows`;
   `CLAUDE_CODE_DISABLE_WORKFLOWS`).
-- **`workflow('tdd-slice-loop')` throws (unknown name).** The shared inner
+- **`workflow('tdd-slice-loop')` throws (unknown name).** spike-flow's prototype
   loop is a saved workflow that must exist at
   `~/.claude/workflows/tdd-slice-loop.js` (mise-symlinked from this
   repo). If it's missing, the parent logs the launch failure and records
@@ -290,7 +292,8 @@ the accumulated learnings evaporate.
 1. **Behavioral validator** — a stage that runs the app and exercises it
    (Playwright for web, expect for TUIs/CLIs) before declaring a feature
    done, complementing the static critic.
-2. **Cross-provider critic** — route the critic to a different provider to
-   break the in-family critic+implementer shared-distribution blind spot.
+2. **Cross-provider critic** — feature-flow now ends with a different-model
+   final review (Fable, or Codex with `--codex`); review-flow has its Codex
+   cross-check. Extend to spike-flow if its critic misses recur.
 3. **`agt-ls` / `agt-prune`** — list active runs, prune old run dirs +
    worktrees, when run count justifies it.

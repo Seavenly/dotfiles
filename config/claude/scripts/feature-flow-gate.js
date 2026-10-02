@@ -39,6 +39,8 @@ const DEFAULT_TEST_PATTERNS = [
   "**/*.test.*", "**/*.spec.*", "**/*_test.*", "**/test_*.py",
   "**/test/**", "**/tests/**", "**/__tests__/**",
 ];
+const FOCUS = /\b(?:it|test|describe|context)\.only\s*\(|\b(?:fit|fdescribe|ftest)\s*\(/;
+const SKIP = /\b(?:it|test|describe|context)\.(?:skip|todo)\s*\(|\b(?:xit|xdescribe|xtest)\s*\(|@pytest\.mark\.skip|\bt\.Skip\(/;
 const ASSERTION = /\b(expect|assert\w*|should|t\.(is|not|true|false|deepEqual|equal|throws|regex|snapshot)|toBe|toEqual|toMatch|toThrow|toHaveBeenCalled\w*)\b/;
 
 // Child runner: argv = [cmd, timeoutMs, logPath]. Streams output to the log,
@@ -59,6 +61,8 @@ child.on("exit", (code) => {
   fs.writeFileSync(log + ".status", JSON.stringify({ exit: code, timedOut }));
 });
 `;
+
+class GateError extends Error {}
 
 function usage(message) {
   process.stderr.write(`${message}\n`);
@@ -130,12 +134,12 @@ class Gate {
     this.ledgerPath = path.join(this.dir, "ledger.json");
     this.cachePath = path.join(this.dir, "cache.json");
     const raw = fs.existsSync(this.configPath) ? fs.readFileSync(this.configPath, "utf8") : null;
-    if (raw === null) usage(`missing ${this.configPath}`);
+    if (raw === null) throw new GateError(`missing ${this.configPath}`);
     this.configDigest = sha256(raw);
     this.config = JSON.parse(raw);
     const c = this.config;
-    if (!c.worktree || !path.isAbsolute(c.worktree)) usage("gate.json needs an absolute worktree");
-    if (!c.branch) usage("gate.json needs the run branch");
+    if (!c.worktree || !path.isAbsolute(c.worktree)) throw new GateError("gate.json needs an absolute worktree");
+    if (!c.branch) throw new GateError("gate.json needs the run branch");
     this.wt = c.worktree;
     this.ignore = c.ignorePaths || [];
     this.testPatterns = c.testPathPatterns || DEFAULT_TEST_PATTERNS;
@@ -252,8 +256,8 @@ class Gate {
   }
 
   // ── init ──────────────────────────────────────────────────────────
-  init() {
-    if (this.state && !process.argv.includes("--force")) {
+  init(opts = {}) {
+    if (this.state && opts.force !== true) {
       return { ok: false, reason: "already-initialized", message: "pass --force to re-initialize" };
     }
     const top = this.git(["rev-parse", "--show-toplevel"], { allowFail: true }).out;
@@ -305,7 +309,7 @@ class Gate {
     if (bad) return { ok: false, ...bad };
     const slice = String(opts.slice || "");
     const tests = String(opts.tests || "").split(",").map((s) => s.trim()).filter(Boolean);
-    if (!slice || !tests.length) usage("red needs --slice and --tests");
+    if (!slice || !tests.length) throw new GateError("red needs --slice and --tests");
     const files = [];
     for (const rel of tests) {
       const abs = path.resolve(this.wt, rel);
@@ -336,6 +340,9 @@ class Gate {
     record.red = { files: snapshot, dir: snapDir, outcome: red, at: new Date().toISOString() };
     this.state.slices[slice] = record;
     this.saveState();
+    if (red === "error") {
+      return { ok: false, reason: "red-errored", message: "the focused test run errored or timed out, which is not a behavioral failure; fix the test setup and run red again", files, tail: result.tail };
+    }
     if (red === "passed") {
       return { ok: false, reason: "tests-not-red", message: "the new tests already pass, so they do not describe new behavior; fix the tests or ask for the slice to be red-exempt", files, tail: result.tail };
     }
@@ -358,7 +365,15 @@ class Gate {
         if (removed.length) weakenedAssertions.push({ file: rel, removed: removed.slice(0, 10) });
       }
     }
-    return { existingTestEdits, weakenedAssertions };
+    const focusMarkers = [];
+    const skipMarkers = [];
+    for (const file of changed.filter((f) => matchesAny(f, this.testPatterns))) {
+      const added = this.git(["diff", "-U0", fromTree, toTree, "--", file]).out
+        .split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+      if (added.some((l) => FOCUS.test(l))) focusMarkers.push(file);
+      if (added.some((l) => SKIP.test(l))) skipMarkers.push(file);
+    }
+    return { existingTestEdits, weakenedAssertions, focusMarkers, skipMarkers };
   }
 
   // ── verify ────────────────────────────────────────────────────────
@@ -370,7 +385,7 @@ class Gate {
     const mode = opts.mode === "verify" ? "verify" : "test";
     const final = opts.final === true;
     const redExempt = opts["red-exempt"] === true;
-    if (!slice || !title) usage("verify needs --slice and --title");
+    if (!slice || !title) throw new GateError("verify needs --slice and --title");
 
     const { folded, diverged } = this.fold();
     const verified = this.state.verifiedHead;
@@ -383,7 +398,7 @@ class Gate {
       return { ok: false, slice, reason, head: verified, folded, diverged, ...extra };
     };
 
-    if (mode === "test" && !redExempt && !(record.red && record.red.outcome !== "passed")) {
+    if (mode === "test" && !redExempt && !(record.red && ["failed", "unchecked"].includes(record.red.outcome))) {
       return fail("missing-red-snapshot", { message: "test-mode slices run `red` on their new tests before implementing; nothing is committed until then" });
     }
 
@@ -436,6 +451,10 @@ class Gate {
     record.lastAttemptTree = tree;
 
     const edits = this.testEdits(slice, verifiedTree, tree);
+    if (edits.focusMarkers.length) {
+      this.writeAttempt(slice, tree, results, false);
+      return fail("focused-test-marker", { message: "a test file adds .only, fit, or fdescribe, which narrows the suite; remove it", files: edits.focusMarkers });
+    }
     if (tree === verifiedTree) {
       record.status = "verified";
       this.writeAttempt(slice, tree, results, true, verified);
@@ -530,23 +549,107 @@ class Gate {
   }
 }
 
+// An agent's shell call times out after ten minutes, and a full suite can take
+// longer. `--detach` starts the subcommand in the background and prints
+// { pending: true, token }; `wait` blocks up to --timeout seconds (default
+// 540) and prints the result, or { pending: true, token } again.
+function resultsDir(runDir) {
+  return path.join(path.resolve(runDir), "gate", "results");
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// --request names the caller's attempt (the workflow passes its agent label),
+// so a relay that retries reattaches to the same run instead of starting a
+// second gate that would race the first.
+function detach(command, runDir, argv, opts) {
+  const request = typeof opts.request === "string" && /^[\w.:-]+$/.test(opts.request) ? opts.request.replace(/:/g, "_") : null;
+  const token = request ? `${command}-${request}` : `${command}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+  const dir = resultsDir(runDir);
+  const resultFile = path.join(dir, `${token}.json`);
+  const pidFile = path.join(dir, `${token}.pid`);
+  fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(resultFile)) return readJson(resultFile, { ok: false, reason: "gate-error", message: "unreadable result" });
+  const pid = Number(fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : 0);
+  if (pid && pidAlive(pid)) return { pending: true, token, ok: false };
+  const rest = argv.filter((x) => x !== "--detach");
+  const child = spawnSync("/bin/sh", ["-c", `nohup ${[process.execPath, __filename, command, runDir, ...rest, "--result-file", resultFile].map(shellQuote).join(" ")} >/dev/null 2>&1 & echo $!`], { encoding: "utf8" });
+  if (child.status !== 0) return { ok: false, reason: "gate-error", message: "could not start the detached gate" };
+  fs.writeFileSync(pidFile, child.stdout.trim());
+  return { pending: true, token, ok: false };
+}
+
+function waitFor(runDir, opts) {
+  const token = String(opts.token || "");
+  if (!/^[\w.-]+$/.test(token)) usage("wait needs --token");
+  const resultFile = path.join(resultsDir(runDir), `${token}.json`);
+  const pidFile = path.join(resultsDir(runDir), `${token}.pid`);
+  const deadline = Date.now() + Math.min(Number(opts.timeout || 540), 570) * 1000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(resultFile)) return readJson(resultFile, { ok: false, reason: "gate-error", message: "unreadable result" });
+    const pid = Number(fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : 0);
+    if (pid && !pidAlive(pid)) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+      if (fs.existsSync(resultFile)) continue;
+      return { ok: false, reason: "gate-error", message: "the detached gate exited without a result" };
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+  }
+  return { pending: true, token, ok: false };
+}
+
+// One gate at a time per run: a second caller waits for the lock rather than
+// racing the first on reset, commit, and state.
+function withLock(runDir, fn) {
+  const lock = path.join(path.resolve(runDir), "gate", "lock");
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  const deadline = Date.now() + 60 * 60 * 1000;
+  while (true) {
+    try {
+      fs.writeFileSync(lock, String(process.pid), { flag: "wx" });
+      break;
+    } catch {
+      const holder = Number(fs.readFileSync(lock, "utf8") || 0);
+      if (!holder || !pidAlive(holder)) { fs.rmSync(lock, { force: true }); continue; }
+      if (Date.now() > deadline) return { ok: false, reason: "gate-busy", message: `another gate (pid ${holder}) has held the lock for an hour` };
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+    }
+  }
+  try { return fn(); } finally { fs.rmSync(lock, { force: true }); }
+}
+
 function main() {
-  const { command, runDir, opts } = parseArgs(process.argv.slice(2));
-  if (!command || !runDir) usage("usage: feature-flow-gate.js <init|red|verify|finalize|audit> <runDir> [options]");
-  const gate = new Gate(runDir);
+  const argv = process.argv.slice(2);
+  const { command, runDir, opts } = parseArgs(argv);
+  if (!command || !runDir) usage("usage: feature-flow-gate.js <init|red|verify|finalize|audit|wait> <runDir> [options] [--detach] [--request id]");
+  if (command === "wait") {
+    process.stdout.write(`${JSON.stringify(waitFor(runDir, opts))}\n`);
+    return;
+  }
+  if (!["init", "red", "verify", "finalize", "audit"].includes(command)) usage(`unknown subcommand: ${command}`);
+  if (opts.detach) {
+    process.stdout.write(`${JSON.stringify(detach(command, runDir, argv.slice(2), opts))}\n`);
+    return;
+  }
   let result;
   try {
-    switch (command) {
-      case "init": result = gate.init(); break;
-      case "red": result = gate.red(opts); break;
-      case "verify": result = gate.verify(opts); break;
-      case "finalize": result = gate.finalize(opts); break;
-      case "audit": result = gate.audit(); break;
-      default: usage(`unknown subcommand: ${command}`);
-    }
+    const gate = new Gate(runDir);
+    const run = () => {
+      switch (command) {
+        case "init": return gate.init(opts);
+        case "red": return gate.red(opts);
+        case "verify": return gate.verify(opts);
+        case "finalize": return gate.finalize(opts);
+        default: return gate.audit();
+      }
+    };
+    result = command === "audit" ? run() : withLock(runDir, run);
   } catch (error) {
-    result = { ok: false, reason: "gate-error", message: error.message };
+    result = { ok: false, reason: error instanceof GateError ? "gate-config" : "gate-error", message: error.message };
   }
+  if (typeof opts["result-file"] === "string") writeJson(opts["result-file"], result);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

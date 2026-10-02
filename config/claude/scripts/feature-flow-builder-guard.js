@@ -12,8 +12,8 @@ const fs = require("node:fs");
 
 const HISTORY = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+(commit|reset|stash|checkout|switch|clean|rebase|merge|cherry-pick|revert|am|push|pull|fetch|tag|worktree|update-ref|symbolic-ref|filter-branch|replace|notes)\b/;
 const BRANCH_WRITE = /\bgit\b(?:\s+-[cC]\s+\S+)*\s+branch\s+(?:-[a-zA-Z]*[dDmMcCf]|--(?:delete|move|copy|force))/;
-const GATE = /feature-flow-gate\.js\b/;
-const GATE_RED = /feature-flow-gate\.js\s+red\b/;
+// Any gate invocation other than `red`, anywhere in a chained command.
+const GATE_OTHER = /feature-flow-gate\.js(?!\s+red\b)/;
 const GATE_STATE = /^gate(\/|\.json$)/;
 
 function block(reason) {
@@ -31,7 +31,7 @@ if (tool === "Bash") {
   if (HISTORY.test(command) || BRANCH_WRITE.test(command)) {
     block("Blocked: the gate is the only committer in feature-flow. Leave your changes uncommitted (do not commit, stash, reset, checkout, or switch); the gate verifies and commits them. Use `git diff`, `git status`, and `git log` freely.");
   }
-  if (GATE.test(command) && !GATE_RED.test(command)) {
+  if (GATE_OTHER.test(command.replace(/feature-flow-gate\.js\s+red\b/g, ""))) {
     block("Blocked: the builder may run only `feature-flow-gate.js red`; the workflow runs verify and finalize.");
   }
   if (/agent-teams\/runs\/[^\s/]+\/gate(\/|\.json)/.test(command) && /(>|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b)/.test(command)) {

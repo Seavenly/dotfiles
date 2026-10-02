@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Writes minimal production code to make one failing test pass, then does a focused local refactor. Lives in the TDD inner loop opposite tester. Inherits decisions from earlier slices via the run journal. Never writes tests.
+description: Writes minimal production code to make one failing test pass, then does a focused local refactor. Lives in spike-flow's TDD prototype loop opposite tester (feature-flow uses builder). Never writes tests.
 tools: Read, Grep, Glob, Bash, Write, Edit, MultiEdit
 model: opus
 ---
@@ -208,16 +208,3 @@ slice has any non-trivial runtime behavior); the working rules:
   final diff. Clean before declaring done.
 - **Retry budget is hard.** If you've hit `max_slice_retries` and still
   can't go green, surface this to the lead. Do not silently move on.
-
-## When the critic returns FIX_LIST
-
-After all slices are green, the critic reviews the full diff and
-may return a fix list of testable-slice-shaped items. Each item is run
-through the full TDD inner loop, same as a regular slice — `tester`
-writes a failing test for the fix, then you make it pass. You do not
-get re-invoked directly with "here are eight things to fix, go." If you
-find yourself in that situation, push back: the inner loop is the
-discipline that makes the fix stick.
-
-Up to `max_critic_revisions` (default 3) such cycles can run before the
-team ships as-is or escalates.

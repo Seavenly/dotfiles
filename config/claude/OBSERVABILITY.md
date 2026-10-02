@@ -1,7 +1,7 @@
 # Observability doctrine — agent-teams
 
 Single source of truth for how the agent-teams flows treat observability.
-Both the **builder** (feature-flow: planner, implementer, feature critic) and
+Both the **builder** (feature-flow: planner, builder, feature critic) and
 the **reviewer** (review-flow: the `observability` lens + critic) work from
 this. The goal is the same in both directions: when this code misbehaves in
 production, can an on-call engineer figure out *what happened and why* from

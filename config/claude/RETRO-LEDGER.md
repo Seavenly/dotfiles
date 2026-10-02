@@ -12,6 +12,33 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-10-02 - feature-flow overhaul for current models (not a retro)
+
+An audit of 78 runs (2026-08-31 to 10-01), outside research, and two
+independent reviews of the plan (Codex and Fable). Most cost came from engine
+defects, not model limits: 49% of retries were gate false-rejects, and 57 of
+111 stuck slices were green.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Gate rejected green slices when an agent had committed its own work (`committed:false` on a clean tree); unverified self-commits reached branch history | AVOID | scripts/feature-flow-gate.js + workflows/feature-flow-run.js | applied - deterministic gate script owns every check and commit; reset --soft folds agent commits; failed work never stays in history; leftovers commit as [unverified]; audit accounts for every commit. **Supersedes 2026-07-24 and 2026-10-01 ledger and reuse rules** |
+| Prompt rules did not stop agents committing (106 of 1,133 attempts) | ADD | agents/builder.md + scripts/feature-flow-builder-guard.js | applied - PreToolUse hook blocks history-changing git and gate state |
+| Separate tester and implementer: 0 confirmed weakenings guarded, 19% of tokens, 14 wrong tests nobody could fix, 57 slices stuck on existing tests nobody could update | AVOID | agents/builder.md | applied - one builder per slice; red snapshot through the gate flags removed assertions; existing-test edits allowed and itemized |
+| Over-slicing (one behavior per module, docs-only slices) multiplied gate runs | AVOID | agents/planner.md | applied - **extends 2026-10-01** - behavior-sized slices; docs ride with their source |
+| Test code at a median 1.66x source lines; user asked to trim | ADD | agents/builder.md + agents/planner.md + agents/feature-critic.md | applied - about one test per behavior, extend existing tests, critic reviews proportion; no numeric ratio rule |
+| Critic precision 85-95%, but 85% of its items were deferred by the blocking rule and it missed 70% of outside-review should-fix findings | AVOID | agents/feature-critic.md + agents/feature-verifier.md + workflows/feature-flow-run.js | applied - report everything with severity and confidence; lenses for the recurring blind spots; verifier triages by risk and fix cost; prod and credential safety never deferred |
+| User ran an outside Codex or Fable review on most runs and asked whether another round was worthwhile | ADD | agents/final-reviewer.md + scripts/feature-flow-codex-review.js | applied - final cross-model review (Fable; `--codex` opt-in) with triage; at most 2 fix rounds across both stages |
+| Completeness dropped non-blocking recheck gaps, went stale before the critic loop, and never saw the ledger | AVOID | workflows/feature-flow-run.js + agents/completeness-critic.md | applied - coverage recomputed at the final head; ledger and stuck slices as inputs; partial gaps become follow-ups |
+| Briefs carried "checks pass" and process rules as acceptance criteria; CI-only criteria were declared undeliverable | ADD | commands/feature-flow.md | applied - evidence-tagged criteria (test, diff, docs, ci:<job>, live); process rules under constraints; deferred proofs name the exact job |
+| Report averaged 1,188 words; user rewrote nearly every PR body | AVOID | agents/synthesizer.md | applied - short review summary with a review guide |
+| An interrupted run was delivered without its review stages | ADD | commands/feature-flow.md + workflows/feature-flow-run.js | applied - stage status per head; UNREVIEWED registration; --review-only relaunch |
+| RE_PLAN research and fix-size guard fired 0 times in 76 runs | AVOID | workflows/feature-flow-run.js | applied - removed; triage returns a replan reason instead |
+| Haiku 4.5 retires; gate relays now only relay | STRESS | workflows | applied - Sonnet 5.5 at low effort |
+
+Notes:
+- spike-flow keeps tdd-slice-loop.js with tester and implementer; only its gate model changed.
+- ADR-0008 amended so the Claude-only baseline stays maintained; the pin is re-recorded with this change.
+
 ## 2026-10-01 - feature run (sanitized)
 
 A small additive change shipped correctly, but took several times its

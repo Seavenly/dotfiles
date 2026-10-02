@@ -1,17 +1,15 @@
 # Default cap and gate values for agent-teams flows.
-# The flow command merges these with brief-level overrides and CLI flags at
-# draft time, before launching the workflow. The workflow reads the merged
-# values from its `args`.
-#
-# Override at the brief level by setting `config:` fields in brief.md.
+# The flow command merges these with CLI flags before launching the workflow,
+# which reads the merged values from its `args`.
 
 feature_flow:
-  max_slice_retries: 3        # how many times implementer can retry per slice
-  max_critic_revisions: 3     # how many critic-driven revision cycles allowed
-  max_critic_fix_files: 8     # larger critic repairs trigger research + RE_PLAN
-  plan_gate: false            # if true, the command runs the plan workflow first
-                              # and waits for user approval before implementing
-                              # (the --gated two-launch split)
+  max_slice_retries: 3        # builder retries per slice after a gate failure
+  max_fix_rounds: 2           # repair rounds across both review stages (0-2)
+  final_reviewer: fable       # fable | codex (--codex); codex usage is limited
+  codex_model: gpt-6-sol      # used only with --codex
+  codex_effort: medium
+  gate_timeout_sec: 900       # per gate command (gate.json timeoutSec)
+  plan_gate: false            # true = --gated: approve the plan before building
 
 review_flow:
   urgency: standard           # hotfix | fast | standard — decides what the

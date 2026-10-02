@@ -224,6 +224,58 @@ test("normalize commands must be scoped to {files}", (t) => {
   assert.equal(gate(runDir, "init").reason, "unscoped-normalize");
 });
 
+test("an added .only fails the gate", (t) => {
+  const { runDir, wt } = fixture(t);
+  gate(runDir, "init");
+  write(wt, "tests/old.test.js", "expect(old).toBe(1)\nit.only('x', () => {})\n");
+  const r = gate(runDir, "verify", "--slice", "1", "--title", "F", "--mode", "verify");
+  assert.equal(r.reason, "focused-test-marker");
+  assert.deepEqual(r.files, ["tests/old.test.js"]);
+});
+
+test("a red run that errors or times out is not red", (t) => {
+  const { runDir, wt } = fixture(t, { focusedTestCmd: "sleep 5 # {files}", timeoutSec: 1 });
+  gate(runDir, "init");
+  write(wt, "tests/n.test.js", "expect(a).toBe(1)\n");
+  assert.equal(gate(runDir, "red", "--slice", "1", "--tests", "tests/n.test.js").reason, "red-errored");
+  write(wt, "f.txt", "x\n");
+  assert.equal(gate(runDir, "verify", "--slice", "1", "--title", "F", "--mode", "test").reason, "missing-red-snapshot");
+});
+
+test("a retried detached request reattaches instead of starting a second gate", (t) => {
+  const { runDir, wt } = fixture(t, { suiteCmd: "sleep 2; echo run >> ../suite.log" });
+  gate(runDir, "init");
+  write(wt, "a.txt", "a\n");
+  const first = gate(runDir, "verify", "--slice", "1", "--title", "A", "--mode", "verify", "--detach", "--request", "gate:s1");
+  const again = gate(runDir, "verify", "--slice", "1", "--title", "A", "--mode", "verify", "--detach", "--request", "gate:s1");
+  assert.equal(again.token, first.token);
+  const r = gate(runDir, "wait", "--token", first.token, "--timeout", "60");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const replay = gate(runDir, "verify", "--slice", "1", "--title", "A", "--mode", "verify", "--detach", "--request", "gate:s1");
+  assert.equal(replay.ok, true);
+  assert.equal(fs.readFileSync(path.join(runDir, "suite.log"), "utf8").trim().split("\n").length, 2);
+});
+
+test("a detached run that fails on bad config still reports", (t) => {
+  const { runDir } = fixture(t);
+  fs.writeFileSync(path.join(runDir, "gate.json"), JSON.stringify({ branch: "x" }));
+  const started = gate(runDir, "init", "--detach");
+  const r = gate(runDir, "wait", "--token", started.token, "--timeout", "30");
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "gate-config");
+});
+
+test("a detached gate run is collected with wait", (t) => {
+  const { runDir, wt } = fixture(t);
+  gate(runDir, "init");
+  write(wt, "a.txt", "a\n");
+  const started = gate(runDir, "verify", "--slice", "1", "--title", "A", "--mode", "verify", "--detach");
+  assert.equal(started.pending, true);
+  const r = gate(runDir, "wait", "--token", started.token, "--timeout", "60");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(log(wt), ["ABC-1: A"]);
+});
+
 function guard(payload) {
   return spawnSync(process.execPath, [guardScript], { input: JSON.stringify(payload), encoding: "utf8" });
 }
@@ -237,6 +289,7 @@ test("the builder guard blocks history changes and gate state, and allows reads"
   assert.equal(bash("git branch -D other"), 2);
   assert.equal(bash("node ~/.claude/scripts/feature-flow-gate.js verify /r --slice 1"), 2);
   assert.equal(bash("node ~/.claude/scripts/feature-flow-gate.js red /r --slice 1 --tests a.test.ts"), 0);
+  assert.equal(bash("node ~/.claude/scripts/feature-flow-gate.js red /r --slice 1 --tests a.test.ts; node ~/.claude/scripts/feature-flow-gate.js verify /r --slice 1"), 2);
   assert.equal(bash("git status && git diff --stat && git log -5"), 0);
   assert.equal(bash("pnpm vitest run src/a.test.ts"), 0);
   const edit = (file_path) => guard({ tool_name: "Write", tool_input: { file_path } }).status;

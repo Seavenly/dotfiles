@@ -1,164 +1,169 @@
 ---
-description: Implement a feature with a dynamic workflow — interview → brief → worktree (one native install) → planner/test-or-verify/critic/synthesizer workflow → PR-ready branch. Supports declarative infra/config stories via first-class verification-mode slices and --verify gates. Args — goal statement and optional flags (--gated, --grill, --max-retries N, --max-revisions N, --context path, --repo path, --base branch, --verify "cmd", --story JIRA-KEY).
+description: Implement a feature with a dynamic workflow - interview, brief, worktree, then planner, per-slice builder with a deterministic gate, completeness and design review, a final cross-model review, and a short review summary, delivered to the local tuicr inbox. Args - goal statement and optional flags (--gated, --grill, --codex, --max-retries N, --max-fix-rounds N, --context path, --repo path, --base branch, --verify "cmd", --story JIRA-KEY, --review-only run_id).
 ---
 
-You run a feature-flow: interview the user, draft a brief, set up a
-worktree with deps installed once, then launch the `feature-flow-run`
-dynamic workflow to implement it. The autonomous build (plan → test or verify →
-critic → synthesize) lives in the workflow; you handle the interview,
-worktree/setup, the optional plan gate, and the wrap-up.
+You run a feature-flow: interview the user, write a brief, prepare a worktree
+and its gate, launch the `feature-flow-run` workflow, and hand the result to
+the local review inbox. The workflow owns planning, building, and review; you
+own the interview, setup, the optional plan gate, and the handoff.
 
-> **⚠️ DELIVERY MODE — LOCAL REVIEW ONLY (overrides the PR steps in wrap-up).**
-> The finished branch is delivered to the **local `tuicr` review inbox**, NOT as a
-> GitHub PR. In Step 6: **register the review with `tuicr-reviews add`** and leave
-> the local branch + worktree in place — then stop. **Do NOT `git push` and do NOT
-> `gh pr create`** (not even a draft), even when `--story` is given. Since nothing
-> hits GitHub, there is no PR link to auto-transition Jira: leave the story **In
-> Progress** and comment the local review handle / branch name on it instead of a
-> PR link (skip the transition-to-In-Review + PR-comment step). The human reviews
-> and integrates locally. (Rationale + scope: memory
-> `feedback-epic-flow-local-review-not-prs`.)
+Delivery is local review only: register the review with `tuicr-reviews add`
+and leave the branch and worktree in place. Do not push and do not open a PR.
 
 User's invocation: `/feature-flow $ARGUMENTS`
 
-## Read first
-- `~/.claude/AGENT-TEAMS.md` — system architecture.
-- `~/.claude/defaults.yaml` — cap defaults (`feature_flow`).
+Read `~/.claude/defaults.yaml` (`feature_flow`) for defaults.
 
-## Step 1 — Parse arguments
-- **Goal statement** — leading free text / first quoted string.
-- `--gated` → plan-approval gate (two-phase launch, see Step 5).
-- `--grill` → heavy interview (grill-me style) before drafting.
-- `--max-retries N` → `max_slice_retries`. `--max-revisions N` → `max_critic_revisions`.
-- `--context <path>` (repeatable) → copy into the run's `context/`.
-- `--repo <path>` → target repo (default: CWD).
-- `--base <branch>` → branch the worktree from this branch and target the PR at it (integration-branch workflows). Default: the branch the user is on.
-- `--verify "<cmd>"` (repeatable) → approved verification command(s) the gate runs for verification-mode slices and once after the final slice (e.g. `pulumi preview --stack dev`). Declarative infra/config/docs use verification mode when there is no stable behavioral seam; a failing test must never be manufactured. Destructive or credentialed live commands such as `pulumi up` and `pulumi destroy` remain explicit human gates unless the user separately authorizes them.
-- `--story <JIRA-KEY>` → fetch the Jira issue (Atlassian MCP) and use its summary/description as the goal and acceptance criteria; on wrap-up, open the PR and update the story (see Step 6). A story description may carry its own `Verify:` and `Base branch:` lines — treat those as defaults that explicit flags override.
+## 1. Arguments
+- Goal: the leading free text. Empty or `help`: explain usage and stop.
+- `--gated`: approve the plan before building (two launches, step 5).
+- `--grill`: interview in depth with the `grilling` skill before the brief.
+- `--codex`: the final review runs on Codex (`codex_model` / `codex_effort`
+  from defaults) instead of Fable; Codex usage is limited, so it is opt-in.
+- `--max-retries N`, `--max-fix-rounds N` (0-2, one per review stage): override the caps.
+- `--context <path>` (repeatable): copy into the run's `context/`.
+- `--repo <path>` (default: CWD). `--base <branch>`: branch from it and diff
+  against it (default: the current branch).
+- `--verify "<cmd>"` (repeatable): approved verification commands, run for
+  verify-mode slices and the final gate (for example `pulumi preview --stack
+  dev`). Destructive or credentialed live commands (`pulumi up`) stay human
+  gates unless the user separately authorizes them.
+- `--story <KEY>`: fetch the Jira issue; its summary, description, acceptance
+  criteria, and `Verify:` / `Base branch:` lines pre-answer the interview
+  (flags override them).
+- `--review-only <run_id>`: rerun only the review and handoff against that
+  run's existing worktree (step 7).
 
-If `$ARGUMENTS` is empty or `help`, explain usage and stop.
+## 2. Interview
+Ask only what the arguments and story leave open, at most four questions:
+1. **Repo**: confirm it; warn about unrelated uncommitted changes.
+2. **Acceptance**: what must be true when done, and what proves each item
+   (a test, the diff, docs, a CI job, or a live check)?
+3. **Scope boundaries**: what must not change, such as other environments,
+   public interfaces, or neighboring services? What is explicitly out?
+4. **Context**: files, docs, or PRs to read.
 
-## Step 2 — Interview (lightweight by default)
-If `--story` was given, fetch the issue first — its summary, description, acceptance criteria, and any `Verify:`/`Base branch:` lines pre-answer the questions below; with a well-formed story the interview usually has nothing left to ask, which is the point (unattended runs). Skip any question already answered by args. Three max:
-1. **Target repo** — confirm CWD (or `--repo`); warn on unrelated uncommitted changes.
-2. **Acceptance signal** — "What should be true when this is done? A passing test, a route that responds, a visible behavior?"
-3. **Must-read context** — "Any files/docs/PRs the team should read? (paths or 'none')"
+## 3. Brief
+`run_id=$(date +%Y-%m-%d-%H%M)-<slug>`, `run_dir=~/.agent-teams/runs/<run_id>`,
+`out_dir=$run_dir/out`. Create both plus `$run_dir/context`; copy `--context`
+files (warn on missing ones). Write `$run_dir/brief.md`:
 
-If `--grill`, conduct a deeper multi-round interview, pushing on ambiguity, before drafting.
-
-## Step 3 — Build the run dir and brief
-```
-run_id   = $(date +%Y-%m-%d-%H%M)-<slug>
-run_dir  = ~/.agent-teams/runs/<run_id>
-out_dir  = <run_dir>/out
-```
-`mkdir -p "$out_dir" "$run_dir/context"`. Copy each `--context` file into `context/` (warn, don't fail, on missing).
-
-Write `<run_dir>/brief.md` (merge `defaults.yaml.feature_flow` + flag overrides):
 ```markdown
 ---
 type: feature
-created: <ISO>
 run_id: <run_id>
-repo: <abs repo path>
-config:
-  max_slice_retries: <merged>
-  max_critic_revisions: <merged>
-  max_critic_fix_files: <merged default; critic repairs above this size trigger research + RE_PLAN>
-  plan_gate: <true if --gated>
-  base_branch: <from --base / story / current branch>
-  verify_commands: [<from --verify / story, may be empty>]
-  story: <JIRA-KEY or null>
-env: {}
-setup_commands: []
+repo: <abs path>
+base_branch: <base>
+story: <KEY or null>
+final_reviewer: fable | codex
 acceptance:
-  - <from interview>
-context_files:
-  - <relative paths under context/>
+  - { id: A1, evidence: test, text: "<one observable behavior>" }
+  - { id: A2, evidence: "ci:<job name>", text: "..." }
+constraints:
+  - <scope boundaries and process rules: what must not change, commit conventions>
 ---
 
 # Goal
-<goal statement + anything from the interview>
+<goal and anything learned in the interview>
 ```
-Show the rendered brief; reply `launch` / `edit` / `cancel`. On cancel `rm -rf "$run_dir"` and stop.
 
-## Step 4 — Worktree + one-time install
-Capture the diff base BEFORE branching — `--base` if given, else the branch the user is on (default `main`). When `--base` names a remote-tracked integration branch, fetch it first so the worktree starts from its latest tip:
+Each criterion is one observable behavior, split from compound statements,
+tagged `test`, `diff`, `docs`, `ci:<job>`, or `live`. "Lint, typecheck, and
+tests pass" is not a criterion; the gate enforces it. Process rules go under
+`constraints`. Show the brief and wait for `launch`, `edit`, or `cancel`
+(cancel: remove the run dir and stop).
+
+## 4. Worktree and gate
 ```bash
-base=<--base if given, else $(git -C <repo> rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)>
-git -C <repo> fetch origin "$base" 2>/dev/null || true
+git -C <repo> fetch origin "<base>" 2>/dev/null || true
 wt="$run_dir/worktree"
-git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "origin/$base" 2>/dev/null \
-  || git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "$base"
+git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "origin/<base>" 2>/dev/null \
+  || git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "<base>"
 ```
-Install deps once, natively, in the worktree (this is the only install for the run — agents and you share this tree). Use `setup_commands` if set, else auto-detect:
-- `.mise.toml` → `mise install` · `package.json` → `pnpm|npm|yarn install` (per lockfile) · `pyproject.toml` → `uv sync`|`poetry install` · `Cargo.toml` → `cargo build --tests`
-Detect the gate commands:
-- `testCmd` - the full suite (e.g. `pnpm test`).
-- `staticCmds` - cheap deterministic checks every slice gate runs first: typecheck, plus lint or format-check when they take seconds. Many test runners don't typecheck, so without these a slice's type error fails a later slice's gate and is charged to the wrong slice.
-- Slow or credentialed checks (build, preview) join `--verify` as `verifyCmds`, which run only for verify-mode slices and the final gate.
+Install dependencies once in the worktree (`mise install`, the lockfile's
+package manager, `uv sync`, `cargo build --tests`). The gate needs a clean
+worktree: if the install changed tracked files, stop and ask; untracked
+artifacts it leaves belong in `.gitignore` or `ignorePaths`. Then write
+`$run_dir/gate.json`. Only the host writes it; the gate refuses to run after
+it changes.
 
-**Baseline before launch (required).** Run every gate command once on the unchanged base, in the worktree, exactly as it will be passed, non-interactively the way gate agents run it (no TTY; watch modes off), each under an outer timeout. If any command is red or hangs on the base, do not launch: show the failure and ask the user for an approved alternative (a narrower suite, an exclusion, or an explicit waiver), then baseline that. A red base fails every slice's gate, and a hang stalls the run.
-
-## Step 5 — Launch the workflow
-Confirm `auto` permission mode (announce; if not, ask the user to `Shift+Tab`). Pre-allowlist the test/build/`git` commands so the gate agents don't stall mid-run.
-
-**Ungated (default):** launch the saved workflow once with `planOnly:false`:
-> Run `/feature-flow-run` with args:
-> ```json
-> { "runDir":"<run_dir>","outDir":"<out_dir>","repo":"<repo>","worktree":"<wt>",
->   "branch":"agt/feature-<slug>","base":"<base>","briefPath":"<run_dir>/brief.md","slug":"<slug>",
->   "testCmd":"<cmd|null>","staticCmds":[...]|null,"verifyCmds":[...]|null,
->   "commitPrefix":"<JIRA-KEY>: "|null,
->   "maxSliceRetries":<n>,"maxCriticRevisions":<n>,"maxCriticFixFiles":<n>,"acceptance":[...],
->   "priorRunStats":null,"planOnly":false,"slices":null }
-> ```
-
-**Gated (`--gated`):** two launches with the plan approved between them (a workflow can't take mid-run input):
-1. Launch with `planOnly:true`. It returns `{ slices, planPath, runStats }`. Show `plan.md` to the user; loop on edits (edit `plan.md` and adjust the slice list).
-2. On approval, launch again with `planOnly:false`, `slices:<approved slice array>`, and `priorRunStats:<step-1 runStats>` so the planner is skipped, implementation runs the approved slices, and final statistics cover both launches.
-
-Launch the saved `~/.claude/workflows/feature-flow-run.js` by name — never regenerate ad-hoc. Watch with `/workflows`.
-
-## Step 6 — Wrap-up (after the workflow returns)
-The workflow returns `{ branch, worktree, reportPath, reportContent, reportMissing, notesPath, notesContent, slices, criticRevisions, criticVerdictMissing, stuck, decisions, openFindings, deferredFindings, uncoveredAcceptance, verificationLedger, runStats }` (or `{ escalate:'RE_PLAN', reason, architectureResearch }`).
-
-**On a normal return, persist conversation-owned artifacts first.** If
-`reportMissing` is true or `reportContent` is empty, do not create an empty
-`report.md` and do not register the review - surface the missing load-bearing
-artifact and stop. Otherwise write `reportContent` to `reportPath` and
-`notesContent` to `notesPath` with the conversation's file
-write tool. The synthesizer deliberately returns content instead of writing
-inside the workflow, so a deterministic subagent write-policy rejection cannot
-trigger an expensive guaranteed-to-fail retry. If persistence itself is denied
-or fails, surface the returned content/path and stop; do not relaunch the
-synthesizer to repeat the same write.
-
-- **RE_PLAN** → surface the critic's reason plus `architectureResearch` evidence and alternatives, then stop for the user's architecture decision; do not auto-replan or start the proposed subsystem.
-- **stuck[]** non-empty → call out which slices exhausted retries or could not produce their declared test/verification evidence, and the recorded reason. An entry with `supersededBy` was carried forward and validated by a later gate at that SHA with every command it needed; report it as resolved later, not as a failure (the completeness gate judges whether its behavior arrived).
-- **decisions[]** non-empty → questions the critic says only the user can settle, such as a repo rule requiring part of the change to ship separately. Surface them before the review is registered; they're also near the top of the PR body.
-- **uncoveredAcceptance[]** non-empty → the completeness gate found acceptance criteria the brief asked for but the artifact still doesn't demonstrate after a fix pass — i.e. promised behavior that did **not** ship. Call these out first and prominently; they're surfaced at the top of the PR body under "Unmet acceptance criteria". This is a stronger signal than an open design finding: the feature is incomplete against its own contract.
-- **openFindings[]** non-empty → note the critic hit the revision cap with open merge-blocking findings (they're also in the PR body).
-- **deferredFindings[]** non-empty → mention the critic recorded non-blocking follow-ups; they're listed in the PR body under "Things deliberately not done".
-- **criticVerdictMissing** true → warn that the outer critique pass produced no verdict (the critic died twice); recommend a manual review before merging.
-- **runStats** → report agents, retries, static-check executions, full-suite executions, verification executions, and reused checks. The `verificationLedger` is the evidence record (command, validated commit SHA, exit status, and whether the command changed the tree); do not rerun a check merely to restate it during wrap-up.
-- Otherwise print:
+```json
+{ "worktree": "<wt>", "branch": "agt/feature-<slug>", "commitPrefix": "<KEY>: " ,
+  "staticCmds": ["<typecheck>", "<fast lint>"], "suiteCmd": "<full suite>",
+  "verifyCmds": ["<--verify / story Verify: commands>"],
+  "normalizeCmds": ["<formatter> {files}"], "focusedTestCmd": "<runner> {files}",
+  "ignorePaths": ["coverage/**"], "timeoutSec": <gate_timeout_sec> }
 ```
-✓ feature-flow complete
-  branch:  <branch>   (worktree: <wt>)
-  report:  <reportPath>
-  journal: <notesPath>   (what happened across slices)
-  diff:    git -C <wt> diff <base>...HEAD
+Use `""` for `commitPrefix` without a story, and omit fields that don't apply.
+Commands run non-interactively (`CI=1`, no watch mode). Formatters belong in
+`normalizeCmds`, never in the checks, and both templates take `{files}`.
+`ignorePaths` lists files the suite itself writes. The gate judges commands
+by exit status, so a preview whose risky output is a replace or delete needs
+a wrapper that exits non-zero on it (for example a script that fails on
+`replace` or `delete` in `pulumi preview --json`).
+
+Baseline: run `node ~/.claude/scripts/feature-flow-gate.js init "$run_dir"
+--detach`, then `... wait "$run_dir" --token <token>` until it returns, and
+keep its `baseSha` for the launch. If it
+reports `baseline-red`, a timeout, or a mutation, do not launch: show the
+failing command and ask for an approved alternative, update `gate.json`, and
+re-run `init --force`.
+
+## 5. Launch
+Confirm `auto` permission mode. The settings must allow
+`Bash(node ~/.claude/scripts/feature-flow-gate.js *)` and
+`Bash(node ~/.claude/scripts/feature-flow-codex-review.js *)`; if prompts
+appear, add them. Launch the saved workflow by name; never regenerate it.
+
+```json
+{ "runDir":"<run_dir>","outDir":"<out_dir>","worktree":"<wt>","branch":"agt/feature-<slug>",
+  "base":"<base>","baseSha":"<init baseSha>","briefPath":"<run_dir>/brief.md","slug":"<slug>",
+  "gate":"node ~/.claude/scripts/feature-flow-gate.js",
+  "acceptance":[<brief acceptance objects>],
+  "maxSliceRetries":<n>,"maxFixRounds":<n>,
+  "finalReviewer":"fable|codex","codex":{"model":"<m>","effort":"<e>"},
+  "planOnly":false,"slices":null,"reviewOnly":false,"priorRunStats":null }
 ```
-- Record the review so the `tuicr` tmux hotkey (`prefix + r`) can reopen it later: `tuicr-reviews add --repo <repo> --worktree <wt> --base <base> --branch <branch> --slug <slug> --summary "<one-line summary>"`. The `--summary` is a short, human-readable one-liner naming what the PR does (the story summary, or the brief's goal in plain prose) — it shows as a column in the picker, so make it scannable, not the branch name restated. Idempotent; upserts by (worktree, base, branch). Remove the projection explicitly with `tuicr-reviews rm --worktree <wt> --base <base> --branch <branch>` when the review is intentionally retired; a missing worktree remains visible as broken state. Skip registration only for stuck/RE_PLAN runs that produced no reviewable branch.
+`--gated`: launch with `planOnly:true`, show `plan.md`, iterate on edits, then
+launch again with the approved `slices` and `priorRunStats`.
 
-**If `--story` was given** (and the run wasn't stuck/RE_PLAN): push the branch and open the PR **as a draft** against the base branch with `report.md` as the body — `git -C <wt> push -u origin <branch>` then `gh pr create --draft --base <base> --title "<JIRA-KEY>: <story summary>" --body-file <out_dir>/report.md`. **Agent-opened PRs are always drafts and are never auto-merged** — a human reviews, marks the PR ready, and merges. (Draft status keeps coworkers from accidentally reviewing/merging unreviewed agent output, and keeps any merge-triggered deploy a human decision.) Then move the Jira story to In Review (or its nearest equivalent transition) and comment the PR link. If the run ended stuck or with open findings, comment the findings on the story and leave it In Progress.
+## 6. Handoff
+The workflow returns the report and journal content, `reviewedBase`,
+`reviewedHead`, `stageStatus`, `audit`, and the outcome lists. Two other
+shapes: `{ escalate: 'RE_PLAN', reason }` (surface the reason and stop for the
+user's decision) and `{ error }` (the plan or the gate failed; surface it,
+with `stuck` and `stageStatus`, and register nothing).
 
-**PR title/body reference ONLY this story's own key.** Never write another Jira issue key (a sibling, blocker, or downstream `ABC-NNN`/`PROJ-NNN`) in the PR title or body. The GitHub↔Jira integration creates a remote link on every issue key it finds in a PR, and a Jira automation rule can then auto-transition those *other* issues to Done — silently false-completing work that never happened. Refer to related stories by name/prose without the key (e.g. "the CI-redesign story", not "ABC-302"), or express the relationship as a Jira issue link on the story itself. The only key that belongs in the PR is this story's, in the title.
+1. Write `reportContent` to `$out_dir/report.md` and `notesContent` to
+   `$out_dir/notes.md`. If the report is missing, surface that and stop. If
+   the write itself fails, show the content and its path; do not relaunch.
+2. Run `node ~/.claude/scripts/feature-flow-gate.js audit "$run_dir"`. It
+   must report no unknown commits and the head must equal `reviewedHead`.
+3. Tell the user, most important first: `uncoveredAcceptance`, `decisions`,
+   unverified commits, `stuck` / `notAttempted`, `openFindings`,
+   `deferredProof` (the CI or live checks still to run), the final reviewer
+   used (and any fallback), `postReviewFixes`, then `runStats`. Do not rerun
+   checks to restate them.
+4. Register the review:
+   `tuicr-reviews add --repo <repo> --worktree <wt> --base <base> --branch <branch> --slug <slug> --summary "<one scannable line>"`.
+   If any stage in `stageStatus` is not `ok` or `skipped`, or the audit fails,
+   prefix the summary with `UNREVIEWED: <stages>` and offer
+   `/feature-flow --review-only <run_id>`.
+5. With `--story`: comment the branch, the summary, and any unmet criteria,
+   stuck slices, and open findings on the issue, and leave it In Progress. Mention no other issue keys anywhere;
+   the GitHub-Jira link can transition every key it finds.
 
-Stay available for follow-ups. The user can run `/retro` afterward to capture team-process lessons; don't run it automatically. (The worktree persists for the user to inspect/verify; remove later with `git -C <repo> worktree remove <wt>`.)
+The user can run `/retro` afterward. Remove the worktree later with
+`git -C <repo> worktree remove <wt>`.
+
+## 7. Review-only relaunch
+For `--review-only <run_id>`: reuse that run dir, worktree, brief, and
+`gate.json`; launch with `reviewOnly:true` and the same arguments otherwise;
+then do step 6. Uncommitted work in the worktree is committed as
+`[unverified]` first, so the review sees it.
 
 ## Failure cases
-- No identifiable repo → ask, don't guess.
-- Worktree add fails (dirty branch name collision) → surface, suggest a unique slug.
-- No test runner → surface, ask for guidance before launching.
+- No identifiable repo: ask.
+- Worktree branch collision: suggest a unique slug.
+- No test runner: ask before launching; verify-only work needs approved
+  `verifyCmds`.
