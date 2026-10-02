@@ -164,7 +164,9 @@ function lastJson(r) {
 }
 
 async function gate(sub, flags, label, phaseName) {
-  const command = `${a.gate} ${sub} ${q(a.runDir)}${flags ? ` ${flags}` : ''} --detach --request ${label.replace(/[^\w.:-]/g, '_')}`
+  // Request ids are scoped to this launch, so a later relaunch on the same run
+  // directory never reattaches to an earlier launch's result.
+  const command = `${a.gate} ${sub} ${q(a.runDir)}${flags ? ` ${flags}` : ''} --detach --request ${`${a.launchId || 'launch'}.${label}`.replace(/[^\w.:-]/g, '_')}`
   const waitCmd = `If it contains "pending":true, run: ${a.gate} wait ${q(a.runDir)} --token <the token it printed>`
   for (let attempt = 0; attempt < 3; attempt++) {
     runStats.agents++
@@ -285,8 +287,8 @@ async function runCritic(head) {
 async function runFinalReviewer(head) {
   const fable = async (note) => {
     const r = await retryNull((n) => { runStats.agents++; return agent(
-      `${where}\nReview the complete change \`git diff ${baseSha}..${head}\` (base ${baseSha}, head ${head}). The brief that asked for it is at ${a.briefPath}. Do not read the run's notes, plan, or earlier reviews.`,
-      { label: n ? 'final-review:fable-retry' : 'final-review:fable', phase: 'Final review', agentType: 'final-reviewer', schema: CRITIC_SCHEMA }
+      `${pinned(head)}\nThis is the final review: a fresh look at the complete change after the in-flow review and its fixes. You are not given the run journal, the gate reports, or earlier findings, and you should not read them; judge the change on its own. Acceptance criteria:\n${accText}\nReview through your lenses and report every finding.`,
+      { label: n ? 'final-review:fable-retry' : 'final-review:fable', phase: 'Final review', agentType: 'feature-critic', model: 'fable', schema: CRITIC_SCHEMA }
     ) })
     return { used: 'fable', fallbackReason: note || null, result: r }
   }

@@ -72,8 +72,8 @@ tier on the high-volume inner loop, the cheap tier on prescriptive assembly.
 | builder | opus, high | ~1-2 per slice | feature-flow's slice builder: tests first, red snapshot, implementation; may update tests the slice deliberately changes |
 | completeness-critic | opus, high | 1-2 | Maps each acceptance criterion to evidence; catches planned work that never landed |
 | feature-critic | opus, high | 1 | In-flow lenses review; reports every finding with severity and confidence, decides nothing |
+| final review | feature-critic on fable | 1 | Fresh cross-model look at the complete change with brief and plan only; `--codex` sends the same persona to Codex (gpt-6-sol, medium), with Fable as the fallback. A 2026-10-02 replay showed a thinner final-review prompt missing a Critical the lens persona caught |
 | feature-verifier | opus, high | 1-2 | Triage: verifies each finding, then fix / follow-up / reject by risk and fix cost |
-| final-reviewer | fable, high | 1 | Fresh cross-model look at the complete change; `--codex` swaps in Codex (gpt-6-sol, medium) with Fable as the fallback |
 | critic | opus, high | 1-2 | spike-flow gap analysis (Mode C) |
 | review-critic | opus | 1 | review-flow's critic (dedupe, reconcile, tier, posture). The review verifier runs persona-free on opus |
 | tester, implementer | opus | ~1-2 per slice | spike-flow's prototype loop (`tdd-slice-loop`) |
@@ -110,7 +110,7 @@ single source of truth.
 │             retry ≤ N; finalize commits leftovers [unverified]    │
 │   Review  → parallel(completeness-critic, feature-critic)         │
 │             → agent(feature-verifier) triage → fix slices         │
-│   Final   → final-reviewer (fable, or codex via script)           │
+│   Final   → feature-critic on fable (or codex via script)         │
 │             → triage → fix slices (≤ max_fix_rounds in total)     │
 │   Report  → coverage at the final head → agent(synthesizer)       │
 │   return {reportContent, notesContent, reviewedHead,              │
@@ -154,7 +154,7 @@ their workflow internals differ (see below).
         │   └── tdd-slice-loop.js  # spike-flow's prototype loop (sub-workflow, never run directly)
         ├── agents/                # → ~/.claude/agents  (role personas; agentType source)
         │   ├── planner.md  builder.md  completeness-critic.md  feature-critic.md
-        │   ├── feature-verifier.md  final-reviewer.md  synthesizer.md
+        │   ├── feature-verifier.md  synthesizer.md
         │   ├── tester.md  implementer.md  critic.md   # spike-flow
         │   ├── review-critic.md  researcher.md  diagrammer.md
         └── scripts/               # → ~/.claude/scripts
@@ -181,7 +181,7 @@ State (host-local, not version-controlled):
 
 ### feature-flow
 **Command:** interview (at most four questions, including scope boundaries; `--grill` uses the grilling skill; `--gated` adds a plan gate) → brief with evidence-tagged acceptance criteria (`test`, `diff`, `docs`, `ci:<job>`, `live`) and constraints → worktree + one-time install → `gate.json` and `feature-flow-gate.js init` (the baseline) → launch → handoff to tuicr.
-**Workflow (`feature-flow-run.js`):** planner returns behavior-sized slices → per slice, the `builder` writes tests first and runs `gate red` (a snapshot that later flags removed assertions), implements, and may update existing tests the slice deliberately changes; a Sonnet relay runs `gate verify`, which owns every check and the commit → `finalize` commits leftover work from stuck slices as `[unverified]` → completeness-critic and feature-critic in parallel → feature-verifier triage (fix / follow-up / reject by risk and fix cost; prod and credential safety is never deferred) → fix slices → final-reviewer (Fable; `--codex` runs `feature-flow-codex-review.js`, falling back to Fable) → triage → fix slices, at most `max_fix_rounds` in total → coverage recheck at the final head → synthesizer review summary. Declarative infrastructure, configuration, and docs are verify-mode work; tests are never manufactured to create a red phase. Credentialed or destructive live commands remain human gates.
+**Workflow (`feature-flow-run.js`):** planner returns behavior-sized slices → per slice, the `builder` writes tests first and runs `gate red` (a snapshot that later flags removed assertions), implements, and may update existing tests the slice deliberately changes; a Sonnet relay runs `gate verify`, which owns every check and the commit → `finalize` commits leftover work from stuck slices as `[unverified]` → completeness-critic and feature-critic in parallel → feature-verifier triage (fix / follow-up / reject by risk and fix cost; prod and credential safety is never deferred) → fix slices → final review (feature-critic on Fable with the brief and plan only; `--codex` runs `feature-flow-codex-review.js` with the same persona, falling back to Fable) → triage → fix slices, at most `max_fix_rounds` in total → coverage recheck at the final head → synthesizer review summary. Declarative infrastructure, configuration, and docs are verify-mode work; tests are never manufactured to create a red phase. Credentialed or destructive live commands remain human gates.
 **The gate (`scripts/feature-flow-gate.js`):** runs only the commands the host recorded in `gate.json` and refuses to run after that file changes. Each verify moves the branch back to the last verified commit with `reset --soft`, so agent commits are folded in and failed work never stays in history. Trees are computed on a temporary index excluding `ignorePaths`; commands run once, in their own process group, with a timeout; hooks always run and may not change the committed tree. `--detach` / `wait` keep long suites inside an agent's ten-minute shell limit. `audit` accounts for every commit since the base. The builder's `PreToolUse` hook (`scripts/feature-flow-builder-guard.js`) blocks history-changing git commands, gate subcommands other than `red`, and writes to gate state.
 **Stage status:** every review stage records ok / failed / skipped against the head it reviewed. The handoff registers the review as `UNREVIEWED: <stages>` when one failed, and `--review-only <run_id>` reruns the review against the existing worktree.
 **`--gated`:** the command launches twice: `planOnly:true` returns the plan for approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).

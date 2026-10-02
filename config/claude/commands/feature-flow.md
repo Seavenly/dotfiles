@@ -92,11 +92,15 @@ it changes.
   "staticCmds": ["<typecheck>", "<fast lint>"], "suiteCmd": "<full suite>",
   "verifyCmds": ["<--verify / story Verify: commands>"],
   "normalizeCmds": ["<formatter> {files}"], "focusedTestCmd": "<runner> {files}",
+  "focusedTestCmds": [{ "paths": "<pkg>/**", "cwd": "<pkg>", "cmd": "<pkg runner> {files}" }],
   "ignorePaths": ["coverage/**"], "timeoutSec": <gate_timeout_sec> }
 ```
 Use `""` for `commitPrefix` without a story, and omit fields that don't apply.
 Commands run non-interactively (`CI=1`, no watch mode). Formatters belong in
-`normalizeCmds`, never in the checks, and both templates take `{files}`.
+`normalizeCmds`, never in the checks, and test and format templates take
+`{files}`. Give the red check a focused runner wherever one exists: in a
+monorepo, add a `focusedTestCmds` entry per package (files are passed
+relative to `cwd`); without one, red is recorded as unchecked.
 `ignorePaths` lists files the suite itself writes. The gate judges commands
 by exit status, so a preview whose risky output is a replace or delete needs
 a wrapper that exits non-zero on it (for example a script that fails on
@@ -117,7 +121,8 @@ appear, add them. Launch the saved workflow by name; never regenerate it.
 
 ```json
 { "runDir":"<run_dir>","outDir":"<out_dir>","worktree":"<wt>","branch":"agt/feature-<slug>",
-  "base":"<base>","baseSha":"<init baseSha>","briefPath":"<run_dir>/brief.md","slug":"<slug>",
+  "base":"<base>","baseSha":"<init baseSha>","launchId":"<$(date +%s), new for every launch>",
+  "briefPath":"<run_dir>/brief.md","slug":"<slug>",
   "gate":"node ~/.claude/scripts/feature-flow-gate.js",
   "acceptance":[<brief acceptance objects>],
   "maxSliceRetries":<n>,"maxFixRounds":<n>,

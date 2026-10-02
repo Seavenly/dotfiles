@@ -28,7 +28,9 @@ const input = payload.tool_input || {};
 
 if (tool === "Bash") {
   const command = String(input.command || "");
-  if (HISTORY.test(command) || BRANCH_WRITE.test(command)) {
+  // Read-only forms of otherwise blocked subcommands stay allowed.
+  const reads = command.replace(/\bgit\b(?:\s+-[cC]\s+\S+)*\s+(?:stash\s+(?:list|show)|worktree\s+list|tag\s+(?:-l|--list)|notes\s+(?:list|show))\b/g, "");
+  if (HISTORY.test(reads) || BRANCH_WRITE.test(reads)) {
     block("Blocked: the gate is the only committer in feature-flow. Leave your changes uncommitted (do not commit, stash, reset, checkout, or switch); the gate verifies and commits them. Use `git diff`, `git status`, and `git log` freely.");
   }
   if (GATE_OTHER.test(command.replace(/feature-flow-gate\.js\s+red\b/g, ""))) {

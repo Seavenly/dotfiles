@@ -233,6 +233,19 @@ test("an added .only fails the gate", (t) => {
   assert.deepEqual(r.files, ["tests/old.test.js"]);
 });
 
+test("per-package focused runners run from the package directory", (t) => {
+  const { runDir, wt } = fixture(t, { focusedTestCmd: null, focusedTestCmds: [{ paths: "pkg/**", cwd: "pkg", cmd: "test \"$(pwd)\" = \"$PWD\" && ! grep -q TODO {files}" }] });
+  gate(runDir, "init");
+  write(wt, "pkg/a.test.js", "// TODO red\nexpect(a).toBe(1)\n");
+  const r = gate(runDir, "red", "--slice", "1", "--tests", "pkg/a.test.js");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.red, "failed");
+  write(wt, "other/b.test.js", "expect(b).toBe(1)\n");
+  const r2 = gate(runDir, "red", "--slice", "2", "--tests", "other/b.test.js");
+  assert.equal(r2.red, "unchecked");
+  assert.deepEqual(r2.unrunnable, ["other/b.test.js"]);
+});
+
 test("a red run that errors or times out is not red", (t) => {
   const { runDir, wt } = fixture(t, { focusedTestCmd: "sleep 5 # {files}", timeoutSec: 1 });
   gate(runDir, "init");
@@ -291,6 +304,8 @@ test("the builder guard blocks history changes and gate state, and allows reads"
   assert.equal(bash("node ~/.claude/scripts/feature-flow-gate.js red /r --slice 1 --tests a.test.ts"), 0);
   assert.equal(bash("node ~/.claude/scripts/feature-flow-gate.js red /r --slice 1 --tests a.test.ts; node ~/.claude/scripts/feature-flow-gate.js verify /r --slice 1"), 2);
   assert.equal(bash("git status && git diff --stat && git log -5"), 0);
+  assert.equal(bash("git stash list >/dev/null; git worktree list"), 0);
+  assert.equal(bash("git stash list; git stash pop"), 2);
   assert.equal(bash("pnpm vitest run src/a.test.ts"), 0);
   const edit = (file_path) => guard({ tool_name: "Write", tool_input: { file_path } }).status;
   assert.equal(edit("/Users/me/.agent-teams/runs/2026-10-02-x/gate.json"), 2);

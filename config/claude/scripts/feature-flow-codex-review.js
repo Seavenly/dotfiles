@@ -6,7 +6,8 @@
 //        [--model M] [--effort E] [--timeout-sec N]
 //
 // Uses the same instructions as the Fable final reviewer (the body of
-// agents/final-reviewer.md), pinned to one base and head. Codex runs
+// agents/feature-critic.md, whose lenses a 2026-10-02 replay showed a thin
+// final-review prompt could not match), pinned to one base and head. Codex runs
 // read-only against the run worktree. The result is rejected when the
 // worktree's HEAD is not the pinned head before and after the review, so
 // findings always describe the change that was asked about.
@@ -102,20 +103,28 @@ function main() {
   if (probe.status !== 0) return finish("skipped", { reason: "codex not logged in (run `codex login`)" });
   if (currentHead() !== head) return finish("failed", { reason: "worktree HEAD is not the pinned head" });
 
-  const persona = fs.readFileSync(path.join(__dirname, "..", "agents", "final-reviewer.md"), "utf8")
+  const persona = fs.readFileSync(path.join(__dirname, "..", "agents", "feature-critic.md"), "utf8")
     .replace(/^---[\s\S]*?---\s*/, "");
   const brief = fs.readFileSync(path.join(runDir, "brief.md"), "utf8");
+  const planPath = path.join(runDir, "out", "plan.md");
+  const plan = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "(no plan)";
   const prompt = `${persona}
 
 ## This change
 
-The worktree is the current directory. Review \`git diff ${base}..${head}\`
-(inspect it with git; the files at ${head} are checked out). Read any
-surrounding code you need.
+This is the final review: a fresh look at the complete change after the
+in-flow review and its fixes. You get only the brief and the plan, not the
+run's journal or earlier findings. The worktree is the current directory.
+Review \`git diff ${base}..${head}\` (inspect it with git; the files at
+${head} are checked out). Read any surrounding code you need.
 
 ## The brief
 
 ${brief}
+
+## The plan
+
+${plan}
 
 Return JSON matching the output schema: a one-line summary and every finding.
 `;

@@ -212,7 +212,7 @@ class Gate {
     return { folded, diverged: !descends };
   }
 
-  run(command, files) {
+  run(command, files, subdir) {
     let cmd = command;
     if (cmd.includes("{files}")) {
       if (!files || !files.length) return { skipped: true };
@@ -225,7 +225,7 @@ class Gate {
     // Run in its own process group so a timeout kills the whole tree
     // (pnpm -> vitest -> workers), not just the shell.
     const res = spawnSync(process.execPath, ["-e", RUNNER, cmd, String(this.timeoutMs), log], {
-      cwd: this.wt, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+      cwd: subdir ? path.join(this.wt, subdir) : this.wt, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" },
     });
     const outcome = readJson(`${log}.status`, { exit: null, timedOut: false, error: res.stderr || "runner failed" });
@@ -270,8 +270,9 @@ class Gate {
     if (unscoped.length) {
       return { ok: false, reason: "unscoped-normalize", message: "normalize commands must take {files} so they only touch files the slice changed", commands: unscoped };
     }
-    if (this.config.focusedTestCmd && !this.config.focusedTestCmd.includes("{files}")) {
-      return { ok: false, reason: "unscoped-focused-test", message: "focusedTestCmd must take {files}" };
+    const focused = [this.config.focusedTestCmd, ...(this.config.focusedTestCmds || []).map((e) => e && e.cmd)].filter((c) => c !== undefined && c !== null);
+    if (focused.some((cmd) => typeof cmd !== "string" || !cmd.includes("{files}"))) {
+      return { ok: false, reason: "unscoped-focused-test", message: "every focused test command must take {files}" };
     }
     const head = this.git(["rev-parse", "HEAD"]).out;
     this.state = {
@@ -329,13 +330,29 @@ class Gate {
       fs.writeFileSync(dest, content);
       snapshot[rel] = sha256(content);
     }
+    // Group the files by the first focusedTestCmds entry whose `paths` glob
+    // matches (files passed relative to its `cwd`), falling back to the root
+    // focusedTestCmd. Red means every group ran and failed.
+    const groups = new Map();
+    const unrunnable = [];
+    for (const rel of files) {
+      const entry = (this.config.focusedTestCmds || []).find((e) => matchesAny(rel, [e.paths]));
+      const key = entry ? JSON.stringify(entry) : this.config.focusedTestCmd ? "root" : null;
+      if (!key) { unrunnable.push(rel); continue; }
+      if (!groups.has(key)) groups.set(key, { entry, files: [] });
+      groups.get(key).files.push(entry && entry.cwd ? path.relative(entry.cwd, rel) : rel);
+    }
     let red = "unchecked";
     let result;
-    if (this.config.focusedTestCmd) {
-      result = this.run(this.config.focusedTestCmd, files);
-      if (result.timedOut || result.error) red = "error";
-      else red = result.exit === 0 ? "passed" : "failed";
+    const outcomes = [];
+    for (const { entry, files: groupFiles } of groups.values()) {
+      const r = this.run(entry ? entry.cmd : this.config.focusedTestCmd, groupFiles, entry && entry.cwd);
+      outcomes.push({ files: groupFiles, outcome: r.timedOut || r.error ? "error" : r.exit === 0 ? "passed" : "failed", tail: r.tail });
     }
+    if (outcomes.some((o) => o.outcome === "error")) red = "error";
+    else if (outcomes.some((o) => o.outcome === "passed")) red = "passed";
+    else if (outcomes.length && !unrunnable.length) red = "failed";
+    result = outcomes.find((o) => o.outcome === red) || outcomes[0];
     const record = this.state.slices[slice] || {};
     record.red = { files: snapshot, dir: snapDir, outcome: red, at: new Date().toISOString() };
     this.state.slices[slice] = record;
@@ -346,7 +363,7 @@ class Gate {
     if (red === "passed") {
       return { ok: false, reason: "tests-not-red", message: "the new tests already pass, so they do not describe new behavior; fix the tests or ask for the slice to be red-exempt", files, tail: result.tail };
     }
-    return { ok: true, slice, files, red, tail: result ? result.tail : undefined };
+    return { ok: true, slice, files, red, unrunnable, tail: result ? result.tail : undefined };
   }
 
   testEdits(slice, fromTree, toTree) {
