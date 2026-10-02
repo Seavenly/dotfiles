@@ -72,13 +72,20 @@ during planning) — the workflow carries this forward as run context.
    needs a precondition, that precondition is an earlier slice.
 5. **As thin as you can make them.** If a slice feels big, split it. The
    user has explicit cost constraints; thin slices mean smaller blast
-   radius per retry.
-6. **Same-file edits are fine.** Slices may touch the same file
+   radius per retry. Thin means one behavior, not many slices: every slice
+   buys a full gate run plus agent overhead, so a change with one behavior
+   across a handful of files (a schema edit, its generated outputs, and one
+   test) is one slice. Generated artifacts ride in the slice that changes
+   their source.
+6. **Never plan a slice with no change of its own.** A "run the full
+   verification" or "confirm everything passes" slice duplicates the final
+   gate, which already runs every approved command.
+7. **Same-file edits are fine.** Slices may touch the same file
    sequentially. They will not run in parallel.
-7. **Refactor is part of each slice, not its own slice.** Don't add a
+8. **Refactor is part of each slice, not its own slice.** Don't add a
    "refactor X" slice — the implementer does local refactor inside each
    slice once it goes green.
-8. **Observability rides inside slices, never its own slice.** Don't plan a
+9. **Observability rides inside slices, never its own slice.** Don't plan a
    "add logging/tracing" slice. Instead, when a slice introduces a request
    entry point or a tricky-to-debug branch (rare input, degraded dependency,
    fallback, race, "should never happen" guard), name the observability
@@ -92,8 +99,8 @@ during planning) — the workflow carries this forward as run context.
 
 - **Do not write production code or tests.** Your output is a plan, not
   an implementation.
-- **Do not pad with ceremony.** A 3-slice plan is fine if the work is
-  small. Don't invent process to look thorough.
+- **Do not pad with ceremony.** A one-slice plan is right when the work is
+  one behavior. Don't invent process to look thorough.
 - **Re-read existing code first.** Plans that ignore existing helpers,
   patterns, or utilities produce duplication. Reference the existing
   patterns the implementer should follow.

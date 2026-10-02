@@ -78,6 +78,17 @@ verification gates handled correctness). Look at:
   a security-group rule that makes the service unreachable) that the
   inner loop never reasoned about, because no individual slice was
   thinking about traffic flow as a whole.
+- **Repo-declared sequencing and rollout rules.** A diff can be correct
+  and still break the repo's rules about *how* changes ship: expand/contract
+  migrations, "the state change lands before the code that depends on it",
+  shared or ephemeral environments that pick up a change without applying
+  it. Read the rules that cover the diff's files (agent and contributor
+  guides, ADRs, the docs they link) and any check scripts that enforce them.
+  Pay particular attention to warn-only hygiene checks: CI stays green, so
+  they are the easiest violation to miss. A violation is merge-blocking.
+  When the fix fits a repair slice, make it a FIX_LIST item. When it means
+  reshaping delivery (splitting the change, reordering the rollout), put it
+  under `decisions` for the human instead.
 - **Observability.** Can this be debugged in production from telemetry
   alone? Per `~/.claude/OBSERVABILITY.md`: is the unit of work
   covered by one wide root span rather than a confetti of micro-spans; do the
@@ -153,6 +164,12 @@ If a finding has no behavioral seam (for example a naming issue, dead code,
 a doc correction, or declarative infrastructure), use
 `verification-mode: verify`. `non-testable: true` remains a deprecated
 compatibility alias only.
+
+## Decisions (any verdict)
+Questions only the human can settle - most often a repo rule that requires
+part of this change to ship separately. One line each: the rule (file:line),
+what in the diff violates it, and the options. Decisions never enter the
+repair loop; the workflow surfaces them near the top of the PR body.
 
 ## RE_PLAN (if applicable — rare)
 Use this when the current approach can't be patched as thin repair slices -

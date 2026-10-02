@@ -5,9 +5,12 @@ export const meta = {
 
 // args (built by the parent workflow):
 //   worktree, briefPath, planPath|null, slug, testCmd|null, maxSliceRetries
+//   staticCmds|null - cheap deterministic checks (typecheck, fast lint) run first on EVERY gate;
+//     many test runners don't typecheck, so without these a slice's type error surfaces in the next slice's gate
 //   verifyCmds|null — extra gate commands run after the suite (e.g. `pulumi preview`);
 //     for verificationMode=verify slices these ARE the slice's verification
-//   verificationLedger[] - prior command results reusable only for the same clean commit/environment
+//   verificationLedger[] - prior command results, reusable only for the identical tree in the same environment
+//   commitPrefix|null - prepended to gate commit subjects (e.g. a story key)
 //   slices: [{ title, behavior, verificationMode?, testIdea?, verificationIdea?,
 //              verificationReason?, nonTestable?, fixDirection?, evidence? }]
 //   finalSliceNote|null — appended to the last slice's tester prompt (e2e discipline)
@@ -15,18 +18,22 @@ export const meta = {
 //   phaseLabel — progress-group title for the spawned agents ('Implement' | 'Critique' | 'Prototype')
 //   notesHeader, noteEntries[] — the run journal (header + markdown entry blocks)
 // returns { noteEntries, stuck, verificationLedger, stats }
+//   stuck[] gate-exhaustion entries carry requiredCommands + ledgerIndex so the
+//   parent can tell when a later gate validated the slice's carried-forward work
 // args can arrive as a JSON-encoded string when launched by name — normalize.
 const a = typeof args === 'string' ? JSON.parse(args) : args
 const noteEntries = (a.noteEntries || []).slice()
 const verificationLedger = (a.verificationLedger || []).slice()
 const environmentKey = `${a.slug || 'run'}:${a.worktree}`
 const stuck = []
-const stats = { agents: 0, retries: 0, fullSuiteExecutions: 0, verificationExecutions: 0, reusedChecks: 0 }
+const stats = { agents: 0, retries: 0, staticExecutions: 0, fullSuiteExecutions: 0, verificationExecutions: 0, reusedChecks: 0 }
 
 const inWorktree = `Work in the worktree at ${a.worktree} — cd there for all commands, reads, and writes. Never switch branches. Treat the run journal shown inline below as the authoritative notes, and return structured output where this prompt asks for it instead of writing a verdict/handoff file.${a.scopeNote ? ` ${a.scopeNote}` : ''}`
 // Guard against a stray agent that didn't cd: confirm we're in the worktree before any commit.
 const wtGuard = `Before staging or committing, confirm \`git -C "${a.worktree}" rev-parse --show-toplevel\` resolves to ${a.worktree}; run all git from \`-C "${a.worktree}"\` so you never touch another checkout. If it doesn't resolve there, do NOT commit — set committed=false and say so in output.`
 const readRefs = `Read ${a.briefPath}${a.planPath ? ` and ${a.planPath}` : ''}.`
+// Gate agents don't load the user's global rules, so commit conventions are stated here.
+const commitRule = (subject) => `Use exactly this commit message: ${JSON.stringify(`${a.commitPrefix || ''}${subject}`)}. Add no Co-Authored-By, Generated-with, or other attribution trailer.`
 
 const HANDOFF = {
   type: 'object',
@@ -55,7 +62,7 @@ const GATE_SCHEMA = {
       type: 'object', required: ['command', 'kind', 'exitStatus', 'treeChanged', 'treeBefore', 'treeAfter', 'reused'],
       properties: {
         command: { type: 'string' },
-        kind: { type: 'string', enum: ['suite', 'verification'] },
+        kind: { type: 'string', enum: ['static', 'suite', 'verification'] },
         exitStatus: { type: 'number' },
         treeChanged: { type: 'boolean' },
         treeBefore: { type: 'string', description: 'git write-tree object ID immediately before the command' },
@@ -135,6 +142,7 @@ for (let i = 0; i < a.slices.length; i++) {
 
   // ── Implementer → independent gate, retry ≤ maxSliceRetries ──
   let retries = 0, lastFail = '', lastHandoff = null
+  let lastAttemptPasses = [] // this slice's previous gate: passing, non-mutating results keyed by tree
   while (true) {
     const retryPacket = retries
       ? `\nContinuation retry ${retries}/${a.maxSliceRetries}. The current working tree already contains the previous attempt. Start with \`git diff --stat HEAD\` and the changed files it names; do not reread the brief/plan or broadly rediscover the repository unless this packet points to missing context.\nPrevious handoff: ${JSON.stringify(lastHandoff || {})}\nGate failure (bounded tail):\n${lastFail}\nRevise only what the failure requires.${testPath ? ' Do NOT modify the test.' : ''}`
@@ -151,66 +159,84 @@ for (let i = 0; i < a.slices.length; i++) {
     lastHandoff = im && im.handoff
     fold('implementer', tag, lastHandoff)
 
-    // Verification commands can be expensive cumulative checks such as a
-    // Pulumi preview. Run them for every verify-mode slice and once at the
-    // final slice, rather than after every behavior-test slice. Exact command
-    // duplicates are removed before the gate sees them.
+    // Static checks are cheap and run on every gate so a type or lint error is
+    // charged to the slice that introduced it. Verification commands can be
+    // expensive cumulative checks such as a Pulumi preview: run them for every
+    // verify-mode slice and once at the final slice, rather than after every
+    // behavior-test slice. Exact command duplicates are removed before the
+    // gate sees them.
     const shouldRunVerification = verifyOnly || isFinal
     const requestedCommands = uniqueCommands([
+      ...(a.staticCmds || []).map((command) => ({ command, kind: 'static' })),
       { command: a.testCmd || '<auto-detect the project full-suite command once>', kind: 'suite' },
       ...((shouldRunVerification && a.verifyCmds) || []).map((command) => ({ command, kind: 'verification' })),
     ])
-    const reusable = verificationLedger.filter((entry) => entry.kind === 'suite' && entry.environment === environmentKey).slice(-40).map((entry) => ({
-      command: entry.command, kind: entry.kind, commitSha: entry.commitSha, treeSha: entry.treeSha,
-      exitStatus: entry.exitStatus, treeChanged: entry.treeChanged,
-      environment: entry.environment,
-    }))
+    // Reuse is keyed on the exact tree, so any tree change reruns everything.
+    // Static and suite results depend only on the tree and are reusable across
+    // the run. Verification can depend on credentials, time, or external state,
+    // so it is reusable only from this slice's immediately preceding attempt -
+    // a retry after an unrelated failure on an unchanged tree reruns only what
+    // failed.
+    const reusable = [
+      ...verificationLedger.filter((entry) => entry.kind !== 'verification' && entry.environment === environmentKey && entry.treeSha && entry.exitStatus === 0 && entry.treeChanged === false).slice(-40),
+      ...lastAttemptPasses.filter((entry) => entry.kind === 'verification'),
+    ].map((entry) => ({ command: entry.command, kind: entry.kind, treeSha: entry.treeSha, exitStatus: entry.exitStatus, treeChanged: entry.treeChanged }))
     const commandList = requestedCommands.map((entry, index) => `${index + 1}. [${entry.kind}] \`${entry.command}\``).join('\n')
     stats.agents++
     const g = await agent(
-      `Mechanical gate only - do not read the brief or plan, inspect architecture, or produce design reasoning. In ${a.worktree}:\n${commandList}\nRun each distinct command at most once, in order. For the auto-detect placeholder, detect one full-suite command, run it once, and report the exact command. First record startSha=HEAD and startClean from both the index and working tree. Use Git tree object IDs, not status text, to prove content identity: before every executed command run \`git add -A\` then \`git write-tree\` as treeBefore; immediately afterward run \`git add -A\` then \`git write-tree\` as treeAfter. Set treeChanged to whether those IDs differ. Only suite results may be reused within this same run-scoped environment; verification commands can depend on credentials, time, or external state and must execute fresh. A suite result may be reused only when startClean is true, startSha equals its commitSha, \`git rev-parse startSha^{tree}\` equals its treeSha, command + kind + environment match exactly, exitStatus is 0, and treeChanged is false. Reusable ledger entries: ${JSON.stringify(reusable)}\nCapture each exit status and at most the last 40 relevant output lines. Any executed command with treeBefore != treeAfter is a gate failure: keep passed=false and let the next attempt rerun the full deduplicated list from the resulting state. Treat failed/erroring previews and unexpected replace/delete of protected resources as failures. Do NOT edit code or tests yourself. After all commands succeed without mutation, set verifiedTree to the final \`git write-tree\`. Commit the staged slice ("${s.title}") additively when changes exist (never --amend/--force); when clean HEAD was fully reused, no new commit is needed. Then compare \`git rev-parse HEAD^{tree}\` as committedTree with verifiedTree and set endClean from whether both the index and working tree exactly match HEAD after all commit hooks finish. A hook or formatter that changes either the committed tree or leaves uncommitted content makes the gate fail; the next attempt must verify that resulting state. Set passed=true only when committedTree == verifiedTree, endClean is true, validatedSha is the matching HEAD, and committed=true means that SHA is a committed code state. Otherwise keep passed=false and validatedSha empty. ${wtGuard} Return {passed, output, committed, validatedSha, startSha, startClean, endClean, verifiedTree, committedTree, commandResults}.`,
+      `Mechanical gate only - do not read the brief or plan, inspect architecture, or produce design reasoning. In ${a.worktree}:\n${commandList}\nRun each command verbatim, exactly as written above: add no flags, filters, paths, or wrappers, and do not substitute a related command. Run each at most once, in order, and never rerun one inside this gate, even after a failure; the next attempt owns reruns. Report each command string exactly as you ran it. For the auto-detect placeholder, detect one full-suite command, run it once, and report the exact command. First record startSha=HEAD and startClean from both the index and working tree. Use Git tree object IDs, not status text, to prove content identity: before every command run \`git add -A\` then \`git write-tree\` as treeBefore; immediately afterward run \`git add -A\` then \`git write-tree\` as treeAfter. Set treeChanged to whether those IDs differ. Before running a command, check the reusable results below: when one has the same command and kind, exitStatus 0, treeChanged false, and a treeSha equal to the current treeBefore, do not run the command - report it with reused=true, treeAfter=treeBefore, treeChanged=false, and exitStatus 0. Reusable results: ${JSON.stringify(reusable)}\nCapture each exit status and at most the last 40 relevant output lines. Any executed command with treeBefore != treeAfter is a gate failure: keep passed=false and let the next attempt rerun the full deduplicated list from the resulting state. Treat failed/erroring previews and unexpected replace/delete of protected resources as failures. When the gate fails, put the failing command and its output tail in output. Do NOT edit code or tests yourself. After all commands succeed without mutation, set verifiedTree to the final \`git write-tree\`. Commit the staged slice additively when changes exist (never --amend/--force). ${commitRule(s.title)} When clean HEAD was fully reused, no new commit is needed. Then compare \`git rev-parse HEAD^{tree}\` as committedTree with verifiedTree and set endClean from whether both the index and working tree exactly match HEAD after all commit hooks finish. A hook or formatter that changes either the committed tree or leaves uncommitted content makes the gate fail; the next attempt must verify that resulting state. Set passed=true only when committedTree == verifiedTree, endClean is true, validatedSha is the matching HEAD, and committed=true means that SHA is a committed code state. Otherwise keep passed=false and validatedSha empty. ${wtGuard} Return {passed, output, committed, validatedSha, startSha, startClean, endClean, verifiedTree, committedTree, commandResults}.`,
       { label: `gate:${i + 1}${retries ? `r${retries}` : ''}`, phase: a.phaseLabel, schema: GATE_SCHEMA, model: 'haiku', effort: 'low' }
     )
     const commandResults = (g && g.commandResults) || []
+    // Tree identity is the proof: every result, executed or reused, must sit on
+    // the verified tree, and the commit must carry that same tree.
     const gatePassed = !!(
       g && g.passed && g.committed === true && g.validatedSha && g.endClean === true &&
       g.verifiedTree && g.verifiedTree === g.committedTree &&
-      (!commandResults.some((result) => result.reused) || g.validatedSha === g.startSha) &&
       commandResults.length === requestedCommands.length &&
       commandResults.every((result, index) => {
         const requested = requestedCommands[index]
         const commandMatches = requested.command.startsWith('<auto-detect') || result.command.trim() === requested.command
-        const contentMatches = result.treeBefore && result.treeBefore === result.treeAfter && result.treeChanged === false
-        const reuseMatches = !result.reused || (
-          result.kind === 'suite' && g.startClean === true && reusable.some((entry) =>
-            entry.command === result.command && entry.kind === result.kind &&
-            entry.commitSha === g.startSha && entry.treeSha === g.verifiedTree && entry.exitStatus === 0 &&
-            entry.treeChanged === false && entry.environment === environmentKey
-          )
+        const contentMatches = result.treeBefore === g.verifiedTree && result.treeAfter === g.verifiedTree && result.treeChanged === false
+        const reuseMatches = !result.reused || reusable.some((entry) =>
+          entry.command === result.command && entry.kind === result.kind && entry.treeSha === g.verifiedTree
         )
         return commandMatches && contentMatches && reuseMatches && result.kind === requested.kind && result.exitStatus === 0
       })
     )
+    lastAttemptPasses = []
     for (const result of commandResults) {
       if (result.reused) stats.reusedChecks++
+      else if (result.kind === 'static') stats.staticExecutions++
       else if (result.kind === 'suite') stats.fullSuiteExecutions++
       else stats.verificationExecutions++
-      verificationLedger.push({
+      // A failed gate still proves the commands that passed on an unchanged tree.
+      const unchangedTree = result.treeChanged === false && result.treeBefore && result.treeBefore === result.treeAfter ? result.treeAfter : ''
+      const entry = {
         command: result.command,
         kind: result.kind,
         commitSha: gatePassed ? g.validatedSha : '',
-        treeSha: gatePassed ? g.verifiedTree : '',
+        treeSha: gatePassed ? g.verifiedTree : unchangedTree,
         exitStatus: result.exitStatus,
         treeChanged: result.treeChanged,
         environment: environmentKey,
         output: result.output || '',
-      })
+      }
+      verificationLedger.push(entry)
+      if (entry.treeSha && entry.exitStatus === 0) lastAttemptPasses.push(entry)
     }
     if (gatePassed) break
     retries++
-    lastFail = (g && g.output) || (g && g.passed ? 'gate claimed success without a committed validated SHA or with incomplete/mutating command results' : 'unknown failure')
+    const failedResult = commandResults.find((result) => result.exitStatus !== 0 || result.treeChanged)
+    lastFail = (g && g.output) ||
+      (failedResult && `\`${failedResult.command}\` exited ${failedResult.exitStatus}${failedResult.treeChanged ? ' and changed the tree' : ''}:\n${failedResult.output || ''}`) ||
+      (g && g.passed ? 'gate claimed success without a committed validated SHA or with incomplete/mutating command results' : 'unknown failure')
     if (retries > a.maxSliceRetries) {
-      stuck.push({ slice: s.title, reason: lastFail })
+      stuck.push({
+        slice: s.title, reason: lastFail,
+        requiredCommands: requestedCommands.map(({ command, kind }) => ({ command, kind })),
+        ledgerIndex: verificationLedger.length,
+      })
       log(`${tag}: exhausted ${a.maxSliceRetries} retries — recording and moving on`)
       break
     }

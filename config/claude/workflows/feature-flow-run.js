@@ -11,8 +11,10 @@ export const meta = {
 }
 
 // args (built by the host command before launch):
-//   runDir, outDir, repo, worktree, base, briefPath, slug, testCmd|null
+//   runDir, outDir, repo, worktree, branch, base, briefPath, slug, testCmd|null
+//   staticCmds|null - cheap deterministic checks (typecheck, fast lint) every slice gate runs first
 //   verifyCmds|null — approved gate commands (e.g. `pulumi preview`); the primary gate for verify-mode slices
+//   commitPrefix|null - commit subject prefix from the brief's story key (e.g. "ABC-123: ")
 //   maxSliceRetries, maxCriticRevisions, maxCriticFixFiles, acceptance[], priorRunStats|null
 //   planOnly (bool — gated step 1 stops after planning)
 //   slices (array|null — gated step 2 passes the approved slices to skip planning)
@@ -21,6 +23,8 @@ const a = typeof args === 'string' ? JSON.parse(args) : args
 const inWorktree = `Work in the worktree at ${a.worktree} — cd there for all commands, reads, and writes. Never switch branches. Treat the run journal shown inline below as the authoritative notes, and return structured output where this prompt asks for it instead of writing a verdict/handoff file.`
 // Guard against a stray agent that didn't cd: confirm we're in the worktree before any commit.
 const wtGuard = `Before staging or committing, confirm \`git -C "${a.worktree}" rev-parse --show-toplevel\` resolves to ${a.worktree}; run all git from \`-C "${a.worktree}"\` so you never touch another checkout. If it doesn't resolve there, do NOT commit — set committed=false and say so in output.`
+// Commit agents don't load the user's global rules, so commit conventions are stated here.
+const commitRule = (subject) => `Use exactly this commit message: ${JSON.stringify(`${a.commitPrefix || ''}${subject}`)}. Add no Co-Authored-By, Generated-with, or other attribution trailer.`
 
 const PLAN_SCHEMA = {
   type: 'object', required: ['slices'],
@@ -76,6 +80,7 @@ const VERDICT_SCHEMA = {
   properties: {
     verdict: { type: 'string', enum: ['APPROVE', 'FIX_LIST', 'RE_PLAN'] },
     note: { type: 'string' },
+    decisions: { type: 'array', items: { type: 'string' }, description: 'questions only the human can settle, such as a repo rule requiring part of this change to ship separately; one line each with the rule (file:line), the violation, and the options. Never routed to the repair loop' },
     reason: { type: 'string', description: 'required explanation for RE_PLAN; empty string otherwise' },
     researchQuestions: { type: 'array', items: { type: 'string' }, description: 'bounded questions for RE_PLAN; empty otherwise' },
     candidateDirections: { type: 'array', items: { type: 'string' }, description: 'hypotheses for RE_PLAN, not a unilateral architecture choice; empty otherwise' },
@@ -120,6 +125,7 @@ let currentHeadSha = ''
 const runStats = {
   agents: (a.priorRunStats && a.priorRunStats.agents) || 0,
   retries: (a.priorRunStats && a.priorRunStats.retries) || 0,
+  staticExecutions: (a.priorRunStats && a.priorRunStats.staticExecutions) || 0,
   fullSuiteExecutions: (a.priorRunStats && a.priorRunStats.fullSuiteExecutions) || 0,
   verificationExecutions: (a.priorRunStats && a.priorRunStats.verificationExecutions) || 0,
   reusedChecks: (a.priorRunStats && a.priorRunStats.reusedChecks) || 0,
@@ -136,7 +142,8 @@ async function runSliceLoop(slices, phaseLabel, finalSliceNote) {
   try {
     const r = await workflow('tdd-slice-loop', {
       worktree: a.worktree, briefPath: a.briefPath, planPath: `${a.outDir}/plan.md`,
-      slug: a.slug, testCmd: a.testCmd, verifyCmds: a.verifyCmds || null, maxSliceRetries: a.maxSliceRetries,
+      slug: a.slug, testCmd: a.testCmd, staticCmds: a.staticCmds || null, verifyCmds: a.verifyCmds || null,
+      commitPrefix: a.commitPrefix || null, maxSliceRetries: a.maxSliceRetries,
       slices, finalSliceNote, scopeNote: null, phaseLabel,
       notesHeader, noteEntries, verificationLedger,
     })
@@ -155,13 +162,31 @@ async function runSliceLoop(slices, phaseLabel, finalSliceNote) {
   }
 }
 
+// A slice that exhausts its retries leaves its work uncommitted, and the next
+// passing gate commits the whole tree. When a later gate validated every
+// command the stuck slice required, mark the entry superseded so wrap-up
+// doesn't report validated work as stuck. Whether the behavior itself arrived
+// is the completeness gate's question, not this one.
+function reconcileStuck(entries) {
+  return entries.map((entry) => {
+    if (!entry.requiredCommands) return entry
+    const later = verificationLedger.slice(entry.ledgerIndex || 0).filter((e) => e.commitSha && e.exitStatus === 0)
+    const supersededBy = [...new Set(later.map((e) => e.commitSha))].find((sha) =>
+      entry.requiredCommands.every((req) => later.some((e) =>
+        e.commitSha === sha && e.kind === req.kind && (req.command.startsWith('<auto-detect') || e.command === req.command)
+      ))
+    )
+    return supersededBy ? { ...entry, supersededBy } : entry
+  })
+}
+
 // ── Phase: Plan ────────────────────────────────────────────────────
 let slices = a.slices || null
 if (!slices) {
   phase('Plan')
   runStats.agents++
   const plan = await agent(
-    `${inWorktree}\nRead the brief at ${a.briefPath}. Produce a vertical-slice plan in dependency order, as thin as possible. For each slice choose verificationMode=test only when there is a stable behavioral seam that can fail for the intended reason; choose verificationMode=verify for declarative infrastructure, configuration, documentation, or any slice where a test would merely inspect the shipped artifact. Never manufacture a test to satisfy the workflow. Include testIdea for test mode or verificationIdea for verify mode, plus verificationReason. Write the human-readable plan to ${a.outDir}/plan.md (and an acceptance summary). Follow the planner role exactly. Also return the slices via the structured-output tool.`,
+    `${inWorktree}\nRead the brief at ${a.briefPath}. Produce a vertical-slice plan in dependency order: each slice as thin as possible, and no more slices than the change has distinct behaviors (one behavior means one slice). For each slice choose verificationMode=test only when there is a stable behavioral seam that can fail for the intended reason; choose verificationMode=verify for declarative infrastructure, configuration, documentation, or any slice where a test would merely inspect the shipped artifact. Never manufacture a test to satisfy the workflow. Include testIdea for test mode or verificationIdea for verify mode, plus verificationReason. Write the human-readable plan to ${a.outDir}/plan.md (and an acceptance summary). Follow the planner role exactly. Also return the slices via the structured-output tool.`,
     { label: 'planner', phase: 'Plan', agentType: 'planner', schema: PLAN_SCHEMA }
   )
   slices = (plan && plan.slices) || []
@@ -169,7 +194,7 @@ if (!slices) {
     return { planned: true, slices, planPath: `${a.outDir}/plan.md`, outOfScope: (plan && plan.outOfScope) || [], runStats }
   }
 }
-if (!slices.length) return { error: 'no slices produced', branch: a.worktree, runStats }
+if (!slices.length) return { error: 'no slices produced', branch: a.branch || null, worktree: a.worktree, runStats }
 
 // ── Phase: Implement (sequential same-file test-or-verify work) ──
 phase('Implement')
@@ -179,7 +204,7 @@ stuck.push(...await runSliceLoop(slices, 'Implement', E2E_NOTE))
 // Ensure everything is committed before the critic diffs base...HEAD.
 runStats.agents++
 const initialSweep = await agent(
-  `Mechanical commit sweep only. Stage and commit any outstanding changes in the worktree at ${a.worktree} as a single additive commit (never --amend/--force). If nothing is uncommitted, do nothing. ${wtGuard} Return {passed:true, committed:<whether a new commit was created>, headSha:<current HEAD after the sweep>}.`,
+  `Mechanical commit sweep only. Stage and commit any outstanding changes in the worktree at ${a.worktree} as a single additive commit (never --amend/--force). ${commitRule('Commit remaining changes')} If nothing is uncommitted, do nothing. ${wtGuard} Return {passed:true, committed:<whether a new commit was created>, headSha:<current HEAD after the sweep>}.`,
   { label: 'commit-all', phase: 'Implement', schema: GATE_SCHEMA, model: 'haiku', effort: 'low' }
 )
 currentHeadSha = (initialSweep && initialSweep.headSha) || ''
@@ -188,6 +213,7 @@ let revisions = 0
 let deferred = []  // non-blocking findings carried to the PR body as follow-ups
 let remaining = [] // merge-blocking findings left unresolved at the revision cap
 let criticVerdictMissing = false
+const decisions = [] // human-only questions from the critic; never enter the repair loop
 
 // ── Phase: Completeness (coverage gate, before design critique) ────
 // The design critic (next phase) judges whether what's there is good.
@@ -234,7 +260,7 @@ if ((a.acceptance || []).length) {
       // Re-commit anything the fix pass left staged so the re-check and design critic see it.
       runStats.agents++
       const completenessSweep = await agent(
-        `Mechanical commit sweep only. Stage and commit any outstanding changes in the worktree at ${a.worktree} as a single additive commit (never --amend/--force). If nothing is uncommitted, do nothing. ${wtGuard} Return {passed:true, committed:<whether a new commit was created>, headSha:<current HEAD after the sweep>}.`,
+        `Mechanical commit sweep only. Stage and commit any outstanding changes in the worktree at ${a.worktree} as a single additive commit (never --amend/--force). ${commitRule('Commit remaining changes')} If nothing is uncommitted, do nothing. ${wtGuard} Return {passed:true, committed:<whether a new commit was created>, headSha:<current HEAD after the sweep>}.`,
         { label: 'commit-completeness', phase: 'Completeness', schema: GATE_SCHEMA, model: 'haiku', effort: 'low' }
       )
       currentHeadSha = (completenessSweep && completenessSweep.headSha) || ''
@@ -258,7 +284,7 @@ function criticPrompt() {
   const ledgerNote = validLedger.length
     ? `\nVerification ledger (reuse this evidence; do NOT rerun these commands): ${JSON.stringify(validLedger.slice(-40))}`
     : '\nNo reusable verification ledger entries were returned; treat verification as unknown rather than rerunning the suite.'
-  return `${inWorktree}\nYou are the feature-flow critic for run ${a.slug}. Operate in Mode A per your role definition. Read the brief at ${a.briefPath} and the plan at ${a.outDir}/plan.md. Run \`git diff ${a.base}...HEAD\` for the final diff (base is ${a.base} - NOT necessarily main).${ledgerNote} The lead-curated run journal:\n${fullNotes()}${deferredNote}\nReview design quality, edge cases the tests miss, security/perf smells (the security lens auto-engages for infra-touching diffs), observability (per your role's observability pass - wide root span, debugging dimensions on the root span, a trail on tricky-to-debug edge branches; flag silent catches), and anything the journal admits was left undone. Shape each FIX_LIST item as a thin test-or-verify slice and include its estimated file count, subsystems, behavioral seams, and whether it introduces an infrastructure primitive. Return your verdict via structured output. Do NOT run tests or verification commands and do NOT request inner-loop transcripts.`
+  return `${inWorktree}\nYou are the feature-flow critic for run ${a.slug}. Operate in Mode A per your role definition. Read the brief at ${a.briefPath} and the plan at ${a.outDir}/plan.md. Run \`git diff ${a.base}...HEAD\` for the final diff (base is ${a.base} - NOT necessarily main).${ledgerNote} The lead-curated run journal:\n${fullNotes()}${deferredNote}\nReview design quality, edge cases the tests miss, security/perf smells (the security lens auto-engages for infra-touching diffs), observability (per your role's observability pass - wide root span, debugging dimensions on the root span, a trail on tricky-to-debug edge branches; flag silent catches), and repo-declared sequencing and rollout rules the diff's files fall under (including warn-only checks), and anything the journal admits was left undone. Shape each FIX_LIST item as a thin test-or-verify slice and include its estimated file count, subsystems, behavioral seams, and whether it introduces an infrastructure primitive. Return your verdict via structured output. Do NOT run tests or verification commands and do NOT request inner-loop transcripts.`
 }
 async function researchArchitecture(reason, questions, directions) {
   runStats.agents++
@@ -282,11 +308,12 @@ while (true) {
     log('critic returned nothing twice — shipping without an outer-pass verdict')
     break
   }
+  for (const d of v.decisions || []) if (!decisions.includes(d)) decisions.push(d)
   if (v.verdict === 'APPROVE') break
   if (v.verdict === 'RE_PLAN') {
     const reason = v.reason || 'critic determined the repair cannot stay within the thin-slice boundary'
     const architectureResearch = await researchArchitecture(reason, v.researchQuestions, v.candidateDirections)
-    return { escalate: 'RE_PLAN', reason, architectureResearch, branch: a.worktree, slices: slices.length, stuck, runStats }
+    return { escalate: 'RE_PLAN', reason, architectureResearch, branch: a.branch || null, worktree: a.worktree, slices: slices.length, stuck: reconcileStuck(stuck), decisions, runStats }
   }
   const items = v.items || []
   if (!items.length) {
@@ -313,7 +340,7 @@ while (true) {
     const reason = `Critic repair exceeds the thin-slice guard (${maxCriticFixFiles} files, one subsystem, one behavioral seam, no new infrastructure primitive): ${oversized.map((it) => it.behavior).join(' · ')}`
     log(`critic fix-size guard tripped for ${oversized.length} finding(s) - researching before RE_PLAN`)
     const architectureResearch = await researchArchitecture(reason, oversized.map((it) => it.behavior), oversized.map((it) => it.fixDirection).filter(Boolean))
-    return { escalate: 'RE_PLAN', reason, architectureResearch, branch: a.worktree, slices: slices.length, stuck, runStats }
+    return { escalate: 'RE_PLAN', reason, architectureResearch, branch: a.branch || null, worktree: a.worktree, slices: slices.length, stuck: reconcileStuck(stuck), decisions, runStats }
   }
 
   revisions++
@@ -338,6 +365,7 @@ while (true) {
 // and the conversation-side command writes the approved artifact paths.
 phase('Synthesize')
 const openNote = remaining.length ? `\nThe critic left ${remaining.length} unresolved merge-blocking finding(s) at the revision cap — surface them honestly in the PR body so the human reviewer sees them: ${JSON.stringify(remaining)}` : ''
+const decisionsNote = decisions.length ? `\nThe critic raised ${decisions.length} decision(s) only the human reviewer can settle (for example a repo rule that requires part of this change to ship separately). Put them near the TOP of the PR body under "Decisions for the reviewer", each with its rule and options: ${JSON.stringify(decisions)}` : ''
 const followupNote = deferred.length ? `\nThe critic recorded ${deferred.length} non-blocking finding(s) as follow-ups — list them under "Things deliberately not done": ${JSON.stringify(deferred)}` : ''
 const acceptanceNote = uncoveredAcceptance.length ? `\nThe completeness gate found ${uncoveredAcceptance.length} acceptance criterion/criteria the brief asked for but the artifact still doesn't demonstrate (no test or implementation evidence after a fix pass) — these are promised behaviors that did NOT ship. Surface them at the TOP of the PR body under an explicit "Unmet acceptance criteria" heading so the human reviewer cannot miss them: ${JSON.stringify(uncoveredAcceptance)}` : ''
 const SYNTH_SCHEMA = {
@@ -347,7 +375,7 @@ const SYNTH_SCHEMA = {
   },
 }
 function synthPrompt() {
-  return `${inWorktree}\nRead the brief at ${a.briefPath} and the plan at ${a.outDir}/plan.md. Run \`git diff ${a.base}...HEAD\` (base ${a.base}). Run journal:\n${fullNotes()}${acceptanceNote}${openNote}${followupNote}\nDraft the complete PR body following the feature-flow format in your role definition. Never expose the run's internal framing (no slice/phase names). Do NOT write any artifact file; return the markdown as reportContent via structured output so the conversation-side command can persist it.`
+  return `${inWorktree}\nRead the brief at ${a.briefPath} and the plan at ${a.outDir}/plan.md. Run \`git diff ${a.base}...HEAD\` (base ${a.base}). Run journal:\n${fullNotes()}${acceptanceNote}${decisionsNote}${openNote}${followupNote}\nDraft the complete PR body following the feature-flow format in your role definition. Never expose the run's internal framing (no slice/phase names). Do NOT write any artifact file; return the markdown as reportContent via structured output so the conversation-side command can persist it.`
 }
 runStats.agents++
 let synth = await agent(synthPrompt(), { label: 'synthesizer', phase: 'Synthesize', agentType: 'synthesizer', schema: SYNTH_SCHEMA })
@@ -363,7 +391,8 @@ const reportMissing = !reportContent
 if (reportMissing) log('PR-body content still missing after one structured-output retry')
 
 return {
-  branch: a.worktree,
+  branch: a.branch || null,
+  worktree: a.worktree,
   reportPath: `${a.outDir}/report.md`,
   reportContent,
   reportMissing,
@@ -372,7 +401,8 @@ return {
   slices: slices.length,
   criticRevisions: revisions,
   criticVerdictMissing,
-  stuck,
+  stuck: reconcileStuck(stuck),
+  decisions,
   openFindings: remaining,
   deferredFindings: deferred,
   uncoveredAcceptance,

@@ -93,7 +93,12 @@ git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "origin/$base" 2>/dev/n
 ```
 Install deps once, natively, in the worktree (this is the only install for the run — agents and you share this tree). Use `setup_commands` if set, else auto-detect:
 - `.mise.toml` → `mise install` · `package.json` → `pnpm|npm|yarn install` (per lockfile) · `pyproject.toml` → `uv sync`|`poetry install` · `Cargo.toml` → `cargo build --tests`
-Detect the test command (e.g. `pnpm test`) to pass as `testCmd`. Run the verification triad once to confirm tooling works; surface gaps before launching.
+Detect the gate commands:
+- `testCmd` - the full suite (e.g. `pnpm test`).
+- `staticCmds` - cheap deterministic checks every slice gate runs first: typecheck, plus lint or format-check when they take seconds. Many test runners don't typecheck, so without these a slice's type error fails a later slice's gate and is charged to the wrong slice.
+- Slow or credentialed checks (build, preview) join `--verify` as `verifyCmds`, which run only for verify-mode slices and the final gate.
+
+**Baseline before launch (required).** Run every gate command once on the unchanged base, in the worktree, exactly as it will be passed, non-interactively the way gate agents run it (no TTY; watch modes off), each under an outer timeout. If any command is red or hangs on the base, do not launch: show the failure and ask the user for an approved alternative (a narrower suite, an exclusion, or an explicit waiver), then baseline that. A red base fails every slice's gate, and a hang stalls the run.
 
 ## Step 5 — Launch the workflow
 Confirm `auto` permission mode (announce; if not, ask the user to `Shift+Tab`). Pre-allowlist the test/build/`git` commands so the gate agents don't stall mid-run.
@@ -102,8 +107,9 @@ Confirm `auto` permission mode (announce; if not, ask the user to `Shift+Tab`). 
 > Run `/feature-flow-run` with args:
 > ```json
 > { "runDir":"<run_dir>","outDir":"<out_dir>","repo":"<repo>","worktree":"<wt>",
->   "base":"<base>","briefPath":"<run_dir>/brief.md","slug":"<slug>","testCmd":"<cmd|null>",
->   "verifyCmds":[...]|null,
+>   "branch":"agt/feature-<slug>","base":"<base>","briefPath":"<run_dir>/brief.md","slug":"<slug>",
+>   "testCmd":"<cmd|null>","staticCmds":[...]|null,"verifyCmds":[...]|null,
+>   "commitPrefix":"<JIRA-KEY>: "|null,
 >   "maxSliceRetries":<n>,"maxCriticRevisions":<n>,"maxCriticFixFiles":<n>,"acceptance":[...],
 >   "priorRunStats":null,"planOnly":false,"slices":null }
 > ```
@@ -115,7 +121,7 @@ Confirm `auto` permission mode (announce; if not, ask the user to `Shift+Tab`). 
 Launch the saved `~/.claude/workflows/feature-flow-run.js` by name — never regenerate ad-hoc. Watch with `/workflows`.
 
 ## Step 6 — Wrap-up (after the workflow returns)
-The workflow returns `{ branch, reportPath, reportContent, reportMissing, notesPath, notesContent, slices, criticRevisions, criticVerdictMissing, stuck, openFindings, deferredFindings, uncoveredAcceptance, verificationLedger, runStats }` (or `{ escalate:'RE_PLAN', reason, architectureResearch }`).
+The workflow returns `{ branch, worktree, reportPath, reportContent, reportMissing, notesPath, notesContent, slices, criticRevisions, criticVerdictMissing, stuck, decisions, openFindings, deferredFindings, uncoveredAcceptance, verificationLedger, runStats }` (or `{ escalate:'RE_PLAN', reason, architectureResearch }`).
 
 **On a normal return, persist conversation-owned artifacts first.** If
 `reportMissing` is true or `reportContent` is empty, do not create an empty
@@ -129,12 +135,13 @@ or fails, surface the returned content/path and stop; do not relaunch the
 synthesizer to repeat the same write.
 
 - **RE_PLAN** → surface the critic's reason plus `architectureResearch` evidence and alternatives, then stop for the user's architecture decision; do not auto-replan or start the proposed subsystem.
-- **stuck[]** non-empty → call out which slices exhausted retries or could not produce their declared test/verification evidence, and the recorded reason.
+- **stuck[]** non-empty → call out which slices exhausted retries or could not produce their declared test/verification evidence, and the recorded reason. An entry with `supersededBy` was carried forward and validated by a later gate at that SHA with every command it needed; report it as resolved later, not as a failure (the completeness gate judges whether its behavior arrived).
+- **decisions[]** non-empty → questions the critic says only the user can settle, such as a repo rule requiring part of the change to ship separately. Surface them before the review is registered; they're also near the top of the PR body.
 - **uncoveredAcceptance[]** non-empty → the completeness gate found acceptance criteria the brief asked for but the artifact still doesn't demonstrate after a fix pass — i.e. promised behavior that did **not** ship. Call these out first and prominently; they're surfaced at the top of the PR body under "Unmet acceptance criteria". This is a stronger signal than an open design finding: the feature is incomplete against its own contract.
 - **openFindings[]** non-empty → note the critic hit the revision cap with open merge-blocking findings (they're also in the PR body).
 - **deferredFindings[]** non-empty → mention the critic recorded non-blocking follow-ups; they're listed in the PR body under "Things deliberately not done".
 - **criticVerdictMissing** true → warn that the outer critique pass produced no verdict (the critic died twice); recommend a manual review before merging.
-- **runStats** → report agents, retries, full-suite executions, verification executions, and reused checks. The `verificationLedger` is the evidence record (command, validated commit SHA, exit status, and whether the command changed the tree); do not rerun a check merely to restate it during wrap-up.
+- **runStats** → report agents, retries, static-check executions, full-suite executions, verification executions, and reused checks. The `verificationLedger` is the evidence record (command, validated commit SHA, exit status, and whether the command changed the tree); do not rerun a check merely to restate it during wrap-up.
 - Otherwise print:
 ```
 ✓ feature-flow complete

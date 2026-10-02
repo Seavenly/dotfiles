@@ -12,6 +12,36 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-10-01 - feature run (sanitized)
+
+A small additive change shipped correctly, but took several times its
+command cost in process: too many slices, retries on unchanged code, and
+type errors charged to the wrong slice. Most items extend the 2026-07-24
+single-owner gate and verification ledger.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Over-slicing a one-behavior change; a slice whose only content is re-running gate commands | AVOID | agents/planner.md + workflows/feature-flow-run.js (planner prompt) | applied - thin means one behavior, not many slices; generated outputs ride with their source; no slice without a change of its own. The planner prompt's "as thin as possible" no longer reads as "as many as possible" |
+| Retrying the full gate list on an unchanged tree after an unrelated failure | AVOID | workflows/tdd-slice-loop.js | applied · **extends 2026-07-24 verification ledger** - reuse is keyed on the exact tree, so any tree change still reruns everything. Static and suite results are reusable across the run; verification results only from the same slice's previous attempt. Failed gates now record the tree for commands that passed, and an empty gate output falls back to the failing command's tail instead of "unknown failure" |
+| Test runner doesn't typecheck, so a slice's type error fails the next slice's gate | ADD | workflows/tdd-slice-loop.js + workflows/feature-flow-run.js + commands/feature-flow.md | applied · **corroborates 2026-06-03 preflight triad and 2026-06-12 "wire the uncovered check into the inner loop"** - new `staticCmds` run first on every gate (new `static` kind and stat); slow or credentialed checks stay in `verifyCmds` |
+| Stale `stuck` entries for work a later gate validated; `branch` carried the worktree path | ADD | workflows/feature-flow-run.js + workflows/tdd-slice-loop.js + commands/feature-flow.md | applied - gate-exhaustion entries carry their required commands, and a later validated SHA covering all of them marks the entry `supersededBy` (kept, not dropped; completeness still judges the behavior). Real branch passed in and returned; worktree returned separately |
+| Red or hanging gate command on the unchanged base, found only by chance | ADD | commands/feature-flow.md | applied · **corroborates 2026-06-03 and 2026-06-12 preflight entries** - baseline every gate command exactly as passed, non-interactively, under an outer timeout; red or hung base stops the launch and asks for an approved alternative |
+| Critic and completeness gate passed a change that a repo rule says must ship separately (warn-only check, CI green) | ADD | agents/critic.md + workflows/feature-flow-run.js | applied · **corroborates 2026-09-23 review-flow "no owner for rollout-order / repo-rule questions"** - Mode A reads the repo's sequencing and rollout rules and warn-only checks; delivery-reshaping violations go to a new `decisions` channel surfaced near the top of the PR body, not into the repair loop |
+| Gate ran commands more than once and apparently altered one | STRESS | workflows/tdd-slice-loop.js | applied · **corroborates 2026-07-24 "mechanical gates"** - commands verbatim (no added flags, filters, paths, or substitutes), each at most once, no in-gate reruns |
+| Wrapper that records the command line the gate actually executed | STRESS | workflows/tdd-slice-loop.js | skipped - the script can't read files, so a wrapper log is still agent-reported; revisit if verbatim instructions don't hold |
+| Gate commits carried an agent attribution trailer and lacked the story prefix | STRESS | workflows/tdd-slice-loop.js + workflows/feature-flow-run.js | applied - gate agents don't load the user's global rules, so the exact message (`commitPrefix` + subject, no attribution trailer) is now in every gate and sweep commit prompt |
+| Cross-model check after the feature-flow critic | ADD | workflows/feature-flow-run.js | skipped - retro asked for a second miss by the in-family critic first; watching |
+| Brief predicted a generator-assigned identifier that was already taken | ADD | commands/feature-flow.md | skipped - single occurrence, agents handled it; if it recurs, describe generated identifiers by pattern, not value |
+
+Notes:
+- No conflicts or reverts. The tree-keyed reuse replaces the 2026-07-24
+  rule that required a clean, committed start state for reuse. Tree identity
+  was always the proof, and the script now also checks that every result
+  sits on the verified tree. A throwaway simulation covered flaky-retry
+  reuse, stale-tree rejection, stuck supersession, and the unsuperseded case.
+- Verification reuse within one slice's retry window is deliberately narrow.
+  Credentialed or time-dependent previews stay fresh across slices.
+
 ## 2026-09-30 - review-flow evidence and coverage (not a retro)
 
 Checked by an independent Codex review of the plan.
