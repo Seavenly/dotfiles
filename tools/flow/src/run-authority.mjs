@@ -519,6 +519,22 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
       return hostProjection();
     },
 
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: hostProjection(),
+        readRun: (runId) => {
+          const run = runs.get(runId);
+          if (!run) return null;
+          return projectRunWithHostBarrier(projectRun({
+            authorityEventStreamDigest: runWatermark(run),
+            fold: foldRun(run),
+            events: run.events,
+          }), hostProjection());
+        },
+      });
+    },
+
     watch(runId, { unrefPollTimer = false } = {}) {
       const run = runs.get(runId);
       if (!run) {
@@ -2146,6 +2162,14 @@ export function createDurableRunAuthority({
       } finally {
         database?.close();
       }
+    },
+
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: this.query(),
+        readRun: (runId) => this.query(runId),
+      });
     },
 
     watch(runId, { unrefPollTimer = false } = {}) {
@@ -6037,6 +6061,74 @@ function unknownRunRejection(operation, runId, authorityEvents, commandType) {
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
   });
+}
+
+/**
+ * Resolve the retained completed run that published one exact review
+ * candidate reference.  The candidate projection intentionally does not
+ * carry source_run_id, so callers must use this RunAuthority-owned index
+ * rather than guessing a run from caller input.
+ */
+export function queryRetainedSourceRunByReviewCandidateReference({
+  reference,
+  hostProjection,
+  readRun,
+} = {}) {
+  const watermark = hostProjection?.watermark ?? EMPTY_WATERMARK;
+  if (!isPlainRecord(reference) ||
+      typeof reference.candidate_id !== "string" ||
+      reference.candidate_id.length === 0 ||
+      !isDigestValue(reference.candidate_fingerprint)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_missing",
+      reason: "RunAuthority has no exact retained source run reference",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  if (typeof readRun !== "function" || !Array.isArray(hostProjection?.runs)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_unavailable",
+      reason: "RunAuthority cannot inspect retained source runs",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  const matches = [];
+  for (const runId of hostProjection.runs) {
+    const projection = readRun(runId);
+    const candidateReference = projection?.review_candidate_reference;
+    if (projection?.schema !== "flow.run-projection/v1" ||
+        projection.phase !== "succeeded" ||
+        candidateReference?.candidate_id !== reference.candidate_id ||
+        candidateReference?.candidate_fingerprint !==
+          reference.candidate_fingerprint ||
+        reference.review_authority_watermark !== undefined &&
+          candidateReference.review_authority_watermark !==
+            reference.review_authority_watermark) {
+      continue;
+    }
+    matches.push(projection);
+  }
+  if (matches.length === 1) return matches[0];
+  return createRejection({
+    operation: "query",
+    code: matches.length === 0 ? "source_run_missing" : "source_run_ambiguous",
+    reason: matches.length === 0
+      ? "RunAuthority has no retained completed source run for this candidate"
+      : "RunAuthority retained more than one source run for this candidate",
+    authorityWatermark: watermark,
+    authorityWatermarkDomain: "host",
+    legalActions: [],
+  });
+}
+
+function isDigestValue(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function launchRejection(code, prepared, authorityEvents, reason = null) {

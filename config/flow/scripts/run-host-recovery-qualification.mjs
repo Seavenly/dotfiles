@@ -310,7 +310,7 @@ async function startHeadlessPublicOwner({ entrypoints, isolation }) {
   return startFlowOwner({
     env: {
       ...isolatedQualificationEnvironment(isolation),
-      FLOW_PUBLIC_REPOSITORY: isolation.repository_root,
+      FLOW_REPOSITORY_ROOT: isolation.repository_root,
       FLOW_OWNER_RUNTIME_MODULE: join(
         isolation.worktree_root,
         "config/flow/test-support/public-owner-runtime.mjs",
@@ -334,7 +334,7 @@ async function seedHeadlessPublicReview({ worktreeRoot, isolation, rawRoot }) {
   await initializePublicReviewRepository(isolation.repository_root);
   const env = {
     ...isolatedQualificationEnvironment(isolation),
-    FLOW_PUBLIC_REPOSITORY: isolation.repository_root,
+    FLOW_REPOSITORY_ROOT: isolation.repository_root,
   };
   writeFileSync(join(isolation.repository_root, "tuicr-seed.txt"), "after\n", {
     mode: 0o600,

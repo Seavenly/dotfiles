@@ -53,8 +53,8 @@ adapter or synthetic pass mechanism.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v34 binds it to
-`flow.contract-catalog/v1@34`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v36 binds it to
+`flow.contract-catalog/v1@36`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -291,8 +291,12 @@ ambient workspace path; local review targets alone receive a read-only
   bundle, then atomically creates or adopts the content-derived run. Declining
   confirmation returns a typed rejection and creates no run. Repeating an
   accepted launch returns the same run identity and records no second launch
-  event. Launch never invokes the plan compiler or refreshes identity-bearing
-  facts; the caller supplies the closed observation.
+  event. Launch never invokes the plan compiler or refreshes generic
+  identity-bearing facts; the caller supplies the closed observation. A local
+  `review/v1` envelope is the deliberate exception: launch freshly revalidates
+  its owner-derived preparation facts before adopting an exact existing review
+  run or creating a new run, so replay drift is rejected without weakening
+  idempotent adoption.
   Invalid prepared bundles, confirmation decisions, and changed closed facts
   return typed launch rejections rather than escaping as transport errors.
   Launch also rejects operation cards with
@@ -1370,7 +1374,7 @@ The managed sources under `config/flow/` are:
   feature-capture identities, the five `FlowRuntime` operations, authority
   ownership, the execution-time accounting contract, and the reboot-admission
   typed-fact and uncertainty policy. The current catalog identity is
-  `flow.contract-catalog/v1@34`; a catalog change must update this managed
+  `flow.contract-catalog/v1@36`; a catalog change must update this managed
   source and the source constants/tests that validate its exact contents. Any
   future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
@@ -1391,7 +1395,9 @@ The managed sources under `config/flow/` are:
   `schemas/flow.runtime-runner-status.v1.schema.json`,
   `schemas/flow.feature-preparation-request.v1.schema.json`, and
   `schemas/flow.feature-candidate-archive.v1.schema.json` - the public host
-  and ordinary-preparation payload contracts.
+  and ordinary-preparation payload contracts; and
+- `schemas/flow.review-preparation-facts.v1.schema.json` - the
+  authority-derived, digest-bound local-review preparation envelope.
 - `schemas/flow.time-fact.v1.schema.json`,
   `schemas/flow.execution-time-accounting.v1.schema.json`,
   `schemas/flow.execution-time-projection.v1.schema.json`,

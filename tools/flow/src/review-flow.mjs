@@ -23,6 +23,10 @@ import {
   SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
 } from "./authority-bindings.mjs";
 import {
+  reviewExplicitFactsFromPreparationFacts,
+  validateReviewPreparationFacts,
+} from "./review-preparation-facts.mjs";
+import {
   DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
   DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
 } from "./delegate-input-envelope.mjs";
@@ -325,7 +329,13 @@ export function createReviewDefinition() {
 }
 
 export function compileReviewSelection({ inputs, explicit_facts: explicitFacts }) {
-  const selection = validateReviewInputs(inputs, explicitFacts);
+  const materializedFacts = explicitFacts ??
+    (inputs?.preparation_facts === undefined
+      ? explicitFacts
+      : reviewExplicitFactsFromPreparationFacts(inputs.preparation_facts, {
+          limits: inputs.limits,
+        }));
+  const selection = validateReviewInputs(inputs, materializedFacts);
   const cards = reviewCards(selection);
   return {
     schema: "flow.dynamic-plan-proposal/v1",
@@ -349,7 +359,7 @@ export function compileReviewSelection({ inputs, explicit_facts: explicitFacts }
           : []),
       ],
     },
-    explicit_facts: explicitFacts,
+    explicit_facts: materializedFacts,
     revision_templates: [],
   };
 }
@@ -393,6 +403,35 @@ export function validateReviewInputs(inputs, explicitFacts) {
       "invalid_review_target",
       "review/v1 requires one exact local candidate or GitHub pull-request snapshot",
     );
+  }
+  if (inputs.preparation_facts !== undefined) {
+    const preparationValidation = validateReviewPreparationFacts(
+      inputs.preparation_facts,
+    );
+    if (!preparationValidation.valid) {
+      invalidReview(
+        preparationValidation.issues[0]?.code ?? "facts_changed",
+        preparationValidation.issues[0]?.reason ??
+          "review preparation facts are invalid",
+      );
+    }
+    if (targetKind === "local" &&
+        (inputs.preparation_facts.candidate.candidate_id !==
+          target.candidate.candidate_id ||
+         inputs.preparation_facts.candidate.candidate_fingerprint !==
+          target.candidate_fingerprint)) {
+      invalidReview(
+        "preparation_facts_candidate_mismatch",
+        "review preparation facts do not identify the exact review target",
+      );
+    }
+    if (targetKind === "local" &&
+        !preparationDelegationMatches(inputs, inputs.preparation_facts)) {
+      invalidReview(
+        "preparation_facts_route_mismatch",
+        "review delegation routes are not the exact authority-observed selections",
+      );
+    }
   }
   if (!Array.isArray(inputs.lenses) || inputs.lenses.length === 0 ||
       new Set(inputs.lenses).size !== inputs.lenses.length ||
@@ -491,6 +530,34 @@ export function validateReviewInputs(inputs, explicitFacts) {
     orientation,
     diagrams,
     create_pending_review: createPendingReview,
+  });
+}
+
+function preparationDelegationMatches(inputs, facts) {
+  const expected = new Map((facts.route?.bindings ?? []).map((binding) => [
+    binding.card_id,
+    { route: binding.route, description: binding.description },
+  ]));
+  const actual = [];
+  for (const lens of inputs.lenses ?? []) {
+    const binding = inputs.delegation?.lenses?.[lens];
+    actual.push({
+      card_id: `review-lens-${lens}`,
+      route: binding?.route,
+      description: binding?.description,
+    });
+  }
+  actual.push({
+    card_id: "review-critic",
+    route: inputs.delegation?.critic?.route,
+    description: inputs.delegation?.critic?.description,
+  });
+  if (expected.size !== actual.length) return false;
+  return actual.every(({ card_id, route, description }) => {
+    const observed = expected.get(card_id);
+    return observed !== undefined &&
+      isDeepEqualDigest(observed.route, route) &&
+      isDeepEqualDigest(observed.description, description);
   });
 }
 
@@ -764,7 +831,7 @@ function terminalCandidateLifecycleProjection(projection) {
   });
 }
 
-function reviewCandidateProjectionIssue(target, projection) {
+export function reviewCandidateProjectionIssue(target, projection) {
   const lifecycleStatus = candidateLifecycleStatus(projection);
   if (projection?.schema !== "work.review-candidate-projection/v1" ||
       projection.contract !== "work.review/v1" ||

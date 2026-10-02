@@ -164,6 +164,18 @@ authority identity, contract, provider identity, watermark or generation, and
 closed legal actions.
 _Avoid_: Free-form error detail, caller-supplied authority
 
+**Review preparation facts**:
+The immutable `flow.review-preparation-facts/v1` envelope derived after
+RunAuthority joins the retained source run, ReviewAuthority supplies the
+sealed candidate, and WorkspaceAuthority supplies the exact workspace
+generation and Git fingerprint. Its route, catalog, operation, validator,
+four-part time, authority-fact, watermark, and digest fields are exact
+authority bindings; public queries and route snapshots are non-authoritative
+projections that cannot mint or replace them. A local-review caller may select
+the bounded review inputs and limits, but may not supply explicit facts or
+replace the derived envelope.
+_Avoid_: Latest projection, caller-supplied facts, forged authority envelope
+
 **Plan fingerprint**:
 The content digest of the canonical finite run-plan graph. It identifies the
 graph but not the wider prepared bundle or its explicit facts.

@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 34);
+  assert.equal(catalog.catalog_version, 36);
   for (const contract of [
     "flow.release-manifest/v1",
     "flow.dark-opt-in/v1",
@@ -68,6 +68,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
     endpoint: "flow.owner-endpoint/v1",
     status: "flow.owner-status/v1",
     authority: "RunAuthority",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "flow.production.run-authority",
+      version: "1",
+    },
     identity: ["owner_token", "pid", "process_start_identity"],
     state_directory_mode: "0700",
     endpoint_mode: "0600",
@@ -151,7 +156,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@34",
+    catalog_id: "flow.contract-catalog/v1@36",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
@@ -641,6 +646,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "flow.review-terminal-disposition/v1",
     "flow.review-automated-evidence/v1",
     "flow.review-provenance/v1",
+    "flow.review-preparation-selection/v1",
+    "flow.review-preparation-facts/v1",
     "flow.review-artifacts/v1",
     "flow.review-artifact-json/v1",
     "flow.review-artifact-markdown/v1",
@@ -710,6 +717,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
   }
   assert.deepEqual(catalog.work_domain_interfaces.review, {
     authority: "ReviewAuthority",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "flow.production.review-authority",
+      version: "1",
+    },
     interface: "work.review-authority/v1",
     contract: "work.review/v1",
     candidate: "work.review-candidate/v1",
@@ -750,6 +762,8 @@ test("the public catalog exposes the settled interface and forbids legacy import
     summary: "flow.review-summary/v1",
     automated_evidence: "flow.review-automated-evidence/v1",
     provenance: "flow.review-provenance/v1",
+    preparation_selection: "flow.review-preparation-selection/v1",
+    preparation_facts: "flow.review-preparation-facts/v1",
     artifacts: "flow.review-artifacts/v1",
     artifact_formats: [
       "flow.review-artifact-json/v1",
@@ -879,6 +893,11 @@ test("the public catalog exposes the settled interface and forbids legacy import
       rejection: "flow.rejection/v1",
       request: "flow.query/v1",
     },
+    review_preparation_facts: {
+      projection: "flow.review-preparation-facts/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
   });
   assert.deepEqual(catalog.flow_runtime.operation_contracts.watch.review, {
     inbox: "flow.review-inbox-projection/v1",
@@ -891,6 +910,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
   assert.ok(catalog.contracts.includes("flow.legacy-compatibility-inventory/v1"));
   assert.ok(catalog.projections.includes("autonomous_runner_status"));
   assert.ok(catalog.projections.includes("legacy_compatibility_inventory"));
+  assert.ok(catalog.projections.includes("review_preparation_facts"));
   assert.deepEqual(catalog.delegated_agent_port, {
     contract: "flow.delegated-agent-port/v1",
     authority: "non_authoritative",

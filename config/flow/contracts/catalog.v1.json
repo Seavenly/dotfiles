@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 34,
+  "catalog_version": 36,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -52,6 +52,11 @@
       "endpoint": "flow.owner-endpoint/v1",
       "status": "flow.owner-status/v1",
       "authority": "RunAuthority",
+      "provider_identity": {
+        "schema": "flow.registered-authority/v1",
+        "id": "flow.production.run-authority",
+        "version": "1"
+      },
       "identity": ["owner_token", "pid", "process_start_identity"],
       "state_directory_mode": "0700",
       "endpoint_mode": "0600",
@@ -201,7 +206,7 @@
       "binding": "flow.evidence-safety-binding/v1",
       "catalog_view": "flow.evidence-safety-catalog/v1",
       "policy_id": "flow.evidence-safety-policy/v1",
-      "catalog_id": "flow.contract-catalog/v1@34",
+      "catalog_id": "flow.contract-catalog/v1@36",
       "allowed_uses": [
         "delegate_transfer",
         "artifact_acceptance",
@@ -446,6 +451,11 @@
             "request": "flow.query/v1",
             "projection": "flow.review-inbox-projection/v1",
             "rejection": "flow.rejection/v1"
+          },
+          "review_preparation_facts": {
+            "request": "flow.query/v1",
+            "projection": "flow.review-preparation-facts/v1",
+            "rejection": "flow.rejection/v1"
           }
         }
       },
@@ -684,6 +694,11 @@
       "interface": "work.workspace-authority/v1",
       "contract": "work.workspace/v1",
       "projection": "work.workspace-projection/v1",
+      "provider_identity": {
+        "schema": "flow.registered-authority/v1",
+        "id": "flow.production.workspace-authority",
+        "version": "1"
+      },
       "commands": [
         "work.workspace-register-command/v1",
         "work.workspace-observation-command/v1",
@@ -713,6 +728,11 @@
       "contract": "work.review/v1",
       "candidate": "work.review-candidate/v1",
       "projection": "work.review-candidate-projection/v1",
+      "provider_identity": {
+        "schema": "flow.registered-authority/v1",
+        "id": "flow.production.review-authority",
+        "version": "1"
+      },
       "review_projection": "flow.review-projection/v1",
       "event": "work.review-event/v1",
       "commands": [
@@ -749,6 +769,8 @@
       "summary": "flow.review-summary/v1",
       "automated_evidence": "flow.review-automated-evidence/v1",
       "provenance": "flow.review-provenance/v1",
+      "preparation_selection": "flow.review-preparation-selection/v1",
+      "preparation_facts": "flow.review-preparation-facts/v1",
       "artifacts": "flow.review-artifacts/v1",
       "artifact_formats": [
         "flow.review-artifact-json/v1",
@@ -1056,6 +1078,8 @@
     "flow.review-summary/v1",
     "flow.review-automated-evidence/v1",
     "flow.review-provenance/v1",
+    "flow.review-preparation-selection/v1",
+    "flow.review-preparation-facts/v1",
     "flow.review-artifacts/v1",
     "flow.review-target-invalidation/v1",
     "flow.review-target-refresh/v1",
@@ -1283,6 +1307,7 @@
     "backup",
     "restore",
     "review",
+    "review_preparation_facts",
     "authority_schema_compatibility",
     "execution_time",
     "workspace",

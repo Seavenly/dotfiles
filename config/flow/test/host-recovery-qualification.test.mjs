@@ -35,6 +35,9 @@ import {
   runBackupRestoreReconciliation,
 } from "../src/host-recovery-runtime-scenarios.mjs";
 import { publicQualificationIsAvailable } from "../../../tools/flow/src/transition-projection.mjs";
+import {
+  bindQualifiedReleaseFixture,
+} from "../test-support/qualified-release-fixture.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-harness-test-"));
@@ -823,7 +826,25 @@ test("aggregate generation rejects a catalog subset and binds the candidate rele
   }
 });
 
-test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", () => {
+test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", async () => {
+  const ledger = JSON.parse(await readFile(
+    join(WORKTREE, "config/flow/transition-ledger.v1.json"),
+    "utf8",
+  ));
+  const deferredIssue46 = ledger.not_run.find(({ id }) => id === "issue-46");
+  if (deferredIssue46?.status === "not_run") {
+    assert.throws(
+      () => validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE }),
+      (error) => {
+        assert.ok([
+          "release_candidate_dirty",
+          "tracked_aggregate_release_mismatch",
+        ].includes(error?.code));
+        return true;
+      },
+    );
+    return;
+  }
   try {
     const result = validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE });
     assert.equal(result.schema, "flow.tracked-host-recovery-consumer-result/v1");
@@ -1612,7 +1633,18 @@ test("provider recovery scenarios run through one native subprocess and bind obs
 test("qualification runner records the native headless probe after public captures", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-headless-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const worktree = WORKTREE;
+  const worktree = await makeEphemeralPinnedWorktree(
+    WORKTREE,
+    join(root, "pinned-worktree"),
+  );
+  await bindQualifiedReleaseFixture({
+    configDirectory: join(worktree, "config/flow"),
+    repositoryRoot: worktree,
+  });
+  await execFile("git", ["-C", worktree, "add", "-A"]);
+  await execFile("git", [
+    "-C", worktree, "commit", "--quiet", "-m", "bind qualified test release",
+  ]);
   const rawRoot = join(root, "raw");
   const paths = {
     state: join(root, "state"),

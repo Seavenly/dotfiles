@@ -66,7 +66,7 @@ launch rejection schema are kept separate: runtime callers receive
 `flow.rejection/v1` with an optional `outcome`, while selector callers receive
 `flow.launch-rejection/v1` with the exact route and legal actions.
 
-`transition-ledger.v1.json` binds catalog v34, policy, manifest, release
+`transition-ledger.v1.json` binds catalog v36, policy, manifest, release
 content, environment, prerequisite commits, legacy inventory, and evidence.
 `evidence/release-content.v1.json` binds an exact candidate Git tree ID,
 its declared qualification-base commit, and every regular-file byte in the
@@ -203,7 +203,7 @@ capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
 the evidence-safety catalog identity is
-`flow.contract-catalog/v1@34`.
+`flow.contract-catalog/v1@36`.
 
 Callers select instructions, minimal task-input IDs and facts, resource
 selection IDs, and output requirements. RunAuthority derives execution
@@ -278,7 +278,9 @@ The public host payload contracts are maintained beside this inventory:
   autonomous capacity projections; and
 - `schemas/flow.feature-preparation-request.v1.schema.json` and
   `schemas/flow.feature-candidate-archive.v1.schema.json` define the ordinary
-  feature preparation and captured archive descriptors.
+  feature preparation and captured archive descriptors; and
+- `schemas/flow.review-preparation-facts.v1.schema.json` defines the
+  authority-derived, digest-bound local-review preparation envelope.
 
 Host-manager definitions remain explicit opt-in sources under `host/`. Their
 installation and lifecycle procedure is documented in

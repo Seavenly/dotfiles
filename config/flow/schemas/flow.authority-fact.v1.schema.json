@@ -37,6 +37,27 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "generation": { "type": ["integer", "null"], "minimum": 0 },
-    "legal_actions": { "type": "array" }
+    "legal_actions": { "type": "array" },
+    "watermark_domain": {
+      "enum": [
+        "host",
+        "run",
+        "candidate",
+        "source_run",
+        "workspace",
+        "review",
+        "route",
+        "resource",
+        "contract",
+        "generation",
+        "catalog",
+        "operation",
+        "validator",
+        "time"
+      ]
+    },
+    "subject_id": { "type": ["string", "null"] },
+    "disposition": { "type": ["string", "null"] },
+    "facts": { "type": ["object", "null"] }
   }
 }

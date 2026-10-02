@@ -13,13 +13,20 @@ import {
 import {
   adaptTuicrLiveProbeResult,
 } from "../scripts/run-host-recovery-qualification.mjs";
+import {
+  makeQualifiedPinnedWorktree,
+} from "../test-support/qualified-release-fixture.mjs";
 
 const WORKTREE = resolve(import.meta.dirname, "../../..");
 
 test("issue-46 tuicr runs after a real producer exits and survives owner rebuild", async () => {
   const root = await mkdtemp(join(tmpdir(), "flow-tuicr-live-integration-"));
+  const worktree = await makeQualifiedPinnedWorktree({
+    source: WORKTREE,
+    destination: join(root, "worktree"),
+  });
   const isolation = createQualificationIsolation({
-    worktreeRoot: WORKTREE,
+    worktreeRoot: worktree,
     xdgStateHome: join(root, "state"),
     authorityDirectory: join(root, "authority"),
     socketPath: join(root, "authority", "owner.sock"),

@@ -21,6 +21,7 @@ import {
   createPredefinedFlowConfirmation,
 } from "./prepared-contracts.mjs";
 import { normalizeAuthorityBindings } from "./authority-bindings.mjs";
+import { validateReviewPreparationFacts } from "./review-preparation-facts.mjs";
 
 const PREPARED_RUN_FIELDS = [
   "schema",
@@ -262,6 +263,58 @@ function assertPredefinedEnvelope(prepared) {
   } catch (error) {
     translateCanonicalError(error);
   }
+  const preparationFacts = prepared.selection.inputs.preparation_facts;
+  if (preparationFacts !== undefined) {
+    const validation = validateReviewPreparationFacts(preparationFacts);
+    if (!validation.valid) {
+      invalidLaunch(
+        validation.issues[0]?.code ?? "facts_changed",
+        validation.issues[0]?.reason ?? "review preparation facts are invalid",
+      );
+    }
+    if (!preparationExplicitFactsMatch(prepared.explicit_facts, preparationFacts)) {
+      invalidLaunch(
+        "facts_changed",
+        "prepared review explicit facts are not bound to preparation facts",
+      );
+    }
+  }
+}
+
+function preparationExplicitFactsMatch(explicitFacts, preparationFacts) {
+  if (!isPlainRecord(explicitFacts) || !isPlainRecord(preparationFacts)) return false;
+  if (explicitFacts.catalog_fingerprint !== preparationFacts.catalog.fingerprint ||
+      digest(explicitFacts.operation_contracts) !==
+        digest(preparationFacts.operation.contracts) ||
+      digest(explicitFacts.validator_contracts) !==
+        digest(preparationFacts.validator.contracts) ||
+      digestCanonicalSequence(explicitFacts.time_facts) !==
+        digestCanonicalSequence(preparationFacts.time_facts)) {
+    return false;
+  }
+  const workspace = preparationFacts.workspace;
+  const workspaceClaim = explicitFacts.resource_claims?.find((claim) =>
+    claim?.kind === "workspace" &&
+    claim.id === workspace.subject_id &&
+    claim.generation === workspace.generation &&
+    claim.mutation_epoch === workspace.mutation_epoch &&
+    claim.fingerprint === workspace.fingerprint);
+  if (workspaceClaim === undefined) return false;
+  const generation = explicitFacts.subject_generations?.find((candidate) =>
+    candidate?.subject_id === workspace.subject_id &&
+    candidate.generation === workspace.generation &&
+    candidate.fingerprint === workspace.fingerprint);
+  if (generation === undefined) return false;
+  const bindings = explicitFacts.route_snapshot?.bindings;
+  return Array.isArray(bindings) && bindings.length > 0 &&
+    Array.isArray(preparationFacts.route.bindings) &&
+    digestCanonicalSequence(bindings) ===
+      digestCanonicalSequence(preparationFacts.route.bindings);
+}
+
+function digestCanonicalSequence(values) {
+  return digest([...(values ?? [])].sort((left, right) =>
+    digest(left).localeCompare(digest(right))));
 }
 
 function assertPredefinedRoutes(prepared) {

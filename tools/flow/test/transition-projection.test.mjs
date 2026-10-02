@@ -22,6 +22,9 @@ import {
 } from "../src/transition-projection.mjs";
 import { digest as canonicalDigest } from "../src/canonical.mjs";
 import {
+  PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
+} from "../src/qualification-recipe.mjs";
+import {
   deriveGitTreeSha,
   isGovernedReleasePath,
 } from "../src/release-content-contract.mjs";
@@ -274,9 +277,10 @@ test("transition query rejects a wrong or unavailable candidate tree binding", a
   );
 });
 
-test("transition query derives its watermark and legal actions from authority", async () => {
+test("transition query derives its watermark and legal actions from authority", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "current-projection");
   const projection = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/home",
     stateDirectory: "/test/state",
@@ -298,12 +302,12 @@ test("transition query derives its watermark and legal actions from authority", 
   assert.equal(projection.selected_implementation, "legacy-claude/v1");
   assert.equal(projection.selected_authority_root, "/test/home/.agent-teams");
   assert.deepEqual(projection.evidence_statuses, {
-    passed: 6,
+    passed: 5,
     failed: 0,
     blocked: 0,
-    not_run: 1,
+    not_run: 3,
   });
-  assert.equal(projection.dark_opt_in.available, true);
+  assert.equal(projection.dark_opt_in.available, false);
   assert.equal(projection.legacy_baseline_audit.status, "passed");
   assert.equal(projection.capability_manifest.release_id, "flow-release-1.0-dark/v1");
   assert.deepEqual(projection.capability_manifest.supported_routes, [
@@ -361,15 +365,16 @@ test("transition status withholds dark opt-in when production-route conformance 
     `sha256:${phase2.sha256}`);
 });
 
-test("transition watermark binds the resolved authority root", async () => {
+test("transition watermark binds the resolved authority root", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "authority-root-watermark");
   const first = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/first-home",
     stateDirectory: "/test/first-state",
   });
   const second = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/second-home",
     stateDirectory: "/test/second-state",
@@ -381,7 +386,11 @@ test("transition watermark binds the resolved authority root", async () => {
 
 for (const status of ["failed", "blocked", "not_run"]) {
   test(`dark opt-in availability fails closed when qualification evidence is ${status}`, async (t) => {
-    const { copiedConfig } = await copyTransitionConfig(t, `qualification-${status}`);
+    const { copiedConfig } = await copyTransitionConfig(
+      t,
+      `qualification-${status}`,
+      { qualified: true },
+    );
     const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     const evidence = ledger.evidence.find(({ id }) =>
@@ -513,7 +522,11 @@ for (const [label, mutate] of [
   }],
 ]) {
   test(`transition query rejects tampered qualification receipt with updated ledger digest: ${label}`, async (t) => {
-    const { scratch, copiedConfig } = await copyTransitionConfig(t, `tampered-${label}`);
+    const { scratch, copiedConfig } = await copyTransitionConfig(
+      t,
+      `tampered-${label}`,
+      { qualified: true },
+    );
     const evidencePath = join(
       copiedConfig,
       "evidence/release-qualification.v1.json",
@@ -763,7 +776,7 @@ test("transition query derives the launch action from either legacy default", as
   ]);
 });
 
-async function copyTransitionConfig(t, label) {
+async function copyTransitionConfig(t, label, { qualified = false } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), `flow-transition-${label}-`));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const copiedConfig = join(scratch, "flow");
@@ -771,7 +784,158 @@ async function copyTransitionConfig(t, label) {
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
+  await rebindReleaseContentFixture(copiedConfig);
+  if (qualified) await qualifyTransitionFixture(copiedConfig);
   return { scratch, copiedConfig };
+}
+
+async function rebindReleaseContentFixture(configDirectory) {
+  const contentPath = join(configDirectory, "evidence/release-content.v1.json");
+  const content = JSON.parse(await readFile(contentPath, "utf8"));
+  for (const entry of content.files) {
+    const bytes = await readFile(join(repositoryRoot, entry.path));
+    entry.git_blob_sha = gitBlobSha(bytes);
+    entry.sha256 = createHash("sha256").update(bytes).digest("hex");
+  }
+  content.git_binding.candidate_tree_sha = deriveGitTreeSha(content.files);
+  content.content_digest = canonicalDigest({
+    schema: content.schema,
+    release_id: content.release_id,
+    git_binding: content.git_binding,
+    files: content.files,
+  });
+  const contentBytes = Buffer.from(`${JSON.stringify(content, null, 2)}\n`);
+  await writeFile(contentPath, contentBytes);
+
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const contentEvidence = ledger.evidence.find(({ id }) =>
+    id === "release_content_binding");
+  contentEvidence.sha256 = createHash("sha256").update(contentBytes).digest("hex");
+  ledger.release.content.sha256 = contentEvidence.sha256;
+  ledger.release.content.digest = content.content_digest;
+
+  const productionEvidence = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  if (productionEvidence?.path !== null) {
+    const productionPath = join(configDirectory, productionEvidence.path);
+    const production = JSON.parse(await readFile(productionPath, "utf8"));
+    production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
+    production.release_content_digest = content.content_digest;
+    const productionBytes = Buffer.from(
+      `${JSON.stringify(production, null, 2)}\n`,
+    );
+    await writeFile(productionPath, productionBytes);
+    productionEvidence.sha256 = createHash("sha256")
+      .update(productionBytes)
+      .digest("hex");
+  }
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+}
+
+async function qualifyTransitionFixture(configDirectory) {
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const releaseContent = JSON.parse(await readFile(
+    join(configDirectory, "evidence/release-content.v1.json"),
+    "utf8",
+  ));
+  const qualificationPath = join(
+    configDirectory,
+    "evidence/release-qualification.v1.json",
+  );
+  const qualification = JSON.parse(await readFile(qualificationPath, "utf8"));
+  qualification.release_id = ledger.release.id;
+  qualification.qualification_base_commit =
+    ledger.release.qualification_base_commit;
+  qualification.candidate_tree_sha = releaseContent.git_binding.candidate_tree_sha;
+  qualification.release_content_digest = ledger.release.content.digest;
+  qualification.status = "passed";
+  const qualificationBytes = Buffer.from(
+    `${JSON.stringify(qualification, null, 2)}\n`,
+  );
+  await writeFile(qualificationPath, qualificationBytes);
+
+  const phase1 = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  phase1.path = "evidence/release-qualification.v1.json";
+  phase1.status = "passed";
+  phase1.sha256 = createHash("sha256").update(qualificationBytes).digest("hex");
+
+  const productionPath = join(
+    configDirectory,
+    "evidence/production-route-conformance.v1.json",
+  );
+  const production = JSON.parse(await readFile(productionPath, "utf8"));
+  production.release_id = ledger.release.id;
+  production.qualification_base_commit =
+    ledger.release.qualification_base_commit;
+  production.candidate_tree_sha = releaseContent.git_binding.candidate_tree_sha;
+  production.release_content_digest = ledger.release.content.digest;
+  production.status = "passed";
+  production.phase1_evidence_sha256 = phase1.sha256;
+  production.generation_id = null;
+  production.generation_binding_sha256 = null;
+  production.recipe = await qualifiedProductionRecipe(configDirectory);
+  const productionBytes = Buffer.from(
+    `${JSON.stringify(production, null, 2)}\n`,
+  );
+  await writeFile(productionPath, productionBytes);
+
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  phase2.path = "evidence/production-route-conformance.v1.json";
+  phase2.status = "passed";
+  phase2.sha256 = createHash("sha256").update(productionBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+}
+
+async function qualifiedProductionRecipe(configDirectory) {
+  const commands = [];
+  for (const expected of PRODUCTION_ROUTE_CONFORMANCE_COMMANDS) {
+    const receiptBytes = await readFile(join(configDirectory, expected.receipt_path));
+    const counts = tapSummary(receiptBytes.toString("utf8"));
+    commands.push({
+      id: expected.id,
+      command: expected.command,
+      working_directory: expected.working_directory,
+      receipt_path: expected.receipt_path,
+      receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
+      status: "passed",
+      exit_code: 0,
+      tests: counts.tests,
+      passed: counts.pass,
+      failed: counts.fail,
+      cancelled: counts.cancelled,
+      skipped: counts.skipped,
+      flaky: 0,
+    });
+  }
+  return {
+    schema: "flow.production-route-conformance-recipe/v1",
+    digest: canonicalDigest(commands),
+    commands,
+  };
+}
+
+function tapSummary(receipt) {
+  const summary = {};
+  for (const line of receipt.split(/\r?\n/u)) {
+    const match = /^# (tests|pass|fail|cancelled|skipped|todo) (\d+)$/u.exec(line);
+    if (match !== null) summary[match[1]] = Number(match[2]);
+  }
+  if (!["tests", "pass", "fail", "cancelled", "skipped"].every((key) =>
+    Number.isSafeInteger(summary[key]))) {
+    throw new Error("qualified transition fixture receipt has no TAP summary");
+  }
+  return summary;
+}
+
+function gitBlobSha(bytes) {
+  return createHash("sha1")
+    .update(Buffer.from(`blob ${bytes.length}\0`))
+    .update(bytes)
+    .digest("hex");
 }
 
 async function copyReleaseCandidateToFreshClone(t, label) {
@@ -803,6 +967,7 @@ async function copyReleaseCandidateToFreshClone(t, label) {
     await mkdir(dirname(target), { recursive: true });
     await cp(join(repositoryRoot, path), target);
   }
+  await rebindReleaseContentFixture(clonedConfig);
   return { content, clonedConfig, clonedRepository };
 }
 

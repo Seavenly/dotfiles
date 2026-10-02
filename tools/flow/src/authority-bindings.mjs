@@ -454,7 +454,11 @@ export function authorityFactFromIssue(issue) {
     authorityContract: issue?.authority_contract ?? null,
     providerIdentity: issue?.authority_provider_identity ?? null,
     watermark: issue?.authority_watermark ?? null,
+    watermarkDomain: issue?.authority_watermark_domain ?? null,
     generation: issue?.authority_generation ?? null,
+    subjectId: issue?.subject_id ?? null,
+    disposition: issue?.disposition ?? null,
+    facts: issue?.facts,
     legalActions: issue?.legal_actions ?? [],
   });
 }
@@ -464,10 +468,14 @@ export function createAuthorityFact({
   authorityContract = null,
   providerIdentity = null,
   watermark = null,
+  watermarkDomain = null,
   generation = null,
+  subjectId = null,
+  disposition = null,
+  facts = undefined,
   legalActions = [],
 } = {}) {
-  return freezeCanonical({
+  const authorityFact = {
     schema: AUTHORITY_FACT_SCHEMA,
     authority_id: authorityId,
     authority_contract: authorityContract,
@@ -475,7 +483,14 @@ export function createAuthorityFact({
     watermark,
     generation,
     legal_actions: Array.isArray(legalActions) ? legalActions : [],
-  });
+  };
+  if (watermarkDomain !== null) {
+    authorityFact.watermark_domain = watermarkDomain;
+  }
+  if (subjectId !== null) authorityFact.subject_id = subjectId;
+  if (disposition !== null) authorityFact.disposition = disposition;
+  if (facts !== undefined) authorityFact.facts = facts;
+  return freezeCanonical(authorityFact);
 }
 
 export function authorityWatermark(observation) {
