@@ -38,3 +38,14 @@ This decision supersedes neither ADR-0005's immutable delivery guarantees nor
 ADR-0007's use of Drovr. ADR-0004 remains historical guidance for the frozen
 Hermes-backed baseline only. ADR-0006's controller terminal exception is also
 scoped exclusively to that frozen Hermes-backed baseline.
+
+## Amendment 2026-10-02: the Claude-only baseline stays maintained
+
+The Claude-only implementation remains the default and is still the flow in
+daily use, so it is maintained rather than frozen in place. The owner may
+approve maintenance changes to `config/claude` beyond critical correctness and
+security repairs; an approved change re-records that baseline's Git object and
+source commit in `config/flow/legacy-baselines.v1.json`, together with the
+transition ledger's matching release commit and evidence digest, in the same
+change set. Committed drift without a re-recorded pin still fails closed. The
+Hermes-backed baseline remains frozen under the original policy.

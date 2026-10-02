@@ -75,7 +75,8 @@
   "change_policy": {
     "allowed_reasons": [
       "critical_correctness",
-      "critical_security"
+      "critical_security",
+      "owner_approved_maintenance:legacy-claude/v1"
     ],
     "requires_explicit_legacy_evidence": true,
     "authority_bearing_compatibility_requires_decision": true
