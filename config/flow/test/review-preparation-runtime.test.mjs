@@ -30,7 +30,7 @@ const validateRejection = rejectionAjv.getSchema(
   "https://dotfiles.local/schemas/flow.rejection.v1.schema.json",
 );
 
-test("production review preparation provider reads owner projections and rechecks route drift", async () => {
+test("production review preparation provider reads owner projections and rechecks route drift", async (t) => {
   const candidateFingerprint = DIGEST("a");
   const git = {
     commit_sha: "a".repeat(40),
@@ -182,7 +182,7 @@ test("production review preparation provider reads owner projections and recheck
     { schema: "flow.time-fact/v1", kind: "boot", boot_id: "boot:test" },
     { schema: "flow.time-fact/v1", kind: "clock_source", identity: "clock:test" },
   ];
-  const composition = createProductionComposition({
+  const compositionOptions = {
     delegatedAgentPort: {
       describe({ caller_metadata: callerMetadata }) {
         const digit = routeChanged
@@ -209,7 +209,8 @@ test("production review preparation provider reads owner projections and recheck
     authorityOptions: {
       timeObservationAdapter: { observe() { return timeFacts; } },
     },
-  });
+  };
+  const composition = createProductionComposition(compositionOptions);
   composition.bindAuthority(sourceLookupAuthority);
   assert.equal(getReviewAuthority({ runAuthority: sourceLookupAuthority }), reviewAuthority);
   assert.equal(getWorkspaceAuthority({ runAuthority: sourceLookupAuthority }), workspaceAuthority);
@@ -227,6 +228,88 @@ test("production review preparation provider reads owner projections and recheck
   assert.equal(result.facts.route.route_id, "route:review");
   assert.equal(result.facts.route.bindings.length, 2);
   assert.equal(result.facts.catalog.id, "flow.contract-catalog/v1@36");
+
+  await t.test("async route observations revalidate configured catalog drift", async () => {
+    let catalogIdentity = result.facts.catalog;
+    const asyncComposition = createProductionComposition({
+      ...compositionOptions,
+      delegatedAgentPort: {
+        async describe(request) {
+          return compositionOptions.delegatedAgentPort.describe(request);
+        },
+      },
+      authorityOptions: {
+        ...compositionOptions.authorityOptions,
+        contractCatalogAdapter: { observe() { return catalogIdentity; } },
+      },
+    });
+    asyncComposition.bindAuthority(sourceLookupAuthority);
+    const runtime = createFlowRuntime({
+      runAuthority: sourceLookupAuthority,
+      reviewPreparationProvider: asyncComposition.reviewPreparationProvider,
+    });
+    const query = {
+      schema: "flow.query/v1",
+      query: "review_preparation_facts",
+      candidate_id: "candidate:sealed",
+      candidate_fingerprint: candidateFingerprint,
+      selection: reviewSelection(),
+    };
+    const initial = await runtime.query(query);
+    assert.equal(initial.schema, "flow.review-preparation-facts/v1");
+    catalogIdentity = { ...catalogIdentity, fingerprint: DIGEST("0") };
+
+    const currentQuery = await runtime.query(query);
+    assert.equal(currentQuery.code, "catalog_changed");
+    const launchRevalidation = await asyncComposition.reviewPreparationProvider.revalidate({
+      facts: initial,
+      inputs: { preparation_selection: reviewSelection() },
+    });
+    assert.equal(launchRevalidation.accepted, false);
+    assert.equal(launchRevalidation.issue.code, "catalog_changed");
+    assert.deepEqual(runtime.query().runs, []);
+  });
+
+  await t.test("async owner observations cannot replace owning authority projections", async () => {
+    const asyncComposition = createProductionComposition({
+      ...compositionOptions,
+      authorityOptions: {
+        ...compositionOptions.authorityOptions,
+        reviewPreparationFactsAdapter: {
+          async observe(context) {
+            return {
+              routeSnapshot: result.facts.route,
+              candidateProjection: { ...context.candidateProjection, generation: 99 },
+              sourceRunProjection: { ...context.sourceRunProjection, phase: "failed" },
+              workspaceProjection: { ...context.workspaceProjection, generation: 99 },
+              ownerAuthorities: {},
+            };
+          },
+        },
+      },
+    });
+    asyncComposition.bindAuthority(sourceLookupAuthority);
+    const runtime = createFlowRuntime({
+      runAuthority: sourceLookupAuthority,
+      reviewPreparationProvider: asyncComposition.reviewPreparationProvider,
+    });
+    const currentQuery = await runtime.query({
+      schema: "flow.query/v1",
+      query: "review_preparation_facts",
+      candidate_id: "candidate:sealed",
+      candidate_fingerprint: candidateFingerprint,
+      selection: reviewSelection(),
+    });
+    assert.equal(currentQuery.schema, "flow.review-preparation-facts/v1");
+    assert.equal(currentQuery.workspace.generation, 2);
+    assert.deepEqual(currentQuery.owner_authorities, result.facts.owner_authorities);
+    const launchRevalidation = await asyncComposition.reviewPreparationProvider.revalidate({
+      facts: currentQuery,
+      inputs: { preparation_selection: reviewSelection() },
+    });
+    assert.equal(launchRevalidation.accepted, true, JSON.stringify(launchRevalidation));
+    assert.deepEqual(launchRevalidation.facts, currentQuery);
+  });
 
   const replay = await composition.reviewPreparationProvider.derive({
     schema: "flow.query/v1",

@@ -16,11 +16,10 @@ import {
 const execFile = promisify(execFileCallback);
 
 /**
- * Bind a copied Flow configuration to the current repository as a disposable
- * qualified release fixture.  This never changes native evidence in the
- * source worktree; callers own the copied config or temporary worktree.
+ * Rebind a copied Flow configuration without changing qualification status.
+ * Callers own the copied config; native source evidence is never changed.
  */
-export async function bindQualifiedReleaseFixture({
+export async function rebindReleaseContentFixture({
   configDirectory,
   repositoryRoot,
 } = {}) {
@@ -44,18 +43,46 @@ export async function bindQualifiedReleaseFixture({
   ledger.release.content.sha256 = contentEvidence.sha256;
   ledger.release.content.digest = content.content_digest;
 
+  const productionEvidence = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  if (productionEvidence?.path !== null) {
+    const productionPath = join(configDirectory, productionEvidence.path);
+    const production = JSON.parse(await readFile(productionPath, "utf8"));
+    production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
+    production.release_content_digest = content.content_digest;
+    const productionBytes = jsonBytes(production);
+    await writeFile(productionPath, productionBytes);
+    productionEvidence.sha256 = sha256(productionBytes);
+  }
+  await writeFile(ledgerPath, jsonBytes(ledger));
+
+  return {
+    candidateTreeSha: content.git_binding.candidate_tree_sha,
+    releaseContentDigest: content.content_digest,
+  };
+}
+
+/**
+ * Qualify only a caller-owned disposable copy after rebinding its content.
+ */
+export async function bindQualifiedReleaseFixture({
+  configDirectory,
+  repositoryRoot,
+} = {}) {
+  await rebindReleaseContentFixture({ configDirectory, repositoryRoot });
+  const content = JSON.parse(await readFile(
+    join(configDirectory, "evidence/release-content.v1.json"),
+    "utf8",
+  ));
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const productionEvidence = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
   const productionPath = join(
     configDirectory,
     "evidence/production-route-conformance.v1.json",
   );
   const production = JSON.parse(await readFile(productionPath, "utf8"));
-  production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
-  production.release_content_digest = content.content_digest;
-  const productionBytes = jsonBytes(production);
-  await writeFile(productionPath, productionBytes);
-  const productionEvidence = ledger.evidence.find(({ id }) =>
-    id === "production_route_conformance");
-  productionEvidence.sha256 = sha256(productionBytes);
 
   const qualificationPath = join(
     configDirectory,
@@ -79,6 +106,8 @@ export async function bindQualifiedReleaseFixture({
   production.release_id = ledger.release.id;
   production.qualification_base_commit =
     ledger.release.qualification_base_commit;
+  production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
+  production.release_content_digest = ledger.release.content.digest;
   production.status = "passed";
   production.phase1_evidence_sha256 = qualificationEvidence.sha256;
   production.generation_id = null;

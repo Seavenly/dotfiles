@@ -898,14 +898,12 @@ function callOwnerObservation({
   let observed = {};
   if (typeof observer === "function") {
     observed = observer.call(ownerAdapter?.observe ? ownerAdapter : routeAdapter, context);
-    if (isPromiseLike(observed) && !allowAsync) return observed;
   } else {
     observed = observeDefaultReviewRoutes({
       request: base.request,
       delegatedAgentPort,
       allowAsync,
     });
-    if (isPromiseLike(observed) && !allowAsync) return observed;
   }
   if (isPromiseLike(observed)) {
     return observed.then((value) => mergeOwnerObservations(value, catalogObserver, context));
@@ -1247,6 +1245,20 @@ async function readProductionCatalog(env = process.env) {
   };
 }
 
+function reviewRouteSnapshotIdentity(bindings) {
+  return {
+    configuration_watermark: digest(bindings.map(({ card_id, route, description }) => ({
+      card_id,
+      route,
+      description_digest: description?.description_digest,
+    }))),
+    comparison_key: digest(bindings.map(({ card_id, route }) => ({
+      card_id,
+      launch_comparison_key: route?.launch_comparison_key,
+    }))),
+  };
+}
+
 function normalizeReviewRouteSnapshot(routeSnapshot, routeBindings) {
   if (!isRecord(routeSnapshot)) return null;
   const bindings = routeBindings ?? routeSnapshot.bindings;
@@ -1259,15 +1271,10 @@ function normalizeReviewRouteSnapshot(routeSnapshot, routeBindings) {
   let configurationWatermark;
   let comparisonKey;
   try {
-    configurationWatermark = digest(normalizedBindings.map(({ card_id, route, description }) => ({
-      card_id,
-      route,
-      description_digest: description?.description_digest,
-    })));
-    comparisonKey = digest(normalizedBindings.map(({ card_id, route }) => ({
-      card_id,
-      launch_comparison_key: route?.launch_comparison_key,
-    })));
+    ({
+      configuration_watermark: configurationWatermark,
+      comparison_key: comparisonKey,
+    } = reviewRouteSnapshotIdentity(normalizedBindings));
   } catch {
     return null;
   }
@@ -1436,15 +1443,7 @@ function routeSnapshotFromBindings(bindings) {
   }
   return {
     route_id: "route:review",
-    configuration_watermark: digest(normalized.map(({ card_id, route, description }) => ({
-      card_id,
-      route,
-      description_digest: description.description_digest,
-    }))),
-    comparison_key: digest(normalized.map(({ card_id, route }) => ({
-      card_id,
-      launch_comparison_key: route.launch_comparison_key,
-    }))),
+    ...reviewRouteSnapshotIdentity(normalized),
     bindings: normalized,
   };
 }

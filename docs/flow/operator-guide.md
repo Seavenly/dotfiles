@@ -17,15 +17,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `1e3e4665d4241419ad573d208077a20d845289bc` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `fb7242dffae56b05648779f0758c251ce00a4bba` |
-| Governed release content | `sha256:016438d7c6e56c2789308684af3e4964dce4bc3179a92b8af82e939cb5e9b41c` |
+| Governed release candidate tree (`release-content.v1.json`) | `a78dd2eb610e10ee8ddf267392c7e0b585b44ad7` |
+| Governed release content | `sha256:fcadbc835ec3b0413b543e8bae04f94487435943dc30b6259ddba75f02b024fc` |
 | Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@36`, `sha256:fa436e4305a734b85f5b6e91496b9974ee1fc0efe4b696e0c95e3e2e141ddb7c` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:9dae417ec17622410b82c861b4dc5e0fdf3e5245222129e61b46a0c8ca870bc5` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:65cb34edb7cca8f3dad91fdf47df997aa8154d44c0cda1482d7a1334a0b97ded` |
 | Historical deterministic qualification evidence (recorded release only; not bound to the current ticket candidate) | `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
-| Production-route evidence | `config/flow/evidence/production-route-conformance.v1.json`, `sha256:da06387d4849479d881225da58de6d1214be119aadaa2401a238e156cd4b1cfe` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:ca545a0beb8205792baba2af6f9b4bdea4d99b451bd617b92c3ac9a01fdf02a4` |
+| Production-route evidence | `config/flow/evidence/production-route-conformance.v1.json`, `sha256:356962bf87c93c6e2bc97ddc2e33e0418e3d1124fdfceb566290c9b6fc127702` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:58fa884721a009418ff78a9703a07600f456ce04a10ebc9f588c5b4db7781aa5` |
 
 The ledger records the historical `source_commit`; it does not say that this
 working tree is that commit. The current governed release tree is the separate

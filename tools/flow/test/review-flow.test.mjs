@@ -6,7 +6,15 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { canonicalize, digest, idempotencyCommandDigest } from "../src/canonical.mjs";
-import { createAuthorityFact } from "../src/authority-bindings.mjs";
+import {
+  createAuthorityFact,
+  snapshotPredefinedAuthorityCatalog,
+  snapshotRegisteredAuthorities,
+} from "../src/authority-bindings.mjs";
+import {
+  compilePredefinedFlowSelection,
+  snapshotPredefinedDefinitions,
+} from "../src/plan-compiler.mjs";
 import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   createFlowRuntime,
@@ -14,6 +22,7 @@ import {
 } from "../src/flow-runtime.mjs";
 import { operationEffectIdentity } from "../src/effect-identity.mjs";
 import {
+  attachAuthorityBindingCatalogs,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import {
@@ -1096,7 +1105,8 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   }, DIGEST("c"));
   const staleFingerprint = runtime.launch(reviewLaunchRequest(prepared));
   assert.equal(staleFingerprint.code, "candidate_fingerprint_mismatch");
-  assert.equal(staleFingerprint.authority_watermark, DIGEST("c"));
+  assert.equal(staleFingerprint.authority_watermark, runtime.query().watermark);
+  assert.notEqual(staleFingerprint.authority_watermark, DIGEST("c"));
   assert.equal(staleFingerprint.authority_watermark_domain, "host");
   assert.deepEqual(staleFingerprint.authority_fact, {
     schema: "flow.authority-fact/v1",
@@ -1125,7 +1135,8 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   candidateProjection = candidateAuthorityProjection(candidate, DIGEST("d"));
   const staleWatermark = runtime.launch(reviewLaunchRequest(prepared));
   assert.equal(staleWatermark.code, "stale_candidate_authority_watermark");
-  assert.equal(staleWatermark.authority_watermark, DIGEST("d"));
+  assert.equal(staleWatermark.authority_watermark, runtime.query().watermark);
+  assert.notEqual(staleWatermark.authority_watermark, DIGEST("d"));
   assert.equal(staleWatermark.authority_watermark_domain, "host");
   assert.equal(staleWatermark.authority_fact.watermark_domain, "review");
   assert.equal(staleWatermark.authority_fact.watermark, DIGEST("d"));
@@ -1184,6 +1195,88 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   );
   assert.equal(secondTargetStale.code, "stale_candidate_authority_watermark",
     JSON.stringify(secondTargetStale));
+});
+
+test("local review launch requires preparation facts before adopting or creating a run", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-facts-required-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("review-facts-boot", "review-facts-process"),
+  });
+  t.after(() => authority.close());
+  let adoptions = 0;
+  let launches = 0;
+  const runAuthority = {
+    ...authority,
+    adoptExactLaunch(...args) {
+      adoptions += 1;
+      return authority.adoptExactLaunch(...args);
+    },
+    launch(...args) {
+      launches += 1;
+      return authority.launch(...args);
+    },
+  };
+  const candidate = reviewCandidate();
+  const facts = reviewRuntimeFacts();
+  const registeredAuthorities = shippedAuthorityRegistrations({
+    current: shippedAuthorityStateFromFacts(facts),
+  });
+  const inputs = reviewInputsForCandidate(candidate);
+  const security = await supportedDescription(
+    reviewDescriptionRequest("codex", "gpt-5.6-luna", "security"), {},
+  );
+  const critic = await supportedDescription(
+    reviewDescriptionRequest("claude", "gpt-5.6", "critic"), {},
+  );
+  inputs.delegation.lenses.security = {
+    description: security,
+    route: reviewRoute("agent:review-security", security),
+  };
+  inputs.delegation.critic = {
+    description: critic,
+    route: reviewRoute("agent:review-critic", critic),
+  };
+  const selection = {
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  };
+  const definition = createReviewDefinition();
+  const definitions = snapshotPredefinedDefinitions({ "review/v1": definition });
+  const authorityCatalog = snapshotRegisteredAuthorities(registeredAuthorities);
+  attachAuthorityBindingCatalogs(authority, {
+    authorities: authorityCatalog,
+    predefinedDefinitions: snapshotPredefinedAuthorityCatalog(definitions),
+  });
+  const prepared = compilePredefinedFlowSelection(
+    selection,
+    definitions.get("review/v1"),
+    { registeredAuthorities: authorityCatalog },
+  );
+  const runtime = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities,
+    reviewAuthority: createInMemoryReviewAuthority({
+      candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    }),
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": definition },
+  });
+  assert.equal(runtime.prepare(selection).code, "review_preparation_required");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = await runtime.launch(reviewLaunchRequest(prepared));
+    assert.equal(result.schema, "flow.rejection/v1", JSON.stringify(result));
+    assert.equal(result.code, "review_preparation_required");
+    assert.equal(result.authority_watermark, authority.query().watermark);
+    assert.equal(result.authority_watermark_domain, "host");
+    assert.deepEqual(runtime.query().runs, []);
+  }
+  assert.equal(adoptions, 0);
+  assert.equal(launches, 0);
 });
 
 test("review/v1 absent launch rechecks the current shipped route provider", async (t) => {

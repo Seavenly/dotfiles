@@ -228,6 +228,20 @@ export function createFlowRuntime({
 
     launch(request) {
       const validation = validateLaunchRequest(request);
+      if (validation.accepted &&
+          validation.prepared?.selection?.inputs?.preparation_facts === undefined &&
+          executionCards(validation.prepared).some((card) =>
+            card.inputs?.target?.schema === "flow.review-local-candidate/v1")) {
+        return createRejection({
+          operation: "launch",
+          code: "review_preparation_required",
+          reason: "local review requires authority-derived preparation_facts",
+          bundleDigest: validation.prepared.bundle_digest,
+          authorityWatermark: runAuthority.query().watermark,
+          authorityWatermarkDomain: "host",
+          legalActions: [],
+        });
+      }
       const factsBoundReview = validation.accepted &&
         validation.prepared?.selection?.inputs?.preparation_facts !== undefined;
       const reviewAuthorityRejection = () => {
@@ -247,9 +261,8 @@ export function createFlowRuntime({
               code: issue.code,
               reason: issue.reason,
               bundleDigest: validation.prepared.bundle_digest,
-              authorityWatermark: issue.projection?.watermark ?? host.watermark,
-              authorityWatermarkDomain: issue.projection?.schema ===
-                "work.review-candidate-projection/v1" ? "review" : "host",
+              authorityWatermark: host.watermark,
+              authorityWatermarkDomain: "host",
               legalActions: authorityFact.legal_actions,
               authorityFact,
             });
@@ -335,19 +348,11 @@ export function createFlowRuntime({
         }
         const settlePreparation = (preparationIssue) => {
           if (preparationIssue !== null) {
-            const host = runAuthority.query();
-            return createRejection({
-              operation: "launch",
-              code: preparationIssue.code,
-              reason: preparationIssue.reason ?? null,
-              bundleDigest: validation.prepared.bundle_digest,
-              authorityWatermark: preparationIssue.authority_watermark ??
-                host?.watermark ?? null,
-              authorityWatermarkDomain: preparationIssue.authority_watermark_domain ??
-                "host",
-              legalActions: preparationIssue.legal_actions ?? [],
-              authorityFact: preparationIssue.authority_fact,
-            });
+            return reviewPreparationLaunchRejection(
+              runAuthority,
+              validation.prepared,
+              preparationIssue,
+            );
           }
           if (operationCards.some(({ executor }) =>
             ["delegate", "operation", "subrun"].includes(executor.kind)) &&
@@ -375,19 +380,11 @@ export function createFlowRuntime({
       if (validation.accepted && factsBoundReview) {
         const settleReviewPreparation = (preparationIssue) => {
           if (preparationIssue !== null) {
-            const host = runAuthority.query();
-            return createRejection({
-              operation: "launch",
-              code: preparationIssue.code,
-              reason: preparationIssue.reason ?? null,
-              bundleDigest: validation.prepared.bundle_digest,
-              authorityWatermark: preparationIssue.authority_watermark ??
-                host?.watermark ?? null,
-              authorityWatermarkDomain: preparationIssue.authority_watermark_domain ??
-                "host",
-              legalActions: preparationIssue.legal_actions ?? [],
-              authorityFact: preparationIssue.authority_fact,
-            });
+            return reviewPreparationLaunchRejection(
+              runAuthority,
+              validation.prepared,
+              preparationIssue,
+            );
           }
           const authorityRejection = reviewAuthorityRejection();
           if (authorityRejection !== null) return authorityRejection;
@@ -1371,6 +1368,7 @@ function dispatchReviewPreparationFactsQuery(
   const candidateId = request?.candidate_id;
   const candidateFingerprint = request?.candidate_fingerprint;
   if (!isRecord(request) ||
+      request.schema !== "flow.query/v1" ||
       keys.length !== required.length ||
       required.some((key) => !Object.hasOwn(request, key)) ||
       keys.some((key) => !required.includes(key)) ||
@@ -1503,6 +1501,29 @@ function reviewPreparationIssueRejection(runAuthority, issue = {}) {
   });
 }
 
+function reviewPreparationLaunchRejection(runAuthority, prepared, issue) {
+  const host = runAuthority.query();
+  const sourceRunId = issue.authority_watermark_domain === "run" &&
+      issue.authority_fact?.authority_id === "RunAuthority" &&
+      issue.authority_fact.watermark_domain === "run" &&
+      typeof issue.authority_fact.subject_id === "string"
+    ? issue.authority_fact.subject_id
+    : null;
+  return createRejection({
+    operation: "launch",
+    code: issue.code,
+    reason: issue.reason ?? null,
+    runId: sourceRunId,
+    bundleDigest: prepared.bundle_digest,
+    authorityWatermark: sourceRunId === null
+      ? host?.watermark ?? null
+      : issue.authority_watermark ?? issue.authority_fact.watermark ?? null,
+    authorityWatermarkDomain: sourceRunId === null ? "host" : "run",
+    legalActions: issue.legal_actions ?? [],
+    authorityFact: issue.authority_fact,
+  });
+}
+
 function prepareReviewSelectionWithFacts(proposal, provider) {
   if (!isPredefinedFlowSelection(proposal) ||
       proposal.definition !== "review/v1" ||
@@ -1576,6 +1597,20 @@ export function revalidatePreparedReviewFacts(prepared, provider) {
   const validation = validateReviewPreparationFacts(facts);
   if (!validation.valid) {
     return preparationLaunchIssue(validation.issues[0]);
+  }
+  const localTargets = [
+    prepared.selection.inputs.target,
+    ...(prepared.graph?.cards ?? []).map((card) => card.inputs?.target),
+    ...(prepared.revision_templates ?? []).flatMap(({ changes }) =>
+      (changes.add_cards ?? []).map((card) => card.inputs?.target)),
+  ].filter((target) => target?.schema === "flow.review-local-candidate/v1");
+  if (localTargets.some((target) =>
+    target.candidate?.candidate_id !== facts.candidate.candidate_id ||
+    target.candidate_fingerprint !== facts.candidate.candidate_fingerprint)) {
+    return preparationLaunchIssue({
+      code: "preparation_facts_candidate_mismatch",
+      reason: "review preparation facts do not identify the exact review target",
+    });
   }
   if (typeof provider?.revalidate !== "function") {
     return preparationLaunchIssue({

@@ -341,6 +341,7 @@ test("public admission withholds qualification captured on another host", async 
   await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
     repositoryRoot]);
   const configDirectory = join(repositoryRoot, "config/flow");
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot });
   const runtime = createFlowRuntime({
     env: {
       HOME: scratch,
@@ -358,6 +359,8 @@ test("public admission withholds qualification captured on another host", async 
     id === "deterministic_qualification");
   const phase2 = ledger.evidence.find(({ id }) =>
     id === "production_route_conformance");
+  assert.equal(phase1.status, "passed");
+  assert.equal(phase2.status, "passed");
   const phase1Path = join(configDirectory, phase1.path);
   const phase1Evidence = JSON.parse(await readFile(phase1Path, "utf8"));
   phase1Evidence.environment.os = process.platform === "darwin" ? "linux" : "darwin";

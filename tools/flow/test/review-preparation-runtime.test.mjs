@@ -324,7 +324,7 @@ test("public query derives review preparation facts through the runtime seam", a
   }]);
 });
 
-test("public preparation query rejects malformed closed-schema requests before provider invocation", async () => {
+test("public preparation query rejects malformed closed-schema requests before provider invocation", async (t) => {
   let calls = 0;
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
@@ -343,6 +343,8 @@ test("public preparation query rejects malformed closed-schema requests before p
     selection: reviewSelection(),
   };
   const malformed = [
+    { name: "foreign schema version", request: { ...base, schema: "flow.query/v2" } },
+    { name: "null schema", request: { ...base, schema: null } },
     { name: "selection missing", request: (({ selection: _selection, ...request }) => request)(base) },
     { name: "candidate reference alias", request: {
       ...base,
@@ -378,9 +380,11 @@ test("public preparation query rejects malformed closed-schema requests before p
     } },
   ];
   for (const { name, request } of malformed) {
-    const result = await runtime.query(request);
-    assert.equal(result.schema, "flow.rejection/v1", name);
-    assert.equal(result.code, "invalid_review_preparation_query", name);
+    await t.test(name, async () => {
+      const result = await runtime.query(request);
+      assert.equal(result.schema, "flow.rejection/v1", name);
+      assert.equal(result.code, "invalid_review_preparation_query", name);
+    });
   }
   assert.equal(calls, 0);
 });
@@ -687,6 +691,14 @@ test("facts-bound launch awaits async authority drift before RunAuthority.launch
     },
     legal_actions: [],
   };
+  let ownerRevalidationIssue = {
+    code: "workspace_disposed",
+    reason: "workspace disposition changed to cleaned",
+    authority_watermark: workspaceFact.watermark,
+    authority_watermark_domain: "workspace",
+    legal_actions: workspaceFact.legal_actions,
+    authority_fact: workspaceFact,
+  };
   const runtime = createFlowRuntime({
     runAuthority: authority,
     reviewAuthority: createInMemoryReviewAuthority({ candidateProjection }),
@@ -708,14 +720,7 @@ test("facts-bound launch awaits async authority drift before RunAuthority.launch
       revalidate() {
         return Promise.resolve({
           valid: false,
-          issue: {
-            code: "workspace_disposed",
-            reason: "workspace disposition changed to cleaned",
-            authority_watermark: workspaceFact.watermark,
-            authority_watermark_domain: "workspace",
-            legal_actions: workspaceFact.legal_actions,
-            authority_fact: workspaceFact,
-          },
+          issue: ownerRevalidationIssue,
         });
       },
     },
@@ -751,10 +756,36 @@ test("facts-bound launch awaits async authority drift before RunAuthority.launch
 
   assert.equal(result.schema, "flow.rejection/v1");
   assert.equal(result.code, "workspace_disposed", JSON.stringify(result));
-  assert.equal(result.authority_watermark, workspaceFact.watermark);
+  assert.equal(result.authority_watermark, authority.query().watermark);
+  assert.notEqual(result.authority_watermark, workspaceFact.watermark);
   assert.equal(result.authority_watermark_domain, "host");
   assert.deepEqual(result.legal_actions, [workspaceRecoveryAction]);
   assert.deepEqual(result.authority_fact, workspaceFact);
+  const validatesRejection = await publicRejectionValidator();
+  assert.equal(validatesRejection(result), true, JSON.stringify(validatesRejection.errors));
+
+  const sourceRunFact = preparationFacts.owner_authorities.run;
+  ownerRevalidationIssue = {
+    code: "run_authority_changed",
+    reason: "retained source run authority changed",
+    authority_watermark: sourceRunFact.watermark,
+    authority_watermark_domain: "run",
+    legal_actions: sourceRunFact.legal_actions,
+    authority_fact: sourceRunFact,
+  };
+  const sourceRunResult = await runtime.launch(request);
+  assert.equal(sourceRunResult.code, "run_authority_changed");
+  assert.equal(sourceRunResult.authority_watermark_domain, "run");
+  assert.equal(sourceRunResult.authority_watermark, sourceRunFact.watermark);
+  assert.equal(sourceRunResult.run_id, sourceRunFact.subject_id);
+  assert.deepEqual(sourceRunResult.authority_fact, sourceRunFact);
+  assert.equal(validatesRejection(sourceRunResult), true,
+    JSON.stringify(validatesRejection.errors));
+  ownerRevalidationIssue.authority_watermark = null;
+  const sourceRunFallback = await runtime.launch(request);
+  assert.equal(sourceRunFallback.authority_watermark_domain, "run");
+  assert.equal(sourceRunFallback.authority_watermark, sourceRunFact.watermark);
+  assert.equal(sourceRunFallback.run_id, sourceRunFact.subject_id);
   assert.equal(adoptions, 0);
   assert.equal(launches, 0);
   assert.deepEqual(authority.query().runs, []);
@@ -841,6 +872,70 @@ test("malformed review preparation queries are rejected before review subject ro
     assert.equal(result.code, "invalid_review_preparation_query");
   }
   assert.equal(providerCalls, 0);
+});
+
+test("review preparation revalidation binds local targets to the owning candidate", async (t) => {
+  const preparationFacts = facts();
+  const target = {
+    schema: "flow.review-local-candidate/v1",
+    candidate: { candidate_id: "candidate:sealed" },
+    candidate_fingerprint: DIGEST("a"),
+  };
+  const preparedFixture = () => ({
+    selection: {
+      inputs: {
+        target: structuredClone(target),
+        preparation_facts: preparationFacts,
+      },
+    },
+    graph: { cards: [{ inputs: { target: structuredClone(target) } }] },
+    revision_templates: [{
+      changes: { add_cards: [{ inputs: { target: structuredClone(target) } }] },
+    }],
+  });
+  const cases = [
+    ["matching identities", () => {}, false],
+    ["selection candidate id differs", (prepared) => {
+      prepared.selection.inputs.target.candidate.candidate_id = "candidate:other";
+    }, true],
+    ["selection candidate fingerprint differs", (prepared) => {
+      prepared.selection.inputs.target.candidate_fingerprint = DIGEST("b");
+    }, true],
+    ["card candidate id differs", (prepared) => {
+      prepared.graph.cards[0].inputs.target.candidate.candidate_id = "candidate:other";
+    }, true],
+    ["card candidate fingerprint differs", (prepared) => {
+      prepared.graph.cards[0].inputs.target.candidate_fingerprint = DIGEST("b");
+    }, true],
+    ["revision addition candidate id differs", (prepared) => {
+      prepared.revision_templates[0].changes.add_cards[0]
+        .inputs.target.candidate.candidate_id = "candidate:other";
+    }, true],
+    ["revision addition candidate fingerprint differs", (prepared) => {
+      prepared.revision_templates[0].changes.add_cards[0]
+        .inputs.target.candidate_fingerprint = DIGEST("b");
+    }, true],
+  ];
+  for (const [name, change, mismatch] of cases) {
+    await t.test(name, () => {
+      const prepared = preparedFixture();
+      change(prepared);
+      let providerCalls = 0;
+      const issue = revalidatePreparedReviewFacts(prepared, {
+        revalidate() {
+          providerCalls += 1;
+          return { valid: true, facts: preparationFacts };
+        },
+      });
+      if (mismatch) {
+        assert.equal(issue?.code, "preparation_facts_candidate_mismatch");
+        assert.equal(providerCalls, 0);
+      } else {
+        assert.equal(issue, null);
+        assert.equal(providerCalls, 1);
+      }
+    });
+  }
 });
 
 test("fresh review preparation drift is closed for every required binding class", () => {
