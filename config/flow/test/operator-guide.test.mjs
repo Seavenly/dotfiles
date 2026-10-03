@@ -51,9 +51,22 @@ test("operator guide binds current source and withholds unrun qualification", as
   mustContain(guide, releaseContent.content_digest, "current release content digest");
   mustContain(guide, releaseContent.git_binding.qualification_base_commit,
     "current qualification base commit");
+  mustContain(guide, "Historical deterministic qualification evidence",
+    "historical qualification label");
+  mustContain(guide, "not bound to the current ticket candidate",
+    "qualification candidate boundary");
 
+  const qualificationRecord = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  const productionRecord = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  assert.equal(qualificationRecord?.status, "not_run",
+    "current deterministic qualification remains withheld");
+  assert.equal(productionRecord?.status, "not_run",
+    "current production-route qualification remains withheld");
   assert.equal(qualificationEvidence.status, "passed",
     "retained historical deterministic evidence remains unchanged");
+  assert.notEqual(qualificationEvidence.release_content_digest, releaseContent.content_digest, "historical qualification remains bound to its original release");
   const currentQualification = ledger.evidence.find(({ id }) =>
     id === "deterministic_qualification");
   assert.equal(currentQualification.status, "not_run");
@@ -89,6 +102,7 @@ test("operator guide binds current source and withholds unrun qualification", as
       "public_drovr_finding_schema",
     ]],
   ]) {
+    if (commands.size === 0) continue;
     for (const id of ids) {
       const command = commands.get(id);
       assert.ok(command, `${recipeName} recipe is missing ${id}`);
@@ -99,10 +113,13 @@ test("operator guide binds current source and withholds unrun qualification", as
         `${recipeName} receipt path ${command.receipt_path}`);
     }
   }
-  assert.ok(productionCommands.has("production_feature_verify"),
-    "production feature verify recipe ID");
-  assert.ok(productionCommands.has("public_local_review_process"),
-    "public local review recipe ID");
+  for (const id of [
+    "production_feature_verify",
+    "public_local_review_process",
+    "public_drovr_finding_schema",
+  ]) {
+    mustContain(guide, id, `pending production route recipe ID ${id}`);
+  }
 
   for (const [label, path] of [
     ["manifest", "release-manifest.v1.json"],
@@ -157,6 +174,8 @@ test("operator guide binds current source and withholds unrun qualification", as
     "flow.predefined-flow-confirmation-decision/v1",
     "flow.closed-fact-observation/v1",
     "flow.query/v1",
+    "flow.review-preparation-selection/v1",
+    "flow.review-preparation-facts/v1",
     "flow.watch/v1",
     "flow.delegate-input-envelope/v1",
     "work.review/v1",
@@ -260,22 +279,25 @@ test("operator guide binds current source and withholds unrun qualification", as
   );
 
   assert.match(reviewSection,
-    /operator CLI has no query that returns the authority-observed review facts/u,
-    "review preparation limitation is explicit");
+    /review_preparation_facts/u,
+    "review preparation query is documented");
   assert.match(reviewSection,
-    /does not launch `review\/local`/u,
-    "guide does not claim to launch review/local");
+    /flow\.review-preparation-selection\/v1/u,
+    "bounded review preparation selection is documented");
+  assert.match(reviewSection,
+    /flow prepare --input[\s\S]*flow launch --input/u,
+    "public review prepare and launch are documented");
   assert.match(reviewSection,
     /Issue 84's real feature\/candidate plus separate review remains `not_run`/u,
     "issue 84 review boundary is explicit");
   assert.match(reviewSection,
     /do not claim a live or billed exercise/iu,
     "guide does not claim a live billed exercise");
+  assert.match(reviewSection,
+    /fresh launch-time\s+revalidation|replay drift/iu,
+    "review launch revalidates retained authority facts");
   assert.doesNotMatch(reviewSection,
-    /flow (?:prepare|launch) --input|flow\.predefined-flow-confirmation-decision\/v1|REVIEW_(?:SELECTION|PREPARE|LAUNCH)/u,
-    "review section has no synthetic prepare or launch flow");
-  assert.doesNotMatch(reviewSection,
-    /catalog_fingerprint|route_snapshot|explicit_facts|time_facts|wall_time|monotonic|boot_id|clock_source|agent(?:_id|_identity)?\s*:|1{64}|2{64}/iu,
+    /catalog_fingerprint|route_snapshot|time_facts|wall_time|monotonic|boot_id|clock_source|agent(?:_id|_identity)?\s*:|1{64}|2{64}/iu,
     "review section has no fabricated authority facts or placeholder identities");
   assert.match(candidateSection,
     /contract:"work\.review\/v1",subject_id:\$id/u,

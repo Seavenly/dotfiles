@@ -49,18 +49,9 @@ export async function copyQualifiedRuntimeFixture({ sourceRoot, destination }) {
   return destination;
 }
 
-/**
- * Bind a copied Flow configuration to the current repository as a disposable
- * qualified release fixture.  This never changes native evidence in the
- * source worktree; callers own the copied config or temporary worktree.
- */
-export async function bindQualifiedReleaseFixture({
-  configDirectory,
-  repositoryRoot,
-} = {}) {
-  if (await realpath(configDirectory) === await realpath(join(repositoryRoot, "config/flow"))) {
-    throw new Error("qualified fixture requires disposable copied config");
-  }
+/** Rebind only a disposable copy, preserving qualification status. */
+export async function rebindReleaseContentFixture({ configDirectory, repositoryRoot } = {}) {
+  if (await realpath(configDirectory) === await realpath(join(repositoryRoot, "config/flow"))) throw new Error("release fixture requires disposable copied config");
   const contentPath = join(configDirectory, "evidence/release-content.v1.json");
   const content = JSON.parse(await readFile(contentPath, "utf8"));
   const { stdout } = await execFile("/usr/bin/git", ["-C", repositoryRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], { maxBuffer: 64 * 1024 * 1024 });
@@ -87,19 +78,31 @@ export async function bindQualifiedReleaseFixture({
   ledger.release.content.sha256 = contentEvidence.sha256;
   ledger.release.content.digest = content.content_digest;
 
-  const productionPath = join(
-    configDirectory,
-    "evidence/production-route-conformance.v1.json",
-  );
-  const production = JSON.parse(await readFile(productionPath, "utf8"));
-  production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
-  production.release_content_digest = content.content_digest;
-  const productionBytes = jsonBytes(production);
-  await writeFile(productionPath, productionBytes);
   const productionEvidence = ledger.evidence.find(({ id }) =>
     id === "production_route_conformance");
-  productionEvidence.sha256 = sha256(productionBytes);
+  if (productionEvidence?.path !== null) {
+    const productionPath = join(configDirectory, productionEvidence.path);
+    const production = JSON.parse(await readFile(productionPath, "utf8"));
+    production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
+    production.release_content_digest = content.content_digest;
+    const productionBytes = jsonBytes(production);
+    await writeFile(productionPath, productionBytes);
+    productionEvidence.sha256 = sha256(productionBytes);
+  }
 
+  await writeFile(ledgerPath, jsonBytes(ledger));
+  return { candidateTreeSha: content.git_binding.candidate_tree_sha, releaseContentDigest: content.content_digest };
+}
+
+/** Qualify only a caller-owned disposable configuration. */
+export async function bindQualifiedReleaseFixture({ configDirectory, repositoryRoot } = {}) {
+  await rebindReleaseContentFixture({ configDirectory, repositoryRoot });
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const content = JSON.parse(await readFile(join(configDirectory, "evidence/release-content.v1.json"), "utf8"));
+  const productionPath = join(configDirectory, "evidence/production-route-conformance.v1.json");
+  const production = JSON.parse(await readFile(productionPath, "utf8"));
+  const productionEvidence = ledger.evidence.find(({ id }) => id === "production_route_conformance");
   const qualificationPath = join(
     configDirectory,
     "evidence/release-qualification.v1.json",
@@ -122,6 +125,8 @@ export async function bindQualifiedReleaseFixture({
   production.release_id = ledger.release.id;
   production.qualification_base_commit =
     ledger.release.qualification_base_commit;
+  production.candidate_tree_sha = content.git_binding.candidate_tree_sha;
+  production.release_content_digest = content.content_digest;
   production.status = "passed";
   production.phase1_evidence_sha256 = qualificationEvidence.sha256;
   production.generation_id = null;
@@ -140,6 +145,45 @@ export async function bindQualifiedReleaseFixture({
     qualificationEvidenceSha256: qualificationEvidence.sha256,
     productionEvidenceSha256: productionEvidence.sha256,
   };
+}
+
+/**
+ * Make a clean temporary worktree carrying the current working files and bind
+ * its copied release records to that same tree.  The result is suitable for
+ * isolated qualification subprocesses and is never the native worktree.
+ */
+export async function makeQualifiedPinnedWorktree({
+  source,
+  destination,
+} = {}) {
+  await execFile("git", ["clone", "--quiet", source, destination], {
+    cwd: source,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  const { stdout } = await execFile("git", [
+    "-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+  ], { maxBuffer: 64 * 1024 * 1024 });
+  for (const path of stdout.split("\0").filter(Boolean)) {
+    const target = join(destination, path);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(source, path), target, { recursive: true, force: true });
+  }
+  await execFile("git", ["-C", destination, "config", "user.email", "flow@example.test"]);
+  await execFile("git", ["-C", destination, "config", "user.name", "Flow Qualification"]);
+  await execFile(process.execPath, [
+    join(destination, "config/flow/scripts/generate-release-content.mjs"),
+  ], { cwd: destination, maxBuffer: 4 * 1024 * 1024 });
+  await bindQualifiedReleaseFixture({
+    configDirectory: join(destination, "config/flow"),
+    repositoryRoot: source,
+  });
+  await execFile("git", ["-C", destination, "add", "-A"], {
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  await execFile("git", [
+    "-C", destination, "commit", "--quiet", "-m", "qualified test release",
+  ]);
+  return destination;
 }
 
 async function qualifiedProductionRecipe(configDirectory) {

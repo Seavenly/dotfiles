@@ -1,7 +1,10 @@
 import { isDirectDescription, directDescriptionIssue } from "../../../tools/flow/src/execution-contract.mjs";
 import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
 import { execFileSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   digest,
@@ -21,11 +24,29 @@ import {
 import {
   createReviewDefinition,
   REVIEW_LENSES,
+  reviewCandidateProjectionIssue,
   REVIEW_OPERATION_CONTRACTS,
 } from "../../../tools/flow/src/review-flow.mjs";
+import {
+  createAuthorityFact,
+  SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
+  prepareAuthorityBindings,
+  snapshotRegisteredAuthorities,
+} from "../../../tools/flow/src/authority-bindings.mjs";
+import { createRejection } from "../../../tools/flow/src/rejection.mjs";
+import { loadContractCatalog } from "../../../tools/flow/src/contract-catalog.mjs";
+import {
+  deriveReviewPreparationFacts,
+  reviewExplicitFactsFromPreparationFacts,
+  reviewOwnerProjectionDigest,
+  workspaceRecoveryActions,
+} from "../../../tools/flow/src/review-preparation-facts.mjs";
 import { createHostAuthorityIdentityAdapter } from "../../../tools/flow/src/host-authority-identity.mjs";
 import { createTopLevelRunOwnershipAdapter } from "../../../tools/flow/src/run-authority.mjs";
-import { getWorkspaceAuthority } from "../../../tools/flow/src/work-authority.mjs";
+import {
+  getReviewAuthority,
+  getWorkspaceAuthority,
+} from "../../../tools/flow/src/work-authority.mjs";
 import {
   registeredOperation,
   sanitizeProviderEvidence,
@@ -88,7 +109,9 @@ export function createProductionComposition({
 
   const repositories = new Map();
   const workspaceRepositories = new Map();
+  registerConfiguredRepositoryRoot(repositories, env.FLOW_REPOSITORY_ROOT);
   let boundAuthority = null;
+  const reviewPreparationAuthorityRef = { current: null };
 
   const hostIdentityAdapter = authorityOptions.hostIdentityAdapter ??
     createHostAuthorityIdentityAdapter();
@@ -152,15 +175,25 @@ export function createProductionComposition({
     },
     overrides: predefinedDefinitions,
   });
+  const authorities = mergeRegistrations({
+    defaults: authorityRegistrations(),
+    overrides: registeredAuthorities,
+  });
+  const reviewPreparationProvider = createReviewPreparationProvider({
+    authorities,
+    delegatedAgentPort,
+    timeObservationAdapter,
+    runAuthority: () => reviewPreparationAuthorityRef.current,
+    authorityOptions,
+    env,
+  });
 
   return Object.freeze({
     authorityOptions: productionAuthorityOptions,
     definitions,
     operations,
-    authorities: mergeRegistrations({
-      defaults: authorityRegistrations(),
-      overrides: registeredAuthorities,
-    }),
+    authorities,
+    reviewPreparationProvider,
     validators: mergeRegistrations({
       defaults: {
         [FEATURE_DELEGATE_OUTPUT_VALIDATOR]: {
@@ -290,6 +323,7 @@ export function createProductionComposition({
     },
     bindAuthority(authority) {
       boundAuthority = authority;
+      reviewPreparationAuthorityRef.current = authority;
       featureOperations.bindAuthority(authority);
     },
     resolveDelegatedWorkspaceClaim(claim, request = {}) {
@@ -341,6 +375,1201 @@ export function createProductionComposition({
     repositories.set(repository.repository_id, repository.path);
     return repository;
   }
+}
+
+function registerConfiguredRepositoryRoot(repositories, repositoryRoot) {
+  if (typeof repositoryRoot !== "string" || !repositoryRoot.startsWith("/")) {
+    return;
+  }
+  try {
+    const repositoryPath = canonicalRepositoryPath(repositoryRoot);
+    const repositoryId = `repository:${digest(repositoryPath).slice("sha256:".length)}`;
+    repositories.set(repositoryId, repositoryPath);
+  } catch {
+    // Feature preparation reports the precise repository error when the path
+    // is selected. A stale ambient path must not make unrelated queries fail
+    // during composition construction.
+  }
+}
+
+function createReviewPreparationProvider({
+  authorities,
+  delegatedAgentPort,
+  timeObservationAdapter,
+  runAuthority: readRunAuthority,
+  authorityOptions,
+  env,
+}) {
+  const ownerAdapter = authorityOptions.reviewPreparationFactsAdapter ?? null;
+  const routeAdapter = authorityOptions.reviewRouteObservationAdapter ?? null;
+  const catalogAdapter = authorityOptions.contractCatalogAdapter ?? null;
+
+  return Object.freeze({
+    async derive(request) {
+      return deriveProductionReviewFacts({
+        request,
+        readRunAuthority,
+        authorities,
+        timeObservationAdapter,
+        ownerAdapter,
+        routeAdapter,
+        catalogAdapter,
+        delegatedAgentPort,
+        env,
+        allowAsync: true,
+      });
+    },
+    revalidate({ facts, prepared, inputs }) {
+      const request = {
+        ...(inputs ?? prepared?.selection?.inputs ?? {}),
+        candidate_id: facts?.candidate?.candidate_id,
+        candidate_fingerprint: facts?.candidate?.candidate_fingerprint,
+      };
+      const result = deriveProductionReviewFacts({
+        request,
+        readRunAuthority,
+        authorities,
+        timeObservationAdapter,
+        ownerAdapter,
+        routeAdapter,
+        catalogAdapter,
+        delegatedAgentPort,
+        env,
+        allowAsync: false,
+      });
+      if (isPromiseLike(result)) {
+        return result.then((fresh) => compareReviewPreparationFacts(
+          facts,
+          fresh,
+        ));
+      }
+      return compareReviewPreparationFacts(facts, result);
+    },
+    materialize({ facts, proposal }) {
+      return reviewExplicitFactsFromPreparationFacts(facts, {
+        limits: proposal?.inputs?.limits,
+      });
+    },
+  });
+}
+
+function compareReviewPreparationFacts(previous, result) {
+  if (result?.accepted !== true) return result;
+  const fresh = result.facts;
+  if (sameCanonicalValue(previous.candidate, fresh.candidate) === false) {
+    return ownerRevalidationRejection(fresh, "review", "candidate_changed", "candidate authority facts changed");
+  }
+  if (sameCanonicalValue(previous.source_run, fresh.source_run) === false) {
+    return ownerRevalidationRejection(fresh, "run", "source_run_changed", "source run authority facts changed");
+  }
+  if (sameCanonicalValue(previous.workspace, fresh.workspace) === false) {
+    return ownerRevalidationRejection(fresh, "workspace", "workspace_changed", "workspace authority facts changed");
+  }
+  for (const owner of ["run", "review", "workspace"]) {
+    if (sameCanonicalValue(
+      previous.owner_authorities?.[owner],
+      fresh.owner_authorities?.[owner],
+    ) === false) {
+      return ownerRevalidationRejection(
+        fresh,
+        owner,
+        `${owner}_authority_changed`,
+        `${owner} authority facts changed`,
+      );
+    }
+  }
+  if (sameCanonicalValue(previous.route, fresh.route) === false) {
+    return ownerRevalidationRejection(fresh, "review", "route_changed", "route authority facts changed");
+  }
+  if (sameCanonicalValue(previous.catalog, fresh.catalog) === false) {
+    return ownerRevalidationRejection(fresh, "review", "catalog_changed", "contract catalog facts changed");
+  }
+  if (sameCanonicalValue(previous.operation, fresh.operation) === false) {
+    return ownerRevalidationRejection(fresh, "run", "operation_changed", "operation authority facts changed");
+  }
+  if (sameCanonicalValue(previous.validator, fresh.validator) === false) {
+    return ownerRevalidationRejection(fresh, "run", "validator_changed", "validator authority facts changed");
+  }
+  if (!compatibleReviewTimeFacts(previous.time_facts, fresh.time_facts)) {
+    return ownerRevalidationRejection(fresh, "run", "time_changed", "time authority facts changed");
+  }
+  if (sameCanonicalValue(previous.authority_facts, fresh.authority_facts) === false ||
+      !sameNonTimeWatermarks(previous.authority_watermarks, fresh.authority_watermarks)) {
+    return ownerRevalidationRejection(fresh, "run", "authority_changed", "required authority facts changed");
+  }
+  // The current time observation is intentionally fresh and therefore may
+  // advance between preparation and launch. All other facts remain bound to
+  // the prepared envelope; the caller keeps that immutable envelope.
+  return { accepted: true, facts: previous };
+}
+
+function ownerRevalidationRejection(facts, owner, code, reason) {
+  const authorityFact = facts?.owner_authorities?.[owner];
+  return {
+    accepted: false,
+    issue: {
+      code,
+      reason,
+      authority_watermark: authorityFact?.watermark ?? null,
+      authority_watermark_domain: authorityFact?.watermark_domain ?? "host",
+      legal_actions: authorityFact?.legal_actions ?? [],
+      authority_fact: authorityFact,
+    },
+  };
+}
+
+function compatibleReviewTimeFacts(previous, fresh) {
+  const previousByKind = new Map((previous ?? []).map((fact) => [fact.kind, fact]));
+  const freshByKind = new Map((fresh ?? []).map((fact) => [fact.kind, fact]));
+  if (previousByKind.size !== freshByKind.size ||
+      [...previousByKind.keys()].some((kind) => !freshByKind.has(kind))) {
+    return false;
+  }
+  const previousWall = previousByKind.get("wall_clock");
+  const freshWall = freshByKind.get("wall_clock");
+  const previousMonotonic = previousByKind.get("suspend_excluding_monotonic");
+  const freshMonotonic = freshByKind.get("suspend_excluding_monotonic");
+  if (previousWall !== undefined && (
+      freshWall.clock_source_id !== previousWall.clock_source_id ||
+      freshWall.value_ms < previousWall.value_ms)) return false;
+  if (previousMonotonic !== undefined) {
+    try {
+      if (freshMonotonic.clock_source_id !== previousMonotonic.clock_source_id ||
+          BigInt(freshMonotonic.value_ns) < BigInt(previousMonotonic.value_ns)) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  for (const kind of ["boot", "clock_source"]) {
+    if (!sameCanonicalValue(previousByKind.get(kind), freshByKind.get(kind))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameNonTimeWatermarks(previous, fresh) {
+  if (!isRecord(previous) || !isRecord(fresh)) return false;
+  const withoutTime = (value) => {
+    const { time: _time, ...rest } = value;
+    return rest;
+  };
+  return sameCanonicalValue(withoutTime(previous), withoutTime(fresh));
+}
+
+async function deriveProductionReviewFacts({
+  request,
+  readRunAuthority,
+  authorities,
+  timeObservationAdapter,
+  ownerAdapter,
+  routeAdapter,
+  catalogAdapter,
+  delegatedAgentPort,
+  env,
+  allowAsync,
+}) {
+  const runAuthority = readRunAuthority?.();
+  if (runAuthority === null || runAuthority === undefined) {
+    return rejectedReviewPreparation("authority_unavailable",
+      "RunAuthority is not bound to the production composition");
+  }
+  let productionCatalog;
+  try {
+    productionCatalog = await readProductionCatalog(env);
+  } catch (error) {
+    return rejectedReviewPreparation(
+      "catalog_changed",
+      "the canonical production contract catalog is unavailable or invalid",
+      error,
+    );
+  }
+  let owner;
+  try {
+    owner = await readReviewPreparationOwners({
+      request,
+      runAuthority,
+      productionCatalog,
+      ownerAdapter,
+      routeAdapter,
+      catalogAdapter,
+      timeObservationAdapter,
+      authorities,
+      delegatedAgentPort,
+      allowAsync,
+    });
+  } catch (error) {
+    return rejectedReviewPreparation(
+      error?.code ?? "authority_unavailable",
+      error?.message ?? "review preparation authority is unavailable",
+      error,
+    );
+  }
+  if (owner?.accepted === false) return owner;
+  const derived = deriveReviewPreparationFacts(owner);
+  return derived;
+}
+
+function readReviewPreparationOwners({
+  request,
+  runAuthority,
+  productionCatalog,
+  ownerAdapter,
+  routeAdapter,
+  catalogAdapter,
+  timeObservationAdapter,
+  authorities,
+  delegatedAgentPort,
+  allowAsync,
+}) {
+  const candidateId = reviewPreparationCandidateId(request);
+  if (candidateId === null) {
+    return rejectedReviewPreparation(
+      "candidate_missing",
+      "review preparation requires one candidate reference",
+    );
+  }
+  const requestedFingerprint = reviewPreparationCandidateFingerprint(request);
+  if (requestedFingerprint === null) {
+    return rejectedReviewPreparation(
+      "candidate_fingerprint_missing",
+      "review preparation requires the exact candidate fingerprint",
+    );
+  }
+  let reviewAuthority;
+  let workspaceAuthority;
+  try {
+    reviewAuthority = getReviewAuthority({ runAuthority });
+    workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  } catch (error) {
+    return rejectedReviewPreparation(
+      "authority_unavailable",
+      "ReviewAuthority and WorkspaceAuthority are unavailable",
+      error,
+    );
+  }
+  const candidateProjection = reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: candidateId,
+  });
+  const candidateRejection = authorityReadRejection(candidateProjection);
+  if (candidateRejection !== null) {
+    return rejectedReviewPreparationFromAuthority(candidateRejection, {
+      owner: "review",
+      providerIdentity: productionCatalog.providerIdentities.review,
+    });
+  }
+  const candidateOutcome = reviewCandidatePreparationOutcome({
+    candidateProjection,
+    candidateId,
+    requestedFingerprint,
+    providerIdentity: productionCatalog.providerIdentities.review,
+  });
+  if (candidateOutcome !== null) {
+    return rejectedReviewPreparationFromAuthority(candidateOutcome, {
+      owner: "review",
+      providerIdentity: productionCatalog.providerIdentities.review,
+    });
+  }
+  const candidateReference = candidateProjection?.candidate;
+  const candidateFingerprint = candidateProjection?.candidate_fingerprint ??
+    candidateReference?.candidate_fingerprint ?? null;
+  if (candidateFingerprint !== requestedFingerprint) {
+    return rejectedReviewPreparation(
+      "candidate_fingerprint_mismatch",
+      "review preparation candidate fingerprint does not match ReviewAuthority",
+      ownerAuthorityError({
+        owner: "review",
+        projection: candidateProjection,
+        providerIdentity: productionCatalog.providerIdentities.review,
+      }),
+    );
+  }
+  const reference = {
+    candidate_id: candidateId,
+    candidate_fingerprint: candidateFingerprint,
+  };
+  const sourceRunProjection = typeof runAuthority.queryByReviewCandidateReference ===
+      "function"
+    ? runAuthority.queryByReviewCandidateReference(reference)
+    : rejectedReviewPreparation(
+      "source_run_unavailable",
+      "RunAuthority cannot resolve retained source runs by candidate reference",
+      ownerAuthorityError({
+        owner: "run",
+        projection: runAuthority.query?.(),
+        providerIdentity: productionCatalog.providerIdentities.run,
+      }),
+    );
+  const sourceRunRejection = authorityReadRejection(sourceRunProjection);
+  if (sourceRunRejection !== null) {
+    return rejectedReviewPreparationFromAuthority(sourceRunRejection, {
+      owner: "run",
+      providerIdentity: productionCatalog.providerIdentities.run,
+    });
+  }
+  const workspaceId = candidateReference?.workspace?.subject_id;
+  const workspaceProjection = workspaceId === undefined
+    ? null
+    : workspaceAuthority.query({
+        contract: "work.workspace/v1",
+        subject_id: workspaceId,
+      });
+  const workspaceRejection = authorityReadRejection(workspaceProjection);
+  if (workspaceRejection !== null) {
+    return rejectedReviewPreparationFromAuthority(workspaceRejection, {
+      owner: "workspace",
+      providerIdentity: productionCatalog.providerIdentities.workspace,
+    });
+  }
+  if (!isRecord(workspaceProjection) ||
+      workspaceProjection.schema !== "work.workspace-projection/v1") {
+    return rejectedReviewPreparation(
+      "workspace_missing",
+      "WorkspaceAuthority has no exact workspace projection for this candidate",
+      ownerAuthorityError({
+        owner: "workspace",
+        projection: workspaceProjection,
+        subjectId: workspaceId,
+        providerIdentity: productionCatalog.providerIdentities.workspace,
+      }),
+    );
+  }
+  const normalizedWorkspaceProjection = workspaceProjectionForFacts(
+    workspaceProjection,
+    productionCatalog.providerIdentities.workspace,
+  );
+  const base = {
+    request,
+    runAuthority,
+    candidateProjection,
+    sourceRunProjection,
+    workspaceProjection: normalizedWorkspaceProjection,
+    ownerAuthorities: ownerAuthoritiesForProjections({
+      candidateProjection,
+      sourceRunProjection,
+      workspaceProjection: normalizedWorkspaceProjection,
+      providerIdentities: productionCatalog.providerIdentities,
+    }),
+    productionCatalog,
+  };
+  const observed = callOwnerObservation({
+    ownerAdapter,
+    routeAdapter,
+    catalogAdapter,
+    base,
+    delegatedAgentPort,
+    allowAsync,
+  });
+  if (isPromiseLike(observed)) {
+    return observed.then((value) => completeReviewPreparationOwners({
+      ...base,
+      ...(value ?? {}),
+    }, {
+      authorities,
+      timeObservationAdapter,
+      productionCatalog,
+    }));
+  }
+  return completeReviewPreparationOwners({
+    ...base,
+    ...(observed ?? {}),
+  }, {
+    authorities,
+    timeObservationAdapter,
+    productionCatalog,
+  });
+}
+
+function completeReviewPreparationOwners(
+  base,
+  { authorities, timeObservationAdapter, productionCatalog },
+) {
+  if (base?.accepted === false) return base;
+  if (base?.routeSnapshot?.accepted === false) return base.routeSnapshot;
+  const routeSnapshot = normalizeReviewRouteSnapshot(
+    base.routeSnapshot ?? base.route_snapshot ?? null,
+    base.routeBindings ?? base.route_bindings,
+  );
+  if (routeSnapshot === null) {
+    return rejectedReviewPreparation(
+      "route_changed",
+      "RouteAuthority cannot provide the exact review route snapshot",
+    );
+  }
+  const operationContracts = [
+    REVIEW_OPERATION_CONTRACTS.record,
+  ];
+  const validatorContracts = [
+    "flow.validator/operation-receipt/v1",
+    "flow.validator/review-result/v1",
+  ];
+  const workspace = base.workspaceProjection;
+  const resourceClaims = workspace === null ? [] : [{
+    kind: "workspace",
+    id: workspace.subject_id,
+    generation: workspace.generation,
+    mutation_epoch: workspace.mutation_epoch,
+    fingerprint: workspace.fingerprint,
+  }];
+  const subjectGenerations = workspace === null ? [] : [{
+    schema: "flow.subject-generation/v1",
+    contract: "work.workspace/v1",
+    subject_id: workspace.subject_id,
+    generation: workspace.generation,
+    fingerprint: workspace.fingerprint,
+  }];
+  const timeFacts = timeObservationAdapter.observe();
+  const catalog = productionCatalog.identity;
+  if (base.catalog !== undefined &&
+      !sameCanonicalValue(base.catalog, catalog)) {
+    return rejectedReviewPreparation(
+      "catalog_changed",
+      "observed catalog identity does not match the strictly loaded production catalog",
+      ownerAuthorityError({
+        owner: "review",
+        projection: base.candidateProjection,
+        providerIdentity: productionCatalog.providerIdentities.review,
+      }),
+    );
+  }
+  const ownerFacts = {
+    route_snapshot: routeSnapshot,
+    resource_claims: resourceClaims,
+    contract_facts: {
+      operation_contracts: operationContracts,
+      validator_contracts: validatorContracts,
+    },
+    subject_generations: subjectGenerations,
+  };
+  let authorityBindings;
+  try {
+    authorityBindings = prepareAuthorityBindings(
+      SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
+      authorities instanceof Map
+        ? authorities
+        : snapshotRegisteredAuthorities(authorities),
+      {
+        phase: "review_preparation",
+        ownerFacts,
+        candidateProjection: base.candidateProjection,
+        sourceRunProjection: base.sourceRunProjection,
+        workspaceProjection: base.workspaceProjection,
+      },
+    );
+  } catch (error) {
+    return rejectedReviewPreparation(
+      error?.code ?? "authority_unavailable",
+      error?.reason ?? "required authority observations are unavailable",
+      error,
+    );
+  }
+  return {
+    candidateProjection: base.candidateProjection,
+    sourceRunProjection: base.sourceRunProjection,
+    workspaceProjection: base.workspaceProjection,
+    authorityBindings,
+    routeSnapshot,
+    catalog,
+    operationContracts,
+    validatorContracts,
+    timeFacts,
+    ownerAuthorities: base.ownerAuthorities,
+  };
+}
+
+function callOwnerObservation({
+  ownerAdapter,
+  routeAdapter,
+  catalogAdapter,
+  base,
+  delegatedAgentPort,
+  allowAsync,
+}) {
+  const observer = ownerAdapter?.observe ?? routeAdapter?.observe;
+  const catalogObserver = catalogAdapter?.observe;
+  const context = Object.freeze({
+    request: base.request,
+    candidateProjection: base.candidateProjection,
+    sourceRunProjection: base.sourceRunProjection,
+    workspaceProjection: base.workspaceProjection,
+    runAuthority: base.runAuthority,
+    delegatedAgentPort,
+  });
+  let observed = {};
+  if (typeof observer === "function") {
+    observed = observer.call(ownerAdapter?.observe ? ownerAdapter : routeAdapter, context);
+  } else {
+    observed = observeDefaultReviewRoutes({
+      request: base.request,
+      workspacePath: base.workspaceProjection.workspace?.canonical_path,
+      delegatedAgentPort,
+      allowAsync,
+    });
+  }
+  if (isPromiseLike(observed)) {
+    return observed.then((value) => mergeOwnerObservations(value, catalogObserver, context));
+  }
+  return mergeOwnerObservations(observed, catalogObserver, context);
+}
+
+function mergeOwnerObservations(observed, catalogObserver, context) {
+  const rawValue = observed?.facts === undefined ? observed : observed.facts;
+  if (observed?.accepted === false) return observed;
+  const value = isRecord(rawValue)
+    ? {
+        ...(Object.hasOwn(rawValue, "routeSnapshot")
+          ? { routeSnapshot: rawValue.routeSnapshot }
+          : {}),
+        ...(Object.hasOwn(rawValue, "route_snapshot")
+          ? { route_snapshot: rawValue.route_snapshot }
+          : {}),
+        ...(Object.hasOwn(rawValue, "routeBindings")
+          ? { routeBindings: rawValue.routeBindings }
+          : {}),
+        ...(Object.hasOwn(rawValue, "route_bindings")
+          ? { route_bindings: rawValue.route_bindings }
+          : {}),
+      }
+    : {};
+  if (typeof catalogObserver !== "function") return value;
+  const catalog = catalogObserver.call(context, context);
+  if (isPromiseLike(catalog)) {
+    return catalog.then((result) => ({ ...(value ?? {}), catalog: result }));
+  }
+  return { ...(value ?? {}), catalog };
+}
+
+function workspaceProjectionForFacts(projection, providerIdentity) {
+  if (!isRecord(projection) ||
+      projection.schema !== "work.workspace-projection/v1") return projection;
+  const git = projection.git;
+  let fingerprint = null;
+  try {
+    fingerprint = digest({ git });
+  } catch {
+    fingerprint = null;
+  }
+  const projectionDigest = reviewOwnerProjectionDigest("workspace", projection);
+  const tainted = projection.taint !== null && projection.taint !== undefined;
+  const ownerFact = createAuthorityFact({
+    authorityId: "WorkspaceAuthority",
+    authorityContract: "work.workspace/v1",
+    providerIdentity,
+    watermark: projection.watermark ?? null,
+    watermarkDomain: "workspace",
+    subjectId: projection.subject_id ?? null,
+    disposition: projection.disposition ?? null,
+    generation: projection.generation ?? null,
+    facts: {
+      fingerprint,
+      git_commit_sha: git?.commit_sha ?? null,
+      git_tree_sha: git?.tree_sha ?? null,
+      git_ref: git?.ref ?? null,
+      git_clean: git?.clean === true,
+      mutation_epoch: projection.mutation_epoch ?? null,
+      taint_status: tainted ? "tainted" : "clear",
+      claims_digest: digest(projection.claims ?? []),
+      projection_digest: projectionDigest,
+    },
+    legalActions: projection.legal_actions ?? [],
+  });
+  return {
+    ...projection,
+    disposition: projection.disposition ?? null,
+    fingerprint,
+    clean: git?.clean === true,
+    dirty: git?.clean !== true,
+    tainted,
+    authority_fact: ownerFact,
+    owner_projection_digest: projectionDigest,
+    legal_actions: projection.legal_actions ?? [],
+  };
+}
+
+function ownerAuthoritiesForProjections({
+  candidateProjection,
+  sourceRunProjection,
+  workspaceProjection,
+  providerIdentities,
+}) {
+  const candidate = candidateProjection.candidate;
+  const workspace = candidate.workspace;
+  const runProjectionDigest = reviewOwnerProjectionDigest(
+    "run",
+    sourceRunProjection,
+  );
+  const reviewProjectionDigest = digest(candidateProjection);
+  const run = createAuthorityFact({
+    authorityId: "RunAuthority",
+    authorityContract: "flow.run-projection/v1",
+    providerIdentity: providerIdentities.run,
+    watermark: sourceRunProjection.watermark,
+    watermarkDomain: "run",
+    subjectId: sourceRunProjection.run_id,
+    disposition: sourceRunProjection.phase,
+    generation: sourceRunProjection.stream_generation ?? sourceRunProjection.sequence ?? 0,
+    facts: {
+      run_id: sourceRunProjection.run_id,
+      phase: sourceRunProjection.phase,
+      candidate_id: sourceRunProjection.review_candidate_reference.candidate_id,
+      candidate_fingerprint: sourceRunProjection.review_candidate_reference.candidate_fingerprint,
+      sequence: sourceRunProjection.sequence ?? null,
+      current_revision: {
+        ordinal: sourceRunProjection.current_revision?.ordinal ?? null,
+        plan_fingerprint: sourceRunProjection.current_revision?.plan_fingerprint ?? null,
+      },
+      bundle_digest: sourceRunProjection.bundle_digest ?? null,
+      projection_digest: runProjectionDigest,
+    },
+    legalActions: sourceRunProjection.legal_actions ?? [],
+  });
+  const review = createAuthorityFact({
+    authorityId: "ReviewAuthority",
+    authorityContract: "work.review/v1",
+    providerIdentity: providerIdentities.review,
+    watermark: candidateProjection.watermark,
+    watermarkDomain: "review",
+    subjectId: candidateProjection.subject_id,
+    disposition: candidateProjection.status,
+    generation: candidateProjection.generation,
+    facts: {
+      candidate_fingerprint: candidateProjection.candidate_fingerprint ?? null,
+      workspace_subject_id: workspace?.subject_id ?? null,
+      workspace_generation: workspace?.generation ?? null,
+      workspace_fingerprint: workspace?.fingerprint ?? null,
+      projection_digest: reviewProjectionDigest,
+    },
+    legalActions: candidateProjection.legal_actions ?? [],
+  });
+  return {
+    run,
+    review,
+    workspace: workspaceProjection?.authority_fact,
+  };
+}
+
+function ownerAuthorityError({ owner, projection, subjectId = null, providerIdentity }) {
+  const identity = {
+    run: {
+      authorityId: "RunAuthority",
+      contract: "flow.run-projection/v1",
+      domain: "run",
+      subjectId: projection?.run_id ?? subjectId,
+      disposition: projection?.phase ?? null,
+      generation: projection?.stream_generation ?? projection?.sequence ?? null,
+    },
+    review: {
+      authorityId: "ReviewAuthority",
+      contract: "work.review/v1",
+      domain: "review",
+      subjectId: projection?.subject_id ?? subjectId,
+      disposition: projection?.status ?? null,
+      generation: projection?.generation ?? null,
+    },
+    workspace: {
+      authorityId: "WorkspaceAuthority",
+      contract: "work.workspace/v1",
+      domain: "workspace",
+      subjectId: projection?.subject_id ?? subjectId,
+      disposition: projection?.disposition ?? null,
+      generation: projection?.generation ?? null,
+    },
+  }[owner];
+  const rejection = authorityReadRejection(projection);
+  const baseFact = isRecord(rejection?.authority_fact)
+    ? rejection.authority_fact
+    : {};
+  let projectionDigest = null;
+  try {
+    projectionDigest = reviewOwnerProjectionDigest(owner, projection);
+  } catch {
+    // The owner fact still carries all validated metadata available on reject.
+  }
+  const ownerFacts = isRecord(baseFact.facts) ? baseFact.facts : {};
+  const authorityFactLegalActions = Array.isArray(baseFact.legal_actions)
+    ? baseFact.legal_actions
+    : Array.isArray(rejection?.legal_actions)
+      ? rejection.legal_actions
+      : projection?.legal_actions ?? [];
+  const legalActionSources = [
+    baseFact.legal_actions,
+    rejection?.legal_actions,
+    projection?.legal_actions,
+  ];
+  const legalActions = legalActionSources.find((actions) =>
+    Array.isArray(actions) && actions.length > 0) ??
+    legalActionSources.find(Array.isArray) ?? [];
+  const fact = createAuthorityFact({
+    authorityId: baseFact.authority_id ?? identity.authorityId,
+    authorityContract: baseFact.authority_contract ?? rejection?.contract ?? identity.contract,
+    providerIdentity,
+    watermark: baseFact.watermark ?? rejection?.authority_watermark ??
+      projection?.watermark ?? null,
+    watermarkDomain: identity.domain,
+    subjectId: baseFact.subject_id ?? rejection?.subject_id ?? identity.subjectId,
+    disposition: baseFact.disposition ?? identity.disposition,
+    generation: baseFact.generation ?? identity.generation,
+    facts: {
+      ...ownerFacts,
+      ...(ownerFacts.projection_digest !== undefined || projectionDigest === null
+        ? {}
+        : { projection_digest: projectionDigest }),
+    },
+    legalActions: authorityFactLegalActions,
+  });
+  const effectiveLegalActions = legalActions.length > 0
+    ? legalActions
+    : owner === "workspace"
+      ? workspaceRecoveryActions({
+          subject_id: fact.subject_id,
+          watermark: fact.watermark,
+          generation: fact.generation,
+          mutation_epoch: fact.facts?.mutation_epoch ?? null,
+          fingerprint: fact.facts?.fingerprint ?? null,
+        })
+      : [];
+  return {
+    authority_watermark: fact.watermark,
+    authority_watermark_domain: identity.domain,
+    legal_actions: effectiveLegalActions,
+    authority_fact: fact,
+  };
+}
+
+function reviewCandidatePreparationOutcome({
+  candidateProjection,
+  candidateId,
+  requestedFingerprint,
+  providerIdentity,
+}) {
+  if (!isRecord(candidateProjection) ||
+      candidateProjection.schema !== "work.review-candidate-projection/v1" ||
+      candidateProjection.candidate_fingerprint !== requestedFingerprint) {
+    return null;
+  }
+  if (candidateProjection.status === "sealed" &&
+      candidateProjection.subject_id === candidateId &&
+      candidateProjection.candidate_fingerprint === requestedFingerprint) {
+    return null;
+  }
+  const candidate = candidateProjection.candidate;
+  if (!isRecord(candidate)) return null;
+  const issue = reviewCandidateProjectionIssue({
+    schema: "flow.review-local-candidate/v1",
+    candidate,
+    candidate_fingerprint: requestedFingerprint,
+    candidate_authority_watermark: candidateProjection.watermark,
+  }, candidateProjection);
+  if (issue === null) return null;
+  return createRejection({
+    operation: "prepare",
+    code: issue.code,
+    reason: issue.reason,
+    authorityWatermark: candidateProjection.watermark ?? null,
+    authorityWatermarkDomain: "review",
+    legalActions: Array.isArray(candidateProjection.legal_actions)
+      ? candidateProjection.legal_actions
+      : [],
+    authorityFact: createAuthorityFact({
+      authorityId: "ReviewAuthority",
+      authorityContract: "work.review/v1",
+      providerIdentity,
+      watermark: candidateProjection.watermark ?? null,
+      watermarkDomain: "review",
+      subjectId: candidateProjection.subject_id ?? candidateId,
+      disposition: candidateProjection.status ?? null,
+      generation: candidateProjection.generation ?? null,
+      facts: {
+        candidate_fingerprint: candidateProjection.candidate_fingerprint,
+        projection_digest: digest(candidateProjection),
+      },
+      legalActions: candidateProjection.legal_actions ?? [],
+    }),
+  });
+}
+
+function reviewPreparationCandidateId(request) {
+  const candidates = [
+    request?.candidate_id,
+    request?.review_candidate_reference?.candidate_id,
+    request?.inputs?.target?.candidate?.candidate_id,
+    request?.selection?.inputs?.target?.candidate?.candidate_id,
+    request?.prepared?.selection?.inputs?.target?.candidate?.candidate_id,
+  ].filter((candidate) => candidate !== undefined);
+  if (candidates.length === 0 ||
+      candidates.some((candidate) =>
+        typeof candidate !== "string" || candidate.length === 0) ||
+      new Set(candidates).size !== 1) return null;
+  return candidates[0];
+}
+
+function reviewPreparationCandidateFingerprint(request) {
+  const candidates = [
+    request?.candidate_fingerprint,
+    request?.review_candidate_reference?.candidate_fingerprint,
+    request?.inputs?.target?.candidate_fingerprint,
+    request?.inputs?.preparation_selection?.target?.candidate_fingerprint,
+    request?.selection?.target?.candidate_fingerprint,
+  ].filter((candidate) => candidate !== undefined);
+  if (candidates.length === 0 ||
+      candidates.some((candidate) =>
+        typeof candidate !== "string" || !/^sha256:[0-9a-f]{64}$/.test(candidate)) ||
+      new Set(candidates).size !== 1) return null;
+  return candidates[0];
+}
+
+async function readProductionCatalog(env = process.env) {
+  const catalogPath = fileURLToPath(
+    new URL("../contracts/catalog.v1.json", import.meta.url),
+  );
+  const homeDirectory = env.HOME ?? homedir();
+  const stateDirectory = env.XDG_STATE_HOME ?? join(homeDirectory, ".local", "state");
+  const catalog = await loadContractCatalog({
+    catalogPath,
+    featureContractPath: fileURLToPath(
+      new URL("../contracts/drovr-required-features.v1.json", import.meta.url),
+    ),
+    homeDirectory,
+    stateDirectory,
+  });
+  const identity = {
+    id: `flow.contract-catalog/v1@${catalog.catalog_version}`,
+    fingerprint: digest(catalog),
+  };
+  return {
+    identity,
+    providerIdentities: {
+      run: catalog.flow_runtime.owner.provider_identity,
+      review: catalog.work_domain_interfaces.review.provider_identity,
+      workspace: catalog.work_domain_interfaces.workspace.provider_identity,
+    },
+  };
+}
+
+function reviewRouteSnapshotIdentity(bindings) {
+  return {
+    configuration_watermark: digest(bindings.map(({ card_id, route, description }) => ({
+      card_id,
+      route,
+      description_digest: description?.description_digest,
+    }))),
+    comparison_key: digest(bindings.map(({ card_id, route }) => ({
+      card_id,
+      launch_comparison_key: route?.launch_comparison_key,
+    }))),
+  };
+}
+
+function normalizeReviewRouteSnapshot(routeSnapshot, routeBindings) {
+  if (!isRecord(routeSnapshot)) return null;
+  const bindings = routeBindings ?? routeSnapshot.bindings;
+  if (!Array.isArray(bindings) || bindings.length === 0) return null;
+  const normalizedBindings = bindings.map((binding) => ({
+    card_id: binding.card_id,
+    route: binding.route,
+    description: binding.description,
+  })).sort((left, right) => left.card_id.localeCompare(right.card_id));
+  let configurationWatermark;
+  let comparisonKey;
+  try {
+    ({
+      configuration_watermark: configurationWatermark,
+      comparison_key: comparisonKey,
+    } = reviewRouteSnapshotIdentity(normalizedBindings));
+  } catch {
+    return null;
+  }
+  if (routeSnapshot.configuration_watermark !== configurationWatermark ||
+      routeSnapshot.comparison_key !== comparisonKey) {
+    return null;
+  }
+  return {
+    route_id: routeSnapshot.route_id ?? "route:review",
+    configuration_watermark: configurationWatermark,
+    comparison_key: comparisonKey,
+    bindings: normalizedBindings,
+  };
+}
+
+function observeDefaultReviewRoutes({ request, workspacePath, delegatedAgentPort }) {
+  const selection = reviewPreparationSelection(request);
+  if (selection.accepted === false) return selection;
+  const roles = [
+    ...selection.lenses.map((lens) => ({
+      cardId: `review-lens-${lens}`,
+      role: `lens:${lens}`,
+      choice: selection.routes.lenses[lens],
+    })),
+    { cardId: "review-critic", role: "critic", choice: selection.routes.critic },
+  ];
+  const observations = roles.map(({ cardId, role, choice }) =>
+    observeReviewRoute({
+      cardId,
+      role,
+      choice,
+      workspacePath,
+      delegatedAgentPort,
+    }));
+  if (observations.some(isPromiseLike)) {
+    return Promise.all(observations).then((bindings) => ({
+      routeSnapshot: routeSnapshotFromBindings(bindings),
+    }));
+  }
+  return { routeSnapshot: routeSnapshotFromBindings(observations) };
+}
+
+function reviewPreparationSelection(request) {
+  const selection = request?.selection ?? request?.review_selection ??
+    request?.inputs?.preparation_selection ?? request?.preparation_selection;
+  if (!isRecord(selection) ||
+      selection.schema !== "flow.review-preparation-selection/v1" ||
+      !Array.isArray(selection.lenses) || selection.lenses.length === 0 ||
+      new Set(selection.lenses).size !== selection.lenses.length ||
+      selection.lenses.some((lens) => !REVIEW_LENSES.includes(lens)) ||
+      !isRecord(selection.routes) || !isRecord(selection.routes.lenses) ||
+      !isRecord(selection.routes.critic)) {
+    return rejectedReviewPreparation(
+      "invalid_review_preparation_selection",
+      "review preparation requires one exact lens and route selection",
+    );
+  }
+  const lensKeys = Object.keys(selection.routes.lenses);
+  if (lensKeys.some((lens) => !selection.lenses.includes(lens)) ||
+      selection.lenses.some((lens) => !Object.hasOwn(selection.routes.lenses, lens))) {
+    return rejectedReviewPreparation(
+      "invalid_review_preparation_selection",
+      "review preparation route selection must cover every selected lens",
+    );
+  }
+  const target = selection.target;
+  if (target !== undefined && (!isRecord(target) ||
+      target.candidate_id !== reviewPreparationCandidateId(request) ||
+      target.candidate_fingerprint !== reviewPreparationCandidateFingerprint(request))) {
+    return rejectedReviewPreparation(
+      "candidate_fingerprint_mismatch",
+      "review preparation selection target is not the requested candidate",
+    );
+  }
+  return {
+    accepted: true,
+    lenses: [...selection.lenses].sort(),
+    routes: {
+      lenses: Object.fromEntries([...selection.lenses].sort().map((lens) => [
+        lens,
+        selection.routes.lenses[lens],
+      ])),
+      critic: selection.routes.critic,
+    },
+  };
+}
+
+function observeReviewRoute({ cardId, role, choice, workspacePath, delegatedAgentPort }) {
+  if (!isRecord(choice)) {
+    return rejectedReviewPreparation(
+      "invalid_review_route_selection",
+      `review preparation route selection is missing for ${cardId}`,
+    );
+  }
+  const suppliedDescription = isRecord(choice.description)
+    ? choice.description
+    : null;
+  const launch = choice.launch ?? suppliedDescription?.launch;
+  if (!isRecord(launch) || typeof delegatedAgentPort?.describe !== "function") {
+    return rejectedReviewPreparation(
+      "route_unavailable",
+      `review preparation cannot observe the ${role} route`,
+    );
+  }
+  const projection = delegatedAgentPort.describe({
+    schema: "flow.delegated-agent-description-request/v1",
+    launch: { ...launch, capability: launch.capability ?? "read-only" },
+    caller_metadata: { flow: "review/v1", role },
+    ...(delegatedAgentPort.backend === "direct"
+      ? { workspace_path: workspacePath } : {}),
+  });
+  const bind = (observed) => {
+    const description = observed?.description;
+    if (observed?.status !== "compatible" || !validReviewDescription(description)) {
+      return rejectedReviewPreparation(
+        observed?.compatibility?.code ?? "route_unavailable",
+        `Execution ${role} route is unavailable or incompatible`,
+      );
+    }
+    const boundDescription = bindReviewDescription(description);
+    if (suppliedDescription !== null &&
+        !sameDescriptionIdentity(boundDescription, suppliedDescription)) {
+      return rejectedReviewPreparation(
+        "route_changed",
+        `Execution ${role} route description changed before review preparation`,
+      );
+    }
+    const defaultAgentId = `agent:flow-review-${role.replaceAll(":", "-")}-${
+      description.comparison_keys.launch.slice(-16)}`;
+    const suppliedRoute = isRecord(choice.route) ? choice.route : null;
+    const route = suppliedRoute ?? {
+      agent_id: defaultAgentId,
+      configuration_watermark: description.watermark.content_sha256,
+      description_digest: boundDescription.description_digest,
+      launch_comparison_key: description.comparison_keys.launch,
+    };
+    if (!validReviewRoute(route) ||
+        route.configuration_watermark !== description.watermark.content_sha256 ||
+        route.description_digest !== boundDescription.description_digest ||
+        route.launch_comparison_key !== description.comparison_keys.launch) {
+      return rejectedReviewPreparation(
+        "route_changed",
+        `Execution ${role} route binding is not derived from its description`,
+      );
+    }
+    return { card_id: cardId, route, description: boundDescription };
+  };
+  return isPromiseLike(projection) ? projection.then(bind) : bind(projection);
+}
+
+function routeSnapshotFromBindings(bindings) {
+  if (bindings.some((binding) => binding?.accepted === false)) {
+    return bindings.find((binding) => binding?.accepted === false);
+  }
+  const normalized = bindings.slice().sort((left, right) =>
+    left.card_id.localeCompare(right.card_id));
+  const agentIds = new Set();
+  const launchKeys = new Set();
+  for (const binding of normalized) {
+    if (agentIds.has(binding.route.agent_id) ||
+        launchKeys.has(binding.route.launch_comparison_key)) {
+      return rejectedReviewPreparation(
+        "non_independent_review_route",
+        "review preparation requires independent selected route identities",
+      );
+    }
+    agentIds.add(binding.route.agent_id);
+    launchKeys.add(binding.route.launch_comparison_key);
+  }
+  return {
+    route_id: "route:review",
+    ...reviewRouteSnapshotIdentity(normalized),
+    bindings: normalized,
+  };
+}
+
+function validReviewDescription(description) {
+  if (isDirectDescription(description)) {
+    try { return directDescriptionIssue(description) === null; }
+    catch { return false; }
+  }
+  if (!isRecord(description) ||
+      description.schema !== "drovr.delegated-agent-description/v1" ||
+      !isRecord(description.comparison_keys) ||
+      !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys.launch) ||
+      !isDigest(description.comparison_keys.effective_authority) ||
+      !isDigest(description.watermark?.content_sha256)) return false;
+  const { description_digest: _digest, legal_actions: _actions, ...identity } =
+    description;
+  return sameCanonicalValue(digest(identity), description.description_digest);
+}
+
+function bindReviewDescription(description) {
+  const { description_digest: _digest, legal_actions: _actions, ...identity } =
+    description;
+  return freezeCanonical({ ...identity, description_digest: digest(identity) });
+}
+
+function sameDescriptionIdentity(left, right) {
+  try {
+    const strip = (description) => {
+      const { description_digest: _digest, legal_actions: _actions, ...identity } =
+        description;
+      return identity;
+    };
+    return digest(strip(left)) === digest(strip(right));
+  } catch {
+    return false;
+  }
+}
+
+function validReviewRoute(route) {
+  return isRecord(route) &&
+    Object.keys(route).length === 4 &&
+    typeof route.agent_id === "string" && route.agent_id.length > 0 &&
+    isDigest(route.configuration_watermark) &&
+    isDigest(route.description_digest) &&
+    isDigest(route.launch_comparison_key);
+}
+
+function rejectedReviewPreparation(code, reason, error = null) {
+  const authorityRejection = authorityReadRejection(error);
+  if (authorityRejection !== null) {
+    return rejectedReviewPreparationFromAuthority(authorityRejection);
+  }
+  return {
+    accepted: false,
+    issue: {
+      code,
+      reason,
+      ...(error?.authority_watermark === undefined ? {} : {
+        authority_watermark: error.authority_watermark,
+      }),
+      ...(error?.authority_watermark_domain === undefined ? {} : {
+        authority_watermark_domain: error.authority_watermark_domain,
+      }),
+      legal_actions: Array.isArray(error?.legal_actions)
+        ? error.legal_actions
+        : [],
+      ...(error?.authority_fact === undefined ? {} : {
+        authority_fact: error.authority_fact,
+      }),
+    },
+  };
+}
+
+function rejectedReviewPreparationFromAuthority(rejection, {
+  owner = rejection?.contract === "work.workspace/v1"
+    ? "workspace"
+    : rejection?.contract === "work.review/v1"
+      ? "review"
+      : "run",
+  providerIdentity,
+} = {}) {
+  const preserved = ownerAuthorityError({
+    owner,
+    projection: rejection,
+    providerIdentity,
+  });
+  const rawDomain = rejection?.authority_watermark_domain;
+  return {
+    accepted: false,
+    rejection: createRejection({
+      operation: rejection?.operation ?? "query",
+      code: typeof rejection?.code === "string"
+        ? rejection.code
+        : "review_preparation_unavailable",
+      reason: typeof rejection?.reason === "string" ? rejection.reason : null,
+      authorityWatermark: preserved.authority_watermark,
+      authorityWatermarkDomain: owner === "run" &&
+        (rawDomain === "host" || rawDomain === "run")
+        ? rawDomain
+        : "host",
+      legalActions: preserved.legal_actions,
+      authorityFact: preserved.authority_fact,
+    }),
+  };
+}
+
+function authorityReadRejection(value) {
+  if (!isRecord(value)) return null;
+  return value.schema === "flow.rejection/v1" ||
+      value.schema === "work.rejection/v1"
+    ? value
+    : null;
+}
+
+function isPromiseLike(value) {
+  return value !== null && (typeof value === "object" ||
+    typeof value === "function") && typeof value.then === "function";
 }
 
 function resolveDelegatedWorkspaceClaim({
@@ -858,7 +2087,10 @@ function authorityRegistrations() {
       version: "1",
     },
     observe(context = {}) {
-      const facts = context.selection?.explicit_facts ??
+      const facts = context.ownerFacts ??
+        preparationOwnerFacts(context.selection?.inputs?.preparation_facts ??
+          context.prepared?.selection?.inputs?.preparation_facts) ??
+        context.selection?.explicit_facts ??
         context.prepared?.explicit_facts ?? null;
       const value = authorityFactValue(facts, fact);
       return {
@@ -874,12 +2106,41 @@ function authorityRegistrations() {
 function authorityFactValue(facts, fact) {
   if (facts === null) return undefined;
   if (fact === "contract_facts") {
+    if (facts.contract_facts !== undefined) return facts.contract_facts;
     return {
       operation_contracts: facts.operation_contracts,
       validator_contracts: facts.validator_contracts,
     };
   }
   return facts[fact];
+}
+
+function preparationOwnerFacts(facts) {
+  if (!isRecord(facts) || facts.schema !== "flow.review-preparation-facts/v1") {
+    return null;
+  }
+  const workspace = facts.workspace;
+  return {
+    route_snapshot: facts.route,
+    resource_claims: [{
+      kind: "workspace",
+      id: workspace.subject_id,
+      generation: workspace.generation,
+      mutation_epoch: workspace.mutation_epoch,
+      fingerprint: workspace.fingerprint,
+    }],
+    contract_facts: {
+      operation_contracts: facts.operation.contracts,
+      validator_contracts: facts.validator.contracts,
+    },
+    subject_generations: [{
+      schema: "flow.subject-generation/v1",
+      contract: "work.workspace/v1",
+      subject_id: workspace.subject_id,
+      generation: workspace.generation,
+      fingerprint: workspace.fingerprint,
+    }],
+  };
 }
 
 async function describedRoute({

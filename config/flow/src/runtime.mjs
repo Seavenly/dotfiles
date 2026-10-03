@@ -144,6 +144,7 @@ export function createFlowRuntime({
       registeredOperations: composition.operations,
       predefinedDefinitions: composition.definitions,
       registeredAuthorities: composition.authorities,
+      reviewPreparationProvider: composition.reviewPreparationProvider,
       autonomous: autonomous ?? ownsAuthority,
       runnerOptions: coreRunnerOptions,
       registeredQueries: {
@@ -248,10 +249,6 @@ export function createFlowRuntime({
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicRequest = withoutDarkOptIn(request);
-        const adopted = typeof authority?.adoptExactLaunch === "function"
-          ? authority.adoptExactLaunch(publicRequest)
-          : null;
-        if (adopted !== null && adopted !== undefined) return adopted;
         let launchPreparation = null;
         try {
           launchPreparation = composition.beforeLaunch?.(publicRequest, authority) ?? null;
@@ -270,10 +267,19 @@ export function createFlowRuntime({
         }
         try {
           const receipt = coreRuntime.launch(publicRequest);
-          if (receipt?.schema === "flow.rejection/v1") {
-            launchPreparation?.rollback?.();
+          const settle = (value) => {
+            if (value?.schema === "flow.rejection/v1") {
+              launchPreparation?.rollback?.();
+            }
+            return value;
+          };
+          if (isPromiseLike(receipt)) {
+            return receipt.then(settle).catch((error) => {
+              launchPreparation?.rollback?.();
+              throw error;
+            });
           }
-          return receipt;
+          return settle(receipt);
         } catch (error) {
           launchPreparation?.rollback?.();
           throw error;
@@ -434,6 +440,11 @@ function withoutDarkOptIn(value) {
       !Object.hasOwn(value, "dark_opt_in")) return value;
   const { dark_opt_in: _darkOptIn, ...withoutOptIn } = value;
   return withoutOptIn;
+}
+
+function isPromiseLike(value) {
+  return value !== null && (typeof value === "object" ||
+    typeof value === "function") && typeof value.then === "function";
 }
 
 function safeAuthorityWatermark(authority) {

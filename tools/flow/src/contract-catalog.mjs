@@ -83,6 +83,11 @@ const PUBLIC_HOST_OWNER = {
   endpoint: "flow.owner-endpoint/v1",
   status: "flow.owner-status/v1",
   authority: "RunAuthority",
+  provider_identity: {
+    schema: "flow.registered-authority/v1",
+    id: "flow.production.run-authority",
+    version: "1",
+  },
   identity: ["owner_token", "pid", "process_start_identity"],
   state_directory_mode: "0700",
   endpoint_mode: "0600",
@@ -521,6 +526,11 @@ const WORKSPACE_AUTHORITY = {
   interface: "work.workspace-authority/v1",
   contract: "work.workspace/v1",
   projection: "work.workspace-projection/v1",
+  provider_identity: {
+    schema: "flow.registered-authority/v1",
+    id: "flow.production.workspace-authority",
+    version: "1",
+  },
   commands: [
     "work.workspace-register-command/v1",
     "work.workspace-observation-command/v1",
@@ -544,7 +554,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@35",
+  catalog_id: "flow.contract-catalog/v1@37",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -640,6 +650,11 @@ const REVIEW_AUTHORITY = {
   contract: "work.review/v1",
   candidate: "work.review-candidate/v1",
   projection: "work.review-candidate-projection/v1",
+  provider_identity: {
+    schema: "flow.registered-authority/v1",
+    id: "flow.production.review-authority",
+    version: "1",
+  },
   review_projection: "flow.review-projection/v1",
   event: "work.review-event/v1",
   commands: [
@@ -676,6 +691,8 @@ const REVIEW_AUTHORITY = {
   summary: "flow.review-summary/v1",
   automated_evidence: "flow.review-automated-evidence/v1",
   provenance: "flow.review-provenance/v1",
+  preparation_selection: "flow.review-preparation-selection/v1",
+  preparation_facts: "flow.review-preparation-facts/v1",
   artifacts: "flow.review-artifacts/v1",
   artifact_formats: [
     "flow.review-artifact-json/v1",
@@ -787,6 +804,11 @@ const REVIEW_QUERY = {
     authority: "ReviewAuthority",
     watermark: "flow.review-inbox-watermark/v1",
   },
+  rejection: "flow.rejection/v1",
+};
+const REVIEW_PREPARATION_QUERY = {
+  request: "flow.query/v1",
+  projection: "flow.review-preparation-facts/v1",
   rejection: "flow.rejection/v1",
 };
 const REVIEW_WATCH = {
@@ -1119,6 +1141,9 @@ export async function loadContractCatalog({
     catalog.flow_runtime?.operation_contracts?.query?.registered?.review,
     REVIEW_QUERY,
   ) || !isDeepStrictEqual(
+    catalog.flow_runtime?.operation_contracts?.query?.registered?.review_preparation_facts,
+    REVIEW_PREPARATION_QUERY,
+  ) || !isDeepStrictEqual(
     catalog.flow_runtime?.operation_contracts?.watch?.review,
     REVIEW_WATCH,
   ) || ![
@@ -1153,6 +1178,8 @@ export async function loadContractCatalog({
     REVIEW_AUTHORITY.summary,
     REVIEW_AUTHORITY.automated_evidence,
     REVIEW_AUTHORITY.provenance,
+    REVIEW_AUTHORITY.preparation_selection,
+    REVIEW_AUTHORITY.preparation_facts,
     REVIEW_AUTHORITY.artifacts,
     ...REVIEW_AUTHORITY.artifact_formats,
     REVIEW_AUTHORITY.receipt,

@@ -12,9 +12,37 @@ export function directOutputContract(intent) {
   } else if (task?.phase === "critique") {
     const source = JSON.parse(readFileSync(new URL("../../../config/flow/schemas/flow.feature-critique-output.v1.schema.json", import.meta.url), "utf8"));
     const { $id, $schema, ...shape } = source; schema = shape;
+  } else if (isLocalReviewTask(task, intent.delegate_output_schemas)) {
+    const source = JSON.parse(readFileSync(new URL("../../../config/flow/schemas/flow.review-result.v1.schema.json", import.meta.url), "utf8"));
+    const { $id, $schema, ...shape } = source;
+    schema = shape;
+    // A lens may omit its name and inherit the selected lens from semantic
+    // validation. An explicit name must still match; critics name each finding.
+    if (task.role === "lens") {
+      schema.$defs.finding.properties.lens = { const: task.lens };
+    } else {
+      schema.$defs.finding.required = ["lens"];
+    }
   } else {
     const error = new Error("unsupported_direct_output_contract"); error.code = error.message; throw error;
   }
   const identity = { schemas: intent.delegate_output_schemas, schema };
   return freezeCanonical({ ...identity, contract_digest: digest(identity) });
+}
+
+function isLocalReviewTask(task, schemas) {
+  if (task?.schema !== "flow.delegate-task-inputs/v1" ||
+      task.flow !== "review/v1" || task.phase !== undefined ||
+      task.target?.schema !== "flow.review-local-candidate/v1" ||
+      !Array.isArray(schemas) || schemas.length !== 1 ||
+      schemas[0] !== "flow.review-result/v1") return false;
+  if (task.role === "lens") return isLens(task.lens);
+  return task.role === "critic" && Array.isArray(task.lenses) &&
+    task.lenses.length > 0 && task.lenses.every(isLens) &&
+    new Set(task.lenses).size === task.lenses.length;
+}
+
+function isLens(value) {
+  return typeof value === "string" && value.length > 0 &&
+    value.length <= 128 && value === value.trim();
 }

@@ -22,11 +22,13 @@ import {
 } from "../src/transition-projection.mjs";
 import { digest as canonicalDigest } from "../src/canonical.mjs";
 import {
+  bindQualifiedReleaseFixture,
+  rebindReleaseContentFixture,
+} from "../../../config/flow/test-support/qualified-release-fixture.mjs";
+import {
   deriveGitTreeSha,
   isGovernedReleasePath,
 } from "../src/release-content-contract.mjs";
-import { bindQualifiedReleaseFixture } from
-  "../../../config/flow/test-support/qualified-release-fixture.mjs";
 
 const configDirectory = fileURLToPath(
   new URL("../../../config/flow", import.meta.url),
@@ -278,9 +280,36 @@ test("transition query rejects a wrong or unavailable candidate tree binding", a
   );
 });
 
-test("transition query derives its watermark and legal actions from authority", async () => {
+test("release fixture rebinding preserves unqualified evidence with a null production path", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "unqualified-rebind");
+  const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  phase2.path = null;
+  phase2.sha256 = null;
+  phase2.status = "not_run";
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  const qualificationPath = join(copiedConfig, "evidence/release-qualification.v1.json");
+  const qualificationBytes = await readFile(qualificationPath);
+
+  await rebindReleaseContentFixture({ configDirectory: copiedConfig, repositoryRoot });
+
+  const rebound = JSON.parse(await readFile(ledgerPath, "utf8"));
+  assert.deepEqual(rebound.evidence.find(({ id }) =>
+    id === "production_route_conformance"), phase2);
+  assert.deepEqual(rebound.evidence.find(({ id }) =>
+    id === "deterministic_qualification"), ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification"));
+  assert.deepEqual(await readFile(qualificationPath), qualificationBytes);
+  const projection = await queryTransition({ configDirectory: copiedConfig, repositoryRoot });
+  assert.equal(projection.dark_opt_in.available, false);
+});
+
+test("transition query derives its watermark and legal actions from authority", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "current-projection");
   const projection = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/home",
     stateDirectory: "/test/state",
@@ -365,15 +394,16 @@ test("transition status withholds dark opt-in when production-route conformance 
     `sha256:${phase2.sha256}`);
 });
 
-test("transition watermark binds the resolved authority root", async () => {
+test("transition watermark binds the resolved authority root", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "authority-root-watermark");
   const first = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/first-home",
     stateDirectory: "/test/first-state",
   });
   const second = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/second-home",
     stateDirectory: "/test/second-state",
@@ -385,7 +415,11 @@ test("transition watermark binds the resolved authority root", async () => {
 
 for (const status of ["failed", "blocked", "not_run"]) {
   test(`dark opt-in availability fails closed when qualification evidence is ${status}`, async (t) => {
-    const { copiedConfig } = await copyTransitionConfig(t, `qualification-${status}`);
+    const { copiedConfig } = await copyTransitionConfig(
+      t,
+      `qualification-${status}`,
+      { qualified: true },
+    );
     const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     const evidence = ledger.evidence.find(({ id }) =>
@@ -517,7 +551,11 @@ for (const [label, mutate] of [
   }],
 ]) {
   test(`transition query rejects tampered qualification receipt with updated ledger digest: ${label}`, async (t) => {
-    const { scratch, copiedConfig } = await copyTransitionConfig(t, `tampered-${label}`);
+    const { scratch, copiedConfig } = await copyTransitionConfig(
+      t,
+      `tampered-${label}`,
+      { qualified: true },
+    );
     const evidencePath = join(
       copiedConfig,
       "evidence/release-qualification.v1.json",
@@ -767,7 +805,7 @@ test("transition query derives the launch action from either legacy default", as
   ]);
 });
 
-async function copyTransitionConfig(t, label) {
+async function copyTransitionConfig(t, label, { qualified = false } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), `flow-transition-${label}-`));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const copiedConfig = join(scratch, "flow");
@@ -775,7 +813,10 @@ async function copyTransitionConfig(t, label) {
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
-  await bindQualifiedReleaseFixture({ configDirectory: copiedConfig, repositoryRoot });
+  const bind = qualified
+    ? bindQualifiedReleaseFixture
+    : rebindReleaseContentFixture;
+  await bind({ configDirectory: copiedConfig, repositoryRoot });
   return { scratch, copiedConfig };
 }
 
@@ -808,6 +849,7 @@ async function copyReleaseCandidateToFreshClone(t, label) {
     await mkdir(dirname(target), { recursive: true });
     await cp(join(repositoryRoot, path), target);
   }
+  await rebindReleaseContentFixture({ configDirectory: clonedConfig, repositoryRoot });
   return { content, clonedConfig, clonedRepository };
 }
 

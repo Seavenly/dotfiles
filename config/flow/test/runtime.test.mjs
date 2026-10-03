@@ -203,7 +203,9 @@ test("public launch requires passed phase-two production conformance", async (t)
 
 test("phase-two recipe tampering with a refreshed evidence hash withholds public admission", async (t) => {
   const { configDirectory, runtime } =
-    await createRuntimeWithCopiedFlowConfig(t, "phase2-recipe-tamper");
+    await createRuntimeWithCopiedFlowConfig(t, "phase2-recipe-tamper", {
+      qualified: true,
+    });
   const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
   const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
   const phase2 = ledger.evidence.find(({ id }) =>
@@ -361,6 +363,8 @@ test("public admission withholds qualification captured on another host", async 
     id === "deterministic_qualification");
   const phase2 = ledger.evidence.find(({ id }) =>
     id === "production_route_conformance");
+  assert.equal(phase1.status, "passed");
+  assert.equal(phase2.status, "passed");
   const phase1Path = join(configDirectory, phase1.path);
   const phase1Evidence = JSON.parse(await readFile(phase1Path, "utf8"));
   phase1Evidence.environment.os = process.platform === "darwin" ? "linux" : "darwin";
@@ -390,13 +394,16 @@ test("public admission uses the governed qualification root instead of disposabl
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-qualified-root-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const disposableRepository = join(scratch, "disposable-repository");
-  await initializeCleanTestRepository(disposableRepository);
   const configDirectory = join(scratch, "flow");
   await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
-  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
+  await bindQualifiedReleaseFixture({
+    configDirectory,
+    repositoryRoot: REPOSITORY_ROOT,
+  });
+  await initializeCleanTestRepository(disposableRepository);
   const runtime = createFlowRuntime({
     env: {
       HOME: scratch,
@@ -438,7 +445,10 @@ test("public preparation preserves blocked Drovr compatibility details", async (
   const { scratch, runtime } = await createRuntimeWithCopiedFlowConfig(
     t,
     "blocked-drovr-compatibility",
-    { delegatedAgentPort },
+    {
+      delegatedAgentPort,
+      qualified: true,
+    },
   );
   const repository = join(scratch, "candidate-repository");
   await initializeCleanTestRepository(repository);
@@ -499,27 +509,11 @@ test("public preparation normalizes real Drovr feature findings to the rejection
       return description;
     },
   });
-  const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ?? join(scratch, "flow");
-  if (!process.env.FLOW_CONFIG_DIRECTORY) {
-    await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
-      recursive: true,
-      filter: (source) => !source.split(sep).includes("node_modules"),
-    });
-    await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
-  }
-  const runtime = createFlowRuntime({
-    env: {
-      ...process.env,
-      HOME: scratch,
-      XDG_STATE_HOME: join(scratch, "state"),
-      FLOW_CONFIG_DIRECTORY: configDirectory,
-      FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT ?? REPOSITORY_ROOT,
-      FLOW_QUALIFICATION_REPOSITORY_ROOT: process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT ?? REPOSITORY_ROOT,
-    },
-    delegatedAgentPort,
-    autonomous: false,
-  });
-  t.after(() => closeFlowRuntime(runtime));
+  const { runtime } = await createRuntimeWithCopiedFlowConfig(
+    t,
+    "real-drovr-feature-findings",
+    { delegatedAgentPort, qualified: true },
+  );
   const repository = join(scratch, "candidate-repository");
   await initializeCleanTestRepository(repository);
 
@@ -2093,6 +2087,7 @@ async function createRuntimeWithCopiedFlowConfig(
   {
     delegatedAgentPort = { describe: async () => null },
     environment = {},
+    qualified = false,
   } = {},
 ) {
   const scratch = await mkdtemp(join(tmpdir(), `flow-public-config-${label}-`));
@@ -2102,7 +2097,12 @@ async function createRuntimeWithCopiedFlowConfig(
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
-  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
+  if (qualified) {
+    await bindQualifiedReleaseFixture({
+      configDirectory,
+      repositoryRoot: REPOSITORY_ROOT,
+    });
+  }
   const runtime = createFlowRuntime({
     env: {
       ...environment,

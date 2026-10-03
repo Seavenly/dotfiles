@@ -6,6 +6,15 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { canonicalize, digest, idempotencyCommandDigest } from "../src/canonical.mjs";
+import {
+  createAuthorityFact,
+  snapshotPredefinedAuthorityCatalog,
+  snapshotRegisteredAuthorities,
+} from "../src/authority-bindings.mjs";
+import {
+  compilePredefinedFlowSelection,
+  snapshotPredefinedDefinitions,
+} from "../src/plan-compiler.mjs";
 import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   createFlowRuntime,
@@ -13,6 +22,7 @@ import {
 } from "../src/flow-runtime.mjs";
 import { operationEffectIdentity } from "../src/effect-identity.mjs";
 import {
+  attachAuthorityBindingCatalogs,
   createInMemoryRunAuthority,
 } from "../src/run-authority.mjs";
 import {
@@ -62,6 +72,11 @@ import {
   REVIEW_PROJECTION_FOLD_CONTRACT,
 } from "../src/review-flow.mjs";
 import {
+  deriveReviewPreparationFacts,
+  reviewOwnerProjectionDigest,
+  reviewExplicitFactsFromPreparationFacts,
+} from "../src/review-preparation-facts.mjs";
+import {
   migrateReviewProjectionFolds,
   replayAuthorityStream,
 } from "../src/sqlite-authority-replay.mjs";
@@ -101,15 +116,14 @@ test("review/v1 rejects a minimal self-digest candidate before launch", () => {
     runAuthority: createInMemoryRunAuthority(),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
-  assert.throws(
-    () => runtime.prepare({
-      schema: "flow.predefined-flow-selection/v1",
-      definition: "review/v1",
-      inputs: reviewInputsForCandidate(candidate),
-      explicit_facts: reviewRuntimeFacts(),
-    }),
-    (error) => error.reason === "invalid_verified_review_candidate",
-  );
+  const result = runtime.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs: reviewInputsForCandidate(candidate),
+    explicit_facts: reviewRuntimeFacts(),
+  });
+  assert.equal(result.schema, "flow.rejection/v1");
+  assert.equal(result.code, "review_preparation_required");
 });
 
 test("review/v1 reports invalid urgency_floor as typed caller input", () => {
@@ -1058,12 +1072,18 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
     reviewAuthority,
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(facts),
     }),
     predefinedDefinitions: { "review/v1": createReviewDefinition() },
   });
   const inputs = reviewInputsForCandidate(candidate);
+  inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
   const prepared = runtime.prepare({
     schema: "flow.predefined-flow-selection/v1",
     definition: "review/v1",
@@ -1085,13 +1105,44 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   }, DIGEST("c"));
   const staleFingerprint = runtime.launch(reviewLaunchRequest(prepared));
   assert.equal(staleFingerprint.code, "candidate_fingerprint_mismatch");
-  assert.equal(staleFingerprint.authority_watermark, DIGEST("c"));
-  assert.equal(staleFingerprint.authority_watermark_domain, "review");
+  assert.equal(staleFingerprint.authority_watermark, runtime.query().watermark);
+  assert.notEqual(staleFingerprint.authority_watermark, DIGEST("c"));
+  assert.equal(staleFingerprint.authority_watermark_domain, "host");
+  assert.deepEqual(staleFingerprint.authority_fact, {
+    schema: "flow.authority-fact/v1",
+    authority_id: "ReviewAuthority",
+    authority_contract: "work.review/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "flow.production.review-authority",
+      version: "1",
+    },
+    watermark: DIGEST("c"),
+    generation: 1,
+    legal_actions: [],
+    watermark_domain: "review",
+    subject_id: candidate.candidate_id,
+    disposition: "sealed",
+    facts: {
+      candidate_fingerprint: DIGEST("d"),
+      workspace_subject_id: candidate.workspace.subject_id,
+      workspace_generation: candidate.workspace.generation,
+      workspace_fingerprint: candidate.workspace.fingerprint,
+      projection_digest: digest(candidateProjection),
+    },
+  });
 
   candidateProjection = candidateAuthorityProjection(candidate, DIGEST("d"));
   const staleWatermark = runtime.launch(reviewLaunchRequest(prepared));
   assert.equal(staleWatermark.code, "stale_candidate_authority_watermark");
-  assert.equal(staleWatermark.authority_watermark, DIGEST("d"));
+  assert.equal(staleWatermark.authority_watermark, runtime.query().watermark);
+  assert.notEqual(staleWatermark.authority_watermark, DIGEST("d"));
+  assert.equal(staleWatermark.authority_watermark_domain, "host");
+  assert.equal(staleWatermark.authority_fact.watermark_domain, "review");
+  assert.equal(staleWatermark.authority_fact.watermark, DIGEST("d"));
+  assert.equal(staleWatermark.authority_fact.disposition, "sealed");
+  assert.equal(staleWatermark.authority_fact.provider_identity.id,
+    "flow.production.review-authority");
   assert.deepEqual(staleWatermark.legal_actions, []);
 
   candidateProjection = {
@@ -1119,6 +1170,11 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
   const multiTargetRuntime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
     reviewAuthority,
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     registeredAuthorities: shippedAuthorityRegistrations({
       current: shippedAuthorityStateFromFacts(facts),
     }),
@@ -1130,12 +1186,97 @@ test("FlowRuntime launch rechecks candidate fingerprint and owning seal watermar
     schema: "flow.predefined-flow-selection/v1",
     definition: "review-multi-target/v1",
     inputs,
-    explicit_facts: facts,
+    explicit_facts: reviewExplicitFactsFromPreparationFacts(
+      inputs.preparation_facts,
+    ),
   });
   const secondTargetStale = multiTargetRuntime.launch(
     reviewLaunchRequest(multiTargetPrepared),
   );
-  assert.equal(secondTargetStale.code, "stale_candidate_authority_watermark");
+  assert.equal(secondTargetStale.code, "stale_candidate_authority_watermark",
+    JSON.stringify(secondTargetStale));
+});
+
+test("local review launch requires preparation facts before adopting or creating a run", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-facts-required-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("review-facts-boot", "review-facts-process"),
+  });
+  t.after(() => authority.close());
+  let adoptions = 0;
+  let launches = 0;
+  const runAuthority = {
+    ...authority,
+    adoptExactLaunch(...args) {
+      adoptions += 1;
+      return authority.adoptExactLaunch(...args);
+    },
+    launch(...args) {
+      launches += 1;
+      return authority.launch(...args);
+    },
+  };
+  const candidate = reviewCandidate();
+  const facts = reviewRuntimeFacts();
+  const registeredAuthorities = shippedAuthorityRegistrations({
+    current: shippedAuthorityStateFromFacts(facts),
+  });
+  const inputs = reviewInputsForCandidate(candidate);
+  const security = await supportedDescription(
+    reviewDescriptionRequest("codex", "gpt-5.6-luna", "security"), {},
+  );
+  const critic = await supportedDescription(
+    reviewDescriptionRequest("claude", "gpt-5.6", "critic"), {},
+  );
+  inputs.delegation.lenses.security = {
+    description: security,
+    route: reviewRoute("agent:review-security", security),
+  };
+  inputs.delegation.critic = {
+    description: critic,
+    route: reviewRoute("agent:review-critic", critic),
+  };
+  const selection = {
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "review/v1",
+    inputs,
+    explicit_facts: facts,
+  };
+  const definition = createReviewDefinition();
+  const definitions = snapshotPredefinedDefinitions({ "review/v1": definition });
+  const authorityCatalog = snapshotRegisteredAuthorities(registeredAuthorities);
+  attachAuthorityBindingCatalogs(authority, {
+    authorities: authorityCatalog,
+    predefinedDefinitions: snapshotPredefinedAuthorityCatalog(definitions),
+  });
+  const prepared = compilePredefinedFlowSelection(
+    selection,
+    definitions.get("review/v1"),
+    { registeredAuthorities: authorityCatalog },
+  );
+  const runtime = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities,
+    reviewAuthority: createInMemoryReviewAuthority({
+      candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    }),
+    delegatedAgentPort: githubReviewDelegatedPort(),
+    predefinedDefinitions: { "review/v1": definition },
+  });
+  assert.equal(runtime.prepare(selection).code, "review_preparation_required");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = await runtime.launch(reviewLaunchRequest(prepared));
+    assert.equal(result.schema, "flow.rejection/v1", JSON.stringify(result));
+    assert.equal(result.code, "review_preparation_required");
+    assert.equal(result.authority_watermark, authority.query().watermark);
+    assert.equal(result.authority_watermark_domain, "host");
+    assert.deepEqual(runtime.query().runs, []);
+  }
+  assert.equal(adoptions, 0);
+  assert.equal(launches, 0);
 });
 
 test("review/v1 absent launch rechecks the current shipped route provider", async (t) => {
@@ -1155,6 +1296,11 @@ test("review/v1 absent launch rechecks the current shipped route provider", asyn
     reviewAuthority: createInMemoryReviewAuthority({
       candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
     }),
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     delegatedAgentPort: {
       contract: "flow.delegated-agent-port/v1",
       describe() {},
@@ -1186,6 +1332,7 @@ test("review/v1 absent launch rechecks the current shipped route provider", asyn
     description: criticDescription,
     route: reviewRoute("agent:review-critic", criticDescription),
   };
+  inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
   const prepared = runtime.prepare({
     schema: "flow.predefined-flow-selection/v1",
     definition: "review/v1",
@@ -1362,6 +1509,7 @@ test("review/v1 prepares one exact local candidate with isolated lenses and a cr
       },
     },
   };
+  inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
   const runtime = createFlowRuntime({
     runAuthority: createInMemoryRunAuthority(),
     registeredAuthorities: shippedAuthorityRegistrations({
@@ -6129,10 +6277,16 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
       },
     },
   };
+  inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
   const runtime = createFlowRuntime({
     runAuthority,
     reviewAuthority,
     delegatedAgentPort,
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     delegateOutputValidators: {
       [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: {
         validate: () => true,
@@ -6677,6 +6831,7 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
       },
     },
   };
+  inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
   const prompts = [];
   const dispatches = [];
   const delegatedAgentPort = {
@@ -6789,6 +6944,11 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   const runtime = createFlowRuntime({
     runAuthority: authority,
     reviewAuthority,
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     registeredOperations: {
       [REVIEW_OPERATION_CONTRACTS.record]: {
         schema: "flow.registered-operation/v1",
@@ -6815,6 +6975,7 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
     inputs,
     explicit_facts: facts,
   });
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
   const launch = runtime.launch({
     prepared,
     confirmation: {
@@ -6829,7 +6990,7 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
       facts: structuredClone(prepared.explicit_facts),
     },
   });
-  assert.ok(launch.run_id);
+  assert.ok(launch.run_id, JSON.stringify(launch));
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const projection = runtime.query({ run_id: launch.run_id });
     if (projection.phase === "succeeded") break;
@@ -7096,6 +7257,221 @@ function reviewInputsForCandidate(candidate, target = {}) {
       critic: { description: critic, route: route("agent:critic", critic) },
     },
   };
+}
+
+function reviewPreparationFactsFor(candidate, inputs) {
+  const routeBindings = [
+    ...Object.entries(inputs.delegation.lenses).map(([lens, binding]) => ({
+      card_id: `review-lens-${lens}`,
+      route: binding.route,
+      description: binding.description,
+    })),
+    {
+      card_id: "review-critic",
+      route: inputs.delegation.critic.route,
+      description: inputs.delegation.critic.description,
+    },
+  ].sort((left, right) => left.card_id.localeCompare(right.card_id));
+  const routeIdentity = routeBindings.map(({ card_id, route, description }) => ({
+    card_id,
+    route,
+    description_digest: description.description_digest,
+  }));
+  const comparisonIdentity = routeBindings.map(({ card_id, route }) => ({
+    card_id,
+    launch_comparison_key: route.launch_comparison_key,
+  }));
+  const binding = (id, contract, fact, watermark) => ({
+    schema: "flow.required-authority-binding/v1",
+    id,
+    contract,
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: `test.preparation.${id.replaceAll(":", "-")}`,
+      version: "1",
+    },
+    observation_input: { fact },
+    observation: {
+      schema: "flow.authority-observation/v1",
+      status: "available",
+      watermark,
+      observation_input: { fact },
+      legal_actions: [],
+    },
+  });
+  const candidateProjection = {
+    schema: "work.review-candidate-projection/v1",
+    contract: "work.review/v1",
+    subject_id: candidate.candidate_id,
+    watermark: DIGEST("c"),
+    generation: 4,
+    status: "sealed",
+    candidate_fingerprint: candidate.candidate_fingerprint,
+    candidate,
+    legal_actions: [],
+  };
+  const sourceRunProjection = {
+    run_id: "run:review-preparation",
+    phase: "succeeded",
+    watermark: DIGEST("d"),
+    sequence: 1,
+    current_revision: {
+      ordinal: 0,
+      plan_fingerprint: DIGEST("a"),
+    },
+    bundle_digest: DIGEST("b"),
+    review_candidate_reference: {
+      candidate_id: candidate.candidate_id,
+      candidate_fingerprint: candidate.candidate_fingerprint,
+    },
+    legal_actions: [],
+  };
+  const workspaceProjection = {
+    schema: "work.workspace-projection/v1",
+    contract: "work.workspace/v1",
+    subject_id: candidate.workspace.subject_id,
+    disposition: "retained_for_handoff",
+    watermark: DIGEST("e"),
+    generation: candidate.workspace.generation,
+    mutation_epoch: candidate.workspace.mutation_epoch,
+    git: candidate.git,
+    claims: [],
+    taint: null,
+    legal_actions: [],
+  };
+  const ownerAuthorities = {
+    run: createAuthorityFact({
+      authorityId: "RunAuthority",
+      authorityContract: "flow.run-projection/v1",
+      providerIdentity: {
+        schema: "flow.registered-authority/v1",
+        id: "flow.production.run-authority",
+        version: "1",
+      },
+      watermark: sourceRunProjection.watermark,
+      watermarkDomain: "run",
+      subjectId: sourceRunProjection.run_id,
+      disposition: sourceRunProjection.phase,
+      generation: sourceRunProjection.sequence,
+      facts: {
+        run_id: sourceRunProjection.run_id,
+        phase: sourceRunProjection.phase,
+        candidate_id: candidate.candidate_id,
+        candidate_fingerprint: candidate.candidate_fingerprint,
+        sequence: sourceRunProjection.sequence,
+        current_revision: sourceRunProjection.current_revision,
+        bundle_digest: sourceRunProjection.bundle_digest,
+        projection_digest: reviewOwnerProjectionDigest("run", sourceRunProjection),
+      },
+      legalActions: sourceRunProjection.legal_actions,
+    }),
+    review: createAuthorityFact({
+      authorityId: "ReviewAuthority",
+      authorityContract: "work.review/v1",
+      providerIdentity: {
+        schema: "flow.registered-authority/v1",
+        id: "flow.production.review-authority",
+        version: "1",
+      },
+      watermark: candidateProjection.watermark,
+      watermarkDomain: "review",
+      subjectId: candidateProjection.subject_id,
+      disposition: candidateProjection.status,
+      generation: candidateProjection.generation,
+      facts: {
+        candidate_fingerprint: candidateProjection.candidate_fingerprint,
+        workspace_subject_id: candidate.workspace.subject_id,
+        workspace_generation: candidate.workspace.generation,
+        workspace_fingerprint: candidate.workspace.fingerprint,
+        projection_digest: digest(candidateProjection),
+      },
+      legalActions: candidateProjection.legal_actions,
+    }),
+    workspace: createAuthorityFact({
+      authorityId: "WorkspaceAuthority",
+      authorityContract: "work.workspace/v1",
+      providerIdentity: {
+        schema: "flow.registered-authority/v1",
+        id: "flow.production.workspace-authority",
+        version: "1",
+      },
+      watermark: workspaceProjection.watermark,
+      watermarkDomain: "workspace",
+      subjectId: workspaceProjection.subject_id,
+      disposition: workspaceProjection.disposition,
+      generation: workspaceProjection.generation,
+      facts: {
+        fingerprint: candidate.workspace.fingerprint,
+        git_commit_sha: workspaceProjection.git.commit_sha,
+        git_tree_sha: workspaceProjection.git.tree_sha,
+        git_ref: workspaceProjection.git.ref,
+        git_clean: workspaceProjection.git.clean,
+        mutation_epoch: workspaceProjection.mutation_epoch,
+        taint_status: "clear",
+        claims_digest: digest(workspaceProjection.claims),
+        projection_digest: digest(workspaceProjection),
+      },
+      legalActions: workspaceProjection.legal_actions,
+    }),
+  };
+  return deriveReviewPreparationFacts({
+    candidateProjection,
+    sourceRunProjection,
+    workspaceProjection: {
+      ...workspaceProjection,
+      fingerprint: candidate.workspace.fingerprint,
+      clean: true,
+      owner_projection_digest: digest(workspaceProjection),
+    },
+    ownerAuthorities,
+    authorityBindings: [
+      binding("route:facts", "flow.route-authority/v1", "route_snapshot", DIGEST("f")),
+      binding("resource:facts", "flow.resource-authority/v1", "resource_claims", DIGEST("0")),
+      binding("contract:facts", "flow.contract-authority/v1", "contract_facts", DIGEST("1")),
+      binding("generation:facts", "flow.subject-generation/v1", "subject_generations", DIGEST("2")),
+    ],
+    routeSnapshot: {
+      route_id: "route:review",
+      configuration_watermark: digest(routeIdentity),
+      comparison_key: digest(comparisonIdentity),
+      bindings: routeBindings,
+    },
+    catalog: {
+      id: "flow.contract-catalog/v1@37",
+      fingerprint: DIGEST("3"),
+    },
+    operationContracts: ["flow.operation/review-record/v1"],
+    validatorContracts: [
+      "flow.validator/review-result/v1",
+      "flow.validator/operation-receipt/v1",
+    ],
+    timeFacts: [
+      {
+        schema: "flow.time-fact/v1",
+        kind: "wall_clock",
+        value_ms: 1_700_000_000_000,
+        uncertainty_ms: 0,
+        clock_source_id: "wall:review",
+      },
+      {
+        schema: "flow.time-fact/v1",
+        kind: "suspend_excluding_monotonic",
+        value_ns: "1000000000",
+        uncertainty_ns: "0",
+        clock_source_id: "mono:review",
+      },
+      {
+        schema: "flow.time-fact/v1",
+        kind: "boot",
+        boot_id: "boot:review",
+      },
+      {
+        schema: "flow.time-fact/v1",
+        kind: "clock_source",
+        identity: "clock:review",
+      },
+    ],
+  }).facts;
 }
 
 function githubReviewInputs(target, { createPendingReview = false } = {}) {

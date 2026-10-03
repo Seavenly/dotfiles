@@ -1832,3 +1832,44 @@ async function pathExists(path) {
     throw error;
   }
 }
+
+test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", async () => {
+  const ledger = JSON.parse(await readFile(
+    join(WORKTREE, "config/flow/transition-ledger.v1.json"),
+    "utf8",
+  ));
+  const deferredIssue46 = ledger.not_run.find(({ id }) => id === "issue-46");
+  if (deferredIssue46?.status === "not_run") {
+    assert.throws(
+      () => validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE }),
+      (error) => {
+        assert.ok([
+          "release_candidate_dirty",
+          "tracked_aggregate_release_mismatch",
+        ].includes(error?.code));
+        return true;
+      },
+    );
+    return;
+  }
+  try {
+    const result = validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE });
+    assert.equal(result.schema, "flow.tracked-host-recovery-consumer-result/v1");
+    assert.equal(result.status, "passed");
+    assert.match(result.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
+    assert.match(result.evidence_sha256, /^[0-9a-f]{64}$/u);
+  } catch (error) {
+    // The tracked artifact is regenerated only after a clean candidate and a
+    // fresh external qualification run.  A dirty review worktree must remain
+    // fail-closed rather than silently accepting stale evidence.
+    if (error?.code === "release_candidate_dirty") {
+      assert.match(
+        error.message,
+        /candidate|aggregate|ledger/u,
+        `unexpected fail-closed issue-46 consumer error: ${error.code}`,
+      );
+      return;
+    }
+    throw error;
+  }
+});

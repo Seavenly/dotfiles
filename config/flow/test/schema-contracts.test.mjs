@@ -62,6 +62,7 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "work.review-target-refresh-command.v1.schema.json",
     "flow.review-integration-evidence.v1.schema.json",
     "flow.review-provenance.v1.schema.json",
+    "flow.review-preparation-facts.v1.schema.json",
     "flow.review-inbox-watermark.v1.schema.json",
     "flow.review-inbox-projection.v1.schema.json",
     "flow.review-inbox-item.v1.schema.json",
@@ -74,6 +75,17 @@ test("public host and reboot admission schemas compile in strict mode", async ()
 
   for (const schema of schemas) ajv.addSchema(schema);
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
+});
+
+test("review preparation schema references the canonical time-fact schema", async () => {
+  const schema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.review-preparation-facts.v1.schema.json"),
+    "utf8",
+  ));
+  assert.deepEqual(schema.properties.time_facts.items, {
+    "$ref": "flow.time-fact.v1.schema.json",
+  });
+  assert.equal(schema.$defs.timeFact, undefined);
 });
 
 test("release transition contracts validate the managed manifest and receipt", async () => {
@@ -276,6 +288,34 @@ test("public host schemas accept exact frames, status, and ordinary preparation"
     schema: "flow.query/v1",
     query: "review_inbox",
   }), true);
+  assert.equal(validate("flow.query.v1", {
+    schema: "flow.query/v1",
+    query: "review_preparation_facts",
+    candidate_id: "candidate:sealed",
+    candidate_fingerprint: `sha256:${"a".repeat(64)}`,
+    selection: {
+      schema: "flow.review-preparation-selection/v1",
+      lenses: ["security"],
+      routes: {
+        lenses: { security: { launch: { harness: "codex" } } },
+        critic: { description: { schema: "drovr.delegated-agent-description/v1" } },
+      },
+    },
+  }), true);
+  assert.equal(validate("flow.query.v1", {
+    schema: "flow.query/v1",
+    query: "review_preparation_facts",
+    candidate_id: "candidate:sealed",
+    candidate_fingerprint: `sha256:${"a".repeat(64)}`,
+    selection: {
+      schema: "flow.review-preparation-selection/v1",
+      lenses: ["security"],
+      routes: {
+        lenses: { security: { route: { agent_id: "caller" } } },
+        critic: { launch: { harness: "claude" } },
+      },
+    },
+  }), false);
   assert.equal(validate("flow.query.v1", {
     schema: "flow.query/v1",
     query: "autonomous_runner_status",
@@ -1518,7 +1558,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@35",
+          catalog_id: "flow.contract-catalog/v1@37",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,

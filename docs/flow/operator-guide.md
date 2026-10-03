@@ -11,7 +11,9 @@ implementation uses Linux subreaper and pidfd support with Python; macOS direct
 mutation is unavailable. Claude native admission remains blocked by
 `claude_native_policy_unproven`. The existing Drovr examples below describe the
 optional backend selected with `FLOW_EXECUTION_BACKEND=drovr`; they do not prove
-the direct feature-to-review bridge or native provider qualification.
+native provider qualification. The integrated direct feature-to-review bridge
+is covered by deterministic subprocess fixtures only; it does not qualify a
+native provider.
 
 The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
 decision does not qualify native execution: current release qualification remains
@@ -35,15 +37,19 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `1e3e4665d4241419ad573d208077a20d845289bc` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `7478dc11b9526c567df021de1762e6e660077469` |
-| Governed release content | `sha256:5ec69af02f5a4f8f9201dcc1e61954c58f429b418054bac567a49d3096be2ffb` |
-| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@35`, `sha256:53cde3073dab06782efebeeaf1360b9cc68922b838c165a29cb2fd8d2dabe863` |
+| Governed release candidate tree (`release-content.v1.json`) | `653457cc5f4ca4eb50dca971a9df2f6d17841abc` |
+| Governed release content | `sha256:da6fbce92464166059038dc275012bc7163511120601d1a25806ed3791103d09` |
+| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@37`, `sha256:bc7ba9f749b2b8c571412c9a725b36faf1c9450e5428bfb55e9d22dcb660dea4` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:1ca7f8a820bcca74c2cfc06d028820d3e5a9c338c520e1a2c866bddfbe7aba54` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:9bd9e4909bb74a8408549c436e6b0276919762363c1bfbed3f8c5d71e657a03c` |
 | Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
-| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:3f44d76c7426d93a7f159a5848e961198093b42a01bd3bd55a8a0611118cb830` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:e54d4f7dc254bcdc73d98593f286fcac732c9e2453ca7fe4d6aff399c0e3940d` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:0e512601981726c5a45d58d38a67f53e60c0f6bf1e94049bbf4567154da520c3` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:bddff2b825469f907428c0825b4e172f6025c0eb813882fa3b8da55ef14d842a` |
+
+Historical deterministic qualification evidence is bound to its recorded
+release and is not bound to the current ticket candidate. The current ledger
+withholds deterministic and production-route qualification as `not_run`.
 
 The ledger records the historical `source_commit`; it does not say that this
 working tree is that commit. The current governed release tree is the separate
@@ -68,6 +74,17 @@ Drovr delegation, and ADR-0008 for
 the sole RunAuthority. Do not edit local authority files, database records, provider
 registries, or harness transcripts. Do not invent a run ID, candidate ID,
 result digest, authority watermark, or future Git identity.
+
+For a separately qualified direct Linux Codex release, select
+`FLOW_EXECUTION_BACKEND=direct` and configure `FLOW_REPOSITORY_ROOT` to the
+retained candidate repository. `FLOW_QUALIFICATION_REPOSITORY_ROOT` identifies
+the runtime release being admitted. Direct local-review lens and critic routes
+use `read-only` with distinct launch roles, such as `lens:security` and `critic`,
+and separate attempts. The public facts query obtains the canonical workspace
+path privately from WorkspaceAuthority for preflight and launch revalidation;
+callers never put that path in the public facts envelope. Both description
+contracts retain exact digest, authority, candidate and watermark fences.
+Unconfigured cross-repository discovery by a fresh owner is not supported.
 
 ## What this release admits
 
@@ -652,19 +669,135 @@ observations remove review authorization while preserving history. A consumer
 pins the exact handoff and rechecks it before mutation; it never selects
 `latest`.
 
-The candidate is not itself a review. The release exposes the `review/local`
-contract, including `flow.review-request/v1`,
-`flow.predefined-flow-selection/v1`, and `flow.dark-opt-in/v1`, but the public
-operator CLI has no query that returns the authority-observed review facts
-needed to prepare and launch that definition from this candidate. Do not
-manufacture catalog fingerprints, route watermarks, time or boot facts,
-delegation identities, candidate identities, or review identities. The
-in-process production test helper that assembles those facts is not an
-operator interface. This guide therefore does not launch `review/local`.
+The candidate is not itself a review. The public `review/local` path starts by
+asking the owner for one bounded, authority-derived preparation envelope. The
+request selects the exact candidate, finding lenses, and read-only Drovr route
+choices; it contains no authority facts. Use the candidate fingerprint returned
+by the candidate projection, never a value copied from this document:
+
+```sh
+CANDIDATE_FINGERPRINT="$(jq -er '.candidate_fingerprint' \
+  "$RECEIPTS/candidate.json")"
+jq -cn --arg id "$CANDIDATE_ID" --arg fingerprint "$CANDIDATE_FINGERPRINT" '{
+  schema:"flow.query/v1",
+  query:"review_preparation_facts",
+  candidate_id:$id,
+  candidate_fingerprint:$fingerprint,
+  selection:{
+    schema:"flow.review-preparation-selection/v1",
+    target:{candidate_id:$id,candidate_fingerprint:$fingerprint},
+    lenses:["security"],
+    routes:{
+      lenses:{security:{launch:{harness:"codex",role:"reviewer",capability:"read-only"}}},
+      critic:{launch:{harness:"claude",role:"reviewer",capability:"read-only"}}
+    }
+  }
+}' > "$RECEIPTS/review-preparation-query.json"
+flow query --input "$(<"$RECEIPTS/review-preparation-query.json")" --json \
+  | tee "$RECEIPTS/review-preparation-facts.json"
+jq -e --arg id "$CANDIDATE_ID" --arg fingerprint "$CANDIDATE_FINGERPRINT" '
+  (.schema == "flow.review-preparation-facts/v1") and
+  (.candidate.candidate_id == $id) and
+  (.candidate.candidate_fingerprint == $fingerprint) and
+  ([.route.bindings[].card_id] | index("review-lens-security")) != null and
+  ([.route.bindings[].card_id] | index("review-critic")) != null
+' "$RECEIPTS/review-preparation-facts.json"
+```
+
+Prepare the actual predefined review definition from that returned envelope.
+The delegation descriptions and route bindings below are selected from the
+same authority response; the operator does not invent them. The owner may
+observe the routes asynchronously, so a transport client must await the query
+before preparing:
+
+```sh
+jq -cn --slurpfile candidate "$RECEIPTS/candidate.json" \
+  --slurpfile facts "$RECEIPTS/review-preparation-facts.json" \
+  --slurpfile request "$RECEIPTS/review-preparation-query.json" \
+  --arg fingerprint "$CANDIDATE_FINGERPRINT" '
+  ($candidate[0]) as $candidate |
+  ($facts[0]) as $facts |
+  ($request[0]) as $request |
+  ($facts.route.bindings | map({key:.card_id,value:.}) | from_entries) as $routes |
+  {
+    schema:"flow.predefined-flow-selection/v1",
+    definition:"review/v1",
+    inputs:{
+      schema:"flow.review-request/v1",
+      target:{
+        schema:"flow.review-local-candidate/v1",
+        candidate:$candidate.candidate,
+        candidate_fingerprint:$fingerprint,
+        candidate_authority_watermark:$candidate.watermark,
+        lifecycle_generation:$candidate.generation
+      },
+      lenses:["security"],
+      preparation_selection:$request.selection,
+      preparation_facts:$facts,
+      delegation:{
+        schema:"flow.review-delegation-bindings/v1",
+        lenses:{security:{
+          description:$routes["review-lens-security"].description,
+          route:$routes["review-lens-security"].route
+        }},
+        critic:{
+          description:$routes["review-critic"].description,
+          route:$routes["review-critic"].route
+        }
+      }
+    },
+    dark_opt_in:{
+      schema:"flow.dark-opt-in/v1",
+      release_id:"flow-release-1.0-dark/v1",
+      purpose:"sacrificial_qualification"
+    }
+  }
+' > "$RECEIPTS/review-prepare-request.json"
+flow prepare --input "$(<"$RECEIPTS/review-prepare-request.json")" --json \
+  | tee "$RECEIPTS/review-prepared.json"
+jq -e '.schema == "flow.prepared-run/v1" and
+  .selection.inputs.preparation_facts.schema == "flow.review-preparation-facts/v1"' \
+  "$RECEIPTS/review-prepared.json"
+```
+
+Launch only the returned review bundle and its returned confirmation. Copy the
+closed authority observation from that bundle unchanged. Fresh launch-time
+revalidation checks the candidate, workspace, selected provider descriptions,
+route, catalog, operation and validator contracts, time source, and required
+authority bindings. Any replay drift is a typed fail-closed rejection. The
+same retained authorities remain usable after the producer client exits or is
+restarted:
+
+```sh
+jq -cn --slurpfile prepared "$RECEIPTS/review-prepared.json" '{
+  prepared:$prepared[0],
+  dark_opt_in:{
+    schema:"flow.dark-opt-in/v1",
+    release_id:"flow-release-1.0-dark/v1",
+    purpose:"sacrificial_qualification"
+  },
+  confirmation:{
+    schema:"flow.predefined-flow-confirmation-decision/v1",
+    decision:"accept",
+    bundle_digest:$prepared[0].bundle_digest,
+    confirmation_digest:$prepared[0].confirmation_digest
+  },
+  closed_facts:{
+    schema:"flow.closed-fact-observation/v1",
+    bundle_digest:$prepared[0].bundle_digest,
+    facts:$prepared[0].explicit_facts
+  }
+}' > "$RECEIPTS/review-launch-request.json"
+flow launch --input "$(<"$RECEIPTS/review-launch-request.json")" --json \
+  | tee "$RECEIPTS/review-launch.json"
+```
 
 Issue 84's real feature/candidate plus separate review remains `not_run`, as do
 issue 44's mixed delegation and issue 46's host recovery/concurrency/rendering
-scenarios. These instructions do not claim a live or billed exercise.
+scenarios. These instructions do not claim a live or billed exercise. After a
+successful launch, use the inbox and review projection commands below; their
+rendered provenance is owned by `ReviewAuthority`, not by the preparation
+request.
 
 Local review is the supported human route. It is a projection-only consumer
 such as tuicr; `ReviewAuthority` owns review lifecycle and `FlowRuntime` owns
@@ -892,11 +1025,14 @@ source recipe declarations and the retained historical evidence:
 | Governed release-tree binding | `release_tree_integrity` | `evidence/receipts/release-tree-integrity.tap` |
 | Schema and contract catalog checks | `schema_contracts`; `contract_catalog` | `evidence/receipts/schema-contracts.tap`; `evidence/receipts/contract-catalog.tap` |
 
-The deterministic recipe records contract and fault behavior; the production
-route records are isolated local process evidence. Neither substitutes for an
-operator's separately authorized disposable exercise or creates a future result
-identity. Read the returned public projections and receipts from the exact run
-before taking any legal action.
+The deterministic recipe records contract and fault behavior for the historical
+release-content digest stored in its qualification file. That record is not
+bound to the current ticket candidate. The current deterministic and production
+qualification records remain `not_run` until recaptured against their declared
+identities. The production-route records are isolated local process evidence.
+Neither substitutes for an operator's separately authorized disposable
+exercise or creates a future result identity. Read the returned public
+projections and receipts from the exact run before taking any legal action.
 
 ## Evidence boundary and later expansion
 
