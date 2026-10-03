@@ -1,3 +1,5 @@
+import { createProductionDirectCommitOperation } from "./production-direct-commit.mjs";
+import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
@@ -44,6 +46,7 @@ export function createProductionFeatureOperations({
   resolveWorkspace,
   gitWorkspaceObservationAdapter,
   gitRetentionAdapter,
+  authorityDirectory,
 } = {}) {
   if (typeof resolveWorkspace !== "function") {
     throw new TypeError("production feature operations require workspace resolution");
@@ -112,6 +115,7 @@ export function createProductionFeatureOperations({
   });
 
   const operations = {
+    [FEATURE_DIRECT_COMMIT_CONTRACT]: createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority: () => authorityRef.value }),
     [FEATURE_OPERATION_CONTRACTS.setup]: unavailableOperation(
       FEATURE_OPERATION_CONTRACTS.setup,
     ),

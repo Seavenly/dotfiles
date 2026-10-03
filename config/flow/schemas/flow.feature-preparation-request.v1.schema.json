@@ -101,6 +101,7 @@
             "read-only",
             "on-approve",
             "workspace-write",
+            "workspace-write-denied",
             "auto",
             "unrestricted"
           ]

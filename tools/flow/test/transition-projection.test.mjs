@@ -25,6 +25,8 @@ import {
   deriveGitTreeSha,
   isGovernedReleasePath,
 } from "../src/release-content-contract.mjs";
+import { bindQualifiedReleaseFixture } from
+  "../../../config/flow/test-support/qualified-release-fixture.mjs";
 
 const configDirectory = fileURLToPath(
   new URL("../../../config/flow", import.meta.url),
@@ -53,6 +55,8 @@ test("release content binds the governed candidate tree and declared base", asyn
       "config/flow/",
       "docs/adr/0007-use-drovr-as-the-delegated-agent-runtime.md",
       "docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md",
+      "docs/adr/0009-separate-delegated-resource-and-turn-lifecycles.md",
+      "docs/adr/0010-use-direct-cli-tasks-as-primary-flow-execution.md",
       "tests/flow_cli_test.sh",
       "tests/flow_transition_test.sh",
       "tools/drovr/HARNESS-INTERFACE.md",
@@ -298,12 +302,12 @@ test("transition query derives its watermark and legal actions from authority", 
   assert.equal(projection.selected_implementation, "legacy-claude/v1");
   assert.equal(projection.selected_authority_root, "/test/home/.agent-teams");
   assert.deepEqual(projection.evidence_statuses, {
-    passed: 6,
+    passed: 5,
     failed: 0,
     blocked: 0,
-    not_run: 1,
+    not_run: 3,
   });
-  assert.equal(projection.dark_opt_in.available, true);
+  assert.equal(projection.dark_opt_in.available, false);
   assert.equal(projection.legacy_baseline_audit.status, "passed");
   assert.equal(projection.capability_manifest.release_id, "flow-release-1.0-dark/v1");
   assert.deepEqual(projection.capability_manifest.supported_routes, [
@@ -771,6 +775,7 @@ async function copyTransitionConfig(t, label) {
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
+  await bindQualifiedReleaseFixture({ configDirectory: copiedConfig, repositoryRoot });
   return { scratch, copiedConfig };
 }
 

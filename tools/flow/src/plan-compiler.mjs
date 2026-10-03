@@ -1,3 +1,4 @@
+import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
 import {
   digest,
   freezeCanonical,
@@ -1385,7 +1386,7 @@ function validateDelegateCard(
     invalidPlan("incomplete_delegate_authority",
       `delegate authority is incomplete: ${card.id}`);
   }
-  if (description?.schema !== "drovr.delegated-agent-description/v1" ||
+  if ((!isDirectDescription(description) && description?.schema !== "drovr.delegated-agent-description/v1") ||
       !isDigest(description.description_digest) ||
       !isDigest(description.comparison_keys?.launch) ||
       !isDigest(description.comparison_keys?.effective_authority) ||
@@ -1413,6 +1414,9 @@ function validateDelegateCard(
       typeof card.route?.agent_id !== "string" || !card.route.agent_id) {
     invalidPlan("invalid_delegate_route",
       `delegate route does not bind the exact description: ${card.id}`);
+  }
+  if (isDirectDescription(description) && (directDescriptionIssue(description) || card.inputs.fallback || (card.inputs.steering ?? []).length > 0)) {
+    invalidPlan("unsupported_direct_execution", "direct execution cannot steer, reuse sessions or fail over");
   }
   validateDelegateCapability(card, proposal);
   validateDelegateFallback(card, description);
@@ -1662,7 +1666,7 @@ function validateDelegateFallback(card, primaryDescription) {
         "description_digest,relation" ||
       fallback.activate_for_attempt !== card.limits.max_attempts ||
       fallback.activate_for_attempt < 2 ||
-      description?.schema !== "drovr.delegated-agent-description/v1" ||
+      (!isDirectDescription(description) && description?.schema !== "drovr.delegated-agent-description/v1") ||
       !isDigest(description.description_digest) ||
       !isDigest(description.comparison_keys?.launch) ||
       !isDigest(description.comparison_keys?.effective_authority) ||

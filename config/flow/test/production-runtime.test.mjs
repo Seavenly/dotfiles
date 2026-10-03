@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -16,7 +17,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { before, after } from "node:test";
 
 import {
   digest,
@@ -39,6 +40,14 @@ import { createProductionBackupRestoreAdapter } from
   "../src/production-backup-restore.mjs";
 import { validateFeatureCritiqueOutput } from
   "../src/production-feature-operations.mjs";
+import { bindQualifiedReleaseFixture } from
+  "../test-support/qualified-release-fixture.mjs";
+import { createDirectDelegatedAgentPort } from
+  "../../../tools/flow/src/direct-delegated-agent-port.mjs";
+import { codexExecutionAdapter } from
+  "../../../tools/flow/src/codex-execution-adapter.mjs";
+import { executionDescription } from
+  "../../../tools/flow/src/execution-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const DARK_OPT_IN = {
@@ -46,10 +55,46 @@ const DARK_OPT_IN = {
   release_id: "flow-release-1.0-dark/v1",
   purpose: "sacrificial_qualification",
 };
+let qualifiedFixtureRoot;
+let qualifiedFixtureConfig;
+const QUALIFICATION_REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+before(async () => {
+  if (process.env.FLOW_CONFIG_DIRECTORY !== undefined ||
+      process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT !== undefined) return;
+  qualifiedFixtureRoot = await mkdtemp(join(tmpdir(), "flow-production-file-config-"));
+  qualifiedFixtureConfig = join(qualifiedFixtureRoot, "flow");
+  await cp(fileURLToPath(new URL("..", import.meta.url)), qualifiedFixtureConfig, {
+    recursive: true,
+    filter: (source) => !source.split("/").includes("node_modules"),
+  });
+  await bindQualifiedReleaseFixture({
+    configDirectory: qualifiedFixtureConfig,
+    repositoryRoot: QUALIFICATION_REPOSITORY_ROOT,
+  });
+});
+after(async () => {
+  if (qualifiedFixtureRoot !== undefined) {
+    await rm(qualifiedFixtureRoot, { recursive: true, force: true });
+  }
+});
 
 function createFlowRuntime(options = {}) {
+  const bindInjectedFixture = options.delegatedAgentPort !== undefined &&
+    qualifiedFixtureConfig !== undefined &&
+    options.env?.FLOW_CONFIG_DIRECTORY === undefined &&
+    options.env?.FLOW_QUALIFICATION_REPOSITORY_ROOT === undefined &&
+    options.env?.FLOW_EXECUTION_BACKEND === undefined;
   return createProductionFlowRuntime({
     ...options,
+    ...(bindInjectedFixture ? {
+      env: {
+        ...options.env,
+        FLOW_CONFIG_DIRECTORY: qualifiedFixtureConfig,
+        FLOW_QUALIFICATION_REPOSITORY_ROOT: QUALIFICATION_REPOSITORY_ROOT,
+        FLOW_EXECUTION_BACKEND: "drovr",
+      },
+    } : {}),
     ...(options.delegatedAgentPort === undefined ||
         options.delegatedAgentResourcePort !== undefined
       ? {}
@@ -168,6 +213,7 @@ test("production feature binds copied config to the explicit governed qualificat
     recursive: true,
     filter: (source) => !source.split("/").includes("node_modules"),
   });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: governedRepositoryRoot });
   await initializeRepository(repository);
 
   const runtime = createFlowRuntime({
@@ -923,6 +969,83 @@ test("ordinary feature preparation derives immutable facts from a brief and repo
   );
 });
 
+test("direct production preparation rejects known workspace ambient authority before intent", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-ambient-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "ambient");
+  const taskDirectory = join(scratch, "tasks");
+  const env = { HOME: scratch, PATH: "", XDG_STATE_HOME: join(scratch, "state") };
+  const delegatedAgentPort = createDirectDelegatedAgentPort({
+    env, taskDirectory,
+    executables: { codex: join(scratch, "unavailable-executable") },
+    providers: { codex: { ...codexExecutionAdapter,
+      authorityIssue(context) {
+        return codexExecutionAdapter.authorityIssue(context, {
+          canonicalPath: (path) => path,
+          pathExists: (path) => path === join(scratch, ".codex", "config.toml"),
+        });
+      },
+    } },
+  });
+  const runtime = createFlowRuntime({ env, delegatedAgentPort, autonomous: false });
+  t.after(() => closeFlowRuntime(runtime));
+  const request = preparationRequest(repository, "brief:direct-ambient");
+  request.routes.apply.launch.capability = "workspace-write-denied";
+  const result = await runtime.prepare(request);
+
+  assert.equal(result.operation, "prepare");
+  assert.equal(result.code, "unproved_ambient_authority");
+  await assert.rejects(stat(taskDirectory), { code: "ENOENT" });
+});
+
+for (const backend of ["direct", "drovr"]) {
+  test(`production preparation binds canonical workspace preflight only for ${backend} requests`, async (t) => {
+    const scratch = await mkdtemp(join(tmpdir(), "flow-production-preflight-path-"));
+    t.after(() => rm(scratch, { recursive: true, force: true }));
+    const repository = await createCommittedRepository(scratch, "path");
+    const alias = join(scratch, "repository-alias");
+    await symlink(repository, alias);
+    const requests = [];
+    const delegatedAgentPort = {
+      backend,
+      async describe(request) {
+        requests.push(structuredClone(request));
+        if (backend === "drovr") {
+          assert.equal(Object.hasOwn(request, "workspace_path"), false);
+          return supportedDelegatedAgentPort().describe(request);
+        }
+        const description = executionDescription({
+          launch: request.launch, callerMetadata: request.caller_metadata,
+          backend: { id: "direct", contract: "flow.direct-task/v1", harness: request.launch.harness,
+            adapter: "flow.codex-exec", adapter_version: "1", native_session_strategy: "fresh_ephemeral",
+            executable: { path: "/fixture/codex", version: "codex-cli 0.160.0", sha256: digest("fixture") } },
+        });
+        return { status: "compatible", description };
+      },
+    };
+    const runtime = createFlowRuntime({
+      env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+      delegatedAgentPort, autonomous: false,
+    });
+    t.after(() => closeFlowRuntime(runtime));
+    const request = preparationRequest(alias, `brief:preflight-${backend}`);
+    if (backend === "direct") {
+      request.routes.apply.launch.capability = "workspace-write-denied";
+      request.routes.critique.launch.harness = "codex";
+    }
+    const prepared = await runtime.prepare(request);
+
+    assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+    assert.equal(requests.length, 2);
+    for (const described of requests) {
+      assert.equal(described.workspace_path, backend === "direct" ? await realpath(repository) : undefined);
+    }
+    for (const route of Object.values(prepared.selection.inputs.delegation).filter((value) => value?.description)) {
+      assert.equal(Object.hasOwn(route.description, "workspace_path"), false);
+    }
+  });
+}
+
 test("production preparation enforces the closed published request schema", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-production-preparation-schema-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -1049,6 +1172,15 @@ test("production feature runs a real Git mutation through a local candidate", as
   const repository = join(scratch, "repository");
   t.after(() => rm(scratch, { recursive: true, force: true }));
   await initializeRepository(repository);
+  const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ?? join(scratch, "flow");
+  const governedRepositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
+  if (!process.env.FLOW_CONFIG_DIRECTORY) {
+    await cp(fileURLToPath(new URL("..", import.meta.url)), configDirectory, {
+      recursive: true,
+      filter: (source) => !source.split("/").includes("node_modules"),
+    });
+    await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: governedRepositoryRoot });
+  }
   const initialGit = await gitFacts(repository);
   let mutationCount = 0;
   let candidateText = "after\n";
@@ -1072,16 +1204,13 @@ test("production feature runs a real Git mutation through a local candidate", as
     env: {
       HOME: scratch,
       XDG_STATE_HOME: state,
-      ...(typeof process.env.FLOW_CONFIG_DIRECTORY === "string" ? {
-        FLOW_CONFIG_DIRECTORY: process.env.FLOW_CONFIG_DIRECTORY,
-      } : {}),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_EXECUTION_BACKEND: "drovr",
       ...(typeof process.env.FLOW_REPOSITORY_ROOT === "string" ? {
         FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT,
       } : {}),
-      ...(typeof process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT === "string" ? {
-        FLOW_QUALIFICATION_REPOSITORY_ROOT:
-          process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT,
-      } : {}),
+      FLOW_QUALIFICATION_REPOSITORY_ROOT:
+        process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT ?? governedRepositoryRoot,
     },
     delegatedAgentPort,
   });
@@ -1122,6 +1251,7 @@ test("production feature runs a real Git mutation through a local candidate", as
       },
     },
   });
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
   const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
   assert.equal(launch.schema, "flow.launch-receipt/v1", JSON.stringify(launch));
 

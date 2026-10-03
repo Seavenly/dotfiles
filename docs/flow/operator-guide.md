@@ -1,9 +1,27 @@
 # Flow 1.0 dark opt-in operator guide
 
-This is the executable operator path for the qualified first release. It is
-deliberately a sacrificial dark opt-in: the legacy Claude launcher remains the
-default, and this guide does not authorize normal use or any remote mutation.
-Run the examples only against disposable local resources that you own.
+This documents the first-release public operator path. The current source
+qualification is `not_run`, so public admission returns `qualification_withheld`.
+The legacy Claude launcher remains the default. These examples require a
+separately qualified release and disposable local resources that you own.
+This guide does not authorize normal use or any remote mutation.
+
+ADR-0010 makes direct CLI tasks primary for Flow execution. The first direct
+implementation uses Linux subreaper and pidfd support with Python; macOS direct
+mutation is unavailable. Claude native admission remains blocked by
+`claude_native_policy_unproven`. The existing Drovr examples below describe the
+optional backend selected with `FLOW_EXECUTION_BACKEND=drovr`; they do not prove
+the direct feature-to-review bridge or native provider qualification.
+
+The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
+decision does not qualify native execution: current release qualification remains
+`not_run`, and public admission remains `qualification_withheld`. Issue #84 must
+qualify real Codex startup and permission enforcement against the exact pilot
+release before native pilot use. The later full release under parent #2 still
+requires both official harnesses. Claude remains blocked by
+`claude_native_policy_unproven`; macOS direct execution is unsupported. Sole owner
+authority, conservative recovery and independent review remain mandatory. This
+pilot does not authorize normal use, legacy-default cutover or remote mutation.
 
 ## Release and authority boundary
 
@@ -17,15 +35,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `1e3e4665d4241419ad573d208077a20d845289bc` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `786dbef7f949f3981bb1de4d2163da9904282d1a` |
-| Governed release content | `sha256:aef823af8211b58dba2c988e765e40592f0e0bded02c99f1f58ce114be3323b8` |
-| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@34`, `sha256:6bc7ba3cc966379b2943d79f05da733f1eaeec456ac705636de2554f4eae9b06` |
+| Governed release candidate tree (`release-content.v1.json`) | `7478dc11b9526c567df021de1762e6e660077469` |
+| Governed release content | `sha256:5ec69af02f5a4f8f9201dcc1e61954c58f429b418054bac567a49d3096be2ffb` |
+| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@35`, `sha256:53cde3073dab06782efebeeaf1360b9cc68922b838c165a29cb2fd8d2dabe863` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:fb485ad83af73fccefcdbd8930610dab11c219edf52a6a47ebf89cb0615f20d2` |
-| Deterministic qualification evidence | `config/flow/evidence/release-qualification.v1.json`, `sha256:58dfcba2b23dc352c744772b3f1c020ee60154dda2313f43d2b48fdd7ed9bf6a` |
-| Production-route evidence | `config/flow/evidence/production-route-conformance.v1.json`, `sha256:7e327852d983bd530564405f9bf01e643c40632850cc78be4b046bf5a696d671` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:2e2155e7f22fa6b90e5ef59c210f701f2b8df158486c5a682af0bed31750a413` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:1ca7f8a820bcca74c2cfc06d028820d3e5a9c338c520e1a2c866bddfbe7aba54` |
+| Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:3f44d76c7426d93a7f159a5848e961198093b42a01bd3bd55a8a0611118cb830` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:e54d4f7dc254bcdc73d98593f286fcac732c9e2453ca7fe4d6aff399c0e3940d` |
 
 The ledger records the historical `source_commit`; it does not say that this
 working tree is that commit. The current governed release tree is the separate
@@ -45,7 +63,8 @@ jq '{default_implementation,implementations}' config/flow/launch-policy.v1.json
 disposable caller. `flow.runtime/v1` has exactly five operations:
 `prepare`, `launch`, `command`, `query`, and `watch`. A projection's
 `watermark` and `legal_actions` are the authority-produced inputs to the next
-command. This boundary follows ADR-0007 for Drovr delegation and ADR-0008 for
+command. This boundary follows ADR-0010 for direct execution, ADR-0007 for optional
+Drovr delegation, and ADR-0008 for
 the sole RunAuthority. Do not edit local authority files, database records, provider
 registries, or harness transcripts. Do not invent a run ID, candidate ID,
 result digest, authority watermark, or future Git identity.
@@ -187,6 +206,8 @@ systemctl --user enable --now flow-owner.service
 `launchctl` or `systemctl --user` only supervises the owner process. It never
 approves a flow card or resumes a run after a changed boot. Normal dotfiles
 convergence exposes these templates but does not load or enable them.
+
+The Ubuntu unit stops and restarts only the Flow owner. Active direct task workers remain running under their original exact attempt and workspace bindings, so stopping the owner does not mean the workspace is idle. Before disabling the unit or treating a workspace as available, use the public Flow cancellation and recovery actions and require exact task retirement evidence. A restarted owner may adopt the same proven task or receipt; a lost worker, changed boot or uncertain outcome retains the workspace claim and requires the returned operator action. Manager and host shutdown remain separate qualification scenarios.
 
 ## Prepare with an ordinary brief
 
@@ -518,6 +539,10 @@ flow command --input "$TERMINAL" --json | tee "$RECEIPTS/terminal-disposition.js
 Never reset a retry budget or repeat an uncertain effect because a process
 exited.
 
+An interrupted direct-commit operation may retain a per-effect reservation without a completed commit record, or a recorded commit whose ref changed before ordinary index publication. Both remain indeterminate; missing records and an unchanged index tree do not prove absence or permit replay. A retained ordinary index lock is not released by age or owner restart. Preserve the returned effect identity, workspace claims and Git evidence, query the current public projection, and follow only its legal actions. Do not delete reservation records, force-unlock Git, or rewrite the index as automatic recovery. If a separate explicitly authorized repair restores the exact recorded ref, commit, tree and clean index, reconciliation can adopt that existing commit; it never constructs a replacement.
+
+The direct-commit operation rejects every defined filter attribute, including explicit -filter and sentinel-looking driver names, as candidate_commit_external_filter_unsupported; only unspecified filter attributes are supported.
+
 Cancellation is irreversible convergence. Select the exact authority-projected
 action and submit it with its current watermark:
 
@@ -844,15 +869,15 @@ as an operator shortcut.
 
 ## Executable example evidence
 
-The examples above are public-interface instructions. These generated receipts
-are candidate-bound conformance evidence for the release identities above; they
-are deterministic or isolated local test records, not a live billed operator
-exercise. They do not authorize paid or live delegates, remote mutation, or a
-claim that issue 44, issue 46, or issue 84 has passed. Those issues remain
-`not_run`.
+The examples above are public-interface instructions. The retained receipts
+describe earlier deterministic or isolated local test executions. Current source
+qualification is `not_run`; those receipts do not qualify the candidate tree
+above. They do not authorize paid or live delegates, remote mutation, or a claim
+that issue 44 or issue 84 has passed. The issue 46 evidence has its own recorded
+host and scope and cannot qualify direct provider execution.
 
 The paths below are relative to `config/flow/` and are taken from the recipe
-records in the two evidence documents:
+source recipe declarations and the retained historical evidence:
 
 | Guide concern | Recipe ID | Generated receipt |
 | --- | --- | --- |
@@ -875,9 +900,10 @@ before taking any legal action.
 
 ## Evidence boundary and later expansion
 
-The exact qualification records are passed for their recorded environment and
-scope. They are evidence for release admission, not synthetic real-run
-receipts. A later scope requires a new manifest, content binding, and
+The retained historical qualification record is passed for its earlier
+environment and scope. The current ledger withholds deterministic and production
+route qualification as `not_run`; no current admission is claimed. A later scope
+requires a new manifest, content binding, and
 qualification evidence. In particular, issue 85 must refresh this guide and
 the compatibility/evidence records before issue 53 considers expanded parity
 or cutover.

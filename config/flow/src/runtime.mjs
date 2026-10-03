@@ -11,6 +11,7 @@ import {
 import {
   createDrovrDelegatedAgentResourcePort,
 } from "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
+import { createDirectDelegatedAgentPort } from "../../../tools/flow/src/direct-delegated-agent-port.mjs";
 import { contentDigest } from "./canonical-json.mjs";
 import {
   FilesystemLegacyCompatibilityAdapter,
@@ -54,6 +55,8 @@ const RUNNER_CAPACITY_ENV = Object.freeze({
 export function createFlowRuntime({
   env = process.env,
   delegatedAgentPort = null,
+  executionBackend = env.FLOW_EXECUTION_BACKEND ?? "direct",
+  directExecutionOptions = {},
   delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
   registeredOperations = {},
@@ -85,10 +88,15 @@ export function createFlowRuntime({
       ? defaultLegacyRoots(env)
       : legacyRoots,
   });
-  const delegationPort = delegatedAgentPort ?? createDrovrDelegatedAgentPort({
-    dependencies: { env },
-  });
-  const composition = createProductionComposition({
+  if (!["direct", "drovr"].includes(executionBackend)) throw new TypeError("unsupported execution backend");
+  let composition;
+  const delegationPort = delegatedAgentPort ?? (executionBackend === "drovr"
+    ? createDrovrDelegatedAgentPort({ dependencies: { env } })
+    : createDirectDelegatedAgentPort({ ...directExecutionOptions, env,
+      taskDirectory: join(resolvedAuthorityDirectory, "direct-tasks"),
+      resolveWorkspace: (claim, request) => composition.resolveDelegatedWorkspaceClaim(claim, request),
+    }));
+  composition = createProductionComposition({
     delegatedAgentPort: delegationPort,
     env,
     authorityDirectory: resolvedAuthorityDirectory,
@@ -102,10 +110,10 @@ export function createFlowRuntime({
     delegateOutputValidators,
   });
   const delegationResourcePort = delegatedAgentResourcePort ??
-    createDrovrDelegatedAgentResourcePort({
+    (delegationPort.backend === "direct" ? null : createDrovrDelegatedAgentResourcePort({
       resolveWorkspace: composition.resolveDelegatedWorkspaceClaim,
       dependencies: { env },
-    });
+    }));
   const ownsAuthority = runAuthority === undefined;
   let authority = null;
   let coreRuntime = null;

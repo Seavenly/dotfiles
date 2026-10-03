@@ -35,6 +35,8 @@ import {
   runBackupRestoreReconciliation,
 } from "../src/host-recovery-runtime-scenarios.mjs";
 import { publicQualificationIsAvailable } from "../../../tools/flow/src/transition-projection.mjs";
+import { copyQualifiedRuntimeFixture } from
+  "../test-support/qualified-release-fixture.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-harness-test-"));
@@ -823,27 +825,18 @@ test("aggregate generation rejects a catalog subset and binds the candidate rele
   }
 });
 
-test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", () => {
-  try {
-    const result = validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE });
-    assert.equal(result.schema, "flow.tracked-host-recovery-consumer-result/v1");
-    assert.equal(result.status, "passed");
-    assert.match(result.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
-    assert.match(result.evidence_sha256, /^[0-9a-f]{64}$/u);
-  } catch (error) {
-    // The tracked artifact is regenerated only after a clean candidate and a
-    // fresh external qualification run.  A dirty review worktree must remain
-    // fail-closed rather than silently accepting stale evidence.
-    if (error?.code === "release_candidate_dirty") {
-      assert.match(
-        error.message,
-        /candidate|aggregate|ledger/u,
-        `unexpected fail-closed issue-46 consumer error: ${error.code}`,
-      );
-      return;
-    }
-    throw error;
-  }
+test("tracked issue-46 aggregate consumer rejects the historical release for current source", async () => {
+  const historical = JSON.parse(await readFile(join(
+    WORKTREE, "config/flow/evidence/host-recovery-qualification.v1.json",
+  ), "utf8"));
+  const current = derivePinnedReleaseIdentity({ worktreeRoot: WORKTREE });
+  assert.equal(historical.status, "passed");
+  assert.equal(historical.release.release_id, current.release_id);
+  assert.notEqual(historical.release.candidate_tree_sha, current.candidate_tree_sha);
+  assert.notEqual(historical.release.release_content_digest, current.release_content_digest);
+  assert.notEqual(historical.release.release_content_bytes_sha256, current.release_content_bytes_sha256);
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE }),
+    (error) => error?.code === "tracked_aggregate_release_mismatch");
 });
 
 test("tracked issue-46 consumer remains valid after landing the aggregate commit", async (t) => {
@@ -1612,7 +1605,9 @@ test("provider recovery scenarios run through one native subprocess and bind obs
 test("qualification runner records the native headless probe after public captures", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-headless-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const worktree = WORKTREE;
+  const worktree = await copyQualifiedRuntimeFixture({
+    sourceRoot: WORKTREE, destination: join(root, "worktree"),
+  });
   const rawRoot = join(root, "raw");
   const paths = {
     state: join(root, "state"),

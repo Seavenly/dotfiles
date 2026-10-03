@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { PRODUCTION_ROUTE_CONFORMANCE_COMMANDS } from
+  "../../../tools/flow/src/qualification-recipe.mjs";
 
 const flowRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repositoryRoot = dirname(dirname(flowRoot));
@@ -21,7 +23,7 @@ function mustContain(text, value, message = value) {
   assert.ok(text.includes(value), `operator guide is missing ${message}`);
 }
 
-test("operator guide binds the qualified release and public operator path", async () => {
+test("operator guide binds current source and withholds unrun qualification", async () => {
   const [guide, readme, manifest, policy, ledger, catalog, releaseContent,
     qualificationEvidence, productionEvidence] = await Promise.all([
     readFile(guidePath, "utf8"),
@@ -51,14 +53,24 @@ test("operator guide binds the qualified release and public operator path", asyn
     "current qualification base commit");
 
   assert.equal(qualificationEvidence.status, "passed",
-    "deterministic qualification evidence is passed");
-  assert.equal(productionEvidence.status, "passed",
-    "production-route evidence is passed");
+    "retained historical deterministic evidence remains unchanged");
+  const currentQualification = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  assert.equal(currentQualification.status, "not_run");
+  assert.equal(currentQualification.path, null);
+  assert.equal(currentQualification.sha256, null);
+  assert.equal(productionEvidence.status, "not_run");
+  assert.equal(productionEvidence.recipe, null);
+  assert.equal(ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance").status, "not_run");
+  mustContain(guide, "qualification_withheld", "current public admission boundary");
+  mustContain(guide, "claude_native_policy_unproven", "native Claude limitation");
+  mustContain(guide, "FLOW_EXECUTION_BACKEND=drovr", "optional backend selection");
   const qualificationCommands = new Map(
     qualificationEvidence.recipe.commands.map((command) => [command.id, command]),
   );
   const productionCommands = new Map(
-    productionEvidence.recipe.commands.map((command) => [command.id, command]),
+    PRODUCTION_ROUTE_CONFORMANCE_COMMANDS.map((command) => [command.id, command]),
   );
   for (const [recipeName, commands, ids] of [
     ["qualification", qualificationCommands, [

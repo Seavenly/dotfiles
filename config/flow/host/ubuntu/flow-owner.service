@@ -5,6 +5,8 @@ After=default.target
 [Service]
 Type=simple
 ExecStart=%h/.config/flow/host/flow-owner
+# Direct workers retain their exact tasks across owner stop/restart.
+KillMode=process
 Restart=on-failure
 RestartSec=5s
 

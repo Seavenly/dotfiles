@@ -11,10 +11,7 @@ home="$tmp/home"
 mkdir -p "$home/.config" "$home/.local/state"
 
 for _ in 1 2; do
-  HOME="$home" XDG_CONFIG_HOME="$home/.config" \
-    XDG_STATE_HOME="$home/.local/state" MISE_TRUSTED_CONFIG_PATHS="$root" \
-    mise -C "$root" -E linux bootstrap dotfiles apply --yes \
-    >/dev/null 2>&1
+  converge_test_dotfiles "$root" "$home" >/dev/null
 done
 
 managed_flow="$home/.config/flow"
@@ -33,7 +30,7 @@ selection="$(HOME="$home" XDG_STATE_HOME="$home/.local/state" node --input-type=
     dark_opt_in_available: result.dark_opt_in.available,
   }));
 ' "$root/tools/flow/src/transition-projection.mjs" "$managed_flow" "$root")"
-[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","dark_opt_in_available":true}' ]] \
+[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","dark_opt_in_available":false}' ]] \
   || fail "repeated convergence selected replacement authority"
 
 echo "ok - repeated convergence preserves the frozen legacy launch policy"

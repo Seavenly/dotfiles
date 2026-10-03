@@ -1518,7 +1518,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@34",
+          catalog_id: "flow.contract-catalog/v1@35",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,
@@ -1778,6 +1778,7 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     caller_metadata: { run_id: "run:contract", card_id: "review" },
   };
   const delegatedProjection = await createFlowRuntime({
+    executionBackend: "drovr",
     env: {
       ...process.env,
       DROVR_CONFIG_DIR: join(root, "../drovr"),

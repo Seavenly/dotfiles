@@ -50,9 +50,21 @@
     },
     "absence_proven": { "const": true },
     "request_envelope": { "$ref": "#/$defs/request-envelope" },
+    "direct": { "$ref": "#/$defs/direct-classification" },
     "drovr": { "$ref": "#/$defs/drovr-classification" }
   },
+  "not": { "properties": { "direct": {}, "drovr": {} }, "required": ["direct", "drovr"] },
   "$defs": {
+    "direct-classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "outcome", "classification"],
+      "properties": {
+        "schema": { "const": "flow.execution-failure-classification/v1" },
+        "outcome": { "type": "string", "pattern": "^[a-z0-9_:-]+$" },
+        "classification": { "const": "unproven" }
+      }
+    },
     "request-envelope": {
       "type": "object",
       "additionalProperties": false,

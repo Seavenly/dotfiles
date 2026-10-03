@@ -55,6 +55,8 @@ import { validateDelegateEvidenceSafety } from
 import {
   productionRouteConformanceSessionBinding,
 } from "../../../tools/flow/src/qualification-phase2-session.mjs";
+import { bindQualifiedReleaseFixture } from
+  "../test-support/qualified-release-fixture.mjs";
 
 const DARK_OPT_IN = {
   schema: "flow.dark-opt-in/v1",
@@ -270,10 +272,13 @@ test("ordinary request and environment inputs cannot activate phase-two generati
 test("public module imports cannot mint phase-two generation authority", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-phase2-import-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
-  const repositoryRoot = join(scratch, "repository");
-  await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
-    repositoryRoot]);
-  const configDirectory = join(repositoryRoot, "config/flow");
+  const repositoryRoot = REPOSITORY_ROOT;
+  const configDirectory = join(scratch, "flow");
+  await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
+    recursive: true,
+    filter: (source) => !source.split(sep).includes("node_modules"),
+  });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot });
   const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
   const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
   const phase1 = ledger.evidence.find(({ id }) =>
@@ -332,10 +337,13 @@ test("public module imports cannot mint phase-two generation authority", async (
 test("public admission withholds qualification captured on another host", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-foreign-host-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
-  const repositoryRoot = join(scratch, "repository");
-  await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
-    repositoryRoot]);
-  const configDirectory = join(repositoryRoot, "config/flow");
+  const repositoryRoot = REPOSITORY_ROOT;
+  const configDirectory = join(scratch, "flow");
+  await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
+    recursive: true,
+    filter: (source) => !source.split(sep).includes("node_modules"),
+  });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot });
   const runtime = createFlowRuntime({
     env: {
       HOME: scratch,
@@ -383,11 +391,17 @@ test("public admission uses the governed qualification root instead of disposabl
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const disposableRepository = join(scratch, "disposable-repository");
   await initializeCleanTestRepository(disposableRepository);
+  const configDirectory = join(scratch, "flow");
+  await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
+    recursive: true,
+    filter: (source) => !source.split(sep).includes("node_modules"),
+  });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
   const runtime = createFlowRuntime({
     env: {
       HOME: scratch,
       XDG_STATE_HOME: join(scratch, "state"),
-      FLOW_CONFIG_DIRECTORY,
+      FLOW_CONFIG_DIRECTORY: configDirectory,
       FLOW_REPOSITORY_ROOT: disposableRepository,
       FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT,
     },
@@ -485,8 +499,14 @@ test("public preparation normalizes real Drovr feature findings to the rejection
       return description;
     },
   });
-  const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ??
-    FLOW_CONFIG_DIRECTORY;
+  const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ?? join(scratch, "flow");
+  if (!process.env.FLOW_CONFIG_DIRECTORY) {
+    await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
+      recursive: true,
+      filter: (source) => !source.split(sep).includes("node_modules"),
+    });
+    await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
+  }
   const runtime = createFlowRuntime({
     env: {
       ...process.env,
@@ -494,6 +514,7 @@ test("public preparation normalizes real Drovr feature findings to the rejection
       XDG_STATE_HOME: join(scratch, "state"),
       FLOW_CONFIG_DIRECTORY: configDirectory,
       FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT ?? REPOSITORY_ROOT,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT ?? REPOSITORY_ROOT,
     },
     delegatedAgentPort,
     autonomous: false,
@@ -2081,6 +2102,7 @@ async function createRuntimeWithCopiedFlowConfig(
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
   const runtime = createFlowRuntime({
     env: {
       ...environment,

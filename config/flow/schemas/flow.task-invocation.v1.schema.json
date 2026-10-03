@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.task-invocation.v1.schema.json",
+  "title": "flow.task-invocation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "flow.task-invocation/v1"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "caller_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "card_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "effect_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "$ref": "flow.execution-description.v1.schema.json"
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "path",
+        "claim"
+      ]
+    },
+    "output_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "schema": {
+          "type": "object"
+        },
+        "contract_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "schemas",
+        "schema"
+      ]
+    },
+    "output_schema_bytes": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output_contract_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "process_containment": {
+      "const": "linux_subreaper"
+    },
+    "retention": {
+      "const": "authority_owned_until_explicit_disposition"
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executable": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "executable",
+        "args",
+        "cwd"
+      ]
+    },
+    "descriptor_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "supervision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executable": {
+          "type": "string"
+        },
+        "executable_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "worker_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "args": {
+          "const": [
+            "-I",
+            "-S"
+          ]
+        },
+        "signal_identity": {
+          "const": "linux_pidfd"
+        }
+      },
+      "required": [
+        "executable",
+        "executable_sha256",
+        "worker_sha256",
+        "args",
+        "signal_identity"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "task_id",
+    "caller_key",
+    "input_key",
+    "input_sha256",
+    "run_id",
+    "card_id",
+    "attempt_id",
+    "effect_id",
+    "description",
+    "workspace",
+    "output_contract",
+    "output_schema_bytes",
+    "output_contract_digest",
+    "environment",
+    "process_containment",
+    "retention",
+    "invocation",
+    "descriptor_digest",
+    "supervision"
+  ]
+}

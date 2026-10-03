@@ -37,6 +37,24 @@ _Avoid_: Recording stack
 A named, repeatable agent strategy for producing and reviewing a software outcome.
 _Avoid_: Workflow when referring to both interactive preparation and automated execution
 
+**Execution backend**:
+The exact versioned mechanism selected for one Flow delegated attempt. Direct
+CLI tasks are primary; Drovr is an explicit optional adapter. Backend identity
+is distinct from an opaque registered authority-provider identity.
+_Avoid_: Authority provider, scheduler
+
+**Direct task**:
+One immutable caller-key-reserved official CLI invocation with exact executable,
+workspace, input, schema and authority bindings, owned by a bounded detached
+process. It owns output and retirement evidence without owning Flow admission.
+_Avoid_: Native session, background scheduler
+
+**Task terminal receipt**:
+Atomic digest-bound evidence of exact raw output, native exit and positive
+retirement of the whole owned process tree. Flow independently validates the
+structured result before settlement; absence of this receipt proves no absence.
+_Avoid_: Successful exit, dead parent, latest output
+
 **Flow run**:
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session

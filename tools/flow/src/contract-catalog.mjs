@@ -544,7 +544,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@34",
+  catalog_id: "flow.contract-catalog/v1@35",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -1229,6 +1229,12 @@ export async function loadContractCatalog({
     if (!isValidLegacyImportAdapter(catalog, adapter)) {
       throw new Error("contract catalog legacy import adapter is invalid");
     }
+  }
+  const execution = catalog.execution_backends;
+  if (execution?.primary !== "direct/v1" || execution.authority !== "non_authoritative" ||
+      execution.containment !== "linux_subreaper" || execution.native_qualification !== "not_run" ||
+      !["flow.execution-description/v1", "flow.task-invocation/v1", "flow.task-observation/v1", "flow.task-terminal-receipt/v1", "flow.task-settlement-proof/v1", "flow.operation/feature-direct-commit/v1", "flow.git-candidate-commit-receipt/v1"].every(contract=>catalog.contracts.includes(contract))) {
+    throw new Error("direct execution contracts are incomplete or weakened");
   }
   return catalog;
 }

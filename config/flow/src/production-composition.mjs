@@ -1,3 +1,5 @@
+import { isDirectDescription, directDescriptionIssue } from "../../../tools/flow/src/execution-contract.mjs";
+import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
 import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 
@@ -137,6 +139,7 @@ export function createProductionComposition({
     resolveWorkspace: resolveProductionWorkspace,
     gitWorkspaceObservationAdapter,
     gitRetentionAdapter,
+    authorityDirectory,
   });
   operations = mergeRegistrations({
     defaults: featureOperationRegistrations(featureOperations.operations),
@@ -175,7 +178,7 @@ export function createProductionComposition({
           FEATURE_OPERATION_CONTRACTS.seal,
         ]);
         const featureOperations = new Set(
-          Object.values(FEATURE_OPERATION_CONTRACTS),
+          [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT],
         );
         const selectionInputs = publicFeatureSelectionInputs(request);
         if (selectionInputs?.setup !== undefined &&
@@ -599,14 +602,16 @@ async function buildPreparationSelection({
   const routes = request.routes;
   const apply = await describedRoute({
     delegatedAgentPort,
+    workspacePath: repositoryPath,
     input: routes?.apply,
-    capability: "workspace-write",
+    capability: delegatedAgentPort.backend === "direct" ? "workspace-write-denied" : "workspace-write",
     role: "apply",
     repositoryId,
     workspaceSubjectId,
   });
   const critique = await describedRoute({
     delegatedAgentPort,
+    workspacePath: repositoryPath,
     input: routes?.critique,
     capability: "read-only",
     role: "critique",
@@ -640,7 +645,7 @@ async function buildPreparationSelection({
     { card_id: "feature-apply", route: apply.route },
     { card_id: "feature-critique", route: critique.route },
   ];
-  const operationContracts = Object.values(FEATURE_OPERATION_CONTRACTS);
+  const operationContracts = [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT];
   const validatorContracts = [
     "flow.validator/operation-receipt/v1",
     FEATURE_DELEGATE_OUTPUT_VALIDATOR,
@@ -813,6 +818,7 @@ function featureOperationRegistrations(productionOperations) {
       provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
       validateReceipt: validateFeatureTestReceipt,
     }),
+    [FEATURE_DIRECT_COMMIT_CONTRACT]: productionOperations[FEATURE_DIRECT_COMMIT_CONTRACT],
     [FEATURE_OPERATION_CONTRACTS.capture]: productionOperations[
       FEATURE_OPERATION_CONTRACTS.capture
     ],
@@ -878,6 +884,7 @@ function authorityFactValue(facts, fact) {
 
 async function describedRoute({
   delegatedAgentPort,
+  workspacePath,
   input,
   capability,
   role,
@@ -896,6 +903,7 @@ async function describedRoute({
       flow: "feature/v1",
       role,
     },
+    ...(delegatedAgentPort.backend === "direct" ? { workspace_path: workspacePath } : {}),
   };
   const projection = await delegatedAgentPort.describe(request);
   const description = projection?.description;
@@ -909,7 +917,7 @@ async function describedRoute({
       : "drovr_incompatible";
     throw new ProductionPreparationError(
       code,
-      `Drovr ${role} route is unavailable or incompatible`,
+      `Execution ${role} route is unavailable or incompatible`,
       {
         compatibility: {
           code,
@@ -923,10 +931,9 @@ async function describedRoute({
   }
   let findings;
   try {
-    findings = featureConformanceFindings(
-      description,
-      loadRequiredDrovrFeatures(),
-    );
+    findings = isDirectDescription(description)
+      ? (directDescriptionIssue(description) ? [{ field: "description", reason: "contradictory" }] : [])
+      : featureConformanceFindings(description, loadRequiredDrovrFeatures());
   } catch (error) {
     throw new ProductionPreparationError(
       "drovr_contract_unavailable",
@@ -935,14 +942,14 @@ async function describedRoute({
     );
   }
   if (findings.length > 0 ||
-      description.schema !== "drovr.delegated-agent-description/v1" ||
+      (!isDirectDescription(description) && description.schema !== "drovr.delegated-agent-description/v1") ||
       !isDigest(description.description_digest) ||
       !isDigest(description.comparison_keys?.launch) ||
       !isDigest(description.comparison_keys?.effective_authority) ||
       !isDigest(description.watermark?.content_sha256)) {
     throw new ProductionPreparationError(
       "incompatible_feature_advertisement",
-      `Drovr ${role} route does not satisfy the shipped feature contract`,
+      `Execution ${role} route does not satisfy its advertised contract`,
       {
         compatibility: {
           code: "incompatible_feature_advertisement",
@@ -1142,6 +1149,7 @@ function validPreparationLaunch(launch) {
       "read-only",
       "on-approve",
       "workspace-write",
+      "workspace-write-denied",
       "auto",
       "unrestricted",
     ].includes(launch.capability));

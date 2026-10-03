@@ -43,6 +43,8 @@ import {
   initializePublicReviewRepository,
   seedPublicReview,
 } from "../test-support/public-review-seed.mjs";
+import { bindQualifiedReleaseFixture } from
+  "../test-support/qualified-release-fixture.mjs";
 
 const PUBLIC_OWNER_RUNTIME_MODULE = resolve(
   import.meta.dirname,
@@ -180,7 +182,7 @@ test("client process exit does not stop the detached owner or its autonomous run
 });
 
 test("public host rebuilds the review inbox after the producing client exits", async (t) => {
-  const fixture = await disposableOwnerFixture(t, { production: true });
+  const fixture = await disposableOwnerFixture(t, { production: true, qualifiedReview: true });
   const seeded = await seedPublicReview({
     authorityDirectory: fixture.paths.authorityDirectory,
     env: fixture.env,
@@ -399,7 +401,7 @@ test("public host rebuilds the review inbox after the producing client exits", a
 });
 
 test("public host supersedes a production review and rejects stale follow-up actions", async (t) => {
-  const fixture = await disposableOwnerFixture(t, { production: true });
+  const fixture = await disposableOwnerFixture(t, { production: true, qualifiedReview: true });
   const seeded = await seedPublicReview({
     authorityDirectory: fixture.paths.authorityDirectory,
     env: fixture.env,
@@ -984,8 +986,12 @@ test("fallback rejects a symlinked XDG runtime component before chmod", async (t
     ...paths,
     env,
   });
-  await assert.rejects(owner.start(), { code: "socket_runtime_directory_symlink" });
-  assert.equal((await stat(target)).mode & 0o777, 0o700);
+  try {
+    await assert.rejects(owner.start(), { code: "socket_runtime_directory_symlink" });
+    assert.equal((await stat(target)).mode & 0o777, 0o700);
+  } finally {
+    await owner.stop();
+  }
 });
 
 test("detached startup preserves the bounded fallback path across the child boundary", async (t) => {
@@ -1698,7 +1704,7 @@ test("watch carries watermarks and returns the server iterator on client disconn
 
 async function disposableOwnerFixture(
   t,
-  { cleanupOwner = true, production = false } = {},
+  { cleanupOwner = true, production = false, qualifiedReview = false } = {},
 ) {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-process-"));
   const state = join(scratch, "state");
@@ -1722,6 +1728,18 @@ async function disposableOwnerFixture(
     await mkdir(repository, { recursive: true, mode: 0o700 });
     await writeFile(join(repository, "feature.txt"), "before\n");
     await initializePublicReviewRepository(repository);
+  }
+  if (qualifiedReview && !process.env.FLOW_CONFIG_DIRECTORY) {
+    const configDirectory = join(scratch, "flow");
+    const repositoryRoot = resolve(import.meta.dirname, "../../..");
+    await cp(resolve(import.meta.dirname, ".."), configDirectory, {
+      recursive: true,
+      filter: (source) => !source.split("/").includes("node_modules"),
+    });
+    await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot });
+    env.FLOW_CONFIG_DIRECTORY = configDirectory;
+    env.FLOW_QUALIFICATION_REPOSITORY_ROOT = repositoryRoot;
+    env.FLOW_EXECUTION_BACKEND = "drovr";
   }
   t.after(async () => {
     if (!cleanupOwner) {

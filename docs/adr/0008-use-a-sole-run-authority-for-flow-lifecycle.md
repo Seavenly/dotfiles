@@ -12,9 +12,9 @@ determine readiness, admit cards and attempts, record checkpoints and blocks,
 revise or cancel work, and finalize a flow run.
 
 Pure plan and lifecycle modules calculate decisions from explicit facts.
-Mechanism adapters record or reconcile effects but do not own policy. Drovr
-remains the delegated agent runtime described by ADR-0007 and does not schedule
-or advance flow work. Workspace, artifact, review, and stack authorities own
+Mechanism adapters record or reconcile effects but do not own policy. ADR-0010
+selects direct CLI tasks as primary execution and retains Drovr as optional.
+Neither backend schedules or advances flow work. Workspace, artifact, review, and stack authorities own
 their bounded durable subjects without gaining flow lifecycle authority.
 Kanban, timeline, tracker, review-inbox, and operator views are disposable
 projections with exact authority watermarks.
@@ -35,6 +35,6 @@ validates digest, schema, provenance, redaction, classification, retention,
 and allowed use.
 
 This decision supersedes neither ADR-0005's immutable delivery guarantees nor
-ADR-0007's use of Drovr. ADR-0004 remains historical guidance for the frozen
+ADR-0010's optional use of Drovr. ADR-0004 remains historical guidance for the frozen
 Hermes-backed baseline only. ADR-0006's controller terminal exception is also
 scoped exclusively to that frozen Hermes-backed baseline.

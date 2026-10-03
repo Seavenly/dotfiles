@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 34);
+  assert.equal(catalog.catalog_version, 35);
   for (const contract of [
     "flow.release-manifest/v1",
     "flow.dark-opt-in/v1",
@@ -151,7 +151,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@34",
+    catalog_id: "flow.contract-catalog/v1@35",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",
