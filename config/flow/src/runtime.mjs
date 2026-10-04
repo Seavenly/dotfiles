@@ -70,6 +70,7 @@ export function createFlowRuntime({
   autonomous = undefined,
   runnerOptions = undefined,
   runnerErrorSink = undefined,
+  featureTestCheck = undefined,
 } = {}) {
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
     throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
@@ -108,6 +109,7 @@ export function createFlowRuntime({
     registeredAuthorities,
     predefinedDefinitions,
     delegateOutputValidators,
+    featureTestCheck,
   });
   const delegationResourcePort = delegatedAgentResourcePort ??
     (delegationPort.backend === "direct" ? null : createDrovrDelegatedAgentResourcePort({
@@ -396,6 +398,19 @@ function publicReplacementGate({
       authorityWatermark: safeAuthorityWatermark(authority),
       authorityWatermarkDomain: "host",
       legalActions: selection.capability_manifest?.supported_routes ?? [],
+    });
+  }
+
+  if (operation === "prepare" && route.flow === "feature" &&
+      route.mode === "test" &&
+      request?.schema !== "flow.feature-preparation-request/v1") {
+    return createRejection({
+      operation,
+      code: "invalid_preparation_request",
+      outcome: "unsupported",
+      reason: "public test preparation requires an ordinary brief and trusted check selection",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
     });
   }
 

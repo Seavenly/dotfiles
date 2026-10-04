@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 37,
+  "catalog_version": 38,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -60,7 +60,11 @@
         "id": "flow.production.run-authority",
         "version": "1"
       },
-      "identity": ["owner_token", "pid", "process_start_identity"],
+      "identity": [
+        "owner_token",
+        "pid",
+        "process_start_identity"
+      ],
       "state_directory_mode": "0700",
       "endpoint_mode": "0600",
       "socket_mode": "0600",
@@ -106,11 +110,26 @@
       "brief": "flow.feature-brief/v1",
       "definition": "flow.definition/feature/v1",
       "selection": "flow.predefined-flow-selection/v1",
-      "mode": "verify",
       "facts": "starting_clean_git_and_workspace_only",
       "future_identity": "forbidden",
       "callbacks": "forbidden",
-      "patch_bytes": "forbidden"
+      "patch_bytes": "forbidden",
+      "modes": [
+        "verify",
+        "test"
+      ],
+      "test": {
+        "selection": "check_id_only",
+        "configuration": "trusted_owner_constructor_only",
+        "operation": "flow.operation/feature-test/v1",
+        "receipt": "work.feature-test-receipt/v1",
+        "runner": "fixed_node_health_and_acceptance_with_os_confinement",
+        "health": "positive_probe_before_behavioral_red",
+        "acceptance": "same_committed_check_green",
+        "identity": "exact_check_and_runtime_fingerprint_before_claims",
+        "generic_test_inputs": "rejected_before_effects",
+        "native_qualification": "separate_required"
+      }
     },
     "rejection_contract": {
       "contract": "flow.rejection/v1",
@@ -219,7 +238,7 @@
       "binding": "flow.evidence-safety-binding/v1",
       "catalog_view": "flow.evidence-safety-catalog/v1",
       "policy_id": "flow.evidence-safety-policy/v1",
-      "catalog_id": "flow.contract-catalog/v1@37",
+      "catalog_id": "flow.contract-catalog/v1@38",
       "allowed_uses": [
         "delegate_transfer",
         "artifact_acceptance",

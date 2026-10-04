@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 
@@ -38,6 +38,10 @@ export async function seedPublicReview({
   env,
   repository,
 } = {}) {
+  const darkOptIn = env?.FLOW_CONFIG_DIRECTORY === undefined ? DARK_OPT_IN : {
+    ...DARK_OPT_IN,
+    release_id: JSON.parse(await readFile(join(env.FLOW_CONFIG_DIRECTORY, "release-manifest.v1.json"), "utf8")).release_id,
+  };
   const delegatedAgentPort = createPublicDelegatedAgentPort({ repository });
   const runtimeOptions = {
     env,
@@ -52,11 +56,11 @@ export async function seedPublicReview({
   let candidateProjection;
   try {
     const featurePrepared = await runtime.prepare(
-      featurePreparationRequest(repository),
+      featurePreparationRequest(repository, darkOptIn),
     );
     assertPrepared(featurePrepared, "feature");
     const featureLaunch = runtime.launch(
-      confirmedPredefinedLaunchRequest(featurePrepared),
+      confirmedPredefinedLaunchRequest(featurePrepared, darkOptIn),
     );
     assertAcceptedLaunch(featureLaunch, "feature");
     featureCompleted = await waitForTerminal(runtime, featureLaunch.run_id);
@@ -133,11 +137,11 @@ export async function seedPublicReview({
       schema: "flow.predefined-flow-selection/v1",
       definition: "review/v1",
       inputs: reviewInputs(candidateProjection, preparationFacts, reviewSelection),
-      dark_opt_in: DARK_OPT_IN,
+      dark_opt_in: darkOptIn,
     });
     assertPrepared(reviewPrepared, "review");
     const reviewLaunch = await runtime.launch(
-      confirmedPredefinedLaunchRequest(reviewPrepared),
+      confirmedPredefinedLaunchRequest(reviewPrepared, darkOptIn),
     );
     assertAcceptedLaunch(reviewLaunch, "review");
     boundaryEvents.push("review_run_launched");
@@ -279,7 +283,7 @@ export async function initializePublicReviewRepository(repository) {
   await execFile("git", ["-C", repository, "commit", "--quiet", "--allow-empty", "-m", "initial"]);
 }
 
-function featurePreparationRequest(repository) {
+function featurePreparationRequest(repository, darkOptIn = DARK_OPT_IN) {
   return {
     schema: "flow.feature-preparation-request/v1",
     brief: {
@@ -290,7 +294,7 @@ function featurePreparationRequest(repository) {
     },
     repository: { path: repository },
     mode: "verify",
-    dark_opt_in: DARK_OPT_IN,
+    dark_opt_in: darkOptIn,
     routes: {
       apply: {
         launch: {
@@ -378,10 +382,10 @@ function reviewPreparationSelection() {
   };
 }
 
-function confirmedPredefinedLaunchRequest(prepared) {
+function confirmedPredefinedLaunchRequest(prepared, darkOptIn = DARK_OPT_IN) {
   return {
     prepared,
-    dark_opt_in: DARK_OPT_IN,
+    dark_opt_in: darkOptIn,
     confirmation: {
       schema: "flow.predefined-flow-confirmation-decision/v1",
       decision: "accept",

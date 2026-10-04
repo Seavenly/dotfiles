@@ -24,13 +24,11 @@ import {
   auditLegacyBaselinesSync,
 } from "./legacy-baselines.mjs";
 import {
-  DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+  deterministicQualificationAssertionsForRelease,
   DETERMINISTIC_QUALIFICATION_COMMANDS,
   DETERMINISTIC_QUALIFICATION_SCOPE,
-  PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS,
-  PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
-  PRODUCTION_ROUTE_CONFORMANCE_ROUTES,
   PRODUCTION_ROUTE_CONFORMANCE_SCOPE,
+  productionRouteConformanceForRelease,
 } from "./qualification-recipe.mjs";
 import {
   projectCapabilityManifest,
@@ -755,7 +753,7 @@ function validateQualificationEvidence({
       evidence.scope !== DETERMINISTIC_QUALIFICATION_SCOPE ||
       !isDeepStrictEqual(
         evidence.assertions,
-        DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+        deterministicQualificationAssertionsForRelease(ledger.release.id),
       ) ||
       !isDeepStrictEqual(evidence.routes?.supported, supportedRoutes) ||
       !isDeepStrictEqual(evidence.routes?.negative_classes, negativeRoutes) ||
@@ -791,6 +789,7 @@ function validateProductionRouteEvidence({
   releaseContent,
   generationSession,
 }) {
+  const conformance = productionRouteConformanceForRelease(ledger.release.id);
   const record = ledger.evidence.find(({ id }) =>
     id === "production_route_conformance");
   if (record === undefined) {
@@ -826,9 +825,9 @@ function validateProductionRouteEvidence({
         releaseContent?.git_binding?.candidate_tree_sha ||
       evidence.release_content_digest !== ledger.release.content.digest ||
       evidence.scope !== PRODUCTION_ROUTE_CONFORMANCE_SCOPE ||
-      !isDeepStrictEqual(evidence.routes, PRODUCTION_ROUTE_CONFORMANCE_ROUTES) ||
+      !isDeepStrictEqual(evidence.routes, conformance.routes) ||
       !isDeepStrictEqual(evidence.assertions,
-        PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS) ||
+        conformance.assertions) ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(
         evidence.captured_at ?? "") ||
       !qualificationEnvironmentMatches(evidence.environment) ||
@@ -855,7 +854,7 @@ function validateProductionRouteEvidence({
         configDirectory,
         evidence.recipe,
         "flow.production-route-conformance-recipe/v1",
-        PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
+        conformance.commands,
       )) {
     return false;
   }

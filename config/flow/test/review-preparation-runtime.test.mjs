@@ -227,7 +227,7 @@ test("production review preparation provider reads owner projections and recheck
   assert.equal(result.facts.workspace.subject_id, workspace.subject_id);
   assert.equal(result.facts.route.route_id, "route:review");
   assert.equal(result.facts.route.bindings.length, 2);
-  assert.equal(result.facts.catalog.id, "flow.contract-catalog/v1@37");
+  assert.equal(result.facts.catalog.id, "flow.contract-catalog/v1@38");
 
   await t.test("async route observations revalidate configured catalog drift", async () => {
     let catalogIdentity = result.facts.catalog;

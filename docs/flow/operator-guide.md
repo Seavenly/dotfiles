@@ -1,6 +1,7 @@
-# Flow 1.0 dark opt-in operator guide
+# Flow dark opt-in operator guide
 
-This documents the first-release public operator path. The current source
+This documents the default first-release public operator path and the separate
+feature-test pilot configuration. The current source
 qualification is `not_run`, so public admission returns `qualification_withheld`.
 The legacy Claude launcher remains the default. These examples require a
 separately qualified release and disposable local resources that you own.
@@ -27,7 +28,8 @@ pilot does not authorize normal use, legacy-default cutover or remote mutation.
 
 ## Release and authority boundary
 
-The guide is bound to these exact source records. The release content tree is
+The default `flow-release-1.0-dark/v1` path below is bound to these exact source
+records. The release content tree is
 the governed candidate tree for the release; it is not a future flow-run
 candidate, run result, or operator-supplied identity.
 
@@ -37,15 +39,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `1e3e4665d4241419ad573d208077a20d845289bc` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `653457cc5f4ca4eb50dca971a9df2f6d17841abc` |
-| Governed release content | `sha256:da6fbce92464166059038dc275012bc7163511120601d1a25806ed3791103d09` |
-| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@37`, `sha256:bc7ba9f749b2b8c571412c9a725b36faf1c9450e5428bfb55e9d22dcb660dea4` |
+| Governed release candidate tree (`release-content.v1.json`) | `893219bd854348d7edc9c16f4d20e5989566137e` |
+| Governed release content | `sha256:ff8e41661f33f6bb4b9b057ee2bed89bdf9f5d14558ea1f9f2ebfd54eecb0411` |
+| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:9bd9e4909bb74a8408549c436e6b0276919762363c1bfbed3f8c5d71e657a03c` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:d6a63b94625b1a686a646d72c03be240bb8d0e95dbdd84071a6a84efe6c8e01a` |
 | Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
-| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:0e512601981726c5a45d58d38a67f53e60c0f6bf1e94049bbf4567154da520c3` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:bddff2b825469f907428c0825b4e172f6025c0eb813882fa3b8da55ef14d842a` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:677b325a01608bebc5abbbd4c1faea2143fcc63830fd568daf7c4196e964ef10` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:3ea7b6ce16d63e935254da2a1becbe1e0af0bfcd82ff3d8ba7af17387e3f89a4` |
 
 Historical deterministic qualification evidence is bound to its recorded
 release and is not bound to the current ticket candidate. The current ledger
@@ -86,7 +88,7 @@ callers never put that path in the public facts envelope. Both description
 contracts retain exact digest, authority, candidate and watermark fences.
 Unconfigured cross-repository discovery by a fresh owner is not supported.
 
-## What this release admits
+## What the default release admits
 
 The manifest's only supported routes are:
 
@@ -118,6 +120,122 @@ mixed delegation, or issue 46's host recovery/concurrency/rendering evidence.
 Issue #85 must refresh the documentation and evidence for the expanded release
 before issue #53 can authorize a later transition. This is the required
 issue #85 refresh boundary, not a claim that its expanded scenarios have run.
+
+## Separate feature-test pilot
+
+`flow-release-1.1-dark-test/v1` adds one direct Linux Codex feature-test route
+in `config/flow/releases/1.1-dark-test/`. It requires explicit configuration
+selection and its own exact release qualification. Native test qualification
+is **NOT_RUN**. The deterministic public fixtures prove real check execution,
+one writer and same-boot owner recovery with local fixture delegates; they do
+not qualify native Codex startup or permissions. Old historical qualification
+does not grant this route permission. Until the exact qualification passes,
+public admission remains withheld; these examples describe the request shape
+for that separately qualified, disposable pilot.
+
+| Test release binding | Value |
+| --- | --- |
+| Test pilot manifest | `config/flow/releases/1.1-dark-test/release-manifest.v1.json`, `flow-release-1.1-dark-test/v1`, `sha256:a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b` |
+| Test pilot catalog | `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
+| Test pilot qualification base | `c34c6e881ce375691d4f3e4ca626c1af9eef81cc` |
+| Test pilot content | `893219bd854348d7edc9c16f4d20e5989566137e`, `sha256:8633b976c6749ff056a46942ab2fc98a01294095eddd4570e0b087b9765795aa`, `sha256:b40078d1ab7572332876e08c46e35dc87ed9c1dbe9402588a3357a4408af6ab0` |
+| Test pilot source qualification | `not_run`; deterministic qualification, production conformance and new host qualification grant no admission |
+| Historical fixture bootstrap | `config/flow/releases/1.1-dark-test/evidence/receipts/public-production-feature-test.tap`, `sha256:3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050`; pre-D deterministic fixture evidence only, never current/native qualification |
+
+Keep the runtime repository separate from the disposable feature workspace:
+
+```sh
+# FLOW_RUNTIME_ROOT is the absolute repository containing this Flow runtime.
+export FLOW_CONFIG_DIRECTORY="$FLOW_RUNTIME_ROOT/config/flow/releases/1.1-dark-test"
+export FLOW_QUALIFICATION_REPOSITORY_ROOT="$FLOW_RUNTIME_ROOT"
+export FLOW_EXECUTION_BACKEND=direct
+```
+
+Apply these settings to the trusted owner before it starts. Selecting files
+does not install a test check or grant qualification. The owner must also be
+provisioned with one private `featureTestCheck` through the production runtime
+constructor. The public CLI has no check-configuration loader. The
+[composition notes](../../config/flow/README.md#separate-feature-test-pilot)
+describe the supported host recipe; do not put executable paths, commands,
+environment, timeout, expected failure, health assertions or receipts in the
+public request. Missing or invalid host configuration returns an unavailable
+test route and leaves verify/review construction usable.
+
+After the owner has selected a committed check whose exact criteria match the
+brief, a request uses only its `check_id`. For example, if the owner has
+provisioned `check:feature-text` with criterion `feature.txt contains after`:
+
+```json
+{
+  "schema": "flow.feature-preparation-request/v1",
+  "brief": {
+    "schema": "flow.feature-brief/v1",
+    "id": "brief:feature-text",
+    "summary": "Change feature.txt to after",
+    "acceptance": ["feature.txt contains after"]
+  },
+  "repository": "/absolute/path/to/disposable/repository",
+  "mode": "test",
+  "test": { "check_id": "check:feature-text" },
+  "routes": {
+    "apply": { "harness": "codex", "capability": "workspace-write-denied" },
+    "critique": { "harness": "codex", "capability": "read-only" }
+  },
+  "dark_opt_in": {
+    "schema": "flow.dark-opt-in/v1",
+    "release_id": "flow-release-1.1-dark-test/v1",
+    "purpose": "sacrificial_qualification"
+  }
+}
+```
+
+Save the actual request as `$RECEIPTS/test-prepare-request.json` and submit it
+through the existing public interface:
+
+```sh
+flow prepare --input "$(<"$RECEIPTS/test-prepare-request.json")" --json
+```
+
+Preparation requires a clean canonical workspace and committed selected
+acceptance and positive health checks. One test slice owns every brief
+criterion exactly once; unknown checks, incomplete criteria, mixed mode,
+caller commands or generic caller-derived test slices are rejected. Preparation
+runs neither probes nor a writer and returns no future candidate identity.
+Its healthy-environment field is a requirement, not evidence that health passed.
+Retain the complete returned prepared bundle. Follow the confirmation and launch
+procedure below using that bundle, its actual returned digests and facts, and
+the same `flow-release-1.1-dark-test/v1` opt-in on launch. Do not reuse a 1.0
+opt-in or edit a prepared slice. Launch recomputes the complete trusted selection
+and refuses changed check/configuration/runner fingerprints before creating a
+run or claiming the workspace; reprepare after an authorized change.
+
+Admitted execution runs a positive health case and the exact intended RED case
+before one workspace writer. Checks use the fixed bounded Node runner under
+bubblewrap on supported Linux: workspace read-only, host network isolated,
+host home/auth directories absent, and private effect scratch. Missing sandbox
+support, timeout, output overflow, malformed output, unhealthy environment or
+an unrelated failure blocks mutation. Registered direct commit and capture then
+bind the changed Git snapshot. The same health and acceptance checks must go
+GREEN; retained RED evidence, independent critique, aggregate verification and
+seal are all required for the local candidate. The contract supports this single
+test slice, not arbitrary test commands or mixed workflows.
+
+The Flow owner and check worker have distinct lifetimes. A client exit does not
+cancel work. Same-boot checker takeover may adopt exact terminal evidence when
+the worker has positively retired before the new owner observes it, preserving
+one checker and one writer. If takeover observes a pending checker, the outcome
+remains indeterminate without consuming a fresh attempt. Later retirement does
+not automatically reopen exhausted recovery. Preserve the claims and evidence
+and use the actions actually returned by the runtime, currently cancel; no
+reconciliation command is implied. Changed boot and uncertain effects also
+retain their claims. Do not replay checks or writers blindly, delete
+reservations, or force-unlock Git. Actual reboot and manager shutdown remain
+separate qualification scenarios.
+
+The default root configuration still rejects test and mixed modes. This
+separate release leaves the legacy default unchanged; normal-use and
+remote-mutation authorization remain false. Issue #89's native qualification and
+acceptance checklist remain incomplete; deterministic success does not close it.
 
 ## Supported hosts, configuration, and retention
 
@@ -1044,7 +1162,8 @@ qualification evidence. In particular, issue 85 must refresh this guide and
 the compatibility/evidence records before issue 53 considers expanded parity
 or cutover.
 
-Feature verify and local review are the only supported routes here. Feature
+Feature verify and local review are the only supported routes in the default
+`flow-release-1.0-dark/v1` configuration. Feature
 test/mixed, spike, epic, GitHub review, tracker, forge, publication, merge,
 push, and remote mutation are disabled or unsupported and must remain visibly
 so in operator tooling. Never treat an unsupported outcome as a reason to

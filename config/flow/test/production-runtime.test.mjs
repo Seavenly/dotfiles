@@ -54,7 +54,9 @@ const FLOW_CONFIG_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const DARK_OPT_IN = {
   schema: "flow.dark-opt-in/v1",
-  release_id: "flow-release-1.0-dark/v1",
+  release_id: process.env.FLOW_CONFIG_DIRECTORY === undefined
+    ? "flow-release-1.0-dark/v1"
+    : JSON.parse(await readFile(join(process.env.FLOW_CONFIG_DIRECTORY, "release-manifest.v1.json"), "utf8")).release_id,
   purpose: "sacrificial_qualification",
 };
 let qualifiedFixtureRoot;

@@ -18,7 +18,6 @@ import {
   FEATURE_TEST_RECEIPT_VALIDATOR,
   FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
   validateFeatureCaptureReceipt,
-  validateFeatureTestReceipt,
   validateFeatureVerificationReceipt,
 } from "../../../tools/flow/src/feature-flow.mjs";
 import {
@@ -64,6 +63,7 @@ import {
 import { validateDelegateEvidenceSafety } from "../../../tools/flow/src/evidence-safety.mjs";
 import {
   createProductionFeatureOperations,
+  resolveProductionFeatureTestSelection,
   prepareProductionFeatureLaunch,
   materializedEvidenceDigest,
   validateFeatureCriterionEvidence,
@@ -102,6 +102,7 @@ export function createProductionComposition({
   registeredAuthorities = {},
   predefinedDefinitions = {},
   delegateOutputValidators = {},
+  featureTestCheck = undefined,
 } = {}) {
   if (typeof delegatedAgentPort?.describe !== "function") {
     throw new TypeError("production FlowRuntime requires a Drovr description port");
@@ -163,6 +164,7 @@ export function createProductionComposition({
     gitWorkspaceObservationAdapter,
     gitRetentionAdapter,
     authorityDirectory,
+    featureTestCheck,
   });
   operations = mergeRegistrations({
     defaults: featureOperationRegistrations(featureOperations.operations),
@@ -204,7 +206,7 @@ export function createProductionComposition({
       overrides: delegateOutputValidators,
     }),
     publicRouteAvailability(route, request) {
-      if (route?.flow === "feature" && route?.mode === "verify") {
+      if (route?.flow === "feature" && ["verify", "test"].includes(route?.mode)) {
         const required = new Set([
           FEATURE_OPERATION_CONTRACTS.capture,
           FEATURE_OPERATION_CONTRACTS.verify,
@@ -214,6 +216,10 @@ export function createProductionComposition({
           [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT],
         );
         const selectionInputs = publicFeatureSelectionInputs(request);
+        if (route.mode === "test") {
+          required.add(FEATURE_OPERATION_CONTRACTS.test);
+          required.add(FEATURE_DIRECT_COMMIT_CONTRACT);
+        }
         if (selectionInputs?.setup !== undefined &&
             selectionInputs.setup !== null) {
           required.add(FEATURE_OPERATION_CONTRACTS.setup);
@@ -225,6 +231,10 @@ export function createProductionComposition({
         const preparedCards = request?.prepared?.graph?.cards ??
           request?.prepared?.plan?.graph?.cards ?? [];
         const unexpected = new Set();
+        if (route.mode === "test" &&
+            (delegatedAgentPort.backend !== "direct" || process.platform !== "linux")) {
+          unexpected.add("unsupported_feature_test_backend");
+        }
         for (const card of preparedCards) {
           const executor = card?.executor;
           if (executor?.kind === "operation") {
@@ -318,6 +328,7 @@ export function createProductionComposition({
         repositories,
         workspaceRepositories,
         runAuthority: boundAuthority,
+        featureTestCheck,
       });
       return compileSelection(prepared.selection);
     },
@@ -335,6 +346,32 @@ export function createProductionComposition({
       });
     },
     beforeLaunch(request, authority) {
+      const prepared = request?.prepared;
+      const inputs = prepared?.selection?.inputs;
+      if (prepared?.definition?.id === "feature/v1" && inputs?.mode === "test") {
+        const repository = resolveProductionWorkspace(inputs.workspace?.subject_id);
+        if (repository === null || !Array.isArray(inputs.slices) ||
+            inputs.slices.length !== 1) {
+          throw new ProductionPreparationError(
+            "feature_test_check_drift",
+            "test launch requires its exact single prepared workspace and check",
+          );
+        }
+        const fresh = productionFeatureTestSelection({
+          checkId: featureTestCheck?.check_id,
+          brief: inputs.brief,
+          workspace: { ...inputs.workspace, path: repository.path },
+          featureTestCheck,
+        });
+        if (!sameCanonicalValue(fresh.slice, inputs.slices[0]) ||
+            fresh.checkBinding.fingerprint !==
+              inputs.slices[0].test?.environment_fingerprint) {
+          throw new ProductionPreparationError(
+            "feature_test_check_drift",
+            "the trusted feature test check no longer matches preparation",
+          );
+        }
+      }
       return prepareProductionFeatureLaunch({
         request,
         runAuthority: authority,
@@ -1681,6 +1718,18 @@ export class ProductionPreparationError extends Error {
   }
 }
 
+function productionFeatureTestSelection(options) {
+  try {
+    return resolveProductionFeatureTestSelection(options);
+  } catch (error) {
+    throw new ProductionPreparationError(
+      error?.code ?? "feature_test_check_invalid",
+      "the selected committed feature test check is unavailable or incompatible",
+      { cause: error },
+    );
+  }
+}
+
 function configuredBackupRestoreAdapter({
   env,
   authorityDirectory,
@@ -1730,6 +1779,7 @@ async function buildPreparationSelection({
   repositories,
   workspaceRepositories,
   runAuthority = null,
+  featureTestCheck,
 }) {
   if (!isFeaturePreparationRequest(request)) {
     throw new ProductionPreparationError(
@@ -1828,6 +1878,14 @@ async function buildPreparationSelection({
   });
 
   const mode = request.mode;
+  const testSelection = mode === "test"
+    ? productionFeatureTestSelection({
+        checkId: request.test.check_id,
+        brief,
+        workspace: { path: repositoryPath, ...workspace },
+        featureTestCheck,
+      })
+    : null;
   const routes = request.routes;
   const apply = await describedRoute({
     delegatedAgentPort,
@@ -1855,13 +1913,24 @@ async function buildPreparationSelection({
       "feature preparation requires an independent critique route",
     );
   }
+  if (mode === "test" && (
+      !isDirectDescription(apply.description) ||
+      !isDirectDescription(critique.description) ||
+      apply.description.backend.harness !== "codex" ||
+      critique.description.backend.harness !== "codex" ||
+      process.platform !== "linux")) {
+    throw new ProductionPreparationError(
+      "feature_test_backend_unavailable",
+      "the first feature test pilot requires direct Linux Codex routes",
+    );
+  }
 
   const delegation = {
     schema: DELEGATION_SCHEMA,
     apply,
     critique,
   };
-  const verification = {
+  const verification = mode === "test" ? null : {
     schema: VERIFICATION_SCHEMA,
     baseline: {
       schema: BASELINE_SCHEMA,
@@ -1896,7 +1965,10 @@ async function buildPreparationSelection({
     generation: workspace.generation,
     fingerprint: workspace.fingerprint,
   }];
-  const limits = preparationLimits(request.limits);
+  const limits = preparationLimits({
+    ...(mode === "test" ? { max_cards: 9 } : {}),
+    ...request.limits,
+  });
   const explicitFacts = freezeCanonical({
     catalog_fingerprint: digest({
       definitions: ["feature/v1", "review/v1"],
@@ -1925,7 +1997,8 @@ async function buildPreparationSelection({
         brief,
         mode,
         workspace,
-        verification,
+        ...(verification === null ? {} : { verification }),
+        ...(testSelection === null ? {} : { slices: [testSelection.slice] }),
         delegation,
       },
       explicit_facts: explicitFacts,
@@ -2043,10 +2116,9 @@ function featureOperationRegistrations(productionOperations) {
   });
   return {
     [FEATURE_OPERATION_CONTRACTS.setup]: unavailable(),
-    [FEATURE_OPERATION_CONTRACTS.test]: unavailable({
-      provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR,
-      validateReceipt: validateFeatureTestReceipt,
-    }),
+    [FEATURE_OPERATION_CONTRACTS.test]: productionOperations[
+      FEATURE_OPERATION_CONTRACTS.test
+    ],
     [FEATURE_DIRECT_COMMIT_CONTRACT]: productionOperations[FEATURE_DIRECT_COMMIT_CONTRACT],
     [FEATURE_OPERATION_CONTRACTS.capture]: productionOperations[
       FEATURE_OPERATION_CONTRACTS.capture
@@ -2352,6 +2424,7 @@ function isFeaturePreparationRequest(request) {
     "mode",
     "routes",
     "verification",
+    "test",
     "limits",
   ], ["schema", "brief", "repository", "mode", "routes"])) {
     return false;
@@ -2359,10 +2432,15 @@ function isFeaturePreparationRequest(request) {
   return request.schema === PREPARATION_SCHEMA &&
     validPreparationBrief(request.brief) &&
     validPreparationRepository(request.repository) &&
-    request.mode === "verify" &&
+    ["verify", "test"].includes(request.mode) &&
     validPreparationRoutes(request.routes) &&
-    (request.verification === undefined ||
-      validPreparationVerification(request.verification)) &&
+    (request.mode === "test"
+      ? !Object.hasOwn(request, "verification") &&
+        exactObject(request.test, ["check_id"], ["check_id"]) &&
+        nonEmptyString(request.test.check_id)
+      : !Object.hasOwn(request, "test") &&
+        (request.verification === undefined ||
+          validPreparationVerification(request.verification))) &&
     (request.limits === undefined || validPreparationLimitsShape(request.limits));
 }
 

@@ -226,7 +226,7 @@ function facts() {
       }))),
       bindings: routeBindings,
     },
-    catalog: { id: "flow.contract-catalog/v1@37", fingerprint: DIGEST("1") },
+    catalog: { id: "flow.contract-catalog/v1@38", fingerprint: DIGEST("1") },
     operationContracts: ["flow.operation/review-record/v1"],
     validatorContracts: [
       "flow.validator/operation-receipt/v1",

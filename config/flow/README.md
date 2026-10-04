@@ -58,7 +58,8 @@ the manifest release ID and purpose. The gate is applied at both public
 caller cannot bypass it with a predefined bundle or dynamic graph. Legacy
 Claude remains the default policy selection.
 
-Only feature `verify` and local review are production-supported routes. The
+In the default `flow-release-1.0-dark/v1` configuration, only feature `verify`
+and local review are production-supported routes. The
 manifest records feature test/mixed, spike, epic, GitHub review,
 tracker/forge, publication, merge, push, and remote mutation as typed
 disabled or unsupported outcomes. Missing registered feature adapters also
@@ -67,7 +68,7 @@ launch rejection schema are kept separate: runtime callers receive
 `flow.rejection/v1` with an optional `outcome`, while selector callers receive
 `flow.launch-rejection/v1` with the exact route and legal actions.
 
-`transition-ledger.v1.json` binds catalog v37, policy, manifest, release
+`transition-ledger.v1.json` binds catalog v38, policy, manifest, release
 content, environment, prerequisite commits, legacy inventory, and evidence.
 `evidence/release-content.v1.json` binds an exact candidate Git tree ID,
 its declared qualification-base commit, and every regular-file byte in the
@@ -104,6 +105,23 @@ node config/flow/scripts/generate-release-content.mjs
 node config/flow/scripts/generate-qualification-evidence.mjs
 ```
 
+Both generators accept `--config-directory PATH` and `--repository-root PATH`
+independently; omitting them preserves the root release. Generate the separate
+test release content with `--config-directory config/flow/releases/1.1-dark-test
+--repository-root .`. Its initializer copies the shared catalog, required
+features, legacy inventory and historical host evidence as contained regular
+files. Source qualification and conformance remain `not_run`.
+
+For deterministic fixture bootstrap only, the content generator accepts
+`--feature-test-fixture-receipt PATH` for the retained pre-D public fixture TAP
+with SHA-256 `3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050`.
+It copies those actual historical bytes into the test release's excluded
+`evidence/receipts/public-production-feature-test.tap`. The copied fixture
+helper may reuse them inside a disposable authority. This historical receipt
+does not qualify changed source or a native provider; a fresh public test and
+separate native qualification remain required. Content generation does not run
+the qualification generator or grant its bootstrap mode authority.
+
 These phase-one and phase-two artifacts make no claim that the current
 candidate is committed and do not record real runs for deferred issue 84/44
 or remote actions. First-release host recovery is qualified separately by the
@@ -111,6 +129,58 @@ issue-46 catalog and external raw receipts documented in
 `qualification/README.md`; actual reboot and expanded macOS visuals remain
 deferred to issue 47. The projection withholds `dark_opt_in.available`
 whenever any required evidence record is failed, blocked, or not run.
+
+### Separate feature-test pilot
+
+`releases/1.1-dark-test/` declares `flow-release-1.1-dark-test/v1`. Select it
+explicitly with `FLOW_CONFIG_DIRECTORY` and set
+`FLOW_QUALIFICATION_REPOSITORY_ROOT` to the repository containing the governed
+runtime sources. The root configuration and its disabled test/mixed routes are
+unchanged. Both selections require their own exact manifest and qualification;
+historical evidence copied into the new configuration does not qualify native
+test execution. Native test qualification remains **NOT_RUN**. The public
+request and configuration example are in the
+[operator guide](../../docs/flow/operator-guide.md#separate-feature-test-pilot).
+
+Trusted owner composition injects one `featureTestCheck` through the production
+`createFlowRuntime` constructor. There is no public request or CLI loader for
+this private configuration. Missing or invalid configuration keeps the test
+operation unavailable while preserving verify and review construction. This
+pilot supports one direct Linux Codex test slice; mixed mode stays disabled.
+
+The check configuration pins a Node 22 executable and version, workspace-relative
+committed acceptance and positive health files with one named `node:test` case
+each, any additional pinned files, the exact ordered brief criteria, an expected
+`ERR_ASSERTION`/`strictEqual` failure, a fixed PATH, timeout and output bounds.
+The selected slice owns every brief criterion exactly once. The fingerprint
+also binds the reporter, operation/check implementation, Python supervisor and
+fixed bubblewrap sandbox. Implementation files that the writer must change are
+not check inputs to pin. Preparation and prelaunch comparison run no probes;
+`environment_status:"healthy"` in the selection is a requirement, not health
+evidence. Changed configuration, check bytes or runner identity refuses launch
+before run creation or workspace claims.
+
+The registered operation observes positive health and the exact intended RED
+before the single writer. The fixed `/usr/bin/bwrap` runner (bubblewrap 0.11.1)
+uses a read-only workspace, isolated network, no host home/auth mounts, private effect scratch,
+and bounded output/time. It requires the supported Linux sandbox, subreaper and
+pidfd capabilities; unavailable containment fails closed. This is a limited
+Node check runner, not an arbitrary command service. Registered direct commit,
+capture, slice GREEN verification, aggregate capture, independent critique,
+aggregate verification and seal then produce the local candidate. GREEN reruns
+the unchanged health and acceptance checks and requires the retained exact RED
+receipt.
+
+The durable check worker owns its descendants independently of a disposable
+client or Flow owner. Same-boot owner restart may adopt the exact retained
+terminal evidence when the worker has positively retired before the new owner
+observes it. A pending checker remains indeterminate and is never blindly
+replayed. That observation consumes no fresh attempt, but later terminal
+retirement does not automatically reopen exhausted recovery. Preserve its
+claims and evidence and use the actions actually returned by the runtime,
+currently cancel. Deterministic public success/restart fixtures do not qualify
+native Codex startup or permission enforcement, actual reboot or manager
+shutdown.
 
 ## Public host runtime
 
@@ -204,7 +274,7 @@ capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
 the evidence-safety catalog identity is
-`flow.contract-catalog/v1@37`.
+`flow.contract-catalog/v1@38`.
 
 Callers select instructions, minimal task-input IDs and facts, resource
 selection IDs, and output requirements. RunAuthority derives execution

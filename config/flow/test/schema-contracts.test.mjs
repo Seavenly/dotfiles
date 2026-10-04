@@ -9,7 +9,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
 import {
-  DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+  deterministicQualificationAssertionsForRelease,
   DETERMINISTIC_QUALIFICATION_SCOPE,
 } from "../../../tools/flow/src/qualification-recipe.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
@@ -127,7 +127,7 @@ test("release transition contracts validate the managed manifest and receipt", a
   qualification.candidate_tree_sha =
     releaseContent.git_binding.candidate_tree_sha ?? "a".repeat(40);
   qualification.scope = DETERMINISTIC_QUALIFICATION_SCOPE;
-  qualification.assertions = DETERMINISTIC_QUALIFICATION_ASSERTIONS;
+  qualification.assertions = deterministicQualificationAssertionsForRelease(qualification.release_id);
   const digest = `sha256:${"a".repeat(64)}`;
   const capabilityManifest = {
     schema: "flow.capability-manifest/v1",
@@ -1558,7 +1558,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@37",
+          catalog_id: "flow.contract-catalog/v1@38",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,

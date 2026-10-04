@@ -15,6 +15,16 @@ export const DETERMINISTIC_QUALIFICATION_ASSERTIONS = Object.freeze([
   "prerequisite integrity remains bound to the declared qualification base",
 ]);
 
+export function deterministicQualificationAssertionsForRelease(releaseId) {
+  if (releaseId !== "flow-release-1.1-dark-test/v1") {
+    return DETERMINISTIC_QUALIFICATION_ASSERTIONS;
+  }
+  return DETERMINISTIC_QUALIFICATION_ASSERTIONS.map((assertion, index) =>
+    index === 1
+      ? "dark opt-in resolves only exact feature verify, feature test, and local review routes"
+      : assertion);
+}
+
 const commands = [
   {
     id: "launch_selector",
@@ -156,6 +166,28 @@ export const PRODUCTION_ROUTE_CONFORMANCE_COMMANDS = Object.freeze(
   })),
 );
 
+const testConformanceCommand = Object.freeze({
+  id: "public_production_feature_test",
+  command: "node --test config/flow/test/direct-feature-test.test.mjs",
+  args: Object.freeze(["--test", "config/flow/test/direct-feature-test.test.mjs"]),
+  receipt_path: "evidence/receipts/public-production-feature-test.tap",
+  working_directory: ".",
+});
+
+// The original release keeps its exact historical recipe. Only the separately
+// curated test release adds the production checker and direct public route.
+export function productionRouteConformanceForRelease(releaseId) {
+  const testRelease = releaseId === "flow-release-1.1-dark-test/v1";
+  return {
+    routes: testRelease ? [...PRODUCTION_ROUTE_CONFORMANCE_ROUTES,
+      { flow: "feature", mode: "test" }] : PRODUCTION_ROUTE_CONFORMANCE_ROUTES,
+    assertions: testRelease ? [...PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS,
+      "public direct feature test proves healthy RED, one writer, unchanged checker GREEN, independent critique, sealed clean Git, and owner restart without duplicate dispatch"] : PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS,
+    commands: testRelease ? [...PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
+      testConformanceCommand] : PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
+  };
+}
+
 export function createProductionRouteConformanceEvidence({
   releaseId,
   qualificationBaseCommit,
@@ -169,6 +201,7 @@ export function createProductionRouteConformanceEvidence({
   capturedAt,
   environment,
 }) {
+  const conformance = productionRouteConformanceForRelease(releaseId);
   return {
     schema: "flow.production-route-conformance-evidence/v1",
     release_id: releaseId,
@@ -177,8 +210,8 @@ export function createProductionRouteConformanceEvidence({
     release_content_digest: releaseContentDigest,
     status,
     scope: PRODUCTION_ROUTE_CONFORMANCE_SCOPE,
-    routes: PRODUCTION_ROUTE_CONFORMANCE_ROUTES.map((route) => ({ ...route })),
-    assertions: [...PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS],
+    routes: conformance.routes.map((route) => ({ ...route })),
+    assertions: [...conformance.assertions],
     phase1_evidence_sha256: phase1EvidenceSha256,
     generation_id: generationId,
     generation_binding_sha256: generationBindingSha256,

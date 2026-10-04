@@ -51,6 +51,7 @@ import {
 } from "./reboot-revalidation.mjs";
 import { validateTimeFacts } from "./reboot-facts.mjs";
 import {
+  unobservedCallerIdempotentInvocation,
   applyExecutionTimeObservation,
   foldRun,
   projectRun,
@@ -2293,6 +2294,12 @@ export function createDurableRunAuthority({
           latestInvocation?.type === "effect_invocation_started" &&
           (!validateTimeFacts(latestInvocation.time_facts) ||
             latestInvocation.time_facts.length === 0);
+        const unobservedInvocation = unobservedCallerIdempotentInvocation(intent, runEventsFromRecords(stream.records));
+        const resumesUnobservedIdempotentInvocation = reconciliation === null &&
+          adapter?.operatorRecovery === true && intent.authority_boot_id === bootId &&
+          intent.authority_epoch < authorityEpoch &&
+          unobservedInvocation !== null && unobservedInvocation.authority_epoch < authorityEpoch;
+        const resumesInvocation = resumesUnknownInvocation || resumesUnobservedIdempotentInvocation;
         const observedPresence = validateEffectObservation(
           latestObservation,
           intent,
@@ -2368,7 +2375,7 @@ export function createDurableRunAuthority({
           payload.effect_id === intent.effect_id);
         if (reconciliation !== "adopt_present" &&
             reconciliation !== "settle_absent" &&
-            !resumesUnknownInvocation &&
+            !resumesInvocation &&
             (intent.effect_kind === undefined || intent.effect_kind === "operation")) {
           const invocationCount = stream.records.filter(({ payload }) =>
             payload.type === "effect_invocation_started" &&
@@ -2481,10 +2488,10 @@ export function createDurableRunAuthority({
             );
           }
           assertDurableHostRestoreClear(database);
-          const recordsInvocationStart = !resumesUnknownInvocation &&
+          const recordsInvocationStart = !resumesInvocation &&
             (!settleCancelled ||
               effectiveIntent.effect_kind === "delegate_cancellation");
-          if (recordsInvocationStart || resumesUnknownInvocation) {
+          if (recordsInvocationStart || resumesInvocation) {
             // beforeEffect is the last injected boundary before dispatch. It
             // may advance time or invalidate an authority fence, so it must
             // run before the final typed time observation and invocation
@@ -5243,6 +5250,33 @@ function fencedRunFold(
     authority_epoch: admission.authority_epoch,
     authority_boot_id: admission.boot_id,
   });
+  // Recovery under a newer owner is a fenced query decision. Keep the
+  // persisted reducer output compatible with stores written before takeover
+  // recovery was supported.
+  const runEvents = runEventsFromRecords(stream.records);
+  const recoveryActions = stream.fold.phase === "active"
+    ? stream.fold.effect_intents.flatMap((intent) => {
+        const effect = stream.fold.effects.find(({ effect_id: effectId }) =>
+          effectId === intent.effect_id);
+        const invocation = unobservedCallerIdempotentInvocation(intent, runEvents);
+        if (effect?.retry?.status !== "exhausted" || effect.receipt !== null ||
+            invocation === null || intent.authority_boot_id !== admission.boot_id ||
+            intent.authority_epoch >= admission.authority_epoch ||
+            invocation.authority_epoch >= admission.authority_epoch ||
+            stream.fold.legal_actions.some((action) =>
+              action.type === "recovery" && action.effect_id === intent.effect_id)) {
+          return [];
+        }
+        return [{
+          schema: "flow.command/v1",
+          type: "recovery",
+          run_id: stream.fold.run_id,
+          effect_id: intent.effect_id,
+          recovery: effectClassPolicy(intent.classification).recovery,
+          expected_watermark: watermark,
+        }];
+      })
+    : [];
   const legalActions = hostRestoreBarrier
     ? []
     : suspendedAfterReboot
@@ -5256,7 +5290,7 @@ function fencedRunFold(
         expected_generation: stream.generation,
         revalidation,
       }]
-    : stream.fold.legal_actions.map((action) => ({
+    : [...stream.fold.legal_actions, ...recoveryActions].map((action) => ({
         ...action,
         expected_watermark: watermark,
       }));
@@ -5264,7 +5298,7 @@ function fencedRunFold(
     stream.fold,
     legalActions,
     executionTimeObservation,
-    runEventsFromRecords(stream.records),
+    runEvents,
   );
   const retryProjection = applyRetryTimeObservation(
     stream.fold,

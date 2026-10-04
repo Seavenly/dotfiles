@@ -136,11 +136,23 @@ const PUBLIC_FEATURE_PREPARATION = {
   brief: "flow.feature-brief/v1",
   definition: "flow.definition/feature/v1",
   selection: "flow.predefined-flow-selection/v1",
-  mode: "verify",
+  modes: ["verify", "test"],
   facts: "starting_clean_git_and_workspace_only",
   future_identity: "forbidden",
   callbacks: "forbidden",
   patch_bytes: "forbidden",
+  test: {
+    selection: "check_id_only",
+    configuration: "trusted_owner_constructor_only",
+    operation: "flow.operation/feature-test/v1",
+    receipt: "work.feature-test-receipt/v1",
+    runner: "fixed_node_health_and_acceptance_with_os_confinement",
+    health: "positive_probe_before_behavioral_red",
+    acceptance: "same_committed_check_green",
+    identity: "exact_check_and_runtime_fingerprint_before_claims",
+    generic_test_inputs: "rejected_before_effects",
+    native_qualification: "separate_required",
+  },
 };
 const PUBLIC_HOST_CONTRACTS = Object.freeze([
   PUBLIC_HOST_TRANSPORT.request,
@@ -554,7 +566,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@37",
+  catalog_id: "flow.contract-catalog/v1@38",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",

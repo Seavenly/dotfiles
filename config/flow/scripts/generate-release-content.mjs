@@ -3,7 +3,10 @@ import { execFileSync } from "node:child_process";
 import {
   accessSync,
   constants as fsConstants,
+  copyFileSync,
+  existsSync,
   lstatSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   statSync,
@@ -20,10 +23,15 @@ import {
 } from "../../../tools/flow/src/release-content-contract.mjs";
 import {
   createProductionRouteConformanceEvidence,
+  deterministicQualificationAssertionsForRelease,
 } from "../../../tools/flow/src/qualification-recipe.mjs";
 
-const configDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = resolve(configDirectory, "../..");
+const defaultConfigDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const invocation = parseDirectories(process.argv.slice(2));
+const repositoryRoot = invocation.repositoryRoot ?? resolve(defaultConfigDirectory, "../..");
+const configDirectory = invocation.configDirectory ?? defaultConfigDirectory;
+const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/u, "Z");
+initializeTestRelease();
 const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
 const manifestPath = join(configDirectory, "release-manifest.v1.json");
 const policyPath = join(configDirectory, "launch-policy.v1.json");
@@ -76,7 +84,27 @@ const evidencePath = join(configDirectory, "evidence/release-content.v1.json");
 const contentBytes = Buffer.from(`${JSON.stringify(content, null, 2)}\n`);
 writeFileSync(evidencePath, contentBytes);
 
-const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/u, "Z");
+if (releaseManifest.release_id === "flow-release-1.1-dark-test/v1") {
+  const templatePath = join(configDirectory, "evidence/release-qualification.v1.json");
+  const template = JSON.parse(readFileSync(templatePath, "utf8"));
+  Object.assign(template, {
+    release_id: ledger.release.id,
+    qualification_base_commit: ledger.release.qualification_base_commit,
+    candidate_tree_sha: candidateTreeSha,
+    release_content_digest: content.content_digest,
+    status: "not_run",
+    recipe: null,
+    assertions: deterministicQualificationAssertionsForRelease(ledger.release.id),
+    captured_at: timestamp,
+    environment: qualificationEnvironment(),
+    routes: {
+      supported: releaseManifest.supported_routes.map(({ flow, mode }) => ({ flow, mode })),
+      negative_classes: releaseManifest.disabled_routes.map(({ flow, mode, outcome }) => ({ flow, mode, outcome })),
+    },
+  });
+  writeFileSync(templatePath, `${JSON.stringify(template, null, 2)}\n`);
+}
+
 const phase2EvidencePath = join(
   configDirectory,
   "evidence/production-route-conformance.v1.json",
@@ -168,6 +196,88 @@ process.stdout.write(`${JSON.stringify({
   content_digest: content.content_digest,
   manifest_sha256: releaseManifestDigest,
 }, null, 2)}\n`);
+
+function parseDirectories(args) {
+  const result = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const key = { "--config-directory": "configDirectory", "--repository-root": "repositoryRoot", "--feature-test-fixture-receipt": "featureTestFixtureReceipt" }[args[index]];
+    if (key === undefined || result[key] !== undefined || !args[index + 1] || args[index + 1].startsWith("--")) {
+      throw new Error("use optional --config-directory PATH, --repository-root PATH and --feature-test-fixture-receipt PATH once each");
+    }
+    result[key] = resolve(args[index + 1]);
+  }
+  return result;
+}
+
+function initializeTestRelease() {
+  if (realpathSync(configDirectory) === realpathSync(defaultConfigDirectory)) {
+    if (invocation.featureTestFixtureReceipt !== undefined) {
+      throw new Error("fixture receipt requires the curated dark test release");
+    }
+    return;
+  }
+  const manifest = JSON.parse(readFileSync(join(configDirectory, "release-manifest.v1.json"), "utf8"));
+  if (manifest.release_id !== "flow-release-1.1-dark-test/v1") {
+    throw new Error("alternate release generation requires the curated dark test manifest");
+  }
+  const canonical = join(repositoryRoot, "config/flow");
+  mkdirSync(join(configDirectory, "contracts"), { recursive: true });
+  mkdirSync(join(configDirectory, "evidence"), { recursive: true });
+  if (invocation.featureTestFixtureReceipt !== undefined) {
+    const bytes = readFileSync(invocation.featureTestFixtureReceipt);
+    // This is the retained pre-D deterministic public fixture receipt, not
+    // qualification of the generated release or of a native provider.
+    if (createHash("sha256").update(bytes).digest("hex") !==
+        "3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050") {
+      throw new Error("feature test fixture bootstrap requires the exact historical public GREEN receipt");
+    }
+    mkdirSync(join(configDirectory, "evidence/receipts"), { recursive: true });
+    writeFileSync(join(configDirectory, "evidence/receipts/public-production-feature-test.tap"), bytes);
+  }
+  for (const path of ["contracts/catalog.v1.json", "contracts/drovr-required-features.v1.json", "legacy-baselines.v1.json", "evidence/host-recovery-qualification.v1.json"]) {
+    copyFileSync(join(canonical, path), join(configDirectory, path));
+  }
+  for (const path of ["launch-policy.v1.json", "evidence/release-qualification.v1.json"]) {
+    if (!existsSync(join(configDirectory, path))) copyFileSync(join(canonical, path), join(configDirectory, path));
+  }
+  const path = join(configDirectory, "transition-ledger.v1.json");
+  const historical = JSON.parse(readFileSync(join(canonical, "transition-ledger.v1.json"), "utf8"));
+  const fresh = !existsSync(path);
+  const initialized = fresh ? historical : JSON.parse(readFileSync(path, "utf8"));
+  const qualificationBase = "c34c6e881ce375691d4f3e4ca626c1af9eef81cc";
+  const inventory = JSON.parse(readFileSync(join(configDirectory, "legacy-baselines.v1.json"), "utf8"));
+  if (fresh) {
+    initialized.release.id = manifest.release_id;
+    initialized.release.source_commit = inventory.source_commit;
+    initialized.release.qualification_base_commit = qualificationBase;
+    initialized.capability_manifest.release_id = manifest.release_id;
+    initialized.routes.supported = manifest.supported_routes.map(({ flow, mode }) => ({ flow, mode }));
+    initialized.decision.dark_opt_in_release_id = manifest.release_id;
+    initialized.decision.decided_at = timestamp;
+  } else if (initialized.release.id === manifest.release_id &&
+      initialized.release.qualification_base_commit === qualificationBase) {
+    // Repair only the earlier initializer's conflation of the frozen inventory
+    // origin with this release's independently pinned qualification base.
+    if (initialized.release.source_commit === qualificationBase) {
+      initialized.release.source_commit = inventory.source_commit;
+    }
+    if (initialized.decision.dark_opt_in_release_id === manifest.release_id &&
+        initialized.decision.decided_at === historical.decision.decided_at) {
+      initialized.decision.decided_at = timestamp;
+    }
+  }
+  for (const record of initialized.evidence) {
+    if (!["deterministic_qualification", "production_route_conformance", "issue_46_host_recovery"].includes(record.id)) continue;
+    if (fresh) {
+      record.status = "not_run";
+      record.path = null;
+      record.sha256 = null;
+      if (record.evidence_digest !== undefined) record.evidence_digest = null;
+    }
+    if (record.status === "not_run") record.recorded_at = timestamp;
+  }
+  writeFileSync(path, `${JSON.stringify(initialized, null, 2)}\n`);
+}
 
 function readGovernedFiles(root) {
   const listing = execFileSync(

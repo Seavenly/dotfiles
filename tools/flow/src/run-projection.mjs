@@ -28,6 +28,24 @@ import {
 } from "./projection-builder.mjs";
 import { normalizeResultBindingRecord } from "./result-bindings.mjs";
 
+// An unresolved invocation is a continuation, not another physical attempt.
+// Durable admission separately requires a new owner on the same boot.
+export function unobservedCallerIdempotentInvocation(intent, events) {
+  if (intent.classification !== "caller_idempotent") return null;
+  let latest = null;
+  for (const event of events) {
+    if (event.effect_id !== intent.effect_id) continue;
+    if (["effect_invocation_started", "effect_invocation_resumed"].includes(
+      event.type,
+    )) latest = event;
+    else if (["effect_observation_recorded", "effect_receipt_recorded"].includes(
+      event.type,
+    )) latest = null;
+  }
+  return latest !== null && validateTimeFacts(latest.time_facts) &&
+      latest.time_facts.length > 0 ? latest : null;
+}
+
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const launchEvent = run.events.find(({ type }) => type === "run_launched");
   const launchOwnership = launchEvent?.run_ownership;
@@ -1187,6 +1205,18 @@ function activeElapsedBounds(events, currentFacts) {
       "effect_invocation_started",
       "effect_invocation_resumed",
     ].includes(event.type)) continue;
+    // A takeover resumes the same interval. Keep its original start so
+    // elapsed time is neither reset nor counted again over the overlap.
+    if (event.type === "effect_invocation_resumed") {
+      const previousIndex = events.slice(0, index).findLastIndex(candidate =>
+        candidate.effect_id === event.effect_id &&
+        ["effect_invocation_started", "effect_invocation_resumed"].includes(candidate.type));
+      const previous = events[previousIndex];
+      if (validateTimeFacts(event.time_facts) && event.time_facts.length > 0 &&
+          previous !== undefined && validateTimeFacts(previous.time_facts) && previous.time_facts.length > 0 &&
+          !events.slice(previousIndex + 1, index).some(candidate => candidate.type === "run_cancelled" ||
+            candidate.effect_id === event.effect_id && ["effect_observation_recorded", "effect_receipt_recorded"].includes(candidate.type))) continue;
+    }
     const settled = events.slice(index + 1).find((candidate) =>
       candidate.type === "run_cancelled" ||
       candidate.effect_id === event.effect_id && [

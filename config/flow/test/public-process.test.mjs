@@ -1825,7 +1825,7 @@ async function disposableOwnerFixture(
   }
   if (production && qualifiedRelease) {
     const configDirectory = join(scratch, "qualified-flow");
-    await cp(resolve(import.meta.dirname, ".."), configDirectory, {
+    await cp(process.env.FLOW_CONFIG_DIRECTORY ?? resolve(import.meta.dirname, ".."), configDirectory, {
       recursive: true,
       filter: (source) => !source.split("/").includes("node_modules"),
     });

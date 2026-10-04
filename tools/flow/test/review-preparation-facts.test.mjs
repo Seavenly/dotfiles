@@ -241,7 +241,7 @@ function sourceInput(overrides = {}) {
       bindings: routeBindings,
     },
     catalog: {
-      id: "flow.contract-catalog/v1@37",
+      id: "flow.contract-catalog/v1@38",
       fingerprint: DIGEST("5"),
     },
     operationContracts: ["flow.operation/review-record/v1"],

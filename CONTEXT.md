@@ -71,6 +71,15 @@ the routes named by one qualified capability manifest. It is not normal-use
 authorization and does not prove that deferred real scenarios ran.
 _Avoid_: Replacement default, approval
 
+**Production feature test check**:
+One trusted host selection of committed acceptance and positive health checks,
+their exact criteria and intended failure, and the bounded runner identity. A
+public preparation request names only its `check_id`; preparation binds the
+selection but does not observe health or RED. The Linux pilot requires real
+health and expected RED before its writer, then the same acceptance check GREEN
+before seal. Changed check bindings refuse launch before workspace claims.
+_Avoid_: Caller command, claimed health, generic test registry
+
 **Transition ledger**:
 The durable release/environment record that binds prerequisites, contracts,
 manifest and content digests, qualification evidence, legacy inventory, and

@@ -17,6 +17,7 @@ import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import {
   AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   createFeatureDefinition,
+  FEATURE_DIRECT_COMMIT_CONTRACT,
   FEATURE_CAPTURE_RECEIPT_VALIDATOR,
   FEATURE_CRITIQUE_OUTPUT_SCHEMA,
   FEATURE_CRITIQUE_PROMPT,
@@ -2059,6 +2060,28 @@ test("feature/v1 test mode prepares an honest failure-proving slice", () => {
     prepared.selection.inputs.slices.map(({ id, mode }) => ({ id, mode })),
     [{ id: "behavior", mode: "test" }],
   );
+});
+
+test("feature/v1 direct single test slice commits after its sole writer before capture", async (t) => {
+  const { directTaskFixture } = await import("../test-support/direct-task-fixture.mjs");
+  const fixture = await directTaskFixture(t);
+  const inputs = featureInputs();
+  inputs.mode = "test";
+  inputs.slices = [{ schema: "flow.feature-slice/v1", id: "behavior", mode: "test", acceptance: inputs.brief.acceptance,
+    test: { schema: "flow.feature-test-request/v1", intended_failure: "expected behavior missing", environment_fingerprint: `sha256:${"a".repeat(64)}` } }];
+  for (const [role, capability] of [["apply", "workspace-write-denied"], ["critique", "read-only"]]) {
+    const value = await fixture.port.describe({ schema: "flow.delegated-agent-description-request/v1", launch: { harness: "codex", model: "fixture-model", effort: "high", capability }, caller_metadata: { owner: "feature-flow", role } });
+    inputs.delegation[role] = featureDelegateBindingFromDescription(role, value.description);
+  }
+  const proposal = createFeatureDefinition({ independentCritique: true }).compile({ inputs, explicit_facts: featureFactsForInputs(inputs) });
+  const commit = proposal.graph.cards.find(({ id }) => id === "feature-direct-commit");
+  assert.ok(commit, "a direct writer cannot publish protected Git metadata itself");
+  assert.equal(commit.executor.contract, FEATURE_DIRECT_COMMIT_CONTRACT);
+  assert.deepEqual(commit.dependencies, ["feature-apply"]);
+  assert.deepEqual(proposal.graph.cards.find(({ id }) => id === "feature-capture-behavior").dependencies, [commit.id]);
+  assert.equal(proposal.graph.cards.filter(({ executor }) => executor.kind === "delegate").length, 2);
+  assert.equal(proposal.graph.cards.length, 9);
+  assert.ok(proposal.graph.result_bindings.some(({ producer_card_id, consumer_card_id }) => producer_card_id === "feature-apply" && consumer_card_id === commit.id));
 });
 
 test("feature/v1 serialized slices own the brief acceptance exactly once", async (t) => {
@@ -8007,7 +8030,7 @@ function featureReviewPreparationFacts({
       bindings: routeBindings,
     },
     catalog: {
-      id: "flow.contract-catalog/v1@37",
+      id: "flow.contract-catalog/v1@38",
       fingerprint: digestValue("feature-review-catalog"),
     },
     operationContracts: ["flow.operation/review-record/v1"],

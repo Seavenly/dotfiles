@@ -7437,7 +7437,7 @@ function reviewPreparationFactsFor(candidate, inputs) {
       bindings: routeBindings,
     },
     catalog: {
-      id: "flow.contract-catalog/v1@37",
+      id: "flow.contract-catalog/v1@38",
       fingerprint: DIGEST("3"),
     },
     operationContracts: ["flow.operation/review-record/v1"],

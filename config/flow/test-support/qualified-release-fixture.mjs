@@ -12,7 +12,9 @@ import {
   RELEASE_CONTENT_GOVERNANCE,
 } from "../../../tools/flow/src/release-content-contract.mjs";
 import {
-  PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
+  DETERMINISTIC_QUALIFICATION_COMMANDS,
+  deterministicQualificationAssertionsForRelease,
+  productionRouteConformanceForRelease,
 } from "../../../tools/flow/src/qualification-recipe.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -51,7 +53,13 @@ export async function copyQualifiedRuntimeFixture({ sourceRoot, destination }) {
 
 /** Rebind only a disposable copy, preserving qualification status. */
 export async function rebindReleaseContentFixture({ configDirectory, repositoryRoot } = {}) {
-  if (await realpath(configDirectory) === await realpath(join(repositoryRoot, "config/flow"))) throw new Error("release fixture requires disposable copied config");
+  const selected = await realpath(configDirectory);
+  for (const source of ["config/flow", "config/flow/releases/1.1-dark-test"]) {
+    let canonical;
+    try { canonical = await realpath(join(repositoryRoot, source)); }
+    catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    if (selected === canonical) throw new Error("release fixture requires disposable copied config");
+  }
   const contentPath = join(configDirectory, "evidence/release-content.v1.json");
   const content = JSON.parse(await readFile(contentPath, "utf8"));
   const { stdout } = await execFile("/usr/bin/git", ["-C", repositoryRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], { maxBuffer: 64 * 1024 * 1024 });
@@ -114,6 +122,11 @@ export async function bindQualifiedReleaseFixture({ configDirectory, repositoryR
   qualification.candidate_tree_sha = content.git_binding.candidate_tree_sha;
   qualification.release_content_digest = ledger.release.content.digest;
   qualification.status = "passed";
+  qualification.assertions = deterministicQualificationAssertionsForRelease(ledger.release.id);
+  if (qualification.recipe === null) {
+    qualification.recipe = await qualifiedRecipe(configDirectory, repositoryRoot,
+      DETERMINISTIC_QUALIFICATION_COMMANDS, "flow.deterministic-qualification-recipe/v1");
+  }
   const qualificationBytes = jsonBytes(qualification);
   await writeFile(qualificationPath, qualificationBytes);
   const qualificationEvidence = ledger.evidence.find(({ id }) =>
@@ -131,7 +144,11 @@ export async function bindQualifiedReleaseFixture({ configDirectory, repositoryR
   production.phase1_evidence_sha256 = qualificationEvidence.sha256;
   production.generation_id = null;
   production.generation_binding_sha256 = null;
-  production.recipe = await qualifiedProductionRecipe(configDirectory);
+  const conformance = productionRouteConformanceForRelease(ledger.release.id);
+  production.routes = conformance.routes.map(value => ({ ...value }));
+  production.assertions = [...conformance.assertions];
+  production.recipe = await qualifiedRecipe(configDirectory, repositoryRoot,
+    conformance.commands, "flow.production-route-conformance-recipe/v1");
   const qualifiedProductionBytes = jsonBytes(production);
   await writeFile(productionPath, qualifiedProductionBytes);
   productionEvidence.path = "evidence/production-route-conformance.v1.json";
@@ -186,10 +203,23 @@ export async function makeQualifiedPinnedWorktree({
   return destination;
 }
 
-async function qualifiedProductionRecipe(configDirectory) {
+async function qualifiedRecipe(configDirectory, repositoryRoot, expectedCommands, schema) {
   const commands = [];
-  for (const expected of PRODUCTION_ROUTE_CONFORMANCE_COMMANDS) {
-    const receiptBytes = await readFile(join(configDirectory, expected.receipt_path));
+  for (const expected of expectedCommands) {
+    let receiptBytes;
+    try {
+      receiptBytes = await readFile(join(configDirectory, expected.receipt_path));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      // Only disposable fixtures may reuse these actual historical receipts.
+      // Rebinding does not qualify the source release or a native provider.
+      const canonical = expected.id === "public_production_feature_test"
+        ? "config/flow/releases/1.1-dark-test"
+        : "config/flow";
+      receiptBytes = await readFile(join(repositoryRoot, canonical, expected.receipt_path));
+      await mkdir(dirname(join(configDirectory, expected.receipt_path)), { recursive: true });
+      await writeFile(join(configDirectory, expected.receipt_path), receiptBytes);
+    }
     const counts = tapSummary(receiptBytes.toString("utf8"));
     commands.push({
       id: expected.id,
@@ -208,7 +238,7 @@ async function qualifiedProductionRecipe(configDirectory) {
     });
   }
   return {
-    schema: "flow.production-route-conformance-recipe/v1",
+    schema,
     digest: canonicalDigest(commands),
     commands,
   };

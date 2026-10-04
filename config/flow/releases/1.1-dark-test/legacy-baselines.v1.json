@@ -1,0 +1,83 @@
+{
+  "schema": "flow.legacy-baseline-inventory/v1",
+  "source_commit": "1e3e4665d4241419ad573d208077a20d845289bc",
+  "recorded_at": "2026-07-30T23:06:09Z",
+  "baselines": [
+    {
+      "implementation": "legacy-claude/v1",
+      "components": [
+        {
+          "source_path": "config/claude",
+          "git_object": "880cbe13dc702d9a2cbefba2ba89a37e9fd40fda"
+        }
+      ],
+      "authority_root": {
+        "base": "home",
+        "path": ".agent-teams"
+      },
+      "launch_surfaces": [
+        "/feature-flow",
+        "/review-flow",
+        "/spike-flow",
+        "/epic-flow"
+      ],
+      "frozen": true
+    },
+    {
+      "implementation": "legacy-agent-flow/v1",
+      "components": [
+        {
+          "source_path": "config/agent-flow",
+          "git_object": "736a58ac62f0488678d58d5acb90b7def4acc790"
+        },
+        {
+          "source_path": "bin/agent-flow",
+          "git_object": "20cb821600acb44c4118a0e995037d97b86cf87e"
+        },
+        {
+          "source_path": "config/agents/skills/agent-flow-epic",
+          "git_object": "f2b0081008ab00633d23019eef8d4cfff01b7b10"
+        },
+        {
+          "source_path": "config/agents/skills/agent-flow-feature",
+          "git_object": "b1805be17b5b7ab963fb89e09f4413f5c90d2881"
+        },
+        {
+          "source_path": "config/agents/skills/agent-flow-review",
+          "git_object": "3ec3f9c6a30269c1fe3d037860bfcf01de13359c"
+        },
+        {
+          "source_path": "config/agents/skills/agent-flow-spike",
+          "git_object": "5249b1828432fb8a135664477ac4779e00af06d4"
+        },
+        {
+          "source_path": "config/agents/skills/agent-flow-stacks",
+          "git_object": "471036e2a240c612fa85eeef6ed8043d9c3838ee"
+        },
+        {
+          "source_path": "config/agents/profiles",
+          "git_object": "57d5b3a9f058092de000213303457037750ea31a"
+        }
+      ],
+      "authority_root": {
+        "base": "state",
+        "path": "agent-flow"
+      },
+      "launch_surfaces": [
+        "agent-flow feature",
+        "agent-flow review",
+        "agent-flow spike",
+        "agent-flow epic"
+      ],
+      "frozen": true
+    }
+  ],
+  "change_policy": {
+    "allowed_reasons": [
+      "critical_correctness",
+      "critical_security"
+    ],
+    "requires_explicit_legacy_evidence": true,
+    "authority_bearing_compatibility_requires_decision": true
+  }
+}

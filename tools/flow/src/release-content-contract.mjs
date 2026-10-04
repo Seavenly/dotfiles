@@ -26,6 +26,8 @@ export const RELEASE_CONTENT_GOVERNANCE = Object.freeze({
   excluded_paths: Object.freeze([
     "config/flow/evidence/",
     "config/flow/node_modules/",
+    "config/flow/releases/1.1-dark-test/evidence/",
+    "config/flow/releases/1.1-dark-test/transition-ledger.v1.json",
     "config/flow/transition-ledger.v1.json",
     "tools/flow/node_modules/",
   ]),

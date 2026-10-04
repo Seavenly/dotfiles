@@ -21,12 +21,12 @@ import { fileURLToPath } from "node:url";
 
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
 import {
-  DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+  deterministicQualificationAssertionsForRelease,
   DETERMINISTIC_QUALIFICATION_COMMANDS,
   DETERMINISTIC_QUALIFICATION_SCOPE,
-  PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
   PRODUCTION_ROUTE_CONFORMANCE_SCOPE,
   createProductionRouteConformanceEvidence,
+  productionRouteConformanceForRelease,
 } from
   "../../../tools/flow/src/qualification-recipe.mjs";
 import {
@@ -37,8 +37,10 @@ import {
   validateTrackedHostRecoveryEvidence,
 } from "../src/host-recovery-qualification.mjs";
 
-const configDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = resolve(configDirectory, "../..");
+const defaultConfigDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const invocation = parseInvocation(process.argv.slice(2));
+const configDirectory = invocation.configDirectory ?? defaultConfigDirectory;
+const repositoryRoot = invocation.repositoryRoot ?? resolve(defaultConfigDirectory, "../..");
 const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
 const evidencePath = join(
   configDirectory,
@@ -50,7 +52,7 @@ const phase2EvidencePath = join(
   configDirectory,
   "evidence/production-route-conformance.v1.json",
 );
-const invocationMode = parseInvocationMode(process.argv.slice(2));
+const invocationMode = invocation.mode;
 const bootstrapPrerequisites = invocationMode === "bootstrap_prerequisites";
 
 const ledger = readJson(ledgerPath);
@@ -104,7 +106,7 @@ try {
       "flow.transition-projection/v1",
       "flow.production-route-conformance-evidence/v1",
     ],
-    assertions: DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+    assertions: deterministicQualificationAssertionsForRelease(ledger.release.id),
     recipe: {
       schema: "flow.deterministic-qualification-recipe/v1",
       digest: canonicalDigest(phase1Commands),
@@ -295,7 +297,7 @@ function runProductionRouteConformancePhase() {
       FLOW_REPOSITORY_ROOT: repositoryRoot,
       FLOW_PRODUCTION_ROUTE_CONFORMANCE_PROCESS: "1",
     };
-    return PRODUCTION_ROUTE_CONFORMANCE_COMMANDS.map((command) =>
+    return productionRouteConformanceForRelease(ledger.release.id).commands.map((command) =>
       runCommand(command, env, {
         phase2Session: {
           authorityDirectory: phase2ConfigDirectory,
@@ -354,14 +356,20 @@ function bindStaticEvidence(record, path, sha256Value) {
   record.status = "passed";
 }
 
-function parseInvocationMode(args) {
-  if (args.length === 0) return "final_qualification";
-  if (args.length === 1 && args[0] === "--bootstrap-prerequisites") {
-    return "bootstrap_prerequisites";
+function parseInvocation(args) {
+  const result = { mode: "final_qualification" };
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--bootstrap-prerequisites" && result.mode === "final_qualification") {
+      result.mode = "bootstrap_prerequisites";
+      continue;
+    }
+    const key = { "--config-directory": "configDirectory", "--repository-root": "repositoryRoot" }[args[index]];
+    if (key === undefined || result[key] !== undefined || !args[index + 1] || args[index + 1].startsWith("--")) {
+      throw new Error("use optional --bootstrap-prerequisites, --config-directory PATH and --repository-root PATH once each");
+    }
+    result[key] = resolve(args[++index]);
   }
-  throw new Error(
-    "unsupported qualification invocation; use no arguments for strict final qualification or --bootstrap-prerequisites for prerequisite bootstrap",
-  );
+  return result;
 }
 
 function requireLedgerEvidence(ledger, id) {

@@ -6,7 +6,7 @@ disabled, so this API does not authorize normal replacement launches.
 
 ## Release capability and qualification
 
-`config/flow/release-manifest.v1.json` is the versioned capability manifest.
+`config/flow/release-manifest.v1.json` is the default versioned capability manifest.
 Its `flow.dark-opt-in/v1` value is request-local authority for only feature
 `verify` and local review. The public `config/flow` runtime gates both
 `prepare` and `launch` through the same selector; missing opt-in is a typed
@@ -14,6 +14,16 @@ Its `flow.dark-opt-in/v1` value is request-local authority for only feature
 `unsupported` rejection. Claude remains the default implementation, and the
 gate never authorizes normal use, remote mutation, publication, merge, push,
 tracker/forge work, GitHub review, spikes, epics, or mixed/test feature modes.
+
+The explicitly selected `config/flow/releases/1.1-dark-test/` configuration
+declares `flow-release-1.1-dark-test/v1` and adds one bounded direct Linux Codex
+test route. Public admission accepts only an ordinary brief plus
+`test:{check_id}`; trusted owner configuration derives its internal test slice.
+The root release still rejects test/mixed, and historical qualification grants
+no new native permission. Native test qualification is **NOT_RUN**. See the
+[operator guide](../../docs/flow/operator-guide.md#separate-feature-test-pilot)
+for selection and the [production composition notes](../../config/flow/README.md#separate-feature-test-pilot)
+for host provisioning and recovery.
 
 The transition ledger binds the exact environment, prerequisite commits,
 catalog, policy, manifest, release-content digest, legacy inventory, and
@@ -53,8 +63,8 @@ adapter or synthetic pass mechanism.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v37 binds it to
-`flow.contract-catalog/v1@37`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v38 binds it to
+`flow.contract-catalog/v1@38`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -621,6 +631,14 @@ slice, that slice is first, and the baseline fingerprint equals the selected
 workspace fingerprint. Other serialized verify arrangements require the
 aggregate compensating assertion. Test-only slices may retain a safe baseline
 for the aggregate verification receipt.
+
+These are internal definition contracts. The production test pilot does not
+admit caller-derived slices, intended failures, fingerprints or receipts through
+public preparation. Its host-derived single slice covers the whole brief;
+launch compares the fresh complete slice before claims or effects. The direct
+test graph serializes test, apply, registered direct commit, slice capture and
+GREEN verification, aggregate capture, critique, aggregate verification and
+seal. Only real positive health and expected RED receipts admit the writer.
 
 An identity-free selection may provide a versioned `capture_policy` using
 `flow.feature-capture-policy/v1`. It binds the selected starting workspace and
@@ -1374,7 +1392,7 @@ The managed sources under `config/flow/` are:
   feature-capture identities, the five `FlowRuntime` operations, authority
   ownership, the execution-time accounting contract, and the reboot-admission
   typed-fact and uncertainty policy. The current catalog identity is
-  `flow.contract-catalog/v1@37`; a catalog change must update this managed
+  `flow.contract-catalog/v1@38`; a catalog change must update this managed
   source and the source constants/tests that validate its exact contents. Any
   future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported

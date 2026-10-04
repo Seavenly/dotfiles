@@ -1,0 +1,41 @@
+{
+  "schema": "flow.production-route-conformance-evidence/v1",
+  "release_id": "flow-release-1.1-dark-test/v1",
+  "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
+  "candidate_tree_sha": "893219bd854348d7edc9c16f4d20e5989566137e",
+  "release_content_digest": "sha256:8633b976c6749ff056a46942ab2fc98a01294095eddd4570e0b087b9765795aa",
+  "status": "not_run",
+  "scope": "production_public_route_conformance",
+  "routes": [
+    {
+      "flow": "feature",
+      "mode": "verify"
+    },
+    {
+      "flow": "review",
+      "mode": "local"
+    },
+    {
+      "flow": "feature",
+      "mode": "test"
+    }
+  ],
+  "assertions": [
+    "real production feature verify mutates and verifies a local candidate through production runtime, gate, composition, workspace authority, and deterministic Drovr-port adapter",
+    "public local review prepares and launches through production runtime, gate, composition, review authority, and inbox projection",
+    "production route cases use isolated local repositories and do not authorize remote mutations",
+    "public direct feature test proves healthy RED, one writer, unchanged checker GREEN, independent critique, sealed clean Git, and owner restart without duplicate dispatch"
+  ],
+  "phase1_evidence_sha256": null,
+  "generation_id": null,
+  "generation_binding_sha256": null,
+  "recipe": null,
+  "captured_at": "2026-10-04T01:07:24Z",
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "git": "2.53.0"
+  }
+}

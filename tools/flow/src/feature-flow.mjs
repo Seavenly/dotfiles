@@ -421,6 +421,10 @@ function serializedFeatureCards(
   workspaceClaim,
   { independentCritique = false } = {},
 ) {
+  const direct = isDirectDescription(selection.delegation.apply.description);
+  if (direct && selection.slices.length !== 1) {
+    invalidFeature("unsupported_direct_feature_slices", "direct feature slices require one bounded writer slice");
+  }
   const { delegate, operation } = featureCardBuilders(selection, workspaceClaim);
   const shared = {
     brief: selection.brief,
@@ -511,6 +515,15 @@ function serializedFeatureCards(
     cards.push(apply);
     applyCardIds.push(apply.id);
     dependency = apply.id;
+
+    if (direct) {
+      const commit = operation("feature-direct-commit", FEATURE_DIRECT_COMMIT_CONTRACT, [apply.id], {
+        ...shared, phase: "direct-commit", delegate_evidence_card_ids: [apply.id],
+        permitted_paths: ["."], receipt_owner: "registered_operation",
+      }, ["flow.git-candidate-commit-receipt/v1"]);
+      cards.push(commit);
+      dependency = commit.id;
+    }
 
     const captureCard = operation(
       `feature-capture-${slice.id}`,
