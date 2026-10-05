@@ -6,18 +6,19 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createDurableRunAuthority } from "../../../tools/flow/src/run-authority.mjs";
 import { getWorkspaceAuthority } from "../../../tools/flow/src/work-authority.mjs";
 
 import { startFlowOwner, stopFlowOwner } from "../src/owner-process.mjs";
 import { requestFlowTransport } from "../src/transport.mjs";
+import { deriveOwnerRuntimeBinding } from "../src/owner-runtime-binding.mjs";
 import { bindQualifiedReleaseFixture } from "../test-support/qualified-release-fixture.mjs";
 
 const sourceConfig = fileURLToPath(new URL("..", import.meta.url));
 const sourceRepository = fileURLToPath(new URL("../../..", import.meta.url));
-const runtimeModule = fileURLToPath(new URL("../test-support/direct-feature-test-runtime.mjs", import.meta.url));
+const productionRuntimeModule = fileURLToPath(new URL("../src/runtime.mjs", import.meta.url));
 const checkId = "check:feature-text";
 const criterion = "feature.txt contains after";
 const fixtureRelease = "flow-release-1.1-dark-test/v1";
@@ -232,7 +233,83 @@ for (const scenario of ["success", "restart", "check-restart"]) {
   });
 }
 
-async function createFixture(t, scenario) {
+test("public trusted owner accepts check_id with an embedded recipe and no caller configuration", async (t) => {
+  const fixture = await createFixture(t, "trusted-factory");
+  const owner = await fixture.start();
+  const prepared = await publicClient(owner.socket_path).prepare(fixture.request);
+  await retain("trusted-factory-preparation", { request: fixture.request, prepared, owner, factory_sha256: sha256(Buffer.from(fixture.factoryBytes)), fixture_only: true, native_qualification: "not_run" });
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  assert.equal(await fixture.invocations(), "");
+  const stopped = await fixture.stop(owner);
+  assert.equal(stopped.state, "stopped");
+  fixture.completed();
+});
+
+test("public trusted owner withholds missing or invalid private recipes before dispatch", async (t) => {
+  for (const recipe of ["missing", "invalid"]) {
+    await t.test(recipe, async (t) => {
+      const fixture = await createFixture(t, `factory-${recipe}`, { recipe });
+      const owner = await fixture.start();
+      const client = publicClient(owner.socket_path);
+      const before = await client.query({});
+      const rejected = await client.prepare(fixture.request);
+      assert.equal(rejected.schema, "flow.rejection/v1", JSON.stringify(rejected));
+      assert.equal(rejected.code, "route_unavailable", JSON.stringify(rejected));
+      assert.deepEqual((await client.query({})).runs, before.runs);
+      assert.equal(await fixture.invocations(), "");
+      assert.equal((await fixture.stop(owner)).state, "stopped");
+      await retain(`factory-${recipe}`, { fixture_only: true, rejected, owner });
+      fixture.completed();
+    });
+  }
+});
+
+test("public owner rejects changed trusted module bytes before runtime construction", async (t) => {
+  const fixture = await createFixture(t, "factory-module-drift");
+  const binding = deriveOwnerRuntimeBinding({ env: fixture.ownerEnv });
+  await writeFile(fixture.runtimeModule, fixture.factoryBytes + '\nthrow new Error("changed factory executed");\n');
+  await assert.rejects(startFlowOwner({ env: {
+    ...fixture.ownerEnv, FLOW_OWNER_RUNTIME_BINDING: JSON.stringify(binding),
+  } }), { code: "owner_runtime_binding_mismatch" });
+  assert.equal(await fixture.invocations(), "");
+  await assert.rejects(readFile(join(fixture.ownerEnv.FLOW_AUTHORITY_DIRECTORY, "owner.json")), { code: "ENOENT" });
+  await retain("factory-module-drift", { fixture_only: true, binding, code: "owner_runtime_binding_mismatch", dispatched: false });
+  fixture.completed();
+});
+
+test("public launch rejects a newly provisioned recipe after owner replacement", async (t) => {
+  const fixture = await createFixture(t, "factory-check-drift");
+  let owner = await fixture.start();
+  const prepared = await publicClient(owner.socket_path).prepare(fixture.request);
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  assert.equal((await fixture.stop(owner)).state, "stopped");
+  const changed = { ...fixture.featureTestCheck, limits: {
+    ...fixture.featureTestCheck.limits, timeout_ms: fixture.featureTestCheck.limits.timeout_ms + 1,
+  } };
+  await writeFile(fixture.runtimeModule, trustedFactorySource(changed));
+  owner = await fixture.start();
+  const client = publicClient(owner.socket_path);
+  const before = await client.query({});
+  const rejected = await client.launch(confirmation(prepared, fixture.request.dark_opt_in));
+  assert.equal(rejected.schema, "flow.rejection/v1", JSON.stringify(rejected));
+  assert.equal(rejected.code, "feature_test_check_drift", JSON.stringify(rejected));
+  assert.deepEqual((await client.query({})).runs, before.runs);
+  assert.equal(await fixture.invocations(), "");
+  assert.equal((await fixture.stop(owner)).state, "stopped");
+  await retain("factory-check-drift", { fixture_only: true, prepared, rejected, dispatched: false });
+  fixture.completed();
+});
+
+function trustedFactorySource(featureTestCheck) {
+  return `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(productionRuntimeModule).href)};
+const featureTestCheck = ${JSON.stringify(featureTestCheck, null, 2)};
+export function createFlowRuntime(options = {}) {
+  return production({ ...options, featureTestCheck });
+}
+`;
+}
+
+async function createFixture(t, scenario, { recipe = "valid" } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-feature-test-"));
   let ownerCleanup = async () => {};
   let succeeded = false;
@@ -274,7 +351,7 @@ async function createFixture(t, scenario) {
   git(["commit", "--quiet", "-m", "committed acceptance check and health probe"]);
   const initial = git(["rev-parse", "HEAD"]);
   const node = await realpath(process.execPath);
-  const configPath = join(scratch, "host-check.json");
+  const runtimeModule = join(scratch, "trusted-feature-test-owner.mjs");
   const featureTestCheck = {
     schema: "flow.production-feature-test-check/v1", check_id: checkId,
     executable: { path: node, version: process.version, sha256: checkDigest(await readFile(node)) },
@@ -284,7 +361,23 @@ async function createFixture(t, scenario) {
     criteria: [criterion], expected_failure: { code: "ERR_ASSERTION", operator: "strictEqual", expected: "after\n", actual: "before\n" },
     environment: { PATH: "/usr/bin:/bin" }, limits: { timeout_ms: 5000, max_output_bytes: 64 * 1024 },
   };
-  await writeFile(configPath, JSON.stringify(featureTestCheck));
+  if (recipe === "valid") {
+    // Execute the documented zero-provider preparation, then exercise its
+    // generated embedded recipe through the actual detached public owner.
+    const guide = await readFile(join(sourceRepository, "docs/flow/operator-guide.md"), "utf8");
+    const command = guide.match(/"\$FLOW_CHECK_NODE" --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/u);
+    assert.ok(command, "the trusted owner preparation recipe is documented");
+    execFileSync(node, ["--input-type=module"], {
+      input: command[1], encoding: "utf8", timeout: 5000,
+      env: { PATH: process.env.PATH, FLOW_RUNTIME_ROOT: sourceRepository,
+        FLOW_CHECK_WORKSPACE: repository, FLOW_OWNER_RUNTIME_MODULE: runtimeModule },
+    });
+  } else {
+    const selectedCheck = recipe === "missing" ? undefined
+      : { ...featureTestCheck, environment: { PATH: "/caller/bin" } };
+    await writeFile(runtimeModule, trustedFactorySource(selectedCheck), { flag: "wx", mode: 0o600 });
+  }
+  const factoryBytes = await readFile(runtimeModule, "utf8");
   const invocationPath = join(scratch, "invocations");
   const executable = join(scratch, "codex-fixture");
   await writeFile(executable, delegateFixture({ invocationPath, releasePath: join(scratch, "release-writer") }));
@@ -293,7 +386,7 @@ async function createFixture(t, scenario) {
   await cp(sourceConfig, configDirectory, { recursive: true, filter: path => !path.split("/").includes("node_modules") });
   await copiedTestRelease(configDirectory);
   await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: sourceRepository });
-  const ownerEnv = { HOME: scratch, PATH: process.env.PATH, GIT_OPTIONAL_LOCKS: "0", FLOW_REPOSITORY_ROOT: repository, FLOW_AUTHORITY_DIRECTORY: join(scratch, "authority"), FLOW_CONFIG_DIRECTORY: configDirectory, FLOW_QUALIFICATION_REPOSITORY_ROOT: sourceRepository, FLOW_EXECUTION_BACKEND: "direct", FLOW_CODEX_EXECUTABLE: executable, FLOW_OWNER_RUNTIME_MODULE: runtimeModule, FLOW_FEATURE_TEST_FIXTURE_CONFIG: configPath };
+  const ownerEnv = { HOME: scratch, PATH: process.env.PATH, GIT_OPTIONAL_LOCKS: "0", FLOW_REPOSITORY_ROOT: repository, FLOW_AUTHORITY_DIRECTORY: join(scratch, "authority"), FLOW_CONFIG_DIRECTORY: configDirectory, FLOW_QUALIFICATION_REPOSITORY_ROOT: sourceRepository, FLOW_EXECUTION_BACKEND: "direct", FLOW_CODEX_EXECUTABLE: executable, FLOW_OWNER_RUNTIME_MODULE: runtimeModule };
   const owners = [];
   const retirements = [];
   const stop = async owner => {
@@ -309,7 +402,7 @@ async function createFixture(t, scenario) {
     await retain(`${scenario}-retirement`, { retirements });
   };
   const request = { schema: "flow.feature-preparation-request/v1", dark_opt_in: { schema: "flow.dark-opt-in/v1", release_id: fixtureRelease, purpose: "sacrificial_qualification" }, brief: { schema: "flow.feature-brief/v1", id: `brief:test-${scenario}`, summary: "Change feature.txt to after", acceptance: [criterion] }, repository, mode: "test", test: { check_id: checkId }, routes: { apply: { harness: "codex", model: "fixture-model", effort: "high", capability: "workspace-write-denied" }, critique: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" } } };
-  return { scratch, repository, git, initial, ownerEnv, configDirectory, request, acceptanceBytes, healthBytes, completed: () => { succeeded = true; }, invocations: () => readFile(invocationPath, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; }), start: async () => { const owner = await startFlowOwner({ env: ownerEnv }); assert.equal(owner.state, "running", JSON.stringify(owner)); owners.push(owner); return owner; }, stop };
+  return { scratch, repository, git, initial, ownerEnv, configDirectory, runtimeModule, factoryBytes, featureTestCheck, request, acceptanceBytes, healthBytes, completed: () => { succeeded = true; }, invocations: () => readFile(invocationPath, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; }), start: async () => { const owner = await startFlowOwner({ env: ownerEnv }); assert.equal(owner.state, "running", JSON.stringify(owner)); owners.push(owner); return owner; }, stop };
 }
 
 async function copiedTestRelease(directory) {

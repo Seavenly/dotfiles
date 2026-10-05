@@ -59,6 +59,7 @@ async function main() {
   ]);
   const isolation = createQualificationIsolation({
     worktreeRoot: options.worktree,
+    configDirectory: options["config-directory"] === undefined ? undefined : requiredAbsolute(options, "config-directory"),
     xdgStateHome: options["xdg-state-home"],
     authorityDirectory: options["authority-directory"],
     socketPath: options.socket,
@@ -283,6 +284,7 @@ function parseArgs(args) {
   const options = {};
   const keys = new Set([
     "--probe",
+    "--config-directory",
     ...REQUIRED.map((key) => `--${key}`),
     "--timeout",
   ]);
@@ -307,6 +309,7 @@ function requiredAbsolute(options, key, allowIdentity = false) {
   if (!allowIdentity && !value.startsWith("/")) {
     throw new NativeProbeError("native_probe_argument_invalid", `--${key} must be absolute`);
   }
+  return value;
 }
 
 function boundedTimeout(value) {

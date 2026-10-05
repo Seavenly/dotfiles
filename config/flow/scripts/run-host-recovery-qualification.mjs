@@ -94,6 +94,7 @@ try {
   if (!scenario) throw new Error(`unknown issue-46 scenario: ${options.scenario ?? ""}`);
   isolation = createQualificationIsolation({
     worktreeRoot,
+    configDirectory: options["config-directory"] === undefined ? undefined : requiredAbsolute(options, "config-directory"),
     xdgStateHome: requiredAbsolute(options, "xdg-state-home"),
     authorityDirectory: requiredAbsolute(options, "authority-directory"),
     socketPath: requiredAbsolute(options, "socket"),
@@ -114,7 +115,7 @@ try {
     label: "rawRoot",
   });
   entrypoints = resolvePinnedEntrypoints({ worktreeRoot });
-  release = derivePinnedReleaseIdentity({ worktreeRoot });
+  release = derivePinnedReleaseIdentity({ worktreeRoot, configDirectory: isolation.config_directory });
   mkdirSync(rawRoot, { recursive: true, mode: 0o700 });
   const driverOptions = {
     entrypoints,
@@ -454,6 +455,7 @@ async function runNativeReaderQualificationScenario({
     scriptPath,
     "--probe", probe,
     "--worktree", worktreeRoot,
+    ...(isolation.config_directory === undefined ? [] : ["--config-directory", isolation.config_directory]),
     "--raw-root", rawRoot,
     "--xdg-state-home", isolation.xdg_state_home,
     "--authority-directory", isolation.authority_directory,
@@ -728,6 +730,7 @@ function nativeProviderScenarioRunner({
     scriptPath,
     "--scenario", scenarioId,
     "--worktree", worktreeRoot,
+    ...(isolation.config_directory === undefined ? [] : ["--config-directory", isolation.config_directory]),
     "--authority-directory", isolation.authority_directory,
     "--home-directory", isolation.qualification_workspace,
     "--xdg-state-home", isolation.xdg_state_home,
@@ -1471,6 +1474,7 @@ function nativeBackupRestoreProbeRunner({
     scriptPath,
     "--probe", "backup_restore",
     "--worktree", worktreeRoot,
+    ...(isolation.config_directory === undefined ? [] : ["--config-directory", isolation.config_directory]),
     "--raw-root", rawRoot,
     "--temporary-root", dirname(isolation.xdg_state_home),
     "--xdg-state-home", isolation.xdg_state_home,
@@ -1553,6 +1557,7 @@ function nativeDrovrLockProbeRunner({
     scriptPath,
     "--probe", "drovr_lock",
     "--worktree", worktreeRoot,
+    ...(isolation.config_directory === undefined ? [] : ["--config-directory", isolation.config_directory]),
     "--raw-root", rawRoot,
     "--temporary-root", dirname(isolation.xdg_state_home),
     "--xdg-state-home", isolation.xdg_state_home,
@@ -1753,6 +1758,7 @@ function parseArgs(args) {
   const options = {};
   const keyMap = new Map([
     ["--worktree", "worktree"],
+    ["--config-directory", "config-directory"],
     ["--raw-root", "raw-root"],
     ["--scenario", "scenario"],
     ["--xdg-state-home", "xdg-state-home"],

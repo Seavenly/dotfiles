@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, chmod, rm, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, chmod, rm, readFile, stat, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -285,7 +285,12 @@ test("exact reservation recovery adopts stored invocation before ambient spawn p
       const fixture = await directTaskFixture(t, mode);
       const dispatched = await fixture.port.dispatch(fixture.request);
       const original = mode === "complete" ? await fixture.port.wait({ turn_id: dispatched.task.id, timeout_ms: 3000 }) : dispatched;
-      await writeFile(fixture.options.executables.codex, (await readFile(fixture.options.executables.codex, "utf8")) + "\n# ambient executable update\n");
+      const executable = fixture.options.executables.codex;
+      const successor = executable + ".successor";
+      const executableMode = (await stat(executable)).mode & 0o777;
+      await writeFile(successor, (await readFile(executable, "utf8")) + "\n# ambient executable update\n", { flag: "wx", mode: executableMode });
+      await chmod(successor, executableMode);
+      await rename(successor, executable);
       const recovered = createDirectDelegatedAgentPort({ ...fixture.options,
         env: { HOME: join(fixture.scratch, "other-home"), PATH: fixture.options.env.PATH + ":/different-owner-path", CODEX_HOME: join(fixture.scratch, "other-codex") },
         resolveWorkspace: () => { throw new Error("ambient_workspace_lookup"); },

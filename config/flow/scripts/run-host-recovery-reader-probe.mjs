@@ -41,6 +41,7 @@ async function main() {
   mkdirSync(paths["raw-root"], { recursive: true, mode: 0o700 });
   const isolation = createQualificationIsolation({
     worktreeRoot: paths.worktree,
+    configDirectory: options["config-directory"] === undefined ? undefined : requiredAbsolute(options, "config-directory"),
     xdgStateHome: paths["xdg-state-home"],
     authorityDirectory: paths["authority-directory"],
     socketPath: paths.socket,

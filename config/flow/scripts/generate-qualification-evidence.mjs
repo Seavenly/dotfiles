@@ -65,7 +65,10 @@ const phase2Record = requireLedgerEvidence(ledger, "production_route_conformance
 if (!bootstrapPrerequisites) {
   requirePassedLedgerEvidence(ledger, "issue_46_host_recovery");
   try {
-    validateTrackedHostRecoveryEvidence({ worktreeRoot: repositoryRoot });
+    validateTrackedHostRecoveryEvidence({
+      worktreeRoot: repositoryRoot, configDirectory, ledgerPath,
+      evidencePath: join(configDirectory, "evidence/host-recovery-qualification.v1.json"),
+    });
   } catch (error) {
     throw new Error(
       `release qualification requires exact tracked issue-46 evidence: ${error.message}`,

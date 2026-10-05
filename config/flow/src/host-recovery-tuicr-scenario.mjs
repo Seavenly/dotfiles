@@ -817,17 +817,26 @@ function now(clock) {
 
 function waitForChild(child, timeoutMs) {
   return new Promise((resolveResult, reject) => {
-    let timer = setTimeout(() => {
+    let timedOut = false;
+    let spawnError = null;
+    let killTimer = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGTERM");
-      resolveResult({ exitCode: null, signal: "SIGTERM", timedOut: true });
+      killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, 1_000);
     }, timeoutMs);
     child.once("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      clearTimeout(killTimer);
+      spawnError = error;
     });
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
-      resolveResult({ exitCode, signal, timedOut: false });
+      clearTimeout(killTimer);
+      if (spawnError !== null) reject(spawnError);
+      else resolveResult({ exitCode, signal, timedOut });
     });
   });
 }

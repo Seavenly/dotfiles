@@ -26,6 +26,8 @@ import {
   deterministicQualificationAssertionsForRelease,
 } from "../../../tools/flow/src/qualification-recipe.mjs";
 
+import { validateTrackedHostRecoverySuccessor } from "../src/host-recovery-qualification.mjs";
+
 const defaultConfigDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const invocation = parseDirectories(process.argv.slice(2));
 const repositoryRoot = invocation.repositoryRoot ?? resolve(defaultConfigDirectory, "../..");
@@ -221,6 +223,17 @@ function initializeTestRelease() {
     throw new Error("alternate release generation requires the curated dark test manifest");
   }
   const canonical = join(repositoryRoot, "config/flow");
+  const path = join(configDirectory, "transition-ledger.v1.json");
+  const fresh = !existsSync(path);
+  const selectedLedger = fresh ? undefined : JSON.parse(readFileSync(path, "utf8"));
+  const hostRecord = selectedLedger?.evidence?.find(({ id }) => id === "issue_46_host_recovery");
+  const preserveHostEvidence = hostRecord !== undefined && !(hostRecord.status === "not_run" &&
+    hostRecord.path === null && hostRecord.sha256 === null && hostRecord.evidence_digest === null);
+  if (preserveHostEvidence) {
+    // Governed content may have drifted, but the selected predecessor must
+    // still be exactly ledger-bound before any generated file is written.
+    validateTrackedHostRecoverySuccessor({ worktreeRoot: repositoryRoot, configDirectory });
+  }
   mkdirSync(join(configDirectory, "contracts"), { recursive: true });
   mkdirSync(join(configDirectory, "evidence"), { recursive: true });
   if (invocation.featureTestFixtureReceipt !== undefined) {
@@ -234,16 +247,18 @@ function initializeTestRelease() {
     mkdirSync(join(configDirectory, "evidence/receipts"), { recursive: true });
     writeFileSync(join(configDirectory, "evidence/receipts/public-production-feature-test.tap"), bytes);
   }
-  for (const path of ["contracts/catalog.v1.json", "contracts/drovr-required-features.v1.json", "legacy-baselines.v1.json", "evidence/host-recovery-qualification.v1.json"]) {
+  for (const path of ["contracts/catalog.v1.json", "contracts/drovr-required-features.v1.json", "legacy-baselines.v1.json"]) {
     copyFileSync(join(canonical, path), join(configDirectory, path));
+  }
+  if (!preserveHostEvidence) {
+    const hostPath = "evidence/host-recovery-qualification.v1.json";
+    copyFileSync(join(canonical, hostPath), join(configDirectory, hostPath));
   }
   for (const path of ["launch-policy.v1.json", "evidence/release-qualification.v1.json"]) {
     if (!existsSync(join(configDirectory, path))) copyFileSync(join(canonical, path), join(configDirectory, path));
   }
-  const path = join(configDirectory, "transition-ledger.v1.json");
   const historical = JSON.parse(readFileSync(join(canonical, "transition-ledger.v1.json"), "utf8"));
-  const fresh = !existsSync(path);
-  const initialized = fresh ? historical : JSON.parse(readFileSync(path, "utf8"));
+  const initialized = fresh ? historical : selectedLedger;
   const qualificationBase = "c34c6e881ce375691d4f3e4ca626c1af9eef81cc";
   const inventory = JSON.parse(readFileSync(join(configDirectory, "legacy-baselines.v1.json"), "utf8"));
   if (fresh) {

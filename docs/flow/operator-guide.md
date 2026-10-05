@@ -39,15 +39,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `1e3e4665d4241419ad573d208077a20d845289bc` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `893219bd854348d7edc9c16f4d20e5989566137e` |
-| Governed release content | `sha256:ff8e41661f33f6bb4b9b057ee2bed89bdf9f5d14558ea1f9f2ebfd54eecb0411` |
+| Governed release candidate tree (`release-content.v1.json`) | `6e2888e7d970aa39f015397fc2f8bc6dbd8aa619` |
+| Governed release content | `sha256:eed296c7f92baa40c8e4c1ddd8400c4b2211c6dac5eb534be67cce289eacd02d` |
 | Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:d6a63b94625b1a686a646d72c03be240bb8d0e95dbdd84071a6a84efe6c8e01a` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:750261c8699694f4390d664f2d69d1d6a4209e904979275efd5cae61d6843654` |
 | Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
-| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:677b325a01608bebc5abbbd4c1faea2143fcc63830fd568daf7c4196e964ef10` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:3ea7b6ce16d63e935254da2a1becbe1e0af0bfcd82ff3d8ba7af17387e3f89a4` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:8c46977a8db2fb127d0188e2c764576fc2862ade6f3e9440f2248093183d5ba5` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:08c6327a9c9b1f3006663b4dd24e734944413f5d793c5997120dbe120b8a1bac` |
 
 Historical deterministic qualification evidence is bound to its recorded
 release and is not bound to the current ticket candidate. The current ledger
@@ -138,7 +138,7 @@ for that separately qualified, disposable pilot.
 | Test pilot manifest | `config/flow/releases/1.1-dark-test/release-manifest.v1.json`, `flow-release-1.1-dark-test/v1`, `sha256:a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b` |
 | Test pilot catalog | `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
 | Test pilot qualification base | `c34c6e881ce375691d4f3e4ca626c1af9eef81cc` |
-| Test pilot content | `893219bd854348d7edc9c16f4d20e5989566137e`, `sha256:8633b976c6749ff056a46942ab2fc98a01294095eddd4570e0b087b9765795aa`, `sha256:b40078d1ab7572332876e08c46e35dc87ed9c1dbe9402588a3357a4408af6ab0` |
+| Test pilot content | `6e2888e7d970aa39f015397fc2f8bc6dbd8aa619`, `sha256:f1d007e590938b76e30d4c330f0b51f69cd653d6ff1aeb3b1d25f5b139597c6d`, `sha256:e3b71572ddb0a0a76f99888a243158ff95a4f63425e6e1b7e2e7bbe9396f39d7` |
 | Test pilot source qualification | `not_run`; deterministic qualification, production conformance and new host qualification grant no admission |
 | Historical fixture bootstrap | `config/flow/releases/1.1-dark-test/evidence/receipts/public-production-feature-test.tap`, `sha256:3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050`; pre-D deterministic fixture evidence only, never current/native qualification |
 
@@ -151,6 +151,17 @@ export FLOW_QUALIFICATION_REPOSITORY_ROOT="$FLOW_RUNTIME_ROOT"
 export FLOW_EXECUTION_BACKEND=direct
 ```
 
+Selected host-recovery collection and validation must use the same explicit
+configuration directory. Follow the [selected host evidence recipe](../../config/flow/qualification/README.md)
+with `--config-directory`; historical default-release evidence is not proof for
+this pilot. Its first host binding uses `--initialize-selected-release` only for
+an initially unbound selected release, with `--preserve-historical-directory`
+retaining the prior aggregate and ledger bytes outside the repository. Later
+bound replacements retain the strict `--replace-tracked-successor` path. Every
+required scenario and native witness still needs actual current receipts. The
+aggregate and ledger have separate atomic writes; interruption between them
+leaves admission withheld until their exact bindings agree.
+
 Apply these settings to the trusted owner before it starts. Selecting files
 does not install a test check or grant qualification. The owner must also be
 provisioned with one private `featureTestCheck` through the production runtime
@@ -160,6 +171,115 @@ describe the supported host recipe; do not put executable paths, commands,
 environment, timeout, expected failure, health assertions or receipts in the
 public request. Missing or invalid host configuration returns an unavailable
 test route and leaves verify/review construction usable.
+
+#### Provision the trusted owner
+
+The existing `FLOW_OWNER_RUNTIME_MODULE` hook loads an approved host factory.
+Keep this module outside the disposable feature repository and make it private;
+it is trusted host code, not public caller input. Embed the fixed recipe in its
+bytes rather than reading a mutable external recipe file. The owner records the
+module SHA-256 together with the selected configuration and rechecks that binding
+before importing it. Do not point a host at `test-support/direct-feature-test-runtime.mjs`;
+that wrapper belongs to deterministic fixtures.
+
+This concrete example selects a committed test for changing `feature.txt` from
+`before\n` to `after\n`. Before preparation, the clean disposable repository
+must already commit `feature.txt` containing `before` plus these two files:
+
+```js
+// health.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+test("positive health probe", () => assert.equal(2 + 2, 4));
+```
+
+```js
+// acceptance.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+test("selected feature behavior", () =>
+  assert.equal(readFileSync("feature.txt", "utf8"), "after\n"));
+```
+
+Choose the exact accepted runtime, canonical disposable workspace, approved Node
+22 executable and an owned private receipt directory. The following preparation
+writes one new factory module. It reads file bytes but runs no check, native CLI
+or provider, and uses exclusive creation so it cannot overwrite another module:
+
+```sh
+export FLOW_CHECK_WORKSPACE=/absolute/path/to/disposable/repository
+export FLOW_CHECK_NODE=/absolute/path/to/approved/node22
+export FLOW_OWNER_RUNTIME_MODULE="$RECEIPTS/trusted-feature-test-owner.mjs"
+"$FLOW_CHECK_NODE" --input-type=module <<'NODE'
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+if (!/^v22\.[0-9]+\.[0-9]+$/.test(process.version)) throw new Error("Node 22 required");
+const runtimeRoot = realpathSync(process.env.FLOW_RUNTIME_ROOT);
+const workspace = realpathSync(process.env.FLOW_CHECK_WORKSPACE);
+const executable = realpathSync(process.execPath);
+const sha = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const file = (path, case_name) => ({
+  path, sha256: sha(readFileSync(join(workspace, path))), case_name,
+});
+const featureTestCheck = {
+  schema: "flow.production-feature-test-check/v1",
+  check_id: "check:feature-text",
+  executable: { path: executable, version: process.version, sha256: sha(readFileSync(executable)) },
+  health: file("health.test.mjs", "positive health probe"),
+  acceptance: file("acceptance.test.mjs", "selected feature behavior"),
+  pinned_files: [],
+  criteria: ["feature.txt contains after"],
+  expected_failure: {
+    code: "ERR_ASSERTION", operator: "strictEqual", expected: "after\n", actual: "before\n",
+  },
+  environment: { PATH: "/usr/bin:/bin" },
+  limits: { timeout_ms: 5000, max_output_bytes: 65536 },
+};
+const runtime = pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href;
+const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(runtime)};
+const featureTestCheck = ${JSON.stringify(featureTestCheck, null, 2)};
+export function createFlowRuntime(options = {}) {
+  return production({ ...options, featureTestCheck });
+}
+`;
+writeFileSync(process.env.FLOW_OWNER_RUNTIME_MODULE, moduleBytes, { flag: "wx", mode: 0o600 });
+NODE
+```
+
+For another check, replace the committed files, names, exact ordered criteria and
+expected assertion together. List additional immutable check dependencies in
+`pinned_files` with their relative paths and SHA-256; do not pin implementation
+files that the writer must change. This first pilot accepts one fixed recipe.
+Preparation verifies the selected files still match their committed HEAD bytes,
+the approved executable and the bounded runner. It does not infer a healthy
+result from the configuration.
+
+Apply the release selection above and the factory setting to the same isolated
+owner and public clients. Allocate explicit private authority/socket/endpoint
+paths and the disposable repository before starting it:
+
+```sh
+export FLOW_AUTHORITY_DIRECTORY="$RECEIPTS/authority"
+export FLOW_OWNER_SOCKET_PATH="$FLOW_AUTHORITY_DIRECTORY/owner.sock"
+export FLOW_OWNER_ENDPOINT_PATH="$FLOW_AUTHORITY_DIRECTORY/owner.json"
+export FLOW_REPOSITORY_ROOT="$FLOW_CHECK_WORKSPACE"
+"$FLOW_CHECK_NODE" "$FLOW_RUNTIME_ROOT/config/flow/src/cli.mjs" start --json
+"$FLOW_CHECK_NODE" "$FLOW_RUNTIME_ROOT/config/flow/src/cli.mjs" status --json
+```
+
+These commands are for a separately authorized isolated owner after exact release
+qualification and native pre-effect policy are established. They do not enable a
+host manager, switch the legacy default, qualify native execution or authorize
+paid work. Missing or invalid recipes leave the test route unavailable. A stale
+module binding refuses construction; changed check/configuration fingerprints
+refuse launch before claims or dispatch. To change a recipe, first use returned
+public actions to retire any active work, stop only this owned owner, retain its
+evidence, create an approved new module and reprepare after restarting. Do not
+edit a module under an active owner or replay an old prepared run after drift.
 
 After the owner has selected a committed check whose exact criteria match the
 brief, a request uses only its `check_id`. For example, if the owner has

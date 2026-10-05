@@ -41,10 +41,10 @@ test("public direct description pins Codex identity and denies old approval prof
   }
 });
 
-for (const scenario of ["success", "cancel", "restart"]) test(scenario === "cancel" ? "detached public cancellation retires direct task before writer release" : scenario === "restart" ? "detached owner replacement retains direct writer and adopts exactly one task" : "detached public direct feature fixture edits files before an operation commits and seals unknown candidate", async (t) => {
+for (const scenario of ["success", "cancel", "restart"]) test(scenario === "cancel" ? "detached public cancellation retains its writer through affirmative task retirement" : scenario === "restart" ? "detached owner replacement retains direct writer and adopts exactly one task" : "detached public direct feature fixture edits files before an operation commits and seals unknown candidate", async (t) => {
   const cancellation = scenario === "cancel";
   const { execFileSync } = await import("node:child_process");
-  const { mkdir, readFile } = await import("node:fs/promises");
+  const { mkdir, readFile, readdir } = await import("node:fs/promises");
   const scratch = await mkdtemp(join(tmpdir(), "flow-direct-feature-"));
   let ownerCleanup = async () => {};
   t.after(async () => { await ownerCleanup(); await rm(scratch, { recursive: true, force: true }); });
@@ -65,6 +65,7 @@ for (const scenario of ["success", "cancel", "restart"]) test(scenario === "canc
 import {readFileSync,writeFileSync,appendFileSync,existsSync} from "node:fs";
 import {createHash} from "node:crypto";
 if(process.argv[2]==="--version"){console.log("codex-cli 0.160.0");process.exit(0);}
+if(${cancellation})process.on("SIGTERM",()=>{});
 const raw=readFileSync(0,"utf8"); const envelope=JSON.parse(raw); const task=envelope.task_inputs;
 appendFileSync(${JSON.stringify(join(scratch,"invocations"))},(task.phase ?? task.role)+"\\n");
 const canonical=(v)=>Array.isArray(v)?v.map(canonical):v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
@@ -101,7 +102,23 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
     const retirement=await stopFlowOwner({env:ownerEnv,pid:owner.pid,processStartIdentity:owner.process_start_identity,waitMs:3000,force:true});
     assert.equal(retirement.state,"stopped",JSON.stringify(retirement));
     await retainPublicFixtureEvidence(`owner-retirement-${scenario}`,{fixture_owner_retirement:{pid:owner.pid,process_start_identity:owner.process_start_identity,retirement}});
+    if (cancellation) await retainPublicFixtureEvidence("direct-cancel-task-retirement",{fixture_direct_tasks:await captureDirectTasks()});
   };
+  async function captureDirectTasks() {
+    const directory=join(authorityDirectory,"direct-tasks");
+    const tasks=[];
+    for (const task of await readdir(directory)) {
+      const files={};
+      for (const name of ["descriptor.json","worker.json","cancel.json","receipt.json","stdin.bin","stdout.bin","stderr.bin","last-message.json"]) {
+        files[name]=await readFile(join(directory,task,name)).then(bytes=>({base64:bytes.toString("base64")})).catch(error=>{
+          if(error.code!=="ENOENT")throw error;
+          return {absent:true};
+        });
+      }
+      tasks.push({task_id:`task:${task}`,files});
+    }
+    return tasks;
+  }
   const runtime=Object.fromEntries(["prepare","launch","command","query"].map(operation=>[operation,request=>requestFlowTransport({socketPath:owner.socket_path,operation,request})]));
   const optIn={schema:"flow.dark-opt-in/v1",release_id:"flow-release-1.0-dark/v1",purpose:"sacrificial_qualification"};
   const prepared=await runtime.prepare({schema:"flow.feature-preparation-request/v1",dark_opt_in:optIn,brief:{schema:"flow.feature-brief/v1",id:"brief:direct",summary:"Change feature.txt to after",acceptance:["feature.txt contains after"]},repository,mode:"verify",routes:{apply:{harness:"codex",model:"fixture-model",effort:"high",capability:"workspace-write-denied"},critique:{harness:"codex",model:"fixture-model",effort:"high",capability:"read-only"}}});
@@ -110,6 +127,7 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
   assert.equal(JSON.stringify(prepared).includes('"candidate_digest"'),false);
   const launch=await runtime.launch({prepared,dark_opt_in:optIn,confirmation:{schema:"flow.predefined-flow-confirmation-decision/v1",decision:"accept",bundle_digest:prepared.bundle_digest,confirmation_digest:prepared.confirmation_digest},closed_facts:{schema:"flow.closed-fact-observation/v1",bundle_digest:prepared.bundle_digest,facts:structuredClone(prepared.explicit_facts)}});
   assert.equal(launch.schema,"flow.launch-receipt/v1",JSON.stringify(launch));
+  let cancellationCommand;
   if (scenario !== "success") {
     const end = Date.now() + 5000;
     while (Date.now() < end && !(await readFile(join(scratch,"invocations"),"utf8").catch(()=>"")).includes("apply")) await new Promise(resolve=>setTimeout(resolve,20));
@@ -132,18 +150,54 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
     if (cancellation) {
     const active=await runtime.query({run_id:launch.run_id});
     const cancel=active.legal_actions.find(({type})=>type==="cancel");assert.ok(cancel,JSON.stringify(active));
-    assert.equal((await runtime.command(cancel)).accepted,true);
+    cancellationCommand=await runtime.command(cancel);
+    assert.equal(cancellationCommand.accepted,true);
     }
   }
+  let workspaceInspection;
+  let cancellationWorkspace;
+  const cancellationSnapshots=[];
+  if (cancellation) {
+    const { createDurableRunAuthority } = await import("../../../tools/flow/src/run-authority.mjs");
+    const { getWorkspaceAuthority } = await import("../../../tools/flow/src/work-authority.mjs");
+    workspaceInspection=createDurableRunAuthority({authorityDirectory,access:"inspect"});
+    t.after(()=>workspaceInspection.close());
+    cancellationWorkspace=getWorkspaceAuthority({runAuthority:workspaceInspection});
+  }
+  const cancellationSubject=prepared.graph.cards.find(({id})=>id==="feature-direct-commit").inputs.workspace.subject_id;
   let projection;const end=Date.now()+10000;
-  do { projection=await runtime.query({run_id:launch.run_id}); if(["succeeded","failed","cancelled"].includes(projection.phase))break; await new Promise(r=>setTimeout(r,20)); } while(Date.now()<end);
+  do {
+    projection=await runtime.query({run_id:launch.run_id});
+    if (cancellation && projection.phase==="cancelled") {
+      const workspace=cancellationWorkspace.query({contract:"work.workspace/v1",subject_id:cancellationSubject});
+      const effect=projection.effects.find(effect=>effect.effect_kind==="delegate_cancellation");
+      const previous=cancellationSnapshots.at(-1);
+      if (!previous || JSON.stringify(previous.projection.watermark)!==JSON.stringify(projection.watermark)) {
+        cancellationSnapshots.push({projection,workspace,direct_tasks:await captureDirectTasks(),head:git(["rev-parse","HEAD"]),invocations:await readFile(join(scratch,"invocations"),"utf8")});
+        await retainPublicFixtureEvidence("direct-cancel-observations",{fixture_cancellation:{launch,cancellationCommand,cancellationSnapshots}});
+      }
+      if (!effect?.receipt) assert.ok(workspace.claims.some(claim=>claim.holder===launch.run_id),"pending cancellation must retain its writer");
+      if (effect?.receipt?.provider_receipt?.terminal_disposition?.retired===true)break;
+    } else if(["succeeded","failed","cancelled"].includes(projection.phase)) {
+      break;
+    }
+    await new Promise(r=>setTimeout(r,20));
+  } while(Date.now()<end);
   if (cancellation) {
     assert.equal(projection.phase,"cancelled",JSON.stringify(projection));
     assert.equal(git(["rev-parse","HEAD"]),initial);
     assert.equal(await readFile(join(scratch,"invocations"),"utf8"),"apply\n");
     const cancellationEffect=projection.effects.find(effect=>effect.effect_kind==="delegate_cancellation");
+    assert.ok(cancellationEffect?.receipt,"cancelled admission preceded its affirmative retirement receipt");
     assert.equal(cancellationEffect.receipt.provider_receipt.terminal_disposition.proof,"linux_subreaper_echild");
     assert.equal(cancellationEffect.receipt.provider_receipt.terminal_disposition.retired,true);
+    const disposition=cancellationEffect.receipt.provider_receipt.terminal_disposition;
+    const task=cancellationSnapshots.at(-1).direct_tasks.find(({task_id})=>task_id===disposition.resource.id);
+    const terminal=JSON.parse(Buffer.from(task.files["receipt.json"].base64,"base64").toString("utf8"));
+    const { digest } = await import("../../../tools/flow/src/canonical.mjs");
+    assert.equal(digest(terminal),disposition.terminal_receipt_digest);
+    assert.equal(terminal.tree_retired,true);
+    assert.equal(terminal.cancelled,true);
     assert.ok(projection.resource_dispositions.every(record=>record.disposition!=="unresolved"));
     return;
   }

@@ -148,6 +148,18 @@ this private configuration. Missing or invalid configuration keeps the test
 operation unavailable while preserving verify and review construction. This
 pilot supports one direct Linux Codex test slice; mixed mode stays disabled.
 
+For a detached owner, use the existing `FLOW_OWNER_RUNTIME_MODULE` hook with an
+approved private factory module. Embed the complete recipe in that module and
+export `createFlowRuntime(options)` forwarding
+`productionCreateFlowRuntime({ ...options, featureTestCheck })`. The owner binds
+the module bytes and selected configuration before importing the factory; the
+check selection then binds the recipe and committed check/runner bytes at
+preparation and launch. The [operator recipe](../../docs/flow/operator-guide.md#provision-the-trusted-owner)
+shows this path without a new loader. The test-support runtime wrapper is a
+fixture seam, not an installed host configuration mechanism. Changing a module
+requires a deliberate owner restart and fresh preparation; neither operation
+grants qualification or widens native permissions.
+
 The check configuration pins a Node 22 executable and version, workspace-relative
 committed acceptance and positive health files with one named `node:test` case
 each, any additional pinned files, the exact ordered brief criteria, an expected
