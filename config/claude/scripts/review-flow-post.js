@@ -8,6 +8,8 @@
 // render):
 //   0. the run is not a replay of frozen revisions (manual regression runs are
 //      never posted, whatever the live head is)
+//   0b. a quick set (one reviewer, no Claude verifier) was audited: its
+//      Codex cross-check status is "applied"
 //   1. a draft exists (no draft-blocked.json, no failed render)
 //   2. the PR head still equals the reviewed snapshot; a moved head can
 //      invalidate findings in ways a per-finding patch can't see
@@ -19,7 +21,8 @@
 // `event` stays omitted, so the review is PENDING until the user submits it.
 //
 // Exit codes: 0 posted (or dry-run passed) · 2 usage · 3 no draft ·
-// 4 head moved · 5 pending review exists · 6 POST failed · 7 replay run.
+// 4 head moved · 5 pending review exists · 6 POST failed · 7 replay run ·
+// 8 quick set without an applied Codex audit.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -42,6 +45,22 @@ function main() {
   const snapReplay = fs.existsSync(snapshotPath) && JSON.parse(fs.readFileSync(snapshotPath, "utf8")).replay === true;
   if (field("replay") === "true" || snapReplay) {
     done(7, { error: "replay run of frozen revisions: posting is disabled", comparison: field("comparison") || null });
+  }
+
+  // 0b. A quick set's only audit is Codex; without it the set is one agent's word.
+  // Either marker is enough, and an unreadable set fails closed.
+  let comments = null;
+  try { comments = JSON.parse(fs.readFileSync(path.join(outDir, "comments.json"), "utf8")); } catch { /* handled below */ }
+  if (!comments) done(3, { error: "out/comments.json is missing or unreadable; fix it and re-render" });
+  if (comments.depth === "quick" || /^\s+depth:\s*quick\s*$/m.test(brief)) {
+    const cc = comments.cross_check;
+    if (!cc || cc.status !== "applied") {
+      done(8, {
+        error: "quick review without an applied Codex audit: posting is disabled",
+        cross_check: cc ? `${cc.status}${cc.reason ? `: ${cc.reason}` : ""}` : "not run",
+        fix: "run codex-cross-check.js and re-render, or run a full review",
+      });
+    }
   }
 
   // 1. Draft exists.

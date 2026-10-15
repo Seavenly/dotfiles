@@ -6,6 +6,8 @@
 // Runs after the workflow (critic + Claude verifier) and before the renderer.
 // A different model family re-attacks the finished set, because a checker
 // from the same family as the finders tends to accept the same wrong claims.
+// On a quick set (comments.depth "quick", one reviewer and no Claude verifier)
+// it is the only audit, and the prompt says so.
 //
 // Codex never edits comments.json. It returns one verdict per finding id; this
 // script validates and applies them:
@@ -95,7 +97,7 @@ function main() {
   const logPath = path.join(cxDir, "exec.log");
   fs.rmSync(verdictPath, { force: true });
   fs.writeFileSync(schemaPath, JSON.stringify(VERDICT_SCHEMA, null, 2));
-  fs.writeFileSync(promptPath, buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir }));
+  fs.writeFileSync(promptPath, buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick: comments.depth === "quick" }));
 
   const started = Date.now();
   const res = spawnSync(
@@ -279,7 +281,7 @@ const VERDICT_SCHEMA = {
 // Deliberately NOT seeded with the Claude pipeline's prompts or evidence-rule
 // wording: the value of this pass is an independent read. It gets the
 // finished findings, the inputs, and a disposition vocabulary.
-function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir }) {
+function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick }) {
   const slim = findings.map((f) => ({
     id: f.id,
     tier: f.tier,
@@ -301,7 +303,10 @@ function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir }) {
     .map(([label, p]) => `- ${label}: ${p}`)
     .join("\n");
 
-  return `You are an independent reviewer from a different model family, doing the last check on a pull-request review before a human decides what to post. Another model produced the findings below and has already tried to verify them. Your value is catching what that model family gets wrong.
+  const provenance = quick
+    ? "A single reviewer from another model produced the findings below in one pass, and nothing else has checked them: you are the only audit. Your value is catching what that reviewer, and its model family, gets wrong."
+    : "Another model produced the findings below and has already tried to verify them. Your value is catching what that model family gets wrong.";
+  return `You are an independent reviewer from a different model family, doing the last check on a pull-request review before a human decides what to post. ${provenance}
 
 Inputs (read-only):
 ${inputs}

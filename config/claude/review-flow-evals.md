@@ -32,6 +32,10 @@ Or pass the same flags to `/review-flow`. A replay run:
   refuses it (exit 7), so the rendered draft is a proposal to inspect, never
   something that can be posted.
 
+Add `--depth quick` to replay a case through the single quick reviewer
+instead; the replay rules above are the same, and a quick result is recorded
+as its own entry.
+
 Don't give the reviewer the expected outcome, and delete the run directory
 when the result is recorded.
 
@@ -51,7 +55,9 @@ One entry per run, newest first:
 
 ```
 ### <date> <case> - <dotfiles commit>
+- depth: full | quick
 - models: reviewers <model>, critic <model>, verifier <model>, codex <model or off>
+  (quick: reviewer <model>, codex <model or off>)
 - expected problem: found (finding id, tier) | partial (what was missing) | missed
 - false positives: <ids and why, or none>
 - placement and coverage: anchors right? Coverage section honest about what was traced?

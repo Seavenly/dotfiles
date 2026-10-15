@@ -22,6 +22,11 @@ review_flow:
                               #              merge_ready_with_followups).
                               #   fast     — draft: criticals + importants.
                               #   standard — draft: all four tiers (caps apply).
+  depth: full                 # full | quick (--depth). quick = one reviewer
+                              # derived from the lens, critic and verifier
+                              # prompts, reporting criticals + importants only;
+                              # Codex is its only audit, so posting refuses a
+                              # quick set the cross-check didn't apply to.
   max_comments: 20            # draft budget across inline + general;
                               # criticals/importants exempt (always posted)
   per_tier_caps:              # optional fine-grained override

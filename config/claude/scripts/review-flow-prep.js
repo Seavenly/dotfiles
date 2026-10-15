@@ -4,7 +4,7 @@
 //
 //   node review-flow-prep.js <pr> [--repo owner/name] [--urgency hotfix|fast|standard]
 //        [--max-comments N] [--lenses a,b,c] [--prepare-draft] [--no-codex]
-//        [--focus "text"] [--allow-closed]
+//        [--depth quick|full] [--focus "text"] [--allow-closed]
 //        [--at-base <sha> --at-head <sha>]
 //
 // Pins one snapshot (head SHA, base SHA, diff digest, checkout SHA) so every
@@ -48,8 +48,11 @@ function main() {
   const defaults = readReviewDefaults(path.join(__dirname, "..", "defaults.yaml"));
   const urgency = opt("urgency") || (flag("hotfix") && "hotfix") || (flag("fast") && "fast") || defaults.urgency || "standard";
   if (!["hotfix", "fast", "standard"].includes(urgency)) fail(2, `unknown urgency: ${urgency}`);
+  const depth = opt("depth") || defaults.depth || "full";
+  if (!["quick", "full"].includes(depth)) fail(2, `unknown depth: ${depth} (quick or full)`);
   const config = {
     urgency,
+    depth,
     max_comments: Number(opt("max-comments") || defaults.max_comments || 20),
     per_tier_caps: defaults.per_tier_caps || { critical: null, important: null, recommended: 10, nit: 3 },
     reviewer_lenses: opt("lenses") ? opt("lenses").split(",") : defaults.reviewer_lenses,
@@ -220,11 +223,15 @@ function main() {
     ? ["REVIEW.md", ".github/REVIEW.md"].filter((f) => rules.files.includes(f)).map((f) => path.join(rules.dir, f))[0] || null
     : null;
 
+  // A quick set is audited only by Codex, so without it the run can't be posted.
+  const unpostable = "; a quick review without the Codex audit cannot be posted";
   if (config.codex) {
     const probe = spawnSync("codex", ["login", "status"], { encoding: "utf8" });
     if (probe.error || probe.status !== 0) {
-      warnings.push(`Codex cross-check will be skipped: ${probe.error ? "codex not found" : "not logged in (run `codex login`)"}`);
+      warnings.push(`Codex cross-check will be skipped: ${probe.error ? "codex not found" : "not logged in (run `codex login`)"}${depth === "quick" ? unpostable : ""}`);
     }
+  } else if (depth === "quick") {
+    warnings.push(`depth quick with codex off${unpostable}`);
   }
 
   const yamlStr = (s) => JSON.stringify(String(s));
@@ -246,6 +253,7 @@ ${replay ? `replay: true
 comparison: ${baseSha}..${headSha}
 ` : ""}config:
   urgency: ${config.urgency}
+  depth: ${config.depth}
   max_comments: ${config.max_comments}
   per_tier_caps:
 ${Object.entries(config.per_tier_caps).map(([k, v]) => `    ${k}: ${v === null ? "null" : v}`).join("\n")}
@@ -281,13 +289,13 @@ ${focus ? `Focus: ${focus}` : ""}${replay ? `\nReplay of frozen revisions ${base
         unreviewablePath: census.files.length ? unreviewablePath : null,
         replay,
         prNumber: Number(pr), prTitle: meta.title, repo, prUrl: meta.url, headSha,
-        urgency, maxComments: config.max_comments,
+        urgency, depth, maxComments: config.max_comments,
         lenses: config.reviewer_lenses,
         focus,
       },
       codex: config.codex,
       prepareDraft: config.prepare_draft,
-      confirm: `${replay ? `REPLAY ${baseSha.slice(0, 10)}..` : ""}PR #${pr} "${meta.title}" @ ${headSha.slice(0, 10)} · urgency ${urgency}: draft carries ${draftScope}; local report shows everything · codex ${config.codex ? "on" : "off"}${replay ? " · posting disabled" : ""}`,
+      confirm: `${replay ? `REPLAY ${baseSha.slice(0, 10)}..` : ""}PR #${pr} "${meta.title}" @ ${headSha.slice(0, 10)} · depth ${depth}${depth === "quick" ? " (one reviewer, Codex audits)" : ""} · urgency ${urgency}: draft carries ${draftScope}; local report shows everything · codex ${config.codex ? "on" : "off"}${replay ? " · posting disabled" : ""}`,
       warnings,
     }, null, 2) + "\n"
   );

@@ -28,6 +28,11 @@
 // evidence (local only — never posted), confidence (0-1, optional),
 // pre_existing (bool, optional), draft (false = hold out of the draft).
 //
+// Set-level fields from the workflow (optional; absent = full):
+//   depth           — "quick": one reviewer, criticals and importants only, and
+//                     Codex as its only audit; shown in review.md, never posted
+//   escalate        — quick only: why the PR deserves a full review, or null
+//
 // Set-level fields written after the Claude passes (all optional):
 //   decisions[]     — judgment calls for the human; local only, never posted
 //   cross_check     — Codex cross-check status and counts
@@ -141,6 +146,8 @@ function main() {
     orientation,
     coverage,
     replay: brief.replay === true ? brief.comparison || true : null,
+    quick: comments.depth === "quick",
+    escalate: comments.escalate || null,
     // Local report: every finding by tier, each carrying `excluded` (null when
     // it is in the draft). Draft: only the included subset.
     all: policy.all,
@@ -365,7 +372,7 @@ function renderMarkdown(ctx) {
   const out = [];
   out.push(`# Review of PR #${ctx.prNumber}: ${ctx.prTitle}\n`);
   out.push(
-    `**Verdict: ${ctx.postureLabel}**  ·  *urgency: ${ctx.urgency}*`
+    `**Verdict: ${ctx.postureLabel}**  ·  *urgency: ${ctx.urgency}*${ctx.quick ? "  ·  *depth: quick*" : ""}`
   );
   if (ctx.postureRationale) out.push(ctx.postureRationale);
   if (ctx.postureCaveat) out.push(`_⚠ ${ctx.postureCaveat}._`);
@@ -373,6 +380,11 @@ function renderMarkdown(ctx) {
 
   if (ctx.replay) {
     out.push(`> **Replay** of frozen revisions${typeof ctx.replay === "string" ? ` \`${ctx.replay}\`` : ""}: a manual regression run. Posting is disabled.`);
+    out.push("");
+  }
+  if (ctx.quick) {
+    out.push("> **Quick review:** one reviewer across every lens, criticals and importants only; the Codex cross-check is its only audit, and posting requires it.");
+    if (ctx.escalate) out.push(`> **Consider a full review:** ${ctx.escalate}`);
     out.push("");
   }
   const gaps = coverageGaps(ctx.coverage);
