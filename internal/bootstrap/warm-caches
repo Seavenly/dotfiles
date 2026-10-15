@@ -10,10 +10,6 @@ if [[ -r "$antidote" ]]; then
     "$antidote" "$root/config/zsh/zsh_plugins.txt" "$cache_home/antidote/zsh_plugins.zsh"
 fi
 
-if [[ -f "$root/config/claude/scripts/package-lock.json" ]]; then
-  npm ci --prefix "$root/config/claude/scripts"
-fi
-
 if [[ -f "$root/config/agent-flow/package-lock.json" ]]; then
   npm ci --prefix "$root/config/agent-flow"
 fi

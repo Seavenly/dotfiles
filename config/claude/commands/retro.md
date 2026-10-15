@@ -60,7 +60,7 @@ in frontmatter for host-local lookup; do not repeat it in prose or headings.
    - **STRESS** — a pattern already present but not followed / not emphasized enough.
 4. **Map each item to a candidate target.** Point each pattern at the file
    most likely to own it:
-   - `agents/<role>.md` — planner, researcher, tester, implementer, critic, synthesizer, diagrammer (persona / judgment)
+   - `agents/<role>.md` — planner, researcher, tester, implementer, critic, synthesizer, explainer (persona / judgment)
    - `workflows/<flow>-run.js` — orchestration: fan-out shape, retry/cap budgets, gate, phase order, spawn-prompt wording
    - `commands/<flow>-flow.md` — the interactive front half: interview, brief, worktree/setup, wrap-up
    - `AGENT-TEAMS.md` — if the gap is in how the run is framed or set up overall

@@ -10,14 +10,12 @@ trap 'rm -rf "$tmp"' EXIT
 fixture="$tmp/root"
 fake_bin="$tmp/bin"
 mkdir -p \
-  "$fixture/config/claude/scripts" \
   "$fixture/config/agent-flow" \
   "$fixture/config/flow" \
   "$fixture/tools/flow" \
   "$fake_bin" \
   "$tmp/home"
 touch \
-  "$fixture/config/claude/scripts/package-lock.json" \
   "$fixture/config/agent-flow/package-lock.json" \
   "$fixture/config/flow/package-lock.json" \
   "$fixture/tools/flow/package-lock.json"
@@ -36,7 +34,6 @@ HOME="$tmp/home" PATH="$fake_bin:$PATH" DOTFILES_ROOT="$fixture" \
   NPM_TEST_LOG="$tmp/npm.log" "$root/internal/bootstrap/warm-caches"
 
 npm_log="$(cat "$tmp/npm.log")"
-assert_contains "$npm_log" "ci --prefix $fixture/config/claude/scripts"
 assert_contains "$npm_log" "ci --prefix $fixture/config/agent-flow"
 assert_contains "$npm_log" "ci --prefix $fixture/config/flow"
 assert_contains "$npm_log" "ci --prefix $fixture/tools/flow"

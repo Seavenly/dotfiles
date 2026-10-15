@@ -4,7 +4,7 @@
 //
 //   node review-flow-prep.js <pr> [--repo owner/name] [--urgency hotfix|fast|standard]
 //        [--max-comments N] [--lenses a,b,c] [--prepare-draft] [--no-codex]
-//        [--diagrams] [--focus "text"] [--allow-closed]
+//        [--focus "text"] [--allow-closed]
 //        [--at-base <sha> --at-head <sha>]
 //
 // Pins one snapshot (head SHA, base SHA, diff digest, checkout SHA) so every
@@ -55,7 +55,6 @@ function main() {
     reviewer_lenses: opt("lenses") ? opt("lenses").split(",") : defaults.reviewer_lenses,
     prepare_draft: flag("prepare-draft"),
     codex: flag("no-codex") ? false : defaults.codex_cross_check !== false,
-    diagrams: flag("diagrams") || defaults.diagrams === true,
   };
   const focus = opt("focus") || null;
   const warnings = [];
@@ -84,7 +83,6 @@ function main() {
   const outDir = path.join(runDir, "out");
   const repoDir = path.join(runDir, "repo");
   fs.mkdirSync(path.join(outDir, "findings"), { recursive: true });
-  if (config.diagrams) fs.mkdirSync(path.join(outDir, "diagrams"), { recursive: true });
 
   // Diff + head, re-read until stable: a push between the reads would pair a
   // diff with the wrong SHA. A failed `gh pr diff` (usually too large for the
@@ -254,7 +252,6 @@ ${Object.entries(config.per_tier_caps).map(([k, v]) => `    ${k}: ${v === null ?
   reviewer_lenses: [${config.reviewer_lenses.join(", ")}]
   prepare_draft: ${config.prepare_draft}
   codex: ${config.codex}
-  diagrams: ${config.diagrams}
 focus: ${focus ? yamlStr(focus) : "null"}
 ---
 
@@ -286,7 +283,7 @@ ${focus ? `Focus: ${focus}` : ""}${replay ? `\nReplay of frozen revisions ${base
         prNumber: Number(pr), prTitle: meta.title, repo, prUrl: meta.url, headSha,
         urgency, maxComments: config.max_comments,
         lenses: config.reviewer_lenses,
-        diagrams: config.diagrams, focus,
+        focus,
       },
       codex: config.codex,
       prepareDraft: config.prepare_draft,

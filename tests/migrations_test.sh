@@ -150,6 +150,22 @@ ln -s "$unmanaged_target" "$HOME/.claude/commands"
   || fail "layout migration removed an unmanaged Claude commands link"
 echo "ok - migrations preserve converged and unmanaged layout targets"
 
+retired_marker="$XDG_STATE_HOME/dotfiles/migrations/015-retired-review-flow-links"
+rm -f "$retired_marker"
+mkdir -p "$HOME/.claude/scripts"
+ln -s "$root/config/claude/agents/diagrammer.md" "$HOME/.claude/agents/diagrammer.md"
+ln -s "$root/config/claude/scripts/package.json" "$HOME/.claude/scripts/package.json"
+ln -s "$root/config/claude/agents/researcher.md" "$HOME/.claude/agents/researcher.md"
+"$root/internal/migrate"
+[[ ! -L "$HOME/.claude/agents/diagrammer.md" ]] \
+  || fail "retired diagrammer link was not removed"
+[[ ! -L "$HOME/.claude/scripts/package.json" ]] \
+  || fail "retired scripts package link was not removed"
+[[ "$(readlink "$HOME/.claude/agents/researcher.md")" == "$root/config/claude/agents/researcher.md" ]] \
+  || fail "retired link migration removed a live agent link"
+[[ -f "$retired_marker" ]] || fail "retired review-flow link migration was not recorded"
+echo "ok - migrations remove only retired review-flow links"
+
 [[ "$(cat "$XDG_STATE_HOME/dotfiles/revisions/sketchybar-app-font")" == font-revision ]] \
   || fail "font revision was not preserved"
 [[ "$(cat "$XDG_STATE_HOME/dotfiles/revisions/macos-defaults-restart")" == defaults-revision ]] \

@@ -16,8 +16,9 @@ review_flow:
                               # DRAFT carries; reviewers always produce every
                               # tier and the local review.md shows everything.
                               #   hotfix   — draft: criticals only; skips
-                              #              orientation/diagrams; critic posture
-                              #              is binary (do_not_merge or
+                              #              orientation and the HTML overview;
+                              #              critic posture is binary
+                              #              (do_not_merge or
                               #              merge_ready_with_followups).
                               #   fast     — draft: criticals + importants.
                               #   standard — draft: all four tiers (caps apply).
@@ -43,7 +44,6 @@ review_flow:
   codex_cross_check: true     # cross-model check after the Claude verifier
                               # (scripts/codex-cross-check.js: gpt-6-sol,
                               # medium, read-only). --no-codex disables.
-  diagrams: false             # call-chain diagrams are opt-in (--diagrams)
 
 spike_flow:
   depth: deep                 # quick | deep

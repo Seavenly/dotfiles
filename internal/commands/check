@@ -55,8 +55,6 @@ run "tmux extended keys" bash -c 'rg -q '\''^set-option -s extended-keys on$'\''
 # shellcheck disable=SC2016
 run "JSON" bash -c 'for f in "$@"; do jq empty "$f" || exit; done' _ \
   "$root/config/nvim/nvim-pack-lock.json" \
-  "$root/config/claude/scripts/package.json" \
-  "$root/config/claude/scripts/package-lock.json" \
   "$root/config/agent-flow/package.json" \
   "$root/config/agent-flow/package-lock.json" \
   "$root/config/flow/package.json" \

@@ -42,7 +42,7 @@ prompts. Use it.
 ## Step 3 — Apply the edits
 
 Scope: anything under `~/.claude` is fair game:
-- `agents/<role>.md` — persona / judgment (planner, researcher, tester, implementer, critic, synthesizer, diagrammer)
+- `agents/<role>.md` — persona / judgment (planner, researcher, tester, implementer, critic, synthesizer, explainer)
 - `workflows/<flow>-run.js` — orchestration: fan-out shape, retry/cap budgets, gate, phase order, spawn-prompt wording
 - `commands/<flow>-flow.md` — the interactive front half (interview, brief, worktree/setup, wrap-up); `commands/retro*.md`
 - `AGENT-TEAMS.md` — overall framing

@@ -71,14 +71,14 @@ The diff is the inventory; the run journal holds the process detail.
 **You are not invoked for `review-flow` runs.** Review-flow's rendering
 is deterministic: `~/.claude/scripts/render-review.js` reads the run's
 `brief.md`, `comments.json`, and (when present) `orientation.md`, applies
-the urgency floor + numeric caps, and writes `review.md` and `review.html`
-from the same upstream data.
+the urgency floor + numeric caps, and writes `review.md` and the draft
+payload. The HTML overview belongs to the `explainer` persona.
 
 This separation exists because review-flow's "summary" was assembly,
 not synthesis — every prose section is authored by the critic
 (verdict, posture rationale, cluster) or the orientation researcher.
-A deterministic script avoids LLM drift between the MD and HTML
-outputs and removes a redundant sonnet pass.
+A deterministic script avoids LLM drift between `review.md` and the
+draft and removes a redundant sonnet pass.
 
 If you are spawned for a `review-flow` run by mistake, abort and say the
 renderer should be invoked instead.

@@ -1,5 +1,5 @@
 ---
-description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → Codex cross-model check → rendered review.md/.html, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --max-comments N, --prepare-draft, --lenses security,correctness,design,tests,observability, --no-codex, --diagrams, --focus "text", --at-base SHA --at-head SHA (replay frozen revisions; never posted).
+description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → Codex cross-model check → rendered review.md + HTML overview, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --max-comments N, --prepare-draft, --lenses security,correctness,design,tests,observability, --no-codex, --focus "text", --at-base SHA --at-head SHA (replay frozen revisions; never posted).
 ---
 
 Review PR `$ARGUMENTS`. Scripts do the mechanics; you run them in order, relay what they report, and talk to the user. If `$ARGUMENTS` is empty or `help`, explain the flags and the three urgency tiers (urgency only decides what the draft carries: hotfix = criticals, fast = + importants, standard = all; the local report always shows everything) and stop.
@@ -17,7 +17,7 @@ It pins the reviewed snapshot, clones that exact commit, fetches the stated inte
 
 Confirm auto permission mode is on (ask the user to `Shift+Tab` if not); pre-allowlisting `gh`, `git` and `node` avoids prompts mid-run. Run the saved workflow `/review-flow-run` with `launchArgs` as its args; never regenerate the script. Tell the user it launched (typically 5–15 minutes), then **wait for the completion notification**. Don't poll, narrate, probe `comments.json`, or review the PR yourself in parallel.
 
-It returns `{ commentsPath, orientationMd, diagramsStatus, counts, postCritic, postVerify, verify, cluster, lensesRun, rawFindings }`. `verify: null` means the verifier died and the critic's set is unverified; say so.
+It returns `{ commentsPath, orientationMd, counts, postCritic, postVerify, verify, cluster, lensesRun, rawFindings }`. `verify: null` means the verifier died and the critic's set is unverified; say so.
 
 ## 3. Persist, cross-check, render
 
@@ -25,13 +25,20 @@ It returns `{ commentsPath, orientationMd, diagramsStatus, counts, postCritic, p
 2. Write each `rawFindings` entry (findings, decisions, coverage) to `<outDir>/findings/<lens>.json`, and `orientationMd` (if any) to `<outDir>/orientation.md`. Lenses in `lensesFailed` get no file; the report shows them as not run.
 3. Unless `codex` is false: `node ~/.claude/scripts/codex-cross-check.js <runDir>` (foreground, a few minutes, fail-soft). Relay its one-line result.
 4. `node ~/.claude/scripts/render-review.js <runDir>`. If it errors, log stderr to `out/render-error.log`, write a minimal `review.md` from `comments.json`, and treat the run as having **no draft**.
+5. Unless urgency is hotfix, spawn the `explainer` agent in the background (Agent tool, `subagent_type: explainer`) for the HTML overview. Give it:
+   - the PR: number, title, URL, head SHA;
+   - sources: `<runDir>/out/pr-body.md`, `<runDir>/brief.md`, `<runDir>/out/pr.diff`, the checkout (`launchArgs.repoDir`) if any, `<runDir>/out/orientation.md` if written, and `<runDir>/out/comments.json` (its `decisions[]` and `posture`; line-level findings live in `review.md`, so it raises one only where it changes the design picture);
+   - the purpose: the user is about to judge this PR with little or no prior context in the area, and needs the higher-level picture and the design and architecture choices to align on, not a line-by-line review;
+   - output: `<runDir>/out/overview.html`.
+
+   Handle the render output below while it runs; wait for it before the wrap-up. If it fails, say so; `review.md` stands on its own.
 
 Read the render's stdout JSON:
 - `draft_blocked` — no draft exists. Show each hit and its `fix`. For a contested critical/important, put Claude's claim and Codex's rebuttal in front of the user (open the cited file if that settles it in a minute, and say what you'd pick); the user decides and you record `"resolution": "restore" | "strike"` on that `contested[]` entry.
 - `draft_total: 0` — nothing to post at this urgency; say so.
 - `coverage_gaps`: lenses not run or partial, unreviewable files, missing repo rules. Relay them; they stay out of the draft.
 
-**Every correction goes through `comments.json` plus a re-render; never edit rendered files.** When the set changes, re-derive `posture`, `posture_rationale` and `cluster` in the same edit. Correction notes go in a finding's `evidence`, never its `body` (the author reads `body`). To shape what gets posted without changing findings, set `"draft": false` on a finding or change the brief's urgency, then re-render.
+**Every correction goes through `comments.json` plus a re-render; never edit rendered files.** When the set changes, re-derive `posture`, `posture_rationale` and `cluster` in the same edit. Correction notes go in a finding's `evidence`, never its `body` (the author reads `body`). To shape what gets posted without changing findings, set `"draft": false` on a finding or change the brief's urgency, then re-render. The overview is not re-rendered: if the finding set changes materially after it was written, tell the user it predates the change, and regenerate it only on request.
 
 `comments.json`: `{ urgency, posture, posture_rationale, cluster, decisions[], inline[], general[], cross_check?, contested[]?, codex_raised[]? }`; a finding is `{ id, path, line, side, tier, lens, body, evidence, confidence, pre_existing, draft? }`.
 
@@ -53,9 +60,9 @@ It refuses replay runs (exit 7), then re-checks, at post time: a draft exists, t
   verify:    struck <n>, down-tiered <n>, strengthened <n>   (or ⚠ verifier failed)
   codex:     kept <n>, strengthened <n>, down-tiered <n>, contested <n>, raised <n> · <s>s   (or ⚠ skipped/failed: <reason>, or off)
   markdown:  <runDir>/out/review.md
-  html:      file://<runDir>/out/review.html
+  overview:  file://<runDir>/out/overview.html
   draft:     <url | not posted | ⚠ blocked: <reason>>
   findings:  <total> local, <in draft> in draft  (critical X, important Y, recommended Z, nit W)
   coverage:  <coverage_gaps joined, or complete>
 ```
-`html:` must be a full `file://` URL; omit it if only the fallback exists. Repeat any prep warnings (for example "no checkout"). Stay available for follow-ups; the user can run `/retro` afterwards.
+`overview:` must be a full `file://` URL; omit the line if the overview failed or was skipped. Repeat any prep warnings (for example "no checkout"). Stay available for follow-ups; the user can run `/retro` afterwards.

@@ -2,7 +2,7 @@ export const meta = {
   name: 'review-flow-run',
   description: 'Execution engine for /review-flow (launched by the command, not run directly): parallel reviewers across lenses → critic dedupes/reconciles/right-sizes/decides posture → independent adversarial verifier owns fact-checking. Returns a validated comment set the conversation cross-checks (Codex) and renders.',
   phases: [
-    { title: 'Review', detail: 'one reviewer per lens (+ orientation, optional diagrammer) in parallel' },
+    { title: 'Review', detail: 'one reviewer per lens (+ orientation) in parallel' },
     { title: 'Critique', detail: 'critic dedupes, reconciles, right-sizes tiers, decides posture (no fact-checking)' },
     { title: 'Verify', detail: 'independent adversarial pass: the single fact-check owner, seeded with the evidence rules' },
   ],
@@ -15,8 +15,7 @@ export const meta = {
 //   the base revision; the PR's own edits to them are content, not rules),
 //   ciAnnotationsPath|null, unreviewablePath|null, replay (bool)
 //   prNumber, prTitle, repo, prUrl, headSha
-//   urgency ('hotfix'|'fast'|'standard'), maxComments, lenses[], focus|null,
-//   diagrams (bool, opt-in)
+//   urgency ('hotfix'|'fast'|'standard'), maxComments, lenses[], focus|null
 // args can arrive as a JSON-encoded string when launched by name — normalize.
 const a = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const hotfix = a.urgency === 'hotfix'
@@ -218,13 +217,6 @@ Reply with only this markdown, under 250 words, starting at the heading:
 
 Don't restate findings. Say "unclear" rather than guess.`
 
-const diagrammerPrompt = `You are the diagrammer for PR #${a.prNumber}: ${a.prTitle}. Follow your role definition, substituting:
-  $BRIEF = ${a.briefPath}
-  $DIFF  = ${a.diffPath}
-  $REPO  = ${a.repoDir || '(no checkout — work from the diff alone)'}
-  $OUT   = ${a.outDir}/diagrams
-Write call-chain.txt + flowchart.{mmd,svg} + sequence.{mmd,svg} to $OUT, or skipped.txt if there is no runtime call chain. Start with the mermaid-cli bootstrap; if it fails, write skipped.txt and exit. Return a one-line status.`
-
 // ── Phase: Review (parallel fan-out) ───────────────────────────────
 phase('Review')
 
@@ -252,17 +244,9 @@ if (!hotfix) {
     agent(orientationPrompt, { label: 'orientation', phase: 'Review', agentType: 'researcher', model: 'sonnet' })
       .then((md) => ({ kind: 'orientation', md }))
   )
-  // Opt-in (--diagrams): no reviewer referenced them across the audited runs.
-  if (a.diagrams) {
-    sideThunks.push(() =>
-      agent(diagrammerPrompt, { label: 'diagrammer', phase: 'Review', agentType: 'diagrammer' })
-        .then((status) => ({ kind: 'diagrams', status }))
-    )
-  }
 }
 
-// Side jobs run WITHOUT a barrier — the critic only needs lens findings, and
-// the diagrammer's first run can include a multi-minute mermaid-cli install.
+// The side job runs WITHOUT a barrier — the critic only needs lens findings.
 const sidePromise = sideThunks.length ? parallel(sideThunks) : null
 
 const lensRaw = await parallel(reviewerThunks)
@@ -365,13 +349,11 @@ const finalSummary = verified || summary
 
 const sideResults = sidePromise ? (await sidePromise).filter(Boolean) : []
 const orientation = sideResults.find((r) => r.kind === 'orientation') || null
-const diagrams = sideResults.find((r) => r.kind === 'diagrams') || null
 
 return {
   commentsPath: `${a.outDir}/comments.json`,
   wroteCommentsJson: summary ? summary.wroteCommentsJson === true : false,
   orientationMd: orientation ? orientation.md : null,
-  diagramsStatus: diagrams ? diagrams.status : (hotfix ? 'skipped (hotfix)' : 'skipped (not requested; use --diagrams)'),
   postCritic: summary ? summary.posture : null,
   postVerify: verified ? verified.posture : null,
   verify: verified
