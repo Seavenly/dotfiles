@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Coworker PR feed for review-inbox, run on a schedule by a launchd agent.
+# Each run refreshes the JSONL feed review-inbox reads and raises macOS banners
+# for PRs that are new or changed; see tools/review-feed/review_feed.py.
+#
+# The agent requires personal GitHub credentials, so convergence never enables
+# it: `review-feed enable` is the explicit opt-in. Machine-local settings live in
+# ~/.config/dotfiles/review-feed.env (created on first enable):
+#   REVIEW_FEED_ORG          GitHub org to scope authored and re-review searches (required)
+#   REVIEW_FEED_TEAM         org/team whose review requests count as yours (optional)
+#   REVIEW_FEED_GITHUB_USER  gh account whose token to use (default: gh's active account)
+#   REVIEW_FEED_DAYS         ISO weekdays to run, as a range (default 1-5)
+#   REVIEW_FEED_HOURS        local hours to run, as an inclusive range (default 8-17)
+#   REVIEW_FEED_INTERVAL     seconds between scheduled runs (default 300)
+
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  source_path="$(readlink "$source_path")"
+  [[ "$source_path" = /* ]] || source_path="$source_dir/$source_path"
+done
+root="${DOTFILES_ROOT:-$(cd -P "$(dirname "$source_path")/.." && pwd)}"
+
+label="dotfiles.review-feed"
+config_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/review-feed.env"
+state_dir="${REVIEW_FEED_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/review-feed}"
+feed_file="${COWORKER_PRS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/coworker-review-prs.jsonl}"
+agents_dir="${REVIEW_FEED_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+plist="$agents_dir/$label.plist"
+domain="gui/$(id -u)"
+
+usage() {
+  cat <<'EOF'
+Usage: review-feed <command>
+
+  run       refresh the feed now and print the queue
+  status    show schedule, agent, and feed health
+  logs      show the last failure and the agent's log
+  enable    install and start the launchd agent (macOS)
+  disable   stop and remove the launchd agent
+  tick      scheduled entry point: run only inside the configured window
+EOF
+}
+
+load_config() {
+  # shellcheck disable=SC1090
+  [[ ! -r "$config_file" ]] || source "$config_file"
+  REVIEW_FEED_DAYS="${REVIEW_FEED_DAYS:-1-5}"
+  REVIEW_FEED_HOURS="${REVIEW_FEED_HOURS:-8-17}"
+  REVIEW_FEED_INTERVAL="${REVIEW_FEED_INTERVAL:-300}"
+  export REVIEW_FEED_ORG="${REVIEW_FEED_ORG:-}" REVIEW_FEED_TEAM="${REVIEW_FEED_TEAM:-}"
+  export REVIEW_FEED_GITHUB_USER="${REVIEW_FEED_GITHUB_USER:-}"
+  export REVIEW_FEED_STATE_DIR="$state_dir" COWORKER_PRS_FILE="$feed_file"
+}
+
+in_range() {
+  local value="$1" range="$2"
+  [[ "$range" =~ ^([0-9]+)-([0-9]+)$ ]] || { echo "review-feed: invalid range: $range" >&2; return 2; }
+  ((10#$value >= 10#${BASH_REMATCH[1]} && 10#$value <= 10#${BASH_REMATCH[2]}))
+}
+
+in_window() {
+  in_range "$(date +%u)" "$REVIEW_FEED_DAYS" && in_range "$(date +%H)" "$REVIEW_FEED_HOURS"
+}
+
+feed() {
+  python3 "$root/tools/review-feed/review_feed.py" "$@"
+}
+
+write_config_template() {
+  mkdir -p "$(dirname "$config_file")"
+  install -m 0600 /dev/null "$config_file"
+  cat > "$config_file" <<'EOF'
+# Machine-local settings for review-feed. See `review-feed --help`.
+REVIEW_FEED_ORG=
+REVIEW_FEED_TEAM=
+REVIEW_FEED_GITHUB_USER=
+EOF
+}
+
+write_plist() {
+  mkdir -p "$agents_dir" "$state_dir"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$root/bin/review-feed</string>
+    <string>tick</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$HOME/.local/share/mise/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>$HOME</string>
+  <key>StartInterval</key>
+  <integer>$REVIEW_FEED_INTERVAL</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>$state_dir/agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>$state_dir/agent.log</string>
+</dict>
+</plist>
+EOF
+}
+
+agent_loaded() {
+  launchctl print "$domain/$label" >/dev/null 2>&1
+}
+
+cmd_enable() {
+  [[ "$(uname -s)" == Darwin ]] || { echo "review-feed: the launchd agent is macOS only" >&2; exit 1; }
+  [[ -e "$config_file" ]] || write_config_template
+  load_config
+  if [[ -z "$REVIEW_FEED_ORG" ]]; then
+    echo "review-feed: set REVIEW_FEED_ORG in $config_file, then run \`review-feed enable\` again" >&2
+    exit 1
+  fi
+  [[ "$REVIEW_FEED_INTERVAL" =~ ^[1-9][0-9]*$ ]] || { echo "review-feed: invalid REVIEW_FEED_INTERVAL" >&2; exit 2; }
+  command -v terminal-notifier >/dev/null 2>&1 \
+    || echo "review-feed: terminal-notifier is not installed; banners are off until \`dotfiles install\`" >&2
+  write_plist
+  # Restart from the rendered plist rather than mutating a loaded job.
+  ! agent_loaded || launchctl bootout "$domain/$label"
+  launchctl bootstrap "$domain" "$plist"
+  echo "review-feed: enabled every ${REVIEW_FEED_INTERVAL}s, days $REVIEW_FEED_DAYS, hours $REVIEW_FEED_HOURS"
+}
+
+cmd_disable() {
+  ! agent_loaded || launchctl bootout "$domain/$label"
+  rm -f "$plist"
+  echo "review-feed: disabled"
+}
+
+cmd_status() {
+  local agent="not installed" health="unknown" updated="never" count=0
+  if agent_loaded; then
+    agent="loaded, $(launchctl print "$domain/$label" | awk -F' = ' '/last exit code/ {print "last exit " $2; exit}')"
+  elif [[ -e "$plist" ]]; then
+    agent="installed but not loaded"
+  fi
+  if [[ -r "$state_dir/state.json" ]]; then
+    health="$(jq -r 'if .failing then "failing (see `review-feed logs`)" else "ok" end' "$state_dir/state.json")"
+    updated="$(jq -r '.updated_at // "never"' "$state_dir/state.json")"
+  fi
+  [[ ! -r "$feed_file" ]] || count="$(grep -c . "$feed_file" || true)"
+  printf 'agent:    %s\n' "$agent"
+  printf 'window:   days %s, hours %s, every %ss\n' "$REVIEW_FEED_DAYS" "$REVIEW_FEED_HOURS" "$REVIEW_FEED_INTERVAL"
+  printf 'org:      %s\n' "${REVIEW_FEED_ORG:-(unset in $config_file)}"
+  printf 'health:   %s\n' "$health"
+  printf 'updated:  %s\n' "$updated"
+  printf 'feed:     %s PR(s) in %s\n' "$count" "$feed_file"
+}
+
+cmd_logs() {
+  if [[ -s "$state_dir/error.log" ]]; then
+    echo "== last failure ($state_dir/error.log)"
+    cat "$state_dir/error.log"
+  else
+    echo "== no recorded failure"
+  fi
+  if [[ -s "$state_dir/agent.log" ]]; then
+    echo "== agent log ($state_dir/agent.log)"
+    tail -n 50 "$state_dir/agent.log"
+  fi
+}
+
+case "${1:-}" in
+  run) load_config; feed --print ;;
+  tick) load_config; if in_window; then feed; fi ;;
+  status) load_config; cmd_status ;;
+  logs) cmd_logs ;;
+  enable) cmd_enable ;;
+  disable) cmd_disable ;;
+  -h | --help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

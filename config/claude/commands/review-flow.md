@@ -44,7 +44,7 @@ Read the render's stdout JSON:
 
 ## 4. Post (only when asked, or `prepareDraft`)
 
-Unpublished artifacts are free to rebuild; a posted comment can only be corrected by a public retraction. If you doubt the set, show the user first.
+Unpublished artifacts are free to rebuild; a posted comment can only be corrected by a public retraction. If you doubt the set, show the user first. Before posting, read each critical and important against the changes the stated intent declares; any that argues against a declared change rather than showing a wrong outcome is reason for doubt. Put those in front of the user before posting, not in front of the author after.
 
 ```bash
 node ~/.claude/scripts/review-flow-post.js <runDir>      # add --dry-run to check the gates only

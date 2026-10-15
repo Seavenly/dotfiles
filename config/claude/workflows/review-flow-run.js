@@ -69,7 +69,7 @@ Observability bar:
 // runs) and owns the questions the human reviewer kept asking by hand.
 const DESIGN_DOCTRINE = `
 Design and fit bar:
-- Scope: flag work the stated intent doesn't call for (unrequested resources, permanent machinery for a one-off, speculative generality) and intent the diff doesn't deliver. Quote the intent line in \`evidence\`; with no description, ask rather than assert.
+- Scope: flag work the stated intent doesn't call for (unrequested resources, permanent machinery for a one-off, speculative generality) and intent the diff doesn't deliver. Quote the intent line in \`evidence\`; with no description, ask rather than assert. The guard runs both ways: don't ask a deliberately narrow first iteration to cover more cases or to codify its non-goals as tests; at most leave one follow-up note.
 - House patterns: compare new files against two or three siblings doing the same job (naming, structure, error handling, config shape, tests). A divergence is a finding only when you name the sibling; list those you read in \`evidence\`.
 - Repo rules: breaking a rule from the base-revision rule files is a finding (cite it), and so is a change that makes a rule file untrue.
 - Rollout: deploy order across services, migration reversibility, backfills, flag defaults.
@@ -94,6 +94,15 @@ Evidence rules (each has already shipped a wrong finding):
 3. An unobserved consequence is a question. If the effect needs a render, device, live dependency or real request that never happened, say so, name the test that would settle it, and tier it below verified findings.
 4. Rate each leg of a compound claim separately; verifying one never lifts another or removes its hedge.
 5. Check the diff against itself: a nearby default, input shape or call often contradicts the claim.`
+
+// Truth is not relevance. These cover findings that were true but argued
+// against the PR's own declared goal, and were struck by the human before the
+// author replied (RETRO-LEDGER 2026-10-07). Shared by reviewers and verifier.
+const INTENT_RULES = `
+Declared changes (true findings that contested them were struck):
+- Prior code is not a requirement. When the stated intent declares a removal or behavior change deliberate, the removed code's constants, comments, tests and telemetry describe the old design. A finding against the declared change must cite a requirement independent of that code (a base-revision repo rule, a documented SLO or product requirement, an observed incident) or show a wrong outcome (a security hole, lost or corrupted data, incorrect results). Otherwise raise it once, as a question to the author, at recommended.
+- Work within the change's organizing principle. If the diff moves a concern to the layer that owns it, anchor fixes and test asks at that layer; arguing for the old placement is one design question, not a finding per caller.
+- The description establishes what was intended, not that it is right: never drop a wrong-outcome finding because the PR announces the change. And none of this narrows defects in the new code itself (a check that misfires, a test that can't fail, a comment the change made stale); keep reporting those at full recall.`
 
 const FINDINGS_SCHEMA = {
   type: 'object',
@@ -190,8 +199,10 @@ Tiers, by the consequence you can name:
 - important: a concrete scenario this PR introduces gives wrong behavior, a failed deploy or migration, or a hard-to-recover state; or a missing test lets a critical regress unnoticed.
 - recommended: more robust, clearer or better covered, with no scenario that fails today.
 - nit: typo, formatting, wording.
+Slower is not wrong: a cost that appears only under an edge (a dependency down, a cold start) while the result stays correct and fails safe is recommended at most, framed as a follow-up with the systemic remedy rather than a per-call patch.
 Calibrate to blast radius (repo rules, README, data models tell you what's at stake); note context-based downgrades in \`evidence\`.
 ${EVIDENCE_RULES}
+${INTENT_RULES}
 
 Per finding: \`line\` is the true source line in the checkout (count from the hunk's \`+c\` and check the file), not the diff's running count; \`side\` is RIGHT for added or changed lines, LEFT for removed ones; \`anchorable: false\` if no diff line fits. \`body\` is one to three sentences quoting the code or naming the missed case. ${AUTHOR_FACING}
 
@@ -211,7 +222,7 @@ Reply with only this markdown, under 250 words, starting at the heading:
 
 **What this code is for.** <2-4 plain sentences: what part of the system, what it does for users or operators, where it sits.>
 
-**What this PR changes.** <2-4 sentences on behavior, not files. Say if it goes beyond the stated intent.>
+**What this PR changes.** <2-4 sentences on behavior, not files. Changes the description names, removals included, are within intent; say it goes beyond the stated intent only for a change the description doesn't mention.>
 
 **Read these first.** <1-3 files, one line each on why>
 
@@ -323,6 +334,10 @@ ${EVIDENCE_RULES}
 Rule 1's origin: a finding said a dependency bump changed runtime behavior, but the framework vendored and aliased its own copy, so the bump was inert; the author refuted it in one line and it was publicly retracted. Open the installed copy for every library-behavior claim. For rule 2, run the search yourself: strike if the thing exists, otherwise make the body state the search. For rule 3, reframe as a question with the settling test and lower the tier rather than strike.
 
 Give each finding one disposition: keep (you attacked it and it held), strengthen (true and understated: tighten it or raise the tier, citing what you read), down-tier (real, but the evidence or an unobserved consequence doesn't support the tier), or strike (the central premise is false; remove it, since a wrong finding at any tier discredits the rest). Judge each finding, and each leg, on its own evidence. A plausible rebuttal is worth checking, not proof; don't concede a finding for being contestable or defend it because a peer wrote it.
+
+After truth, check intent. True findings can still argue against the PR's goal:
+${INTENT_RULES}
+A surviving critical or important that contests a declared change without an independent requirement or a wrong outcome goes down to recommended, its \`body\` reframed as one question to the author, so it no longer supports the posture. A cost that is slower but still correct and fail-safe is recommended at most, with the systemic remedy as the follow-up.
 
 Then:
 1. \`cp ${a.outDir}/comments.json ${a.outDir}/comments.pre-verify.json\`

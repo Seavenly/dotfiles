@@ -7,6 +7,7 @@ system_packages.managers = ["brew"]
 [bootstrap.packages]
 "brew:felixkratz/formulae/sketchybar" = "latest"
 "brew:eza" = "latest"
+"brew:terminal-notifier" = "latest"
 
 [bootstrap.repos]
 "~/.local/share/sketchybar-app-font" = { url = "https://github.com/kvndrsslr/sketchybar-app-font.git", ref = "8899e75c5b08aa0ead9c347ff6139260720bc0b0" }

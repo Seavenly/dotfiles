@@ -86,7 +86,7 @@ check_env="$DOTFILES_ENV"
 run "locked tools" env MISE_TRUSTED_CONFIG_PATHS="$root" mise install -n --locked -C "$root" -E "$check_env"
 # shellcheck disable=SC2016
 run "Lua" bash -c 'find "$1/config/nvim" -name "*.lua" -print0 | xargs -0 luac -p' _ "$root"
-run "Python" env PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/dotfiles-pycache" python3 -m py_compile "$root/tools/recorder/clean.py" "$root/tools/recorder/record.py" "$root/tools/recorder/transcribe.py"
+run "Python" env PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/dotfiles-pycache" python3 -m py_compile "$root/tools/recorder/clean.py" "$root/tools/recorder/record.py" "$root/tools/recorder/transcribe.py" "$root/tools/review-feed/review_feed.py"
 run "recorder lock" env UV_CACHE_DIR="${TMPDIR:-/tmp}/dotfiles-uv-cache" uv lock --project "$root/tools/recorder" --check
 run "Drovr" npm --prefix "$root/tools/drovr" test
 run "Flow" npm --prefix "$root/config/flow" test

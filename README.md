@@ -143,6 +143,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
+| `tools/review-feed/` | Optional GitHub PR feed for `review-inbox`, scheduled by launchd |
 | `tools/drovr/` | Harness-neutral delegated agent runtime over Herdr |
 | `tools/flow/` | Public flow transition interfaces and the dark replacement runtime |
 
@@ -259,6 +260,29 @@ The recorder's uv environment lives at
 BlackHole audio routing, the pyannote model license, and Hugging Face
 authentication require manual setup. See
 [`tools/recorder/README.md`](tools/recorder/README.md) for the complete process.
+
+## Optional review feed
+
+`review-feed` keeps the coworker section of `review-inbox` current and raises a
+macOS banner when a PR newly needs your review, gets new activity since you
+reviewed it, or receives feedback on one of your own PRs. Clicking a banner
+opens the PR. A launchd agent runs it every five minutes on weekdays from 08:00
+to 17:59.
+
+The agent uses your GitHub credentials, so installation never enables it.
+Opt in with:
+
+```sh
+review-feed enable     writes ~/.config/dotfiles/review-feed.env on first use
+review-feed status     schedule, agent, and feed health
+review-feed run        refresh now and print the queue
+review-feed logs       last failure and agent output
+review-feed disable    stop and remove the agent
+```
+
+Set `REVIEW_FEED_ORG` (and optionally `REVIEW_FEED_TEAM` and
+`REVIEW_FEED_GITHUB_USER`) in the machine-local file before enabling. The token
+comes from `gh auth token`. State lives in `~/.local/state/dotfiles/review-feed`.
 
 ## Secrets and source validation
 
