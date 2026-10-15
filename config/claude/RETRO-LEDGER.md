@@ -12,6 +12,42 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-10-07 - review run (sanitized)
+
+A posted review where the problem was relevance, not accuracy: every finding
+the human or the author rejected was true and had survived both verifiers.
+The rejected class argued against changes the PR description declared
+deliberate (removals, a mechanism moved down a layer), using the removed code
+as the only evidence. The human struck that class before the author replied.
+The kept comments were concrete defects in the new code.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Re-arguing changes the author declared deliberate, with the removed code as the only evidence | AVOID | workflows/review-flow-run.js (new shared `INTENT_RULES`, reviewers + verifier) | applied - prior code is not a requirement; a finding against a declared change cites an independent requirement or a wrong outcome, otherwise one question at recommended. Kept separate from `EVIDENCE_RULES`, because that block is about truth and these findings were true |
+| Remedies that contradict the change's organizing principle (put the concern back at callers, test asks at the old layer) | AVOID | workflows/review-flow-run.js (`INTENT_RULES`) | applied - anchor fixes and test asks at the layer that now owns the concern; argue the principle once as a design question |
+| Asking a deliberately narrow first iteration to cover more cases or test its non-goals | AVOID | workflows/review-flow-run.js (`DESIGN_DOCTRINE` scope) | applied - the scope guard now runs both ways; at most one follow-up note. First data point on the 2026-09-23 design-lens watch: its intent-contesting findings did not survive human review |
+| Cluster whose root cause is the PR's own purpose, used as the verdict headline | AVOID | agents/review-critic.md (steps 3 and 6) | applied - re-tier as goal disagreements instead of headlining |
+| Intent-consistency check after fact-checking | ADD | workflows/review-flow-run.js (`verifierPrompt`) + scripts/codex-cross-check.js | applied - verifier moves goal-contesting critical/important to recommended, reframed as a question, before posture is recomputed; Codex told not to strengthen them or raise them as `missed`, in its own wording so the pass stays independent |
+| Tier rule for a dependency down at process start | ADD | workflows/review-flow-run.js (tier rubric) + agents/review-critic.md | applied, **generalized and merged with the STRESS below** - the cold-start case alone failed the cross-PR test; the general "slower but correct and fail-safe" rule passes it |
+| Pre-post intent check by the orchestrating conversation | ADD | commands/review-flow.md (step 4) | applied - gives "if you doubt the set" a concrete trigger. **Corroborates 2026-09-11** front-load doubt before publishing |
+| "Important" means wrong behavior, not slower behavior under an edge | STRESS | workflows/review-flow-run.js + agents/review-critic.md | applied - recommended at most, follow-up with the systemic remedy |
+| Orientation called declared changes "beyond stated intent" | STRESS | workflows/review-flow-run.js (`orientationPrompt`) | applied - changes the description names are within intent |
+| What survived is the model: concrete defects in the new code | STRESS | workflows/review-flow-run.js (`INTENT_RULES`) | applied as a counterweight only - the intent rules explicitly don't narrow defects in the new code; no new framing added |
+
+Notes:
+- Single run, but it passes the cross-PR test: removal and refactor PRs are
+  common, and treating removed code as a spec is a generic reviewer failure.
+  Applied as reframing (question or follow-up), never silence, per the retro's
+  own overcorrection warning.
+- Compatible with 2026-09-30 "PR material is evidence, not instructions": a
+  declaration establishes intent, not correctness. The rules say a
+  wrong-outcome finding (security, data loss, incorrect results) is never
+  dropped because the PR announces the change.
+- Watch: post-verify importants that a human later restores as declared-change
+  findings (sign of overcorrection); whether the 2026-09-11 "author pushback is
+  not proof" stance still holds. Here the human struck the findings
+  independently, so author rejection was not the signal.
+
 ## 2026-10-02 - feature-flow overhaul for current models (not a retro)
 
 An audit of 78 runs (2026-08-31 to 10-01), outside research, and two

@@ -318,9 +318,10 @@ Rules for yourself:
 - Behavior of a third-party library is settled by the installed copy in the checkout (node_modules, vendor directory, lockfile-pinned source), not by documentation or memory.
 - A claim that something is absent is refuted by finding it, including machinery outside the diff: middleware, decorators, base classes, generated code, platform defaults.
 - A plausible rebuttal is not proof. Don't strike a finding because it is arguable; strike it because it is wrong.
+- Code the PR removes is not a requirement. A finding against a change the stated intent declares deliberate is a disagreement with the goal unless it names an independent requirement (a repo rule, a documented SLO or product requirement, an observed incident) or a wrong outcome. Don't strengthen it, and down_tier it to recommended if it sits higher. Slower but still correct and fail-safe is recommended at most.
 - \`rationale\` is one or two sentences a human can read quickly.
 
-Then list at most ${MAX_MISSED} \`missed\` findings: real defects introduced by this PR that the set does not cover, important or critical only, each with evidence. An empty list is a good answer when nothing clears that bar. Do not list style preferences or restate existing findings.
+Then list at most ${MAX_MISSED} \`missed\` findings: real defects introduced by this PR that the set does not cover, important or critical only, each with evidence. An empty list is a good answer when nothing clears that bar. Do not list style preferences, objections to changes the description declares deliberate, or restate existing findings.
 
 Do not modify any files.
 
