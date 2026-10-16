@@ -1,6 +1,6 @@
 ---
 name: to-epic
-description: Turn a finished design (an updated glossary, ADRs, and an implementation plan doc) into a Jira epic of reviewable vertical-slice stories wired for /epic-flow, or add stories to an existing epic. Use when a grill-with-docs or design session is done and the plan needs breaking into agent-auto, human-gate, and human-only stories with dependency links, ready to hand to /epic-flow. Jira workflow.
+description: Turn a finished design (an updated GLOSSARY.md, ADRs, and an implementation plan doc) into a Jira epic of reviewable vertical-slice stories wired for /epic-flow, or add stories to an existing epic. Use when a grill-with-docs or design session is done and the plan needs breaking into agent-auto, human-gate, and human-only stories with dependency links, ready to hand to /epic-flow. Jira workflow.
 ---
 
 # To Epic
@@ -15,8 +15,8 @@ user. Ask which Jira site and project to use if the context doesn't say.
 ## Process
 
 ### 1. Gather the design
-Work from the conversation and the design artifacts: the glossary
-(`CONTEXT.md` or `GLOSSARY.md`), ADRs under `docs/adr/`, and the
+Work from the conversation and the design artifacts: `GLOSSARY.md` (and
+`GLOSSARY-MAP.md` in a multi-context repo), ADRs under `docs/adr/`, and the
 implementation plan doc. Read them if they aren't in context. The plan's
 structure is the starting breakdown. Ask whether this is a
 new epic or stories for an existing one.
