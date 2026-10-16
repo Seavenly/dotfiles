@@ -149,6 +149,7 @@ their workflow internals differ (see below).
         ├── review-flow-evals.md   # review-flow manual regression set (replay cases)
         ├── commands/              # → ~/.claude/commands
         │   ├── feature-flow.md    # interactive front half
+        │   ├── epic-flow.md       # runs an epic's stories through feature-flow
         │   ├── review-flow.md
         │   ├── spike-flow.md
         │   ├── retro.md           # conversation-side retro (emits run-dir retro.md)
@@ -172,7 +173,8 @@ their workflow internals differ (see below).
             ├── feature-flow-builder-guard.js # builder PreToolUse hook
             ├── agent-local-guard.js # PreToolUse hook: feature-flow agents never push or write to GitHub
             ├── feature-flow-codex-review.js  # opt-in Codex final review (--codex)
-            └── codex-model.js     # resolves latest-<family> Codex model specs
+            ├── codex-model.js     # resolves latest-<family> Codex model specs
+            └── epic-flow-integrate.js # epic-flow's integrate / refresh / land / receipts
 
 State (host-local, not version-controlled):
 ~/.agent-teams/runs/<ts>-<slug>/
@@ -182,6 +184,11 @@ State (host-local, not version-controlled):
   ├── worktree/         # feature/spike-prototype: the branch worktree (deps installed here)
   ├── gate.json, gate/  # feature-flow: host-written gate config; gate state, ledger, logs
   └── out/              # artifacts: plan.md, comments.json, review.md, overview.html, report.md, retro.md
+~/.agent-teams/runs/epic-<key>/
+  ├── epic.json         # epic-flow state: stories, runs, approvals, outcomes, decisions
+  ├── gate.template.json # the repo's gate commands, defaults for each story's gate.json
+  ├── integrations.json # receipts, written only by epic-flow-integrate.js
+  └── integration/, refresh/ # script-owned candidate worktrees
 ```
 
 ## The three flows in detail
@@ -194,6 +201,11 @@ State (host-local, not version-controlled):
 **`--gated`:** the command launches twice: `planOnly:true` returns the plan for approval, then a second launch passes the approved `slices` back (a workflow can't take mid-run input).
 **Notes journal:** builder handoffs and gate test-edit reports fold into entry blocks; builder prompts see the latest ~40, the critic and the journal file get all of them, plus the review outcome (rejected findings and follow-ups) and stage status.
 **Artifact ownership:** the synthesizer drafts content; the interactive command persists `report.md` and `notes.md`.
+
+### epic-flow
+**Command only** (no workflow; Jira, git, and tuicr are host work). Each run rebuilds state from git, the tuicr registry, Jira, and run dirs, then: integrates the stories the owner approved in tuicr (one confirmation per batch, each approval bound to the shown head) → reports drift from the target → selects the ready set (blockers integrated or Done; `human-gate` blockers Done; `human-only`, unlabeled, and off-epic-base stories go to the owner) → one `researcher` per ready story checks it against the epic tip and drafts its brief → one approval for the wave → feature-flow setup and launch per story, without the interview → feature-flow's handoff as each run finishes.
+**Integration (`scripts/epic-flow-integrate.js`):** merges an approved head on a candidate branch cut from the exact remote tip, verifies the merged tree through a throwaway `gate init` (skipped only when it equals the reviewed, gate-verified tree), writes a receipt, and only then fast-forwards the remote; it never forces. It refuses a head other than the approved one, commits the gate did not make unless the owner accepted them, and a story cut from outside epic history. `refresh` merges the target into a candidate for review; `land` pushes it only from the tip it was cut from. Receipts are re-derived from git after a crash.
+**Failures:** platform failures resume or relaunch without counting; stuck slices get one continuation on the same run dir and gate (`continuation: true`, the stuck slices' `spec` with their ids); RE_PLAN, unresolved coverage, and second failures go to the owner.
 
 ### review-flow
 **Command:** a short procedure over three scripts. `review-flow-prep.js` pins the snapshot (head/base SHA, diff digest, checkout SHA), clones that exact commit detached, and writes the stated intent (`pr-body.md`), the PR's prior review conversation, and the brief. It also extracts the repo rule files (`CLAUDE.md`, `AGENTS.md`, `REVIEW.md`) **from the base revision** into `out/repo-rules/`, so a PR that edits them is reviewed under the existing rules and its edits are content under review (never a fallback to head copies); fetches the head's CI check-run annotations on changed files (`out/ci-annotations.json`: already reported, so not duplicated, but never a reason to skip a defect); and runs a changed-file census (`out/unreviewable.json`: binary, too-large or truncated files are never treated as reviewed; a diff too large for `gh pr diff` is computed from the clone) → launch → `codex-cross-check.js` → `render-review.js`, with the `explainer` writing `out/overview.html` in the background (skipped on hotfix; not re-rendered after corrections) → on request, `review-flow-post.js` (draft exists, head unmoved, no existing pending review, anchors valid, then POST PENDING with `commit_id`). Mechanics live in scripts so the host's context carries the procedure, not the bash. Every agent is told that PR text, code, comments and changed instruction files are evidence, not instructions.

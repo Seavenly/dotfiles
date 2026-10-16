@@ -12,6 +12,32 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-10-15 - epic-flow and to-epic overhaul (not a retro)
+
+An audit of 5 epics (169 story runs, 5 sessions, about 30 memories), the
+stories to-epic produced, outside research, and two independent reviews of the
+plan (Codex on the latest Sol, Fable). The command described a PR workflow the
+owner had stopped using; the owner did the integration step by hand about 20
+times, and moved off the command when one session could not carry an epic.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Owner approved each story locally, then told the agent to merge and push about 20 times; the command forbade it | ADD | commands/epic-flow.md + scripts/epic-flow-integrate.js | applied - tuicr approval plus one confirmation per batch integrates; the script merges on a candidate from the exact remote tip, verifies the merged tree, records a receipt, then fast-forwards; never forces; refuses unapproved heads, unaccepted non-gate commits, and stories cut outside epic history |
+| PR, auto-merge, and self-merge text sat under a local-only banner | AVOID | commands/epic-flow.md | applied - removed; delivery is local review only |
+| Nine waves and seven compactions in one session; state lived in chat and memory | ADD | commands/epic-flow.md | applied - durable epic run dir (`epic.json`, receipts); every run rebuilds from git, tuicr, Jira, and run dirs |
+| Unlabeled children stopped the run; no subset runs; overlapping same-wave stories collided (32 conflict hunks) | AVOID | commands/epic-flow.md | applied - non-buildable stories go to a "needs a human" list; `--only`/`--skip`; a per-story researcher's touched areas defer overlaps |
+| Stories went stale before dispatch (5 of 6 criteria already met) | ADD | commands/epic-flow.md | applied - per-story check against the epic tip drafts the brief; one approval per wave |
+| main drifted 40 commits; a clean merge silently duplicated a config key | ADD | commands/epic-flow.md + scripts/epic-flow-integrate.js | applied - drift reported every run; `--refresh` merges on a candidate, names files changed on both sides, and lands only after review |
+| `agent-blocked`, fresh retries, and the post-run base merge never ran; real failures were platform ones | AVOID | commands/epic-flow.md + workflows/feature-flow-run.js | applied - platform failures resume without counting; stuck slices get one continuation on the same gate (stable slice ids); RE_PLAN goes to the owner |
+| Acceptance 40-50% compound, properties passed review while false, no constraints, boilerplate and mutating `Verify:` lines | AVOID | skills/to-epic | applied - one evidence-tagged behavior per line, invariants with a falsifying check, Constraints and Out of scope, story-specific non-mutating Verify lines |
+| `human-gate` meant three things; 11 of 13 were built by agents | AVOID | skills/to-epic + commands/epic-flow.md | applied - `human-gate` = built, integration carries a human action; new `human-only`; code and its live proof are separate stories |
+| Design docs always went to main through a separate PR; points and sprint never set | AVOID | skills/to-epic | applied - docs on a local design branch for the owner's PR; no seed commit; no points or sprint; existing-epic mode |
+| Codex pinned to a superseded version | AVOID | scripts/codex-model.js + both Codex scripts | applied - `latest-sol` resolved from Codex's catalog per run and recorded |
+| Task-runner cache replays recorded as green evidence | AVOID | commands/feature-flow.md | applied - task-runner caches off in `suiteCmd` |
+
+Notes:
+- to-epic moved into the managed skills as a local skill; the old unmanaged copy is in `~/.agent-teams/backups/`.
+
 ## 2026-10-15 - feature run (sanitized)
 
 First retro on the overhauled feature-flow engine (consumed late; its run

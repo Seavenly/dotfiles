@@ -52,4 +52,4 @@ spike_flow:
 
 epic_flow:
   concurrency: 2              # max simultaneous story runs (parallel worktrees)
-  story_retries: 1            # fresh feature-flow retries per story before agent-blocked
+  continuations: 1            # continuation launches per story for stuck slices before it goes to the owner

@@ -29,8 +29,10 @@ Read `~/.claude/defaults.yaml` (`feature_flow`) for defaults.
   dev`). Destructive or credentialed live commands (`pulumi up`) stay human
   gates unless the user separately authorizes them.
 - `--story <KEY>`: fetch the Jira issue; its summary, description, acceptance
-  criteria, and `Verify:` / `Base branch:` lines pre-answer the interview
-  (flags override them).
+  criteria (with any evidence tags), Constraints and Out of scope sections, and
+  `Verify:` (one command per prefixed line) / `Base branch:` lines pre-answer
+  the interview (flags override them). Drop `Verify:` commands that modify
+  files, such as fixers.
 - `--review-only <run_id>`: rerun only the review and handoff against that
   run's existing worktree (step 7).
 
@@ -82,8 +84,8 @@ with the user, or leave it out. Show the brief and wait for `launch`, `edit`, or
 ```bash
 git -C <repo> fetch origin "<base>" 2>/dev/null || true
 wt="$run_dir/worktree"
-git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "origin/<base>" 2>/dev/null \
-  || git -C <repo> worktree add "$wt" -b "agt/feature-<slug>" "<base>"
+git -C <repo> worktree add --no-track "$wt" -b "agt/feature-<slug>" "origin/<base>" 2>/dev/null \
+  || git -C <repo> worktree add --no-track "$wt" -b "agt/feature-<slug>" "<base>"
 ```
 Install dependencies once in the worktree (`mise install`, the lockfile's
 package manager, `uv sync`, `cargo build --tests`). The gate needs a clean
@@ -101,7 +103,9 @@ it changes.
   "ignorePaths": ["coverage/**"], "timeoutSec": <gate_timeout_sec> }
 ```
 Use `""` for `commitPrefix` without a story, and omit fields that don't apply.
-Commands run non-interactively (`CI=1`, no watch mode). Formatters belong in
+Commands run non-interactively (`CI=1`, no watch mode), with task-runner
+caches off in `suiteCmd` (for example `TURBO_FORCE=true`): a replayed cache
+entry is not evidence that the suite ran. Formatters belong in
 `normalizeCmds`, never in the checks, and test and format templates take
 `{files}`. Give the red check a focused runner wherever one exists: in a
 monorepo, add a `focusedTestCmds` entry per package (files are passed
