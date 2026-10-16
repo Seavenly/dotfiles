@@ -6,7 +6,7 @@ sources:
     relationship: base
     repository: https://github.com/agavra/tuicr.git
     path: skills/tuicr
-    revision: 057b336e794b1f3e2bf881b9808c5011a3a5a291
+    revision: d02955aac01e0e074dccbf9916a90df57651e4ef
 ---
 
 # Lineage intent
@@ -24,11 +24,17 @@ are needed later, should convert this entry to `derivative`.
 ## Wrapper scripts
 
 Unlike a plugin that resolves helpers through `${CLAUDE_PLUGIN_ROOT}`, upstream
-ships `tuicr-wrapper.sh` and `tuicr-wrapper-zellij.sh` alongside `SKILL.md` and
-the skill resolves them "relative to this skill directory." This package is
-exposed as a managed skill via directory symlinks, and the wrappers travel with
-`SKILL.md`, so that relative reference holds without a plugin-root variable. The
-wrappers are mirrored with their executable bit set.
+ships the tmux, Zellij, cmux, and Herdr wrappers (`tuicr-wrapper*.sh`) and their
+shared `_tuicr-common.sh` alongside `SKILL.md`, and the skill resolves them
+"relative to this skill directory." This package is exposed as a managed skill
+via directory symlinks, and the wrappers travel with `SKILL.md`, so that
+relative reference holds without a plugin-root variable. The wrappers are
+mirrored with their executable bit set; `_tuicr-common.sh` is sourced, not
+executed. The Herdr wrapper requires `jq`.
+
+The skill relies on CLI behavior from recent tuicr releases (the
+`tuicr-summary:` exit line, `reviewed_count`, and comment `author`), so keep the
+mise-managed binary current when advancing this mirror.
 
 ## Relationship to other tuicr wiring in this repo
 

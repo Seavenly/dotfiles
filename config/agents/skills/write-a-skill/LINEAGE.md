@@ -19,6 +19,12 @@ The later `writing-great-skills` package at revision
 a useful editing reference, not a replacement for the end-to-end creation
 workflow needed by harnesses without a built-in skill creator.
 
+Upstream later renamed that package `writing-for-agents` and widened it to any
+agent-facing document. It was reviewed again at revision
+`49dd158d1076134a641b33efb035946536778336` and is now carried as its own
+`writing-for-agents` mirror, alongside this workflow rather than replacing it:
+it still has no gather, scaffold, or review procedure.
+
 ## Update policy
 
 Retain this historical mirror unless upstream publishes a complete portable
