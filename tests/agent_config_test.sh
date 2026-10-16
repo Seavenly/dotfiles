@@ -93,16 +93,22 @@ expected_skills=(
   implement-ticket
   improve-codebase-architecture
   prototype
+  repo-retro
+  research
   setup-matt-pocock-skills
   split
   tdd
+  to-questionnaire
   to-spec
   to-tickets
   triage
   tuicr
   tuicr-reviews
+  wait-what
   wayfinder
+  wizard
   write-a-skill
+  writing-for-agents
 )
 
 actual_skills="$(
@@ -172,14 +178,16 @@ echo "ok - externally sourced skills have valid lineage and local skills are exp
 [[ ! -d "$skills_root/caveman" ]] || fail "retired caveman skill is managed"
 [[ ! -d "$skills_root/grill-me" ]] || fail "retired grill-me skill is managed"
 [[ ! -d "$skills_root/zoom-out" ]] || fail "retired zoom-out skill is managed"
-if grep -Eq '(^|[[:space:]])/(grilling|domain-modeling)([[:space:]]|$)' \
+if grep -Eq '(^|[[:space:]])/(grilling|domain-modeling)([[:space:]]|$)|Skill tool' \
   "$skills_root/grill-with-docs/SKILL.md"; then
   fail "grill-with-docs still invokes component skills"
 fi
-if grep -REq '(^|[[:space:]])/(tdd|code-review|setup-matt-pocock-skills)([[:space:]]|$)' \
+if grep -REq '(^|[[:space:]])/(tdd|code-review|setup-matt-pocock-skills)([[:space:]]|$)|Skill tool' \
   "$skills_root/implement"; then
   fail "implement still invokes component skills"
 fi
+[[ ! -d "$skills_root/retro" ]] \
+  || fail "upstream retro must be managed as repo-retro to avoid the /retro command"
 if grep -RniE --exclude=LINEAGE.md 'Agent tool|subagent_type' \
   "$skills_root" >/dev/null; then
   fail "managed skills contain Claude-specific Agent tool instructions"
