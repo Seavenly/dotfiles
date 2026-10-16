@@ -130,6 +130,8 @@ actual_skills="$(
 
 for harness_root in .agents .claude .hermes; do
   for skill in "${expected_skills[@]}"; do
+    # Hermes reserves skills/research for its bundled research category.
+    [[ "$harness_root/$skill" == .hermes/research ]] && continue
     linked_skill="$home/$harness_root/skills/$skill"
     [[ -L "$linked_skill" ]] \
       || fail "$harness_root is missing the $skill directory link"
@@ -137,6 +139,9 @@ for harness_root in .agents .claude .hermes; do
       || fail "$harness_root/$skill targets the wrong package"
   done
 done
+if grep -q '"~/.hermes/skills/research"' "$root/mise.toml"; then
+  fail "research must not replace the Hermes bundled research category"
+fi
 echo "ok - every approved package is linked as a discoverable directory"
 
 expected_repository() {
