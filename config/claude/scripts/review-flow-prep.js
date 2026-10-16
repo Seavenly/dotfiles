@@ -28,7 +28,8 @@
 // and the brief is marked `replay: true`, which review-flow-post.js refuses.
 //
 // Delta re-review (--since-last-review): the comparison base is the commit of
-// the current gh user's most recent submitted review; the head stays the PR
+// the current gh user's most recent submitted review (not an empty COMMENTED
+// one, which is a thread reply); the head stays the PR
 // head. out/delta.diff (that commit..head, limited to the PR's changed files)
 // is the review scope; out/pr.diff stays the full PR diff, the context and
 // the anchor set GitHub comments attach to. No such review, or a commit that
@@ -338,7 +339,8 @@ const PRIOR_QUERY = `query($owner:String!,$repo:String!,$num:Int!){
     reviews(first:50){ nodes{ author{login} submittedAt state body } } } } }`;
 
 // The delta base: the commit of the current gh user's most recent submitted
-// review. null (a full review, with a warning) when there is none or it can't
+// review. An empty COMMENTED review is a thread reply or a single comment, not
+// a review of the code, so it is skipped: an older base never skips code. null (a full review, with a warning) when there is none or it can't
 // be used; { empty } when nothing the PR changes moved since it.
 function deltaSinceLastReview({ repo, pr, repoDir, headSha, haveCheckout, diff, changed, step, warnings }) {
   const full = (why) => {
@@ -347,13 +349,19 @@ function deltaSinceLastReview({ repo, pr, repoDir, headSha, haveCheckout, diff, 
   };
   const me = tryRun("gh", ["api", "user", "-q", ".login"]);
   const out = me ? tryRun("gh", ["api", "--paginate", `repos/${repo}/pulls/${pr}/reviews?per_page=100`,
-    "--jq", ".[] | {login: .user.login, state, commit_id, submitted_at}"]) : null;
+    "--jq", ".[] | {login: .user.login, state, commit_id, submitted_at, body}"]) : null;
   if (out === null) return full("your reviews on this PR could not be read");
-  const last = out.split("\n").filter(Boolean).map((l) => JSON.parse(l))
-    .filter((r) => r.login === me && r.state !== "PENDING" && r.submitted_at && r.commit_id)
+  const mine = out.split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    .filter((r) => r.login === me && r.state !== "PENDING" && r.submitted_at && r.commit_id);
+  const last = mine
+    .filter((r) => ["APPROVED", "CHANGES_REQUESTED"].includes(r.state) || (r.state === "COMMENTED" && (r.body || "").trim()))
     .sort((x, y) => x.submitted_at.localeCompare(y.submitted_at))
     .pop();
-  if (!last) return full(`${me} has no submitted review on this PR`);
+  if (!last) {
+    return full(mine.length
+      ? `${me}'s submitted reviews on this PR are only thread replies or single comments (COMMENTED with no body), none a review of the code`
+      : `${me} has no submitted review on this PR`);
+  }
   const since = last.commit_id, at = last.submitted_at;
   const which = `your review of ${at.slice(0, 10)} at ${since.slice(0, 10)}`;
   if (since === headSha) return { empty: `the PR head is still the commit of ${which}` };
