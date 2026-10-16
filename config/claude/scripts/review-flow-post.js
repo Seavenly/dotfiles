@@ -15,7 +15,8 @@
 //      invalidate findings in ways a per-finding patch can't see
 //   3. no pending review by the current user already exists (GitHub allows
 //      one; deleting it to repost resurrects comments the user struck)
-//   4. every inline comment anchors to a line in the diff; GitHub rejects the
+//   4. every inline comment anchors to a line in the PR diff (the full one,
+//      also for a delta re-review, which is postable); GitHub rejects the
 //      whole review over one bad anchor, so unanchorable comments are folded
 //      into the body as `file:line — note`
 // `event` stays omitted, so the review is PENDING until the user submits it.
@@ -92,7 +93,8 @@ function main() {
     done(5, { error: "you already have a pending review on this PR; submit, discard or edit it in GitHub first", pending_review: pending.split("\n")[0] });
   }
 
-  // 4. Anchors.
+  // 4. Anchors, against the full PR diff that GitHub anchors to; a delta
+  // re-review's out/delta.diff is review scope only.
   const anchors = diffAnchors(fs.readFileSync(path.join(outDir, "pr.diff"), "utf8"));
   const ok = [];
   const folded = [];

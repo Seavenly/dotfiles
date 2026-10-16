@@ -5,7 +5,7 @@
 //   node review-flow-prep.js <pr> [--repo owner/name] [--urgency hotfix|fast|standard]
 //        [--max-comments N] [--lenses a,b,c] [--prepare-draft] [--no-codex]
 //        [--depth quick|full] [--focus "text"] [--allow-closed]
-//        [--at-base <sha> --at-head <sha>]
+//        [--since-last-review] [--at-base <sha> --at-head <sha>]
 //
 // Pins one snapshot (head SHA, base SHA, diff digest, checkout SHA) so every
 // later step reviews, renders and posts against the same comparison; clones
@@ -27,8 +27,16 @@
 // the clone, prior review threads are withheld (they would leak the answer),
 // and the brief is marked `replay: true`, which review-flow-post.js refuses.
 //
+// Delta re-review (--since-last-review): the comparison base is the commit of
+// the current gh user's most recent submitted review; the head stays the PR
+// head. out/delta.diff (that commit..head, limited to the PR's changed files)
+// is the review scope; out/pr.diff stays the full PR diff, the context and
+// the anchor set GitHub comments attach to. No such review, or a commit that
+// is gone or no longer an ancestor of head (force-push, rebase): a full
+// review with a warning.
+//
 // Exit codes: 0 ok · 2 usage · 3 PR not open (re-run with --allow-closed) ·
-// 4 gh or git failure.
+// 4 gh or git failure · 5 delta re-review with nothing new since that review.
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -64,6 +72,7 @@ function main() {
   const atBase = opt("at-base"), atHead = opt("at-head");
   const replay = Boolean(atBase || atHead);
   if (replay && !(isSha(atBase) && isSha(atHead))) fail(2, "replay needs both --at-base and --at-head as full 40-character SHAs");
+  if (replay && flag("since-last-review")) fail(2, "--since-last-review can't be combined with a replay (--at-base/--at-head)");
   if (replay && config.prepare_draft) {
     config.prepare_draft = false;
     warnings.push("replay run: --prepare-draft ignored; replay runs can never be posted");
@@ -140,26 +149,41 @@ function main() {
     }
     if (!replay) warnings.push(`gh pr diff failed (${diffError}); the diff was computed from the clone against the merge base`);
   }
-  fs.writeFileSync(path.join(outDir, "clone.log"), cloneLog.join("\n"));
   fs.writeFileSync(path.join(outDir, "pr.diff"), diff);
 
+  // Changed-file census: every changed file must have a patch in the diff, or
+  // it is recorded as unreviewable rather than silently treated as reviewed.
+  const census = changedFileCensus({ replay, repo, pr, repoDir, baseSha, headSha, diff, haveBase, haveCheckout, expected: meta.changedFiles });
+
+  const delta = flag("since-last-review")
+    ? deltaSinceLastReview({ repo, pr, repoDir, headSha, haveCheckout, diff, changed: census.changed, step, warnings })
+    : null;
+  fs.writeFileSync(path.join(outDir, "clone.log"), cloneLog.join("\n"));
+  if (delta && delta.empty) {
+    fs.rmSync(runDir, { recursive: true, force: true });
+    fail(5, `nothing new to review: ${delta.empty}`);
+  }
+  const deltaPath = path.join(outDir, "delta.diff");
+  if (delta) fs.writeFileSync(deltaPath, delta.diff);
+
   const crypto = require("node:crypto");
+  const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
   fs.writeFileSync(
     path.join(outDir, "snapshot.json"),
     JSON.stringify({
       head_sha: headSha,
       base_sha: baseSha,
-      diff_sha256: crypto.createHash("sha256").update(diff).digest("hex"),
+      diff_sha256: sha256(diff),
       diff_source: diffSource,
       checkout_sha: checkoutSha,
       ...(replay ? { replay: true, comparison: `${baseSha}..${headSha}` } : {}),
+      ...(delta ? { delta: {
+        since_sha: delta.sinceSha, since_reviewed_at: delta.reviewedAt, reviewer: delta.login,
+        diff_sha256: sha256(delta.diff), files: delta.files, dropped_files: delta.dropped.length,
+      } } : {}),
       fetched_at: new Date().toISOString(),
     }, null, 2)
   );
-
-  // Changed-file census: every changed file must have a patch in the diff, or
-  // it is recorded as unreviewable rather than silently treated as reviewed.
-  const census = changedFileCensus({ replay, repo, pr, repoDir, baseSha, headSha, diff, haveBase, haveCheckout, expected: meta.changedFiles });
   const unreviewablePath = path.join(outDir, "unreviewable.json");
   const { changed: changedPaths, ...censusRecord } = census;
   fs.writeFileSync(unreviewablePath, JSON.stringify(censusRecord, null, 2));
@@ -251,6 +275,8 @@ head_sha: ${headSha}
 base_sha: ${baseSha}
 ${replay ? `replay: true
 comparison: ${baseSha}..${headSha}
+` : ""}${delta ? `since_sha: ${delta.sinceSha}
+since_reviewed_at: ${delta.reviewedAt}
 ` : ""}config:
   urgency: ${config.urgency}
   depth: ${config.depth}
@@ -266,7 +292,7 @@ focus: ${focus ? yamlStr(focus) : "null"}
 # Review brief
 PR #${pr}: ${meta.title}
 Stated intent: out/pr-body.md
-${focus ? `Focus: ${focus}` : ""}${replay ? `\nReplay of frozen revisions ${baseSha.slice(0, 10)}..${headSha.slice(0, 10)} (manual regression run; never posted).` : ""}
+${focus ? `Focus: ${focus}` : ""}${replay ? `\nReplay of frozen revisions ${baseSha.slice(0, 10)}..${headSha.slice(0, 10)} (manual regression run; never posted).` : ""}${delta ? `\nDelta re-review: only the changes since ${delta.login}'s review of ${delta.reviewedAt.slice(0, 10)}, ${delta.sinceSha.slice(0, 10)}..${headSha.slice(0, 10)} (out/delta.diff); the full PR diff (out/pr.diff) is context.` : ""}
 `
   );
 
@@ -288,6 +314,9 @@ ${focus ? `Focus: ${focus}` : ""}${replay ? `\nReplay of frozen revisions ${base
         ciAnnotationsPath: ci && ci.annotations.length ? ciPath : null,
         unreviewablePath: census.files.length ? unreviewablePath : null,
         replay,
+        delta: delta
+          ? { sinceSha: delta.sinceSha, reviewedAt: delta.reviewedAt, path: deltaPath, scope: deltaScope({ ...delta, headSha, deltaPath }) }
+          : null,
         prNumber: Number(pr), prTitle: meta.title, repo, prUrl: meta.url, headSha,
         urgency, depth, maxComments: config.max_comments,
         lenses: config.reviewer_lenses,
@@ -295,7 +324,7 @@ ${focus ? `Focus: ${focus}` : ""}${replay ? `\nReplay of frozen revisions ${base
       },
       codex: config.codex,
       prepareDraft: config.prepare_draft,
-      confirm: `${replay ? `REPLAY ${baseSha.slice(0, 10)}..` : ""}PR #${pr} "${meta.title}" @ ${headSha.slice(0, 10)} · depth ${depth}${depth === "quick" ? " (one reviewer, Codex audits)" : ""} · urgency ${urgency}: draft carries ${draftScope}; local report shows everything · codex ${config.codex ? "on" : "off"}${replay ? " · posting disabled" : ""}`,
+      confirm: `${replay ? `REPLAY ${baseSha.slice(0, 10)}..` : ""}${delta ? `RE-REVIEW since your review of ${delta.reviewedAt.slice(0, 10)}: ${delta.sinceSha.slice(0, 10)}..${headSha.slice(0, 10)}, ${delta.commits} new commit(s) touching ${delta.files} of ${census.changed.length} changed files · ` : ""}PR #${pr} "${meta.title}" @ ${headSha.slice(0, 10)} · depth ${depth}${depth === "quick" ? " (one reviewer, Codex audits)" : ""} · urgency ${urgency}: draft carries ${draftScope}; local report shows everything · codex ${config.codex ? "on" : "off"}${replay ? " · posting disabled" : ""}`,
       warnings,
     }, null, 2) + "\n"
   );
@@ -307,6 +336,67 @@ const PRIOR_QUERY = `query($owner:String!,$repo:String!,$num:Int!){
       comments(first:50){ nodes{ author{login} createdAt body } } } }
     comments(first:100){ nodes{ author{login} createdAt body } }
     reviews(first:50){ nodes{ author{login} submittedAt state body } } } } }`;
+
+// The delta base: the commit of the current gh user's most recent submitted
+// review. null (a full review, with a warning) when there is none or it can't
+// be used; { empty } when nothing the PR changes moved since it.
+function deltaSinceLastReview({ repo, pr, repoDir, headSha, haveCheckout, diff, changed, step, warnings }) {
+  const full = (why) => {
+    warnings.push(`--since-last-review: ${why}; running a full review instead`);
+    return null;
+  };
+  const me = tryRun("gh", ["api", "user", "-q", ".login"]);
+  const out = me ? tryRun("gh", ["api", "--paginate", `repos/${repo}/pulls/${pr}/reviews?per_page=100`,
+    "--jq", ".[] | {login: .user.login, state, commit_id, submitted_at}"]) : null;
+  if (out === null) return full("your reviews on this PR could not be read");
+  const last = out.split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    .filter((r) => r.login === me && r.state !== "PENDING" && r.submitted_at && r.commit_id)
+    .sort((x, y) => x.submitted_at.localeCompare(y.submitted_at))
+    .pop();
+  if (!last) return full(`${me} has no submitted review on this PR`);
+  const since = last.commit_id, at = last.submitted_at;
+  const which = `your review of ${at.slice(0, 10)} at ${since.slice(0, 10)}`;
+  if (since === headSha) return { empty: `the PR head is still the commit of ${which}` };
+  if (!haveCheckout) return full(`no checkout to compute the changes since ${which}`);
+
+  const cmp = ghSoft(["api", `repos/${repo}/compare/${since}...${headSha}`, "--jq",
+    "[.status, .ahead_by, ([.commits[] | select((.parents | length) > 1)] | length)] | @tsv"]);
+  if (!cmp.ok) {
+    return full(/404|not found/i.test(cmp.err)
+      ? `the commit of ${which} is no longer in the repository (force-pushed away?)`
+      : `could not compare ${which} with the PR head (${cmp.err})`);
+  }
+  const [status, aheadBy, merges] = cmp.out.trim().split("\t");
+  if (status !== "ahead") return full(`the commit of ${which} is no longer an ancestor of the PR head (status ${status}): the branch was force-pushed or rebased since`);
+  if (Number(merges)) warnings.push(`the ${aheadBy} new commits include ${merges} merge(s); delta hunks the full PR diff doesn't contain came from the merged branch`);
+
+  const fetched = step("git", ["cat-file", "-e", `${since}^{commit}`], repoDir) ||
+    step("git", ["fetch", "-q", "--depth=1", "origin", since], repoDir);
+  const raw = fetched ? localDiff(repoDir, since, headSha, false, step) : null;
+  if (raw === null) return full(`the changes since ${which} could not be computed from the clone (see out/clone.log)`);
+
+  // Files the PR doesn't change (reverted since, or from a merged branch) are out of scope.
+  const keep = new Set(changed);
+  for (const b of diffBlocks(diff)) if (b.oldPath) keep.add(b.oldPath);
+  const kept = [], dropped = [];
+  for (const part of raw.split(/^(?=diff --git )/m).filter(Boolean)) {
+    const b = diffBlocks(part)[0];
+    if (b && !keep.has(b.path) && !(b.oldPath && keep.has(b.oldPath))) dropped.push(b.path);
+    else kept.push(part);
+  }
+  if (!kept.length) {
+    return { empty: `none of the PR's changes moved since ${which}${dropped.length ? ` (only ${dropped.length} file(s) the PR doesn't change did)` : ""}` };
+  }
+  if (dropped.length) warnings.push(`${dropped.length} file(s) changed since ${which} are not changed by the PR (reverted, or from a merged branch) and are left out of the delta: ${dropped.slice(0, 5).join(", ")}${dropped.length > 5 ? ", ..." : ""}`);
+  return { login: me, sinceSha: since, reviewedAt: at, commits: Number(aheadBy), diff: kept.join(""), files: kept.length, dropped };
+}
+
+// The one statement of a delta re-review's scope, injected into every
+// reviewing prompt (lenses, quick reviewer, critic, verifier, Codex).
+function deltaScope({ login, sinceSha, reviewedAt, headSha, deltaPath }) {
+  const s = sinceSha.slice(0, 10);
+  return `Delta re-review: ${login} already reviewed this PR at ${s} on ${reviewedAt.slice(0, 10)}. The changes since then (${s}..${headSha.slice(0, 10)}) are in ${deltaPath}; judge only those, and treat the rest of the PR as context. Raise an issue in earlier code only when the new commits make it worse or newly reachable. A delta hunk the full PR diff doesn't contain came from a merged branch, not the author. Don't repeat a point from the prior threads; where the new commits address one of ${login}'s open threads, that is not a finding. Anchor lines in the full PR diff, which is what review comments attach to.`;
+}
 
 const RULE_FILES = new Set(["CLAUDE.md", "AGENTS.md", "REVIEW.md"]);
 
@@ -524,4 +614,6 @@ function scalar(s) {
   return s.replace(/^["']|["']$/g, "");
 }
 
-main();
+// Codex builds its prompt with the same delta scope.
+module.exports = { deltaScope };
+if (require.main === module) main();

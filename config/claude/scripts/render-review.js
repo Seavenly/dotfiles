@@ -3,7 +3,7 @@
 // payload. The HTML overview is written separately by the explainer agent.
 //
 // Reads:
-//   <run_dir>/brief.md
+//   <run_dir>/brief.md             (since_sha marks a delta re-review)
 //   <run_dir>/out/comments.json
 //   <run_dir>/out/orientation.md   (optional)
 //   <run_dir>/out/findings/<lens>.json, repo-rules/manifest.json,
@@ -146,6 +146,7 @@ function main() {
     orientation,
     coverage,
     replay: brief.replay === true ? brief.comparison || true : null,
+    since: brief.since_sha ? { sha: String(brief.since_sha), at: String(brief.since_reviewed_at || "") } : null,
     quick: comments.depth === "quick",
     escalate: comments.escalate || null,
     // Local report: every finding by tier, each carrying `excluded` (null when
@@ -371,8 +372,11 @@ function trimOrientation(raw) {
 function renderMarkdown(ctx) {
   const out = [];
   out.push(`# Review of PR #${ctx.prNumber}: ${ctx.prTitle}\n`);
+  const since = ctx.since
+    ? `  ·  *re-review since \`${ctx.since.sha.slice(0, 10)}\` (your review of ${ctx.since.at.slice(0, 10)})*`
+    : "";
   out.push(
-    `**Verdict: ${ctx.postureLabel}**  ·  *urgency: ${ctx.urgency}*${ctx.quick ? "  ·  *depth: quick*" : ""}`
+    `**Verdict: ${ctx.postureLabel}**  ·  *urgency: ${ctx.urgency}*${ctx.quick ? "  ·  *depth: quick*" : ""}${since}`
   );
   if (ctx.postureRationale) out.push(ctx.postureRationale);
   if (ctx.postureCaveat) out.push(`_⚠ ${ctx.postureCaveat}._`);

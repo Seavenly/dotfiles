@@ -1,5 +1,5 @@
 ---
-description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → Codex cross-model check → rendered review.md + HTML overview, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --depth quick|full (quick = one derived reviewer audited by Codex, criticals and importants only), --max-comments N, --prepare-draft, --lenses security,correctness,design,tests,observability, --no-codex, --focus "text", --at-base SHA --at-head SHA (replay frozen revisions; never posted).
+description: Review a GitHub PR with a dynamic workflow — parallel reviewers across lenses → critic → adversarial verify → Codex cross-model check → rendered review.md + HTML overview, optional pending draft. Args — PR number (required), optional --repo owner/name, --urgency hotfix|fast|standard, --depth quick|full (quick = one derived reviewer audited by Codex, criticals and importants only), --max-comments N, --prepare-draft, --lenses security,correctness,design,tests,observability, --no-codex, --focus "text", --since-last-review (re-review only the commits since your last submitted review), --at-base SHA --at-head SHA (replay frozen revisions; never posted).
 ---
 
 Review PR `$ARGUMENTS`. Scripts do the mechanics; you run them in order, relay what they report, and talk to the user. If `$ARGUMENTS` is empty or `help`, explain the flags, the three urgency tiers (urgency only decides what the draft carries: hotfix = criticals, fast = + importants, standard = all; the local report always shows everything) and the two depths (full, the default: five lens reviewers, critic, verifier, Codex; quick, for a small low-risk PR: one reviewer reporting criticals and importants, Codex as its only audit, postable only when Codex applied) and stop.
@@ -9,8 +9,8 @@ Review PR `$ARGUMENTS`. Scripts do the mechanics; you run them in order, relay w
 ```bash
 node ~/.claude/scripts/review-flow-prep.js $ARGUMENTS
 ```
-It pins the reviewed snapshot, clones that exact commit, fetches the stated intent and prior review threads, reads the repo rules from the base revision (never the PR's own copies), CI annotations on the head and a changed-file census, writes the brief, and prints `{ runDir, launchArgs, codex, prepareDraft, confirm, warnings }`. With `--at-base`/`--at-head` it replays frozen revisions for the manual regression set (`~/.dotfiles/config/claude/review-flow-evals.md`); a replay can never be posted.
-- Exit 3: the PR isn't open. Confirm with the user, then re-run with `--allow-closed`. Exit 4: `gh` failed (if unauthenticated, tell the user to run `gh auth login`).
+It pins the reviewed snapshot, clones that exact commit, fetches the stated intent and prior review threads, reads the repo rules from the base revision (never the PR's own copies), CI annotations on the head and a changed-file census, writes the brief, and prints `{ runDir, launchArgs, codex, prepareDraft, confirm, warnings }`. With `--at-base`/`--at-head` it replays frozen revisions for the manual regression set (`~/.dotfiles/config/claude/review-flow-evals.md`); a replay can never be posted. With `--since-last-review` it reviews only the changes since your last submitted review (`out/delta.diff`; the full `out/pr.diff` stays context and the anchor set) and falls back to a full review, with a warning, when there is no such review or the branch was force-pushed past it; a delta re-review is postable.
+- Exit 3: the PR isn't open. Confirm with the user, then re-run with `--allow-closed`. Exit 4: `gh` failed (if unauthenticated, tell the user to run `gh auth login`). Exit 5: nothing new since your last review; relay stderr and stop.
 - Show `confirm` and every warning on one or two lines, then continue. Don't wait for a reply.
 - Depth quick: spawn the explainer now, in the background (step 3.5's inputs minus `orientation.md` and `comments.json`; skipped on hotfix), then launch.
 
@@ -58,7 +58,7 @@ It refuses replay runs (exit 7), then re-checks, at post time: a draft exists, t
 
 ```
 ✓ review-flow complete
-  PR:        #<num> — <title>  @ <sha:10>
+  PR:        #<num> — <title>  @ <sha:10>  ·  re-review since <delta.sinceSha:10>   (the re-review part only with launchArgs.delta)
   verdict:   <postVerify, or postCritic if the verifier died>  ·  urgency: <urgency>  ·  depth: <depth>
   effort:    <the explainer's effort line after `effort:`, verbatim>   (omit if the overview failed or was skipped)
   escalate:  consider a full review: <escalate>   (quick only, when set or effort is Deep)

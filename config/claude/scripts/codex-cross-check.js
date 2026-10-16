@@ -30,6 +30,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { resolveCodexModel } = require("./codex-model");
+const { deltaScope } = require("./review-flow-prep");
 
 const TIER_ORDER = ["critical", "important", "recommended", "nit"];
 const rank = (t) => TIER_ORDER.indexOf(t); // lower index = more severe
@@ -106,7 +107,7 @@ function main() {
   const logPath = path.join(cxDir, "exec.log");
   fs.rmSync(verdictPath, { force: true });
   fs.writeFileSync(schemaPath, JSON.stringify(VERDICT_SCHEMA, null, 2));
-  fs.writeFileSync(promptPath, buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick }));
+  fs.writeFileSync(promptPath, buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick, snapshot }));
 
   const started = Date.now();
   const res = spawnSync(
@@ -297,7 +298,7 @@ const DISPOSITIONS = `For EVERY finding id below, return one verdict:
 - strike — its central factual premise is false. Cite the file and line (or the diff hunk) that refutes it.
 `;
 
-function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick }) {
+function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick, snapshot }) {
   const slim = findings.map((f) => ({
     id: f.id,
     tier: f.tier,
@@ -318,6 +319,10 @@ function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick })
     .filter(([, p]) => p)
     .map(([label, p]) => `- ${label}: ${p}`)
     .join("\n");
+  const d = snapshot && snapshot.delta;
+  const scope = d
+    ? `\n\n${deltaScope({ login: d.reviewer, sinceSha: d.since_sha, reviewedAt: d.since_reviewed_at, headSha: snapshot.head_sha, deltaPath: path.join(outDir, "delta.diff") })}`
+    : "";
 
   const provenance = quick
     ? "A single reviewer from another model produced the findings below in one pass, and nothing else has checked them: you are the only audit. Your value is catching what that reviewer, and its model family, gets wrong."
@@ -325,7 +330,7 @@ function buildPrompt({ runDir, outDir, findings, haveCheckout, repoDir, quick })
   return `You are an independent reviewer from a different model family, doing the last check on a pull-request review before a human decides what to post. ${provenance}
 
 Inputs (read-only):
-${inputs}
+${inputs}${scope}
 ${haveCheckout ? "" : "\nThere is no checkout; judge from the diff, and say so in your evidence when a claim depends on code outside it.\n"}
 ${findings.length ? DISPOSITIONS : "The reviewer kept no findings, so return an empty `verdicts` list and spend your effort on the `missed` hunt below.\n"}
 Rules for yourself:
