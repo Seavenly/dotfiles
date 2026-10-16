@@ -44,7 +44,9 @@ Correctness bar:
 - Concurrency: name the observation a later write depends on and the interleaving that invalidates it. Without both, a race is a question, not a finding.
 - Recovery: assume interruption right after state is persisted or an external effect happens (a call, message, charge or job), then trace the retry or replay. Does it repeat the effect, skip the remainder, or leave state half-written?
 - Delivery: check whether a duplicate or out-of-order request, event or job changes identity or repeats an effect.
-- Guards: read the actual lock, transaction, compare-and-set or idempotency key and what it covers. Don't assume it protects the whole operation, or every caller's precondition.`
+- Guards: read the actual lock, transaction, compare-and-set or idempotency key and what it covers. Don't assume it protects the whole operation, or every caller's precondition.
+- Bug fixes: when the stated intent is a bug fix, check that the change removes the root cause rather than masking the symptom, and look for other instances of the same defect.
+- Bug class: when one defect appears in several places, report one finding that names the class and lists every instance (\`path:line\`) in \`body\`, not one per instance; anchor it at the first instance in diff order that sits on a diff line.`
 
 const SECURITY_DOCTRINE = `
 Security bar:
@@ -322,7 +324,7 @@ ${INTENT_RULES}
 ${LINE_RULES}
 
 Reconcile the set as the critic would:
-- Dedupe: one finding per issue, in the strongest framing, under the lens that owns it (security when it is one). Note merges in \`evidence\`.
+- Dedupe: one finding per issue, in the strongest framing, under the lens that owns it (security when it is one). The same defect in several places is one bug-class finding that lists every instance (\`path:line\`) in \`body\`, anchored at the first instance in diff order that sits on a diff line. Note merges in \`evidence\`.
 - Prior threads: give every overlap a disposition. Drop a duplicate of an existing thread, and one a thread settled (a correct author rebuttal included; check timestamps, since a reply can predate the objection and "resolved" is not proof it was answered). Re-raise only when you can name the thread and the point its closure left unanswered, and say both in \`body\`.
 - Anchors: an inline finding sits on a line in the diff. A real finding with no diff line (whole-file, absent code) gets \`anchorable: false\` and becomes a general comment.
 
@@ -339,7 +341,7 @@ Derive from the survivors: ${POSTURE_RULES} Findings marked pre_existing never c
 
 \`decisions\`: judgment calls for the human (a trade-off, whether a resource should outlive the project), one line each: question, options, consequence. Never a defect.
 \`coverage\`: one record per lens (local only): ${COVERAGE_BASIS}
-\`escalate\`: null, or one line on why this PR deserves a full review: it touches authorization or permissions, money movement, a migration, or infrastructure or IAM; the diff is too large or unreviewable for one pass; or you kept a critical.
+\`escalate\`: null, or one line on why this PR deserves a full review: it touches authorization or permissions, money movement, a migration, infrastructure or IAM, or CI/CD workflows or deploy and release automation; the diff is too large or unreviewable for one pass; or you kept a critical.
 
 Return via the structured-output tool. Don't write files.${hotfix ? `\n\n${HOTFIX_DEPTH}` : ''}`
 

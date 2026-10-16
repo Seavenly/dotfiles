@@ -304,6 +304,16 @@ function applyPolicy(inline, general, urgency, perTierCaps, maxComments) {
   };
 }
 
+// The opening line: findings by tier (only tiers present), or plainly none.
+// `scope` names the urgency floor, so an empty hotfix draft doesn't claim more.
+function countLine(inline, general, scope) {
+  const n = (t) => inline[t].length + general[t].length;
+  const total = TIER_ORDER.reduce((sum, t) => sum + n(t), 0);
+  if (!total) return `**No ${scope}issues found.**`;
+  const parts = TIER_ORDER.filter(n).map((t) => `${n(t)} ${t}${t === "nit" && n(t) > 1 ? "s" : ""}`);
+  return `**${total} finding${total > 1 ? "s" : ""}:** ${parts.join(", ")}.`;
+}
+
 function tierCounts(byTier) {
   return Object.fromEntries(TIER_ORDER.map((t) => [t, byTier[t].length]));
 }
@@ -372,6 +382,7 @@ function trimOrientation(raw) {
 function renderMarkdown(ctx) {
   const out = [];
   out.push(`# Review of PR #${ctx.prNumber}: ${ctx.prTitle}\n`);
+  out.push(countLine(ctx.all, ctx.generalAll, ""), "");
   const since = ctx.since
     ? `  ·  *re-review since \`${ctx.since.sha.slice(0, 10)}\` (your review of ${ctx.since.at.slice(0, 10)})*`
     : "";
@@ -560,6 +571,8 @@ function renderDraft(ctx) {
   // `event` is intentionally omitted → GitHub treats this as PENDING and
   // the user must submit (or discard) from the GH UI.
   const bodyParts = [];
+  const floor = { hotfix: "critical ", fast: "critical or important " }[ctx.urgency] || "";
+  bodyParts.push(countLine(ctx.kept, ctx.generalKept, floor));
   bodyParts.push(`**Verdict: ${ctx.postureLabel}**  ·  *urgency: ${ctx.urgency}*`);
   if (ctx.postureRationale) bodyParts.push(ctx.postureRationale);
 

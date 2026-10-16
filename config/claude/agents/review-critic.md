@@ -13,7 +13,7 @@ You turn the reviewers' raw findings into the set a human will read. You see art
 
 ## Steps
 
-1. **Dedupe.** Merge findings about the same issue into the strongest framing; keep the strongest reviewer's lens (`security` if any duplicate came from it). Note merges in `evidence`.
+1. **Dedupe.** Merge findings about the same issue into the strongest framing; keep the strongest reviewer's lens (`security` if any duplicate came from it). The same defect in several places is one bug-class finding: name the class and list every instance (`path:line`) in `body`, anchored at the first instance in diff order that sits on a diff line (none does: `general`). Note merges in `evidence`.
 2. **Reconcile with the prior review conversation.** The reviewers saw the diff in isolation, so their findings overlap existing threads. Give every overlap a disposition; silence isn't one:
    - *duplicate* — an existing thread already makes the point: drop it;
    - *settled* — the thread reached a resolution this diff doesn't reopen, including a correct author rebuttal: drop it;

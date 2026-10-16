@@ -46,7 +46,7 @@ When the topic is a code change (a PR, a branch, a diff), open the page with a r
 
 Rate four dimensions by risk, Low, Medium or High, each with one line of evidence naming the file, resource or behavior:
 
-- **Blast radius**: if this is wrong, what breaks and for whom. Low: dev tooling, docs, tests. Medium: internal users or a non-critical path. High: production users, money, personal data, auth, or shared infrastructure.
+- **Blast radius**: if this is wrong, what breaks and for whom. Low: dev tooling, docs, tests. Medium: internal users or a non-critical path. High: production users, money, personal data, auth, shared infrastructure, or CI/CD workflows and deploy or release automation.
 - **Reversibility**: what undoing it takes. Low: a plain revert. Medium: a revert plus coordination (deploy order, config, another team). High: one-way, such as a data migration or backfill, a deleted resource, a published API or event others consume, or external state (DNS, sent messages, third-party records).
 - **Architectural fit**: how it relates to the way the repo already does this. Low: follows an existing pattern (name the sibling). Medium: extends a pattern, or is the first of its kind where none exists. High: breaks from, replaces or duplicates an established pattern (name it).
 - **Safety net**: what catches a mistake before users do. Low: tests that would fail on the risky behavior, plus a flag, preview or staged rollout. Medium: part of that. High: only production would show it.
