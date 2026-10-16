@@ -3,7 +3,7 @@
   "sequence": 13,
   "release": {
     "id": "flow-stage0/v1",
-    "source_commit": "dea16b9627a36de9d5ba1b3e10c2a3e09cd08cb1"
+    "source_commit": "980d55ac3a39ae3836012c848443c4c37b4d5348"
   },
   "environment": {
     "id": "repository-linux-x64",
@@ -35,9 +35,9 @@
     {
       "id": "frozen_legacy_inventory",
       "path": "legacy-baselines.v1.json",
-      "sha256": "32cb5dbfd5440cf5cd2a6f913e4b5b7693edf8523d3bbed3ce1409b94cac3e15",
+      "sha256": "79db6df6c0d22a6e4fdf89261617d1e35afe34e26f5cac864408b8fed4639e4c",
       "status": "passed",
-      "recorded_at": "2026-10-02T18:18:02Z"
+      "recorded_at": "2026-10-16T13:12:55Z"
     },
     {
       "id": "replacement_runtime_activation",
@@ -55,5 +55,5 @@
     "replacement_launch_enabled": false,
     "decided_at": "2026-07-30T23:06:09Z"
   },
-  "recorded_at": "2026-10-02T18:18:02Z"
+  "recorded_at": "2026-10-16T13:12:55Z"
 }

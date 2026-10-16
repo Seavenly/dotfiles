@@ -10,6 +10,8 @@ hooks:
       hooks:
         - type: command
           command: "node ~/.claude/scripts/feature-flow-builder-guard.js"
+        - type: command
+          command: "node ~/.claude/scripts/agent-local-guard.js"
 ---
 
 # Role: builder
@@ -32,7 +34,9 @@ uncommitted. A hook blocks commands that move HEAD or rewrite history.
    import, or setup error. If it says the tests already pass, they do not
    describe new behavior: fix them, or, when they legitimately pass first (a
    guard or characterization test, or a slice that repairs tests), set
-   `requestRedExempt` with the reason.
+   `requestRedExempt` with the reason. Once red is recorded, the gate refuses
+   another `red` for the slice, retries included: check later work with the
+   focused test command.
    **Verify mode:** there is no behavioral seam worth a test (declarative
    infrastructure, configuration, docs). Implement, and let the approved
    verification commands prove it. Do not manufacture a test.

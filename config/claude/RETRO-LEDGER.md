@@ -12,6 +12,64 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-10-15 - epic-flow and to-epic overhaul (not a retro)
+
+An audit of 5 epics (169 story runs, 5 sessions, about 30 memories), the
+stories to-epic produced, outside research, and two independent reviews of the
+plan (Codex on the latest Sol, Fable). The command described a PR workflow the
+owner had stopped using; the owner did the integration step by hand about 20
+times, and moved off the command when one session could not carry an epic.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Owner approved each story locally, then told the agent to merge and push about 20 times; the command forbade it | ADD | commands/epic-flow.md + scripts/epic-flow-integrate.js | applied - tuicr approval plus one confirmation per batch integrates; the script merges on a candidate from the exact remote tip, verifies the merged tree, records a receipt, then fast-forwards; never forces; refuses unapproved heads, unaccepted non-gate commits, and stories cut outside epic history |
+| PR, auto-merge, and self-merge text sat under a local-only banner | AVOID | commands/epic-flow.md | applied - removed; delivery is local review only |
+| Nine waves and seven compactions in one session; state lived in chat and memory | ADD | commands/epic-flow.md | applied - durable epic run dir (`epic.json`, receipts); every run rebuilds from git, tuicr, Jira, and run dirs |
+| Unlabeled children stopped the run; no subset runs; overlapping same-wave stories collided (32 conflict hunks) | AVOID | commands/epic-flow.md | applied - non-buildable stories go to a "needs a human" list; `--only`/`--skip`; a per-story researcher's touched areas defer overlaps |
+| Stories went stale before dispatch (5 of 6 criteria already met) | ADD | commands/epic-flow.md | applied - per-story check against the epic tip drafts the brief; one approval per wave |
+| main drifted 40 commits; a clean merge silently duplicated a config key | ADD | commands/epic-flow.md + scripts/epic-flow-integrate.js | applied - drift reported every run; `--refresh` merges on a candidate, names files changed on both sides, and lands only after review |
+| `agent-blocked`, fresh retries, and the post-run base merge never ran; real failures were platform ones | AVOID | commands/epic-flow.md + workflows/feature-flow-run.js | applied - platform failures resume without counting; stuck slices get one continuation on the same gate (stable slice ids); RE_PLAN goes to the owner |
+| Acceptance 40-50% compound, properties passed review while false, no constraints, boilerplate and mutating `Verify:` lines | AVOID | skills/to-epic | applied - one evidence-tagged behavior per line, invariants with a falsifying check, Constraints and Out of scope, story-specific non-mutating Verify lines |
+| `human-gate` meant three things; 11 of 13 were built by agents | AVOID | skills/to-epic + commands/epic-flow.md | applied - `human-gate` = built, integration carries a human action; new `human-only`; code and its live proof are separate stories |
+| Design docs always went to main through a separate PR; points and sprint never set | AVOID | skills/to-epic | applied - docs on a local design branch for the owner's PR; no seed commit; no points or sprint; existing-epic mode |
+| Codex pinned to a superseded version | AVOID | scripts/codex-model.js + both Codex scripts | applied - `latest-sol` resolved from Codex's catalog per run and recorded |
+| Task-runner cache replays recorded as green evidence | AVOID | commands/feature-flow.md | applied - task-runner caches off in `suiteCmd` |
+
+Notes:
+- to-epic moved into the managed skills as a local skill; the old unmanaged copy is in `~/.agent-teams/backups/`.
+
+## 2026-10-15 - feature run (sanitized)
+
+First retro on the overhauled feature-flow engine (consumed late; its run
+started after the 2026-10-02 overhaul landed). Every in-flow stage passed,
+yet two later review rounds asked for seven changes. Almost all trace to
+decisions made before or during planning, then enforced by every later stage:
+a widened brief constraint, a protection downgrade filed as a decision, a
+repair that reversed a reviewer's instruction, and structure that ignored the
+repo's existing equivalents.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Host widened a user's rule into a broader brief constraint that every agent then enforced | AVOID | commands/feature-flow.md | applied - constraints carry `source: user` (verbatim, never widened) or `source: inferred` (checked against repo convention and confirmed with the user, or left out) |
+| Triage filed a protection downgrade as a post-build decision because the brief chose what to reuse | AVOID | agents/feature-verifier.md | applied - added to the always-fix list; a reuse decision never authorizes weaker protection |
+| A repair reversed an explicit reviewer instruction during a review-only relaunch | AVOID | agents/feature-verifier.md + commands/feature-flow.md | applied - review-only relaunch records reviewer instructions as `source: reviewer` constraints; no repair slice changes code against a constraint, and a contested constraint becomes a user decision |
+| Hand-rolled mechanism where a platform primitive exists | AVOID | agents/feature-critic.md (new Fit lens) | applied · **restores 2026-07-24 "unresearched custom primitives"**, which the 2026-10-02 overhaul dropped from both critics |
+| Workflow agent rewrote a live pull-request description | AVOID | scripts/agent-local-guard.js + every feature-flow agent's frontmatter + workflows/feature-flow-run.js | applied - PreToolUse hook blocks pushes and GitHub writes (reads allowed) for builder, critics, verifier, planner and synthesizer; the shared prompt says stay local. Enforced by a hook, following the 2026-10-02 finding that prompt rules alone did not stop commits. Checked in a fresh session: the hook blocked a comment command |
+| Outward action chained after a check whose failure didn't stop it | AVOID | commands/feature-flow.md | skipped - feature-flow no longer pushes; host shell hygiene outside the flow. Watching |
+| External-contract table for each new outbound call | ADD | agents/planner.md | applied, **retargeted** from the researcher, which feature-flow no longer spawns - plan maps each provider status to an outcome; unreadable contracts become open questions |
+| Follow the closest existing precedent for secrets, config, client plumbing, placement, cross-service imports | ADD | agents/planner.md + agents/feature-critic.md (Fit lens) | applied · **corroborates 2026-09-23 review-flow house-pattern bar** - three of the seven later findings were structural |
+| Plan expand-first for base-owned resources that ephemeral environments reference | STRESS | agents/planner.md | applied · **corroborates 2026-10-01 rollout-order entry** - planner names the split for the user to decide; the critic's rollout lens already caught it at review |
+| Run the red check once per slice | STRESS | scripts/feature-flow-gate.js + agents/builder.md + workflow | applied - the gate refuses `red` once a failed or unchecked red is recorded (errored and not-red runs may retry); a second run had overwritten the red record and the removed-assertion snapshot. Regression test proven red without the fix |
+| Independent final review by default when credentials or telemetry change | ADD | - | already covered - the overhaul made a cross-model final review the default on every run |
+| Flag review requests that add duplication or manual operational steps | ADD | - | skipped - single occurrence, low confidence. Watching |
+
+Notes:
+- No conflicts. The guard is flow-neutral, so the shared planner and
+  synthesizer carry it in spike-flow and review-flow too; no flow should
+  publish from an agent.
+- Agent definitions are read at session start: a session that predates the
+  frontmatter change runs agents without the new hook.
+
 ## 2026-10-07 - review run (sanitized)
 
 A posted review where the problem was relevance, not accuracy: every finding

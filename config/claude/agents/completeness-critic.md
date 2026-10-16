@@ -4,6 +4,12 @@ description: feature-flow coverage check. Maps each acceptance criterion to conc
 tools: Read, Grep, Glob, Bash
 model: opus
 effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "node ~/.claude/scripts/agent-local-guard.js"
 ---
 
 # Role: completeness-critic

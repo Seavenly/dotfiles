@@ -4,6 +4,12 @@ description: feature-flow's triage verifier. Checks every review finding (critic
 tools: Read, Grep, Glob, Bash
 model: opus
 effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "node ~/.claude/scripts/agent-local-guard.js"
 ---
 
 # Role: feature-verifier
@@ -23,6 +29,10 @@ hold up.
    - `fix`: real, and the fix fits the change's scope. Always fix:
      - security, credential, grant, or fail-closed problems on prod or
        credential paths, whatever their effort;
+     - a secret or credential stored or delivered with less protection than
+       comparable values in the repo. A brief decision about *what* to reuse
+       never authorizes weakening *how* it is protected, so this is never a
+       `userDecision` after the build;
      - a promised acceptance criterion that does not work;
      - anything that would break the build, a merge gate, or a first deploy.
      Also fix cheap real issues (docs, comments, a one-file correction, a
@@ -57,3 +67,7 @@ questions only the human can settle.
   different model is not true because of its source, and a finding the
   in-flow critic already raised is not false because the change shipped.
 - Never fix by weakening a test or deleting the behavior the finding exposes.
+- Never shape a repair slice that changes code against a brief constraint,
+  especially one marked `source: user` or `source: reviewer`. A finding that
+  argues the constraint is wrong becomes a `userDecision` naming the
+  constraint, with nothing built against it.

@@ -11,6 +11,7 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const root = path.resolve(__dirname, "..");
 const gateScript = path.join(root, "config/claude/scripts/feature-flow-gate.js");
 const guardScript = path.join(root, "config/claude/scripts/feature-flow-builder-guard.js");
+const localGuardScript = path.join(root, "config/claude/scripts/agent-local-guard.js");
 
 function sh(cwd, cmd) {
   return execFileSync("/bin/sh", ["-c", cmd], { cwd, encoding: "utf8" }).trim();
@@ -136,6 +137,19 @@ test("red rejects tests that already pass and flags assertions removed later", (
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.deepEqual(r.testEdits.weakenedAssertions, [{ file: "tests/n.test.js", removed: ["expect(b).toBe(2)"] }]);
   assert.deepEqual(r.testEdits.existingTestEdits, ["tests/old.test.js"]);
+});
+
+test("a second red after implementing is refused and keeps the original record", (t) => {
+  const { runDir, wt } = fixture(t);
+  gate(runDir, "init");
+  write(wt, "tests/n.test.js", "// TODO\nexpect(a).toBe(1)\nexpect(b).toBe(2)\n");
+  assert.equal(gate(runDir, "red", "--slice", "1", "--tests", "tests/n.test.js").ok, true);
+  write(wt, "tests/n.test.js", "expect(a).toBe(1)\n");
+  const again = gate(runDir, "red", "--slice", "1", "--tests", "tests/n.test.js");
+  assert.equal(again.reason, "red-already-recorded");
+  const r = gate(runDir, "verify", "--slice", "1", "--title", "F", "--mode", "test");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(r.testEdits.weakenedAssertions, [{ file: "tests/n.test.js", removed: ["expect(b).toBe(2)"] }]);
 });
 
 test("a commit hook that changes files fails the gate and leaves no commit", (t) => {
@@ -312,4 +326,19 @@ test("the builder guard blocks history changes and gate state, and allows reads"
   assert.equal(edit("/Users/me/.agent-teams/runs/2026-10-02-x/gate/state.json"), 2);
   assert.equal(edit("/Users/me/.agent-teams/runs/2026-10-02-x/worktree/src/gate/index.ts"), 0);
   assert.equal(edit("/Users/me/.agent-teams/runs/2026-10-02-x/worktree/src/a.ts"), 0);
+});
+
+test("the local guard blocks pushes and GitHub writes, and allows reads", () => {
+  const bash = (command) => spawnSync(process.execPath, [localGuardScript], { input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }), encoding: "utf8" }).status;
+  assert.equal(bash("git -C /tmp/wt push origin HEAD"), 2);
+  assert.equal(bash("gh pr edit 12 --body-file report.md"), 2);
+  assert.equal(bash("cd wt && gh pr comment 12 -b hi"), 2);
+  assert.equal(bash("gh issue create -t x -b y"), 2);
+  assert.equal(bash("gh api repos/o/r/pulls/12 -X PATCH -f body=x"), 2);
+  assert.equal(bash("gh api repos/o/r/issues/12/comments -f body=x"), 2);
+  assert.equal(bash("gh pr view 12 --json body && gh pr diff 12"), 0);
+  assert.equal(bash("gh api repos/o/r/pulls/12/comments --paginate"), 0);
+  assert.equal(bash("gh api -X GET search/issues -f q=x"), 0);
+  assert.equal(bash("git log --oneline -5 && git status"), 0);
+  assert.equal(spawnSync(process.execPath, [localGuardScript], { input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: "/x" } }), encoding: "utf8" }).status, 0);
 });

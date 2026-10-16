@@ -105,6 +105,7 @@ expected_skills=(
   split
   stack-split
   tdd
+  to-epic
   to-spec
   to-tickets
   triage
@@ -150,6 +151,7 @@ local_skills=(
   agent-flow-spike
   drovr-review
   implement-ticket
+  to-epic
   tuicr-reviews
 )
 

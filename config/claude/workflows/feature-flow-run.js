@@ -17,6 +17,9 @@ export const meta = {
 //   maxSliceRetries, maxFixRounds, finalReviewer: 'fable'|'codex',
 //   codex: { model, effort } | null
 //   planOnly (bool), slices (array|null), reviewOnly (bool), priorRunStats|null
+//   continuation (bool): a relaunch on the same run dir and gate with a subset
+//     of its planned slices (from `plannedSlices`, ids kept, so each slice
+//     keeps its gate red snapshot); repair slice ids then carry the launchId
 // args can arrive as a JSON-encoded string when launched by name.
 const a = typeof args === 'string' ? JSON.parse(args) : args
 // Reviews diff against the commit the gate recorded at init, not the base
@@ -27,7 +30,7 @@ const planPath = `${a.outDir}/plan.md`
 const ledgerPath = `${a.runDir}/gate/ledger.json`
 const gateStatePath = `${a.runDir}/gate/state.json`
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
-const where = `Work in the worktree at ${a.worktree}; cd there for every command. Run directory: ${a.runDir}. Never switch branches.`
+const where = `Work in the worktree at ${a.worktree}; cd there for every command. Run directory: ${a.runDir}. Never switch branches. Stay local: never push or write to GitHub (pull requests, issues, comments); the host decides what leaves this machine.`
 
 const builderFollowups = []
 const runStats = Object.assign({
@@ -203,15 +206,15 @@ async function buildSlices(slices, phaseName, idPrefix, finalNote) {
   let halted = null
   for (let i = 0; i < slices.length; i++) {
     const s = slices[i]
-    const id = `${idPrefix}${i + 1}`
-    if (halted) { notAttempted.push({ slice: s.title, reason: halted }); continue }
+    const id = s.id || `${idPrefix}${i + 1}`
+    if (halted) { notAttempted.push({ id, slice: s.title, reason: halted, spec: s }); continue }
     const isFinal = i === slices.length - 1
     const mode = s.verificationMode === 'verify' ? 'verify' : 'test'
     const criteria = (s.criteria || []).join(', ')
     const modeNote = mode === 'test'
       ? (s.redExempt
         ? `Mode: test, red-exempt (its tests may pass before the change). Test idea: ${s.testIdea || 'derive from the behavior'}.`
-        : `Mode: test. Test idea: ${s.testIdea || 'derive from the behavior'}. Write the tests first and run \`${a.gate} red ${q(a.runDir)} --slice ${id} --tests <paths>\` before implementing.`)
+        : `Mode: test. Test idea: ${s.testIdea || 'derive from the behavior'}. Write the tests first and run \`${a.gate} red ${q(a.runDir)} --slice ${id} --tests <paths>\` once, before implementing; it is not a test runner.`)
       : `Mode: verify. Evidence: ${s.verificationIdea || 'the approved verification commands'}.${s.verificationReason ? ` Why: ${s.verificationReason}.` : ''}`
     const base = `${where}\nSlice ${id} (${i + 1} of ${slices.length}): ${s.title}\nBehavior: ${s.behavior}${criteria ? `\nCriteria: ${criteria}` : ''}\n${modeNote}${s.fixDirection ? `\nFix direction: ${s.fixDirection}` : ''}${s.evidence ? `\nEvidence: ${s.evidence}` : ''}${isFinal && finalNote ? `\n${finalNote}` : ''}`
     let failure = null
@@ -241,7 +244,7 @@ async function buildSlices(slices, phaseName, idPrefix, finalNote) {
       }
       if (MECHANICAL.has(g.reason)) {
         halted = `gate cannot run: ${g.reason}${g.message ? ` (${g.message})` : ''}`
-        stuck.push({ slice: s.title, reason: halted })
+        stuck.push({ id, slice: s.title, reason: halted, spec: s })
         log(`${id}: ${halted} - stopping the build`)
         break
       }
@@ -249,7 +252,7 @@ async function buildSlices(slices, phaseName, idPrefix, finalNote) {
       attempt++
       runStats.retries++
       if (attempt > a.maxSliceRetries) {
-        stuck.push({ slice: s.title, reason: g.reason, command: g.command || null, tail: g.tail || g.message || '' })
+        stuck.push({ id, slice: s.title, reason: g.reason, command: g.command || null, tail: g.tail || g.message || '', spec: s })
         log(`${id}: stuck after ${a.maxSliceRetries} retries (${g.reason})`)
         const key = g.command || g.reason
         streak = key === lastStuckCommand ? streak + 1 : 1
@@ -294,7 +297,7 @@ async function runFinalReviewer(head) {
   }
   if (a.finalReviewer !== 'codex') return await fable(null)
   const c = a.codex || {}
-  const cx = `node ~/.claude/scripts/feature-flow-codex-review.js ${q(a.runDir)} --base ${baseSha} --head ${head} --model ${c.model || 'gpt-6-sol'} --effort ${c.effort || 'medium'}`
+  const cx = `node ~/.claude/scripts/feature-flow-codex-review.js ${q(a.runDir)} --base ${baseSha} --head ${head} --model ${c.model || 'latest-sol'} --effort ${c.effort || 'medium'}`
   runStats.agents++
   const r = await agent(relayPrompt(`${cx} --detach`, `Then run: ${cx} --wait 540`, '"status":"running"'),
     { label: 'final-review:codex', phase: 'Final review', schema: RELAY_SCHEMA, model: 'sonnet', effort: 'low' })
@@ -314,7 +317,9 @@ async function triage(head, findings, label, phaseName) {
 }
 
 // ── Plan ───────────────────────────────────────────────────────────
-let slices = a.slices || null
+// Build slices get stable gate ids once, here; a continuation passes them back.
+const withIds = (list) => list.map((s, i) => ({ ...s, id: s.id || `s${i + 1}` }))
+let slices = a.slices ? withIds(a.slices) : null
 if (!a.reviewOnly && !slices) {
   phase('Plan')
   runStats.agents++
@@ -322,7 +327,7 @@ if (!a.reviewOnly && !slices) {
     `${where}\nRead the brief at ${a.briefPath}. Acceptance criteria:\n${accText}\nWrite the plan to ${planPath} and return the slices. Map every criterion to a slice or to out of scope.`,
     { label: 'planner', phase: 'Plan', agentType: 'planner', schema: PLAN_SCHEMA }
   )
-  slices = (plan && plan.slices) || []
+  slices = withIds((plan && plan.slices) || [])
   setStage('plan', slices.length ? 'ok' : 'failed')
   if (a.planOnly) return { planned: true, slices, planPath, outOfScope: (plan && plan.outOfScope) || [], runStats }
   if (!slices.length) return { error: 'no slices produced', branch: a.branch, worktree: a.worktree, stageStatus, runStats }
@@ -389,7 +394,9 @@ async function repair(t, fixes, phaseName, round) {
   if (round === 'r2') postReviewFixes.push(...fixSlices.map((x) => x.title))
   fixRounds++
   runStats.fixRounds = fixRounds
-  const r = await buildSlices(fixSlices.map((s) => ({ ...s, title: `Fix: ${s.title}` })), phaseName, `${round}-`)
+  // Repair ids are positional per round; a continuation shares the gate state
+  // of the first launch, so its repair ids carry the launchId.
+  const r = await buildSlices(fixSlices.map((s) => ({ ...s, id: undefined, title: `Fix: ${s.title}` })), phaseName, `${round}${a.continuation ? `@${a.launchId}` : ''}-`)
   stuck.push(...r.stuck)
   notAttempted.push(...r.notAttempted)
   if (r.head) { head = r.head; unverifiedCommits = r.unverified } else log(`${phaseName} fixes: the gate could not finalize; reviews stay on ${head}`)
@@ -485,6 +492,8 @@ return {
   notesPath: `${a.outDir}/notes.md`,
   notesContent,
   slices: (slices || []).length,
+  // Full slice objects with their gate ids, for a continuation launch.
+  plannedSlices: slices || [],
   // epic-flow treats a non-empty stuck list as not clean, so unattempted
   // slices count as stuck there too.
   stuck: [...stuck, ...notAttempted.map((x) => ({ ...x, notAttempted: true }))],

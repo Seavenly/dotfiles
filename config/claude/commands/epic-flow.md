@@ -1,116 +1,91 @@
 ---
-description: Orchestrate epic-level agent work — read a Jira epic's stories (agent-auto/human-gate labels, blocked-by links), dispatch /feature-flow runs per story onto a shared integration branch. The agent builds EVERY story; the label sets merge authority — agent-auto stories the agent merges itself on a clean feature-flow completion, human-gate stories open a PR for a human to merge. Pause when progress needs a human merge; finish with a whole-epic review PR. Args — epic key and optional flags (--branch name, --concurrency N, --repo path, --dry-run).
+description: Run a Jira epic's stories through /feature-flow onto one integration branch - integrate the stories you approved in tuicr, refresh against main, prepare and launch the ready wave, and hand each built story to the local review inbox. Re-invoke to resume. Args - epic key and optional flags (--only KEYS, --skip KEYS, --concurrency N, --repo path, --codex, --dry-run, --integrate, --refresh, --done KEY, --finish).
 ---
 
-You run an epic-flow: turn a Jira epic full of PR-sized stories into a
-stream of feature-flow runs stacked on one integration branch. The agent
-builds every story; the human reviews and integrates the built work. Re-invoking
-the command on the same epic resumes it — all state lives in Jira and git, none
-in this session.
+You run an epic-flow: the epic's stories are built one feature-flow run each,
+stacked on one integration branch (`epic/<key>` unless the epic description
+names another). The owner reviews every story locally in tuicr; a story they
+approved is integrated on their one confirmation per batch, which unblocks its
+dependents. Re-invoking the command resumes from durable state.
 
-> **⚠️ DELIVERY MODE — LOCAL REVIEW ONLY (overrides all PR/merge language below).**
-> Agent-built stories are delivered to the **local `tuicr` review inbox**, NOT as
-> GitHub PRs. For every story (both labels): build via feature-flow, then
-> **register the review with `tuicr-reviews add`** and leave the local branch +
-> worktree in place. **Do NOT `git push` and do NOT `gh pr create`** — not even a
-> draft. Wherever a step below says "open the PR", "merge the PR", or "PR against
-> `<branch>`", instead read it as "register the local tuicr review and stop; the
-> human reviews and integrates locally." Nothing is auto-merged and nothing hits
-> the GitHub↔Jira link, so no Jira auto-transitions fire — leave built stories
-> **In Progress** (they are not Done until the human integrates). The
-> `agent-auto`/`human-gate` label no longer changes delivery (both go local); it
-> only records whether the eventual human integration carries an out-of-loop
-> action (deploy/handshake). The GATE (Step 5) is reached when the ready set is
-> empty — i.e. all buildable stories are built and awaiting local review. The
-> endgame (Step 6) integration→`main` review PR remains a deliberate human
-> action. External-repo work still needs a human to open that repo's PR.
-> (Rationale + scope: memory `feedback-epic-flow-local-review-not-prs`.)
->
-> **One wave per invocation (consequence of the above).** Because the agent
-> never marks a story Done in this mode, the ready set (Step 4.1 — status To Do
-> with every blocker Done) only ever contains stories whose blockers were
-> *already* Done when the invocation started. So a single `/epic-flow <KEY>` run
-> builds exactly the currently-unblocked wave, registers each story's tuicr
-> review, leaves them In Progress, and stops at the gate. It does **NOT**
-> auto-stack the whole dependency tree in one run. Downstream waves unblock only
-> **across invocations**: after reviewing the wave locally, the human integrates
-> each story into `epic/<key>`, **marks it Done**, and re-invokes
-> `/epic-flow <KEY>` — the next wave's stories then branch from the real,
-> reviewed `origin/epic/<key>` tip. Expect roughly one invocation per dependency
-> layer. Do not attempt to build stories whose blockers are still un-Done, and do
-> not locally merge built branches into the integration branch to fake-unblock
-> dependents — that base advance and its review gate are the human's to perform.
-> (Rationale: memory `feedback-epic-flow-local-mode-one-wave-per-invocation`.)
+Delivery is local review: never push a story branch and never open a PR. The
+only pushes are the integration branch's creation and fast-forwards made by
+`~/.claude/scripts/epic-flow-integrate.js` after a confirmed integration.
 
-User's invocation: `/epic-flow $ARGUMENTS`
+User's invocation: `/epic-flow $ARGUMENTS`. Defaults: `~/.claude/defaults.yaml`
+(`epic_flow`, `feature_flow`). The per-story unit is
+`~/.claude/commands/feature-flow.md`; follow it except where this says otherwise.
 
-## Read first
-- `~/.claude/AGENT-TEAMS.md` — system architecture.
-- `~/.claude/commands/feature-flow.md` — the per-story unit of work this command dispatches.
-- `~/.claude/defaults.yaml` — `epic_flow` defaults.
+## Arguments
+- Epic key (required). Empty or `help`: explain usage and stop.
+- `--only KEYS` / `--skip KEYS`: comma lists limiting which stories launch.
+- `--concurrency N` (default `epic_flow.concurrency`), `--repo <path>` (default CWD), `--codex` (passed to every story).
+- `--dry-run`: print the graph, story states, drift, and what would launch; change nothing.
+- `--integrate`: only integrate approved work. `--refresh`: only merge the target branch in (step 3).
+- `--done KEY`: the owner confirms a `human-gate` story's human action or a `human-only` story is finished; record it and transition the story Done.
+- `--finish`: the close-out (step 8).
 
-## Conventions the epic's stories must follow
-- Every story carries exactly one of the labels `agent-auto` or `human-gate`. **The agent builds BOTH via feature-flow** — the label governs *merge authority*, not whether the agent runs the story:
-  - `agent-auto` — the agent may **merge the story's PR itself** once feature-flow completes cleanly (and CI is green). No human review required.
-  - `human-gate` — the agent builds the story and opens the PR, but **only a human may merge it**. Use this whenever the merge needs human judgment or an out-of-loop action tied to the merge — a real cloud deploy, a cross-team handshake, a production-affecting or irreversible change. The agent still writes the code (e.g. the IaC) and gets the PR green; the human owns the merge (and whatever deploy/handshake the merge implies).
-- Every story must be written so an agent can pick it up (clear acceptance + `Verify:` lines), regardless of label.
-- Dependencies are Jira "is blocked by" links.
-- A story description may carry `Base branch:` and `Verify:` lines (one command per `Verify:` line) — feature-flow reads them via `--story`.
-- One story ≈ one PR. PRs target the integration branch, never main.
+## State
+`epic_dir=~/.agent-teams/runs/epic-<key>/`, owned by this command:
+- `epic.json`: `{ epic, repo, branch, target, remote, installCmd, holder: { session, since }, constraints[], stories: { KEY: { label, state, runs[], reviewSlug, reviewedHead, approvedHead, outcome, liveOnMerge, needsHuman, continuations } }, decisions[] }`. `state` is one of `ready`, `running`, `built`, `integrated`, `done`, `needs-human`. `outcome` keeps the run's `uncoveredAcceptance`, `deferredProof`, `openFindings`, and `decisions`.
+- `gate.template.json`: the repo's gate commands (feature-flow step 4 without the per-story fields), written with the first story and treated as defaults: every story's own `gate init` is its baseline.
+- `integrations.json`: receipts, written only by the integration script.
 
-## Step 1 — Parse arguments
-- **Epic key** (required) — e.g. `PROJ-300`.
-- `--branch <name>` → integration branch (default: `epic/<key, lowercased>`).
-- `--concurrency N` → max simultaneous story runs (default from `defaults.yaml`).
-- `--repo <path>` → target repo (default: CWD).
-- `--dry-run` → print the dependency graph, wave plan, and what would launch now; change nothing.
+On every start, rebuild the picture from git, `tuicr-reviews list --json`, Jira, and run dirs, and trust them over `epic.json` when they disagree. If `holder` names another session active in the last 24 hours, ask before continuing; then record this session.
 
-If `$ARGUMENTS` is empty or `help`, explain usage and stop.
+## 1. Load and validate
+Fetch the epic and its children (`parent = <KEY> ORDER BY rank`) with status, labels, blocked-by links, and description. Stop on a dependency cycle. Labels:
+- `agent-auto`: built and integrated by the flow.
+- `human-gate`: built by the flow, but integrating it carries a human action (a deploy, a cross-team handshake, a live check). It is Done, and unblocks dependents, only after `--done`.
+- `human-only`, unlabeled, spikes, and stories with a `Base branch:` other than the epic branch: listed under "needs a human", never launched.
 
-## Step 2 — Load the epic
-Via the Atlassian MCP: fetch the epic, then its child stories (JQL `parent = <KEY> ORDER BY rank`). For each story collect: status, labels, "is blocked by" links, and the description's `Base branch:`/`Verify:` lines. Validate before doing anything:
-- every story has exactly one of `agent-auto`/`human-gate` — list violations and stop;
-- the blocked-by graph is acyclic — report any cycle and stop;
-- warn (don't stop) on stories with no acceptance criteria.
+If the integration branch is missing on the remote, check that the design docs the epic links are on the target branch (warn if not), then create it from the target and push it (the one-time exception to no-push). Run `epic-flow-integrate.js receipts <epic_dir>` for the tip and drift.
 
-## Step 3 — Integration branch
+## 2. Integrate approved work
+`tuicr-reviews list --approved --json`, `legacy` entries only, matched to this epic's story and refresh branches. For each, show one batch:
+- `branch@sha` (the current branch head, which becomes `approvedHead`), the diff stat against the epic tip, and any commits after the run's `reviewedHead` (review fixes);
+- the story's gate audit: `[unverified]` commits and commits the gate did not make;
+- open obligations from `outcome` (uncovered acceptance, deferred proof, open findings) and, for `human-gate`, the human action.
+
+Ask once: integrate all, a subset, or none, with a disposition for each obligation (follow-up, waived, or blocks). Record the answer in `epic.json`. Then, serially in dependency order:
+
 ```bash
-git -C <repo> fetch origin
-git -C <repo> rev-parse --verify origin/<branch> >/dev/null 2>&1 \
-  || (git -C <repo> branch <branch> origin/<default> && git -C <repo> push -u origin <branch>)
+node ~/.claude/scripts/epic-flow-integrate.js integrate <epic_dir> --story <KEY> --run <run_dir> \
+  --head <approvedHead> --accept-unknown <the shown review-fix shas> --title "<KEY>: <summary>" --detach
+node ~/.claude/scripts/epic-flow-integrate.js wait <epic_dir> --token <token>   # until it returns
 ```
-Never force-push the integration branch. If branch protection would block the agent pushing branches or opening PRs into it, surface that now, not mid-run.
+It merges on a candidate branch from the exact remote tip, verifies the merged tree (unless it equals the gate-verified reviewed tree), records a receipt, and only then fast-forwards the remote. On `ok`: `agent-auto` stories with no obligation marked "blocks" go Done in Jira; `human-gate` stories stay In Progress with their action listed; then `tuicr-reviews rm`, the tuicr session, and the story worktree are removed. On `conflict` or `verification-failed`: mark needs-human with the files or failing command and offer a repair run (feature-flow from the current tip with the story branch and the failure as context). On `target-moved`: rerun the step. Refresh entries are landed with `land <epic_dir> --head <sha>` instead.
 
-## Step 4 — Dispatch loop
-Repeat until no story is launchable:
+## 3. Drift from the target
+Report `behind` (commits on the target not on the epic branch) every run. With `--refresh`, or when the owner agrees to it: `epic-flow-integrate.js refresh <epic_dir> --detach` and `wait`. It merges the target into `agt/refresh-<branch>` in `<epic_dir>/refresh` and verifies it. Register it with `tuicr-reviews add --repo <repo> --worktree <epic_dir>/refresh --base <branch> --branch agt/refresh-<branch> --slug <key>-refresh` and a summary naming `bothSides` (files changed on both sides, where a clean merge can still be wrong). It reaches the epic branch only through step 2 after approval. A conflict stops with the file list for the owner.
 
-1. **Ready set** = stories with status To Do (**either label**) and every blocker Done. Both `agent-auto` and `human-gate` stories are launched — they differ only at the merge step (3).
-2. **Launch** up to `concurrency` ready stories. Each launch is the feature-flow procedure with `--story <KEY> --base <branch>` (story `Verify:` lines become `--verify`): build the run dir + brief from the story, create the worktree from `origin/<branch>`, launch the `feature-flow-run` workflow in the background, transition the story to In Progress. Distinct stories run in parallel worktrees; the same story never runs twice concurrently.
-3. **On a run's completion**, do feature-flow's wrap-up. If `origin/<branch>` moved while the run was in flight, **merge the latest `origin/<branch>` into the story branch first (integrate with a merge commit — NEVER rebase or force-push), then re-run the verify commands** (this is the stacking/conflict policy — conflicts go back to an implementer agent, then the gate re-verifies). Push the branch and open the PR against `<branch>` with `report.md` as body — `gh pr create --base <branch> --title "<KEY>: <summary>" --body-file <report>`. Then, **by label:**
-   - **`agent-auto`** — if the run finished **cleanly** (verify green, and NONE of: stuck slices, open merge-blocking findings, uncovered acceptance, `criticVerdictMissing`) **and the PR's required CI checks are green**, the agent **merges the PR** into `<branch>` (`gh pr merge --squash`). The merge auto-transitions the story to Done and unblocks its dependents, so the loop continues autonomously. If the run did **not** finish cleanly, do NOT auto-merge: leave the PR open, mark it in the status comment as awaiting human review, and apply the failure policy (4) if it was stuck/RE_PLAN. (Auto-merge may trigger a deploy — the clean-completion + green-CI gate is what makes that acceptable; when in doubt it degrades to human review, never a blind merge.)
-   - **`human-gate`** — open the PR for review and **do NOT merge**; a human merges it (and performs any deploy/handshake the merge implies). The story stays un-Done and its dependents stay blocked until that human merge.
+## 4. Ready set
+A story is ready when its label is `agent-auto` or `human-gate`, it has no run in progress and no registered review, it passes `--only`/`--skip`, and every blocker is integrated (its `approvedHead` is on the remote tip) or Done; a `human-gate` blocker must be Done. A run dir without `out/report.md` is in progress until the owner says it is dead. Order by how many stories each unblocks, then Jira rank.
 
-   Opening a PR (and, for agent-auto, merging it) auto-transitions the story via the GitHub↔Jira link; don't transition by hand. **Never name another story's Jira key in a PR title/body** (or in `report.md`) — the GitHub↔Jira integration remote-links every key it finds and a Jira automation can then auto-transition those siblings/downstream stories to Done, silently false-completing them. Reference related stories by prose, not key; the only key in the PR is the one being implemented (in the title). Express cross-story relationships as Jira issue links on the story, not as PR-body mentions.
-4. **Failure policy** (the flawed-agent clause): a run that ends stuck / RE_PLAN / with open merge-blocking findings gets ONE fresh retry — a new feature-flow run for the same story with the prior journal passed as `--context`. On the second failure: add label `agent-blocked`, comment the reason on the story, do NOT open a PR, and continue with stories that don't depend on it.
+## 5. Prepare the wave
+Spawn one `researcher` per ready story, in parallel, against the current epic tip. Each returns: acceptance criteria already satisfied, assumptions the code contradicts, the areas the story will touch, whether integrating it changes behavior anything deployed sees (`liveOnMerge`, with why), and a feature-flow brief: one observable behavior per criterion with an evidence tag (a property becomes an invariant with a concrete check that would show it false), `constraints`: the epic's and the story's Constraints and Out of scope as `source: user` (the owner approved them in the epic) and anything the researcher derives as `source: inferred`, which the wave approval confirms or drops; verify commands from its `Verify:` lines that do not modify files. Defer a story whose areas overlap a running or higher-ranked story. Show all briefs at once and take one answer: launch all, edit, or drop.
 
-## Step 5 — Human-merge gates
-The gate is now at **merge**, not pick-up: the agent builds `human-gate` stories, but their PRs sit open until a human merges them. The loop pauses when it can make no further progress without a human merge — i.e. the ready set is empty and every remaining To-Do story is blocked by a story whose PR is open-but-unmerged (a `human-gate` PR, or an `agent-auto` PR left open because its run didn't finish cleanly). Post a gate summary (which PRs await a human merge, what each needs — e.g. deploy / cross-team handshake / review — and what's blocked behind them), then stop the loop. The human merges those PRs (merging marks the story Done and unblocks its dependents); re-invoking `/epic-flow <KEY>` resumes from live state.
+## 6. Launch
+Up to the concurrency limit, for each approved brief: reserve it in `epic.json` (`running`, run id), then run feature-flow steps 3-5 without the interview: the run dir and brief, the worktree from `origin/<branch>`, the install (`installCmd`), `gate.json` from the template plus the story's worktree, branch, `commitPrefix` (`"<KEY>: "`), and `verifyCmds`, `gate init`, and the background launch. Transition the story In Progress.
 
-Idempotency: Done stories are skipped. A story with an **open PR** (a `human-gate` PR, or an agent-auto PR awaiting review) is *awaiting merge* — do not re-run or re-open it. An In Progress story with **no live run and no open PR** is treated as To Do. A `human-gate` story whose deliverable is already merged/complete should be marked **Done**, not left In Progress, or the loop will re-run it.
+## 7. When a run finishes
+Do feature-flow step 6 (report, audit, register, story comment), with the story's key as the only key anywhere that reaches GitHub, and no smart-commit `#` commands in agent-written text. Record `reviewedHead`, `reviewSlug`, and `outcome`. Then by result:
+- clean: `built`.
+- `stuck` entries: one continuation (`epic_flow.continuations`). Append a short failure brief to `brief.md` (each stuck slice, the gate reason, the failing tail, what was ruled out), then relaunch the same run dir, worktree, gate, and `baseSha` without `gate init`: `slices` = the `spec` of each stuck and not-attempted entry, `continuation: true`, a new `launchId`, and `priorRunStats`. Register after it finishes.
+- a non-ok review stage: feature-flow's `--review-only` relaunch.
+- `RE_PLAN`, `uncoveredAcceptance` after the review loop, or a second failure: `needs-human` with the reason; register what exists with the summary prefixed `NEEDS HUMAN:`.
+- a platform failure (login, API, spend cap, a dead workflow): resume the workflow run when it is this session's; otherwise launch a fresh run dir and worktree. Neither counts as a continuation.
 
-**In LOCAL-REVIEW-ONLY mode**, built stories are In Progress with **no PR** — so the "In Progress with no open PR → treat as To Do" rule above does not apply. Instead, treat a story as *already built and awaiting local integration* (do NOT re-run it) when it is In Progress **and** has a registered tuicr review — check `tuicr-reviews` for an entry whose branch is `agt/feature-<key-slug>` (or whose worktree/summary names the story). Only an In Progress story with neither a live run nor a registered tuicr review is genuinely un-built and treated as To Do.
+Launch the next ready story whenever a slot frees.
 
-## Step 6 — Endgame
-When every story is Done: open the integration→main PR titled from the epic (`<KEY>: <epic summary>`), with a body that links every story PR in merge order. Recommend `/review-flow <pr-number>` for the whole-epic review — don't run it automatically. Comment the PR link on the epic.
+## Status
+When state changed, add one short comment to the epic: a table of story | state | review | needs a human | live on merge, plus drift. No prose recap.
 
-## Status surface
-Maintain ONE status comment on the epic (create it on first run, update thereafter): a table of story | status | PR | note (e.g. `agent-blocked: <reason>`). Update it at each loop iteration and when stopping at a gate.
+## 8. Finish
+`--finish`, when the owner says the critical path is done: list the remaining stories as follow-ups, the epic branch's commits that came from no story (refreshes, repairs, hand fixes) as the seams the final review should cover, and the stale worktrees, branches, and tuicr entries to remove. The integration branch to target PR stays the owner's action.
 
 ## Failure cases
-- Epic not found / no child stories → say so, stop.
-- Label/cycle validation failures → list them, stop (the epic is mislabeled, not the run).
-- `agent-auto` PRs are merged by the agent **only** on a clean feature-flow completion with green CI; anything less is left open for a human. `human-gate` PRs are always left for a human to merge (the merge is where the deploy/handshake decision lives). Note every open/awaiting-merge PR in the status comment so the human knows what needs their merge.
-- A worktree add collision → unique slug suffix, as in feature-flow.
-
-## v1 limits (deliberate)
-No scheduler beyond the ready-set loop, no cross-story batching, no automatic re-plan of a blocked story. Run `/retro` after the first wave and fold what it finds back into this command.
+- Epic not found or no children: say so and stop.
+- A story's worktree branch collides: suffix the slug, as in feature-flow.
+- The integration script reports `busy`: another session is integrating; wait or stop.
+- The Atlassian tools are down: keep building and integrating; queue the Jira updates in `epic.json` and apply them next run.

@@ -3,7 +3,7 @@
 // feature-flow change by a different model family.
 //
 //   node feature-flow-codex-review.js <runDir> --base <sha> --head <sha>
-//        [--model M] [--effort E] [--timeout-sec N]
+//        [--model latest-sol|<slug>] [--effort E] [--timeout-sec N]
 //
 // Uses the same instructions as the Fable final reviewer (the body of
 // agents/feature-critic.md, whose lenses a 2026-10-02 replay showed a thin
@@ -19,6 +19,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveCodexModel } = require("./codex-model");
 
 const SCHEMA = {
   type: "object",
@@ -55,11 +56,15 @@ function main() {
   const base = opt("base");
   const head = opt("head");
   if (!runDir || !base || !head) {
-    process.stderr.write("usage: feature-flow-codex-review.js <runDir> --base <sha> --head <sha> [--model M] [--effort E]\n");
+    process.stderr.write("usage: feature-flow-codex-review.js <runDir> --base <sha> --head <sha> [--model latest-sol|<slug>] [--effort E]\n");
     process.exit(2);
   }
-  const model = opt("model", "gpt-6-sol");
-  const effort = opt("effort", "medium");
+  // A `latest-<family>` spec resolves after the login probe, so a missing
+  // Codex is reported as such rather than as an unresolvable model.
+  const requestedModel = opt("model", "latest-sol");
+  let model = requestedModel;
+  let effort = opt("effort", "medium");
+  let modelSource = null;
   const timeoutSec = Number(opt("timeout-sec", 1800));
   const worktree = path.join(runDir, "worktree");
   const dir = path.join(runDir, "out", "final-review-codex");
@@ -90,7 +95,7 @@ function main() {
   }
 
   const finish = (status, extra = {}) => {
-    const result = { status, model, effort, base, head, ...extra };
+    const result = { status, model, requestedModel, modelSource, effort, base, head, ...extra };
     fs.writeFileSync(`${resultPath}.tmp`, JSON.stringify(result));
     fs.renameSync(`${resultPath}.tmp`, resultPath);
     process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -101,6 +106,10 @@ function main() {
   const probe = spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 20000 });
   if (probe.error) return finish("skipped", { reason: `codex not runnable: ${probe.error.code || probe.error.message}` });
   if (probe.status !== 0) return finish("skipped", { reason: "codex not logged in (run `codex login`)" });
+  const resolved = resolveCodexModel(requestedModel, effort);
+  if (!resolved.model) return finish("skipped", { reason: `model resolution unavailable: ${resolved.reason}` });
+  ({ model, effort, source: modelSource } = resolved);
+  if (resolved.note) fs.writeFileSync(path.join(dir, "model-note.txt"), `${resolved.note}\n`);
   if (currentHead() !== head) return finish("failed", { reason: "worktree HEAD is not the pinned head" });
 
   const persona = fs.readFileSync(path.join(__dirname, "..", "agents", "feature-critic.md"), "utf8")
