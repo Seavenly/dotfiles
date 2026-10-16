@@ -54,7 +54,7 @@ Rate four dimensions by risk, Low, Medium or High, each with one line of evidenc
 Then the overall effort, named with the dimension that decided it:
 
 - **Deep**: High blast radius together with High reversibility or High safety net, or High architectural fit.
-- **Skim**: every dimension Low.
+- **Skim**: no dimension High, Reversibility and Architectural fit both Low, and at most one Medium.
 - **Standard**: anything else.
 
 Size and file count are evidence, not a dimension: a large mechanical rename can be a Skim.
