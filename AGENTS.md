@@ -18,5 +18,5 @@ Triage uses the standard five-role label vocabulary. See
 
 ### Domain docs
 
-This is a single-context repository. Read `CONTEXT.md` and relevant decisions
+This is a single-context repository. Read `GLOSSARY.md` and relevant decisions
 under `docs/adr/`; see `docs/agents/domain.md`.

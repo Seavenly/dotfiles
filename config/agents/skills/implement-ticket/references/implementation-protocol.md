@@ -1,8 +1,8 @@
 # Implementation Protocol
 
 Read the complete issue body and all comments. Also read its parent
-specification, linked blocking issues, `AGENTS.md`, `CONTEXT.md`, relevant ADRs,
-and repository guidance referenced by those documents.
+specification, linked blocking issues, `AGENTS.md`, `GLOSSARY.md`, relevant
+ADRs, and repository guidance referenced by those documents.
 
 ## Worktree requirement
 

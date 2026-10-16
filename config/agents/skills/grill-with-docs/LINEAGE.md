@@ -6,17 +6,17 @@ sources:
     relationship: base
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/grill-with-docs
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
   - id: upstream-grilling
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/productivity/grilling
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
   - id: upstream-domain-modeling
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/domain-modeling
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
 ---
 
 # Lineage intent
@@ -28,6 +28,8 @@ and architectural decisions without requiring nested skill invocation.
 
 - Inline the upstream grilling interaction loop.
 - Inline the upstream domain-modeling procedure and bundle its document formats.
+- Express the grilling loop's fact-finding delegation in harness-neutral
+  language, with a direct-lookup fallback.
 
 ## Update policy
 

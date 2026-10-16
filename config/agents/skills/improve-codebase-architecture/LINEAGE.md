@@ -6,7 +6,7 @@ sources:
     relationship: base
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/improve-codebase-architecture
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
 ---
 
 # Lineage intent

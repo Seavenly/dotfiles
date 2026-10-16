@@ -6,17 +6,17 @@ sources:
     relationship: base
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/implement
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
   - id: upstream-tdd
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/tdd
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
   - id: upstream-code-review
     relationship: component
     repository: https://github.com/mattpocock/skills.git
     path: skills/engineering/code-review
-    revision: ed37663cc5fbef691ddfecd080dff42f7e7e350d
+    revision: 49dd158d1076134a641b33efb035946536778336
 ---
 
 # Lineage intent
@@ -30,6 +30,9 @@ execution and independent standards/specification review.
 - Express independent review passes in harness-neutral agent language.
 - Use the supplied spec or ticket directly when repository tracker guidance is
   absent instead of invoking a setup skill.
+- Keep the TDD reference's `codebase-design` vocabulary pointer optional rather
+  than a required skill call, and point refactoring at the bundled review
+  reference.
 
 ## Update policy
 

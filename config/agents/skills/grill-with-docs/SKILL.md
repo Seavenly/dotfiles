@@ -7,21 +7,49 @@ disable-model-invocation: true
 # Grill With Docs
 
 Interview the user relentlessly about every aspect of their plan, decision, or
-idea until you reach shared understanding. Walk the decision tree one decision
-at a time, resolving dependencies before moving on. For each question, provide
-a recommended answer.
+idea until you reach shared understanding. Map it as a **design tree**: every
+decision branches into the decisions that hang off it.
 
-Ask one question at a time and wait for feedback. Multiple questions at once
-make it hard to resolve the decision tree cleanly.
+Work the tree in **rounds**. The **frontier** is every decision whose
+prerequisites are already settled: the questions you can ask now without
+guessing at answers you have not heard yet. Ask the whole frontier in one round,
+number each question, give your recommended answer, then wait for the user's
+answers before the next round. Format a round like so:
 
-Look up facts in the environment (filesystem, tools, and other available
-sources) instead of asking the user. Decisions belong to the user: put each one
-to them and wait for an answer. Do not act on it until the user confirms that
-the shared understanding is complete.
+```
+❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+
+➡️ <your recommended answer>
+
+---
+
+❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+
+➡️ <your recommended answer>
+```
+
+Word each question so "yes" accepts your recommended answer.
+
+Each round of answers reshapes the tree: settled decisions push the frontier
+outward and unblock the questions that depended on them. Recompute the frontier
+and ask the next round. A question whose answer depends on another question
+still open in this round belongs to a later round.
+
+Finding facts is your job, never the user's. When a frontier question needs a
+fact from the environment (filesystem, tools, and other available sources),
+delegate the lookup to a subagent when the harness supports it, or look it up
+directly otherwise; do not ask the user for anything you could find yourself.
+Do not block on a running lookup: only the questions downstream of it wait, so
+ask the rest of the frontier now. Decisions belong to the user: put each one to
+them and wait.
+
+The session is done when the frontier is empty: every branch of the design
+tree visited, nothing left silently assumed. Do not act on it until the user
+confirms that the shared understanding is complete.
 
 ## Maintain the domain model
 
-Read the relevant `CONTEXT.md`, `CONTEXT-MAP.md`, and ADRs before questioning.
+Read the relevant `GLOSSARY.md`, `GLOSSARY-MAP.md`, and ADRs before questioning.
 As decisions crystallize, maintain those documents inline rather than batching
 updates at the end.
 
@@ -34,9 +62,10 @@ updates at the end.
 - Cross-check claims about current behavior against the code and surface any
   contradiction.
 
-When a term is resolved, update the relevant `CONTEXT.md` using
-[CONTEXT-FORMAT.md](CONTEXT-FORMAT.md). Create it lazily if needed.
-`CONTEXT.md` is a domain glossary, not a specification or implementation map.
+When a term is resolved, update the relevant `GLOSSARY.md` using
+[GLOSSARY-FORMAT.md](GLOSSARY-FORMAT.md). Create it lazily if needed.
+`GLOSSARY.md` is a domain glossary, not a specification, scratch pad, or
+implementation map.
 
 ### Record durable decisions
 

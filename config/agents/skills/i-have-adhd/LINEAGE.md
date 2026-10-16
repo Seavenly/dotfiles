@@ -6,7 +6,7 @@ sources:
     relationship: base
     repository: https://github.com/ayghri/i-have-adhd.git
     path: skills/i-have-adhd
-    revision: 0241185d6c7f2d0763a988ce52eceb13ea9f5c1f
+    revision: 1ecea1993b7fce257ffbd686c070948b5e07eda6
 ---
 
 # Lineage intent
