@@ -6,7 +6,7 @@ feature_flow:
   max_slice_retries: 3        # builder retries per slice after a gate failure
   max_fix_rounds: 2           # repair rounds across both review stages (0-2)
   final_reviewer: fable       # fable | codex (--codex); codex usage is limited
-  codex_model: gpt-6-sol      # used only with --codex
+  codex_model: latest-sol     # newest listed gpt-<version>-sol; a slug pins it
   codex_effort: medium
   gate_timeout_sec: 900       # per gate command (gate.json timeoutSec)
   plan_gate: false            # true = --gated: approve the plan before building
@@ -42,7 +42,7 @@ review_flow:
                               # Findings are mostly recommended/important, so this
                               # lens contributes in fast/standard, not hotfix.
   codex_cross_check: true     # cross-model check after the Claude verifier
-                              # (scripts/codex-cross-check.js: gpt-6-sol,
+                              # (scripts/codex-cross-check.js: latest Sol,
                               # medium, read-only). --no-codex disables.
 
 spike_flow:

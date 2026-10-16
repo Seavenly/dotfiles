@@ -72,7 +72,7 @@ tier on the high-volume inner loop, the cheap tier on prescriptive assembly.
 | builder | opus, high | ~1-2 per slice | feature-flow's slice builder: tests first, red snapshot, implementation; may update tests the slice deliberately changes |
 | completeness-critic | opus, high | 1-2 | Maps each acceptance criterion to evidence; catches planned work that never landed |
 | feature-critic | opus, high | 1 | In-flow lenses review; reports every finding with severity and confidence, decides nothing |
-| final review | feature-critic on fable | 1 | Fresh cross-model look at the complete change with brief and plan only; `--codex` sends the same persona to Codex (gpt-6-sol, medium), with Fable as the fallback. A 2026-10-02 replay showed a thinner final-review prompt missing a Critical the lens persona caught |
+| final review | feature-critic on fable | 1 | Fresh cross-model look at the complete change with brief and plan only; `--codex` sends the same persona to Codex (the latest Sol model, medium), with Fable as the fallback. A 2026-10-02 replay showed a thinner final-review prompt missing a Critical the lens persona caught |
 | feature-verifier | opus, high | 1-2 | Triage: verifies each finding, then fix / follow-up / reject by risk and fix cost |
 | critic | opus, high | 1-2 | spike-flow gap analysis (Mode C) |
 | review-critic | opus | 1 | review-flow's critic (dedupe, reconcile, tier, posture). The review verifier runs persona-free on opus |
@@ -87,6 +87,12 @@ runs the researcher persona at `sonnet`, and gate relays (feature-flow's gate
 script, spike-flow's mechanical gate) are script-pinned to `sonnet` at low
 effort. Everything else omits `opts.model`, so the persona frontmatter is the
 single source of truth.
+
+Models are named by family, never by version: the Claude aliases (`opus`,
+`sonnet`, `fable`) track each family's newest release, and Codex runs ask for
+`latest-sol`, which `scripts/codex-model.js` resolves per run from Codex's own
+model catalog (falling back to the bundled catalog, then the last slug it
+chose) and records with the result. A full slug in `defaults.yaml` pins one.
 
 ## Data flow
 
@@ -165,7 +171,8 @@ their workflow internals differ (see below).
             ├── feature-flow-gate.js # feature-flow's deterministic gate (init/red/verify/finalize/audit)
             ├── feature-flow-builder-guard.js # builder PreToolUse hook
             ├── agent-local-guard.js # PreToolUse hook: feature-flow agents never push or write to GitHub
-            └── feature-flow-codex-review.js  # opt-in Codex final review (--codex)
+            ├── feature-flow-codex-review.js  # opt-in Codex final review (--codex)
+            └── codex-model.js     # resolves latest-<family> Codex model specs
 
 State (host-local, not version-controlled):
 ~/.agent-teams/runs/<ts>-<slug>/
@@ -193,7 +200,7 @@ State (host-local, not version-controlled):
 **Replay and regression set:** `--at-base <sha> --at-head <sha>` replays frozen revisions (local diff, prior threads withheld, `replay: true` in brief and snapshot, refused by `review-flow-post.js`). The cases, expected outcomes and recording format are in [`review-flow-evals.md`](review-flow-evals.md), a manual set whose cases are kept locally.
 **Workflow (`review-flow-run.js`):** one reviewer per lens in `parallel(...)`, with orientation fired alongside but **un-barriered** (the critic starts as soon as the lens findings are in; its result is collected before the return). Orientation is skipped on `--urgency hotfix`. Correctness, security and tests each get a short bar of their own (concurrency, recovery and replay, guard coverage; authorization traced to the effect, caller-supplied IDs bound to the principal; tests that fail for the intended reason), injected only into that lens's prompt, as observability and design already were. Each reviewer also returns a `coverage` record (checked / partial / not applicable / not checked, with a one-line basis) that the renderer shows in a local-only Coverage section, alongside repo-rule provenance, CI annotations and the census; a lens that returned nothing shows as *not run*. The **design** lens (which replaced `style` on 2026-09-23) judges scope against the PR's stated intent, sibling house patterns, repo rules and rollout order, and returns **decisions** (judgment calls for the human) separately from defects. Reviewers and the verifier share one `EVIDENCE_RULES` block (mechanism from the resolved dependency on disk; absence backed by a stated search; unobserved consequences as questions; compound claims leg by leg; the diff checked against itself), so the bar the finders are told to meet and the bar the verifier enforces cannot drift apart. Then the `review-critic` persona: dedupe, reconcile with prior threads, right-size tiers, check anchors (real-but-unanchorable findings go to `general`), decide posture, name the cluster — **no fact-checking**; that moved to the verifier on 2026-09-23 after the audit found the two passes overlapping. Then the **Verify** phase: one independent adversarial agent (persona-free `general-purpose` on opus, so nothing it loads contradicts its job), the only pass that checks truth, hunts violations of the evidence rules, assigns keep/strengthen/down-tier/strike, and **regenerates** posture, rationale, cluster and counts from the surviving set. It is fail-soft: if it dies, the critic's set is already on disk and still renders.
 
-**Cross-model check (command, after the workflow):** `scripts/codex-cross-check.js` runs `codex exec` (`gpt-6-sol`, medium effort, read-only, against the snapshot checkout, strict output schema) over the finished set. A different model family catches what a same-family checker accepts. Codex never edits the set; the script applies its verdicts: keep/strengthen/down-tier in place with provenance, **strike → `contested`** (kept beside Codex's rebuttal, out of the draft, and blocking the draft while a contested critical/important is undecided), up to three **`codex_raised`** findings kept local. Fail-soft on every error path; `--no-codex` disables. It runs in the command, not the workflow, because workflow scripts can only spawn Claude agents.
+**Cross-model check (command, after the workflow):** `scripts/codex-cross-check.js` runs `codex exec` (the latest Sol model, medium effort, read-only, against the snapshot checkout, strict output schema) over the finished set. A different model family catches what a same-family checker accepts. Codex never edits the set; the script applies its verdicts: keep/strengthen/down-tier in place with provenance, **strike → `contested`** (kept beside Codex's rebuttal, out of the draft, and blocking the draft while a contested critical/important is undecided), up to three **`codex_raised`** findings kept local. Fail-soft on every error path; `--no-codex` disables. It runs in the command, not the workflow, because workflow scripts can only spawn Claude agents.
 
 Reviewers **return structured findings**; the critic **writes its own `comments.json`** (its deliverable, like plan.md/report.md) and returns a summary; the verifier rewrites that file in place, preserving the critic's original as `comments.pre-verify.json`; the conversation just renders.
 **Policy is deterministic, and it only shapes the draft:** `render-review.js` writes a complete local report (review.md, blob-deep-linked) with every finding marked *in draft* or *local only: <reason>*, then selects the draft: pre-existing findings stay local, then the urgency floor (hotfix=criticals only, fast=+important, standard=all), per-tier caps, and the `max_comments` budget (criticals/importants exempt). A **publication gate** (secret scan) must pass before `draft-review.json` is written at all; a failed render or a gate hit means no draft exists. The command pins a **snapshot** (head SHA, base SHA, diff digest, checkout SHA) up front, the draft carries `commit_id`, and a live-head check runs immediately before any POST. **No tests, no execution** — review is static. **Never auto-submit** — drafts stay PENDING.

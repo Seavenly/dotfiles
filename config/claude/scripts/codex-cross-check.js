@@ -27,6 +27,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveCodexModel } = require("./codex-model");
 
 const TIER_ORDER = ["critical", "important", "recommended", "nit"];
 const rank = (t) => TIER_ORDER.indexOf(t); // lower index = more severe
@@ -43,10 +44,13 @@ function main() {
     const i = argv.indexOf(`--${name}`);
     return i >= 0 && argv[i + 1] ? argv[i + 1] : dflt;
   };
-  // Pinned explicitly so a change to ~/.codex/config.toml can't silently
-  // change reviews.
-  const model = opt("model", "gpt-6-sol");
-  const effort = opt("effort", "medium");
+  // Always passed explicitly so a change to ~/.codex/config.toml can't
+  // silently change reviews; `latest-sol` follows new Sol releases and the
+  // result records the slug that ran.
+  const requestedModel = opt("model", "latest-sol");
+  let model = requestedModel;
+  let effort = opt("effort", "medium");
+  let modelSource = null;
   const timeoutSec = Number(opt("timeout-sec", 900));
 
   const outDir = path.join(runDir, "out");
@@ -56,7 +60,7 @@ function main() {
   const comments = JSON.parse(fs.readFileSync(commentsPath, "utf8"));
 
   const finish = (status, extra = {}) => {
-    comments.cross_check = { status, model, effort, ...extra };
+    comments.cross_check = { status, model, requested_model: requestedModel, model_source: modelSource, effort, ...extra };
     fs.writeFileSync(commentsPath, JSON.stringify(comments, null, 2));
     process.stdout.write(JSON.stringify(comments.cross_check) + "\n");
     process.exit(0);
@@ -81,6 +85,9 @@ function main() {
   const probe = spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 20000 });
   if (probe.error) return finish("skipped", { reason: `codex not runnable: ${probe.error.code || probe.error.message}` });
   if (probe.status !== 0) return finish("skipped", { reason: "codex not logged in (run `codex login`)" });
+  const resolved = resolveCodexModel(requestedModel, effort);
+  if (!resolved.model) return finish("skipped", { reason: `model resolution unavailable: ${resolved.reason}` });
+  ({ model, effort, source: modelSource } = resolved);
 
   // Work from the pinned checkout when it matches the reviewed SHA.
   const snapshot = readJson(path.join(outDir, "snapshot.json"));

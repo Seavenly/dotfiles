@@ -294,7 +294,7 @@ async function runFinalReviewer(head) {
   }
   if (a.finalReviewer !== 'codex') return await fable(null)
   const c = a.codex || {}
-  const cx = `node ~/.claude/scripts/feature-flow-codex-review.js ${q(a.runDir)} --base ${baseSha} --head ${head} --model ${c.model || 'gpt-6-sol'} --effort ${c.effort || 'medium'}`
+  const cx = `node ~/.claude/scripts/feature-flow-codex-review.js ${q(a.runDir)} --base ${baseSha} --head ${head} --model ${c.model || 'latest-sol'} --effort ${c.effort || 'medium'}`
   runStats.agents++
   const r = await agent(relayPrompt(`${cx} --detach`, `Then run: ${cx} --wait 540`, '"status":"running"'),
     { label: 'final-review:codex', phase: 'Final review', schema: RELAY_SCHEMA, model: 'sonnet', effort: 'low' })
