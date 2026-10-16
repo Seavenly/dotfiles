@@ -60,7 +60,8 @@ acceptance:
   - { id: A1, evidence: test, text: "<one observable behavior>" }
   - { id: A2, evidence: "ci:<job name>", text: "..." }
 constraints:
-  - <scope boundaries and process rules: what must not change, commit conventions>
+  - { source: user, text: "<the user's rule, in their words>" }
+  - { source: inferred, text: "<a rule you derived, confirmed by the user>" }
 ---
 
 # Goal
@@ -69,8 +70,12 @@ constraints:
 
 Each criterion is one observable behavior, split from compound statements,
 tagged `test`, `diff`, `docs`, `ci:<job>`, or `live`. "Lint, typecheck, and
-tests pass" is not a criterion; the gate enforces it. Process rules go under
-`constraints`. Show the brief and wait for `launch`, `edit`, or `cancel`
+tests pass" is not a criterion; the gate enforces it. Scope boundaries and
+process rules go under `constraints`. Every agent enforces them as given, so
+record a user's rule verbatim (`source: user`) and never widen it. Anything you
+derive, such as a broader class of data to protect, is `source: inferred`:
+check it against how the repo already handles the same thing and confirm it
+with the user, or leave it out. Show the brief and wait for `launch`, `edit`, or `cancel`
 (cancel: remove the run dir and stop).
 
 ## 4. Worktree and gate
@@ -164,7 +169,9 @@ The user can run `/retro` afterward. Remove the worktree later with
 ## 7. Review-only relaunch
 For `--review-only <run_id>`: reuse that run dir, worktree, brief, and
 `gate.json`; launch with `reviewOnly:true` and the same arguments otherwise;
-then do step 6. Uncommitted work in the worktree is committed as
+then do step 6. Before launching, add each explicit instruction from the human
+reviewer to the brief's `constraints` verbatim as `source: reviewer`, so
+repairs cannot reverse it. Uncommitted work in the worktree is committed as
 `[unverified]` first, so the review sees it.
 
 ## Failure cases

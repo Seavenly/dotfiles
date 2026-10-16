@@ -311,6 +311,13 @@ class Gate {
     const slice = String(opts.slice || "");
     const tests = String(opts.tests || "").split(",").map((s) => s.trim()).filter(Boolean);
     if (!slice || !tests.length) throw new GateError("red needs --slice and --tests");
+    // Red runs once, before implementing. A second run after the change would
+    // record "passed" over the real red and replace the snapshot that removed
+    // assertions are checked against. Only an errored or not-red run may retry.
+    const prior = this.state.slices[slice] && this.state.slices[slice].red;
+    if (prior && ["failed", "unchecked"].includes(prior.outcome)) {
+      return { ok: false, reason: "red-already-recorded", message: `red for slice ${slice} was recorded at ${prior.at}; it runs once, before implementing. Check your work with the focused test command; the gate runs the suite`, files: Object.keys(prior.files) };
+    }
     const files = [];
     for (const rel of tests) {
       const abs = path.resolve(this.wt, rel);

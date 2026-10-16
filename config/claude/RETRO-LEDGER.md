@@ -12,6 +12,38 @@ loop` for how the loop works.
 
 <!-- entries below, newest first -->
 
+## 2026-10-15 - feature run (sanitized)
+
+First retro on the overhauled feature-flow engine (consumed late; its run
+started after the 2026-10-02 overhaul landed). Every in-flow stage passed,
+yet two later review rounds asked for seven changes. Almost all trace to
+decisions made before or during planning, then enforced by every later stage:
+a widened brief constraint, a protection downgrade filed as a decision, a
+repair that reversed a reviewer's instruction, and structure that ignored the
+repo's existing equivalents.
+
+| Pattern | Bucket | Target | Action |
+|---|---|---|---|
+| Host widened a user's rule into a broader brief constraint that every agent then enforced | AVOID | commands/feature-flow.md | applied - constraints carry `source: user` (verbatim, never widened) or `source: inferred` (checked against repo convention and confirmed with the user, or left out) |
+| Triage filed a protection downgrade as a post-build decision because the brief chose what to reuse | AVOID | agents/feature-verifier.md | applied - added to the always-fix list; a reuse decision never authorizes weaker protection |
+| A repair reversed an explicit reviewer instruction during a review-only relaunch | AVOID | agents/feature-verifier.md + commands/feature-flow.md | applied - review-only relaunch records reviewer instructions as `source: reviewer` constraints; no repair slice changes code against a constraint, and a contested constraint becomes a user decision |
+| Hand-rolled mechanism where a platform primitive exists | AVOID | agents/feature-critic.md (new Fit lens) | applied · **restores 2026-07-24 "unresearched custom primitives"**, which the 2026-10-02 overhaul dropped from both critics |
+| Workflow agent rewrote a live pull-request description | AVOID | scripts/agent-local-guard.js + every feature-flow agent's frontmatter + workflows/feature-flow-run.js | applied - PreToolUse hook blocks pushes and GitHub writes (reads allowed) for builder, critics, verifier, planner and synthesizer; the shared prompt says stay local. Enforced by a hook, following the 2026-10-02 finding that prompt rules alone did not stop commits. Checked in a fresh session: the hook blocked a comment command |
+| Outward action chained after a check whose failure didn't stop it | AVOID | commands/feature-flow.md | skipped - feature-flow no longer pushes; host shell hygiene outside the flow. Watching |
+| External-contract table for each new outbound call | ADD | agents/planner.md | applied, **retargeted** from the researcher, which feature-flow no longer spawns - plan maps each provider status to an outcome; unreadable contracts become open questions |
+| Follow the closest existing precedent for secrets, config, client plumbing, placement, cross-service imports | ADD | agents/planner.md + agents/feature-critic.md (Fit lens) | applied · **corroborates 2026-09-23 review-flow house-pattern bar** - three of the seven later findings were structural |
+| Plan expand-first for base-owned resources that ephemeral environments reference | STRESS | agents/planner.md | applied · **corroborates 2026-10-01 rollout-order entry** - planner names the split for the user to decide; the critic's rollout lens already caught it at review |
+| Run the red check once per slice | STRESS | scripts/feature-flow-gate.js + agents/builder.md + workflow | applied - the gate refuses `red` once a failed or unchecked red is recorded (errored and not-red runs may retry); a second run had overwritten the red record and the removed-assertion snapshot. Regression test proven red without the fix |
+| Independent final review by default when credentials or telemetry change | ADD | - | already covered - the overhaul made a cross-model final review the default on every run |
+| Flag review requests that add duplication or manual operational steps | ADD | - | skipped - single occurrence, low confidence. Watching |
+
+Notes:
+- No conflicts. The guard is flow-neutral, so the shared planner and
+  synthesizer carry it in spike-flow and review-flow too; no flow should
+  publish from an agent.
+- Agent definitions are read at session start: a session that predates the
+  frontmatter change runs agents without the new hook.
+
 ## 2026-10-07 - review run (sanitized)
 
 A posted review where the problem was relevance, not accuracy: every finding

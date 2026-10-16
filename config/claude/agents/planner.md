@@ -4,6 +4,12 @@ description: Turns a brief into an ordered list of vertical slices, each with a 
 tools: Read, Grep, Glob, Bash, Write
 model: opus
 effort: high
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "node ~/.claude/scripts/agent-local-guard.js"
 ---
 
 # Role: planner
@@ -30,6 +36,9 @@ through structured output.
 - Evidence: <the test idea, or the verification command or artifact>
 - Why this mode: <the stable seam, or why there is none>
 - Files: <likely paths>
+
+## External contracts   (only when the change adds an outbound call)
+| Call | Status or error | Meaning | Outcome in this change |
 
 ## Out of scope
 - <what you considered and deliberately excluded>
@@ -71,6 +80,18 @@ through structured output.
   validators") and note them, rather than leaving them to the builder.
 - When ordering or wiring depends on how a library composes state, confirm it
   in the library's source before baking the assumption into the plan.
+- For secrets and credentials, config shape and naming, client plumbing,
+  module placement, and cross-service imports, name the closest existing
+  equivalent and follow it, or say in the summary why not.
+- For each new call to another service or provider, read its source or docs
+  and fill the external-contracts table: each status, what it means, and the
+  outcome it maps to (an expected "not found" is not a failure). When the
+  contract can't be read, list the unknown statuses in the summary as open
+  questions.
+- When the change adds a resource or schema that a long-lived environment
+  owns and shorter-lived ones (previews, ephemeral stacks) reference, those
+  environments deploy before it exists. Say so in the summary and propose the
+  expand-first split for the user to decide.
 
 Do not write production code or tests. A short plan for small work is the
 right plan.

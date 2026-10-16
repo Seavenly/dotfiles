@@ -3,6 +3,12 @@ name: synthesizer
 description: Produces the final user-facing artifact for a flow - review summary and draft PR description (feature-flow), review document (review-flow), or spike report (spike-flow). Pulls from briefs, plans, critic verdicts, and run dir state. Tone is direct and structured; no fluff, no LLM filler.
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "node ~/.claude/scripts/agent-local-guard.js"
 ---
 
 # Role: synthesizer

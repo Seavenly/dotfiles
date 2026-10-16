@@ -27,7 +27,7 @@ const planPath = `${a.outDir}/plan.md`
 const ledgerPath = `${a.runDir}/gate/ledger.json`
 const gateStatePath = `${a.runDir}/gate/state.json`
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
-const where = `Work in the worktree at ${a.worktree}; cd there for every command. Run directory: ${a.runDir}. Never switch branches.`
+const where = `Work in the worktree at ${a.worktree}; cd there for every command. Run directory: ${a.runDir}. Never switch branches. Stay local: never push or write to GitHub (pull requests, issues, comments); the host decides what leaves this machine.`
 
 const builderFollowups = []
 const runStats = Object.assign({
@@ -211,7 +211,7 @@ async function buildSlices(slices, phaseName, idPrefix, finalNote) {
     const modeNote = mode === 'test'
       ? (s.redExempt
         ? `Mode: test, red-exempt (its tests may pass before the change). Test idea: ${s.testIdea || 'derive from the behavior'}.`
-        : `Mode: test. Test idea: ${s.testIdea || 'derive from the behavior'}. Write the tests first and run \`${a.gate} red ${q(a.runDir)} --slice ${id} --tests <paths>\` before implementing.`)
+        : `Mode: test. Test idea: ${s.testIdea || 'derive from the behavior'}. Write the tests first and run \`${a.gate} red ${q(a.runDir)} --slice ${id} --tests <paths>\` once, before implementing; it is not a test runner.`)
       : `Mode: verify. Evidence: ${s.verificationIdea || 'the approved verification commands'}.${s.verificationReason ? ` Why: ${s.verificationReason}.` : ''}`
     const base = `${where}\nSlice ${id} (${i + 1} of ${slices.length}): ${s.title}\nBehavior: ${s.behavior}${criteria ? `\nCriteria: ${criteria}` : ''}\n${modeNote}${s.fixDirection ? `\nFix direction: ${s.fixDirection}` : ''}${s.evidence ? `\nEvidence: ${s.evidence}` : ''}${isFinal && finalNote ? `\n${finalNote}` : ''}`
     let failure = null
