@@ -154,23 +154,23 @@ url_api = "https://api.github.com/repos/cli/cli/releases/assets/464728562"
 provenance = "github-attestations"
 
 [[tools."github:agavra/tuicr"]]
-version = "0.19.0"
+version = "0.27.0"
 backend = "github:agavra/tuicr"
 
 [tools."github:agavra/tuicr"."platforms.linux-arm64"]
-checksum = "sha256:3ca8e99e82e49fbdcab9d69725bbd56f4a8773a0225abbebda9f11fd6104a164"
-url = "https://github.com/agavra/tuicr/releases/download/v0.19.0/tuicr-0.19.0-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/471658713"
+checksum = "sha256:6f6bf1604159bc8644cadf73b9bace8441af183a574aa9f8db0a7b142a1c0e16"
+url = "https://github.com/agavra/tuicr/releases/download/v0.27.0/tuicr-0.27.0-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/584421927"
 
 [tools."github:agavra/tuicr"."platforms.linux-x64"]
-checksum = "sha256:41e62aabc379838c1b30be95fa0b14b0061821e9188886c9a33516b778f7c815"
-url = "https://github.com/agavra/tuicr/releases/download/v0.19.0/tuicr-0.19.0-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/471658792"
+checksum = "sha256:851c7671d85fd20dc77d30321b201093af9dcdfe45011ad1d51ae65a229da192"
+url = "https://github.com/agavra/tuicr/releases/download/v0.27.0/tuicr-0.27.0-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/584422403"
 
 [tools."github:agavra/tuicr"."platforms.macos-arm64"]
-checksum = "sha256:f276027163d139eff70e7ad2626405c578547ac8053ac12d1bf75d92a09b03f9"
-url = "https://github.com/agavra/tuicr/releases/download/v0.19.0/tuicr-0.19.0-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/471659053"
+checksum = "sha256:170b2e5290435faaf663c9498b1385493df7c336646b74c9336388844e028dcf"
+url = "https://github.com/agavra/tuicr/releases/download/v0.27.0/tuicr-0.27.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/agavra/tuicr/releases/assets/584424400"
 
 [[tools."github:dandavison/delta"]]
 version = "0.19.2"
