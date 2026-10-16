@@ -60,7 +60,8 @@ It refuses replay runs (exit 7), then re-checks, at post time: a draft exists, t
 ✓ review-flow complete
   PR:        #<num> — <title>  @ <sha:10>
   verdict:   <postVerify, or postCritic if the verifier died>  ·  urgency: <urgency>  ·  depth: <depth>
-  escalate:  consider a full review: <escalate>   (quick only, when set)
+  effort:    <the explainer's effort line after `effort:`, verbatim>   (omit if the overview failed or was skipped)
+  escalate:  consider a full review: <escalate>   (quick only, when set or effort is Deep)
   verify:    struck <n>, down-tiered <n>, strengthened <n>   (or ⚠ verifier failed, or Codex audit only (quick))
   codex:     kept <n>, strengthened <n>, down-tiered <n>, contested <n>, raised <n> · <s>s   (or ⚠ skipped/failed: <reason>, or off)
   markdown:  <runDir>/out/review.md
@@ -69,4 +70,4 @@ It refuses replay runs (exit 7), then re-checks, at post time: a draft exists, t
   findings:  <total> local, <in draft> in draft  (critical X, important Y, recommended Z, nit W)
   coverage:  <coverage_gaps joined, or complete>
 ```
-`overview:` must be a full `file://` URL; omit the line if the overview failed or was skipped. Depth quick: list each `codex_raised` finding (tier, location, one line) under the block, since nothing else looked for what the single reviewer missed. Repeat any prep warnings (for example "no checkout"). Stay available for follow-ups; the user can run `/retro` afterwards.
+`overview:` must be a full `file://` URL; omit the line if the overview failed or was skipped. Depth quick: when effort is Deep, the `escalate:` line also carries `effort Deep - <dimension>: <evidence>` (alone when `escalate` is null), and list each `codex_raised` finding (tier, location, one line) under the block, since nothing else looked for what the single reviewer missed. Repeat any prep warnings (for example "no checkout"). Stay available for follow-ups; the user can run `/retro` afterwards.
