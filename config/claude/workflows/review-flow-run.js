@@ -72,6 +72,16 @@ Observability bar:
 - Hygiene: no secrets, tokens, full bodies or PII in logs; no unbounded-cardinality attributes; no per-iteration or every-layer log spam; level matches consequence.
 - Don't force it. Pass-throughs need nothing, these findings are rarely critical, and the test is whether on-call could debug this from telemetry, judged against the repo's existing instrumentation.`
 
+// Catches work bundled into a PR that its purpose doesn't need, even when
+// the description lists it. Part of the design bar.
+const SCOPE_DOCTRINE = `
+Scope and bundling:
+- The PR's purpose comes from its title, linked issue or ticket, and the description's opening statement. The description's own list of contents does not make an item part of the purpose.
+- Split the diff into cohesive units. For each, ask whether the purpose needs it and whether it would make sense as its own PR (reviewable, shippable and revertible on its own). An independent unit the purpose doesn't need is bundled.
+- Strong signals: a new workflow or automation; a new secret, credential or permission; a new external service or vendor integration; a different area or service; a different rollout or blast radius from the rest; an unrelated refactor or cleanup mixed into a behavior change; a policy or ownership decision the team hasn't made.
+- Don't flag enabling refactors, tests, docs or migrations the purpose needs; small adjacent fixes inside the touched code; a deliberately narrow PR; work the description explicitly defers.
+- Report at most one scope finding per PR: lens design, \`anchorable: false\` (a general comment), \`pre_existing: false\`. Its \`body\` names each bundled unit with its files, why it is separable, and the suggested route (a separate PR, a follow-up, or a team decision first), phrased as a suggestion or question to the author. Tier important when a bundled unit carries its own risk or needs its own decision (a new credential, permission or workflow, infrastructure, a separate rollout); recommended otherwise. \`evidence\` quotes the purpose source and lists the units.`
+
 // Replaced the style lens (2 critical/important of 81 findings across 16
 // runs) and owns the questions the human reviewer kept asking by hand.
 const DESIGN_DOCTRINE = `
@@ -81,7 +91,7 @@ Design and fit bar:
 - Repo rules: breaking a rule from the base-revision rule files is a finding (cite it), and so is a change that makes a rule file untrue.
 - Rollout: deploy order across services, migration reversibility, backfills, flag defaults.
 - Not yours: formatting, import order, naming taste no rule or sibling backs.
-- Judgment calls (a trade-off, whether a resource should outlive the project) are not defects. Return each in \`decisions\` as one line: question, options, consequence.`
+- Judgment calls (a trade-off, whether a resource should outlive the project) are not defects. Return each in \`decisions\` as one line: question, options, consequence.${SCOPE_DOCTRINE}`
 
 const LENS_DOCTRINE = {
   correctness: CORRECTNESS_DOCTRINE,
@@ -108,6 +118,7 @@ Evidence rules (each has already shipped a wrong finding):
 const INTENT_RULES = `
 Declared changes (true findings that contested them were struck):
 - Prior code is not a requirement. When the stated intent declares a removal or behavior change deliberate, the removed code's constants, comments, tests and telemetry describe the old design. A finding against the declared change must cite a requirement independent of that code (a base-revision repo rule, a documented SLO or product requirement, an observed incident) or show a wrong outcome (a security hole, lost or corrupted data, incorrect results). Otherwise raise it once, as a question to the author, at recommended.
+- Declared is not in scope. Naming a change in the description establishes intent, not that it belongs in this PR, so the scope check applies to declared changes too. A scope finding questions the bundling, not the change's merits: the intent down-tier never applies to it, and its tier follows the bundled unit's own risk, not the defect rubric.
 - Work within the change's organizing principle. If the diff moves a concern to the layer that owns it, anchor fixes and test asks at that layer; arguing for the old placement is one design question, not a finding per caller.
 - The description establishes what was intended, not that it is right: never drop a wrong-outcome finding because the PR announces the change. And none of this narrows defects in the new code itself (a check that misfires, a test that can't fail, a comment the change made stale); keep reporting those at full recall.`
 
@@ -325,6 +336,7 @@ ${LINE_RULES}
 
 Reconcile the set as the critic would:
 - Dedupe: one finding per issue, in the strongest framing, under the lens that owns it (security when it is one). The same defect in several places is one bug-class finding that lists every instance (\`path:line\`) in \`body\`, anchored at the first instance in diff order that sits on a diff line. Note merges in \`evidence\`.
+- Scope: fold every scope or bundling point into the design bar's one scope finding, and drop a decision that only repeats its question. Defects inside a bundled unit stay their own findings.
 - Prior threads: give every overlap a disposition. Drop a duplicate of an existing thread, and one a thread settled (a correct author rebuttal included; check timestamps, since a reply can predate the objection and "resolved" is not proof it was answered). Re-raise only when you can name the thread and the point its closure left unanswered, and say both in \`body\`.
 - Anchors: an inline finding sits on a line in the diff. A real finding with no diff line (whole-file, absent code) gets \`anchorable: false\` and becomes a general comment.
 

@@ -40,6 +40,8 @@ The first screen answers: what this is, what changes, why it matters, and which 
 
 Give the design and architecture choices their own prominent place: each choice in a sentence, the alternative it rules out, what it costs or commits to, and how hard it is to reverse. Rank them by what is most expensive to get wrong. Name a choice the sources leave open as an open question rather than resolving it yourself.
 
+When a code change bundles independent units, show them as separate units and name the one that doesn't serve the stated purpose among the choices to align on.
+
 ## Review effort, for a code change
 
 When the topic is a code change (a PR, a branch, a diff), open the page with a review-effort rating, above everything else, so the reader can decide how hard to look. Rate the change itself, not a review's findings: a clean review never lowers it.

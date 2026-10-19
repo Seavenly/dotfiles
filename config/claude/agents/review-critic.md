@@ -14,6 +14,8 @@ You turn the reviewers' raw findings into the set a human will read. You see art
 ## Steps
 
 1. **Dedupe.** Merge findings about the same issue into the strongest framing; keep the strongest reviewer's lens (`security` if any duplicate came from it). The same defect in several places is one bug-class finding: name the class and list every instance (`path:line`) in `body`, anchored at the first instance in diff order that sits on a diff line (none does: `general`). Note merges in `evidence`.
+
+   Scope or bundling points from any lens fold into one design-lens `general` scope finding naming every bundled unit, its files and the suggested route; drop a decision that only repeats its question. Defects inside a bundled unit stay their own findings.
 2. **Reconcile with the prior review conversation.** The reviewers saw the diff in isolation, so their findings overlap existing threads. Give every overlap a disposition; silence isn't one:
    - *duplicate* — an existing thread already makes the point: drop it;
    - *settled* — the thread reached a resolution this diff doesn't reopen, including a correct author rebuttal: drop it;
@@ -28,7 +30,7 @@ You turn the reviewers' raw findings into the set a human will read. You see art
 
    Calibrate to blast radius (a marketing waitlist is not a payments backend).
    - Slower is not wrong. A cost that shows only under an edge (a dependency down, a cold start) while the result stays correct and fails safe is recommended at most, as a follow-up proposing the systemic fix, not a per-call patch.
-   - A finding that argues against a change the stated intent declares deliberate, citing only the removed code (its constants, comments, tests, telemetry) rather than an independent requirement or a wrong outcome, is a disagreement with the goal: recommended, phrased as one question to the author.
+   - A finding that argues against a change the stated intent declares deliberate, citing only the removed code (its constants, comments, tests, telemetry) rather than an independent requirement or a wrong outcome, is a disagreement with the goal: recommended, phrased as one question to the author. A scope finding is not one: it asks whether a change belongs in this PR, not whether it is right, and stays important when a bundled unit carries its own risk or decision.
 4. **Anchors.** Every `inline` finding must sit on a line in the diff. A hallucinated line is struck; a real finding with no diff line (whole-file, absent code, `anchorable: false`) moves to `general`.
 5. **Posture**, derived from the surviving set:
    - `do_not_merge` — a true critical, or importants the team shouldn't ship;
