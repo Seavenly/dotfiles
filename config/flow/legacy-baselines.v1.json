@@ -1,14 +1,14 @@
 {
   "schema": "flow.legacy-baseline-inventory/v1",
-  "source_commit": "7c3278127400b02c49bc8e0e437ba23d92d909c6",
-  "recorded_at": "2026-10-16T20:57:28Z",
+  "source_commit": "e55efcccf595c25bc0f7c5c4669467be906e9894",
+  "recorded_at": "2026-10-19T14:46:20Z",
   "baselines": [
     {
       "implementation": "legacy-claude/v1",
       "components": [
         {
           "source_path": "config/claude",
-          "git_object": "551372adedef5a94aa243d3ed4e2b45a947a1326"
+          "git_object": "14601952b43f1719d8db466d34e8fda302cf83f7"
         }
       ],
       "authority_root": {
