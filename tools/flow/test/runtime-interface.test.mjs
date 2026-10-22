@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { createBackupManifest } from "../src/backup-restore.mjs";
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
-import { createInMemoryRunAuthority } from "../src/run-authority.mjs";
+import { revisionAdmissionStatus } from "../src/plan-revision.mjs";
+import {
+  createResultBindingRecord,
+  normalizeResultBindingRecord,
+} from "../src/result-bindings.mjs";
+import {
+  createInMemoryRunAuthority,
+} from "../src/run-authority.mjs";
+import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import {
   capabilityBlockedCheckpointProposal,
   confirmedLaunchRequest,
@@ -15,6 +28,1827 @@ import {
   revisionBlockedCheckpointProposal,
   terminalRevisionCheckpointProposal,
 } from "../test-support/dynamic-checkpoint.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+  fixedHostIdentity,
+} from "../test-support/fixed-host-identity.mjs";
+import {
+  operationReceipt,
+  registeredOperationProposal,
+  TEST_OPERATION_CONTRACT,
+} from "../test-support/registered-operation.mjs";
+
+function completeReplacementAuthority(overrides = {}) {
+  return {
+    database_streams: [],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+    filesystem_state: [],
+    ...overrides,
+  };
+}
+
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
+
+test("shared RunAuthority rejects a conflicting immutable authority catalog", () => {
+  const runAuthority = createInMemoryRunAuthority();
+  const definition = {
+    schema: "flow.predefined-definition/v1",
+    id: "example/v1",
+    contract: "flow.definition/example/v1",
+    promised_outcomes: ["one outcome"],
+    negative_outcomes: ["no mutation"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+    compile() {
+      return dynamicCheckpointProposal();
+    },
+  };
+  const authority = (providerId) => ({
+    schema: "flow.registered-authority/v1",
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: providerId,
+      version: "v1",
+    },
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status: "available",
+        watermark: `sha256:${"a".repeat(64)}`,
+        observation_input,
+      };
+    },
+  });
+  createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: { "route:example": authority("route-adapter-a") },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  assert.throws(
+    () => createFlowRuntime({
+      runAuthority,
+      registeredAuthorities: { "route:example": authority("route-adapter-b") },
+      predefinedDefinitions: { "example/v1": definition },
+    }),
+    /conflicting authority catalog attachment/,
+  );
+});
+
+test("shared RunAuthority keeps the first exact provider semantics", () => {
+  const runAuthority = createInMemoryRunAuthority();
+  const definition = {
+    schema: "flow.predefined-definition/v1",
+    id: "example/v1",
+    contract: "flow.definition/example/v1",
+    promised_outcomes: ["one outcome"],
+    negative_outcomes: ["no mutation"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{
+      schema: "flow.required-authority/v1",
+      id: "route:example",
+      contract: "flow.route-authority/v1",
+      observation_input: { route: "example" },
+    }],
+    compile() {
+      return dynamicCheckpointProposal();
+    },
+  };
+  const authority = (status) => ({
+    schema: "flow.registered-authority/v1",
+    id: "route:example",
+    contract: "flow.route-authority/v1",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "route-adapter",
+      version: "v1",
+    },
+    observe({ observation_input }) {
+      return {
+        schema: "flow.authority-observation/v1",
+        status,
+        watermark: `sha256:${"a".repeat(64)}`,
+        observation_input,
+      };
+    },
+  });
+  const first = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: { "route:example": authority("available") },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const second = createFlowRuntime({
+    runAuthority,
+    registeredAuthorities: { "route:example": authority("stale") },
+    predefinedDefinitions: { "example/v1": definition },
+  });
+  const prepared = first.prepare({
+    schema: "flow.predefined-flow-selection/v1",
+    definition: "example/v1",
+    inputs: {},
+    explicit_facts: dynamicCheckpointProposal().explicit_facts,
+  });
+  const launch = second.launch({
+    prepared,
+    confirmation: {
+      schema: "flow.predefined-flow-confirmation-decision/v1",
+      decision: "accept",
+      bundle_digest: prepared.bundle_digest,
+      confirmation_digest: prepared.confirmation_digest,
+    },
+    closed_facts: {
+      schema: "flow.closed-fact-observation/v1",
+      bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts),
+    },
+  });
+  assert.equal(launch.created, true);
+});
+
+test("prepare rejects malformed reboot time and subject facts at the public seam", () => {
+  const runtime = createTestRuntime();
+  const malformedTime = dynamicCheckpointProposal();
+  malformedTime.explicit_facts.time_facts = [{
+    kind: "wall_clock",
+    value_ms: 1_700_000_000_000,
+    uncertainty_ms: 0,
+    clock_source_id: "wall:host-a",
+  }];
+  assert.throws(
+    () => runtime.prepare(malformedTime),
+    /reboot time and subject facts are invalid/,
+  );
+
+  const malformedSubject = dynamicCheckpointProposal();
+  malformedSubject.explicit_facts.subject_generations = [{
+    schema: "flow.subject-generation/v1",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:flow",
+    generation: 1,
+    fingerprint: "not-a-digest",
+  }];
+  assert.throws(
+    () => runtime.prepare(malformedSubject),
+    /reboot time and subject facts are invalid/,
+  );
+});
+
+test("restore establishes a host-wide barrier before any host mutation", () => {
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: RESTORE_WRITER,
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const pendingRunCommand = runtime.query({ run_id: launch.run_id }).legal_actions[0];
+  const manifest = createBackupManifest({
+    replacement_authority: completeReplacementAuthority({
+      watermark: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+
+  const entered = runtime.command({
+    schema: "flow.command/v1",
+    type: "restore",
+    manifest,
+  });
+
+  assert.equal(entered.accepted, true);
+  const host = runtime.query();
+  assert.equal(host.restore.state, "reconciling");
+  assert.deepEqual(host.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: host.watermark,
+  }]);
+  assert.equal(runtime.launch({}).code, "host_reconciliation_required");
+  assert.equal(runtime.command(pendingRunCommand).code,
+    "host_reconciliation_required");
+});
+
+test("restore passes one manifest-bound intent to its Adapter and preserves the receipt", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let request;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore(received) {
+        request = received;
+        return { provider_receipt_id: "restore/provider-1" };
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  const result = runtime.command({ type: "restore", manifest });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.receipt.manifest_digest, manifest.manifest_digest);
+  assert.equal(result.receipt.operation_id, request.intent.operation_id);
+  assert.equal(result.receipt.idempotency_key, request.intent.idempotency_key);
+  assert.equal(request.operation_id, request.intent.operation_id);
+  assert.equal(request.idempotency_key, request.intent.idempotency_key);
+  assert.deepEqual(runtime.query().restore.applied_receipt, result.receipt);
+});
+
+test("exact restore retry re-enters an incomplete provider operation behind the barrier", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const differentManifest = createBackupManifest({
+    ...observation,
+    replacement_authority: completeReplacementAuthority({
+      git_state: {
+        commit: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+    }),
+  });
+  let attempts = 0;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      observeRestore: () => observation,
+      restore() {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error("injected restore interruption");
+          error.code = "restore_injected_interruption";
+          throw error;
+        }
+        return { provider_receipt_id: "restore/retry" };
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  const first = runtime.command({ type: "restore", manifest });
+
+  assert.equal(first.code, "restore_injected_interruption");
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(runtime.query().restore.applied_receipt, null);
+
+  const different = runtime.command({ type: "restore", manifest: differentManifest });
+  assert.equal(different.code, "host_reconciliation_required");
+
+  const retried = runtime.command({ type: "restore", manifest });
+  assert.equal(retried.accepted, true);
+  assert.equal(attempts, 2);
+  assert.equal(runtime.query().restore.applied_receipt.provider_receipt.provider_receipt_id,
+    "restore/retry");
+
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(reconciled.accepted, true);
+  assert.equal(runtime.query().restore.state, "ready");
+  const admitted = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(admitted.accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("restore retry stays blocked when a rebooted host has no restore writer", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-restore-null-retry-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: {
+      restore() {
+        const error = new Error("injected restore interruption");
+        error.code = "restore_injected_interruption";
+        throw error;
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("restore-null-boot-a", "restore-null-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const interrupted = firstRuntime.command({ type: "restore", manifest });
+  assert.equal(interrupted.code, "restore_injected_interruption");
+  assert.equal(firstRuntime.query().restore.active, true);
+  firstAuthority.close();
+
+  const rebootedAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("restore-null-boot-b", "restore-null-b"),
+  });
+  t.after(() => rebootedAuthority.close());
+  const rebootedRuntime = createFlowRuntime({ runAuthority: rebootedAuthority });
+
+  const blocked = rebootedRuntime.command({ type: "restore", manifest });
+
+  assert.equal(blocked.schema, "flow.rejection/v1", JSON.stringify(blocked));
+  assert.equal(blocked.code, "restore_writer_unavailable");
+  assert.equal(rebootedRuntime.query().restore.active, true);
+  assert.equal(rebootedRuntime.query().restore.applied_receipt, null);
+});
+
+test("active host restore replaces ordinary run and view actions with reconciliation admission", async () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const watch = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+  await watch.next();
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const blocked = runtime.query({ run_id: launch.run_id });
+  const marker = blocked.host_reconciliation;
+  assert.equal(marker?.active, true);
+  assert.equal(marker?.state, "reconciling");
+  assert.deepEqual(blocked.legal_actions, []);
+  for (const view of Object.values(blocked.views)) {
+    assert.deepEqual(view.legal_actions, []);
+    assert.deepEqual(view.host_reconciliation, marker);
+  }
+  await watch.next();
+  const watched = await watch.next();
+  assert.deepEqual(watched.value.host_reconciliation, marker);
+  await watch.return();
+});
+
+test("host recovery accepts only exact projected command and query vocabulary", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+
+  assert.notEqual(runtime.command({ type: "backup" }).accepted, true);
+  assert.notEqual(runtime.command({ type: "restore_begin", manifest }).accepted, true);
+  assert.equal(runtime.query({
+    schema: "flow.query/v1",
+    query: "backup_manifest",
+  }).code, "unsupported_query");
+  assert.equal(runtime.query({
+    schema: "flow.query/v1",
+    query: "restore_barrier",
+  }).code, "unsupported_query");
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const reconcile = runtime.query().restore.legal_actions[0];
+  assert.equal(runtime.command({
+    type: reconcile.type,
+    expected_watermark: reconcile.expected_watermark,
+  }).code, "host_action_not_projected");
+  assert.equal(runtime.command(reconcile).accepted, true);
+  const ready = runtime.query();
+  assert.equal(runtime.command({
+    ...ready.restore.legal_actions[0],
+    type: "restore_reconcile",
+  }).code, "host_action_not_projected");
+  assert.equal(runtime.command({
+    ...ready.restore.legal_actions[0],
+    expected_watermark: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  }).code, "stale_authority_watermark");
+});
+
+test("restore reconciliation ignores caller observations and requires an observation Adapter", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore: () => ({ provider_receipt_id: "restore/provider-1" }),
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const action = runtime.query().restore.legal_actions[0];
+
+  const callerSupplied = runtime.command({ ...action, observations: observation });
+  assert.equal(callerSupplied.code, "host_action_not_projected");
+
+  const result = runtime.command(action);
+
+  assert.equal(result.code, "restore_observation_unavailable");
+  assert.equal(runtime.query().restore.state, "reconciling");
+});
+
+test("restore rejects a missing writer before entering the host barrier", () => {
+  const manifest = createBackupManifest({
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "restore_writer_unavailable");
+  assert.equal(runtime.query().restore.state, "idle");
+  assert.equal(runtime.query().restore.active, false);
+});
+
+test("restore is not projected while backup intent remains unresolved", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => observation,
+      createBackup: () => {
+        throw new Error("backup receipt lost");
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, undefined);
+  const pending = runtime.query();
+  assert.equal(pending.backup.state, "reconciling");
+
+  const blocked = runtime.command({ type: "restore", manifest });
+
+  assert.equal(blocked.code, "host_action_not_projected");
+  assert.deepEqual(blocked.legal_actions, pending.backup.legal_actions);
+  assert.equal(runtime.query().restore?.active ?? false, false);
+});
+
+test("backup reconciliation rejects a bare safe absence observation", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => observation,
+      createBackup: () => {
+        throw new Error("backup receipt lost");
+      },
+      reconcile: () => ({ status: "absent", safe_to_retry: true }),
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, undefined);
+
+  const action = runtime.query().backup.legal_actions[0];
+  const rejected = runtime.command(action);
+
+  assert.equal(rejected.code, "backup_reconciliation_invalid");
+  assert.equal(runtime.query().backup.state, "reconciling");
+});
+
+test("backup reconciliation recovers only from exact identity-bound absence", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority({
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+    }),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let reconciliationObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => observation,
+      createBackup: () => {
+        throw new Error("backup receipt lost");
+      },
+      reconcile: ({ intent }) => reconciliationObservation ?? {
+        schema: "flow.backup-reconciliation-observation/v1",
+        operation: "backup_create",
+        operation_id: intent.operation_id,
+        idempotency_key: intent.idempotency_key,
+        manifest_digest: intent.manifest_digest,
+        status: "absent",
+        safe_to_retry: true,
+        provider_evidence: {
+          schema: "flow.backup-provider-evidence/v1",
+          provider: "test-backup",
+          proof_id: "absence-proof-1",
+          outcome: "absent",
+        },
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  assert.equal(runtime.command({ type: "backup_create" }).accepted, undefined);
+  const action = runtime.query().backup.legal_actions[0];
+  reconciliationObservation = {
+    schema: "flow.backup-reconciliation-observation/v1",
+    operation: "backup_create",
+    operation_id: "wrong-operation",
+    idempotency_key: "wrong-operation",
+    manifest_digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    status: "absent",
+    safe_to_retry: true,
+    provider_evidence: {
+      schema: "flow.backup-provider-evidence/v1",
+      provider: "test-backup",
+      proof_id: "absence-proof-wrong",
+      outcome: "absent",
+    },
+  };
+  assert.equal(runtime.command(action).code, "backup_reconciliation_invalid");
+
+  reconciliationObservation = null;
+  const recovered = runtime.command(action);
+
+  assert.equal(recovered.accepted, true);
+  assert.equal(runtime.query().backup.state, "retryable");
+  assert.equal(runtime.query().backup.reconciliation.status, "absent");
+  assert.equal(
+    runtime.query().backup.reconciliation.operation_id,
+    runtime.query().backup.intent.operation_id,
+  );
+});
+
+test("backup fails closed before writing an incomplete authority manifest", () => {
+  let wrote = false;
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => ({
+          replacement_authority: {},
+          artifacts: [],
+          legacy_roots: [],
+          external_pointers: [],
+          drovr_obligations: [],
+        }),
+        createBackup: () => {
+          wrote = true;
+          return {};
+        },
+      },
+    }),
+  });
+
+  const rejected = runtime.command({ type: "backup_create" });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(wrote, false);
+  assert.equal(runtime.query().backup.state, "idle");
+});
+
+test("backup rejects legacy replacement authority aliases", () => {
+  for (const alias of ["git", "filesystem"]) {
+    const runtime = createFlowRuntime({
+      runAuthority: createInMemoryRunAuthority({
+        backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+          observeBackup: () => ({
+            replacement_authority: {
+              ...completeReplacementAuthority(),
+              [alias]: alias === "git" ? {} : [],
+            },
+            artifacts: [],
+            legacy_roots: [],
+            external_pointers: [],
+            drovr_obligations: [],
+          }),
+          createBackup: () => {
+            throw new Error("legacy alias reached backup writer");
+          },
+        },
+      }),
+    });
+
+    const rejected = runtime.command({ type: "backup_create" });
+    assert.equal(rejected.code, "invalid_backup_manifest");
+    assert.equal(runtime.query().backup.state, "idle");
+  }
+});
+
+test("backup creation is deterministic and covers every retained authority category", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:admission", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const manifestBytes = [];
+  const createRuntime = () => {
+    const authority = createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => observation,
+        createBackup: ({ manifest, manifest_bytes: bytes }) => {
+          manifestBytes.push(Buffer.from(bytes));
+          return {
+          manifest_digest: manifest.manifest_digest,
+          destination: "backup/latest",
+          };
+        },
+      },
+    });
+    return createFlowRuntime({ runAuthority: authority });
+  };
+
+  const first = createRuntime().command({ type: "backup_create" });
+  const second = createRuntime().command({ type: "backup_create" });
+
+  assert.equal(first.accepted, true);
+  assert.deepEqual(first.manifest, second.manifest);
+  assert.deepEqual(first.manifest, {
+    schema: "flow.backup-manifest/v1",
+    version: 1,
+    replacement_authority: observation.replacement_authority,
+    artifacts: observation.artifacts,
+    legacy_roots: observation.legacy_roots,
+    external_pointers: observation.external_pointers,
+    drovr_obligations: observation.drovr_obligations,
+    manifest_digest: first.manifest.manifest_digest,
+  });
+  assert.equal(first.receipt.manifest_digest, first.manifest.manifest_digest);
+  assert.equal(manifestBytes[0].equals(manifestBytes[1]), true);
+});
+
+test("backup creation canonicalizes unordered authority collections", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [
+        { id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        { id: "host:admission", suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      ],
+      filesystem_state: [
+        { path: "/state/z.sqlite", digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        { path: "/state/a.sqlite", digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" },
+      ],
+      git_state: completeReplacementAuthority().git_state,
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const secondObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      ...firstObservation.replacement_authority,
+      database_streams: [
+        ...firstObservation.replacement_authority.database_streams,
+      ].reverse(),
+      filesystem_state: [
+        ...firstObservation.replacement_authority.filesystem_state,
+      ].reverse(),
+    },
+  };
+  const writes = [];
+  const createRuntime = (observation) => createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority({
+      backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+        observeBackup: () => observation,
+        createBackup: (request) => {
+          writes.push(request);
+          return { manifest_digest: request.manifest.manifest_digest };
+        },
+      },
+    }),
+  });
+
+  const first = createRuntime(firstObservation).command({ type: "backup_create" });
+  const second = createRuntime(secondObservation).command({ type: "backup_create" });
+
+  assert.equal(first.accepted, true);
+  assert.equal(second.accepted, true);
+  assert.deepEqual(first.manifest, second.manifest);
+  assert.deepEqual(writes[0].manifest_bytes, writes[1].manifest_bytes);
+  assert.equal(writes[0].operation_id, writes[1].operation_id);
+  assert.equal(writes[0].intent.operation_id, writes[1].intent.operation_id);
+});
+
+test("restore reconciles six evidence domains before admission and watermarks watch updates", async () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  const watch = runtime.watch({ host: true })[Symbol.asyncIterator]();
+  const initial = await watch.next();
+  const entered = runtime.command({ type: "restore", manifest });
+  await watch.next();
+  const barrier = await watch.next();
+
+  assert.equal(entered.accepted, true);
+  assert.notEqual(barrier.value.watermark, initial.value.watermark);
+  assert.equal(barrier.value.restore.state, "reconciling");
+  assert.deepEqual(barrier.value.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: barrier.value.watermark,
+  }]);
+
+  const reconciled = runtime.command(barrier.value.restore.legal_actions[0]);
+  const ready = runtime.query();
+  assert.equal(reconciled.accepted, true);
+  assert.equal(ready.restore.state, "ready");
+  assert.deepEqual(
+    await runtime.query({ schema: "flow.query/v1", query: "restore" }),
+    ready.restore,
+  );
+  assert.deepEqual(
+    ready.restore.reconciliation.evidence_domains.map(({ domain, status }) => ({
+      domain,
+      status,
+    })),
+    [
+      "database_streams",
+      "artifact_state",
+      "git_state",
+      "filesystem_state",
+      "external_effects",
+      "drovr_obligations",
+    ].map((domain) => ({ domain, status: "reconciled" })),
+  );
+  assert.deepEqual(ready.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_admit",
+    expected_watermark: ready.watermark,
+  }]);
+
+  const admitted = runtime.command(ready.restore.legal_actions[0]);
+  assert.equal(admitted.accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+  await watch.return();
+});
+
+test("in-memory host watch emits ordinary launch watermark changes", async () => {
+  const authority = createInMemoryRunAuthority();
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const watcher = runtime.watch({ host: true })[Symbol.asyncIterator]();
+  const initial = await watcher.next();
+  const prepared = runtime.prepare(dynamicCheckpointProposal());
+  const next = watcher.next();
+
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const update = await Promise.race([
+    next,
+    new Promise((resolve) => setTimeout(() => resolve(null), 100)),
+  ]);
+
+  assert.equal(launch.schema, "flow.launch-receipt/v1");
+  assert.notEqual(update, null);
+  assert.notEqual(update.value.watermark, initial.value.watermark);
+  assert.equal(update.value.runs.includes(launch.run_id), true);
+  await watcher.return();
+});
+
+test("semantically corrupt stream suffix evidence cannot create or admit restore", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "not-a-digest" }],
+      git_state: {
+        commit: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        tree: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifestBody = {
+    schema: "flow.backup-manifest/v1",
+    version: 1,
+    replacement_authority: observation.replacement_authority,
+    artifacts: observation.artifacts,
+    legacy_roots: observation.legacy_roots,
+    external_pointers: observation.external_pointers,
+    drovr_obligations: observation.drovr_obligations,
+  };
+  const rejected = runtime.command({
+    type: "restore",
+    manifest: {
+      ...manifestBody,
+      manifest_digest: digest(manifestBody),
+    },
+  });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(runtime.query().restore?.active ?? false, false);
+});
+
+test("restore requires complete Git identity evidence and recovers after correction", () => {
+  const valid = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  let current = { ...valid, replacement_authority: {
+    ...valid.replacement_authority,
+    git_state: {},
+  } };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => current },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(valid);
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const failed = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(failed.accepted, true);
+  assert.equal(runtime.query().restore.state, "failed");
+  assert.equal(
+    runtime.query().restore.evidence_domains.find(({ domain }) => domain === "git_state").status,
+    "corrupt_evidence",
+  );
+
+  current = valid;
+  const recovered = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(recovered.accepted, true);
+  const ready = runtime.query();
+  assert.equal(runtime.command(ready.restore.legal_actions[0]).accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("backup manifest rejects duplicate external and Drovr obligations", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [
+      { effect_id: "e1", provider: "p", pointer: "x", idempotency_key: "i" },
+      { effect_id: "e1", provider: "p", pointer: "y", idempotency_key: "j" },
+    ],
+    drovr_obligations: [
+      { turn_id: "t1", disposition: "retire" },
+      { turn_id: "t1", disposition: "retire" },
+    ],
+  };
+  assert.throws(() => createBackupManifest(observation), (error) =>
+    error.code === "invalid_backup_observation");
+});
+
+test("backup observation reentry is fenced by the host restore barrier", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [], legacy_roots: [], external_pointers: [], drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  let runtime;
+  let nested;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeBackup: () => {
+        nested = runtime.command({ type: "restore", manifest });
+        return observation;
+      },
+      observeRestore: () => observation,
+    },
+  });
+  runtime = createFlowRuntime({ runAuthority: authority });
+  const rejected = runtime.command({ type: "backup_create" });
+  assert.equal(nested.accepted, true);
+  assert.equal(rejected.code, "host_reconciliation_required");
+  assert.equal(rejected.authority_watermark, runtime.query().watermark);
+  assert.deepEqual(rejected.legal_actions, runtime.query().restore.legal_actions);
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(runtime.query().backup.state, "idle");
+});
+
+test("restore rejects a manifest missing required authority domains before the barrier", () => {
+  const authority = createInMemoryRunAuthority();
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest({
+    replacement_authority: {},
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(runtime.query().restore.active, false);
+  assert.equal(runtime.query().restore.state, "idle");
+});
+
+test("restore reconciliation treats set-like filesystem and legacy evidence as unordered", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [
+        {
+          id: "host:runs",
+          suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+          id: "host:admission",
+          suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      ],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [
+        {
+          path: "/state/z.sqlite",
+          digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        },
+        {
+          path: "/state/a.sqlite",
+          digest: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        },
+      ],
+    },
+    artifacts: [],
+    legacy_roots: [
+      {
+        path: "/legacy/z",
+        digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      },
+      {
+        path: "/legacy/a",
+        digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      },
+    ],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(firstObservation);
+  const reorderedObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      ...firstObservation.replacement_authority,
+      database_streams: [
+        ...manifest.replacement_authority.database_streams,
+      ].reverse(),
+      filesystem_state: [
+        ...manifest.replacement_authority.filesystem_state,
+      ].reverse(),
+    },
+    legacy_roots: [...manifest.legacy_roots].reverse(),
+  };
+  let currentObservation = reorderedObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+
+  assert.equal(reconciled.accepted, true);
+  assert.equal(reconciled.reconciliation.complete, true);
+});
+
+test("restore admission keeps canonical reconciliation across reordered artifacts and obligations", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [
+      {
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        bytes_digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        byte_availability: "available",
+      },
+      {
+        digest: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        bytes_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        byte_availability: "available",
+      },
+    ],
+    legacy_roots: [],
+    external_pointers: [
+      {
+        effect_id: "e1",
+        provider: "github",
+        pointer: "issue:1",
+        idempotency_key: "issue:1",
+        receipt: {
+          schema: "flow.external-effect-receipt/v1",
+          effect_id: "e1",
+          idempotency_key: "issue:1",
+          provider_receipt_id: "provider/e1",
+          outcome: "succeeded",
+        },
+      },
+      {
+        effect_id: "e2",
+        provider: "github",
+        pointer: "issue:2",
+        idempotency_key: "issue:2",
+        receipt: {
+          schema: "flow.external-effect-receipt/v1",
+          effect_id: "e2",
+          idempotency_key: "issue:2",
+          provider_receipt_id: "provider/e2",
+          outcome: "succeeded",
+        },
+      },
+    ],
+    drovr_obligations: [
+      {
+        turn_id: "turn:1",
+        disposition: "retire",
+        receipt: {
+          schema: "flow.drovr-retirement-receipt/v1",
+          turn_id: "turn:1",
+          disposition: "retire",
+          retirement_receipt_id: "drovr/turn:1",
+          outcome: "retired",
+        },
+      },
+      {
+        turn_id: "turn:2",
+        disposition: "retire",
+        receipt: {
+          schema: "flow.drovr-retirement-receipt/v1",
+          turn_id: "turn:2",
+          disposition: "retire",
+          retirement_receipt_id: "drovr/turn:2",
+          outcome: "retired",
+        },
+      },
+    ],
+  };
+  const manifest = createBackupManifest(firstObservation);
+  const reorderedObservation = {
+    ...firstObservation,
+    artifacts: [...manifest.artifacts].reverse(),
+    external_pointers: [...manifest.external_pointers].reverse(),
+    drovr_obligations: [...manifest.drovr_obligations].reverse(),
+  };
+  let observationCalls = 0;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => {
+        observationCalls += 1;
+        return observationCalls === 1 ? reorderedObservation : manifest;
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted,
+    true);
+  const ready = runtime.query();
+  const admitted = runtime.command(ready.restore.legal_actions[0]);
+
+  assert.equal(admitted.accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("restore rejects corrupt immutable manifest structure before Adapter mutation", () => {
+  const manifestBody = {
+    schema: "flow.backup-manifest/v1",
+    version: 1,
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "not-a-digest" }],
+      git_state: {
+        commit: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        tree: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = {
+    ...manifestBody,
+    manifest_digest: digest(manifestBody),
+  };
+  let restoreCalls = 0;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      restore: () => {
+        restoreCalls += 1;
+        return { provider_receipt_id: "should-not-run" };
+      },
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+
+  const rejected = runtime.command({ type: "restore", manifest });
+
+  assert.equal(rejected.code, "invalid_backup_manifest");
+  assert.equal(restoreCalls, 0);
+  assert.equal(runtime.query().restore?.active ?? false, false);
+});
+
+test("external and Drovr obligations require identity-bound settlement receipts", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [{
+        path: "/state/authority.sqlite",
+        digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "provider/e1",
+      idempotency_key: "provider/e1",
+    }],
+    drovr_obligations: [{ turn_id: "turn:1", disposition: "retire" }],
+  };
+  let currentObservation = observation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const missing = runtime.command(runtime.query().restore.legal_actions[0]);
+  let projection = runtime.query();
+  assert.equal(missing.accepted, true);
+  assert.equal(projection.restore.state, "failed");
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "missing_evidence",
+  );
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "drovr_obligations").status,
+    "missing_evidence",
+  );
+
+  currentObservation = {
+    ...observation,
+    external_pointers: [{
+      ...observation.external_pointers[0],
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e2",
+        idempotency_key: "provider/e1",
+        provider_receipt_id: "provider/e2",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      ...observation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:2",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:2",
+        outcome: "retired",
+      },
+    }],
+  };
+  const wrongReceipt = runtime.command(projection.restore.legal_actions[0]);
+  projection = runtime.query();
+  assert.equal(wrongReceipt.accepted, true);
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    projection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "drovr_obligations").status,
+    "corrupt_evidence",
+  );
+
+  currentObservation = {
+    ...observation,
+    external_pointers: [{
+      ...observation.external_pointers[0],
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "provider/e1",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      ...observation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  const recovered = runtime.command(projection.restore.legal_actions[0]);
+  projection = runtime.query();
+  assert.equal(recovered.accepted, true);
+  assert.equal(projection.restore.state, "ready");
+  assert.equal(runtime.command(projection.restore.legal_actions[0]).accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
+
+test("restore preserves failed and cancelled external settlement receipts", () => {
+  const observation = {
+    replacement_authority: completeReplacementAuthority(),
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: ["failed", "cancelled"].map((outcome, index) => ({
+      effect_id: `effect:${index + 1}`,
+      provider: "github",
+      pointer: `issue:${index + 1}`,
+      idempotency_key: `issue:${index + 1}`,
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: `effect:${index + 1}`,
+        idempotency_key: `issue:${index + 1}`,
+        provider_receipt_id: `provider/${index + 1}`,
+        outcome,
+      },
+    })),
+    drovr_obligations: [],
+  };
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => observation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+
+  assert.deepEqual(
+    manifest.external_pointers.map(({ receipt }) => receipt.outcome).sort(),
+    ["cancelled", "failed"],
+  );
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+
+  assert.equal(reconciled.accepted, true, JSON.stringify(reconciled));
+  assert.equal(runtime.query().restore.state, "ready");
+  assert.equal(
+    runtime.query().restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "reconciled",
+  );
+});
+
+test("Drovr obligations recover through an exact named durable-holder handoff", () => {
+  const baseObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [{
+      turn_id: "turn:handoff",
+      disposition: "handoff",
+      durable_holder: "holder:registry",
+    }],
+  };
+  let currentObservation = baseObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(baseObservation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  const missing = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(missing.accepted, true);
+  assert.equal(runtime.query().restore.state, "failed");
+
+  currentObservation = {
+    ...baseObservation,
+    drovr_obligations: [{
+      ...baseObservation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-handoff-receipt/v1",
+        turn_id: "turn:handoff",
+        disposition: "handoff",
+        durable_holder: "holder:wrong",
+        handoff_receipt_id: "handoff/wrong",
+        outcome: "handed_off",
+      },
+    }],
+  };
+  const wrongHolder = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(wrongHolder.accepted, true);
+  assert.equal(runtime.query().restore.state, "failed");
+
+  currentObservation = {
+    ...baseObservation,
+    drovr_obligations: [{
+      ...baseObservation.drovr_obligations[0],
+      receipt: {
+        schema: "flow.drovr-handoff-receipt/v1",
+        turn_id: "turn:handoff",
+        disposition: "handoff",
+        durable_holder: "holder:registry",
+        handoff_receipt_id: "handoff/turn:handoff",
+        outcome: "handed_off",
+      },
+    }],
+  };
+  const recovered = runtime.command(runtime.query().restore.legal_actions[0]);
+
+  assert.equal(recovered.accepted, true);
+  assert.equal(runtime.query().restore.state, "ready");
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+});
+
+test("restore rejects bare settlement, unavailable artifact bytes, and duplicate streams before exact recovery", () => {
+  const validExternalReceipt = {
+    schema: "flow.external-effect-receipt/v1",
+    effect_id: "e1",
+    idempotency_key: "issue:15",
+    provider_receipt_id: "provider/e1",
+    outcome: "succeeded",
+  };
+  const validDrovrReceipt = {
+    schema: "flow.drovr-retirement-receipt/v1",
+    turn_id: "turn:1",
+    disposition: "retire",
+    retirement_receipt_id: "drovr/turn:1",
+    outcome: "retired",
+  };
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        tree: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [{
+      digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      bytes_digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      byte_availability: "available",
+    }],
+    legacy_roots: [],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: validExternalReceipt,
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: validDrovrReceipt,
+    }],
+  };
+  let currentObservation = observation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => currentObservation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+
+  currentObservation = {
+    ...observation,
+    replacement_authority: {
+      ...observation.replacement_authority,
+      database_streams: [
+        ...observation.replacement_authority.database_streams,
+        observation.replacement_authority.database_streams[0],
+      ],
+    },
+    artifacts: [{
+      digest: observation.artifacts[0].digest,
+      bytes_digest: observation.artifacts[0].bytes_digest,
+    }],
+    external_pointers: [{
+      ...observation.external_pointers[0],
+      receipt: { effect_id: "e1" },
+    }],
+    drovr_obligations: [{
+      ...observation.drovr_obligations[0],
+      receipt: { turn_id: "turn:1" },
+    }],
+  };
+  const failed = runtime.command(runtime.query().restore.legal_actions[0]);
+  const failedProjection = runtime.query();
+  assert.equal(failed.accepted, true);
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "database_streams").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "artifact_state").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "external_effects").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    failedProjection.restore.reconciliation.evidence_domains.find(({ domain }) =>
+      domain === "drovr_obligations").status,
+    "corrupt_evidence",
+  );
+
+  currentObservation = observation;
+  const recovered = runtime.command(failedProjection.restore.legal_actions[0]);
+  const ready = runtime.query();
+  assert.equal(recovered.accepted, true);
+  assert.equal(ready.restore.state, "ready");
+  assert.equal(runtime.command(ready.restore.legal_actions[0]).accepted, true);
+});
+
+test("restore admission re-observes every domain and refuses stale ready reconciliation", () => {
+  const firstObservation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const changedObservation = {
+    ...firstObservation,
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }],
+      git_state: firstObservation.replacement_authority.git_state,
+      filesystem_state: [],
+    },
+  };
+  let currentObservation = firstObservation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => currentObservation },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(firstObservation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+  const ready = runtime.query();
+
+  currentObservation = changedObservation;
+  const stale = runtime.command(ready.restore.legal_actions[0]);
+  const quarantined = runtime.query();
+
+  assert.equal(stale.code, "restore_reconciliation_changed");
+  assert.equal(quarantined.restore.state, "failed");
+  assert.equal(quarantined.restore.active, true);
+  assert.deepEqual(quarantined.restore.legal_actions, [{
+    schema: "flow.command/v1",
+    type: "restore_reconcile",
+    expected_watermark: quarantined.watermark,
+  }]);
+  assert.equal(runtime.command({
+    ...ready.restore.legal_actions[0],
+    expected_watermark: ready.watermark,
+  }).code, "restore_reconciliation_incomplete");
+});
+
+test("missing or corrupt restore evidence remains quarantined and recovers only with exact evidence", () => {
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    git_state: {
+      commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      clean: true,
+    },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [{ digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", bytes_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", byte_availability: "available" }],
+    legacy_roots: [{ path: "/legacy/flow", digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }],
+    external_pointers: [{
+      effect_id: "e1",
+      provider: "github",
+      pointer: "issue:15",
+      idempotency_key: "issue:15",
+      receipt: {
+        schema: "flow.external-effect-receipt/v1",
+        effect_id: "e1",
+        idempotency_key: "issue:15",
+        provider_receipt_id: "provider/e1",
+        outcome: "succeeded",
+      },
+    }],
+    drovr_obligations: [{
+      turn_id: "turn:1",
+      disposition: "retire",
+      receipt: {
+        schema: "flow.drovr-retirement-receipt/v1",
+        turn_id: "turn:1",
+        disposition: "retire",
+        retirement_receipt_id: "drovr/turn:1",
+        outcome: "retired",
+      },
+    }],
+  };
+  let currentObservation = observation;
+  const authority = createInMemoryRunAuthority({
+    backupRestoreAdapter: {
+      ...RESTORE_WRITER,
+      observeRestore: () => currentObservation,
+    },
+  });
+  const runtime = createFlowRuntime({ runAuthority: authority });
+  const manifest = createBackupManifest(observation);
+  runtime.command({ type: "restore", manifest });
+
+  currentObservation = { ...observation, artifacts: undefined };
+  const missing = runtime.command(runtime.query().restore.legal_actions[0]);
+  const missingProjection = runtime.query();
+  assert.equal(missing.accepted, true);
+  assert.equal(missingProjection.restore.state, "failed");
+  assert.equal(
+    missingProjection.restore.reconciliation.components.find(({ component }) =>
+      component === "artifacts").status,
+    "missing_evidence",
+  );
+  assert.equal(
+    missingProjection.restore.applied_receipt.schema,
+    "flow.restore-receipt/v1",
+  );
+  assert.equal(runtime.launch({}).code, "host_reconciliation_required");
+
+  currentObservation = {
+    ...observation,
+    replacement_authority: { corrupt_suffix: () => {} },
+  };
+  const corrupt = runtime.command(missingProjection.restore.legal_actions[0]);
+  const corruptProjection = runtime.query();
+  assert.equal(corrupt.accepted, true);
+  assert.equal(corruptProjection.restore.state, "failed");
+  assert.equal(
+    corruptProjection.restore.reconciliation.components.find(({ component }) =>
+      component === "replacement_authority").status,
+    "corrupt_evidence",
+  );
+  assert.equal(
+    corruptProjection.restore.applied_receipt.schema,
+    "flow.restore-receipt/v1",
+  );
+
+  currentObservation = observation;
+  const recovered = runtime.command(corruptProjection.restore.legal_actions[0]);
+  const ready = runtime.query();
+  assert.equal(recovered.accepted, true);
+  assert.equal(ready.restore.state, "ready");
+  assert.equal(runtime.command(ready.restore.legal_actions[0]).accepted, true);
+  assert.equal(runtime.query().restore.state, "admitted");
+});
 
 test("a typed capability grant resolves an exact blocked plan without losing grant history", () => {
   const runtime = createTestRuntime();
@@ -300,6 +2134,150 @@ test("runtime admission withholds a revision beyond the declared run cap", () =>
     type === "revision_decision" && decision === "decline"));
 });
 
+test("revision admission projects only closed capacity failures as cap exhaustion", () => {
+  for (const code of [
+    "revision_template_limit_exceeded",
+    "revision_limit_exceeded",
+    "revision_card_limit_exceeded",
+    "card_limit_exceeded",
+    "revision_capability_limit_exceeded",
+    "revision_resource_limit_exceeded",
+    "revision_elapsed_limit_exceeded",
+  ]) {
+    assert.equal(revisionAdmissionStatus(code), "cap_exhausted", code);
+  }
+  for (const code of [
+    "accepted_history_is_immutable",
+    "incomplete_pending_dependent_closure",
+    "active_card_depends_on_superseded_work",
+    "cyclic_graph",
+    "capability_outside_envelope",
+  ]) {
+    assert.equal(revisionAdmissionStatus(code), "structurally_rejected", code);
+  }
+});
+
+test("FlowRuntime projects a repair cap exhaustion with its exact repair outcome", async () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(repairProjectionProposal({
+    max_revisions: 1,
+  }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+  const watcher = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+
+  assert.deepEqual(await watcher.next(), { done: false, value: initial });
+  const firstRevision = initial.legal_actions.find(({ template_id: id,
+    decision }) => id === "repair-a" && decision === "accept");
+  assert.ok(firstRevision);
+  assert.equal(runtime.command(firstRevision).accepted, true);
+
+  const projected = runtime.query({ run_id: launch.run_id });
+  const outcome = projected.revision_outcomes.find(({ template_id: id }) =>
+    id === "repair-b");
+  const decline = projected.legal_actions.find(({ template_id: id, decision }) =>
+    id === "repair-b" && decision === "decline");
+  assert.deepEqual(await watcher.next(), { done: false, value: projected });
+  assert.deepEqual(outcome, {
+    schema: "flow.feature-repair-outcome/v1",
+    status: "cap_exhausted",
+    template_id: "repair-b",
+    base_plan_fingerprint: projected.revisions[0].plan_fingerprint,
+    trigger: prepared.revision_templates[1].trigger,
+    changes: prepared.revision_templates[1].changes,
+    reason: "revision_admission_rejected",
+    code: "revision_limit_exceeded",
+    repair: prepared.revision_templates[1].repair,
+    authority_watermark: projected.watermark,
+    legal_next_actions: [decline],
+  });
+  assert.equal(projected.revision_outcomes.length, 1);
+  assert.equal(projected.legal_actions.some(({ template_id: id, decision }) =>
+    id === "repair-b" && decision === "accept"), false);
+  assert.equal(projected.revisions.length, 1);
+  assert.equal(projected.active_plan.cards.some(({ id }) =>
+    id === "target-b-replacement"), false);
+  assert.equal(projected.cards.find(({ id }) => id === "target-b").status,
+    "blocked");
+  assert.ok(decline);
+  const recordedUpdate = watcher.next();
+  assert.equal(runtime.command(decline).accepted, true);
+  const recorded = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(await recordedUpdate, { done: false, value: recorded });
+  assert.equal(recorded.revision_outcomes.length, 1);
+  assert.equal(recorded.revision_outcomes[0].status, "cap_exhausted");
+  assert.equal(recorded.revision_outcomes[0].code, "revision_limit_exceeded");
+  assert.equal(recorded.revision_outcomes[0].authority_watermark,
+    recorded.watermark);
+  await watcher.return();
+});
+
+test("FlowRuntime projects a structurally rejected repair without partial graph mutation", async () => {
+  const runtime = createTestRuntime();
+  const prepared = runtime.prepare(repairProjectionProposal({
+    shared_replacement: true,
+  }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const initial = runtime.query({ run_id: launch.run_id });
+  const watcher = runtime.watch({ run_id: launch.run_id })[Symbol.asyncIterator]();
+  assert.deepEqual(await watcher.next(), { done: false, value: initial });
+  const firstRevision = initial.legal_actions.find(({ template_id: id,
+    decision }) => id === "repair-a" && decision === "accept");
+  assert.ok(firstRevision);
+  const update = watcher.next();
+  assert.equal(runtime.command(firstRevision).accepted, true);
+
+  const projected = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(await update, { done: false, value: projected });
+  const outcome = projected.revision_outcomes.find(({ template_id: id }) =>
+    id === "repair-b");
+  const decline = projected.legal_actions.find(({ template_id: id, decision }) =>
+    id === "repair-b" && decision === "decline");
+  assert.equal(outcome.status, "structurally_rejected");
+  assert.equal(outcome.code, "revision_card_conflict");
+  assert.deepEqual(outcome.repair, prepared.revision_templates[1].repair);
+  assert.equal(outcome.authority_watermark, projected.watermark);
+  assert.deepEqual(outcome.legal_next_actions, [decline]);
+  assert.equal(outcome.legal_next_actions.some(({ decision }) =>
+    decision === "accept"), false);
+  assert.equal(projected.revision_outcomes.length, 1);
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }).revision_outcomes,
+    projected.revision_outcomes);
+  assert.equal(projected.revisions.length, 1);
+  assert.equal(projected.active_plan.cards.some(({ id }) =>
+    id === "replacement-shared"), true);
+  assert.equal(projected.active_plan.cards.some(({ id }) =>
+    id === "target-b-replacement"), false);
+  assert.equal(projected.cards.find(({ id }) => id === "target-b").status,
+    "blocked");
+  await watcher.return();
+});
+
+test("FlowRuntime max_cards counts active cards across non-repair revision history", () => {
+  const runtime = createTestRuntime();
+  const proposal = repeatedRevisionCheckpointProposal();
+  proposal.explicit_facts.limits.max_cards = 2;
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  let projection = runtime.query({ run_id: launch.run_id });
+
+  for (let ordinal = 1; ordinal <= 2; ordinal += 1) {
+    const action = projection.legal_actions.find(({ decision }) =>
+      decision === "accept");
+    assert.ok(action);
+    assert.equal(runtime.command(action).accepted, true);
+    projection = runtime.query({ run_id: launch.run_id });
+    assert.equal(projection.revisions.length, ordinal);
+    assert.ok(projection.cards.filter(({ status }) =>
+      status !== "superseded").length <= 2);
+    assert.equal(projection.legal_actions.some(({ type, decision }) =>
+      type === "revision_decision" && decision === "accept"), ordinal < 2);
+  }
+  assert.equal(projection.phase, "active");
+  assert.equal(projection.cards.filter(({ status }) => status !== "superseded").length,
+    2);
+});
+
 test("every active checkpoint-only projection exposes a legal action", () => {
   const capped = repeatedRevisionCheckpointProposal();
   capped.explicit_facts.limits.max_revisions = 1;
@@ -544,11 +2522,13 @@ test("prepare returns an immutable content-addressed dynamic graph without creat
   assert.throws(() => {
     prepared.graph.cards[0].id = "changed";
   }, TypeError);
-  assert.deepEqual(runtime.query(), {
-    schema: "flow.run-index-projection/v1",
-    watermark: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    runs: [],
-  });
+  const host = runtime.query();
+  assert.equal(host.schema, "flow.run-index-projection/v1");
+  assert.deepEqual(host.runs, []);
+  assert.equal(host.backup.state, "idle");
+  assert.equal(host.backup.watermark, host.watermark);
+  assert.equal(host.restore.state, "idle");
+  assert.equal(host.restore.watermark, host.watermark);
 
   const equivalentRequest = dynamicCheckpointProposal();
   equivalentRequest.explicit_facts = Object.fromEntries(
@@ -751,6 +2731,27 @@ test("launch rejects self-consistent explicit facts that are not canonical", () 
   assert.deepEqual(runtime.query().runs, []);
 });
 
+test("launch rejects an incompatible prepared result-binding bundle", () => {
+  const runtime = resultBindingRuntime(
+    createInMemoryRunAuthority(),
+    (intent) => operationReceipt(intent, {
+      schema: "test.result/v1",
+      record: "captured",
+    }),
+  );
+  const prepared = structuredClone(
+    runtime.prepare(resultBindingOperationProposal()),
+  );
+  prepared.graph.result_bindings[0].producer_card_id = "missing-producer";
+  rebindPreparedIdentity(prepared);
+
+  const rejection = runtime.launch(confirmedLaunchRequest(prepared));
+
+  assert.equal(rejection.code, "invalid_prepared_bundle");
+  assert.equal(rejection.reason, "invalid_result_binding_declarations");
+  assert.deepEqual(runtime.query().runs, []);
+});
+
 test("launch returns a typed rejection for a null request", () => {
   const runtime = createTestRuntime();
 
@@ -766,6 +2767,663 @@ test("launch returns a typed rejection for a null request", () => {
     authority_watermark_domain: "host",
     legal_actions: [],
   });
+});
+
+test("recorded legacy runs without result bindings remain replayable", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-legacy-replay-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("legacy-replay-boot", "process-a"),
+  });
+  const firstRuntime = createFlowRuntime({ runAuthority: firstAuthority });
+  const prepared = firstRuntime.prepare(dynamicCheckpointProposal());
+  assert.equal(Object.hasOwn(prepared.graph, "result_bindings"), false);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  const before = firstRuntime.query({ run_id: launch.run_id });
+  firstAuthority.close();
+
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("legacy-replay-boot", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = createFlowRuntime({ runAuthority: recoveredAuthority });
+  const replayed = recoveredRuntime.query({ run_id: launch.run_id });
+
+  assert.equal(replayed.plan_fingerprint, before.plan_fingerprint);
+  assert.deepEqual(replayed.cards, before.cards);
+  assert.deepEqual(replayed.result_bindings ?? [], []);
+  assert.deepEqual(
+    replayed.legal_actions.map(({ expected_watermark: _watermark, ...action }) => action),
+    before.legal_actions.map(({ expected_watermark: _watermark, ...action }) => action),
+  );
+  assert.ok(replayed.legal_actions.every(({ expected_watermark }) =>
+    expected_watermark === replayed.watermark));
+});
+
+test("consumer intents retain exact result bindings across durable recovery", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const proposal = resultBindingOperationProposal();
+  proposal.graph.cards[1].limits.max_attempts = 2;
+  let firstConsumerIntent = null;
+  let firstConsumerCalls = 0;
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-result-binding", "process-a"),
+  });
+  const firstRuntime = resultBindingRuntime(firstAuthority, (intent) => {
+    if (intent.card_id === "consume-outcome") {
+      firstConsumerCalls += 1;
+      firstConsumerIntent = structuredClone(intent);
+      throw new Error("consumer receipt lost after invocation");
+    }
+    return operationReceipt(intent, {
+      schema: "test.result/v1",
+      record: "captured",
+    });
+  });
+  const prepared = firstRuntime.prepare(proposal);
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  let projection = firstRuntime.query({ run_id: launch.run_id });
+  const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "record-outcome");
+  assert.equal(firstRuntime.command(producerAction).accepted, true);
+  await until(() => firstRuntime.query({ run_id: launch.run_id }).result_bindings
+    .length === 1);
+  projection = firstRuntime.query({ run_id: launch.run_id });
+  const captured = projection.result_bindings[0];
+  assert.equal(captured.result_identity, digest({
+    schema: "flow.result-identity/v1",
+    producer_card_id: captured.producer_card_id,
+    output_contract: captured.output_contract,
+    expected_schema: captured.expected_schema,
+    observed_schema: captured.observed_schema,
+    attempt_id: captured.attempt_id,
+    provenance: captured.provenance,
+    content_digest: captured.content_digest,
+  }));
+  const consumerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "consume-outcome");
+  const consumerCommand = firstRuntime.command(consumerAction);
+  assert.equal(consumerCommand.accepted, true);
+  const committedIntent = consumerCommand.effect_intents.find(
+    ({ card_id: cardId }) => cardId === "consume-outcome",
+  );
+  assert.deepEqual(
+    committedIntent.operation_input.authority_materialized_result_bindings,
+    [captured],
+  );
+  assert.equal(
+    committedIntent.operation_input.authority_materialized_result_bindings_digest,
+    digest([captured]),
+  );
+  await until(() => firstConsumerCalls === 1);
+  const unresolved = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(unresolved.effects.find(({ card_id: cardId }) =>
+    cardId === "consume-outcome").status, "unresolved");
+  firstAuthority.close();
+
+  let recoveredConsumerIntent = null;
+  let recoveredConsumerCalls = 0;
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-result-binding", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  const recoveredRuntime = resultBindingRuntime(recoveredAuthority, (intent) => {
+    if (intent.card_id === "consume-outcome") {
+      recoveredConsumerCalls += 1;
+      recoveredConsumerIntent = structuredClone(intent);
+      return operationReceipt(intent, {
+        schema: "test.consumer/v1",
+        record: "recovered",
+      });
+    }
+    throw new Error("producer must not be re-invoked during consumer recovery");
+  });
+  projection = recoveredRuntime.query({ run_id: launch.run_id });
+  const recoveryAction = projection.legal_actions.find(({ type, effect_id: effectId }) =>
+    type === "recovery" && effectId === unresolved.effects.find(({ card_id: cardId }) =>
+      cardId === "consume-outcome").effect_id);
+  assert.ok(recoveryAction);
+  const recoveryCommand = recoveredRuntime.command(recoveryAction);
+  assert.equal(recoveryCommand.accepted, true);
+  await until(() => recoveredConsumerCalls === 1);
+  await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  const recovered = recoveredRuntime.query({ run_id: launch.run_id });
+  assert.deepEqual(
+    recoveredConsumerIntent.operation_input.authority_materialized_result_bindings,
+    [captured],
+  );
+  assert.equal(
+    recoveredConsumerIntent.operation_input.authority_materialized_result_bindings_digest,
+    committedIntent.operation_input.authority_materialized_result_bindings_digest,
+  );
+  assert.equal(recovered.result_bindings.length, 1);
+  assert.deepEqual(recovered.result_bindings[0], captured);
+});
+
+test("accepted result-binding revisions settle declarations from the active plan", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-revision-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-revision", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = resultBindingRuntime(
+    authority,
+    (intent) => operationReceipt(intent, {
+      schema: "test.result/v1",
+      record: intent.card_id,
+    }),
+  );
+  const prepared = runtime.prepare(resultBindingRevisionProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(launch.created, true, JSON.stringify(launch));
+  let projection = runtime.query({ run_id: launch.run_id });
+  const revision = projection.legal_actions.find(({ type }) =>
+    type === "revision_decision");
+  assert.ok(revision);
+  assert.equal(runtime.command(revision).accepted, true);
+
+  projection = runtime.query({ run_id: launch.run_id });
+  const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "record-outcome-revised");
+  assert.ok(producerAction);
+  assert.equal(runtime.command(producerAction).accepted, true);
+  await until(() => runtime.query({ run_id: launch.run_id }).result_bindings
+    .some(({ producer_card_id: producerId }) =>
+      producerId === "record-outcome-revised"));
+
+  const captured = runtime.query({ run_id: launch.run_id }).result_bindings;
+  assert.deepEqual(captured.map(({ producer_card_id: producerId }) => producerId), [
+    "record-outcome-revised",
+  ]);
+});
+
+test("prepare returns a typed rejection for an invalid result-binding delta", () => {
+  const runtime = resultBindingRuntime(
+    createInMemoryRunAuthority(),
+    (intent) => operationReceipt(intent, { schema: "test.result/v1" }),
+  );
+  const proposal = resultBindingRevisionProposal();
+  proposal.revision_templates[0].changes.result_binding_changes.add[0]
+    .producer_card_id = "missing-producer";
+
+  assert.throws(
+    () => runtime.prepare(proposal),
+    (error) => {
+      assert.equal(error?.name, "DynamicPlanValidationError", JSON.stringify(error));
+      assert.equal(error?.reason, "invalid_result_binding_delta", JSON.stringify(error));
+      return true;
+    },
+  );
+});
+
+test("zero-declaration consumers reject caller-materialized evidence", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-zero-declaration-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-zero-declaration", "process-a"),
+  });
+  t.after(() => authority.close());
+  let consumerCalls = 0;
+  const runtime = resultBindingRuntime(authority, (intent) => {
+    if (intent.card_id === "consume-outcome") consumerCalls += 1;
+    return operationReceipt(intent, {
+      schema: "test.consumer/v1",
+      record: "must-not-run",
+    });
+  });
+  const proposal = resultBindingOperationProposal();
+  proposal.graph.result_bindings = [];
+  proposal.graph.cards[1].inputs = {
+    value: "consume",
+    authority_materialized_evidence: {
+      forged: true,
+    },
+  };
+  const prepared = runtime.prepare(proposal);
+  const preparedConsumer = prepared.graph.cards.find(({ id }) => id === "consume-outcome");
+  assert.equal(Object.hasOwn(preparedConsumer.inputs, "authority_materialized_evidence"), true);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  let projection = runtime.query({ run_id: launch.run_id });
+  const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "record-outcome");
+  assert.equal(runtime.command(producerAction).accepted, true);
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "record-outcome" && status === "succeeded",
+  ));
+  projection = runtime.query({ run_id: launch.run_id });
+  const consumerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+    cardId === "consume-outcome");
+  assert.ok(consumerAction);
+  const before = projection;
+  const rejection = runtime.command(consumerAction);
+  assert.equal(rejection.code, "caller_materialized_evidence_forbidden");
+  assert.equal(consumerCalls, 0);
+  assert.deepEqual(runtime.query({ run_id: launch.run_id }), before);
+});
+
+test("zero-declaration consumers reject every caller authority materialization field", async (t) => {
+  const fields = [
+    "authority_materialized_evidence",
+    "authority_materialized_candidate",
+    "authority_materialized_candidate_digest",
+    "authority_materialized_result_bindings",
+    "authority_materialized_result_bindings_digest",
+  ];
+  for (const field of fields) {
+    await t.test(field, async (caseContext) => {
+      const authorityDirectory = await mkdtemp(
+        join(tmpdir(), `flow-result-binding-${field}-`),
+      );
+      caseContext.after(() => rm(authorityDirectory, {
+        recursive: true,
+        force: true,
+      }));
+      const authority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity(`result-binding-${field}`, "process-a"),
+      });
+      caseContext.after(() => authority.close());
+      let consumerCalls = 0;
+      const runtime = resultBindingRuntime(authority, (intent) => {
+        if (intent.card_id === "consume-outcome") consumerCalls += 1;
+        return operationReceipt(intent, {
+          schema: "test.consumer/v1",
+          record: "must-not-run",
+        });
+      });
+      const proposal = resultBindingOperationProposal();
+      proposal.graph.result_bindings = [];
+      proposal.graph.cards[1].inputs = {
+        value: "consume",
+        [field]: field.endsWith("digest")
+          ? digest({ field })
+          : field.endsWith("bindings")
+            ? []
+            : { forged: true },
+      };
+      const prepared = runtime.prepare(proposal);
+      const launch = runtime.launch(confirmedLaunchRequest(prepared));
+      let projection = runtime.query({ run_id: launch.run_id });
+      const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "record-outcome");
+      assert.equal(runtime.command(producerAction).accepted, true);
+      await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+        ({ card_id: cardId, status }) =>
+          cardId === "record-outcome" && status === "succeeded",
+      ));
+      projection = runtime.query({ run_id: launch.run_id });
+      const consumerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "consume-outcome");
+      const before = projection;
+      const rejection = runtime.command(consumerAction);
+      assert.equal(rejection.code, "caller_materialized_evidence_forbidden");
+      assert.equal(consumerCalls, 0);
+      assert.deepEqual(runtime.query({ run_id: launch.run_id }), before);
+    });
+  }
+});
+
+test("durable result-binding normalization rejects a forged observed schema", () => {
+  const declaration = {
+    schema: "flow.result-binding/v1",
+    consumer_card_id: "consume-outcome",
+    producer_card_id: "record-outcome",
+    output_contract: "receipt",
+    expected_schema: "test.result/v1",
+  };
+  const provenance = {
+    schema: "flow.result-provenance/v1",
+    run_id: "run:result-schema",
+    effect_id: "effect:result-schema",
+    attempt_id: "run:result-schema:record-outcome:attempt:1",
+    idempotency_key: "operation:result-schema",
+    source_authority_watermark: digest({ schema: "test.watermark/v1" }),
+  };
+  const record = createResultBindingRecord({
+    declaration,
+    content: { schema: declaration.expected_schema, value: "captured" },
+    attemptId: provenance.attempt_id,
+    provenance,
+  });
+  const forged = structuredClone(record);
+  forged.observed_schema = "test.forged-result/v1";
+  forged.content.schema = forged.observed_schema;
+  forged.content_digest = digest(forged.content);
+  forged.result_identity = digest({
+    schema: "flow.result-identity/v1",
+    producer_card_id: forged.producer_card_id,
+    output_contract: forged.output_contract,
+    expected_schema: forged.expected_schema,
+    observed_schema: forged.observed_schema,
+    attempt_id: forged.attempt_id,
+    provenance: forged.provenance,
+    content_digest: forged.content_digest,
+  });
+  const identity = { ...forged };
+  delete identity.binding_digest;
+  delete identity.self_digest;
+  forged.binding_digest = digest(identity);
+  forged.self_digest = forged.binding_digest;
+
+  assert.throws(
+    () => normalizeResultBindingRecord(forged),
+    /result binding record is incomplete or not exact/,
+  );
+});
+
+test("result binding consumers reject invalid or stale records before Adapter invocation", async (t) => {
+  const cases = [
+    {
+      name: "missing producer result",
+      expectedCode: "authority_result_missing",
+      mutateFold(fold) {
+        return { ...fold, result_bindings: [] };
+      },
+    },
+    {
+      name: "undeclared dependency output",
+      expectedCode: "authority_result_undeclared",
+      configure(proposal) {
+        proposal.graph.cards[1].inputs.operation_evidence_card_ids.push(
+          "unlisted-output",
+        );
+      },
+    },
+    {
+      name: "conflicting declaration identity",
+      expectedCode: "authority_result_declaration_invalid",
+      configure(proposal) {
+        proposal.graph.result_bindings.push(
+          structuredClone(proposal.graph.result_bindings[0]),
+        );
+      },
+    },
+    {
+      name: "ambiguous producer records",
+      expectedCode: "authority_result_ambiguous",
+      mutateFold(fold, captured) {
+        return { ...fold, result_bindings: [captured, captured] };
+      },
+    },
+    {
+      name: "wrong producer",
+      expectedCode: "authority_result_wrong_producer",
+      configure(proposal) {
+        proposal.graph.result_bindings[0].producer_card_id =
+          "unknown-producer";
+        proposal.graph.cards[1].inputs.operation_evidence_card_ids = [
+          "unknown-producer",
+        ];
+      },
+    },
+    {
+      name: "wrong output contract",
+      expectedCode: "authority_result_wrong_output",
+      configure(proposal) {
+        proposal.graph.result_bindings[0].output_contract = "other-output";
+      },
+    },
+    {
+      name: "wrong observed schema",
+      expectedCode: "authority_result_schema_mismatch",
+      mutateFold(fold, captured) {
+        const wrongSchema = {
+          ...captured,
+          observed_schema: "test.wrong-result/v1",
+          content: {
+            ...captured.content,
+            schema: "test.wrong-result/v1",
+          },
+        };
+        return { ...fold, result_bindings: [wrongSchema] };
+      },
+    },
+    {
+      name: "stale producer generation",
+      expectedCode: "authority_result_stale",
+      staleFence: { generation: 2, mutationEpoch: 7 },
+    },
+    {
+      name: "stale workspace mutation epoch",
+      expectedCode: "authority_result_stale",
+      staleFence: { generation: 1, mutationEpoch: 8 },
+    },
+    {
+      name: "superseded producer",
+      expectedCode: "authority_result_superseded",
+      mutateFold(fold) {
+        return {
+          ...fold,
+          superseded_cards: [...fold.superseded_cards, "record-outcome"],
+        };
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (caseContext) => {
+      const authorityDirectory = await mkdtemp(
+        join(tmpdir(), "flow-result-binding-rejection-"),
+      );
+      caseContext.after(() => rm(authorityDirectory, {
+        recursive: true,
+        force: true,
+      }));
+      const proposal = resultBindingOperationProposal();
+      scenario.configure?.(proposal);
+      let captured = null;
+      let consumerCalls = 0;
+      let producerCalls = 0;
+      const lifecycleKernel = (fold, command) => {
+        let materializationFold = fold;
+        if (command.type === "operation_execute" &&
+            command.card_id === "consume-outcome") {
+          if (scenario.staleFence !== undefined) {
+            const workspaceClaim = {
+              kind: "workspace",
+              id: "workspace:result-binding",
+              generation: scenario.staleFence.generation,
+              mutation_epoch: scenario.staleFence.mutationEpoch,
+              fingerprint: digest({ schema: "test.workspace/v1" }),
+            };
+            const record = createResultBindingRecord({
+              declaration: proposal.graph.result_bindings[0],
+              content: captured.content,
+              attemptId: captured.attempt_id,
+              provenance: captured.provenance,
+              producerGeneration: 1,
+              workspaceMutationEpoch: 7,
+            });
+            materializationFold = {
+              ...fold,
+              active_plan: {
+                ...fold.active_plan,
+                cards: fold.active_plan.cards.map((card) =>
+                  card.id === "record-outcome"
+                    ? { ...card, resource_claims: [workspaceClaim] }
+                    : card),
+              },
+              result_bindings: [record],
+            };
+          } else if (scenario.mutateFold !== undefined) {
+            materializationFold = scenario.mutateFold(fold, captured);
+          }
+        }
+        return decideLifecycle(materializationFold, command);
+      };
+      const authority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity(
+          `result-binding-${scenario.name.replaceAll(" ", "-")}`,
+          "process-a",
+        ),
+        lifecycleKernel,
+      });
+      caseContext.after(() => authority.close());
+      const runtime = resultBindingRuntime(authority, (intent) => {
+        if (intent.card_id === "consume-outcome") {
+          consumerCalls += 1;
+          return operationReceipt(intent, {
+            schema: "test.consumer/v1",
+            record: "must-not-run",
+          });
+        }
+        producerCalls += 1;
+        const providerReceipt = Object.hasOwn(scenario, "providerReceipt")
+          ? scenario.providerReceipt
+          : {
+            schema: "test.result/v1",
+            record: "captured",
+          };
+        return operationReceipt(intent, providerReceipt);
+      });
+      if (scenario.configure !== undefined) {
+        const before = runtime.query();
+        assert.throws(
+          () => runtime.prepare(proposal),
+          (error) => error?.name === "DynamicPlanValidationError" &&
+            error.reason === "invalid_result_binding_declarations",
+        );
+        assert.deepEqual(runtime.query(), before);
+        assert.equal(consumerCalls, 0);
+        assert.equal(producerCalls, 0);
+        return;
+      }
+      const prepared = runtime.prepare(proposal);
+      const launch = runtime.launch(confirmedLaunchRequest(prepared));
+      let projection = runtime.query({ run_id: launch.run_id });
+      const producerAction = projection.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "record-outcome");
+      assert.ok(producerAction);
+      assert.equal(runtime.command(producerAction).accepted, true);
+      await until(() => {
+        projection = runtime.query({ run_id: launch.run_id });
+        return projection.effects.find(({ card_id: cardId }) =>
+          cardId === "record-outcome")?.status === "succeeded";
+      });
+      projection = runtime.query({ run_id: launch.run_id });
+      captured = projection.result_bindings[0] ?? null;
+      if (scenario.staleFence !== undefined ||
+          scenario.mutateFold !== undefined) {
+        assert.ok(captured);
+      }
+      const before = projection;
+      const consumerAction = before.legal_actions.find(({ card_id: cardId }) =>
+        cardId === "consume-outcome");
+      assert.ok(consumerAction);
+      const rejection = runtime.command(consumerAction);
+      assert.equal(rejection.code, scenario.expectedCode);
+      assert.equal(consumerCalls, 0);
+      assert.equal(producerCalls, 1);
+      assert.deepEqual(runtime.query({ run_id: launch.run_id }), before);
+    });
+  }
+});
+
+test("exact duplicate producer settlement is rejected without a second binding", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-duplicate-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-duplicate", "process-a"),
+  });
+  t.after(() => authority.close());
+  const runtime = resultBindingRuntime(authority, (intent) =>
+    operationReceipt(intent, {
+      schema: "test.result/v1",
+      record: "captured",
+    }));
+  const prepared = runtime.prepare(resultBindingOperationProposal());
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const producerAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ card_id: cardId }) => cardId === "record-outcome",
+  );
+  const producerCommand = runtime.command(producerAction);
+  const [producerIntent] = producerCommand.effect_intents;
+  await until(() => runtime.query({ run_id: launch.run_id }).result_bindings
+    .length === 1);
+  const before = runtime.query({ run_id: launch.run_id });
+  await assert.rejects(
+    () => authority.invokeEffect(producerIntent, {
+      invoke() {
+        throw new Error("duplicate settlement must not invoke Adapter");
+      },
+    }),
+    (error) => error.code === "effect_already_recorded",
+  );
+  const after = runtime.query({ run_id: launch.run_id });
+  assert.deepEqual(after.result_bindings, before.result_bindings);
+  assert.equal(after.result_bindings.length, 1);
+  assert.deepEqual(after.effects, before.effects);
+});
+
+test("late successful settlement after cancellation cannot capture a result binding", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-result-binding-late-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("result-binding-late", "process-a"),
+  });
+  t.after(() => authority.close());
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let producerInvocations = 0;
+  const runtime = createFlowRuntime({
+    runAuthority: authority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke(intent) {
+          producerInvocations += 1;
+          return pending.then(() => operationReceipt(intent, {
+            schema: "test.result/v1",
+            record: "late",
+          }));
+        },
+      },
+    },
+  });
+  const proposal = resultBindingOperationProposal();
+  proposal.requested_authority.commands.push("cancel");
+  const prepared = runtime.prepare(proposal);
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  const producerAction = runtime.query({ run_id: launch.run_id }).legal_actions.find(
+    ({ card_id: cardId }) => cardId === "record-outcome",
+  );
+  const producerCommand = runtime.command(producerAction);
+  const [producerIntent] = producerCommand.effect_intents;
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, invocation_started: invocationStarted }) =>
+      cardId === "record-outcome" && invocationStarted,
+  ));
+  const beforeCancel = runtime.query({ run_id: launch.run_id });
+  const cancel = beforeCancel.legal_actions.find(({ type }) => type === "cancel");
+  assert.ok(cancel);
+  assert.equal(runtime.command(cancel).accepted, true);
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "cancelled");
+
+  release();
+  await until(() => runtime.query({ run_id: launch.run_id }).effects.some(
+    ({ card_id: cardId, status }) =>
+      cardId === "record-outcome" && status === "late_succeeded",
+  ));
+  const late = runtime.query({ run_id: launch.run_id });
+  assert.equal(producerInvocations, 1);
+  assert.deepEqual(late.result_bindings, []);
+  assert.equal(late.cards.find(({ id }) => id === "consume-outcome").status,
+    "abandoned");
 });
 
 test("launch rejects unsigned fields on the prepared envelope", () => {
@@ -910,6 +3568,24 @@ test("query dispatches registered contracts through the five-operation runtime",
     }), unsupportedQuery);
   }
   assert.equal(runtime.query().schema, "flow.run-index-projection/v1");
+});
+
+test("registered backup and restore queries expose watermarked idle projections", () => {
+  const runtime = createFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+  });
+  const host = runtime.query();
+
+  assert.deepEqual(runtime.query({
+    schema: "flow.query/v1",
+    query: "backup",
+  }), host.backup);
+  assert.deepEqual(runtime.query({
+    schema: "flow.query/v1",
+    query: "restore",
+  }), host.restore);
+  assert.equal(host.backup.watermark, host.watermark);
+  assert.equal(host.restore.watermark, host.watermark);
 });
 
 test("a typed checkpoint command completes the authority-derived run", () => {
@@ -1230,11 +3906,173 @@ test("watch streams the current and next watermarked authority projections", asy
   assert.deepEqual(await iterator.return(), { done: true, value: undefined });
 });
 
+test("public FlowRuntime exposes an authority-derived review inbox projection", () => {
+  const runtime = createTestRuntime();
+  const projection = runtime.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+  });
+
+  assert.equal(projection.schema, "flow.review-inbox-projection/v1");
+  assert.equal(projection.authority, "ReviewAuthority");
+  assert.deepEqual(projection.items, []);
+  assert.deepEqual(projection.legal_actions, []);
+});
+
+test("public review inbox query and watch reject closed-schema extras", async () => {
+  const runtime = createTestRuntime();
+  const queryRejection = runtime.query({
+    schema: "flow.query/v1",
+    query: "review_inbox",
+    undocumented: true,
+  });
+  assert.equal(queryRejection.schema, "flow.rejection/v1");
+  assert.equal(queryRejection.operation, "query");
+  assert.equal(queryRejection.code, "invalid_review_query");
+
+  const watcher = runtime.watch({
+    schema: "flow.watch/v1",
+    query: "review_inbox",
+    undocumented: true,
+  });
+  assert.deepEqual(await watcher.next(), {
+    done: false,
+    value: {
+      ...queryRejection,
+      operation: "watch",
+    },
+  });
+  await watcher.return();
+
+  const malformedQuery = runtime.query({ query: "review_inbox" });
+  assert.equal(malformedQuery.code, "invalid_review_query");
+  const malformedWatcher = runtime.watch({ query: "review_inbox" });
+  const malformedObservation = await malformedWatcher.next();
+  assert.equal(malformedObservation.done, false);
+  assert.equal(malformedObservation.value.code, "invalid_review_query");
+  await malformedWatcher.return();
+});
+
 function createTestRuntime(options = {}) {
   return createFlowRuntime({
     ...options,
     runAuthority: createInMemoryRunAuthority(),
   });
+}
+
+function resultBindingOperationProposal() {
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  const producer = proposal.graph.cards[0];
+  const consumer = {
+    ...structuredClone(producer),
+    id: "consume-outcome",
+    dependencies: ["record-outcome"],
+    inputs: {
+      operation_evidence_card_ids: ["record-outcome"],
+      value: "consume",
+    },
+  };
+  proposal.graph.cards = [producer, consumer];
+  proposal.graph.result_bindings = [{
+    schema: "flow.result-binding/v1",
+    consumer_card_id: "consume-outcome",
+    producer_card_id: "record-outcome",
+    output_contract: "receipt",
+    expected_schema: "test.result/v1",
+  }];
+  proposal.explicit_facts.limits.max_cards = 2;
+  return proposal;
+}
+
+function resultBindingRevisionProposal() {
+  const proposal = resultBindingOperationProposal();
+  const producer = proposal.graph.cards[0];
+  const consumer = proposal.graph.cards[1];
+  const revisedProducer = {
+    ...structuredClone(producer),
+    id: "record-outcome-revised",
+    replaces_card_id: producer.id,
+  };
+  const revisedConsumer = {
+    ...structuredClone(consumer),
+    id: "consume-outcome-revised",
+    replaces_card_id: consumer.id,
+    dependencies: [revisedProducer.id],
+    inputs: {
+      ...structuredClone(consumer.inputs),
+      operation_evidence_card_ids: [revisedProducer.id],
+    },
+  };
+  const revisedDeclaration = {
+    ...structuredClone(proposal.graph.result_bindings[0]),
+    consumer_card_id: revisedConsumer.id,
+    producer_card_id: revisedProducer.id,
+  };
+  const trigger = {
+    schema: "flow.revision-trigger/v1",
+    type: "plan_revision_required",
+    code: "result_binding_revision_required",
+  };
+  proposal.requested_authority.commands.push("revision_decision");
+  proposal.explicit_facts.operation_contracts.push(
+    "flow.adapter/card-block-observation/v1",
+  );
+  proposal.explicit_facts.validator_contracts.push(
+    "flow.validator/card-block-observation/v1",
+  );
+  proposal.explicit_facts.limits.max_revisions = 1;
+  proposal.explicit_facts.limits.max_cards_per_revision = 2;
+  proposal.explicit_facts.block_observations.push(observeCardBlock({
+    card_id: producer.id,
+    block: {
+      schema: "flow.card-block/v1",
+      id: "record-outcome:revision",
+      type: "plan_revision_required",
+      trigger,
+      required_capabilities: [],
+      revision_template_ids: ["replace-result-binding-cards"],
+    },
+  }));
+  proposal.revision_templates = [{
+    schema: "flow.plan-revision-template/v1",
+    id: "replace-result-binding-cards",
+    trigger,
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [revisedProducer, revisedConsumer],
+      add_edges: [],
+      supersede_cards: [producer.id, consumer.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+      result_binding_changes: {
+        schema: "flow.result-binding-delta/v1",
+        add: [revisedDeclaration],
+        remove: [proposal.graph.result_bindings[0]],
+      },
+    },
+  }];
+  return proposal;
+}
+
+function resultBindingRuntime(runAuthority, invoke) {
+  return createFlowRuntime({
+    runAuthority,
+    registeredOperations: {
+      [TEST_OPERATION_CONTRACT]: {
+        classification: "caller_idempotent",
+        invoke,
+      },
+    },
+  });
+}
+
+async function until(condition) {
+  for (let index = 0; index < 100; index += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("condition did not become true");
 }
 
 function assertEveryActiveProjectionIsActionable(proposal, path = [], seen = []) {
@@ -1308,4 +4146,157 @@ function rebindPreparedIdentity(prepared) {
 function rebindBlockObservation(observation) {
   const { schema: _schema, evidence_digest: _digest, ...evidence } = observation;
   observation.evidence_digest = digest(evidence);
+}
+
+function repairProjectionProposal({
+  max_revisions: maxRevisions = 2,
+  shared_replacement: sharedReplacement = false,
+} = {}) {
+  const brief = {
+    schema: "flow.feature-brief/v1",
+    id: "brief:repair-projection",
+    summary: "Exercise repair projection admission",
+    acceptance: ["the repair projection is observable"],
+  };
+  const workspace = {
+    schema: "flow.feature-workspace-binding/v1",
+    subject_id: "workspace:repair-projection",
+    generation: 1,
+    mutation_epoch: 1,
+    fingerprint: digest({ schema: "test.workspace/v1" }),
+  };
+  const checkpoint = (id) => ({
+    id,
+    executor: {
+      kind: "checkpoint",
+      contract: "flow.checkpoint/confirmation/v1",
+    },
+    dependencies: [],
+    inputs: {
+      prompt: `Confirm ${id}`,
+      phase: "seal",
+      brief,
+      workspace,
+    },
+    outputs: [],
+    success_criteria: ["decision:approve"],
+    validators: ["flow.validator/checkpoint-decision/v1"],
+    data_references: [],
+    evidence_references: [],
+    route: null,
+    limits: {},
+    resource_claims: [],
+    recovery: "human_decision",
+  });
+  const graphCards = [checkpoint("target-a"), checkpoint("target-b")];
+  const templates = graphCards.map((card, index) => ({
+    schema: "flow.plan-revision-template/v1",
+    id: `repair-${index === 0 ? "a" : "b"}`,
+    trigger: {
+      schema: "flow.revision-trigger/v1",
+      type: "plan_revision_required",
+      code: `${card.id}_repair_required`,
+    },
+    limits: { max_applications: 1 },
+    changes: {
+      add_cards: [{
+        ...structuredClone(card),
+        id: sharedReplacement
+          ? "replacement-shared"
+          : `${card.id}-replacement`,
+        replaces_card_id: card.id,
+      }],
+      add_edges: [],
+      supersede_cards: [card.id],
+      capability_additions: [],
+      resource_additions: [],
+      limit_changes: {},
+    },
+    repair: {
+      schema: "flow.feature-repair/v1",
+      id: `repair:${card.id}`,
+      kind: "replan",
+      card_id: card.id,
+      acceptance: [...brief.acceptance],
+      remaining_scope: [`repair ${card.id}`],
+      scope_expansion: false,
+      checkpoint_id: null,
+    },
+  }));
+  const blockObservations = graphCards.map((card, index) =>
+    observeCardBlock({
+      card_id: card.id,
+      block: {
+        schema: "flow.card-block/v1",
+        id: `${card.id}:repair`,
+        type: "plan_revision_required",
+        trigger: templates[index].trigger,
+        required_capabilities: [],
+        revision_template_ids: [templates[index].id],
+      },
+    }));
+  return {
+    schema: "flow.dynamic-plan-proposal/v1",
+    graph: {
+      schema: "flow.run-plan/v1",
+      cards: graphCards,
+    },
+    requested_authority: {
+      commands: ["checkpoint_decision", "revision_decision"],
+      capabilities: [],
+      mutations: [],
+    },
+    explicit_facts: {
+      catalog_fingerprint: `sha256:${"1".repeat(64)}`,
+      route_snapshot: {
+        watermark: `sha256:${"2".repeat(64)}`,
+        bindings: [],
+      },
+      capability_envelopes: [],
+      operation_contracts: ["flow.adapter/card-block-observation/v1"],
+      validator_contracts: [
+        "flow.validator/checkpoint-decision/v1",
+        "flow.validator/card-block-observation/v1",
+      ],
+      block_observations: blockObservations,
+      time_facts: [
+        {
+          schema: "flow.time-fact/v1",
+          kind: "wall_clock",
+          value_ms: 1_700_000_000_000,
+          uncertainty_ms: 0,
+          clock_source_id: "wall:repair-projection",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "suspend_excluding_monotonic",
+          value_ns: "1000000000",
+          uncertainty_ns: "0",
+          clock_source_id: "mono:repair-projection",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "boot",
+          boot_id: "boot:repair-projection",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "clock_source",
+          identity: "clock:repair-projection",
+        },
+      ],
+      subject_generations: [],
+      elapsed_seconds: 0,
+      limits: {
+        max_cards: 2,
+        max_revisions: maxRevisions,
+        max_cards_per_revision: 1,
+        max_capabilities: 0,
+        max_resources: 0,
+        max_elapsed_seconds: 0,
+      },
+      resource_claims: [],
+    },
+    revision_templates: templates,
+  };
 }

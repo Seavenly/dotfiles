@@ -3,6 +3,7 @@ export function createProjectionWatcher({
   close,
   readProjection = null,
   pollInterval = 10,
+  unrefPollTimer = false,
 }) {
   const queue = [initialProjection];
   const waiters = [];
@@ -50,6 +51,7 @@ export function createProjectionWatcher({
       publishChanged(readProjection(), true);
       schedulePoll();
     }, pollInterval);
+    if (unrefPollTimer) pollTimer.unref?.();
   }
 
   function publishChanged(projection, suppressDuplicate) {
@@ -84,5 +86,8 @@ export function createOneShotWatcher(result) {
 }
 
 function projectionWatermark(projection) {
+  if (projection?.host_reconciliation?.active === true) {
+    return projection.host_reconciliation.watermark;
+  }
   return projection.watermark ?? projection.authority_watermark ?? null;
 }

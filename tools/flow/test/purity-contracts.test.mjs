@@ -108,6 +108,7 @@ test("pure module imports cannot acquire ambient capabilities", () => {
     resolve(sourceDirectory, "plan-compiler.mjs"),
     resolve(sourceDirectory, "lifecycle-kernel.mjs"),
     resolve(sourceDirectory, "projection-builder.mjs"),
+    resolve(sourceDirectory, "evidence-safety.mjs"),
   ]));
 
   assert.throws(

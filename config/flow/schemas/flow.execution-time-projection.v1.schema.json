@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.execution-time-projection.v1.schema.json",
+  "title": "flow.execution-time-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "max_elapsed_seconds",
+    "wall_elapsed_seconds",
+    "active_elapsed_seconds"
+  ],
+  "properties": {
+    "schema": { "const": "flow.execution-time-projection/v1" },
+    "status": {
+      "enum": ["unobserved", "within", "uncertain", "exhausted"]
+    },
+    "reason": {
+      "enum": [
+        "baseline_unavailable",
+        "observation_unavailable",
+        "time_fact_mismatch",
+        "active_time_uncertain",
+        "attempt_deadline_uncertain",
+        "attempt_deadline_exhausted",
+        "wall_deadline_uncertain",
+        "wall_deadline_exhausted"
+      ]
+    },
+    "max_elapsed_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "wall_elapsed_seconds": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/bounds" }
+      ]
+    },
+    "active_elapsed_seconds": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/bounds" }
+      ]
+    }
+  },
+  "$defs": {
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lower", "upper"],
+      "properties": {
+        "lower": { "type": "number", "minimum": 0 },
+        "upper": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

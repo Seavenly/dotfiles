@@ -7,15 +7,16 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createFlowRuntime } from "../src/flow-runtime.mjs";
+import { createBackupManifest } from "../src/backup-restore.mjs";
 import {
   createGitRetentionAdapter,
   createGitWorkspaceObservationAdapter,
 } from "../src/git-retention-adapter.mjs";
-import { createDurableRunAuthority } from "../src/run-authority.mjs";
 import {
   buildHumanAuthorityBinding,
   foldWorkStream,
   getArtifactAuthority,
+  getReviewAuthority,
   getResourceHandoffAuthority,
   getWorkspaceAuthority,
 } from "../src/work-authority.mjs";
@@ -28,9 +29,117 @@ import {
   registeredOperationProposal,
   TEST_OPERATION_CONTRACT,
 } from "../test-support/registered-operation.mjs";
+import {
+  createFixedTimeDurableRunAuthority as createDurableRunAuthority,
+} from
+  "../test-support/fixed-host-identity.mjs";
 import { withoutViewWatermarks } from "../test-support/projection-assertions.mjs";
 
 const CLEANUP_OPERATION_CONTRACT = "flow.operation/resource-cleanup/v1";
+const RESTORE_WRITER = Object.freeze({
+  restore: () => ({ provider_receipt_id: "restore/test" }),
+});
+
+test("a host restore barrier fences Work-domain mutation until admission", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-restore-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{ id: "host:runs", suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      git_state: {
+        commit: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        tree: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        clean: true,
+      },
+      filesystem_state: [{ path: "/state/authority.sqlite", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
+    hostIdentityAdapter: fixedHostIdentity("restore-boot", "restore-process"),
+  });
+  t.after(() => runAuthority.close());
+  const runtime = createFlowRuntime({ runAuthority });
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  const registration = workspaceRegistration();
+  assert.equal(workspaceAuthority.command(registration).accepted, true);
+
+  const manifest = createBackupManifest(observation);
+  assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+  const blocked = workspaceAuthority.command({
+    ...workspaceRegistration(),
+    command_id: "workspace:blocked-during-restore",
+  });
+  assert.equal(blocked.code, "host_reconciliation_required");
+  assert.deepEqual(blocked.legal_actions, runtime.query().restore.legal_actions);
+
+  const reconciled = runtime.command(runtime.query().restore.legal_actions[0]);
+  assert.equal(reconciled.accepted, true);
+  assert.equal(runtime.command(runtime.query().restore.legal_actions[0]).accepted, true);
+  assert.equal(workspaceAuthority.query(workspaceQuery()).schema,
+    "work.workspace-projection/v1");
+});
+
+test("a reentrant workspace Git observation cannot cross a restore barrier", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-reentrant-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const observation = {
+    replacement_authority: {
+      database_streams: [{
+        id: "host:runs",
+        suffix: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }],
+      git_state: {
+        commit: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        tree: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        clean: true,
+      },
+      filesystem_state: [],
+    },
+    artifacts: [],
+    legacy_roots: [],
+    external_pointers: [],
+    drovr_obligations: [],
+  };
+  const manifest = createBackupManifest(observation);
+  let runtime;
+  let restoreEntered = false;
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    backupRestoreAdapter: { ...RESTORE_WRITER, observeRestore: () => observation },
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: {
+      observe() {
+        if (!restoreEntered) {
+          restoreEntered = true;
+          assert.equal(runtime.command({ type: "restore", manifest }).accepted, true);
+        }
+        return {
+          schema: "work.git-observation/v1",
+          git: exactGitFacts(),
+        };
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("work-reentrant-boot", "process-a"),
+  });
+  t.after(() => runAuthority.close());
+  runtime = createFlowRuntime({ runAuthority });
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+
+  const rejected = workspaceAuthority.command(workspaceRegistration());
+
+  assert.equal(rejected.code, "host_reconciliation_required");
+  assert.equal(runtime.query().restore.active, true);
+  assert.equal(workspaceAuthority.query(workspaceQuery()).code,
+    "unknown_subject");
+});
 
 test("obsolete handoff cleanup cannot release a newer workspace generation", () => {
   const generationTwoGit = promotedGitFacts();
@@ -206,6 +315,30 @@ test("WorkspaceAuthority and ArtifactAuthority register exact durable subjects",
   assert.equal(getArtifactAuthority({ runAuthority: inspector }).command(
     artifactRegistration(Buffer.from("inspect-only\n"), sha256(Buffer.from("inspect-only\n"))),
   ).code, "mutation_authority_unavailable");
+});
+
+test("ReviewAuthority reserves candidate sealing for atomic RunAuthority finalization", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-authority-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: deterministicGitWorkspaceObservationAdapter(),
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "review-process"),
+  });
+  t.after(() => runAuthority.close());
+  const reviewAuthority = getReviewAuthority({ runAuthority });
+  assert.equal(reviewAuthority.schema, "work.review-authority/v1");
+
+  const command = reviewCandidateSealCommand();
+  const rejected = reviewAuthority.command(command);
+  assert.equal(rejected.code, "review_candidate_seal_requires_run_authority");
+  assert.deepEqual(rejected.legal_actions, []);
+  const projection = reviewAuthority.query({
+    contract: "work.review/v1",
+    subject_id: command.subject_id,
+  });
+  assert.equal(projection.code, "unknown_subject");
 });
 
 test("WorkspaceAuthority fences concurrent writers by generation and fingerprint", async (t) => {
@@ -576,14 +709,14 @@ test("FlowRuntime executes an exact eligible cleanup through its registered Adap
 
   const freshAction = workspaceAuthority.previewCleanup(workspaceQuery())
     .legal_actions[0];
-  const proposal = cleanupOperationProposal(freshAction);
+  const proposal = cleanupOperationProposal(freshAction, { maxAttempts: 2 });
   const prepared = runtime.prepare(proposal);
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
   runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions[0]);
   await until(() => runtime.query({ run_id: launch.run_id }).effects.length === 1);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(runtime.query({ run_id: launch.run_id }).effects[0].status,
-    "unresolved");
+    "reconciling");
   assert.equal(workspaceAuthority.query(workspaceQuery()).taint.reason,
     "resource_cleanup_in_flight");
   runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions
@@ -966,6 +1099,157 @@ test("cancellation retains a quarantined mutation lease despite a released sibli
     contract: "flow.resource-handoff/v1",
     subject_id: handoffId,
   }).consumer_pins.some(({ run_id: runId }) => runId === consumer.run_id), true);
+});
+
+test("WorkspaceAuthority records a clean external Git advance only while unclaimed", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-work-observe-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let observedGit = exactGitFacts();
+  const runAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    gitRetentionAdapter: deterministicGitRetentionAdapter(),
+    gitWorkspaceObservationAdapter: {
+      observe() {
+        return {
+          schema: "work.git-observation/v1",
+          git: observedGit,
+        };
+      },
+    },
+    hostIdentityAdapter: fixedHostIdentity("boot-observe", "observe-process"),
+  });
+  t.after(() => runAuthority.close());
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  assert.equal(workspaceAuthority.command(workspaceRegistration()).accepted, true);
+  const before = workspaceAuthority.query(workspaceQuery());
+  observedGit = {
+    ...observedGit,
+    commit_sha: "3".repeat(40),
+    tree_sha: "4".repeat(40),
+    ref: "refs/heads/ticket/advanced",
+  };
+  const receipt = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:advanced",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: before.watermark,
+    expected_generation: before.generation,
+    expected_mutation_epoch: before.mutation_epoch,
+    expected_fingerprint: digestValue({ git: before.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(receipt.accepted, true, JSON.stringify(receipt));
+  const after = workspaceAuthority.query(workspaceQuery());
+  assert.equal(after.generation, before.generation + 1);
+  assert.equal(after.mutation_epoch, before.mutation_epoch + 1);
+  assert.deepEqual(after.git, observedGit);
+  assert.equal(after.claims.length, 0);
+  assert.equal(after.taint, null);
+
+  const unchanged = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:unchanged",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: after.watermark,
+    expected_generation: after.generation,
+    expected_mutation_epoch: after.mutation_epoch,
+    expected_fingerprint: digestValue({ git: after.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(unchanged.code, "workspace_observation_unchanged");
+  assert.deepEqual(workspaceAuthority.query(workspaceQuery()), after);
+
+  const claimReceipt = workspaceAuthority.command(workspaceClaim({
+    expectedGeneration: after.generation,
+    expectedWatermark: after.watermark,
+    expectedFingerprint: digestValue({ git: after.git }),
+    commandId: "workspace-claim:observe-fence",
+    holder: "run:observe-fence",
+  }));
+  assert.equal(claimReceipt.accepted, true);
+  const claimedBeforeObservation = workspaceAuthority.query(workspaceQuery());
+  observedGit = {
+    ...observedGit,
+    commit_sha: "5".repeat(40),
+    tree_sha: "6".repeat(40),
+  };
+  const claimed = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:claimed",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: claimedBeforeObservation.watermark,
+    expected_generation: claimedBeforeObservation.generation,
+    expected_mutation_epoch: claimedBeforeObservation.mutation_epoch,
+    expected_fingerprint: digestValue({ git: claimedBeforeObservation.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(claimed.code, "workspace_already_claimed");
+
+  const releasedClaim = workspaceAuthority.query(workspaceQuery()).legal_actions
+    .find(({ type }) => type === "workspace_claim_release");
+  assert.equal(workspaceAuthority.command(releasedClaim).accepted, true);
+  const cleanBeforeDirtyObservation = workspaceAuthority.query(workspaceQuery());
+  observedGit = {
+    ...observedGit,
+    commit_sha: "7".repeat(40),
+    tree_sha: "8".repeat(40),
+    clean: false,
+  };
+  const dirty = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:dirty",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: cleanBeforeDirtyObservation.watermark,
+    expected_generation: cleanBeforeDirtyObservation.generation,
+    expected_mutation_epoch: cleanBeforeDirtyObservation.mutation_epoch,
+    expected_fingerprint: digestValue({ git: cleanBeforeDirtyObservation.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(dirty.code, "workspace_dirty");
+  assert.deepEqual(workspaceAuthority.query(workspaceQuery()),
+    cleanBeforeDirtyObservation);
+
+  assert.equal(workspaceAuthority.command(
+    workspaceTaint(cleanBeforeDirtyObservation.watermark),
+  ).accepted, true);
+  const taintedBeforeObservation = workspaceAuthority.query(workspaceQuery());
+  observedGit = { ...observedGit, clean: true };
+  const tainted = workspaceAuthority.command({
+    schema: "work.workspace-observation-command/v1",
+    command_id: "workspace-observe:producer:tainted",
+    type: "workspace_observe",
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+    expected_watermark: taintedBeforeObservation.watermark,
+    expected_generation: taintedBeforeObservation.generation,
+    expected_mutation_epoch: taintedBeforeObservation.mutation_epoch,
+    expected_fingerprint: digestValue({ git: taintedBeforeObservation.git }),
+    git_observation: {
+      schema: "work.git-observation/v1",
+      git: observedGit,
+    },
+  });
+  assert.equal(tainted.code, "workspace_tainted");
 });
 
 test("a later run pins and rechecks a retained handoff after the producer disappears", async (t) => {
@@ -1375,6 +1659,108 @@ test("a later run pins and rechecks a retained handoff after the producer disapp
   }).status, "collected");
 });
 
+function reviewCandidateSealCommand({
+  commandId = "review-seal:candidate",
+  expectedGeneration = 0,
+  candidateFingerprint = null,
+  git = exactGitFacts(),
+} = {}) {
+  const verificationIdentity = {
+    schema: "work.feature-verification-receipt/v1",
+    brief_id: "brief:local",
+    acceptance_criteria: [{
+      criterion: "the local candidate is ready for review",
+      evidence_digest: `sha256:${"7".repeat(64)}`,
+      verdict: "passed",
+    }],
+    discriminating_evidence: {
+      schema: "flow.feature-discriminating-evidence/v1",
+      kind: "safe_baseline",
+      selected_fingerprint: `sha256:${"3".repeat(64)}`,
+      post_mutation_fingerprint: digestValue({ git }),
+      distinguished: true,
+    },
+    selected_evidence_fingerprint: `sha256:${"3".repeat(64)}`,
+    workspace: {
+      subject_id: "workspace:producer",
+      generation: 1,
+      mutation_epoch: 7,
+      fingerprint: digestValue({ git }),
+      git: { ...git },
+    },
+    source_authority_watermark: `sha256:${"8".repeat(64)}`,
+    operation_contract: "flow.operation/feature-verify/v1",
+    effect_id: "effect:verify",
+    attempt_id: "attempt:verify",
+    idempotency_key: "idempotency:verify",
+  };
+  const verification = {
+    ...verificationIdentity,
+    receipt_digest: digestValue(verificationIdentity),
+    self_digest: digestValue(verificationIdentity),
+  };
+  const critiqueIdentity = {
+    schema: "work.feature-critique-receipt/v1",
+    delegate_evidence: {
+      card_id: "feature-critique",
+      effect_id: "effect:critique",
+      attempt_id: "attempt:critique",
+      idempotency_key: "idempotency:critique",
+      source_authority_watermark: `sha256:${"9".repeat(64)}`,
+      evidence: "independent critique evidence",
+    },
+    findings: [],
+    operation_contract: "flow.delegated-agent-port/v1",
+    effect_id: "effect:critique",
+    idempotency_key: "idempotency:critique",
+    source_authority_watermark: `sha256:${"9".repeat(64)}`,
+  };
+  const critique = {
+    ...critiqueIdentity,
+    receipt_digest: digestValue(critiqueIdentity),
+    self_digest: digestValue(critiqueIdentity),
+  };
+  const candidateIdentity = {
+    schema: "work.review-candidate/v1",
+    candidate_id: "candidate:local",
+    git,
+    workspace: {
+      contract: "work.workspace/v1",
+      subject_id: "workspace:producer",
+      generation: 1,
+      mutation_epoch: 7,
+      fingerprint: digestValue({ git }),
+    },
+    verification,
+    critique,
+    artifacts: [{
+      digest: `sha256:${"6".repeat(64)}`,
+      generation: 1,
+      artifact_schema: "example.candidate/v1",
+    }],
+    git_retention: {
+      schema: "flow.git-retention-receipt/v1",
+      repository_id: "github.com/Seavenly/example",
+      commit_sha: git.commit_sha,
+      tree_sha: git.tree_sha,
+      retention_ref: "refs/flow/review/candidate-local",
+    },
+  };
+  const candidate = {
+    ...candidateIdentity,
+    candidate_fingerprint: candidateFingerprint ?? digestValue(candidateIdentity),
+  };
+  return {
+    schema: "work.review-candidate-seal-command/v1",
+    command_id: commandId,
+    type: "review_candidate_seal",
+    contract: "work.review/v1",
+    subject_id: candidate.candidate_id,
+    expected_generation: expectedGeneration,
+    candidate,
+  };
+}
+
 function workspaceRegistration(canonicalPath = "/tmp/producer-worktree", {
   disposition = "producer_owned",
   git: gitFacts = exactGitFacts(),
@@ -1636,12 +2022,16 @@ function claimProducerWorkspace(proposal) {
   proposal.explicit_facts.limits.max_resources += 1;
 }
 
-function cleanupOperationProposal(action) {
+function cleanupOperationProposal(action, { maxAttempts = 1 } = {}) {
   const proposal = registeredOperationProposal({
     checkpointBound: false,
     classification: "reconcilable",
   });
   const operation = proposal.graph.cards[0];
+  operation.limits = {
+    ...operation.limits,
+    max_attempts: maxAttempts,
+  };
   operation.executor.contract = CLEANUP_OPERATION_CONTRACT;
   operation.inputs = action.operation_input;
   operation.route = { adapter: "resource-cleanup" };

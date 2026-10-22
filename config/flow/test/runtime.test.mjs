@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,14 +13,22 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
 
+import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
 import {
   createDrovrDelegatedAgentPort,
 } from "../../../tools/flow/src/drovr-delegated-agent-port.mjs";
 import { createDurableRunAuthority } from
   "../../../tools/flow/src/run-authority.mjs";
+import { createInMemoryRunAuthority } from
+  "../../../tools/flow/src/run-authority.mjs";
+import { createFlowRuntime as createCoreFlowRuntime } from
+  "../../../tools/flow/src/flow-runtime.mjs";
 import {
   completedTurnProjection,
   DELEGATE_OUTPUT_VALIDATOR,
@@ -28,11 +39,1159 @@ import {
   repositoryDrovrDependencies,
   supportedDescription,
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
-import { confirmedLaunchRequest } from
+import { confirmedLaunchRequest, dynamicCheckpointProposal } from
   "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
-import { fixedHostIdentity } from
-  "../../../tools/flow/test-support/fixed-host-identity.mjs";
-import { createFlowRuntime } from "../src/runtime.mjs";
+import {
+  fixedExecutionTimeAdapter,
+  fixedHostIdentity,
+} from "../../../tools/flow/test-support/fixed-host-identity.mjs";
+import {
+  closeFlowRuntime,
+  createFlowRuntime,
+  normalizeProductionRunnerOptions,
+} from "../src/runtime.mjs";
+import { validateDelegateEvidenceSafety } from
+  "../../../tools/flow/src/evidence-safety.mjs";
+import {
+  productionRouteConformanceSessionBinding,
+} from "../../../tools/flow/src/qualification-phase2-session.mjs";
+
+const DARK_OPT_IN = {
+  schema: "flow.dark-opt-in/v1",
+  release_id: "flow-release-1.0-dark/v1",
+  purpose: "sacrificial_qualification",
+};
+const FLOW_CONFIG_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
+const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+for (const status of ["failed", "blocked", "not_run"]) {
+  test(`public prepare withholds dark opt-in when qualification is ${status}`, async (t) => {
+    const { configDirectory, runtime } =
+      await createRuntimeWithCopiedFlowConfig(t, `prepare-${status}`);
+    const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    const qualification = ledger.evidence.find(({ id }) =>
+      id === "deterministic_qualification");
+    qualification.status = status;
+    if (status === "not_run") {
+      qualification.path = null;
+      qualification.sha256 = null;
+    }
+    await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+    const rejection = await runtime.prepare({
+      schema: "flow.feature-preparation-request/v1",
+      mode: "verify",
+      dark_opt_in: DARK_OPT_IN,
+    });
+
+    assertQualificationWithheld(rejection, "prepare");
+  });
+}
+
+test("public launch withholds dark opt-in when qualification has a defect", async (t) => {
+  const { configDirectory, runtime } =
+    await createRuntimeWithCopiedFlowConfig(t, "launch-defect");
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.defects.push("injected_qualification_defect");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = runtime.launch({
+    prepared: {
+      kind: "predefined",
+      definition: { id: "feature/v1" },
+      selection: { inputs: { mode: "verify" } },
+    },
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assertQualificationWithheld(rejection, "launch");
+});
+
+test("public prepare withholds tampered transition evidence from its configured authority", async (t) => {
+  const { configDirectory, runtime } =
+    await createRuntimeWithCopiedFlowConfig(t, "prepare-tampered");
+  const evidencePath = join(
+    configDirectory,
+    "evidence/release-qualification.v1.json",
+  );
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  evidence.status = "withdrawn";
+  const evidenceBytes = `${JSON.stringify(evidence, null, 2)}\n`;
+  await writeFile(evidencePath, evidenceBytes);
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.evidence.find(({ id }) => id === "deterministic_qualification").sha256 =
+    createHash("sha256").update(evidenceBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assertQualificationWithheld(rejection, "prepare");
+});
+
+for (const status of ["failed", "blocked", "not_run"]) {
+  test(`public prepare withholds dark opt-in when production route qualification is ${status}`, async (t) => {
+    const { configDirectory, runtime } =
+      await createRuntimeWithCopiedFlowConfig(t, `phase2-prepare-${status}`);
+    const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    const phase2 = ledger.evidence.find(({ id }) =>
+      id === "production_route_conformance");
+    phase2.status = status;
+    if (status === "not_run") {
+      phase2.path = null;
+      phase2.sha256 = null;
+    } else {
+      const evidencePath = join(
+        configDirectory,
+        phase2.path ?? "evidence/production-route-conformance.v1.json",
+      );
+      phase2.path = phase2.path ?? "evidence/production-route-conformance.v1.json";
+      const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+      evidence.status = status;
+      const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+      await writeFile(evidencePath, evidenceBytes);
+      phase2.sha256 = createHash("sha256").update(evidenceBytes).digest("hex");
+    }
+    await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+    const rejection = await runtime.prepare({
+      schema: "flow.feature-preparation-request/v1",
+      mode: "verify",
+      dark_opt_in: DARK_OPT_IN,
+    });
+
+    assertQualificationWithheld(rejection, "prepare");
+  });
+}
+
+test("public launch requires passed phase-two production conformance", async (t) => {
+  const { configDirectory, runtime } =
+    await createRuntimeWithCopiedFlowConfig(t, "phase2-launch-blocked");
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  phase2.status = "blocked";
+  const evidencePath = join(configDirectory, phase2.path);
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  evidence.status = "blocked";
+  const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  await writeFile(evidencePath, evidenceBytes);
+  phase2.sha256 = createHash("sha256").update(evidenceBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = runtime.launch({
+    prepared: {
+      kind: "predefined",
+      definition: { id: "feature/v1" },
+      selection: { inputs: { mode: "verify" } },
+    },
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assertQualificationWithheld(rejection, "launch");
+});
+
+test("phase-two recipe tampering with a refreshed evidence hash withholds public admission", async (t) => {
+  const { configDirectory, runtime } =
+    await createRuntimeWithCopiedFlowConfig(t, "phase2-recipe-tamper");
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  const evidencePath = join(configDirectory, phase2.path);
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  evidence.recipe.commands[0].command += " --changed";
+  evidence.recipe.digest = canonicalDigest(evidence.recipe.commands);
+  const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  await writeFile(evidencePath, evidenceBytes);
+  phase2.sha256 = createHash("sha256").update(evidenceBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assertQualificationWithheld(rejection, "prepare");
+});
+
+test("ordinary request and environment inputs cannot activate phase-two generation", async (t) => {
+  const marker = "b".repeat(64);
+  const { configDirectory, runtime } =
+    await createRuntimeWithCopiedFlowConfig(t, "phase2-generation-inputs", {
+      environment: {
+        FLOW_PRODUCTION_ROUTE_CONFORMANCE_SESSION: "1",
+        FLOW_PRODUCTION_ROUTE_CONFORMANCE_MARKER: marker,
+      },
+    });
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase1 = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  const evidencePath = join(configDirectory, phase2.path);
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  evidence.status = "running";
+  evidence.phase1_evidence_sha256 = phase1.sha256;
+  evidence.generation_id = "00000000-0000-4000-8000-000000000001";
+  evidence.generation_binding_sha256 = createHash("sha256")
+    .update(marker)
+    .digest("hex");
+  evidence.recipe = null;
+  const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  await writeFile(evidencePath, evidenceBytes);
+  phase2.status = "not_run";
+  phase2.sha256 = createHash("sha256").update(evidenceBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+    qualification_phase2_session: {
+      authority_directory: configDirectory,
+      marker,
+    },
+  });
+
+  assertQualificationWithheld(rejection, "prepare");
+});
+
+test("public module imports cannot mint phase-two generation authority", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-phase2-import-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repositoryRoot = join(scratch, "repository");
+  await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
+    repositoryRoot]);
+  const configDirectory = join(repositoryRoot, "config/flow");
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase1 = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  const evidencePath = join(configDirectory, phase2.path);
+  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+  const marker = "c".repeat(64);
+  evidence.status = "running";
+  evidence.phase1_evidence_sha256 = phase1.sha256;
+  evidence.generation_id = "00000000-0000-4000-8000-000000000002";
+  evidence.generation_binding_sha256 =
+    productionRouteConformanceSessionBinding({
+      authorityDirectory: configDirectory,
+      generationId: evidence.generation_id,
+      marker,
+    });
+  evidence.recipe = null;
+  const evidenceBytes = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  await writeFile(evidencePath, evidenceBytes);
+  phase2.status = "not_run";
+  phase2.sha256 = createHash("sha256").update(evidenceBytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const sessionModule = await import(
+    "../../../tools/flow/src/qualification-phase2-session.mjs"
+  );
+  const exportedMint = sessionModule.createProductionRouteConformanceSession;
+  const forgedSession = typeof exportedMint === "function"
+    ? exportedMint({ authorityDirectory: configDirectory, marker })
+    : { authorityDirectory: configDirectory, marker };
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: repositoryRoot,
+    },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+    qualificationPhase2Session: forgedSession,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assert.equal(exportedMint, undefined);
+  assertQualificationWithheld(rejection, "prepare");
+});
+
+test("public admission withholds qualification captured on another host", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-foreign-host-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repositoryRoot = join(scratch, "repository");
+  await execFile("git", ["clone", "--quiet", "--no-local", REPOSITORY_ROOT,
+    repositoryRoot]);
+  const configDirectory = join(repositoryRoot, "config/flow");
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: repositoryRoot,
+    },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const ledgerPath = join(configDirectory, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase1 = ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification");
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  const phase1Path = join(configDirectory, phase1.path);
+  const phase1Evidence = JSON.parse(await readFile(phase1Path, "utf8"));
+  phase1Evidence.environment.os = process.platform === "darwin" ? "linux" : "darwin";
+  const phase1Bytes = Buffer.from(`${JSON.stringify(phase1Evidence, null, 2)}\n`);
+  await writeFile(phase1Path, phase1Bytes);
+  phase1.sha256 = createHash("sha256").update(phase1Bytes).digest("hex");
+
+  const phase2Path = join(configDirectory, phase2.path);
+  const phase2Evidence = JSON.parse(await readFile(phase2Path, "utf8"));
+  phase2Evidence.environment.os = phase1Evidence.environment.os;
+  phase2Evidence.phase1_evidence_sha256 = phase1.sha256;
+  const phase2Bytes = Buffer.from(`${JSON.stringify(phase2Evidence, null, 2)}\n`);
+  await writeFile(phase2Path, phase2Bytes);
+  phase2.sha256 = createHash("sha256").update(phase2Bytes).digest("hex");
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assertQualificationWithheld(rejection, "prepare");
+});
+
+test("public admission uses the governed qualification root instead of disposable backup root", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-qualified-root-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const disposableRepository = join(scratch, "disposable-repository");
+  await initializeCleanTestRepository(disposableRepository);
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY,
+      FLOW_REPOSITORY_ROOT: disposableRepository,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT,
+    },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const result = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+  assert.notEqual(result.code, "qualification_withheld");
+});
+
+test("public preparation preserves blocked Drovr compatibility details", async (t) => {
+  const delegatedAgentPort = {
+    async describe() {
+      return {
+        schema: "flow.delegated-agent-description-projection/v1",
+        status: "blocked",
+        watermark: null,
+        description: null,
+        compatibility: {
+          contract: "flow.delegated-agent-port/v1",
+          code: "compatibility_blocked",
+          findings: [{ field: "model", reason: "changed" }],
+        },
+        legal_next_actions: ["refresh_compatibility", "run_drovr_doctor"],
+      };
+    },
+  };
+  const { scratch, runtime } = await createRuntimeWithCopiedFlowConfig(
+    t,
+    "blocked-drovr-compatibility",
+    { delegatedAgentPort },
+  );
+  const repository = join(scratch, "candidate-repository");
+  await initializeCleanTestRepository(repository);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    brief: {
+      schema: "flow.feature-brief/v1",
+      id: "brief:blocked-drovr",
+      summary: "Check blocked Drovr admission",
+      acceptance: ["the host preserves compatibility evidence"],
+    },
+    repository: { path: repository },
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+    routes: {
+      apply: {
+        launch: {
+          harness: "codex",
+          role: "reviewer",
+          model: "gpt-5.6",
+          effort: "high",
+          capability: "workspace-write",
+        },
+      },
+      critique: {
+        launch: {
+          harness: "claude",
+          role: "reviewer",
+          model: "haiku",
+          effort: "high",
+          capability: "read-only",
+        },
+      },
+    },
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "prepare");
+  assert.equal(rejection.code, "compatibility_blocked");
+  assert.equal(rejection.outcome, "unsupported");
+  assert.deepEqual(rejection.findings, [{ field: "model", reason: "changed" }]);
+  assert.deepEqual(rejection.legal_actions, [
+    "refresh_compatibility",
+    "run_drovr_doctor",
+  ]);
+});
+
+test("public preparation normalizes real Drovr feature findings to the rejection contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-drovr-feature-findings-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const delegatedAgentPort = createDrovrDelegatedAgentPort({
+    dependencies: repositoryDrovrDependencies(),
+    async describeDrovr(request, dependencies) {
+      const description = await supportedDescription(request, dependencies);
+      description.feature_advertisement.features.shift();
+      rebindDescriptionDigest(description);
+      return description;
+    },
+  });
+  const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ??
+    FLOW_CONFIG_DIRECTORY;
+  const runtime = createFlowRuntime({
+    env: {
+      ...process.env,
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT ?? REPOSITORY_ROOT,
+    },
+    delegatedAgentPort,
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const repository = join(scratch, "candidate-repository");
+  await initializeCleanTestRepository(repository);
+
+  const rejection = await runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    brief: {
+      schema: "flow.feature-brief/v1",
+      id: "brief:public-drovr-feature-findings",
+      summary: "Reject an incompatible real Drovr feature advertisement",
+      acceptance: ["the public boundary preserves typed feature findings"],
+    },
+    repository: { path: repository },
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+    routes: {
+      apply: {
+        launch: {
+          harness: "codex",
+          role: "reviewer",
+          model: "gpt-5.6",
+          effort: "high",
+          capability: "workspace-write",
+        },
+      },
+      critique: {
+        launch: {
+          harness: "claude",
+          role: "reviewer",
+          model: "haiku",
+          effort: "high",
+          capability: "read-only",
+        },
+      },
+    },
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "prepare");
+  assert.equal(rejection.code, "incompatible_feature_advertisement");
+  assert.equal(rejection.outcome, "unsupported");
+  assert.deepEqual(rejection.findings, [{
+    field: "feature_advertisement.exact_launch_description",
+    reason: "missing",
+  }]);
+  assert.deepEqual(rejection.legal_actions, [
+    "repair_delegated_runtime_contract",
+    "refresh_delegated_runtime_description",
+  ]);
+  const rejectionSchema = JSON.parse(await readFile(
+    join(FLOW_CONFIG_DIRECTORY, "schemas/flow.rejection.v1.schema.json"),
+    "utf8",
+  ));
+  const rejectionAjv = new Ajv2020({ allErrors: true, strict: true });
+  rejectionAjv.addSchema(JSON.parse(await readFile(
+    join(FLOW_CONFIG_DIRECTORY, "schemas/flow.authority-fact.v1.schema.json"),
+    "utf8",
+  )));
+  const validateRejection = rejectionAjv.compile(rejectionSchema);
+  assert.equal(validateRejection(rejection), true,
+    rejectionAjv.errorsText(validateRejection.errors));
+});
+
+test("public dynamic prepare requires explicit dark opt-in", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-dynamic-prepare-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const rejection = runtime.prepare(dynamicCheckpointProposal());
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "prepare");
+  assert.equal(rejection.code, "dark_opt_in_required");
+  assert.equal(rejection.outcome, "disabled");
+});
+
+test("public dynamic plans cannot classify a mixed feature and push graph as feature verify", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-dynamic-mixed-route-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const proposal = dynamicCheckpointProposal();
+  const contracts = [
+    ["verify", "flow.operation/feature-verify/v1"],
+    ["push", "flow.operation/git-push/v1"],
+  ];
+  proposal.graph.cards = contracts.map(([id, contract]) => ({
+    id,
+    operation_contract: contract,
+    executor: { kind: "operation", contract },
+    dependencies: [],
+    inputs: {},
+    outputs: [],
+    success_criteria: ["operation_completed"],
+    validators: [],
+    data_references: [],
+    evidence_references: [],
+    route: null,
+    limits: {},
+    resource_claims: [],
+    recovery: "reconcile",
+  }));
+
+  const rejection = runtime.prepare({
+    ...proposal,
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "prepare");
+  assert.equal(rejection.code, "route_unsupported");
+  assert.equal(rejection.outcome, "unsupported");
+});
+
+test("public feature verify rejects an exact-definition graph with a registered push executor", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-mixed-predefined-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    registeredOperations: {
+      "flow.operation/git-push/v1": {
+        schema: "flow.registered-operation/v1",
+        classification: "caller_idempotent",
+        invoke() {
+          throw new Error("a forbidden push operation must not run");
+        },
+      },
+    },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const rejection = runtime.launch({
+    prepared: {
+      kind: "predefined",
+      definition: { id: "feature/v1" },
+      selection: { inputs: { mode: "verify" } },
+      graph: {
+        cards: [
+          {
+            id: "feature-verify",
+            executor: {
+              kind: "operation",
+              contract: "flow.operation/feature-verify/v1",
+              effect_classification: "caller_idempotent",
+            },
+          },
+          {
+            id: "remote-push",
+            executor: {
+              kind: "operation",
+              contract: "flow.operation/git-push/v1",
+              effect_classification: "caller_idempotent",
+            },
+          },
+        ],
+      },
+    },
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "launch");
+  assert.equal(rejection.code, "route_unavailable");
+  assert.equal(rejection.outcome, "unsupported");
+  assert.match(rejection.reason, /flow\.operation\/git-push\/v1/u);
+});
+
+test("public dynamic prepare with opt-in is unsupported", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-dynamic-opt-in-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const rejection = runtime.prepare({
+    ...dynamicCheckpointProposal(),
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "prepare");
+  assert.equal(rejection.code, "route_unsupported");
+  assert.equal(rejection.outcome, "unsupported");
+});
+
+test("public launch with opt-in rejects a prepared dynamic plan", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-dynamic-launch-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const coreRuntime = createCoreFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  const prepared = coreRuntime.prepare(dynamicCheckpointProposal());
+  assert.equal(prepared.schema, "flow.prepared-run/v1");
+
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const rejection = runtime.launch({
+    ...confirmedLaunchRequest(prepared),
+    dark_opt_in: DARK_OPT_IN,
+  });
+
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, "launch");
+  assert.equal(rejection.code, "route_unsupported");
+  assert.equal(rejection.outcome, "unsupported");
+});
+
+test("public prepare requires explicit dark opt-in and classifies disabled scope", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-release-gate-prepare-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const missing = runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+  });
+  assert.equal(missing.schema, "flow.rejection/v1");
+  assert.equal(missing.operation, "prepare");
+  assert.equal(missing.code, "dark_opt_in_required");
+  assert.equal(missing.outcome, "disabled");
+
+  const disabled = runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "test",
+    dark_opt_in: DARK_OPT_IN,
+  });
+  assert.equal(disabled.schema, "flow.rejection/v1");
+  assert.equal(disabled.code, "route_disabled");
+  assert.equal(disabled.outcome, "disabled");
+});
+
+test("public launch cannot bypass disabled or unsupported release routes", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-release-gate-launch-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  for (const [definition, inputs, code, outcome] of [
+    ["feature/v1", { mode: "mixed" }, "route_disabled", "disabled"],
+    ["spike/v1", {}, "route_disabled", "disabled"],
+    ["review/v1", {
+      target: { schema: "flow.review-github-pull-request/v1" },
+    }, "route_unsupported", "unsupported"],
+  ]) {
+    const result = runtime.launch({
+      prepared: {
+        kind: "predefined",
+        definition: { id: definition },
+        selection: { inputs },
+      },
+      dark_opt_in: DARK_OPT_IN,
+    });
+    assert.equal(result.schema, "flow.rejection/v1");
+    assert.equal(result.operation, "launch");
+    assert.equal(result.code, code);
+    assert.equal(result.outcome, outcome);
+  }
+});
+
+test("public dark feature verify fails closed when its production operation is unavailable", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-release-gate-adapter-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    registeredOperations: {
+      "flow.operation/feature-verify/v1": null,
+    },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const result = runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    dark_opt_in: DARK_OPT_IN,
+  });
+  assert.equal(result.schema, "flow.rejection/v1");
+  assert.equal(result.code, "route_unavailable");
+  assert.equal(result.outcome, "unsupported");
+});
+
+test("public local review rejects forged extra operation and delegate cards before launch", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-review-forged-executor-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  for (const extraCard of [
+    {
+      id: "remote-push",
+      executor: {
+        kind: "operation",
+        contract: "flow.operation/git-push/v1",
+      },
+    },
+    {
+      id: "unlisted-delegate",
+      executor: {
+        kind: "delegate",
+        contract: "flow.delegated-agent-port/v1",
+      },
+    },
+  ]) {
+    const rejection = runtime.launch({
+      prepared: {
+        kind: "predefined",
+        definition: {
+          id: "review/v1",
+          contract: "flow.definition/review/v1",
+        },
+        selection: {
+          inputs: {
+            target: { schema: "flow.review-local-candidate/v1" },
+            lenses: ["security"],
+          },
+        },
+        graph: {
+          cards: [
+            {
+              id: "review-lens-security",
+              executor: {
+                kind: "delegate",
+                contract: "flow.delegated-agent-port/v1",
+              },
+            },
+            {
+              id: "review-critic",
+              executor: {
+                kind: "delegate",
+                contract: "flow.delegated-agent-port/v1",
+              },
+            },
+            {
+              id: "review-record",
+              executor: {
+                kind: "operation",
+                contract: "flow.operation/review-record/v1",
+              },
+            },
+            extraCard,
+          ],
+        },
+      },
+      dark_opt_in: DARK_OPT_IN,
+    });
+
+    assert.equal(rejection.schema, "flow.rejection/v1");
+    assert.equal(rejection.operation, "launch");
+    assert.equal(rejection.code, "route_unavailable");
+    assert.equal(rejection.outcome, "unsupported");
+    assert.match(rejection.reason, /unlisted_executor/u);
+  }
+});
+
+test("public verify plans requiring unavailable setup or test operations are rejected before launch", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-public-verify-unavailable-setup-test-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const setup = {
+    schema: "flow.feature-setup/v1",
+    id: "setup:test",
+    description: "test setup",
+    fingerprint: `sha256:${"a".repeat(64)}`,
+  };
+  const slices = [{
+    schema: "flow.feature-slice/v1",
+    id: "slice:test",
+    mode: "test",
+  }];
+
+  const prepared = runtime.prepare({
+    schema: "flow.feature-preparation-request/v1",
+    mode: "verify",
+    setup,
+    slices,
+    dark_opt_in: DARK_OPT_IN,
+  });
+  assert.equal(prepared.schema, "flow.rejection/v1");
+  assert.equal(prepared.operation, "prepare");
+  assert.equal(prepared.code, "route_unavailable");
+  assert.equal(prepared.outcome, "unsupported");
+  assert.match(prepared.reason, /feature-setup/u);
+  assert.match(prepared.reason, /feature-test/u);
+
+  const launch = runtime.launch({
+    prepared: {
+      schema: "flow.prepared-run/v1",
+      kind: "predefined",
+      definition: { id: "feature/v1" },
+      selection: { inputs: { mode: "verify", setup, slices } },
+      graph: {
+        cards: [
+          {
+            id: "feature-setup",
+            executor: {
+              kind: "operation",
+              contract: "flow.operation/feature-setup/v1",
+            },
+          },
+          {
+            id: "feature-test",
+            executor: {
+              kind: "operation",
+              contract: "flow.operation/feature-test/v1",
+            },
+          },
+        ],
+      },
+    },
+    dark_opt_in: DARK_OPT_IN,
+  });
+  assert.equal(launch.schema, "flow.rejection/v1");
+  assert.equal(launch.operation, "launch");
+  assert.equal(launch.code, "route_unavailable");
+  assert.equal(launch.outcome, "unsupported");
+  assert.match(launch.reason, /feature-setup/u);
+  assert.match(launch.reason, /feature-test/u);
+});
+
+const execFile = promisify(execFileCallback);
+
+test("short-lived default runtime does not retain a polling handle", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-liveness-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtimeModule = new URL("../src/runtime.mjs", import.meta.url).href;
+  const script = [
+    `const { createFlowRuntime } = await import(${JSON.stringify(runtimeModule)});`,
+    `createFlowRuntime({ env: ${JSON.stringify({
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+    })} });`,
+  ].join("\n");
+
+  await execFile(process.execPath, ["--input-type=module", "-e", script], {
+    timeout: 1_500,
+  });
+});
+
+test("production runner capacity is bounded and exposed through a named query", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-runner-status-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: {
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_RUNNER_DELEGATE_CAPACITY: "3",
+    },
+    runnerOptions: { operationCapacity: 2 },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  const status = await runtime.query({
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  });
+  assert.equal(status.schema, "flow.runtime-runner-status/v1");
+  assert.equal(status.delegates.capacity, 3);
+  assert.equal(status.operations.capacity, 2);
+
+  for (const value of [0, -1, 65, "nope", 1.5]) {
+    assert.throws(
+      () => createFlowRuntime({
+        env: {
+          HOME: scratch,
+          XDG_STATE_HOME: join(scratch, `invalid-${String(value)}`),
+          FLOW_RUNNER_DELEGATE_CAPACITY: String(value),
+        },
+        autonomous: false,
+      }),
+      /delegateCapacity.*integer between 1 and 64/u,
+    );
+  }
+});
+
+test("production runner capacity defaults, overrides, and rejects invalid values", async (t) => {
+  assert.deepEqual(normalizeProductionRunnerOptions({ env: {} }), {});
+  assert.deepEqual(normalizeProductionRunnerOptions({
+    env: {
+      FLOW_RUNNER_DELEGATE_CAPACITY: "3",
+      FLOW_RUNNER_OPERATION_CAPACITY: "4",
+    },
+    runnerOptions: { delegateCapacity: 5 },
+  }), {
+    delegateCapacity: 5,
+    operationCapacity: 4,
+  });
+
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-runner-default-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtime = createFlowRuntime({
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const status = await runtime.query({
+    schema: "flow.query/v1",
+    query: "autonomous_runner_status",
+  });
+  assert.equal(status.delegates.capacity, 1);
+  assert.equal(status.operations.capacity, 1);
+
+  for (const [key, variable] of [
+    ["delegateCapacity", "FLOW_RUNNER_DELEGATE_CAPACITY"],
+    ["operationCapacity", "FLOW_RUNNER_OPERATION_CAPACITY"],
+  ]) {
+    for (const value of [0, 65, 1.5, "nope"]) {
+      assert.throws(
+        () => normalizeProductionRunnerOptions({
+          env: { [variable]: typeof value === "string" ? value : String(value) },
+        }),
+        new RegExp(`${key}.*integer between 1 and 64`),
+      );
+    }
+  }
+});
+
+test("awaited public authority watch keeps the process alive until it closes", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-watch-liveness-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const runtimeModule = new URL("../src/runtime.mjs", import.meta.url).href;
+  const authorityModule = new URL(
+    "../../../tools/flow/src/run-authority.mjs",
+    import.meta.url,
+  ).href;
+  const script = [
+    `const { createFlowRuntime } = await import(${JSON.stringify(runtimeModule)});`,
+    `const { createDurableRunAuthority } = await import(${JSON.stringify(authorityModule)});`,
+    `const authority = createDurableRunAuthority({ authorityDirectory: ${JSON.stringify(join(scratch, "state"))} });`,
+    `const runtime = createFlowRuntime({ runAuthority: authority, autonomous: false, delegatedAgentPort: { describe: async () => null } });`,
+    `const watcher = runtime.watch({ host: true });`,
+    `const initial = await watcher.next();`,
+    `if (initial.done) throw new Error("authority watch closed before its initial projection");`,
+    `const timer = setTimeout(() => authority.close(), 100);`,
+    `timer.unref();`,
+    `const closed = await watcher.next();`,
+    `if (!closed.done) throw new Error("authority watch did not close");`,
+  ].join("\n");
+
+  await execFile(process.execPath, ["--input-type=module", "-e", script], {
+    timeout: 2_000,
+  });
+});
+
+test("shared production runtimes retain one authority until the last close", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-sharing-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const options = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const runtimeA = createFlowRuntime(options);
+  const runtimeB = createFlowRuntime(options);
+
+  assert.equal(closeFlowRuntime(runtimeA), true);
+  assert.equal(closeFlowRuntime(runtimeA), false);
+  assert.doesNotThrow(() => runtimeB.query());
+  assert.equal(closeFlowRuntime(runtimeB), true);
+  assert.throws(() => runtimeB.query(), /durable run authority is closed/u);
+});
+
+test("shared production authority rejects incompatible options while retained", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-options-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const runtime = createFlowRuntime({
+    ...base,
+    authorityOptions: { declaredCapacity: 1 },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+
+  assert.throws(
+    () => createFlowRuntime({
+      ...base,
+      authorityOptions: { declaredCapacity: 2 },
+    }),
+    (error) => error?.code === "authority_options_conflict",
+  );
+});
+
+test("shared production authority rejects distinct caller-supplied adapters", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-adapters-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const adapterFactories = {
+    rebootObservationAdapter: () => ({ observe() {} }),
+    gitWorkspaceObservationAdapter: () => ({ observe() {} }),
+    gitRetentionAdapter: () => ({ observe() {}, retain() {} }),
+  };
+
+  for (const [key, createAdapter] of Object.entries(adapterFactories)) {
+    const runtime = createFlowRuntime({
+      ...base,
+      authorityDirectory: join(scratch, key),
+      authorityOptions: { [key]: createAdapter() },
+    });
+    t.after(() => closeFlowRuntime(runtime));
+    assert.throws(
+      () => createFlowRuntime({
+        ...base,
+        authorityDirectory: join(scratch, key),
+        authorityOptions: { [key]: createAdapter() },
+      }),
+      (error) => error?.code === "authority_options_conflict",
+    );
+  }
+});
+
+test("failed production construction releases its authority lease", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+
+  assert.throws(
+    () => createFlowRuntime({
+      ...base,
+      registeredAuthorities: { invalid: {} },
+    }),
+    /registered authority/u,
+  );
+
+  const runtime = createFlowRuntime(base);
+  t.after(() => closeFlowRuntime(runtime));
+  assert.equal(closeFlowRuntime(runtime), true);
+  assert.throws(() => runtime.query(), /durable run authority is closed/u);
+});
+
+test("failed production construction releases an additional shared lease", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-runtime-authority-shared-failure-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const base = {
+    env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+    delegatedAgentPort: { describe: async () => null },
+    autonomous: false,
+  };
+  const runtime = createFlowRuntime(base);
+  t.after(() => closeFlowRuntime(runtime));
+
+  assert.throws(
+    () => createFlowRuntime({
+      ...base,
+      registeredAuthorities: { invalid: {} },
+    }),
+    /registered authority/u,
+  );
+
+  assert.equal(closeFlowRuntime(runtime), true);
+  assert.throws(() => runtime.query(), /durable run authority is closed/u);
+});
 
 test("query exposes the DelegatedAgentPort description without creating a run", async () => {
   const projection = {
@@ -73,9 +1232,10 @@ test("query exposes the DelegatedAgentPort description without creating a run", 
   assert.deepEqual(runtime.query(), before);
 });
 
-test("public runtime rejects delegate effects without durable authority", async () => {
+test("injected non-autonomous runtime rejects delegate effects without durable authority", async () => {
   const description = await delegateDescription();
-  const runtime = createFlowRuntime({
+  const runtime = createCoreFlowRuntime({
+    runAuthority: createInMemoryRunAuthority(),
     delegatedAgentPort: delegatePort(),
     delegateOutputValidators: delegateValidators(),
   });
@@ -88,17 +1248,18 @@ test("public runtime rejects delegate effects without durable authority", async 
   assert.deepEqual(runtime.query().runs, []);
 });
 
-test("public runtime wires exact delegate execution through its composition root", async (t) => {
+test("core runtime wires exact delegate execution through its composition root", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-runtime-"));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
   const runAuthority = createDurableRunAuthority({
     authorityDirectory,
     hostIdentityAdapter: fixedHostIdentity("boot-a", "process-runtime"),
+    timeObservationAdapter: fixedExecutionTimeAdapter({ bootId: "boot-a" }),
   });
   t.after(() => runAuthority.close());
   const description = await delegateDescription();
   let callerKey;
-  const runtime = createFlowRuntime({
+  const runtime = createCoreFlowRuntime({
     runAuthority,
     delegatedAgentPort: delegatePort({
       async dispatch(request) {
@@ -110,20 +1271,25 @@ test("public runtime wires exact delegate execution through its composition root
       },
     }),
     delegateOutputValidators: delegateValidators(),
+    autonomous: false,
   });
   const prepared = runtime.prepare(delegateCardProposal(description));
   const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.equal(launch.schema, "flow.launch-receipt/v1");
   const checkpoint = runtime.query({ run_id: launch.run_id }).legal_actions
     .find(({ decision }) => decision === "approve");
+  assert.ok(checkpoint);
   runtime.command(checkpoint);
   const execute = runtime.query({ run_id: launch.run_id }).legal_actions
     .find(({ type }) => type === "delegate_execute");
+  assert.ok(execute);
 
   runtime.command(execute);
   await until(() => runtime.query({ run_id: launch.run_id }).phase ===
     "succeeded");
 
   const completed = runtime.query({ run_id: launch.run_id });
+  assert.equal(runAuthority.query(launch.run_id).phase, "succeeded");
   assert.equal(completed.delegate_attempts[0].status, "accepted");
   assert.equal(callerKey, `${launch.run_id}:delegate-review:attempt:1`);
 });
@@ -831,6 +1997,8 @@ test("query rejects unsupported contracts and never repairs missing evidence", a
   await mkdir(runDirectory, { recursive: true });
   await writeFile(join(runDirectory, "run.json"), "not-json\n");
   const runtime = createFlowRuntime({
+    autonomous: false,
+    runAuthority: createInMemoryRunAuthority(),
     legacyRoots: {
       claudeRuns: join(scratch, "absent-claude-runs"),
       hermesRuns,
@@ -865,6 +2033,8 @@ test("query rejects unsupported contracts and never repairs missing evidence", a
 
 test("registered query failures use the shared typed rejection contract", async () => {
   const runtime = createFlowRuntime({
+    autonomous: false,
+    runAuthority: createInMemoryRunAuthority(),
     legacyAdapter: {
       async observe() {
         throw new Error("retained authority unavailable");
@@ -895,6 +2065,54 @@ test("registered query failures use the shared typed rejection contract", async 
     legal_actions: [],
   });
 });
+
+async function createRuntimeWithCopiedFlowConfig(
+  t,
+  label,
+  {
+    delegatedAgentPort = { describe: async () => null },
+    environment = {},
+  } = {},
+) {
+  const scratch = await mkdtemp(join(tmpdir(), `flow-public-config-${label}-`));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const configDirectory = join(scratch, "flow");
+  await cp(FLOW_CONFIG_DIRECTORY, configDirectory, {
+    recursive: true,
+    filter: (source) => !source.split(sep).includes("node_modules"),
+  });
+  const runtime = createFlowRuntime({
+    env: {
+      ...environment,
+      HOME: scratch,
+      XDG_STATE_HOME: join(scratch, "state"),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_REPOSITORY_ROOT: REPOSITORY_ROOT,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT,
+    },
+    delegatedAgentPort,
+    autonomous: false,
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  return { scratch, configDirectory, runtime };
+}
+
+async function initializeCleanTestRepository(repository) {
+  await mkdir(repository, { recursive: true });
+  await execFile("git", ["-C", repository, "init", "--quiet", "--initial-branch", "main"]);
+  await execFile("git", ["-C", repository, "config", "user.email", "flow@example.test"]);
+  await execFile("git", ["-C", repository, "config", "user.name", "Flow Test"]);
+  await writeFile(join(repository, "feature.txt"), "before\n");
+  await execFile("git", ["-C", repository, "add", "feature.txt"]);
+  await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "initial"]);
+}
+
+function assertQualificationWithheld(rejection, operation) {
+  assert.equal(rejection.schema, "flow.rejection/v1");
+  assert.equal(rejection.operation, operation);
+  assert.equal(rejection.code, "qualification_withheld");
+  assert.equal(rejection.outcome, "disabled");
+}
 
 async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -949,6 +2167,7 @@ function delegateValidators() {
       validate(output) {
         return output === "accepted output";
       },
+      evidenceSafety: validateDelegateEvidenceSafety,
     },
   };
 }

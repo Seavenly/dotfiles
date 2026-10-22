@@ -18,8 +18,9 @@
   ],
   "properties": {
     "schema": { "const": "flow.rejection/v1" },
-    "operation": { "enum": ["launch", "command", "query", "watch"] },
+    "operation": { "enum": ["prepare", "launch", "command", "query", "watch"] },
     "code": { "type": "string", "minLength": 1 },
+    "outcome": { "enum": ["disabled", "unsupported"] },
     "reason": { "type": ["string", "null"] },
     "command_type": { "type": ["string", "null"] },
     "run_id": { "type": ["string", "null"] },
@@ -29,6 +30,21 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "authority_watermark_domain": { "enum": ["host", "run"] },
-    "legal_actions": { "type": "array" }
+    "legal_actions": { "type": "array" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason"],
+        "properties": {
+          "field": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "authority_fact": {
+      "$ref": "flow.authority-fact.v1.schema.json"
+    }
   }
 }

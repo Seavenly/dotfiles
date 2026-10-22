@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.review-integration-evidence.v1.schema.json",
+  "title": "flow.review-integration-evidence/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate_fingerprint",
+    "lifecycle_generation"
+  ],
+  "properties": {
+    "schema": { "const": "flow.review-integration-evidence/v1" },
+    "candidate_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "lifecycle_generation": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

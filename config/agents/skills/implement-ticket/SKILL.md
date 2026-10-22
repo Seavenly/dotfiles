@@ -1,6 +1,6 @@
 ---
 name: implement-ticket
-description: Implement one GitHub issue in a dedicated worktree, verify and review the result, and commit it for later aggregate integration. Use only when explicitly invoked as /implement-ticket or $implement-ticket with one issue URL.
+description: Orchestrate Luna Max sub-agents to implement one GitHub issue in a dedicated worktree, then independently verify, review, and commit it for later aggregate integration. Use only when explicitly invoked as /implement-ticket or $implement-ticket with one issue URL.
 argument-hint: "<issue-url>"
 disable-model-invocation: true
 ---

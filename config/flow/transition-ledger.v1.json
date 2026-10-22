@@ -1,9 +1,16 @@
 {
   "schema": "flow.transition-ledger/v1",
-  "sequence": 13,
+  "sequence": 32,
   "release": {
-    "id": "flow-stage0/v1",
-    "source_commit": "e55efcccf595c25bc0f7c5c4669467be906e9894"
+    "id": "flow-release-1.0-dark/v1",
+    "source_commit": "e55efcccf595c25bc0f7c5c4669467be906e9894",
+    "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
+    "content": {
+      "path": "evidence/release-content.v1.json",
+      "sha256": "b53718938f97e33f0fc91cc7b1678c2b4e02c19b055fa4f16c5a1b434e10f216",
+      "digest": "sha256:b8043b8f23a2998de9d4e6a931970956d5a5266f47a5f641ae394d73f57c3469"
+    },
+    "implementation": "flow-runtime/v1"
   },
   "environment": {
     "id": "repository-linux-x64",
@@ -17,34 +24,171 @@
     "blocked",
     "not_run"
   ],
+  "contracts": {
+    "catalog": "flow.contract-catalog/v1@34",
+    "catalog_path": "contracts/catalog.v1.json",
+    "launch_policy": "flow.launch-policy/v1",
+    "launch_selection": "flow.launch-selection/v1",
+    "launch_rejection": "flow.launch-rejection/v1",
+    "release_manifest": "flow.release-manifest/v1",
+    "transition_projection": "flow.transition-projection/v1",
+    "production_route_conformance": "flow.production-route-conformance-evidence/v1"
+  },
+  "routes": {
+    "supported": [
+      {
+        "flow": "feature",
+        "mode": "verify"
+      },
+      {
+        "flow": "review",
+        "mode": "local"
+      }
+    ],
+    "scope_expansion": "new_manifest_and_evidence_required"
+  },
+  "capability_manifest": {
+    "path": "release-manifest.v1.json",
+    "sha256": "8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9",
+    "release_id": "flow-release-1.0-dark/v1",
+    "normal_use_authorized": false,
+    "remote_mutations_authorized": false
+  },
+  "legacy_inventory": {
+    "path": "legacy-baselines.v1.json",
+    "sha256": "cffa8d6b267a609ffef99d55aca51d773ee97986596a64bc9ad0591ede6b0fb3"
+  },
+  "prerequisites": [
+    {
+      "issue": 80,
+      "short_commit": "cca3158",
+      "commit": "cca3158a3d41bda0064d43366e686b9647863bd7",
+      "status": "integrated"
+    },
+    {
+      "issue": 81,
+      "short_commit": "da66e76",
+      "commit": "da66e76dfd5760388b70d65e46a01ca3d756b614",
+      "status": "integrated"
+    },
+    {
+      "issue": 82,
+      "short_commit": "6935cb2",
+      "commit": "6935cb28b9246785508e6cf11983fbab365eac87",
+      "status": "integrated"
+    },
+    {
+      "issue": 83,
+      "short_commit": "685b075",
+      "commit": "685b075e42ab94e3fb8c2960988e9388dd569337",
+      "status": "integrated"
+    },
+    {
+      "issue": 26,
+      "short_commit": "da95b977",
+      "commit": "da95b9779184868cae679376b36e39a2910993cb",
+      "status": "integrated"
+    },
+    {
+      "issue": 29,
+      "short_commit": "a4a9a88",
+      "commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
+      "status": "integrated"
+    }
+  ],
+  "not_run": [
+    {
+      "id": "issue-84",
+      "status": "not_run",
+      "reason": "later sacrificial qualification"
+    },
+    {
+      "id": "issue-44",
+      "status": "not_run",
+      "reason": "later sacrificial qualification"
+    },
+    {
+      "id": "issue-46",
+      "status": "not_run",
+      "reason": "later sacrificial qualification"
+    },
+    {
+      "id": "quick-spike",
+      "status": "not_run",
+      "reason": "deferred and not enabled"
+    }
+  ],
+  "deferred_scope": [
+    "issue-45",
+    "issue-47",
+    "issue-48",
+    "issue-49",
+    "issue-85",
+    "issue-53"
+  ],
+  "environment_fingerprint": {
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "git": "2.53.0",
+    "qualification": "two_phase_public_route_conformance"
+  },
   "evidence": [
     {
       "id": "public_contract_catalog",
       "path": "contracts/catalog.v1.json",
-      "sha256": "b876be1d13130d622e68d89ace45dc3f649caa9fb334ec4a3437d9aea0921f49",
+      "sha256": "6bc7ba3cc966379b2943d79f05da733f1eaeec456ac705636de2554f4eae9b06",
       "status": "passed",
-      "recorded_at": "2026-08-02T21:30:25Z"
+      "recorded_at": "2026-10-22T23:33:57Z"
     },
     {
       "id": "legacy_default_policy",
       "path": "launch-policy.v1.json",
-      "sha256": "892324c24183b78410ac2b5839e12af437a27a43598d81bf2a6bfe65f4d5d752",
+      "sha256": "dc138b56537c408f1e998f9dc0193097745ad789ad8ae0cc5bf2ddbbc121b113",
       "status": "passed",
-      "recorded_at": "2026-07-30T23:06:09Z"
+      "recorded_at": "2026-10-22T23:33:57Z"
     },
     {
       "id": "frozen_legacy_inventory",
       "path": "legacy-baselines.v1.json",
       "sha256": "cffa8d6b267a609ffef99d55aca51d773ee97986596a64bc9ad0591ede6b0fb3",
       "status": "passed",
-      "recorded_at": "2026-10-19T14:46:20Z"
+      "recorded_at": "2026-10-22T23:33:57Z"
     },
     {
       "id": "replacement_runtime_activation",
       "path": null,
       "sha256": null,
       "status": "not_run",
-      "recorded_at": "2026-07-30T23:06:09Z"
+      "recorded_at": "2026-09-20T20:52:56Z"
+    },
+    {
+      "id": "release_content_binding",
+      "path": "evidence/release-content.v1.json",
+      "sha256": "b53718938f97e33f0fc91cc7b1678c2b4e02c19b055fa4f16c5a1b434e10f216",
+      "status": "passed",
+      "recorded_at": "2026-10-22T23:33:57Z"
+    },
+    {
+      "id": "deterministic_qualification",
+      "path": null,
+      "sha256": null,
+      "status": "not_run",
+      "recorded_at": "2026-10-22T23:33:57Z"
+    },
+    {
+      "id": "production_route_conformance",
+      "path": "evidence/production-route-conformance.v1.json",
+      "sha256": "a941e7f9ec5cc520da09939df4b67b466065876d981a8a1c2feae44f986e876f",
+      "status": "not_run",
+      "recorded_at": "2026-10-22T23:33:57Z"
+    },
+    {
+      "id": "issue_46_host_recovery",
+      "path": "evidence/host-recovery-qualification.v1.json",
+      "sha256": "65bc096a309fc09a4d9b87165a7726be122f8d8e9ed9668640ba94bdabf12825",
+      "evidence_digest": "sha256:8ce24eb8b71dcb7d09fa7ffd349d2d6e8174e4421a86f5b7535628954d00ff5d",
+      "status": "passed",
+      "recorded_at": "2026-09-20T20:52:56Z"
     }
   ],
   "defects": [],
@@ -53,7 +197,11 @@
     "kind": "keep_legacy_default",
     "selected_implementation": "legacy-claude/v1",
     "replacement_launch_enabled": false,
-    "decided_at": "2026-07-30T23:06:09Z"
+    "dark_opt_in_enabled": true,
+    "dark_opt_in_release_id": "flow-release-1.0-dark/v1",
+    "normal_use_authorized": false,
+    "remote_mutations_authorized": false,
+    "decided_at": "2026-09-16T03:00:00Z"
   },
-  "recorded_at": "2026-10-19T14:46:20Z"
+  "recorded_at": "2026-10-22T23:33:57Z"
 }

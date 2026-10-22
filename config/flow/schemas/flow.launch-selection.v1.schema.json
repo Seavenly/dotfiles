@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.launch-selection.v1.schema.json",
+  "title": "flow.launch-selection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "policy_generation",
+    "policy_watermark",
+    "implementation",
+    "authority_root_spec",
+    "authority_root"
+  ],
+  "properties": {
+    "schema": { "const": "flow.launch-selection/v1" },
+    "policy_generation": { "type": "integer", "minimum": 1 },
+    "policy_watermark": { "$ref": "#/$defs/digest" },
+    "implementation": { "type": "string", "minLength": 1 },
+    "authority_root_spec": { "$ref": "#/$defs/rootSpec" },
+    "authority_root": { "type": "string", "minLength": 1 },
+    "release_id": { "type": "string", "minLength": 1 },
+    "scope": { "const": "dark_sacrificial" },
+    "not_authorized_before_issue": { "const": 50 },
+    "route": { "$ref": "#/$defs/route" },
+    "normal_use_authorized": { "const": false },
+    "remote_mutations_authorized": { "const": false },
+    "release_manifest": { "$ref": "#/$defs/manifestReference" },
+    "capability_manifest": { "$ref": "flow.capability-manifest.v1.schema.json" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rootSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "path"],
+      "properties": {
+        "base": { "enum": ["home", "state"] },
+        "path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["flow", "mode"],
+      "properties": {
+        "flow": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 }
+      }
+    },
+    "manifestReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "release_id", "digest"],
+      "properties": {
+        "schema": { "const": "flow.release-manifest/v1" },
+        "release_id": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

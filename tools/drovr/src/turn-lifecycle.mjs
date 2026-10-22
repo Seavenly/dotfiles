@@ -15,6 +15,7 @@ export async function prepareTurn({
   caller,
   inputKey,
   launchBinding,
+  resourceBinding,
 }) {
   const prepared = await harness.prepareTurn({
     agent,
@@ -34,6 +35,7 @@ export async function prepareTurn({
     caller,
     inputKey,
     launchBinding,
+    resourceBinding,
   });
   await writeRecord(registryDirectory, "turns", turn);
   return turn;

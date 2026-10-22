@@ -43,6 +43,33 @@ export function dynamicCheckpointProposal() {
       operation_contracts: [],
       validator_contracts: ["flow.validator/checkpoint-decision/v1"],
       block_observations: [],
+      time_facts: [
+        {
+          schema: "flow.time-fact/v1",
+          kind: "wall_clock",
+          value_ms: 1_700_000_000_000,
+          uncertainty_ms: 0,
+          clock_source_id: "wall:host-a",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "suspend_excluding_monotonic",
+          value_ns: "1000000000",
+          uncertainty_ns: "0",
+          clock_source_id: "mono:host-a",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "boot",
+          boot_id: "boot-a",
+        },
+        {
+          schema: "flow.time-fact/v1",
+          kind: "clock_source",
+          identity: "clockset:host-a:v1",
+        },
+      ],
+      subject_generations: [],
       elapsed_seconds: 0,
       limits: {
         max_cards: 1,

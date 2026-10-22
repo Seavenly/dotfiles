@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.review-inbox-projection.v1.schema.json",
+  "title": "flow.review-inbox-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract",
+    "authority",
+    "watermark",
+    "authority_watermark",
+    "authority_watermark_domain",
+    "watermark_schema",
+    "projection_digest",
+    "subject_watermarks",
+    "items",
+    "legal_actions"
+  ],
+  "properties": {
+    "schema": { "const": "flow.review-inbox-projection/v1" },
+    "contract": { "const": "work.review-inbox/v1" },
+    "authority": { "const": "ReviewAuthority" },
+    "watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "authority_watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "authority_watermark_domain": { "const": "review" },
+    "watermark_schema": {
+      "const": "flow.review-inbox-watermark/v1"
+    },
+    "projection_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "subject_watermarks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://dotfiles.local/schemas/flow.review-inbox-watermark.v1.schema.json#/$defs/subjectWatermark"
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "https://dotfiles.local/schemas/flow.review-inbox-item.v1.schema.json"
+      }
+    },
+    "legal_actions": { "const": [] }
+  }
+}

@@ -19,6 +19,12 @@
     },
     "flow-runtime/v1": {
       "launch_enabled": false,
+      "dark_opt_in": {
+        "enabled": true,
+        "manifest": "release-manifest.v1.json",
+        "manifest_sha256": "8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9",
+        "scope": "dark_sacrificial"
+      },
       "authority_root": {
         "base": "state",
         "path": "flow"

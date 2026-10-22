@@ -1,0 +1,70 @@
+{
+  "schema": "flow.release-manifest/v1",
+  "version": 1,
+  "release_id": "flow-release-1.0-dark/v1",
+  "implementation": "flow-runtime/v1",
+  "scope": "dark_sacrificial",
+  "normal_use_authorized": false,
+  "remote_mutations_authorized": false,
+  "not_authorized_before_issue": 50,
+  "scope_expansion": "new_manifest_and_evidence_required",
+  "dark_opt_in": {
+    "schema": "flow.dark-opt-in/v1",
+    "release_id": "flow-release-1.0-dark/v1",
+    "purpose": "sacrificial_qualification",
+    "routes": [
+      { "flow": "feature", "mode": "verify" },
+      { "flow": "review", "mode": "local" }
+    ]
+  },
+  "supported_routes": [
+    {
+      "flow": "feature",
+      "mode": "verify",
+      "contracts": [
+        "flow.definition/feature/v1",
+        "flow.feature-verification-request/v1",
+        "flow.operation/feature-verify/v1",
+        "work.feature-verification-receipt/v1"
+      ]
+    },
+    {
+      "flow": "review",
+      "mode": "local",
+      "contracts": [
+        "flow.review-local-candidate/v1",
+        "flow.operation/review-record/v1",
+        "flow.review-provenance/v1"
+      ]
+    }
+  ],
+  "disabled_routes": [
+    { "flow": "feature", "mode": "test", "outcome": "disabled" },
+    { "flow": "feature", "mode": "mixed", "outcome": "disabled" },
+    { "flow": "spike", "mode": "quick", "outcome": "disabled" },
+    { "flow": "spike", "mode": "deep", "outcome": "disabled" },
+    { "flow": "epic", "mode": "default", "outcome": "disabled" },
+    { "flow": "review", "mode": "github", "outcome": "unsupported" },
+    { "flow": "tracker", "mode": "github", "outcome": "unsupported" },
+    { "flow": "tracker", "mode": "jira", "outcome": "unsupported" },
+    { "flow": "forge", "mode": "default", "outcome": "unsupported" },
+    { "flow": "publication", "mode": "default", "outcome": "unsupported" },
+    { "flow": "merge", "mode": "default", "outcome": "unsupported" },
+    { "flow": "push", "mode": "default", "outcome": "unsupported" },
+    { "flow": "remote", "mode": "mutation", "outcome": "unsupported" }
+  ],
+  "deferred_scope": [
+    "quick_spike",
+    "issue-45",
+    "issue-47",
+    "issue-48",
+    "issue-49",
+    "issue-85",
+    "issue-53"
+  ],
+  "sacrificial_followups": [
+    { "issue": 84, "status": "not_run" },
+    { "issue": 44, "status": "not_run" },
+    { "issue": 46, "status": "not_run" }
+  ]
+}

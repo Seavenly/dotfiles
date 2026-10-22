@@ -58,7 +58,12 @@
         "code": { "type": "string", "minLength": 1 }
       }
     },
+    "lock_entry": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "reason": { "type": "string", "minLength": 1 },
+    "dispatch_proof": { "$ref": "#/$defs/dispatch-proof" },
     "cleanup_receipt": {
       "type": "object",
       "required": [
@@ -89,6 +94,24 @@
     }
   },
   "$defs": {
+    "dispatch-proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "stage",
+        "native_dispatch_started",
+        "turn_created",
+        "effect_created"
+      ],
+      "properties": {
+        "schema": { "const": "drovr.dispatch-proof/v1" },
+        "stage": { "const": "pre_dispatch_validation" },
+        "native_dispatch_started": { "const": false },
+        "turn_created": { "const": false },
+        "effect_created": { "const": false }
+      }
+    },
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
@@ -118,7 +141,18 @@
       "properties": {
         "schema": { "const": "drovr.registry-authority-watermark/v1" },
         "authority": { "const": "drovr.registry" },
-        "turns_sha256": { "$ref": "#/$defs/digest" }
+        "groups_sha256": { "$ref": "#/$defs/digest" },
+        "tasks_sha256": { "$ref": "#/$defs/digest" },
+        "agents_sha256": { "$ref": "#/$defs/digest" },
+        "turns_sha256": { "$ref": "#/$defs/digest" },
+        "blocks_sha256": { "$ref": "#/$defs/digest" },
+        "groups_count": { "type": "integer", "minimum": 0 },
+        "tasks_count": { "type": "integer", "minimum": 0 },
+        "agents_count": { "type": "integer", "minimum": 0 },
+        "turns_count": { "type": "integer", "minimum": 0 },
+        "blocks_count": { "type": "integer", "minimum": 0 },
+        "generation": { "$ref": "#/$defs/digest" },
+        "registry_sha256": { "$ref": "#/$defs/digest" }
       }
     },
     "agentWatermark": {
@@ -149,7 +183,8 @@
         "id": { "type": "string", "minLength": 1 },
         "status": { "type": "string", "minLength": 1 },
         "input_count": { "type": "integer", "minimum": 1 },
-        "inputs": { "type": "array", "minItems": 1 }
+        "inputs": { "type": "array", "minItems": 1 },
+        "resource_binding": { "type": "object" }
       }
     }
   }

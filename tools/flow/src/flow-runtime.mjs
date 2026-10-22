@@ -1,15 +1,31 @@
-import { digest } from "./canonical.mjs";
+import { digest, freezeCanonical } from "./canonical.mjs";
 import {
   applyRevisionGraphChanges,
   compileDynamicPlan,
+  compilePredefinedFlowSelection,
+  isPredefinedFlowSelection,
+  snapshotPredefinedDefinitions,
 } from "./plan-compiler.mjs";
+import {
+  createSpikeOutputValidators,
+  SPIKE_RESEARCH_OUTPUT_VALIDATOR,
+  SPIKE_REPORT_OUTPUT_VALIDATOR,
+} from "./spike-flow.mjs";
 import { createRejection } from "./rejection.mjs";
 import { validateLaunchRequest } from "./launch-validation.mjs";
-import { createInMemoryRunAuthority } from "./run-authority.mjs";
+import {
+  attachAuthorityBindingCatalogs,
+  createInMemoryRunAuthority,
+} from "./run-authority.mjs";
+import {
+  snapshotPredefinedAuthorityCatalog,
+  snapshotRegisteredAuthorities,
+} from "./authority-bindings.mjs";
 import {
   delegateCompatibilityIssue,
   dispatchDelegateEffect,
   snapshotDelegatedAgentPort,
+  snapshotDelegatedAgentResourcePort,
   snapshotDelegateOutputValidators,
   snapshotRequiredDrovrFeatures,
 } from "./delegate-effects.mjs";
@@ -23,8 +39,54 @@ import {
   createSubrunRegistration,
   SUBRUN_CONTRACT,
 } from "./subrun-effects.mjs";
+import { isBackupRestoreCommand } from "./backup-restore.mjs";
+import {
+  getReviewAuthority,
+  getRunEffectIntentReader,
+} from "./work-authority.mjs";
+import {
+  buildGitHubPendingDraft,
+  createInMemoryReviewAuthority,
+  createInMemoryGitHubReviewAuthority,
+  createGitHubReviewOperationRegistration,
+  createReviewOperationRegistration,
+  isReviewTargetInvalidationCommand,
+  isReviewTargetRefreshCommand,
+  isReviewHumanCommand,
+  projectReviewInbox,
+  REVIEW_INBOX_QUERY_CONTRACT,
+  GITHUB_REVIEW_OPERATION_CONTRACTS,
+  GITHUB_REVIEW_PENDING_CHECKPOINT_ID,
+  GITHUB_REVIEW_TARGET_SCHEMA,
+  githubPendingEffectIdentity,
+  reviewCandidateAuthorityIssue,
+  REVIEW_DELEGATE_OUTPUT_VALIDATOR,
+} from "./review-flow.mjs";
+import { parseReviewDelegateResult } from "./review-rendering.mjs";
+import { validateDelegateEvidenceSafety } from "./evidence-safety.mjs";
+import {
+  createFlowRuntimeRunner,
+  FLOW_RUNTIME_BACKGROUND_WATCH,
+} from "./flow-runtime-runner.mjs";
 
 const hostRunAuthority = createInMemoryRunAuthority();
+const runtimeRunners = new WeakMap();
+
+export function validateReviewDelegateOutput(output, context = {}) {
+  try {
+    const lens = typeof context.card_id === "string" &&
+        context.card_id.startsWith("review-lens-")
+      ? context.card_id.slice("review-lens-".length)
+      : null;
+    parseReviewDelegateResult(output, {
+      lens,
+      role: lens === null ? "critic" : "lens",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function createFlowRuntime({
   planCompiler = compileDynamicPlan,
@@ -32,8 +94,22 @@ export function createFlowRuntime({
   registeredOperations = {},
   registeredQueries = {},
   delegatedAgentPort = null,
+  delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
+  predefinedDefinitions = {},
+  registeredAuthorities = {},
+  reviewAuthority = null,
+  githubReviewAuthority = null,
+  githubReviewForge = null,
+  githubReviewAdapter = null,
+  autonomous = false,
+  runnerOptions = {},
 } = {}) {
+  if (githubReviewAdapter !== null) {
+    throw new TypeError(
+      "FlowRuntime accepts a raw githubReviewForge, not a registered operation",
+    );
+  }
   if (registeredOperations === null ||
       !(registeredOperations instanceof Map) &&
       (typeof registeredOperations !== "object" ||
@@ -45,12 +121,76 @@ export function createFlowRuntime({
     getRuntime: () => runtime,
     runAuthority,
   });
-  const operationRegistry = snapshotRegisteredOperations(registeredOperations);
-  const delegateValidators = snapshotDelegateOutputValidators(
-    delegateOutputValidators,
+  const ownedReviewAuthority = reviewAuthority ?? attachedReviewAuthority(runAuthority) ??
+    createInMemoryReviewAuthority({
+      sourceEffectIntentReader: attachedEffectIntentReader(runAuthority),
+    });
+  const ownedGitHubReviewAuthority = githubReviewAuthority ??
+    (attachedReviewAuthority(runAuthority)?.schema === "work.review-authority/v1"
+      ? ownedReviewAuthority
+      : createInMemoryGitHubReviewAuthority({
+          sourceEffectIntentReader: attachedEffectIntentReader(runAuthority),
+        }));
+  const operationInputs = registeredOperations instanceof Map
+    ? new Map(registeredOperations)
+    : { ...registeredOperations };
+  // ReviewAuthority owns this built-in operation. A caller-supplied entry is
+  // deliberately replaced by the trusted registration so an injected
+  // operation cannot bypass candidate, evidence, or completion authority.
+  setRegisteredOperation(
+    operationInputs,
+    "flow.operation/review-record/v1",
+    createReviewOperationRegistration({
+      reviewAuthority: ownedReviewAuthority,
+      githubReviewAuthority: ownedGitHubReviewAuthority,
+    }),
   );
+  if (githubReviewForge !== null) {
+    setRegisteredOperation(
+      operationInputs,
+      GITHUB_REVIEW_OPERATION_CONTRACTS.pending,
+      createGitHubReviewOperationRegistration({
+        forge: githubReviewForge,
+      }),
+    );
+  }
+  const operationRegistry = snapshotRegisteredOperations(operationInputs);
+  const validatorInputs = delegateOutputValidators instanceof Map
+    ? new Map(delegateOutputValidators)
+    : { ...delegateOutputValidators };
+  // This validator is part of the trusted review boundary. A caller may
+  // register validators for other contracts, but cannot replace the parser
+  // that decides whether review evidence is accepted.
+  setRegisteredOperation(validatorInputs, REVIEW_DELEGATE_OUTPUT_VALIDATOR, {
+    validate: validateReviewDelegateOutput,
+    evidenceSafety: validateDelegateEvidenceSafety,
+  });
+  const trustedSpikeOutputValidators = createSpikeOutputValidators();
+  setRegisteredOperation(
+    validatorInputs,
+    SPIKE_RESEARCH_OUTPUT_VALIDATOR,
+    trustedSpikeOutputValidators[SPIKE_RESEARCH_OUTPUT_VALIDATOR],
+  );
+  setRegisteredOperation(
+    validatorInputs,
+    SPIKE_REPORT_OUTPUT_VALIDATOR,
+    trustedSpikeOutputValidators[SPIKE_REPORT_OUTPUT_VALIDATOR],
+  );
+  const delegateValidators = snapshotDelegateOutputValidators(validatorInputs);
   const delegatePort = snapshotDelegatedAgentPort(delegatedAgentPort);
+  const delegateResourcePort = snapshotDelegatedAgentResourcePort(
+    delegatedAgentResourcePort,
+  );
   const requiredDrovrFeatures = snapshotRequiredDrovrFeatures();
+  const predefinedRegistry = snapshotPredefinedDefinitions(predefinedDefinitions);
+  const authorityRegistry = snapshotRegisteredAuthorities(registeredAuthorities);
+  const predefinedAuthorityCatalog = snapshotPredefinedAuthorityCatalog(
+    predefinedRegistry,
+  );
+  attachAuthorityBindingCatalogs(runAuthority, {
+    authorities: authorityRegistry,
+    predefinedDefinitions: predefinedAuthorityCatalog,
+  });
   operationRegistry.set(SUBRUN_CONTRACT, subrunRegistration);
   const compile = planCompiler === compileDynamicPlan
     ? (proposal) => compileDynamicPlan(proposal, {
@@ -59,12 +199,48 @@ export function createFlowRuntime({
     : planCompiler;
   runtime = Object.freeze({
     prepare(proposal) {
+      if (isPredefinedFlowSelection(proposal)) {
+        return compilePredefinedFlowSelection(
+          proposal,
+          predefinedRegistry.get(proposal.definition),
+          {
+            registeredOperations: operationRegistry,
+            registeredAuthorities: authorityRegistry,
+          },
+        );
+      }
       return compile(proposal);
     },
 
     launch(request) {
+      const adopted = typeof runAuthority.adoptExactLaunch === "function"
+        ? runAuthority.adoptExactLaunch(request)
+        : null;
+      if (adopted !== null && adopted !== undefined) return adopted;
       const validation = validateLaunchRequest(request);
       if (validation.accepted) {
+        const reviewTargets = executionCards(validation.prepared)
+          .map((card) => card.inputs?.target)
+          .filter((target) => target?.schema === "flow.review-local-candidate/v1");
+        for (const reviewTarget of reviewTargets) {
+          const issue = reviewCandidateAuthorityIssue(
+            reviewTarget,
+            ownedReviewAuthority,
+          );
+          if (issue) {
+            const host = runAuthority.query();
+            return createRejection({
+              operation: "launch",
+              code: issue.code,
+              reason: issue.reason,
+              bundleDigest: validation.prepared.bundle_digest,
+              authorityWatermark: issue.projection?.watermark ?? host.watermark,
+              authorityWatermarkDomain: issue.projection?.schema ===
+                "work.review-candidate-projection/v1" ? "review" : "host",
+              legalActions: issue.projection?.legal_actions ?? [],
+            });
+          }
+        }
         const operationCards = executionCards(validation.prepared);
         const incompatible = operationCards.map((card) => ({
           card,
@@ -72,6 +248,7 @@ export function createFlowRuntime({
             ? operationRegistrationIssue(
                 registeredOperation(operationRegistry, card.executor.contract),
                 card.executor.effect_classification,
+                card.inputs.provider_receipt_validator,
               )
             : null,
         })).find(({ issue }) => issue !== null);
@@ -122,6 +299,7 @@ export function createFlowRuntime({
               delegatePort,
               delegateValidators,
               requiredDrovrFeatures,
+              delegateResourcePort,
             ),
           }))
           .find(({ issue }) => issue !== null);
@@ -154,16 +332,59 @@ export function createFlowRuntime({
     },
 
     command(command) {
+      if (isBackupRestoreCommand(command)) {
+        if (typeof runAuthority.hostCommand !== "function") {
+          const host = runAuthority.query();
+          return createRejection({
+            operation: "command",
+            code: "unsupported_host_command",
+            commandType: typeof command?.type === "string"
+              ? command.type
+              : null,
+            authorityWatermark: host.watermark,
+            authorityWatermarkDomain: "host",
+            legalActions: host.legal_actions ?? host.restore?.legal_actions ??
+              host.backup?.legal_actions ?? [],
+          });
+        }
+        return runAuthority.hostCommand(command);
+      }
+      if (isReviewTargetInvalidationCommand(command)) {
+        return ownedReviewAuthority.command(command);
+      }
+      if (isReviewTargetRefreshCommand(command)) {
+        return ownedReviewAuthority.command(command);
+      }
+      if (isReviewHumanCommand(command)) {
+        return ownedReviewAuthority.command(command);
+      }
       const before = typeof command?.run_id === "string"
         ? runAuthority.query(command.run_id)
         : null;
+      const checkpointBinding = githubCheckpointDraftBinding(before, command);
+      if (checkpointBinding?.code || checkpointBinding?.missing) {
+        return createRejection({
+          operation: "command",
+          code: checkpointBinding.code,
+          reason: checkpointBinding.reason,
+          commandType: command?.type ?? null,
+          runId: command?.run_id ?? null,
+          bundleDigest: before?.bundle_digest,
+          authorityWatermark: before?.watermark,
+          authorityWatermarkDomain: "run",
+          legalActions: decorateReviewRunProjection(before)?.legal_actions ?? [],
+        });
+      }
+      const authorityCommand = checkpointBinding === null
+        ? command
+        : bindCheckpointDraft(command, checkpointBinding);
       const registryRejection = commandRegistryRejection(
-        command,
+        authorityCommand,
         operationRegistry,
         runAuthority,
       );
       if (registryRejection) return registryRejection;
-      const receipt = runAuthority.command(command);
+      const receipt = runAuthority.command(authorityCommand);
       for (const intent of receipt?.effect_intents ?? []) {
         if (["delegate", "delegate_cancellation"].includes(intent.effect_kind)) {
           dispatchDelegateEffect(
@@ -175,17 +396,20 @@ export function createFlowRuntime({
               settleCancelled:
                 (intent.effect_kind === "delegate_cancellation" &&
                   intent.settlement_phase !== "declined") ||
-                (command?.type === "recovery" &&
-                  command.recovery === "settle_cancelled"),
+                (authorityCommand?.type === "recovery" &&
+                  authorityCommand.recovery === "settle_cancelled"),
+              resourcePort: delegateResourcePort,
             },
           );
         } else {
           dispatchRegisteredEffect(intent, operationRegistry, runAuthority, {
-            recovery: command?.type === "recovery" ? command.recovery : null,
+            recovery: authorityCommand?.type === "recovery"
+              ? authorityCommand.recovery
+              : null,
           });
         }
       }
-      if (receipt?.accepted === true && command?.type === "cancel") {
+      if (receipt?.accepted === true && authorityCommand?.type === "cancel") {
         for (const subrun of before?.subruns ?? []) {
           const intent = before.effects?.find(({ card_id: cardId }) =>
             cardId === subrun.card_id);
@@ -194,23 +418,97 @@ export function createFlowRuntime({
           if (completeIntent) subrunRegistration.requestCancellation(completeIntent);
         }
       }
-      if (receipt?.accepted === true && command?.type === "recovery" &&
-          command.recovery === "settle_cancelled") {
-        const completeIntent = subrunIntentForEffect(before, command.effect_id);
+      if (receipt?.accepted === true && authorityCommand?.type === "recovery" &&
+          authorityCommand.recovery === "settle_cancelled") {
+        const completeIntent = subrunIntentForEffect(before, authorityCommand.effect_id);
         if (completeIntent) subrunRegistration.requestCancellation(completeIntent);
       }
       return receipt;
     },
 
     query(request = {}) {
+      if (request?.query === "review_inbox") {
+        if (!isExactReviewInboxRequest(request, "flow.query/v1")) {
+          return reviewInboxRequestRejection(ownedReviewAuthority, "query");
+        }
+        return ownedReviewAuthority.query({
+          contract: REVIEW_INBOX_QUERY_CONTRACT,
+        });
+      }
+      const reviewSubject = reviewRequestSubject(request);
+      if (reviewSubject !== null) {
+        const authority = ownedGitHubReviewAuthority.query({
+          contract: "work.review/v1",
+          subject_id: reviewSubject,
+        });
+        if (authority?.schema !== "flow.rejection/v1" ||
+            authority.code !== "unknown_subject") {
+          return decorateGitHubReviewProjection(
+            authority,
+            runAuthority,
+          );
+        }
+        return ownedReviewAuthority.query({
+          contract: "work.review/v1",
+          subject_id: reviewSubject,
+        });
+      }
       if (request?.schema === "flow.query/v1") {
         return dispatchRegisteredQuery(request, registeredQueries, runAuthority);
       }
-      return runAuthority.query(request?.run_id);
+      return decorateReviewRunProjection(runAuthority.query(request?.run_id));
     },
 
-    watch({ run_id: runId } = {}) {
-      return runAuthority.watch(runId);
+    watch(request = {}) {
+      const watchOptions = request?.[FLOW_RUNTIME_BACKGROUND_WATCH] === true
+        ? { unrefPollTimer: true }
+        : null;
+      if (request?.query === "review_inbox") {
+        if (!isExactReviewInboxRequest(request, "flow.watch/v1")) {
+          return oneShotReviewObservation(
+            reviewInboxRequestRejection(ownedReviewAuthority, "watch"),
+          );
+        }
+        return oneShotReviewObservation(ownedReviewAuthority.query({
+          contract: REVIEW_INBOX_QUERY_CONTRACT,
+        }));
+      }
+      const reviewSubject = reviewRequestSubject(request);
+      if (reviewSubject !== null) {
+        const githubProjection = ownedGitHubReviewAuthority.query({
+          contract: "work.review/v1",
+          subject_id: reviewSubject,
+        });
+        if (githubProjection?.schema !== "flow.rejection/v1" ||
+            githubProjection.code !== "unknown_subject") {
+          const projection = decorateGitHubReviewProjection(
+            githubProjection,
+            runAuthority,
+          );
+          return oneShotReviewObservation(projection);
+        }
+        return typeof ownedReviewAuthority.watch === "function"
+          ? ownedReviewAuthority.watch({ subject_id: reviewSubject })
+          : oneShotReviewObservation(ownedReviewAuthority.query({
+              contract: "work.review/v1",
+              subject_id: reviewSubject,
+            }));
+      }
+      if (request?.host === true) {
+        if (typeof runAuthority.watchHost === "function") {
+          return watchOptions === null
+            ? runAuthority.watchHost()
+            : runAuthority.watchHost(watchOptions);
+        }
+        return watchOptions === null
+          ? runAuthority.watch(undefined)
+          : runAuthority.watch(undefined, watchOptions);
+      }
+      const runId = request?.run_id;
+      const watcher = watchOptions === null
+        ? runAuthority.watch(runId)
+        : runAuthority.watch(runId, watchOptions);
+      return decorateReviewRunWatcher(watcher);
     },
   });
   recoverOutstandingEffects(
@@ -218,8 +516,362 @@ export function createFlowRuntime({
     runAuthority,
     operationRegistry,
     subrunRegistration,
+    {
+      allowIndeterminateRecovery: !autonomous,
+      allowOneShotRecovery: !autonomous,
+    },
   );
+  if (autonomous) {
+    const runner = createFlowRuntimeRunner({
+      runtime,
+      runAuthority,
+      ...runnerOptions,
+    });
+    runtimeRunners.set(runtime, runner);
+    runner.start();
+  }
   return runtime;
+}
+
+export function createAutonomousFlowRuntime(options = {}) {
+  return createFlowRuntime({ ...options, autonomous: true });
+}
+
+export function startAutonomousFlowRuntime(runtime) {
+  return runtimeRunners.get(runtime)?.start() ?? null;
+}
+
+export function statusAutonomousFlowRuntime(runtime) {
+  return runtimeRunners.get(runtime)?.status() ?? null;
+}
+
+export function stopAutonomousFlowRuntime(runtime) {
+  return runtimeRunners.get(runtime)?.stop();
+}
+
+function decorateReviewRunProjection(projection) {
+  if (projection?.schema !== "flow.run-projection/v1") return projection;
+  const activePlan = projection.active_plan === null ||
+      projection.active_plan === undefined
+    ? projection.active_plan
+    : {
+        ...projection.active_plan,
+        cards: projection.active_plan.cards.map((card) => {
+          if (card.id !== GITHUB_REVIEW_PENDING_CHECKPOINT_ID) return card;
+          const binding = githubCheckpointDraftBinding(projection, {
+            type: "checkpoint_decision",
+            checkpoint_id: card.id,
+          }, { validateCommand: false });
+          if (binding?.code || !binding?.draft) return card;
+          return {
+            ...card,
+            inputs: {
+              ...card.inputs,
+              draft: binding.draft,
+              draft_digest: binding.draft_digest,
+            },
+          };
+        }),
+      };
+  const legalActions = projection.legal_actions.flatMap((action) => {
+    const binding = githubCheckpointDraftBinding(projection, action, {
+      validateCommand: false,
+    });
+    if (binding?.code === "github_review_checkpoint_draft_unavailable") return [];
+    if (binding === null || binding.code || !binding.draft) return [action];
+    return [{
+      ...action,
+      draft: binding.draft,
+      draft_digest: digest(binding.draft),
+    }];
+  });
+  return freezeCanonical({ ...projection, active_plan: activePlan, legal_actions: legalActions });
+}
+
+function decorateReviewRunWatcher(watcher) {
+  return {
+    async next(...args) {
+      const result = await watcher.next(...args);
+      return result.done
+        ? result
+        : { ...result, value: decorateReviewRunProjection(result.value) };
+    },
+    async return(...args) {
+      return typeof watcher.return === "function"
+        ? watcher.return(...args)
+        : { value: undefined, done: true };
+    },
+    async throw(...args) {
+      if (typeof watcher.throw === "function") return watcher.throw(...args);
+      throw args[0];
+    },
+    [Symbol.asyncIterator]() { return this; },
+  };
+}
+
+function githubCheckpointDraftBinding(
+  projection,
+  command,
+  { validateCommand = true } = {},
+) {
+  if (projection?.schema !== "flow.run-projection/v1" ||
+      command?.type !== "checkpoint_decision") return null;
+  const checkpoint = projection.active_plan?.cards?.find(({ id }) =>
+    id === command.checkpoint_id);
+  if (checkpoint?.id !== GITHUB_REVIEW_PENDING_CHECKPOINT_ID ||
+      checkpoint.inputs?.operation_card_id !== "review-github-pending") {
+    return null;
+  }
+  const pending = projection.active_plan.cards.find(({ id }) =>
+    id === "review-github-pending");
+  const target = pending?.inputs?.target;
+  const recordEffect = projection.effects?.find(({ card_id: cardId }) =>
+    cardId === "review-record");
+  const summary = recordEffect?.receipt?.provider_receipt?.summary;
+  const identity = githubPendingEffectIdentity({ runId: projection.run_id });
+  if (target?.schema !== GITHUB_REVIEW_TARGET_SCHEMA ||
+      !summary || !identity) {
+    return {
+      code: "github_review_checkpoint_draft_unavailable",
+      reason: "the exact settled GitHub pending-review draft is unavailable",
+    };
+  }
+  let draft;
+  try {
+    draft = buildGitHubPendingDraft({
+      target,
+      summary,
+      intent: { idempotency_key: identity.idempotency_key },
+    });
+  } catch (error) {
+    return {
+      code: error.code ?? "github_review_checkpoint_draft_unavailable",
+      reason: error.message,
+    };
+  }
+  if (!validateCommand) return { draft, draft_digest: digest(draft) };
+  if (!Object.hasOwn(command, "draft") &&
+      !Object.hasOwn(command, "draft_digest")) {
+    return {
+      draft,
+      draft_digest: digest(draft),
+      missing: true,
+      code: "github_review_checkpoint_draft_mismatch",
+      reason: "checkpoint decision must include the exact rendered GitHub draft",
+    };
+  }
+  if (!isCanonicalEqual(command.draft, draft) ||
+      command.draft_digest !== digest(draft)) {
+    return {
+      code: "github_review_checkpoint_draft_mismatch",
+      reason: "checkpoint decision is not bound to the exact rendered GitHub draft",
+      draft,
+    };
+  }
+  return { draft, draft_digest: digest(draft) };
+}
+
+function bindCheckpointDraft(command, binding) {
+  if (!isRecord(command)) return command;
+  const { draft: _draft, draft_digest: _draftDigest, ...authorityCommand } = command;
+  return {
+    ...authorityCommand,
+    checkpoint_binding: {
+      schema: "flow.checkpoint-binding/v1",
+      checkpoint_id: command.checkpoint_id,
+      draft: binding.draft,
+      draft_digest: binding.draft_digest,
+    },
+  };
+}
+
+function isCanonicalEqual(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function decorateGitHubReviewProjection(
+  projection,
+  runAuthority,
+) {
+  if (projection?.schema !== "flow.review-projection/v1" ||
+      projection.target_kind !== "github") return projection;
+  const runProjection = typeof projection.source_run_id === "string"
+    ? runAuthority.query(projection.source_run_id)
+    : null;
+  const pendingEffect = runProjection?.effects?.find(({ card_id: cardId }) =>
+    cardId === "review-github-pending");
+  const providerObservation = pendingEffect?.last_observation?.provider_observation;
+  const providerReceipt = pendingEffect?.receipt?.outcome === "succeeded"
+    ? pendingEffect.receipt.provider_receipt
+    : null;
+  const remoteReview = githubRemoteReviewProjection(
+    projection.remote_review,
+    providerReceipt,
+  );
+  const invalidation = providerObservation?.code === "github_review_target_moved"
+      ? {
+        intent: { run_id: projection.source_run_id },
+        target: projection.target,
+        code: providerObservation.code,
+        reason: providerObservation.reason,
+        target_observation: providerObservation.target_observation ?? null,
+      }
+      : null;
+  if (!invalidation) {
+    return remoteReview === projection.remote_review
+      ? projection
+      : freezeCanonical({ ...projection, remote_review: remoteReview });
+  }
+  const safeActions = (runProjection?.legal_actions ?? []).filter(({ type }) =>
+    ["recovery", "cancel"].includes(type));
+  const runWatermark = runProjection?.watermark ?? null;
+  return freezeCanonical({
+    ...projection,
+    status: "invalidated",
+    posture: "blocked",
+    automated_completion: false,
+    automated_evidence_status: "invalidated",
+    approval: "blocked",
+    integration_authorized: false,
+    merge_authorized: false,
+    tracker_completion_authorized: false,
+    remote_submission_authorized: false,
+    remote_review: {
+      ...remoteReview,
+      status: "invalidated",
+      submitted: false,
+    },
+    review_authority_watermark: projection.watermark,
+    invalidation: {
+      schema: "flow.github-review-invalidation/v1",
+      code: invalidation.code,
+      reason: invalidation.reason,
+      run_id: invalidation.intent?.run_id ?? projection.source_run_id,
+      run_authority_watermark: runWatermark,
+      review_authority_watermark: projection.watermark,
+      target_observation: invalidation.target_observation ?? null,
+      history_preserved: true,
+    },
+    legal_actions: safeActions,
+  });
+}
+
+function githubRemoteReviewProjection(remoteReview, providerReceipt) {
+  if (!isRecord(providerReceipt) ||
+      providerReceipt.schema !== "flow.github-review-receipt/v1" ||
+      providerReceipt.action !== "create_pending_review" ||
+      providerReceipt.state !== "pending" ||
+      providerReceipt.submitted !== false ||
+      typeof providerReceipt.review_id !== "string" ||
+      providerReceipt.review_id.length === 0) {
+    return remoteReview;
+  }
+  const receiptIdentity = {
+    schema: providerReceipt.schema,
+    effect_id: providerReceipt.effect_id,
+    idempotency_key: providerReceipt.idempotency_key,
+    review_id: providerReceipt.review_id,
+    target_fingerprint: providerReceipt.target_fingerprint,
+    target_authority_watermark: providerReceipt.target_authority_watermark,
+    draft_digest: providerReceipt.draft_digest,
+  };
+  return {
+    ...remoteReview,
+    status: "created",
+    state: "pending",
+    submitted: false,
+    review_id: providerReceipt.review_id,
+    effect_id: providerReceipt.effect_id,
+    idempotency_key: providerReceipt.idempotency_key,
+    target_fingerprint: providerReceipt.target_fingerprint,
+    target_authority_watermark: providerReceipt.target_authority_watermark,
+    draft_digest: providerReceipt.draft_digest,
+    receipt_identity: receiptIdentity,
+  };
+}
+
+function registeredOperationPresent(registry, contract) {
+  return registry instanceof Map
+    ? registry.has(contract) && registry.get(contract) != null
+    : Object.hasOwn(registry ?? {}, contract) && registry[contract] != null;
+}
+function attachedReviewAuthority(runAuthority) {
+  try {
+    return getReviewAuthority({ runAuthority });
+  } catch {
+    return null;
+  }
+}
+
+function attachedEffectIntentReader(runAuthority) {
+  try {
+    return getRunEffectIntentReader({ runAuthority });
+  } catch {
+    return null;
+  }
+}
+
+function setRegisteredOperation(registry, contract, registration) {
+  if (registry instanceof Map) registry.set(contract, registration);
+  else registry[contract] = registration;
+}
+
+function reviewRequestSubject(request) {
+  if (request?.review_id || request?.contract === "work.review/v1") {
+    return request.review_id ?? request.subject_id;
+  }
+  if ((request?.schema === "flow.query/v1" || request?.schema === "flow.watch/v1") &&
+      ["review", "review/v1"].includes(request.query)) {
+    return request.review_id ?? request.subject_id;
+  }
+  return null;
+}
+
+function isExactReviewInboxRequest(request, schema) {
+  return request !== null && typeof request === "object" &&
+    !Array.isArray(request) &&
+    Object.keys(request).sort().join(",") === "query,schema" &&
+    request.schema === schema && request.query === "review_inbox";
+}
+
+function reviewInboxRequestRejection(reviewAuthority, operation) {
+  let current = null;
+  try {
+    current = reviewAuthority.query({
+      contract: REVIEW_INBOX_QUERY_CONTRACT,
+    });
+  } catch {
+    // A malformed public request must still produce a stable rejection when
+    // the backing authority is unavailable or corrupt.
+  }
+  return createRejection({
+    operation,
+    code: "invalid_review_query",
+    authorityWatermark: current?.watermark ?? null,
+    authorityWatermarkDomain: "review",
+    legalActions: [],
+  });
+}
+
+function oneShotReviewObservation(value) {
+  let emitted = false;
+  return {
+    async next() {
+      if (emitted) return { value: undefined, done: true };
+      emitted = true;
+      return { value, done: false };
+    },
+    async return() { emitted = true; return { value: undefined, done: true }; },
+    [Symbol.asyncIterator]() { return this; },
+  };
 }
 
 function executionCards(prepared) {
@@ -296,6 +948,10 @@ function recoverOutstandingEffects(
   runAuthority,
   operationRegistry,
   subrunRegistration,
+  {
+    allowIndeterminateRecovery = true,
+    allowOneShotRecovery = true,
+  } = {},
 ) {
   if (typeof runAuthority.pendingSameBootRecoveryRunIds !== "function") return;
   const runIds = runAuthority.pendingSameBootRecoveryRunIds();
@@ -317,9 +973,12 @@ function recoverOutstandingEffects(
       const isDelegateEffect = ["delegate", "delegate_cancellation"].includes(
         effect?.effect_kind,
       );
+      const operationCard = projection.active_plan.cards.find(({ id }) =>
+        id === effect?.card_id);
       if (!effect || (!isDelegateEffect && operationRegistrationIssue(
         registeredOperation(operationRegistry, effect.operation_contract),
         effect.classification,
+        operationCard?.inputs?.provider_receipt_validator,
       ))) {
         compatible = false;
         break;
@@ -338,6 +997,14 @@ function recoverOutstandingEffects(
       }
       const effect = current.effects.find(({ effect_id: currentEffectId }) =>
         currentEffectId === effectId);
+      if (!allowIndeterminateRecovery &&
+          effect?.last_observation?.presence === "indeterminate") {
+        continue;
+      }
+      if (!allowOneShotRecovery &&
+          effect?.classification === "one_shot_uncertain") {
+        continue;
+      }
       const subrun = current.subruns.find(({ card_id: cardId }) =>
         cardId === effect?.card_id);
       if (effect?.operation_contract === SUBRUN_CONTRACT &&
@@ -383,6 +1050,7 @@ function commandRegistryRejection(command, operationRegistry, runAuthority) {
   const issue = operationRegistrationIssue(
     registeredOperation(operationRegistry, binding.contract),
     binding.classification,
+    binding.providerReceiptValidator,
   );
   if (!issue) return null;
   return createRejection({
@@ -408,6 +1076,8 @@ function operationBinding(command, projection) {
     return effect ? {
       classification: effect.classification,
       contract: effect.operation_contract,
+      providerReceiptValidator: projection.active_plan.cards.find(({ id }) =>
+        id === effect.card_id)?.inputs?.provider_receipt_validator,
     } : null;
   }
   let operationId = command.card_id;
@@ -430,10 +1100,23 @@ function operationBinding(command, projection) {
   return {
     classification: operation.executor.effect_classification,
     contract: operation.executor.contract,
+    providerReceiptValidator: operation.inputs.provider_receipt_validator,
   };
 }
 
 function dispatchRegisteredQuery(request, registeredQueries, runAuthority) {
+  if (request?.query === "backup") {
+    return runAuthority.query()?.backup ?? hostQueryRejection(
+      runAuthority,
+      "backup_unavailable",
+    );
+  }
+  if (request?.query === "restore") {
+    return runAuthority.query()?.restore ?? hostQueryRejection(
+      runAuthority,
+      "restore_unavailable",
+    );
+  }
   if (!Object.hasOwn(registeredQueries, request.query)) {
     return hostQueryRejection(runAuthority, "unsupported_query");
   }

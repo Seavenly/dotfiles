@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-execution-authority.v1.schema.json",
+  "title": "flow.delegate-execution-authority/v1",
+  "description": "RunAuthority's accepted capability fact for delegated execution. Capability material and bearer secrets are never transferable input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "owner",
+    "capability",
+    "effective_authority_digest",
+    "capability_envelope_ids"
+  ],
+  "properties": {
+    "schema": { "const": "flow.delegate-execution-authority/v1" },
+    "owner": { "const": "RunAuthority" },
+    "capability": { "type": "string", "minLength": 1 },
+    "effective_authority_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "capability_envelope_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

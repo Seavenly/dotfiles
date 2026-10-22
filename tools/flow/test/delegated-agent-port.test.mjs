@@ -6,6 +6,7 @@ import {
   createDrovrDelegatedAgentPort as createProductionDrovrDelegatedAgentPort,
 } from "../src/drovr-delegated-agent-port.mjs";
 import { digest } from "../src/canonical.mjs";
+import { digestDelegateInputBytes } from "../src/delegate-input-envelope.mjs";
 import {
   rebindDescriptionDigest,
   repositoryDrovrDependencies,
@@ -232,6 +233,7 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
   const discovered = await port.discover({
@@ -243,6 +245,7 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "prioritize correctness",
+    payload_sha256: digestDelegateInputBytes("prioritize correctness"),
   });
   const observed = await port.observe({
     schema: "flow.delegated-agent-observe-request/v1",
@@ -303,6 +306,366 @@ test("DelegatedAgentPort exposes the complete authority-derived lifecycle", asyn
   assert.equal(calls[2][2].callerKey, "input:2");
 });
 
+test("DelegatedAgentPort requires an exact payload digest for dispatch and send", async () => {
+  const context = lifecycleContext();
+  const port = createDrovrDelegatedAgentPort({
+    async dispatchDrovr() {
+      return { ...context, dispatch_status: "dispatched" };
+    },
+    async sendDrovr() {
+      return { ...context, input_status: "submitted" };
+    },
+  });
+  const description = (await port.describe(request)).description;
+  const dispatchRequest = {
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: "agent:1",
+    caller_key: "run:payload/card:delegate/attempt:1",
+    input_key: "run:payload/card:delegate/attempt:1:input:1",
+    prompt: "inspect the candidate",
+    description,
+  };
+  const missingDispatch = await port.dispatch(dispatchRequest);
+  assert.equal(missingDispatch.status, "blocked");
+  assert.equal(missingDispatch.compatibility.code, "invalid_dispatch_request");
+  const wrongDispatch = await port.dispatch({
+    ...dispatchRequest,
+    payload_sha256: `sha256:${"0".repeat(64)}`,
+  });
+  assert.equal(wrongDispatch.status, "blocked");
+  assert.equal(wrongDispatch.compatibility.code, "invalid_dispatch_request");
+  const missingSend = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "run:payload/card:delegate/attempt:1:steering:next",
+    prompt: "prioritize correctness",
+  });
+  assert.equal(missingSend.status, "blocked");
+  assert.equal(missingSend.compatibility.code, "invalid_input_request");
+  const wrongSend = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "run:payload/card:delegate/attempt:1:steering:next",
+    prompt: "prioritize correctness",
+    payload_sha256: `sha256:${"0".repeat(64)}`,
+  });
+  assert.equal(wrongSend.status, "blocked");
+  assert.equal(wrongSend.compatibility.code, "invalid_input_request");
+});
+
+test("DelegatedAgentPort preserves a competing registry owner watermark and actions", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async dispatchDrovr() {
+      const error = new Error("another registry owner is live");
+      error.outcome = "registry_locked";
+      error.details = {
+        schema: "drovr.registry-lock/v1",
+        resource_key: "task-lifecycle:task:1",
+        lock_path: "/state/drovr/locks/lock-1",
+        owner_status: "live",
+        authority_watermark: authorityWatermark,
+        legal_next_actions: ["wait_for_registry_lock", "status"],
+      };
+      throw error;
+    },
+  });
+  const description = (await port.describe(request)).description;
+
+  const blocked = await port.dispatch({
+    schema: "flow.delegated-agent-dispatch-request/v1",
+    agent_id: "agent:1",
+    caller_key: "run:1/card:review/attempt:1",
+    input_key: "input:1",
+    prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
+    description,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "registry_locked");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "wait_for_registry_lock",
+    "status",
+  ]);
+});
+
+test("DelegatedAgentPort preserves owner-loss recovery evidence", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async sendDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_required",
+        authorityWatermark,
+        ["agent_retire"],
+        { owner_status: "absent" },
+      );
+    },
+  });
+
+  const blocked = await port.send({
+    schema: "flow.delegated-agent-send-request/v1",
+    turn_id: "turn:1",
+    input_key: "input:2",
+    prompt: "resume the exact operation",
+    payload_sha256: digestDelegateInputBytes("resume the exact operation"),
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "registry_lock_recovery_required");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, ["agent_retire"]);
+});
+
+test("DelegatedAgentPort preserves recovery-evidence mismatch watermark and actions", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async observeDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_evidence_invalid",
+        authorityWatermark,
+        ["task_close"],
+        { owner_status: "absent" },
+      );
+    },
+  });
+
+  const blocked = await port.observe({
+    schema: "flow.delegated-agent-observe-request/v1",
+    turn_id: "turn:1",
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(
+    blocked.compatibility.code,
+    "registry_lock_recovery_evidence_invalid",
+  );
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, ["task_close"]);
+});
+
+test("DelegatedAgentPort preserves release-failure watermark and actions", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async retireDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_release_failed",
+        authorityWatermark,
+        ["status"],
+        { owner_status: "absent" },
+      );
+    },
+  });
+
+  const blocked = await port.retire({
+    schema: "flow.delegated-agent-retire-request/v1",
+    agent_id: "agent:1",
+    turn_id: "turn:1",
+    attempt_id: "run:1/card:review/attempt:1",
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "registry_lock_release_failed");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, ["status"]);
+});
+
+test("DelegatedAgentPort blocks detected registry lock ownership loss", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async retireDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_ownership_lost",
+        authorityWatermark,
+        ["status"],
+      );
+    },
+  });
+
+  const blocked = await port.retire({
+    schema: "flow.delegated-agent-retire-request/v1",
+    agent_id: "agent:1",
+    turn_id: "turn:1",
+    attempt_id: "run:1/card:review/attempt:1",
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.compatibility.code, "registry_lock_ownership_lost");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, ["status"]);
+});
+
+test("DelegatedAgentPort sanitizes malformed registry-lock details without authority", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async waitDrovr() {
+      throw Object.assign(new Error("malformed lock evidence"), {
+        outcome: "registry_lock_recovery_evidence_invalid",
+        details: {
+          authority_watermark: {
+            schema: "drovr.registry-authority-watermark/v1",
+            authority: "drovr.registry",
+            turns_sha256: "not-a-digest",
+          },
+          legal_next_actions: ["force_unlock"],
+        },
+      });
+    },
+  });
+
+  const blocked = await port.wait({
+    schema: "flow.delegated-agent-wait-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(
+    blocked.compatibility.code,
+    "registry_lock_recovery_evidence_invalid",
+  );
+  assert.equal(blocked.watermark, null);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_runtime_registry",
+  ]);
+});
+
+test("DelegatedAgentPort does not treat a partial registry watermark as lock authority", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async cancelDrovr() {
+      throw Object.assign(new Error("partial lock evidence"), {
+        outcome: "registry_locked",
+        details: {
+          authority_watermark: {
+            schema: "drovr.registry-authority-watermark/v1",
+            authority: "drovr.registry",
+            turns_sha256: digest([]),
+          },
+          legal_next_actions: ["wait_for_registry_lock", "status"],
+        },
+      });
+    },
+  });
+
+  const blocked = await port.cancel({
+    schema: "flow.delegated-agent-cancel-request/v1",
+    turn_id: "turn:1",
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.watermark, null);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "wait_for_registry_lock",
+    "status",
+  ]);
+});
+
+test("DelegatedAgentPort does not expose internal registry recovery verbs", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async reconcileDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_evidence_invalid",
+        authorityWatermark,
+        ["adopt_registry_operation"],
+      );
+    },
+  });
+
+  const blocked = await port.reconcile({
+    schema: "flow.delegated-agent-reconcile-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_runtime_registry",
+  ]);
+});
+
+test("DelegatedAgentPort keeps absent-owner lock release operator-only", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const port = createDrovrDelegatedAgentPort({
+    async reconcileDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_required",
+        authorityWatermark,
+        ["turn_wait", "release_absent_registry_lock"],
+        {
+          owner_status: "absent",
+          lock_entry: "a".repeat(64),
+          lock_id: "lock-1",
+        },
+      );
+    },
+  });
+
+  const blocked = await port.reconcile({
+    schema: "flow.delegated-agent-reconcile-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "repair_delegated_runtime_registry",
+  ]);
+  assert.equal(Object.hasOwn(blocked, "lock_entry"), false);
+});
+
+test("DelegatedAgentPort preserves a bare-lock abandonment subject", async () => {
+  const authorityWatermark = registryLockWatermark();
+  const lockEntry = "a".repeat(64);
+  const port = createDrovrDelegatedAgentPort({
+    async reconcileDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_required",
+        authorityWatermark,
+        ["abandon_bare_registry_lock"],
+        { owner_status: "unproven", lock_entry: lockEntry },
+      );
+    },
+  });
+
+  const blocked = await port.reconcile({
+    schema: "flow.delegated-agent-reconcile-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.watermark, authorityWatermark);
+  assert.deepEqual(blocked.legal_next_actions, [
+    "abandon_bare_registry_lock",
+  ]);
+  assert.equal(blocked.lock_entry, lockEntry);
+});
+
+test("DelegatedAgentPort closes bare-lock action without a valid subject", async () => {
+  const port = createDrovrDelegatedAgentPort({
+    async reconcileDrovr() {
+      throw drovrRegistryLockError(
+        "registry_lock_recovery_required",
+        registryLockWatermark(),
+        ["abandon_bare_registry_lock"],
+        { owner_status: "unproven", lock_entry: "not-a-hash" },
+      );
+    },
+  });
+
+  const blocked = await port.reconcile({
+    schema: "flow.delegated-agent-reconcile-request/v1",
+    turn_id: "turn:1",
+    timeout_ms: 1000,
+  });
+
+  assert.deepEqual(blocked.legal_next_actions, ["status"]);
+  assert.equal(Object.hasOwn(blocked, "lock_entry"), false);
+});
+
 test("DelegatedAgentPort proves caller-key absence and fails conflicts closed", async () => {
   const port = createDrovrDelegatedAgentPort({
     async discoverDrovr() {
@@ -336,6 +699,7 @@ test("DelegatedAgentPort proves caller-key absence and fails conflicts closed", 
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "different",
+    payload_sha256: digestDelegateInputBytes("different"),
   });
   assert.equal(conflict.status, "blocked");
   assert.equal(conflict.compatibility.code, "caller_key_conflict");
@@ -424,6 +788,7 @@ for (const outcome of ["launch_binding_missing", "launch_binding_stale"]) {
       caller_key: "run:1/card:review/attempt:1",
       input_key: "input:1",
       prompt: "inspect the candidate",
+      payload_sha256: digestDelegateInputBytes("inspect the candidate"),
       description,
     });
 
@@ -461,6 +826,7 @@ test("DelegatedAgentPort keeps a fresh description conflict refreshable", async 
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
 
@@ -497,6 +863,7 @@ test("DelegatedAgentPort never recommends retirement without registry evidence",
     caller_key: "run:1/card:review/attempt:1",
     input_key: "input:1",
     prompt: "inspect the candidate",
+    payload_sha256: digestDelegateInputBytes("inspect the candidate"),
     description,
   });
 
@@ -528,6 +895,7 @@ test("DelegatedAgentPort closes legal actions around unproven delivery and agent
     turn_id: "turn:1",
     input_key: "input:2",
     prompt: "do not duplicate this input",
+    payload_sha256: digestDelegateInputBytes("do not duplicate this input"),
   });
   assert.equal(reconciling.status, "reconciling");
   assert.deepEqual(reconciling.legal_next_actions, [
@@ -602,6 +970,57 @@ function registryWatermark() {
     authority: "drovr.registry",
     turns_sha256: digest([]),
   };
+}
+
+function registryLockWatermark() {
+  const generation = {
+    schema: "drovr.registry-authority-watermark/v1",
+    authority: "drovr.registry",
+    groups_sha256: digest([]),
+    tasks_sha256: digest([]),
+    agents_sha256: digest([]),
+    turns_sha256: digest([]),
+    blocks_sha256: digest([]),
+    groups_count: 0,
+    tasks_count: 0,
+    agents_count: 0,
+    turns_count: 0,
+    blocks_count: 0,
+  };
+  return {
+    ...generation,
+    generation: digest(generation),
+    registry_sha256: digest({
+      groups: [],
+      tasks: [],
+      agents: [],
+      turns: [],
+      blocks: [],
+    }),
+  };
+}
+
+function drovrRegistryLockError(
+  outcome,
+  authorityWatermark,
+  legalNextActions,
+  {
+    owner_status: ownerStatus = "live",
+    lock_entry: lockEntry,
+  } = {},
+) {
+  return Object.assign(new Error(outcome), {
+    outcome,
+    details: {
+      schema: "drovr.registry-lock/v1",
+      resource_key: "task-lifecycle:task:1",
+      lock_path: "/state/drovr/locks/lock-1",
+      owner_status: ownerStatus,
+      ...(lockEntry ? { lock_entry: lockEntry } : {}),
+      authority_watermark: authorityWatermark,
+      legal_next_actions: legalNextActions,
+    },
+  });
 }
 
 for (const [label, mutate, expectedFinding] of [

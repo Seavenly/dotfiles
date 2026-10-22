@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.authority-observation.v1.schema.json",
+  "title": "flow.authority-observation/v1",
+  "description": "observation_input is the exact required binding observation_input. JSON Schema cannot express cross-object digest equality, so runtime validation enforces that equality and rejects augmented or substituted input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "observation_input"],
+  "properties": {
+    "schema": { "const": "flow.authority-observation/v1" },
+    "status": {
+      "enum": [
+        "available",
+        "present",
+        "missing",
+        "stale",
+        "unavailable",
+        "contradictory",
+        "uncertain"
+      ]
+    },
+    "watermark": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "generation": { "type": "integer", "minimum": 0 },
+    "observation_input": { "type": "object" },
+    "legal_actions": { "type": "array" }
+  },
+  "anyOf": [
+    {
+      "required": ["watermark"],
+      "properties": {
+        "watermark": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "required": ["generation"],
+      "properties": {
+        "generation": { "type": "integer", "minimum": 0 }
+      }
+    }
+  ]
+}

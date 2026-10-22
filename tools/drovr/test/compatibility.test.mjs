@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { digestCanonical } from "../src/canonical-json.mjs";
 import {
+  assertQualifiedCompatibility,
   COMPATIBILITY_FEATURES,
   collectProductionCompatibility,
   qualifyCompatibility,
@@ -74,6 +75,19 @@ function managedIdentity({
     effort: harness === "claude" ? "low" : "high",
   };
 }
+
+test("unqualified compatibility is a structured expected outcome", () => {
+  const compatibility = { status: "blocked", reason: "missing_runtime" };
+
+  assert.throws(
+    () => assertQualifiedCompatibility(compatibility),
+    (error) =>
+      error instanceof DrovrError &&
+      error.code === 0 &&
+      error.outcome === "compatibility_blocked" &&
+      error.details?.compatibility === compatibility,
+  );
+});
 
 test("production compatibility records exact executable, integration, and adapter facts", async () => {
   const { run } = runtime();
@@ -446,6 +460,11 @@ test("managed-pane version drift from the caller shell is a typed compatibility 
     result.mismatches[0].field,
     "managed_pane_identity.executable.version",
   );
+  assert.deepEqual(result.remediation, {
+    command: "drovr doctor",
+    shell: "same_non_login_shell",
+    detail: "run Drovr and doctor from the same non-login shell, then align the caller and managed harness executable",
+  });
 });
 
 test("managed-pane executable, integration, path, file, and process binding changes are detected", async () => {

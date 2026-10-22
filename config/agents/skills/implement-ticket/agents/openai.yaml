@@ -1,5 +1,5 @@
 interface:
   display_name: "Implement Ticket"
-  short_description: "Implement one issue in an isolated worktree"
+  short_description: "Orchestrate Luna Max ticket implementation"
 policy:
   allow_implicit_invocation: false

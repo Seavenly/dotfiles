@@ -14,13 +14,16 @@ import {
   getTurn,
   reconcileTurn,
   sendToTurn,
+  trustedPreDispatchProof,
   turnCommandResult,
   turnDiscoveryCommandResult,
+  validateResourceBinding as validateDrovrResourceBinding,
   waitForTurn,
 } from "../../drovr/src/turns.mjs";
 import { retireAgent } from "../../drovr/src/lifecycle.mjs";
 
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
+import { digestDelegateInputBytes } from "./delegate-input-envelope.mjs";
 import {
   featureConformanceFindings,
   FLOW_REQUIRED_DROVR_FEATURE_CONTRACT_DIGEST,
@@ -35,6 +38,44 @@ const PROJECTION_CONTRACT =
   "flow.delegated-agent-description-projection/v1";
 const LIFECYCLE_PROJECTION_CONTRACT =
   "flow.delegated-agent-lifecycle-projection/v1";
+const PRE_DISPATCH_PROOF = Object.freeze({
+  schema: "drovr.dispatch-proof/v1",
+  stage: "pre_dispatch_validation",
+  native_dispatch_started: false,
+  turn_created: false,
+  effect_created: false,
+});
+const TRUSTED_PRE_DISPATCH_PROJECTIONS = new WeakSet();
+
+export function isTrustedPreDispatchProjection(projection) {
+  return TRUSTED_PRE_DISPATCH_PROJECTIONS.has(projection);
+}
+const REGISTRY_LOCK_OUTCOMES = new Set([
+  "registry_locked",
+  "registry_lock_recovery_required",
+  "registry_lock_recovery_evidence_invalid",
+  "registry_lock_release_failed",
+  "registry_lock_ownership_lost",
+]);
+const REGISTRY_LOCK_LEGAL_ACTIONS = new Set([
+  "wait_for_registry_lock",
+  "status",
+  "agent_start",
+  "agent_retire",
+  "agent_staged_input",
+  "task_open",
+  "task_close",
+  "group_close",
+  "turn_start",
+  "turn_dispatch",
+  "turn_wait",
+  "turn_send",
+  "turn_cancel",
+  "abandon_bare_registry_lock",
+]);
+const SAFE_REGISTRY_LOCK_ACTIONS = [
+  "repair_delegated_runtime_registry",
+];
 const PROJECTION_SCHEMA_URL = new URL(
   "../../../config/flow/schemas/flow.delegated-agent-description-projection.v1.schema.json",
   import.meta.url,
@@ -238,13 +279,21 @@ export function createDrovrDelegatedAgentPort({
 
     async dispatch(request) {
       if (!validDispatchRequest(request)) {
-        return lifecycleBlock("dispatch", "invalid_dispatch_request", []);
+        return lifecycleBlock(
+          "dispatch",
+          "invalid_dispatch_request",
+          [],
+          PRE_DISPATCH_PROOF,
+        );
       }
       return invokeLifecycle("dispatch", async () => {
         const description = request.description;
         const context = await dispatchDrovr(request.agent_id, {
           callerKey: request.caller_key,
           callerMetadata: description.caller_metadata,
+          ...(request.resource_binding === undefined ? {} : {
+            resourceBinding: structuredClone(request.resource_binding),
+          }),
           inputKey: request.input_key,
           launchBinding: {
             schema: "drovr.launch-binding/v1",
@@ -289,8 +338,8 @@ export function createDrovrDelegatedAgentPort({
       if (!validKeyedRequest(
         request,
         "send",
-        ["turn_id", "input_key", "prompt"],
-      )) {
+        ["turn_id", "input_key", "prompt", "payload_sha256"],
+      ) || !payloadDigestMatches(request)) {
         return lifecycleBlock("send", "invalid_input_request", []);
       }
       return invokeLifecycle("send", async () => lifecycleTurnProjection(
@@ -445,12 +494,16 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
   try {
     return await execute();
   } catch (error) {
+    if (REGISTRY_LOCK_OUTCOMES.has(error?.outcome)) {
+      return lifecycleRegistryLockBlock(operation, error);
+    }
     if (error?.outcome === "compatibility_blocked") {
       return lifecycleBlock(
         operation,
         "compatibility_blocked",
         error.details?.compatibility?.legal_actions ??
           ["refresh_compatibility", "run_drovr_doctor"],
+        dispatchProofFrom(error),
       );
     }
     if (
@@ -473,8 +526,111 @@ async function invokeLifecycle(operation, execute, conflictProjection) {
       identityConflict(error?.outcome)
         ? []
         : ["retry_delegated_runtime_operation"],
+      dispatchProofFrom(error),
     );
   }
+}
+
+function lifecycleRegistryLockBlock(operation, error) {
+  const details = error?.details;
+  const authorityWatermark = validRegistryWatermark(
+    details?.authority_watermark,
+  )
+    ? structuredClone(details.authority_watermark)
+    : null;
+  const legalNextActions = validRegistryLockActions(
+    details?.legal_next_actions,
+  )
+    ? [...details.legal_next_actions]
+    : [...SAFE_REGISTRY_LOCK_ACTIONS];
+  const lockEntry = validRegistryLockEntry(details?.lock_entry)
+    ? details.lock_entry
+    : null;
+  if (
+    legalNextActions.includes("abandon_bare_registry_lock") &&
+    !lockEntry
+  ) {
+    legalNextActions.splice(
+      legalNextActions.indexOf("abandon_bare_registry_lock"),
+      1,
+    );
+    if (legalNextActions.length === 0) legalNextActions.push("status");
+  }
+  return freezeCanonical({
+    schema: LIFECYCLE_PROJECTION_CONTRACT,
+    operation,
+    status: "blocked",
+    watermark: authorityWatermark,
+    delegation: null,
+    turn: null,
+    compatibility: {
+      contract: PORT_CONTRACT,
+      code: error.outcome,
+    },
+    ...(lockEntry && legalNextActions.includes("abandon_bare_registry_lock")
+      ? { lock_entry: lockEntry }
+      : {}),
+    legal_next_actions: legalNextActions,
+  });
+}
+
+function validRegistryLockActions(actions) {
+  return Array.isArray(actions) &&
+    actions.length > 0 &&
+    new Set(actions).size === actions.length &&
+    actions.every((action) => REGISTRY_LOCK_LEGAL_ACTIONS.has(action));
+}
+
+function validRegistryLockEntry(lockEntry) {
+  return typeof lockEntry === "string" && /^[0-9a-f]{64}$/u.test(lockEntry);
+}
+
+function validRegistryWatermark(watermark) {
+  const requiredDigestKeys = [
+    "groups_sha256",
+    "tasks_sha256",
+    "agents_sha256",
+    "turns_sha256",
+    "blocks_sha256",
+  ];
+  const requiredCountKeys = [
+    "groups_count",
+    "tasks_count",
+    "agents_count",
+    "turns_count",
+    "blocks_count",
+  ];
+  if (!isRecord(watermark) ||
+    watermark.schema !== "drovr.registry-authority-watermark/v1" ||
+    watermark.authority !== "drovr.registry" ||
+    !requiredDigestKeys.every((key) => isDigest(watermark[key])) ||
+    !requiredCountKeys.every((key) =>
+      Number.isSafeInteger(watermark[key]) && watermark[key] >= 0
+    ) ||
+    !isDigest(watermark.generation) ||
+    !isDigest(watermark.registry_sha256)) {
+    return false;
+  }
+  const allowedKeys = new Set([
+    "schema",
+    "authority",
+    "groups_sha256",
+    "tasks_sha256",
+    "agents_sha256",
+    "turns_sha256",
+    "blocks_sha256",
+    "groups_count",
+    "tasks_count",
+    "agents_count",
+    "turns_count",
+    "blocks_count",
+    "generation",
+    "registry_sha256",
+  ]);
+  if (Object.keys(watermark).some((key) => !allowedKeys.has(key))) {
+    return false;
+  }
+  return true;
 }
 
 function lifecycleConflictFromContext(operation, code, context) {
@@ -496,7 +652,8 @@ function lifecycleConflictFromDiscovery(operation, error, discovery) {
     "launch_binding_missing",
     "launch_binding_stale",
   ].includes(code);
-  return freezeCanonical({
+  const dispatchProof = dispatchProofFrom(error);
+  const projection = freezeCanonical({
     schema: LIFECYCLE_PROJECTION_CONTRACT,
     operation,
     status: "blocked",
@@ -504,10 +661,17 @@ function lifecycleConflictFromDiscovery(operation, error, discovery) {
     delegation: error.details?.delegation ?? null,
     turn: null,
     compatibility: { contract: PORT_CONTRACT, code },
+    ...(dispatchProof === null ? {} : {
+      dispatch_proof: dispatchProof,
+    }),
     legal_next_actions: immutableAgentConflict
       ? ["retire_agent"]
       : ["refresh_delegated_runtime_description"],
   });
+  if (dispatchProof !== null) {
+    TRUSTED_PRE_DISPATCH_PROJECTIONS.add(projection);
+  }
+  return projection;
 }
 
 function identityConflict(outcome) {
@@ -519,8 +683,13 @@ function identityConflict(outcome) {
   ].includes(outcome);
 }
 
-function lifecycleBlock(operation, code, legalNextActions) {
-  return freezeCanonical({
+function lifecycleBlock(
+  operation,
+  code,
+  legalNextActions,
+  dispatchProof = null,
+) {
+  const projection = freezeCanonical({
     schema: LIFECYCLE_PROJECTION_CONTRACT,
     operation,
     status: "blocked",
@@ -528,8 +697,29 @@ function lifecycleBlock(operation, code, legalNextActions) {
     delegation: null,
     turn: null,
     compatibility: { contract: PORT_CONTRACT, code },
+    ...(dispatchProof === null ? {} : { dispatch_proof: dispatchProof }),
     legal_next_actions: legalNextActions,
   });
+  if (dispatchProof !== null) {
+    TRUSTED_PRE_DISPATCH_PROJECTIONS.add(projection);
+  }
+  return projection;
+}
+
+function dispatchProofFrom(error) {
+  const proof = trustedPreDispatchProof(error);
+  if (proof === null) return null;
+  return validDispatchProof(proof) ? proof : null;
+}
+
+function validDispatchProof(proof) {
+  return proof?.schema === "drovr.dispatch-proof/v1" &&
+    proof.stage === "pre_dispatch_validation" &&
+    proof.native_dispatch_started === false &&
+    proof.turn_created === false &&
+    proof.effect_created === false &&
+    Object.keys(proof).sort().join(",") ===
+      "effect_created,native_dispatch_started,schema,stage,turn_created";
 }
 
 function validDispatchRequest(request) {
@@ -539,14 +729,27 @@ function validDispatchRequest(request) {
       "caller_key",
       "input_key",
       "prompt",
+      "payload_sha256",
       "description",
+      ...(request.resource_binding === undefined ? [] : ["resource_binding"]),
     ]) ||
     request.description?.schema !== "drovr.delegated-agent-description/v1" ||
     !isDigest(request.description?.description_digest) ||
     !isDigest(request.description?.comparison_keys?.launch) ||
-    !isDigest(request.description?.watermark?.content_sha256)
+    !isDigest(request.description?.watermark?.content_sha256) ||
+    request.resource_binding !== undefined &&
+      !validResourceBinding(request.resource_binding, request.agent_id)
   ) return false;
-  return true;
+  return payloadDigestMatches(request);
+}
+
+function validResourceBinding(binding, agentId) {
+  try {
+    validateDrovrResourceBinding(binding, agentId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validKeyedRequest(request, operation, fields) {
@@ -555,10 +758,19 @@ function validKeyedRequest(request, operation, fields) {
     Object.keys(request).some((key) => !["schema", ...fields].includes(key))
   ) return false;
   return fields.every((field) =>
-    field === "timeout_ms" || field === "description"
+    field === "payload_sha256"
+      ? isDigest(request[field])
+      : field === "timeout_ms" || field === "description"
       ? Object.hasOwn(request, field)
+      : field === "resource_binding"
+      ? isRecord(request[field])
       : nonEmptyString(request[field])
   );
+}
+
+function payloadDigestMatches(request) {
+  return typeof request?.prompt === "string" &&
+    request.payload_sha256 === digestDelegateInputBytes(request.prompt);
 }
 
 function descriptionContradiction(

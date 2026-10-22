@@ -23,6 +23,7 @@ export function createTurnRecord({
   caller,
   inputKey,
   launchBinding,
+  resourceBinding,
 }) {
   return {
     schema: "drovr.turn/v1",
@@ -39,6 +40,9 @@ export function createTurnRecord({
     ...(caller ? { caller: structuredClone(caller) } : {}),
     ...(launchBinding
       ? { launch_binding: structuredClone(launchBinding) }
+      : {}),
+    ...(resourceBinding
+      ? { resource_binding: structuredClone(resourceBinding) }
       : {}),
     transcript_cursor: transcriptCursor,
     ...(Number.isSafeInteger(transitionToken ?? herdrStateChangeSeq)

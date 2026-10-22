@@ -1,53 +1,129 @@
 ---
 name: drovr-review
-description: Run an iterative Drovr review with a full-access reviewer, optionally selecting the harness, model, and effort. Use only when invoked as /drovr-review or $drovr-review.
-argument-hint: "[--harness claude|codex] [--model <model>] [--effort low|medium|high|xhigh]"
+description: Run a Sol-led iterative Drovr review with a read-only Claude Code Opus reviewer at medium effort, then delegate accepted corrections and affected verification to native gpt-5.6-luna agents. Use only when invoked as /drovr-review or $drovr-review.
 disable-model-invocation: true
 ---
 
 # Drovr Review
 
-Review completed, verified local changes.
+Review a completed local candidate as the Sol primary agent. Sol owns scope,
+guidance, authority, adjudication, and the final gate. Do not treat a reviewer
+or Luna summary as proof; inspect the actual candidate state.
 
-1. Pin the scope: request or spec, repository guidance, base and head, plus
-   staged, unstaged, and untracked changes.
-2. Resolve the reviewer launch from the optional arguments. Accept only
-   `--harness`, `--model`, and `--effort`; reject any other argument or an
-   invalid value instead of guessing.
+1. Pin the request or spec, repository guidance, exact candidate cwd, and base.
+   For each review round, record the current `HEAD` and the exact contents of
+   staged, unstaged, and untracked candidate changes: a Git tree OID or
+   retained patches and untracked-file content hashes. `HEAD` and status alone
+   do not identify uncommitted content. Preserve unrelated user changes. Do not
+   review a moving or ambiguous candidate.
 
-   - `--harness`: `claude` or `codex`. Defaults to `claude`.
-   - `--model`: any model the resolved harness supports. Defaults to `opus`
-     when the harness is `claude`; for any other harness, omit the flag so
-     Drovr resolves that harness default.
-   - `--effort`: `low`, `medium`, `high`, or `xhigh`. Defaults to `medium`
-     when the harness is `claude`; for any other harness, omit the flag.
+2. From the candidate cwd, invoke one fresh, read-only Drovr reviewer with a
+   fresh task key. Run Drovr with login-shell startup disabled so the caller
+   and managed pane resolve the same tracked harness executable. Before the
+   first launch, run `drovr doctor` once from that same cwd and non-login shell;
+   stop on an unqualified result instead of creating or retrying a reviewer.
 
-3. From the candidate cwd, create one reviewer with a fresh task key, passing
-   only the flags that resolved to a value:
+   ```sh
+   drovr delegate --task-key <key> --agent-key reviewer --cwd <cwd> \
+     --role reviewer --harness claude --model opus --effort medium \
+     --capability read-only "<scope and review request>"
+   ```
 
-```sh
-drovr delegate --task-key <key> --agent-key reviewer --cwd <cwd> \
-  --role reviewer --harness <harness> [--model <model>] [--effort <effort>] \
-  --capability unrestricted "<scope and review request>"
-```
+   Request actionable correctness, regression, security, test, and spec
+   findings with evidence and locations. Embed the acceptance criteria,
+   parent/blocker constraints, candidate identity, and state snapshot; do not
+   require reviewer network access. Record the agent ID. Resume incomplete
+   turns with that same agent; never replace it.
 
-The reviewer runs with full access, so ask it to run whatever repository
-checks its findings need for evidence, and to leave the working tree, index,
-and branches unchanged; every edit remains yours. Ask for actionable
-correctness, regression, security, test, and spec findings, each with evidence
-and a location. Record the returned agent ID. Resume incomplete turns; never
-replace the reviewer.
+   Retain the returned task, agent, and turn IDs. Resume a yielded automation
+   process through its existing process/session handle. Otherwise observe only
+   the exact turn with `drovr turn wait TURN_ID`, use `drovr turn get TURN_ID`
+   for a nonblocking snapshot, and add `--include-messages` only when the
+   transcript is needed. Use `drovr ask AGENT_ID "<prompt>"` and
+   `drovr agent get AGENT_ID` exactly. Do not use unfiltered `drovr status` to
+   rediscover known work; if IDs were lost, use `drovr status --agent AGENT_ID`
+   or `drovr status --task TASK_ID`.
 
-4. Classify every finding: accept, reject, or clarify. Apply clear accepted
-   changes, reject with reasons, and verify affected behavior.
-5. Before editing, use `drovr ask` with a proposed fix only when ambiguity,
-   risk, spec conflict, or competing designs make likely rework costlier than
-   another turn.
-6. If changes materially alter behavior, interfaces, control flow, or tests,
-   run `drovr ask <agent-id> "<fixes, pushback, verification; re-review>"`.
-   Reuse the agent. All clarification and review responses share a three-response
-   cap. Stop early when another review adds little value. Report sizable changes
-   made after the third response as unreviewed.
-7. Report rounds, dispositions, verification, unresolved blockers, and whether
-   another review cycle would add meaningful value. Do not start one without
-   the user's request.
+   If a later turn alone is blocked by the typed `caller_shell_mismatch`
+   outcome after at least one correlated reviewer response, first retry from
+   the same non-login shell and run `drovr doctor`. If the original reviewer
+   still cannot resume, an evidence-preserving rollover is the only permitted
+   replacement. Capture `drovr agent get AGENT_ID` and `drovr turn get TURN_ID
+   --include-messages` outside the candidate worktree, hash both records, and
+   launch one fresh reviewer with the same role, harness, model, effort, and
+   read-only capability. Bind its prompt to the original IDs, record hashes,
+   prior response count, complete finding/disposition ledger, and current
+   candidate snapshot. Report the new agent as a rollover, never as the same
+   reviewer. Count responses from both agents against the shared three-response
+   cap. Do not roll over any other compatibility or identity failure.
+
+3. Adjudicate every finding as exactly one of `valid in-scope`, `invalid`,
+   `out-of-scope`, or `needs clarification`. For substantial code tracing,
+   reproduction, or test-gap investigation, delegate a bounded evidence task
+   using the Luna launch contract in step 4, with no candidate-edit authority.
+   Require locations, reproduction/check results, and a proposed disposition;
+   Sol inspects decisive evidence and owns the decision. Obvious findings can
+   proceed directly to correction. Use `drovr ask` on the same reviewer when
+   reviewer clarification is necessary. Keep stable finding IDs, dispositions,
+   and reasons in a ledger outside the candidate worktree.
+
+4. Batch all accepted (`valid in-scope`) findings into a bounded correction
+   task for a direct native, bounded/self-contained fork pinned to
+   `gpt-5.6-luna` with `reasoning_effort: max`. Record the requested and
+   observed model override and reasoning setting. The task must state the
+   exact cwd and candidate, owned files or scope, exclusions, required affected
+   tests or checks, and that the agent has no commit, push, merge, issue-closing,
+   or worktree-removal authority. Luna must address all accepted comments,
+   including small ones. Do not silently substitute another model; if the
+   required Luna launch is impossible, stop and report the blocked review.
+   Reuse the same Luna agent for related investigation and correction turns,
+   explicitly granting edit authority only after Sol accepts the findings.
+   Have it confirm workspace access and required tools before substantive
+   work, and report execution blockers immediately with the failed operation.
+
+5. Require Luna to implement the corrections and run the affected
+   verification, then return a compact handoff identifying exact `HEAD`, the
+   changed-file list, and `git status --short` state, plus commands and
+   results, failures or flakes, and residual risks. Map each corrected finding
+   ID to its change and verification evidence bound to the candidate snapshot.
+   Avoid ingesting routine full logs. Sol must inspect the actual diff, status,
+   candidate identity, and concise evidence. Record a concrete risk or evidence
+   discrepancy before duplicating Luna's passing checks; delegate substantial
+   diagnosis and full validation to Luna. After Luna edits, record the new
+   candidate identity and a fresh staged/unstaged/untracked snapshot; do not
+   treat the original `HEAD` as current. If the handoff is incomplete, the actual
+   diff or evidence fails the task contract, or Sol finds an issue, send a bounded follow-up to Luna
+   under explicit Sol guidance. Do not require a follow-up merely because a
+   correction is substantive, and do not implement the correction in Sol.
+
+6. If a correction materially changes behavior, interfaces, control flow,
+   tests, or security-relevant code, ask the original Drovr reviewer to
+   re-review the resulting candidate with `drovr ask <agent-id>`, explicitly
+   identifying the old and new candidate identities, what changed, the new
+   changed-file/status snapshot, verification results, and the re-review
+   request. Reuse that reviewer for every subsequent turn. A small correction
+   may skip a new review only when Sol records why it adds no meaningful
+   assurance.
+
+7. All clarification, review, and re-review responses share a hard
+   three-response cap unless the user explicitly extends the budget. Retain the
+   response count with the finding ledger across resumptions; a new turn or host
+   restart does not reset it. If the cap is reached while any valid in-scope or
+   `needs clarification` finding remains unresolved, do not declare the
+   review complete; report the unresolved findings and stop. If a material
+   correction requires re-review but the cap prevents it, report that
+   correction as unreviewed and do not declare the Drovr review complete. Do
+   not weaken a disposition or silently continue with another reviewer.
+
+8. Before reporting completion, Sol must independently confirm the final diff
+   and repository state are within the pinned scope and reconcile the ledger
+   against that candidate. Every accepted finding needs a Luna correction and
+   passing affected-verification evidence; every material correction needs a
+   reviewer result. Any unresolved valid or `needs clarification` finding, or
+   missing required evidence, leaves the review incomplete regardless of
+   severity or budget exhaustion. Report review rounds, every disposition and
+   reason, candidate identities and state snapshots, Luna
+   handoffs, re-review results, verification, blockers, and residual risks. Link
+   the retained ledger and candidate evidence so later integration can resume
+   without reconstructing them from chat. Do not commit, push, merge, or close
+   issues as part of this skill.

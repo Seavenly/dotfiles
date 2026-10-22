@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.authority-critique-input-binding.v1.schema.json",
+  "title": "flow.authority-critique-input-binding/v1",
+  "description": "RunAuthority's exact binding of an independent critique delegate to the candidate and predecessor evidence it received.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "binding_digest",
+    "candidate_digest",
+    "card_id",
+    "predecessor_evidence_digest",
+    "schema"
+  ],
+  "properties": {
+    "schema": { "const": "flow.authority-critique-input-binding/v1" },
+    "card_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "candidate_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessor_evidence_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "binding_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

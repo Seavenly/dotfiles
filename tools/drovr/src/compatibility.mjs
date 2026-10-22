@@ -1,4 +1,5 @@
 import { digestCanonical } from "./canonical-json.mjs";
+import { DrovrError } from "./errors.mjs";
 import {
   MANAGED_RUNTIME_EXECUTABLE_FIELDS,
   MANAGED_RUNTIME_QUALIFICATION_FIELDS,
@@ -270,13 +271,15 @@ export async function collectProductionCompatibility({
 
 export function assertQualifiedCompatibility(compatibility) {
   if (compatibility?.status === "qualified") return compatibility;
-  const error = new Error(
+  const error = new DrovrError(
     `Drovr compatibility is ${compatibility?.reason ?? "unqualified"}`,
+    {
+      code: 0,
+      outcome: "compatibility_blocked",
+      details: { compatibility },
+    },
   );
   error.name = "CompatibilityBlockedError";
-  error.outcome = "compatibility_blocked";
-  error.code = 0;
-  error.details = { compatibility };
   throw error;
 }
 
@@ -306,6 +309,15 @@ function blockedCompatibility({
       ? { mismatches: deepFreeze(structuredClone(mismatches)) }
       : {}),
     ...(detail ? { detail } : {}),
+    ...(reason === "caller_shell_mismatch"
+      ? {
+          remediation: {
+            command: "drovr doctor",
+            shell: "same_non_login_shell",
+            detail: "run Drovr and doctor from the same non-login shell, then align the caller and managed harness executable",
+          },
+        }
+      : {}),
     evidence_digest: facts ? digestCanonical(facts) : null,
     legal_actions: legalActions(reason),
     upstream_gaps: UPSTREAM_GAPS,

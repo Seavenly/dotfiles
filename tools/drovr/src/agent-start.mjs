@@ -13,6 +13,8 @@ import {
 import {
   stateDirectory,
   taskLifecycleLockKey,
+  registryLockOptions,
+  registryOperation,
   withResourceLock,
   writeRecord,
 } from "./registry.mjs";
@@ -179,6 +181,19 @@ export async function startAgent(taskId, options, dependencies = {}) {
     specification,
     { compatibility: launchValidation.compatibility },
   );
+  const lockOperation = registryOperation(
+    "agent.start",
+    `${taskId}:${options.key}`,
+    {
+      task_id: taskId,
+      request: {
+        key: options.key,
+        label: options.label ?? null,
+      },
+      specification,
+      launch_binding: launchBinding,
+    },
+  );
   await harness.ensureRuntime();
 
   return withResourceLock(
@@ -251,6 +266,7 @@ export async function startAgent(taskId, options, dependencies = {}) {
             env,
             harness: recoveryHarness,
             now,
+            lockOperation,
           });
           if (!["reconciled", "recovered"].includes(availability.status)) {
             throw new DrovrError(
@@ -394,6 +410,7 @@ export async function startAgent(taskId, options, dependencies = {}) {
       }
       return { group: context.group, task: context.task, agent };
     },
+    registryLockOptions(lockOperation),
   );
 }
 

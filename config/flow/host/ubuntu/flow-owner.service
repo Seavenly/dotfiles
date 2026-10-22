@@ -1,0 +1,12 @@
+[Unit]
+Description=Flow replacement runtime owner (opt-in)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/flow/host/flow-owner
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

@@ -19,6 +19,8 @@ import {
 import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
+  registryLockOptions,
+  registryOperation,
   stateDirectory,
   taskLifecycleLockKey,
   withResourceLock,
@@ -34,6 +36,16 @@ import {
 import { deliverTurn, prepareTurn } from "./turn-lifecycle.mjs";
 import { reconcileOrRecoverAgent } from "./recovery.mjs";
 import { ownedStagedTurn } from "./staged-input-receipt.mjs";
+
+// This symbol is intentionally module-private. Consumers may inspect a
+// proof through the read-only predicate below, but cannot mint the marker by
+// copying serialized proof fields.
+const PRE_DISPATCH_PROVENANCE = Symbol("drovr.pre-dispatch-provenance");
+
+export function trustedPreDispatchProof(error) {
+  const proof = error?.[PRE_DISPATCH_PROVENANCE];
+  return proof === undefined ? null : proof;
+}
 
 async function turnContext(registryDirectory, turnId) {
   const turns = await readRecords(registryDirectory, "turns");
@@ -101,6 +113,25 @@ export async function startTurn(agentId, options, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await agentContext(registryDirectory, agentId);
+  if (options.resourceBinding !== undefined) {
+    validateResourceBinding(options.resourceBinding, initial.agent.id);
+  }
+  const operationPrompt = typeof options.prompt === "string"
+    ? normalizeInputText(options.prompt)
+    : options.prompt ?? null;
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation(
+      "turn.start",
+      `${agentId}:${options.inputKey ?? textDigest(options.prompt ?? "")}`,
+      {
+        agent_id: agentId,
+        prompt: operationPrompt,
+        input_key: options.inputKey ?? null,
+        caller: options.caller ?? null,
+        resource_binding: options.resourceBinding ?? null,
+        launch_binding: options.launchBinding ?? null,
+      },
+    );
   const harness = harnessFor(initial, env, dependencies);
   if (harness.capabilities?.compatibility === "required") {
     const validation = await harness.validateLaunch({
@@ -119,6 +150,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
           env,
           harness,
           now,
+          lockOperation,
         });
         if (!["reconciled", "recovered"].includes(availability.status)) {
           throw new DrovrError(
@@ -257,9 +289,11 @@ export async function startTurn(agentId, options, dependencies = {}) {
             caller: options.caller,
             inputKey: options.inputKey,
             launchBinding: options.launchBinding,
+            resourceBinding: options.resourceBinding,
           });
           return { ...current, turn };
         },
+        registryLockOptions(lockOperation),
       );
       await deliverTurn({
         registryDirectory,
@@ -271,6 +305,7 @@ export async function startTurn(agentId, options, dependencies = {}) {
       });
       return context;
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -307,20 +342,45 @@ export async function discoverTurn(callerKey, dependencies = {}) {
 }
 
 export async function dispatchTurn(agentId, options, dependencies = {}) {
-  requireCallerKey(options.callerKey);
-  requireCallerKey(options.inputKey);
-  const prompt = typeof options.prompt === "string"
-    ? normalizeInputText(options.prompt)
-    : options.prompt;
-  requireInputText(prompt);
-  validateLaunchBinding(options.launchBinding);
+  let prompt;
+  try {
+    requireCallerKey(options.callerKey);
+    requireCallerKey(options.inputKey);
+    prompt = typeof options.prompt === "string"
+      ? normalizeInputText(options.prompt)
+      : options.prompt;
+    requireInputText(prompt);
+    validateLaunchBinding(options.launchBinding);
+    if (options.resourceBinding !== undefined) {
+      validateResourceBinding(options.resourceBinding, agentId);
+    }
+  } catch (error) {
+    throw markPreDispatchValidation(error);
+  }
   const env = dependencies.env ?? process.env;
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation(
+      "turn.dispatch",
+      `${options.callerKey}:${options.inputKey}`,
+      {
+        agent_id: agentId,
+        prompt,
+        caller_key: options.callerKey,
+        input_key: options.inputKey,
+        caller_metadata: options.callerMetadata ?? null,
+        resource_binding: options.resourceBinding ?? null,
+        launch_binding: options.launchBinding,
+      },
+    );
   const payloadSha256 = callerPayloadDigest({
     agent_id: agentId,
     prompt,
     input_key: options.inputKey,
     caller_metadata: options.callerMetadata,
+    ...(options.resourceBinding === undefined ? {} : {
+      resource_binding: options.resourceBinding,
+    }),
     launch_binding: options.launchBinding,
   });
   return withResourceLock(
@@ -337,6 +397,16 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
         );
       }
       if (existing.length === 1) {
+        const existingBinding = existing[0].resource_binding;
+        const requestedHasBinding = options.resourceBinding !== undefined;
+        const existingHasBinding = existingBinding !== undefined &&
+          existingBinding !== null;
+        if (requestedHasBinding !== existingHasBinding ||
+            options.resourceBinding !== undefined &&
+              digestCanonical(existingBinding) !==
+                digestCanonical(options.resourceBinding)) {
+          callerKeyConflict(options.callerKey);
+        }
         if (existing[0].caller.payload_sha256 !== payloadSha256) {
           callerKeyConflict(options.callerKey);
         }
@@ -349,7 +419,12 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
               : "adopted",
         };
       }
-      const initial = await agentContext(registryDirectory, agentId);
+      let initial;
+      try {
+        initial = await agentContext(registryDirectory, agentId);
+      } catch (error) {
+        throw markPreDispatchValidation(error);
+      }
       requireAgentLaunchBinding(initial);
       const exactDescription = await describeDelegatedAgent({
         schema: "drovr.delegated-agent-description-request/v1",
@@ -413,9 +488,11 @@ export async function dispatchTurn(agentId, options, dependencies = {}) {
           payload_sha256: payloadSha256,
           metadata: structuredClone(options.callerMetadata),
         },
-      }, dependencies);
+        resourceBinding: options.resourceBinding,
+      }, { ...dependencies, lockOperation });
       return { ...context, dispatch_status: "dispatched" };
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -423,6 +500,12 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("turn.wait", turnId, {
+      turn_id: turnId,
+      after_block_id: options.afterBlockId ?? null,
+      timeout_ms: options.timeoutMs ?? null,
+    });
   let context = await turnContext(registryDirectory, turnId);
   let acknowledgedBlock;
   if (options.afterBlockId) {
@@ -431,6 +514,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       turnId,
       blockId: options.afterBlockId,
       acknowledgedAt: now(),
+      lockOperation,
     }));
   }
   if (!acknowledgedBlock && context.turn.status === "working") {
@@ -466,12 +550,18 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
     registryDirectory,
     turnId,
     observation: evidence.observation,
+    lockOperation,
   });
   if (evidence.outcome === "still_running") {
     return { ...context, wait_status: "still_running" };
   }
   if (evidence.outcome === "agent_lost") {
-    return settleLostTurnWhileWaiting(registryDirectory, turnId, now);
+    return settleLostTurnWhileWaiting(
+      registryDirectory,
+      turnId,
+      now,
+      lockOperation,
+    );
   }
   if (evidence.outcome === "needs_input") {
     return recordSemanticBlock({
@@ -479,6 +569,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       context,
       evidence,
       now,
+      lockOperation,
     });
   }
   if (evidence.outcome === "block_changed") {
@@ -491,6 +582,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       blockId: acknowledgedBlock.id,
       observedAt: now(),
       observation: evidence.working_observation,
+      lockOperation,
     });
     if (recorded.currentBlock?.id !== acknowledgedBlock.id) {
       return { ...context, block: recorded.currentBlock };
@@ -500,6 +592,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       env,
       now,
       harness,
+      lockOperation,
     });
   }
   if (evidence.outcome !== "completed") {
@@ -516,7 +609,7 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
         await writeRecord(registryDirectory, "turns", current.turn);
       }
       return current;
-    });
+    }, registryLockOptions(lockOperation));
   }
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const current = await turnContext(registryDirectory, turnId);
@@ -541,13 +634,14 @@ export async function waitForTurn(turnId, options = {}, dependencies = {}) {
       await writeRecord(registryDirectory, "blocks", block);
     }
     return current;
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function persistObservedAgentIdentity({
   registryDirectory,
   turnId,
   observation,
+  lockOperation,
 }) {
   if (observation?.evidence !== "present") return;
   const nativeSession = observation?.identity?.native_session;
@@ -579,10 +673,15 @@ async function persistObservedAgentIdentity({
       changed = true;
     }
     if (changed) await writeRecord(registryDirectory, "agents", current.agent);
-  });
+  }, registryLockOptions(lockOperation));
 }
 
-function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
+function settleLostTurnWhileWaiting(
+  registryDirectory,
+  turnId,
+  now,
+  lockOperation,
+) {
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
     if (context.turn.status === "working") {
@@ -594,7 +693,7 @@ function settleLostTurnWhileWaiting(registryDirectory, turnId, now) {
       await writeRecord(registryDirectory, "turns", context.turn);
     }
     return context;
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function recordSemanticBlock({
@@ -602,6 +701,7 @@ async function recordSemanticBlock({
   context,
   evidence,
   now,
+  lockOperation,
 }) {
   return withResourceLock(
     registryDirectory,
@@ -644,6 +744,7 @@ async function recordSemanticBlock({
       await writeRecord(registryDirectory, "blocks", block);
       return { ...current, block };
     },
+    registryLockOptions(lockOperation),
   );
 }
 
@@ -652,6 +753,7 @@ async function acknowledgeCurrentBlock({
   turnId,
   blockId,
   acknowledgedAt,
+  lockOperation,
 }) {
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
@@ -683,7 +785,7 @@ async function acknowledgeCurrentBlock({
       await writeRecord(registryDirectory, "blocks", block);
     }
     return { context, block };
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function recordBlockWorkingObservation({
@@ -692,6 +794,7 @@ async function recordBlockWorkingObservation({
   blockId,
   observedAt,
   observation,
+  lockOperation,
 }) {
   return withResourceLock(registryDirectory, `turn:${turnId}`, async () => {
     const context = await turnContext(registryDirectory, turnId);
@@ -708,7 +811,7 @@ async function recordBlockWorkingObservation({
     observeBlockWorking(block, { observedAt, observation });
     await writeRecord(registryDirectory, "blocks", block);
     return { block, currentBlock: block };
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 async function currentBlockForTurn(registryDirectory, turn) {
@@ -730,6 +833,18 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation(
+      "turn.send",
+      `${turnId}:${options.callerKey ?? "legacy"}`,
+      {
+        turn_id: turnId,
+        caller_key: options.callerKey ?? null,
+        prompt: typeof options.prompt === "string"
+          ? normalizeInputText(options.prompt)
+          : options.prompt ?? null,
+      },
+    );
   const prompt = typeof options.prompt === "string"
     ? normalizeInputText(options.prompt)
     : options.prompt;
@@ -768,6 +883,7 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
     env,
     harness,
     now,
+    lockOperation,
   });
   if (!["reconciled", "recovered"].includes(availability.status)) {
     return {
@@ -864,9 +980,13 @@ export async function sendToTurn(turnId, options, dependencies = {}) {
       });
       return context;
     },
+    registryLockOptions(lockOperation),
   );
   if (!outcome.reconcile_status) return outcome;
-  const reconciled = await waitForTurn(turnId, {}, dependencies);
+  const reconciled = await waitForTurn(turnId, {}, {
+    ...dependencies,
+    lockOperation,
+  });
   return { ...reconciled, command_status: outcome.reconcile_status };
 }
 
@@ -907,14 +1027,23 @@ export async function reconcileTurn(
       outcome: "invalid_arguments",
     });
   }
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("turn.reconcile", turnId, {
+      turn_id: turnId,
+      timeout_ms: options.timeoutMs,
+    });
   const initial = await getTurn(turnId, dependencies);
   if (initial.turn.status !== "working") return initial;
   const recovery = await reconcileOrRecoverAgent(
     initial.agent.id,
-    dependencies,
+    { ...dependencies, lockOperation },
   );
   if (recovery.status === "reconciled") {
-    return waitForTurn(turnId, { timeoutMs: options.timeoutMs }, dependencies);
+    return waitForTurn(
+      turnId,
+      { timeoutMs: options.timeoutMs },
+      { ...dependencies, lockOperation },
+    );
   }
   const context = await getTurn(turnId, dependencies);
   if (recovery.status === "recovered") return context;
@@ -1042,6 +1171,118 @@ function validateLaunchBinding(binding) {
   }
 }
 
+export function validateResourceBinding(binding, expectedAgentId) {
+  const invalid = () => {
+    throw new DrovrError("invalid exact resource binding", {
+      code: 2,
+      outcome: "invalid_arguments",
+    });
+  };
+  if (!isPlainRecord(binding) ||
+      !hasExactKeys(binding, [
+        "schema",
+        "resource_key",
+        "owner",
+        "workspace_claim",
+        "launch_binding",
+        "delegation",
+        "native_session",
+        "managed_runtime_evidence_digest",
+        "binding_digest",
+      ]) ||
+      binding.schema !== "flow.delegated-agent-resource-binding/v1" ||
+      !isDigest(binding.resource_key) ||
+      !isDigest(binding.managed_runtime_evidence_digest) ||
+      !isDigest(binding.binding_digest) ||
+      !isPlainRecord(binding.owner) ||
+      !hasExactKeys(binding.owner, [
+        "run_id",
+        "card_id",
+        "route_key",
+      ], ["managed_agent_binding_id"]) ||
+      !nonEmptyString(binding.owner.run_id) ||
+      !nonEmptyString(binding.owner.card_id) ||
+      !nonEmptyString(binding.owner.route_key) ||
+      binding.owner.managed_agent_binding_id !== undefined &&
+        !nonEmptyString(binding.owner.managed_agent_binding_id) ||
+      !isPlainRecord(binding.workspace_claim) ||
+      !hasExactKeys(binding.workspace_claim, [
+        "kind",
+        "authority",
+        "contract",
+        "subject_id",
+        "generation",
+        "mutation_epoch",
+        "fingerprint",
+        "access",
+      ], ["operation"]) ||
+      binding.workspace_claim.kind !== "workspace" ||
+      binding.workspace_claim.authority !== "WorkspaceAuthority" ||
+      binding.workspace_claim.contract !== "work.workspace/v1" ||
+      !nonEmptyString(binding.workspace_claim.subject_id) ||
+      !Number.isSafeInteger(binding.workspace_claim.generation) ||
+      binding.workspace_claim.generation < 1 ||
+      !Number.isSafeInteger(binding.workspace_claim.mutation_epoch) ||
+      binding.workspace_claim.mutation_epoch < 1 ||
+      !isDigest(binding.workspace_claim.fingerprint) ||
+      !["read_only", "mutation"].includes(binding.workspace_claim.access) ||
+      binding.workspace_claim.operation !== undefined &&
+        !nonEmptyString(binding.workspace_claim.operation) ||
+      !isPlainRecord(binding.launch_binding) ||
+      !hasExactKeys(binding.launch_binding, [
+        "description_digest",
+        "launch_comparison_key",
+        "effective_authority_comparison_key",
+        "configuration_watermark",
+      ]) ||
+      !isDigest(binding.launch_binding.description_digest) ||
+      !isDigest(binding.launch_binding.launch_comparison_key) ||
+      !isDigest(binding.launch_binding.effective_authority_comparison_key) ||
+      !isDigest(binding.launch_binding.configuration_watermark) ||
+      !isPlainRecord(binding.delegation) ||
+      !hasExactKeys(binding.delegation, ["group_id", "task_id", "agent_id"]) ||
+      !nonEmptyString(binding.delegation.group_id) ||
+      !nonEmptyString(binding.delegation.task_id) ||
+      !nonEmptyString(binding.delegation.agent_id) ||
+      binding.delegation.agent_id !== expectedAgentId ||
+      binding.native_session !== null &&
+        !nonEmptyString(binding.native_session)) {
+    invalid();
+  }
+  try {
+    if (binding.binding_digest !== digestCanonical({
+      resource_key: binding.resource_key,
+      owner: binding.owner,
+      workspace_claim: binding.workspace_claim,
+      launch_binding: binding.launch_binding,
+      delegation: binding.delegation,
+      native_session: binding.native_session,
+      managed_runtime_evidence_digest:
+        binding.managed_runtime_evidence_digest,
+    })) invalid();
+  } catch (error) {
+    if (error?.outcome === "invalid_arguments") throw error;
+    invalid();
+  }
+}
+
+function hasExactKeys(value, required, optional = []) {
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" &&
+    !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 function requireCallerKey(value) {
   if (typeof value !== "string" || value.length === 0) {
     throw new DrovrError("caller key must be a non-empty string", {
@@ -1058,6 +1299,30 @@ function requireInputText(value) {
       outcome: "invalid_arguments",
     });
   }
+}
+
+function markPreDispatchValidation(error) {
+  if (error?.outcome !== "invalid_arguments") return error;
+  const proof = Object.freeze({
+    schema: "drovr.dispatch-proof/v1",
+    stage: "pre_dispatch_validation",
+    native_dispatch_started: false,
+    turn_created: false,
+    effect_created: false,
+  });
+  Object.defineProperty(error, PRE_DISPATCH_PROVENANCE, {
+    configurable: false,
+    enumerable: false,
+    value: proof,
+    writable: false,
+  });
+  error.details = {
+    ...(error.details !== null && typeof error.details === "object"
+      ? error.details
+      : {}),
+    dispatch_proof: proof,
+  };
+  return error;
 }
 
 function callerKeyConflict(callerKey) {
@@ -1083,6 +1348,11 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
   const env = dependencies.env ?? process.env;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("turn.cancel", turnId, {
+      turn_id: turnId,
+      timeout_ms: options.timeoutMs ?? null,
+    });
   const initial = await turnContext(registryDirectory, turnId);
   if (initial.turn.status !== "working") {
     return { ...initial, command_status: "turn_closed" };
@@ -1097,6 +1367,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     env,
     harness,
     now,
+    lockOperation,
   });
   if (
     availability.status === "reconciled" &&
@@ -1137,7 +1408,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
         command_status: availability.status,
         recovery_reason: availability.reason,
       };
-    });
+    }, registryLockOptions(lockOperation));
   }
   const current = await turnContext(registryDirectory, turnId);
   if (current.turn.status !== "working") {
@@ -1149,6 +1420,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
       env,
       harness,
       now,
+      lockOperation,
     });
     return {
       ...reconciled,
@@ -1179,6 +1451,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
       await writeRecord(registryDirectory, "turns", context.turn);
       return context;
     },
+    registryLockOptions(lockOperation),
   );
   if (cancellation.command_status) {
     return cancellation;
@@ -1212,6 +1485,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
         env,
         harness,
         now,
+        lockOperation,
       });
     } else {
       settleTurnRecord(context.turn, {
@@ -1225,7 +1499,7 @@ export async function cancelTurn(turnId, options = {}, dependencies = {}) {
     }
     await writeRecord(registryDirectory, "turns", context.turn);
     return context;
-  });
+  }, registryLockOptions(lockOperation));
 }
 
 function semanticIdentityError(observation, harness = "codex") {
@@ -1443,6 +1717,9 @@ function summarizeTurn(
     status: turn.status,
     input_count: turn.inputs.length,
     ...(turn.caller ? { caller: structuredClone(turn.caller) } : {}),
+    ...(turn.resource_binding
+      ? { resource_binding: structuredClone(turn.resource_binding) }
+      : {}),
     ...(turn.launch_binding
       ? { launch_binding: summarizeLaunchBinding(turn.launch_binding) }
       : {}),

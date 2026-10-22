@@ -41,6 +41,30 @@ _Avoid_: Workflow when referring to both interactive preparation and automated e
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
 
+**Capability manifest**:
+The exact versioned release declaration of supported, disabled, and unsupported
+public routes, including the authority limits that remain false for a
+sacrificial release.
+_Avoid_: Feature list, implied capability
+
+**Dark opt-in**:
+An explicit request-local `flow.dark-opt-in/v1` binding that may select only
+the routes named by one qualified capability manifest. It is not normal-use
+authorization and does not prove that deferred real scenarios ran.
+_Avoid_: Replacement default, approval
+
+**Transition ledger**:
+The durable release/environment record that binds prerequisites, contracts,
+manifest and content digests, qualification evidence, legacy inventory, and
+not-run scenarios to one projection.
+_Avoid_: Changelog, test summary
+
+**Qualification evidence**:
+Digest-backed deterministic recipe and receipt evidence for one exact release
+content set. It can make a dark opt-in available only when every required
+record is passed; it does not authorize scope expansion or remote mutation.
+_Avoid_: Synthetic pass, production run
+
 **Run ownership**:
 The authority-recorded relationship that identifies a flow run as top-level or
 as a child of one exact parent run.
@@ -91,11 +115,54 @@ One immutable executable node in an accepted finite flow run plan. Dependency
 edges determine readiness but never imply ambient data transfer.
 _Avoid_: Kanban card when discussing replacement authority
 
+**Delegate input envelope**:
+The versioned selection sent to one delegated turn: its instructions, task
+context, authority-owned execution resources, accepted predecessor evidence,
+and output requirements. Execution access and transferable evidence remain
+separate concerns.
+_Avoid_: Prepared bundle, ambient transcript, prompt-only input
+
 **Prepared run**:
 One immutable, content-addressed run bundle produced from a complete proposed
 plan and explicit identity-bearing facts without creating authoritative run
 state.
 _Avoid_: Draft run, pending run
+
+**Required authority contract**:
+A versioned definition declaration for one route, resource, contract, or
+generation fact that must be observed before a predefined run can be admitted.
+It names the authority identity and observation input, not an executable
+provider.
+_Avoid_: Ambient adapter, callback authority
+
+**Required authority binding**:
+The immutable prepared-run record of one required authority contract, its exact
+registered provider identity, observation input, and observation. It is carried
+through launch and reboot admission without executable callbacks.
+_Avoid_: Route cache, latest resource state
+
+**Authority observation**:
+A typed provider result captured at the owning transaction boundary, including
+status and the exact provider watermark or generation used for admission.
+_Avoid_: Health check, best-effort refresh
+
+**Required authority revalidation**:
+The closed comparison of every definition-required authority binding with fresh
+provider observations at launch or reboot admission. An unresolved, stale, or
+uncertain result remains blocked until its legal action is taken.
+_Avoid_: Partial authority check, automatic resume
+
+**Registered authority provider**:
+A trusted catalog entry with one immutable provider identity and a read-only
+observation mechanism. It supplies facts to RunAuthority but never owns flow
+lifecycle, scheduling, or mutation policy.
+_Avoid_: Orchestrator, flow-specific controller
+
+**Authority fact**:
+The canonical public rejection and admission fact containing the owning
+authority identity, contract, provider identity, watermark or generation, and
+closed legal actions.
+_Avoid_: Free-form error detail, caller-supplied authority
 
 **Plan fingerprint**:
 The content digest of the canonical finite run-plan graph. It identifies the
@@ -106,6 +173,101 @@ _Avoid_: Run ID, version number
 The complete operator-visible view bound to a prepared dynamic plan, followed
 by an explicit accept or decline decision bound to that exact view and bundle.
 _Avoid_: Boolean flag, implicit approval
+
+**Predefined flow definition**:
+A registered, versioned flow contract whose trusted compiler derives one exact
+plan from explicit selection inputs and identity-bearing facts. The definition
+supplies the promised outcomes, negative outcomes, and trust posture that
+accompany its plan.
+_Avoid_: Caller-supplied graph, flow alias
+
+**Predefined flow confirmation**:
+The operator-visible view for one selected predefined flow definition, covering
+its inputs, outcomes, authority, routes, limits, trust posture, and revision
+templates before one explicit accept or decline decision. It is distinct from
+dynamic plan confirmation and does not require repeating the complete graph.
+_Avoid_: Implicit approval, graph ceremony
+
+**Feature brief**:
+One accepted, identity-bearing feature request whose acceptance criteria must
+all receive registered-operation verification verdicts before a local review
+candidate can be sealed.
+_Avoid_: Delegate prompt, issue snapshot
+
+**Safe baseline**:
+A non-mutating pre-change observation whose fingerprint must differ from the
+verified clean post-mutation workspace fingerprint.
+_Avoid_: Assumed prior behavior, prose-only expectation
+
+**Compensating assertion**:
+An explicitly non-destructive invariant used when obtaining a safe baseline is
+not practical; its registered receipt must bind the selected assertion and
+prove it remained satisfied after the change.
+_Avoid_: Destructive probe, unverified claim
+
+**Discriminating evidence**:
+Registered-operation evidence that binds either a safe baseline to a distinct
+post-mutation state or a compensating assertion to its satisfied receipt.
+_Avoid_: Delegate self-report, selected fingerprint alone
+
+**Result-binding declaration**:
+The exact prepared-plan relationship between one producer card, its output
+contract, its expected schema, and one consumer card. Dependency edges order
+cards but never transfer result data; a consumer receives only the
+authority-owned record selected by this declaration.
+_Avoid_: Dependency-only input, latest result, caller-shaped evidence
+
+**Result binding record**:
+The immutable RunAuthority record of an accepted active operation result. It
+binds the producer attempt, generation and mutation epoch when applicable,
+provenance, observed schema, content digest, result identity, and self digest.
+_Avoid_: Return value, mutable output cache
+
+**Feature capture receipt**:
+The strict `work.feature-capture-receipt/v1` observation of the post-mutation
+workspace, clean Git commit, tree, ref, and artifact byte descriptors. It is
+created by the registered capture operation after launch and before
+verification, critique, or sealing.
+_Avoid_: Prepared candidate identity, caller-supplied digest, static resource claim
+
+**Feature capture policy**:
+The versioned identity-free preparation binding for the selected starting
+workspace and clean Git facts, permitted transformations, receipt validator,
+retention, disposition, and exact publication consumer policy. It carries no
+future candidate, promoted Git, artifact, or patch identity; the finalization
+binding is derived only after the authority records a post-mutation capture.
+_Avoid_: Future candidate plan, caller-shaped publication, dependency-only policy
+
+**Feature candidate view**:
+The deterministic candidate projection derived from one exact feature capture
+binding. It carries the captured workspace and Git fence, artifact digests, and
+capture identities that verification, critique, and finalization consume.
+_Avoid_: Planned candidate, latest workspace, inferred finalization
+
+**Result-binding revision delta**:
+The explicit `flow.result-binding-delta/v1` add/remove declaration set applied
+atomically with a plan revision's cards, edges, capabilities, resources,
+limits, and supersession. Unaffected declarations remain unchanged, while
+superseded records stay in append-only history and cannot be consumed.
+_Avoid_: In-place evidence rewrite, implicit replacement, widened dependency
+
+**Feature finalization binding**:
+The authority-derived candidate identity and exact handoff publication that
+cross-bind the captured workspace generation, mutation epoch, clean Git
+transition, artifacts, and retention before sealing. Preparation may bind the
+starting facts and publication policy, but the candidate identities come from
+the settled post-mutation capture.
+_Avoid_: Latest workspace, caller-provided candidate, publication assembled from a dependency edge
+
+**Feature verification receipt**:
+The registered verification operation's self-digest-bound verdicts and
+discriminating evidence for every acceptance criterion in one feature brief.
+_Avoid_: Delegate output, partial verdict list
+
+**Feature critique receipt**:
+The sealed operation receipt that binds independent critique evidence and its
+non-blocking findings to the exact candidate finalization effect.
+_Avoid_: Unbound review prose, ignored blocking finding
 
 **Checkpoint decision**:
 A typed approve or decline command for one currently actionable checkpoint,
@@ -134,6 +296,61 @@ An append-only, exact-base change set that may add cards, edges, card-bound
 capabilities, resources, and limits while superseding only blocked pending work
 and its pending dependent closure. It never rewrites accepted upstream history.
 _Avoid_: In-place plan edit, restart
+
+**Feature repair**:
+The `flow.feature-repair/v1` binding that maps one blocked Feature brief card
+to one closed repair kind, exact accepted criteria, remaining scope, preserved
+verification and critique evidence, and the required finalization path. It is
+carried by Plan revision templates; any template-derived scope, capability,
+resource, graph, or raised-limit expansion is deferred behind its exact
+checkpoint, and declined or exhausted attempts remain authority-watermarked
+outcomes.
+_Avoid_: Retry flag, caller scope boolean, replacement without evidence
+
+**Reboot admission**:
+The exact public command that rechecks one suspended run against its current
+authoritative contracts, routes, capabilities, revision facts, typed time and
+subject facts, and unresolved-effect evidence before restoring admission. It
+admits only that run; child runs require their own admission.
+_Avoid_: Automatic resume, process restart
+
+**Restore barrier**:
+The host-wide RunAuthority state entered before restored authority or host
+resources may mutate. It remains active until exact database-stream, artifact,
+Git, filesystem, external-effect, and Drovr-obligation observations reconcile
+to one deterministic backup manifest.
+_Avoid_: Run pause, rollback, best-effort restore
+
+**Time fact**:
+An exact typed observation of wall-clock time, suspend-excluding monotonic time,
+boot identity, or clock-source identity. Time facts carry their uncertainty and
+enter lifecycle policy only through deterministic lower and upper bounds.
+_Avoid_: Ambient clock read, elapsed-time guess
+
+**Execution observation**:
+A durable, typed observation captured at one RunAuthority execution boundary,
+binding the exact run, card, attempt, effect, and observed time or provider
+state without itself changing lifecycle authority.
+_Avoid_: Ambient status, adapter log, inferred completion
+
+**Execution-time accounting/deadline decision**:
+The RunAuthority calculation of wall elapsed and admitted active execution from
+exact accepted baselines, invocation intervals, settlement facts, and fresh
+typed time observations. It exposes lower and upper bounds and blocks new
+admission when exhaustion or uncertainty can affect the decision.
+_Avoid_: Timer callback, process uptime, best-effort timeout
+
+**Operational retry accounting**:
+The durable count of admitted operation invocations and recovery consumption
+against the exact confirmed attempt limit, including retry-not-before facts and
+the closed actions remaining when the budget is waiting, blocked, or exhausted.
+_Avoid_: Retry counter, loop guard, adapter-local attempt number
+
+**Subject generation**:
+The exact durable generation and fingerprint of a resource or authority subject
+that a prepared run binds and reboot admission rechecks. A changed or uncertain
+generation blocks admission until the current subject matches the bound fact.
+_Avoid_: Latest version, ambient resource state
 
 **Run authority**:
 The sole fenced authority that accepts a flow plan and owns readiness,
@@ -174,6 +391,38 @@ Positive, identity-bound provider evidence that settles one effect intent and
 allows its deferred operation completion to become authoritative.
 _Avoid_: Return value, successful process exit
 
+**Evidence safety receipt**:
+The deterministic, self-digest-bound result of validating canonical evidence
+against the exact versioned policy and catalog identity before a delegate
+transfer, artifact acceptance, or resource-handoff publication. It carries no
+lifecycle, publication, mutation, or capability authority.
+_Avoid_: Delegate output, artifact authority, lifecycle receipt
+
+**Evidence safety rejection**:
+A typed, redacted failure from the evidence safety validator whose stable code
+never reproduces rejected input bytes or fragments.
+_Avoid_: Sanitized transcript, secret-bearing error
+
+**Quick spike**:
+The predefined, quick-only tracer that binds one confirmed question to one
+read-only researcher and one independently routed synthesizer. It can finish
+with lower-assurance evidence and residual gaps, but it has no mutation,
+publication, review, tracker, or prototype authority.
+_Avoid_: Production implementation, review run, deep investigation
+
+**Authority-materialized delegate evidence**:
+The digest-bound envelope RunAuthority creates from accepted upstream delegate
+evidence for one declared dependent card. It is the only evidence context a
+dependent quick-spike delegate may receive; caller-provided and ambient sibling
+data are not accepted.
+_Avoid_: Ambient transcript, caller-forged evidence, shared workspace state
+
+**Canonical spike report**:
+The lower-assurance, evidence-cited report answering one confirmed quick-spike
+question and retaining a nonempty residual-gap list. Its citations bind both
+accepted immutable sources and the exact researcher evidence digest.
+_Avoid_: Unbound synthesis prose, approval, publication
+
 **Effect classification**:
 The declared recovery semantics for a registered operation: read-only,
 caller-idempotent, reconcilable, or one-shot uncertain.
@@ -210,6 +459,13 @@ _Avoid_: Updated time, cache version
 **Delegated agent runtime**:
 A host-local execution substrate that launches and observes durable agent harnesses without owning flow policy or scheduling.
 _Avoid_: Orchestrator, workflow engine
+
+**Flow owner**:
+The one host-local process that holds the fenced replacement `RunAuthority`,
+serves the public five-operation Interface, and drives authority-projected
+work. Its endpoint identity and durable state survive client exit, while
+clients remain disposable observers or callers.
+_Avoid_: Client process, scheduler, second lifecycle authority
 
 **Drovr qualification catalog**:
 The versioned source of known production-incident scenarios and the contracts
@@ -261,6 +517,34 @@ The non-authoritative Flow interface that requests an exact delegated-runtime
 description and independently checks it before plan preparation may bind it.
 _Avoid_: Runtime controller, scheduler
 
+**Delegated route identity**:
+The `agent_id` in a Flow route binding is a planning identity from the
+compiled description. It is not a Drovr registry identifier and is never used
+as one after resource discovery proves that no turn exists.
+
+**Delegated agent resource port**:
+The deep two-operation (`ensure`, `retire`) Flow seam that materializes and
+retires the exact Drovr group, task, and managed agent owned by one run/card
+or declared managed-agent binding. Its adapter derives a run-scoped resource
+key from the immutable owner, WorkspaceAuthority claim, and launch binding;
+resolves the canonical cwd through WorkspaceAuthority; and calls only public
+Drovr resource commands. It returns the actual registry IDs, binding digest,
+and registry watermark. Recovery adopts only that exact owned binding, and
+uncertain provisioning or retirement is a typed block with closed legal
+actions.
+
+**Delegated resource binding**:
+The immutable relationship between a Flow run/card (or managed-agent
+binding), an exact workspace claim, an exact launch/effective-authority
+comparison key, a native session identity, and the materialized Drovr
+group/task/agent IDs. Before the first prompt, the binding carries an exact
+managed pane/process evidence digest while `native_session` is null; Drovr
+binds the native session during the first logical turn. A logical turn may use
+and complete the binding, but cannot replace or widen it. Dispatch records the
+binding in a dedicated exact-turn field outside digest-bearing caller metadata
+so restart recovery can adopt it without provisioning again. A declared managed-agent span scopes the binding
+to its managed-agent ID rather than to changing per-card operation labels.
+
 **Exact launch description**:
 A non-mutating, identity-bearing resolution of one delegated launch, including
 its native settings, effective authority, capacity, credential-reference
@@ -303,6 +587,36 @@ _Avoid_: Worker attempt, pane
 One request to a managed agent, including any ordered steering inputs and the final settled assistant result.
 _Avoid_: Native harness turn, prompt
 
+**Durable registry lock**:
+An atomically published, owner-checked authority record for one resource key,
+binding the owning operation, process authority, and exact registry watermark at
+acquisition. It is released only by its owner token and is never taken over by
+age or a timer.
+_Avoid_: Lease, stale-directory cleanup, force unlock
+
+**Registry operation identity**:
+The stable kind and resource identity for one Drovr mutation, bound to a
+canonical digest of its exact invocation payload so retries can prove they are
+continuing the same operation.
+_Avoid_: Caller key alone, retry UUID, lock age
+
+**Process identity**:
+The validated schema, positive process ID, boot identity, and start token used
+to distinguish one owning process from PID reuse. Missing or malformed facts are
+unproven rather than proof of absence.
+_Avoid_: PID alone, liveness guess
+
+**Recovery decision**:
+A typed, watermark-bound adoption, proven-absence, or bare-lock abandonment
+decision derived from current registry and process evidence. Its legal actions
+are closed and operation-specific; operator disposition does not claim an
+operation is absent. Bare-lock abandonment has the closed types
+`owner_terminated`, `operation_failed`, `operation_cancelled`, and
+`operator_disposition`. Both public operator dispositions persist the decision
+receipt. Releasing a held absent-owner lock additionally binds the exact lock
+ID.
+_Avoid_: Timer expiry, generic unlock, caller assertion
+
 **Semantic harness**:
 The internal Drovr interface that delivers and observes logical turns, ordered input, identity, interruption, staged input, and recovery evidence without exposing Herdr commands, native prompt keys, polling, or transcript parsing to callers.
 _Avoid_: Herdr client wrapper, harness controller
@@ -336,6 +650,19 @@ _Avoid_: Card, task
 A verified local branch plus immutable comparison points and review artifacts, ready for agent or human review but not yet delivered.
 _Avoid_: Pull request, review session
 
+Candidate currency is a derived authorization view, not a rewrite of the
+retained candidate or review record. It is `sealed` only when the exact
+workspace mutation epoch/fingerprint, clean and taint state, artifact bytes,
+Git retention, and artifact-pinned active handoff all reconcile. Workspace
+movement is `stale`; dirty, uncertain, missing, mismatched, or unresolved
+observations are `blocked`. The view preserves historical evidence, exposes
+the exact authority and observation watermarks plus deterministic blocking
+reasons, and closes candidate/review legal actions. A `superseded` or
+`abandoned` candidate lifecycle is terminal historical evidence and is exposed
+as stale currency with its lifecycle status and a closed action set. Replacement and recovery
+actions remain owned by the workspace, artifact, Git-retention, or handoff
+authority. GitHub review projections do not depend on local workspace currency.
+
 **Review manifest**:
 The durable identity, lifecycle generation, evidence history, and immutable Git
 comparison points for one review candidate.
@@ -344,6 +671,72 @@ _Avoid_: Registry entry, tuicr session
 **Review projection**:
 A rebuildable, derived view of a review manifest for discovery and display.
 _Avoid_: Review state, approval record
+
+**Review inbox**:
+The disposable `flow.review-inbox-projection/v1` view of candidate and review
+subjects derived from ReviewAuthority's exact watermark. Its
+`subject_watermarks` are the canonical ordered candidate/review stream set
+declared by `flow.review-inbox-watermark/v1`; the inbox watermark is its digest,
+and binds `projection_digest`, the digest of the complete visible item
+snapshot including fresh authority observations. It is not a timestamp or
+mutable global stream. It carries the candidate-seal
+watermark, review lifecycle generation, and closed human-review legal-action
+vocabulary but owns no state or authority.
+_Avoid_: Queue, inbox database, scheduler
+
+**Human review session**:
+An explicit ReviewAuthority event binding one operator session to one exact
+review identity, target fingerprint, candidate-seal watermark, and lifecycle
+generation. Later human commands must cite that session and the current
+expected review generation and watermark.
+_Avoid_: tuicr pane, login session, review authority
+
+**Review operator input**:
+The `flow.review-operator-input/v1` declaration embedded in a projected legal
+action. It names the fields a replaceable review consumer must materialize into
+a `work.review-human-command/v1`; it is not an authority grant or a command
+side channel.
+_Avoid_: Prompt, callback, caller authority
+
+**Human review event**:
+An append-only `flow.review-human-event/v1` record for a session start,
+comment, disposition, approval, supersession, or integration evidence action.
+ReviewAuthority accepts it only through an expected-generation
+`FlowRuntime.command` and advances its exact review watermark.
+_Avoid_: UI event, mutable review status
+
+**Review integration evidence**:
+Typed evidence submitted by a human review command to record that an approved
+candidate is eligible for integration. It authorizes no Git operation and does
+not execute integration; any resulting Git change requires a separate owning
+authority and receipt.
+_Avoid_: Merge flag, integration command
+
+**Automated review record**:
+The append-only ReviewAuthority result of one automated review, bound separately
+to the candidate seal watermark and review lifecycle generation; it records
+automated completion only and never grants human approval or integration power.
+_Avoid_: Approval record, merge decision
+
+**GitHub pull-request snapshot**:
+An immutable review target binding one open repository pull request to its base
+and head commits, diff digest, lifecycle generation, and exact target-authority
+watermark. The pending effect revalidates every binding before remote mutation.
+_Avoid_: Current pull request, branch name
+
+**Pending GitHub review draft**:
+The authority-rendered body, summary, target binding, marker, and exact digest
+shown at the one-shot checkpoint. Acceptance binds that exact draft to the
+RunAuthority effect intent; the only permitted remote result is one unsubmitted
+pending review.
+_Avoid_: Review comment, submitted review, mutable template
+
+**GitHub review record/projection**:
+The durable ReviewAuthority record and disposable authority-derived view for a
+GitHub snapshot, retaining findings, artifacts, source effect evidence, and an
+exact watermark. Target movement invalidates automation and integration
+eligibility while preserving the record history and safe recovery actions.
+_Avoid_: Provider listing, approval, remote review status
 
 **Integration receipt**:
 Durable evidence binding a reviewed head to the exact target ref, resulting
@@ -412,10 +805,24 @@ _Avoid_: Migration record, replacement run
   coverage, policy, cleanup, and verification evidence all pass.
 - A **tracker issue** may own one **flow run** without exposing its internal
   **flow cards** or **legacy Kanban cards**.
+- **ReviewAuthority** seals one immutable local **review candidate** only after
+  registered verification receipts cover the accepted brief and bind the exact
+  clean workspace generation, mutation epoch, Git retention, artifacts, and
+  handoff.
 - A **review candidate** becomes externally complete only through its
   **completion PR**.
 - A **review projection** derives from one **review manifest** and never owns
   approval or lifecycle state.
+- A **review inbox** derives from **ReviewAuthority** and is consumed by a
+  replaceable **tuicr** review UI through the public **FlowRuntime** query,
+  watch, and command operations; it never schedules, advances lifecycle, or
+  mutates Git.
+- A **human review session** binds one operator to one exact review target and
+  lifecycle generation; each **human review event** must carry the current
+  expected review watermark and generation.
+- **Review operator input** is materialized into a public human-review command
+  before submission, while **review integration evidence** records
+  authorization without executing Git integration.
 - An **integration receipt** proves where a **review candidate** entered Git
   history before its **review manifest** advances to integrated.
 - An **active stack generation** derives from one **stack plan** and supplies

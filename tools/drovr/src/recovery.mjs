@@ -6,6 +6,8 @@ import { DrovrError } from "./errors.mjs";
 import { semanticHarnessFor } from "./harness-interface.mjs";
 import {
   readRecords,
+  registryLockOptions,
+  registryOperation,
   stateDirectory,
   withResourceLock,
   writeRecord,
@@ -24,6 +26,8 @@ export async function reconcileOrRecoverAgent(
   const now = dependencies.now ?? (() => new Date().toISOString());
   const registryDirectory = stateDirectory(env);
   const initial = await recoveryContext(registryDirectory, agentId);
+  const lockOperation = dependencies.lockOperation ??
+    registryOperation("agent.recover", agentId, { agent_id: agentId });
   if (initial.agent.status !== "active" || initial.task.status !== "active") {
     return { ...initial, status: "recovery_blocked", reason: "resource_closed" };
   }
@@ -85,6 +89,7 @@ export async function reconcileOrRecoverAgent(
         }
         initial.agent = current.agent;
       },
+      registryLockOptions(lockOperation),
     );
   }
   if (
@@ -112,6 +117,7 @@ export async function reconcileOrRecoverAgent(
           await writeRecord(registryDirectory, "agents", current.agent);
           initial.agent = current.agent;
         },
+        registryLockOptions(lockOperation),
       );
     }
     return { ...initial, status: "reconciled", observed };
@@ -195,6 +201,7 @@ export async function reconcileOrRecoverAgent(
       await writeRecord(registryDirectory, "agents", context.agent);
       return { ...context, status: "recovered", observed: restored };
     },
+    registryLockOptions(lockOperation),
   );
 }
 

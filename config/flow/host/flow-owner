@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The host managers invoke this long-lived owner entrypoint directly.  The
+# public `flow start` command remains a detached convenience for interactive
+# callers; a manager must supervise the owner process itself.
+flow_config_directory="${FLOW_CONFIG_DIRECTORY:-${XDG_CONFIG_HOME:-$HOME/.config}/flow}"
+export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+export FLOW_OWNER_PROCESS=1
+exec node "$flow_config_directory/src/owner-process.mjs" "$@"

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.launch-rejection.v1.schema.json",
+  "title": "flow.launch-rejection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operation", "code", "outcome", "reason", "route", "legal_actions"],
+  "properties": {
+    "schema": { "const": "flow.launch-rejection/v1" },
+    "operation": { "const": "launch" },
+    "code": { "type": "string", "minLength": 1 },
+    "outcome": { "enum": ["disabled", "unsupported"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "route": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["flow", "mode"],
+          "properties": {
+            "flow": { "type": "string", "minLength": 1 },
+            "mode": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "legal_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flow", "mode"],
+        "properties": {
+          "flow": { "type": "string", "minLength": 1 },
+          "mode": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

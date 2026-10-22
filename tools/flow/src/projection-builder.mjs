@@ -13,8 +13,11 @@ const TIMELINE_KINDS = new Map([
   ["effect_intent_recorded", "effect"],
   ["effect_intent_adopted", "effect"],
   ["effect_invocation_started", "effect"],
+  ["effect_invocation_resumed", "effect"],
   ["effect_recovery_requested", "effect"],
   ["effect_observation_recorded", "effect"],
+  ["effect_retry_scheduled", "effect"],
+  ["effect_retry_blocked", "effect"],
   ["effect_receipt_recorded", "effect"],
   ["operation_completed", "attempt"],
   ["delegate_completed", "attempt"],
@@ -33,6 +36,9 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
   const common = {
     run_id: fold.run_id,
     authority_watermark: fold.watermark,
+    ...(fold.reboot_revalidation === undefined ? {} : {
+      reboot_revalidation: fold.reboot_revalidation,
+    }),
   };
   const admission = fold.admission ??
     (fold.phase === "active" ? "admitted" : "released");
@@ -48,17 +54,23 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
   };
   const checkpointDecisions = new Map(events
     .filter(({ type }) => type === "checkpoint_decided")
-    .map(({ checkpoint_id: checkpointId, decision }) => [
+    .map(({ checkpoint_id: checkpointId, decision, checkpoint_binding: checkpointBinding }) => [
       checkpointId,
-      decision,
+      { decision, checkpoint_binding: checkpointBinding },
     ]));
   const checkpoints = fold.cards
     .filter(({ executor_kind: kind }) => kind === "checkpoint")
-    .map(({ id, status }) => ({
-      card_id: id,
-      decision: checkpointDecisions.get(id) ?? null,
-      status,
-    }));
+    .map(({ id, status }) => {
+      const decision = checkpointDecisions.get(id);
+      return {
+        card_id: id,
+        decision: decision?.decision ?? null,
+        status,
+        ...(decision?.checkpoint_binding === undefined ? {} : {
+          checkpoint_binding: decision.checkpoint_binding,
+        }),
+      };
+    });
   const capability = {
     bindings: fold.capability_bindings,
     effective: fold.capabilities,
@@ -73,9 +85,21 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     bindings: fold.resource_handoff_bindings,
     published: fold.handoffs,
   };
+  const reviewCandidateReference = fold.review_candidate_reference === undefined
+    ? null
+    : freezeCanonical({
+      schema: "flow.review-candidate-reference/v1",
+      candidate_id: fold.review_candidate_reference.candidate_id,
+      candidate_fingerprint: fold.review_candidate_reference.candidate_fingerprint,
+      review_authority_watermark:
+        fold.review_candidate_reference.review_authority_watermark,
+      authority_watermark: fold.watermark,
+      legal_actions: [],
+    });
   const revision = {
     current: fold.current_revision,
     history: fold.revisions,
+    outcomes: fold.revision_outcomes,
   };
   const operator = {
     schema: "flow.operator-projection/v1",
@@ -88,9 +112,12 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     routes,
     capability,
     checkpoints,
-    effects: fold.effects,
+    effects: fold.effects.map(publicEffectProjection),
     resources,
     handoffs,
+    ...(reviewCandidateReference === null ? {} : {
+      review_candidate_reference: reviewCandidateReference,
+    }),
     legal_actions: fold.legal_actions,
   };
   const statuses = [...new Set(fold.cards.map(({ status }) => status))];
@@ -147,12 +174,23 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
       admission,
       routes,
       capability,
-      effects: fold.effects,
+      effects: fold.effects.map(publicEffectProjection),
       resources,
       handoffs,
+      ...(reviewCandidateReference === null ? {} : {
+        review_candidate_reference: reviewCandidateReference,
+      }),
       legal_actions: fold.legal_actions,
     },
   });
+}
+
+export function publicEffectProjection(effect) {
+  const { operation_input: _operationInput, ...projection } = effect;
+  const checkpointBinding = effect.operation_input?.checkpoint_binding;
+  return checkpointBinding === undefined
+    ? projection
+    : { ...projection, checkpoint_binding: checkpointBinding };
 }
 
 function assertMatchingAuthorityEvents(fold, events, authorityEventStreamDigest) {

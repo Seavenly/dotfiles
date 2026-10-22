@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegated-agent-resource-retire-request.v1.schema.json",
+  "title": "flow.delegated-agent-resource-retire-request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "binding"
+  ],
+  "properties": {
+    "schema": { "const": "flow.delegated-agent-resource-retire-request/v1" },
+    "binding": { "$ref": "#/$defs/binding" },
+    "settlement": { "type": "object" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "card_id", "route_key"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "card_id": { "type": "string", "minLength": 1 },
+        "route_key": { "type": "string", "minLength": 1 },
+        "managed_agent_binding_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "workspaceClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "authority",
+        "contract",
+        "subject_id",
+        "generation",
+        "mutation_epoch",
+        "fingerprint",
+        "access"
+      ],
+      "properties": {
+        "kind": { "const": "workspace" },
+        "authority": { "const": "WorkspaceAuthority" },
+        "contract": { "const": "work.workspace/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "access": { "enum": ["read_only", "mutation"] },
+        "operation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "launchBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description_digest",
+        "launch_comparison_key",
+        "effective_authority_comparison_key",
+        "configuration_watermark"
+      ],
+      "properties": {
+        "description_digest": { "$ref": "#/$defs/digest" },
+        "launch_comparison_key": { "$ref": "#/$defs/digest" },
+        "effective_authority_comparison_key": { "$ref": "#/$defs/digest" },
+        "configuration_watermark": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id", "task_id", "agent_id"],
+      "properties": {
+        "group_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "agent_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "resource_key", "owner", "workspace_claim",
+        "launch_binding", "delegation", "native_session",
+        "managed_runtime_evidence_digest", "binding_digest"
+      ],
+      "properties": {
+        "schema": { "const": "flow.delegated-agent-resource-binding/v1" },
+        "resource_key": { "$ref": "#/$defs/digest" },
+        "owner": { "$ref": "#/$defs/owner" },
+        "workspace_claim": { "$ref": "#/$defs/workspaceClaim" },
+        "launch_binding": { "$ref": "#/$defs/launchBinding" },
+        "delegation": { "$ref": "#/$defs/delegation" },
+        "native_session": { "type": ["string", "null"] },
+        "managed_runtime_evidence_digest": { "$ref": "#/$defs/digest" },
+        "binding_digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

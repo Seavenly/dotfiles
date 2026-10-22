@@ -1,4 +1,12 @@
 import { digest } from "../src/canonical.mjs";
+import {
+  DELEGATE_EXECUTION_AUTHORITY_SCHEMA,
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+  digestDelegateInputBytes,
+  materializeDelegateInputEnvelope,
+  serializeDelegateInputEnvelope,
+} from
+  "../src/delegate-input-envelope.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { dynamicCheckpointProposal } from "./dynamic-checkpoint.mjs";
 
@@ -79,22 +87,40 @@ export function completedTurnProjection({
   callerKey,
   description,
   output = "accepted output",
-  prompt = "inspect the exact candidate",
+  prompt,
   steering = [],
   turnId = "turn:delegate-review",
 } = {}) {
   const inputKey = `${callerKey}:input:1`;
+  const initialPrompt = projectionPrompt(prompt, {
+    callerKey,
+    description,
+    inputKey,
+    instructions: "inspect the exact candidate",
+    sequence: 1,
+    inputKind: "initial",
+  });
   const inputs = [{
     sequence: 1,
     caller_key: inputKey,
-    payload_sha256: digest(prompt),
+    payload_sha256: digestDelegateInputBytes(initialPrompt),
     delivery: { status: "submitted" },
-  }, ...steering.map(({ caller_id: callerId, prompt: steeringPrompt }, index) => ({
-    sequence: index + 2,
-    caller_key: `${callerKey}:steering:${callerId}`,
-    payload_sha256: digest(steeringPrompt),
-    delivery: { status: "submitted" },
-  }))];
+  }, ...steering.map(({ caller_id: callerId, prompt: steeringPrompt }, index) => {
+    const serialized = projectionPrompt(steeringPrompt, {
+      callerKey,
+      description,
+      inputKey: `${callerKey}:steering:${callerId}`,
+      instructions: `steer ${callerId}`,
+      sequence: index + 2,
+      inputKind: "steering",
+    });
+    return {
+      sequence: index + 2,
+      caller_key: `${callerKey}:steering:${callerId}`,
+      payload_sha256: digestDelegateInputBytes(serialized),
+      delivery: { status: "submitted" },
+    };
+  })];
   return {
     schema: "flow.delegated-agent-lifecycle-projection/v1",
     operation: "wait",
@@ -142,4 +168,52 @@ export function completedTurnProjection({
     },
     legal_next_actions: ["retire_agent"],
   };
+}
+
+function projectionPrompt(prompt, context) {
+  if (typeof prompt === "string") {
+    try {
+      if (JSON.parse(prompt)?.schema === "flow.delegate-input-envelope/v1") {
+        return prompt;
+      }
+    } catch {
+      // A legacy fixture prompt is converted into the canonical envelope.
+    }
+    return defaultDelegatePrompt({ ...context, instructions: prompt });
+  }
+  return defaultDelegatePrompt(context);
+}
+
+function defaultDelegatePrompt({
+  callerKey,
+  description,
+  inputKey,
+  instructions,
+  sequence,
+  inputKind,
+}) {
+  const envelope = materializeDelegateInputEnvelope({
+    attemptId: callerKey,
+    inputKey,
+    sequence,
+    inputKind,
+    instructions,
+    taskInputs: { schema: "flow.delegate-task-inputs/v1" },
+    resourceReferences: [],
+    executionAuthority: {
+      schema: DELEGATE_EXECUTION_AUTHORITY_SCHEMA,
+      owner: "RunAuthority",
+      capability: description.launch.capability,
+      effective_authority_digest:
+        description.comparison_keys.effective_authority,
+      capability_envelope_ids: [],
+    },
+    outputRequirements: {
+      schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+      format: "canonical-json",
+      schemas: ["validated_output"],
+      validator_contracts: [DELEGATE_OUTPUT_VALIDATOR],
+    },
+  });
+  return serializeDelegateInputEnvelope(envelope).bytes;
 }

@@ -36,6 +36,10 @@ test("public command advertises durable turn commands", async () => {
   });
 
   assert.match(stdout, /drovr doctor/);
+  assert.match(
+    stdout,
+    /drovr status \[--agent AGENT_ID \| --task TASK_ID\]/,
+  );
   assert.match(stdout, /drovr delegate \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr ask AGENT_ID \[options\] \[PROMPT\]/);
   assert.match(stdout, /drovr turn start AGENT_ID \[options\] \[PROMPT\]/);
@@ -49,6 +53,10 @@ test("public command advertises durable turn commands", async () => {
   assert.match(stdout, /drovr turn get TURN_ID \[--include-messages\]/);
   assert.match(stdout, /drovr turn list \[filters\]/);
   assert.match(stdout, /drovr turn cancel TURN_ID/);
+  assert.match(
+    stdout,
+    /drovr group list \[--id GROUP_ID\] \[--key KEY\] \[--status STATUS\] \[--limit COUNT\]/,
+  );
   assert.match(stdout, /drovr task open \[options\]/);
   assert.match(stdout, /drovr agent start TASK_ID \[options\]/);
   assert.match(
@@ -927,10 +935,7 @@ esac
   assert.equal(waited.command, "turn wait");
   assert.equal(waited.result.status, "completed");
   assert.equal(waited.result.turn.result.text, "NATIVE STEERED");
-  assert.deepEqual(waited.result.turn.result.messages, [
-    "INTERMEDIATE",
-    "NATIVE STEERED",
-  ]);
+  assert.equal(waited.result.turn.result.messages, undefined);
 
   const { stdout: lateSendOutput } = await execFileAsync(
     drovr,

@@ -1,0 +1,230 @@
+{
+  "schema": "flow.host-recovery-qualification-catalog/v1",
+  "version": 1,
+  "issue": 46,
+  "scope": "first_release_host_recovery_and_local_rendering",
+  "execution_kinds": [
+    "live_public_process",
+    "native_provider",
+    "deterministic_supporting_check"
+  ],
+  "isolation": {
+    "required_absolute_paths": [
+      "XDG_STATE_HOME",
+      "FLOW_AUTHORITY_DIRECTORY",
+      "FLOW_OWNER_SOCKET_PATH",
+      "FLOW_OWNER_ENDPOINT_PATH",
+      "FLOW_BACKUP_DIRECTORY",
+      "FLOW_REPOSITORY_ROOT",
+      "DROVR_CONFIG_DIR"
+    ],
+    "required_unique_identity": "HERDR_QUALIFICATION_SESSION",
+    "required_run_identity": "--run-id",
+    "pinned_launcher": "config/flow/src/cli.mjs",
+    "pinned_host": "config/flow/src/owner-process.mjs",
+    "no_shared_defaults": true
+  },
+  "scenarios": [
+    {
+      "id": "concurrent_runs_owner_restart",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "two_concurrent_top_level_runs",
+        "bounded_capacity_slow_delegate",
+        "client_exit",
+        "same_boot_owner_restart",
+        "no_duplicate_effect"
+      ],
+      "required_assertion_ids": [
+        "bounded_capacity",
+        "client_exit",
+        "same_boot_owner_restart",
+        "no_duplicate_effect"
+      ],
+      "proof_predicate": "concurrent_owner_restart",
+      "required_command_kinds": ["native_concurrency_recovery_probe"],
+      "required_observation_kinds": ["capacity", "client_exit", "owner_restart", "effect"],
+      "public_command_kinds": ["native_concurrency_recovery_probe"]
+    },
+    {
+      "id": "actionable_failure_recovery",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "cancellation",
+        "deadline_exhaustion",
+        "capped_recovery",
+        "provider_outage",
+        "invalid_output",
+        "one_shot_uncertainty_no_duplicate_effect"
+      ],
+      "required_assertion_ids": [
+        "typed_failure_observations",
+        "one_shot_uncertainty_no_duplicate_effect"
+      ],
+      "proof_predicate": "failure_recovery",
+      "required_command_kinds": ["native_failure_recovery_probe"],
+      "required_observation_kinds": ["failure", "uncertainty"],
+      "public_command_kinds": ["native_failure_recovery_probe"]
+    },
+    {
+      "id": "backup_restore_reconciliation",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "production_backup",
+        "destructive_disposable_state_loss",
+        "restore",
+        "six_domain_reconciliation",
+        "public_drovr_status_observation",
+        "retained_result_admission"
+      ],
+      "required_assertion_ids": [
+        "production_backup",
+        "destructive_loss",
+        "restore",
+        "six_domain_reconciliation",
+        "public_drovr_status_observation",
+        "retained_result_admission"
+      ],
+      "proof_predicate": "backup_restore_reconciliation",
+      "required_command_kinds": ["native_backup_restore_probe"],
+      "required_observation_kinds": ["backup", "loss", "restore", "reconciliation", "drovr_status", "admission"],
+      "public_command_kinds": ["native_backup_restore_probe"]
+    },
+    {
+      "id": "ubuntu_headless_text_captures",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "terminal",
+        "status",
+        "checkpoint",
+        "candidate",
+        "review",
+        "graph",
+        "timeline",
+        "tuicr",
+        "legibility_provenance_watermark_legal_actions"
+      ],
+      "required_assertion_ids": [
+        "capture_inventory",
+        "capture_legibility",
+        "capture_provenance",
+        "capture_watermark",
+        "capture_legal_actions"
+      ],
+      "required_capture_kinds": [
+        "terminal",
+        "status",
+        "checkpoint",
+        "candidate",
+        "review",
+        "graph",
+        "timeline",
+        "tuicr"
+      ],
+      "proof_predicate": "headless_capture_inventory",
+      "required_command_kinds": ["status", "query", "watch", "native_headless_capture_probe"],
+      "required_observation_kinds": ["capture_inventory"],
+      "public_command_kinds": ["status", "query", "watch"]
+    },
+    {
+      "id": "tuicr_review_after_producer_exit",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "producer_exit_before_review",
+        "flowruntime_disposition_and_approval",
+        "stale_action_rejection",
+        "projection_rebuild_identity"
+      ],
+      "required_assertion_ids": [
+        "producer_exit_before_review",
+        "flowruntime_disposition_and_approval",
+        "stale_action_rejection",
+        "projection_rebuild_identity"
+      ],
+      "proof_predicate": "tuicr_after_producer_exit",
+      "required_command_kinds": ["native_tuicr_live_probe"],
+      "required_observation_kinds": ["producer_exit", "disposition", "stale_action", "rebuild"],
+      "public_command_kinds": ["native_tuicr_live_probe"]
+    },
+    {
+      "id": "drovr_registry_lock_reconciliation",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "killed_isolated_registry_lock_owner",
+        "evidence_backed_reconciliation_or_actionable_block",
+        "negative_age_takeover",
+        "negative_force_takeover"
+      ],
+      "required_assertion_ids": [
+        "killed_lock_owner",
+        "lock_reconciliation_or_block",
+        "negative_age_takeover",
+        "negative_force_takeover"
+      ],
+      "proof_predicate": "drovr_lock_reconciliation",
+      "required_command_kinds": ["native_drovr_lock_probe"],
+      "required_observation_kinds": ["lock_owner", "reconciliation", "negative_age", "negative_force"],
+      "public_command_kinds": ["native_drovr_lock_probe"]
+    },
+    {
+      "id": "projection_rebuild_readers",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "query",
+        "watch",
+        "projection_rebuild",
+        "no_persistent_mutation_lock",
+        "multiple_views",
+        "realistic_history_latency_samples"
+      ],
+      "required_assertion_ids": [
+        "query_projection",
+        "watch_projection",
+        "rebuild_without_mutation_lock",
+        "multiple_views",
+        "history_latency_samples"
+      ],
+      "proof_predicate": "projection_rebuild_readers",
+      "required_command_kinds": ["native_projection_reader_probe"],
+      "required_observation_kinds": ["query", "watch", "rebuild", "views", "latency"],
+      "public_command_kinds": ["native_projection_reader_probe"]
+    },
+    {
+      "id": "suspended_run_admission",
+      "execution_kind": "native_provider",
+      "coverage": [
+        "suspended_run_observation",
+        "explicit_admission",
+        "actual_reboot_deferred"
+      ],
+      "required_assertion_ids": [
+        "suspended_run_observation",
+        "explicit_admission",
+        "actual_reboot_deferred"
+      ],
+      "proof_predicate": "suspended_run_admission",
+      "required_command_kinds": ["native_suspended_admission_check"],
+      "required_observation_kinds": ["suspended", "admission", "reboot"],
+      "public_command_kinds": ["native_suspended_admission_check"]
+    }
+  ],
+  "deferred": [
+    {
+      "id": "actual_host_reboot",
+      "issue": 47,
+      "status": "not_run",
+      "reason": "actual reboot is deferred to issue 47"
+    },
+    {
+      "id": "expanded_macos_visuals",
+      "issue": 47,
+      "status": "not_run",
+      "reason": "expanded macOS visual matrix is deferred to issue 47"
+    }
+  ],
+  "supporting_checks": {
+    "execution_kind": "deterministic_supporting_check",
+    "cannot_satisfy_live_scenario": true,
+    "required_receipt_fields": ["command", "exit_code", "started_at", "finished_at", "receipt_sha256"]
+  }
+}
