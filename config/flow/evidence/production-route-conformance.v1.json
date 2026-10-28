@@ -2,8 +2,8 @@
   "schema": "flow.production-route-conformance-evidence/v1",
   "release_id": "flow-release-1.0-dark/v1",
   "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
-  "candidate_tree_sha": "310e6a0146ee2ba2384df344300440bf55d8a09b",
-  "release_content_digest": "sha256:b8043b8f23a2998de9d4e6a931970956d5a5266f47a5f641ae394d73f57c3469",
+  "candidate_tree_sha": "19e677217007e26444b940891b025a49ee935340",
+  "release_content_digest": "sha256:058497d5db4361eb86bbef2720196de338edbcea94e2b60087f623786a7a36c9",
   "status": "not_run",
   "scope": "production_public_route_conformance",
   "routes": [
@@ -25,7 +25,7 @@
   "generation_id": null,
   "generation_binding_sha256": null,
   "recipe": null,
-  "captured_at": "2026-10-22T23:33:57Z",
+  "captured_at": "2026-10-28T21:57:50Z",
   "environment": {
     "os": "darwin",
     "architecture": "arm64",

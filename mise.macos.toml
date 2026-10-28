@@ -6,6 +6,7 @@ system_packages.managers = ["brew"]
 
 [bootstrap.packages]
 "brew:felixkratz/formulae/sketchybar" = "latest"
+"brew:bun" = "latest"
 "brew:eza" = "latest"
 "brew:terminal-notifier" = "latest"
 

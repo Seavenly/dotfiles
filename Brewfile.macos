@@ -1,4 +1,9 @@
+tap "anomalyco/tap"
+tap "kitlangton/tap"
+
 cask "ghostty"
 cask "obsidian"
+cask "anomalyco/tap/hex"
+cask "kitlangton/tap/scrawl"
 cask "font-commit-mono-nerd-font"
 cask "font-sf-pro"

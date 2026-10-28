@@ -26,16 +26,16 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "310e6a0146ee2ba2384df344300440bf55d8a09b",
+    "candidate_tree_sha": "19e677217007e26444b940891b025a49ee935340",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:b8043b8f23a2998de9d4e6a931970956d5a5266f47a5f641ae394d73f57c3469",
+  "content_digest": "sha256:058497d5db4361eb86bbef2720196de338edbcea94e2b60087f623786a7a36c9",
   "files": [
     {
       "path": "README.md",
       "mode": "100644",
-      "git_blob_sha": "c1e09654c340210b48b02c75658d3d6c7db22daa",
-      "sha256": "daacbabd6bacdf06e09ba1bf02ba6226ce680179de79c82384ba959bc0abac76"
+      "git_blob_sha": "271c7364aab5392825ee7b398025a6f451de6347",
+      "sha256": "e116918b81bfb7347ebfefe18023e43ea2202dbb338df5b287b38e934b37240b"
     },
     {
       "path": "bin/flow",
