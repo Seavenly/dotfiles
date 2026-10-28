@@ -97,6 +97,7 @@ expected_skills=(
   prototype
   repo-retro
   research
+  scrawl
   setup-matt-pocock-skills
   split
   stack-split
@@ -144,6 +145,7 @@ expected_repository() {
     agent-flow-stacks) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
     stack-split) printf '%s\n' 'https://github.com/Iron-Ham/split.git' ;;
     i-have-adhd) printf '%s\n' 'https://github.com/ayghri/i-have-adhd.git' ;;
+    scrawl) printf '%s\n' 'https://github.com/kitlangton/scrawl.git' ;;
     tuicr) printf '%s\n' 'https://github.com/agavra/tuicr.git' ;;
     *) printf '%s\n' 'https://github.com/mattpocock/skills.git' ;;
   esac
