@@ -7,6 +7,15 @@
   scalability, and long-term maintainability. Do not optimize primarily for
   short-term implementation cost.
 
+## Dictated input
+
+- Messages are often dictated. Speech recognition can turn "Scrawl" (the
+  screen-capture tool whose `.scrawl` bundles and `scrawl` CLI the `scrawl`
+  skill covers) into "scroll". When "scroll" refers to a recording, capture,
+  bundle, or something the user just showed you, treat it as Scrawl and use the
+  `scrawl` skill. Otherwise read it literally; web design work uses "scroll" in
+  its ordinary sense.
+
 ## Authorship and generated files
 
 - Do not add an agent name, co-author trailer, or similar attribution to commit
