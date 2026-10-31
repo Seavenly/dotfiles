@@ -177,7 +177,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `bin/` | Additional user commands linked into `~/.local/bin` |
 | `config/` | Application-owned configuration organized by concern |
 | `config/agents/` | Shared agent guidance, managed skills, and colocated profile variants |
-| `config/agent-flow/` | Hermes-backed agent-flow orchestration, schemas, and routing template |
+| `config/agent-flow/` | Frozen Hermes baseline retained for historical evidence only |
 | `config/flow/` | Replacement FlowRuntime inventory, transition policy, public contracts, frozen legacy baselines, and evidence ledger |
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
@@ -192,10 +192,13 @@ directories to their platform-appropriate destinations.
 
 ## Flow implementation transition
 
-The harness-neutral `flow` runtime is available beside the frozen Claude-only
-and Hermes-backed implementations. New launches still select the Claude-only
-baseline by default. Repeating `dotfiles install` reapplies the same versioned
-policy from `config/flow/launch-policy.v1.json`; it does not change the
+The harness-neutral `flow` runtime is available beside the maintained Claude-only
+and historical Hermes-backed implementations. Hermes is retired: convergence
+no longer installs its skills or profiles, preflights its configuration, or
+creates its routing file. Existing repository-owned links are removed by
+migration 016; local installations and data remain host-owned. New launches
+select the Claude-only baseline by default. Repeating `dotfiles install` reapplies
+the same versioned policy from `config/flow/launch-policy.v1.json`; it does not change the
 selector merely because replacement sources are installed. The launcher
 enforces that converged decision.
 
@@ -280,12 +283,11 @@ Host-specific state stays outside Git under `~/.config/dotfiles/`:
 | `private.zsh` | Secrets and private environment variables, mode `0600` |
 | `git.local` | Git author name and email, mode `0600` |
 | `paths.env` | Local paths such as `PROJECTS_DIR` and `NOTES_DIR` |
-| `hermes-routing.yaml` | Model-neutral routing for managed Hermes profiles, mode `0600` |
 
 The defaults are `PROJECTS_DIR=~/dev` and `NOTES_DIR=~/notes`. The bootstrap
-creates these local files when needed but never commits their contents. The
-Hermes routing file starts with no selected models; fill all six managed lanes
-and run `agent-flow doctor profiles` before launching an automated flow.
+creates these local files when needed but never commits their contents.
+Existing Hermes routing files are retired machine-local data and are no longer
+created or read during convergence.
 
 ## Shell and tmux workflow
 

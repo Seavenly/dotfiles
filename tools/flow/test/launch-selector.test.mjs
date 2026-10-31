@@ -38,6 +38,19 @@ test("repeated selection keeps the frozen legacy implementation as the default",
   );
 });
 
+test("retired Hermes-backed launches are disabled by the converged policy", async () => {
+  await assert.rejects(
+    resolveLaunchPolicy({
+      policyPath,
+      requestedImplementation: "legacy-agent-flow/v1",
+      homeDirectory: "/test/home",
+      stateDirectory: "/test/state",
+    }),
+    (error) => error.code === "implementation_launch_disabled" &&
+      error.outcome === "disabled",
+  );
+});
+
 test("explicit dark opt-in selects the exact qualified feature verify route", async () => {
   const selection = await resolveLaunchPolicy({
     policyPath,

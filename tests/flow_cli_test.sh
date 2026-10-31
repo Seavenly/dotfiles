@@ -5,6 +5,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+export MISE_TRUSTED_CONFIG_PATHS="$root"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/state/agent-flow/runs/cli-run"

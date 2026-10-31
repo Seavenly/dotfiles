@@ -5,6 +5,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+export MISE_TRUSTED_CONFIG_PATHS="$root"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 home="$tmp/home"
@@ -30,10 +32,10 @@ selection="$(HOME="$home" XDG_STATE_HOME="$home/.local/state" node --input-type=
   });
   process.stdout.write(JSON.stringify({
     selected_implementation: result.selected_implementation,
-    dark_opt_in_available: result.dark_opt_in.available,
+    hermes_launch_available: result.legal_actions.includes("launch_explicit_legacy_agent_flow"),
   }));
 ' "$root/tools/flow/src/transition-projection.mjs" "$managed_flow" "$root")"
-[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","dark_opt_in_available":true}' ]] \
-  || fail "repeated convergence selected replacement authority"
+[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","hermes_launch_available":false}' ]] \
+  || fail "repeated convergence changed the default or exposed retired Hermes launches"
 
-echo "ok - repeated convergence preserves the frozen legacy launch policy"
+echo "ok - repeated convergence preserves the Claude default and retires Hermes launches"

@@ -1738,18 +1738,7 @@ test("qualification runner records the native projection reader probe", async (t
 });
 
 async function makeEphemeralPinnedWorktree(source, destination) {
-  await execFile("git", ["clone", "--quiet", source, destination], {
-    cwd: source,
-    maxBuffer: 2 * 1024 * 1024,
-  });
-  const { stdout } = await execFile("git", [
-    "-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
-  ], { maxBuffer: 64 * 1024 * 1024 });
-  for (const path of stdout.split("\0").filter(Boolean)) {
-    const target = join(destination, path);
-    await mkdir(dirname(target), { recursive: true });
-    await cp(join(source, path), target, { recursive: true, force: true });
-  }
+  await makeWorkingTreeCopy(source, destination);
   await execFile("git", ["-C", destination, "config", "user.email", "flow@example.test"]);
   await execFile("git", ["-C", destination, "config", "user.name", "Flow Qualification"]);
   await execFile(process.execPath, [
@@ -1796,10 +1785,20 @@ async function makeWorkingTreeCopy(source, destination) {
     cwd: source,
     maxBuffer: 2 * 1024 * 1024,
   });
+  // A clone contains HEAD's files. Reproduce working-tree deletions before
+  // copying the remaining tracked and untracked candidate files.
+  const { stdout: deletedListing } = await execFile("git", [
+    "-C", source, "diff", "HEAD", "--name-only", "--diff-filter=D", "-z",
+  ]);
+  const deletedPaths = new Set(deletedListing.split("\0").filter(Boolean));
+  for (const path of deletedPaths) {
+    await rm(join(destination, path), { recursive: true, force: true });
+  }
   const { stdout } = await execFile("git", [
     "-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
   ], { maxBuffer: 64 * 1024 * 1024 });
   for (const path of stdout.split("\0").filter(Boolean)) {
+    if (deletedPaths.has(path)) continue;
     const target = join(destination, path);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(source, path), target, { recursive: true, force: true });

@@ -330,7 +330,6 @@ test("transition query derives its watermark and legal actions from authority", 
   assert.match(projection.legacy_inventory_digest, /^sha256:[0-9a-f]{64}$/);
   assert.deepEqual(projection.legal_actions, [
     "launch_default_legacy",
-    "launch_explicit_legacy_agent_flow",
     "inspect_frozen_baselines",
   ]);
 });
@@ -733,6 +732,7 @@ test("transition query derives the launch action from either legacy default", as
   const policyPath = join(copiedConfig, "launch-policy.v1.json");
   const policy = JSON.parse(await readFile(policyPath, "utf8"));
   policy.default_implementation = "legacy-agent-flow/v1";
+  policy.implementations["legacy-agent-flow/v1"].launch_enabled = true;
   const policyBytes = `${JSON.stringify(policy, null, 2)}\n`;
   await writeFile(policyPath, policyBytes);
   const inventoryPath = join(copiedConfig, "legacy-baselines.v1.json");

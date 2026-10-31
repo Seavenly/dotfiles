@@ -5,6 +5,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/testlib.sh
 source "$root/tests/testlib.sh"
 
+export MISE_TRUSTED_CONFIG_PATHS="$root"
+
 help="$("$root/bin/agent-flow" --help)"
 assert_contains "$help" 'agent-flow doctor profiles'
 assert_contains "$help" 'agent-flow status --run'
@@ -41,7 +43,7 @@ mkdir -p "$config_home/dotfiles"
 cp "$root/config/agent-flow/hermes-routing.example.yaml" \
   "$config_home/dotfiles/hermes-routing.yaml"
 HOME="$home" XDG_CONFIG_HOME="$config_home" DOTFILES_ROOT="$root" \
-  "$root/internal/bootstrap/hermes-profiles" >/dev/null
+  node "$root/config/agent-flow/src/render-profiles.mjs" >/dev/null
 
 set +e
 output="$(HOME="$home" XDG_CONFIG_HOME="$config_home" \
