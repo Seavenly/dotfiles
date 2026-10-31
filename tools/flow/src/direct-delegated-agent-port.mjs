@@ -30,6 +30,15 @@ export function createDirectDelegatedAgentPort({
   };
   return Object.freeze({
     contract: "flow.delegated-agent-port/v1", backend: "direct",
+    // Adapter constructors are trusted host code. Request and environment
+    // fields cannot turn source conformance into official native permission.
+    nativeAdmissionIssue({ workspacePath } = {}) {
+      for (const adapter of Object.values(adapters)) {
+        const issue = adapter.nativeQualificationIssue?.();
+        if (issue) return adapter.authorityIssue({ env, workspacePath }) ?? issue;
+      }
+      return null;
+    },
     async describe(request) {
       try {
         if (request?.schema !== "flow.delegated-agent-description-request/v1") throw new Error("invalid_description_request");

@@ -509,11 +509,27 @@ test("public preparation normalizes real Drovr feature findings to the rejection
       return description;
     },
   });
-  const { runtime } = await createRuntimeWithCopiedFlowConfig(
-    t,
-    "real-drovr-feature-findings",
-    { delegatedAgentPort, qualified: true },
-  );
+  let runtime;
+  let darkOptIn = DARK_OPT_IN;
+  if (process.env.FLOW_CONFIG_DIRECTORY !== undefined) {
+    const manifest = JSON.parse(await readFile(
+      join(process.env.FLOW_CONFIG_DIRECTORY, "release-manifest.v1.json"),
+      "utf8",
+    ));
+    darkOptIn = { ...DARK_OPT_IN, release_id: manifest.release_id };
+    runtime = createFlowRuntime({
+      env: { ...process.env, HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+      delegatedAgentPort,
+      autonomous: false,
+    });
+    t.after(() => closeFlowRuntime(runtime));
+  } else {
+    ({ runtime } = await createRuntimeWithCopiedFlowConfig(
+      t,
+      "real-drovr-feature-findings",
+      { delegatedAgentPort, qualified: true },
+    ));
+  }
   const repository = join(scratch, "candidate-repository");
   await initializeCleanTestRepository(repository);
 
@@ -527,7 +543,7 @@ test("public preparation normalizes real Drovr feature findings to the rejection
     },
     repository: { path: repository },
     mode: "verify",
-    dark_opt_in: DARK_OPT_IN,
+    dark_opt_in: darkOptIn,
     routes: {
       apply: {
         launch: {

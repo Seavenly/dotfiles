@@ -1,24 +1,73 @@
 TAP version 13
-# (node:998987) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (node:2381520) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 # (Use `node --trace-warnings ...` to show where the warning was created)
-# Subtest: public production feature test proves real RED/GREEN and sealed unknown candidate
-ok 1 - public production feature test proves real RED/GREEN and sealed unknown candidate
+# Subtest: isolated non-Linux valid check configuration is unavailable before mkdir or worker spawn
+ok 1 - isolated non-Linux valid check configuration is unavailable before mkdir or worker spawn
   ---
-  duration_ms: 9112.545112
+  duration_ms: 36.312376
+  type: 'test'
+  ...
+# Subtest: public production feature test proves real RED/GREEN and sealed unknown candidate
+ok 2 - public production feature test proves real RED/GREEN and sealed unknown candidate
+  ---
+  duration_ms: 10005.684525
   type: 'test'
   ...
 # Subtest: public production feature test proves real RED/GREEN and one writer across owner restart
-ok 2 - public production feature test proves real RED/GREEN and one writer across owner restart
+ok 3 - public production feature test proves real RED/GREEN and one writer across owner restart
   ---
-  duration_ms: 8733.191658
+  duration_ms: 9600.0141
   type: 'test'
   ...
-1..2
-# tests 2
+# Subtest: public production feature test proves real RED/GREEN and one checker across owner restart
+ok 4 - public production feature test proves real RED/GREEN and one checker across owner restart
+  ---
+  duration_ms: 15501.573367
+  type: 'test'
+  ...
+# Subtest: public trusted owner accepts check_id with an embedded recipe and no caller configuration
+ok 5 - public trusted owner accepts check_id with an embedded recipe and no caller configuration
+  ---
+  duration_ms: 1357.021033
+  type: 'test'
+  ...
+# Subtest: public trusted owner withholds missing or invalid private recipes before dispatch
+    # Subtest: missing
+    ok 1 - missing
+      ---
+      duration_ms: 576.383781
+      type: 'test'
+      ...
+    # Subtest: invalid
+    ok 2 - invalid
+      ---
+      duration_ms: 574.219557
+      type: 'test'
+      ...
+    1..2
+ok 6 - public trusted owner withholds missing or invalid private recipes before dispatch
+  ---
+  duration_ms: 1151.259986
+  type: 'test'
+  ...
+# Subtest: public owner rejects changed trusted module bytes before runtime construction
+ok 7 - public owner rejects changed trusted module bytes before runtime construction
+  ---
+  duration_ms: 406.966819
+  type: 'test'
+  ...
+# Subtest: public launch rejects a newly provisioned recipe after owner replacement
+ok 8 - public launch rejects a newly provisioned recipe after owner replacement
+  ---
+  duration_ms: 1658.369668
+  type: 'test'
+  ...
+1..8
+# tests 10
 # suites 0
-# pass 2
+# pass 10
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 17930.13222
+# duration_ms 39824.937004

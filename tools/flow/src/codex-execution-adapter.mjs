@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 export const codexExecutionAdapter = Object.freeze({
   id: "flow.codex-exec", version: "1", harness: "codex",
   supportedVersion: "codex-cli 0.160.0",
+  nativeQualificationIssue() { return "codex_native_policy_unproven"; },
   // Filesystem dependencies are a trusted adapter test seam, never supplied
   // by a Flow request or native invocation environment.
   authorityIssue({ env, workspacePath }, {
@@ -21,7 +22,9 @@ export const codexExecutionAdapter = Object.freeze({
         const parent = dirname(path); if (parent === path) break; path = parent;
       }
     }
-    return ambient.some((path) => pathExists(path)) ? "unproved_ambient_authority" : null;
+    return ambient.some((path) => pathExists(path))
+      ? "unproved_ambient_authority"
+      : codexExecutionAdapter.nativeQualificationIssue();
   },
   buildInvocation({ descriptor, taskDirectory }) {
     const launch = descriptor.description.launch;

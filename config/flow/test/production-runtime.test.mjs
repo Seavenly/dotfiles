@@ -49,6 +49,8 @@ import { codexExecutionAdapter } from
 import { executionDescription } from
   "../../../tools/flow/src/execution-contract.mjs";
 
+import { fixtureCodexAdapter } from "../test-support/direct-feature-test-runtime.mjs";
+
 const execFile = promisify(execFileCallback);
 const FLOW_CONFIG_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -993,7 +995,7 @@ test("direct production preparation rejects known workspace ambient authority be
   const delegatedAgentPort = createDirectDelegatedAgentPort({
     env, taskDirectory,
     executables: { codex: join(scratch, "unavailable-executable") },
-    providers: { codex: { ...codexExecutionAdapter,
+    providers: { codex: { ...codexExecutionAdapter, id: "flow.fixture-codex-exec", nativeQualificationIssue() { return null; },
       authorityIssue(context) {
         return codexExecutionAdapter.authorityIssue(context, {
           canonicalPath: (path) => path,
@@ -1220,17 +1222,15 @@ test("production feature runs a real Git mutation through a local candidate", as
   });
   const runtime = await createFlowRuntime({
     env: {
+      ...process.env,
       HOME: scratch,
       XDG_STATE_HOME: state,
       FLOW_CONFIG_DIRECTORY: configDirectory,
       FLOW_EXECUTION_BACKEND: "drovr",
-      ...(typeof process.env.FLOW_REPOSITORY_ROOT === "string" ? {
-        FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT,
-      } : {}),
+      FLOW_REPOSITORY_ROOT: repository,
       FLOW_QUALIFICATION_REPOSITORY_ROOT:
         process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT ?? governedRepositoryRoot,
     },
-    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
   });
   t.after(() => closeFlowRuntime(runtime));
@@ -2556,3 +2556,72 @@ async function until(predicate, timeout = 5000) {
   }
   assert.fail("condition did not become true before timeout");
 }
+
+
+test("source-qualified public native admission remains withheld without native permission proof", { skip: process.platform !== "linux" && "The controlled positive feature writer requires Linux; this skip is not macOS qualification" }, async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-native-admission-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "subject");
+  const configDirectory = join(scratch, "selected-config");
+  await cp(join(FLOW_CONFIG_DIRECTORY, "releases/1.1-dark-test"), configDirectory, { recursive: true });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
+  const invocations = join(scratch, "native-invocations");
+  const executable = join(scratch, "private-codex-sentinel");
+  await writeFile(executable, `#!/usr/bin/env node
+if (process.argv[2] === "--version") { console.log("codex-cli 0.160.0"); process.exit(0); }
+(await import("node:fs/promises")).appendFile(${JSON.stringify(invocations)}, "unexpected-native-invocation\\n").then(() => process.exit(86));
+`);
+  await chmod(executable, 0o700);
+  const authorityDirectory = join(scratch, "authority");
+  const runtime = createProductionFlowRuntime({
+    env: { HOME: scratch, PATH: process.env.PATH, FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_REPOSITORY_ROOT: repository,
+      FLOW_NATIVE_QUALIFICATION_PASSED: "1", FLOW_ALLOW_NATIVE: "1" },
+    authorityDirectory, autonomous: false,
+    directExecutionOptions: { executables: { codex: executable } },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const request = preparationRequest(repository, "brief:native-permission-unproven");
+  request.dark_opt_in = { ...request.dark_opt_in, release_id: "flow-release-1.1-dark-test/v1" };
+  request.routes = {
+    apply: { harness: "codex", model: "fixture-model", effort: "high", capability: "workspace-write-denied" },
+    critique: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" },
+  };
+  const { publicQualificationIsAvailable } = await import("../../../tools/flow/src/transition-projection.mjs");
+  const { resolvePublicLaunchPolicy } = await import("../../../tools/flow/src/launch-selector.mjs");
+  const selection = resolvePublicLaunchPolicy({ policyPath: join(configDirectory, "launch-policy.v1.json"),
+    releaseManifestPath: join(configDirectory, "release-manifest.v1.json"), darkOptIn: request.dark_opt_in,
+    route: { flow: "feature", mode: "verify" }, homeDirectory: scratch, stateDirectory: join(scratch, ".local/state") });
+  const sourceQualificationAvailable = publicQualificationIsAvailable({ configDirectory, repositoryRoot: REPOSITORY_ROOT,
+    selection, homeDirectory: scratch, stateDirectory: join(scratch, ".local/state") });
+  assert.equal(sourceQualificationAvailable, true, "the same source binding must be valid before testing native refusal");
+  const controlled = createProductionFlowRuntime({
+    env: { HOME: scratch, PATH: process.env.PATH, FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_REPOSITORY_ROOT: repository },
+    authorityDirectory: join(scratch, "fixture-authority"), autonomous: false,
+    directExecutionOptions: { executables: { codex: executable }, providers: { codex: fixtureCodexAdapter } },
+  });
+  t.after(() => closeFlowRuntime(controlled));
+  const prepared = await controlled.prepare(request);
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  assert.equal(prepared.selection.inputs.delegation.apply.description.backend.adapter, "flow.fixture-codex-exec");
+  const result = await runtime.prepare(request);
+  const launchRejection = runtime.launch({ prepared, dark_opt_in: request.dark_opt_in });
+  const ledger = JSON.parse(await readFile(join(configDirectory, "transition-ledger.v1.json"), "utf8"));
+  const snapshot = { fixture_only: true, official_provider_invoked: false, result, launchRejection, sourceQualificationAvailable,
+    source_evidence: ledger.evidence.map(({ id, status }) => ({ id, status })), native: ledger.not_run,
+    invocation_log: await readFile(invocations, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; }) };
+  if (process.env.FLOW_NATIVE_ADMISSION_RECEIPT_DIRECTORY) {
+    await mkdir(process.env.FLOW_NATIVE_ADMISSION_RECEIPT_DIRECTORY, { recursive: true });
+    await writeFile(join(process.env.FLOW_NATIVE_ADMISSION_RECEIPT_DIRECTORY, "public-prepare.json"), JSON.stringify(snapshot, null, 2) + "\n");
+  }
+  assert.equal(snapshot.source_evidence.find(({ id }) => id === "deterministic_qualification").status, "passed");
+  assert.equal(snapshot.source_evidence.find(({ id }) => id === "production_route_conformance").status, "passed");
+  assert.equal(snapshot.native.find(({ id }) => id === "issue-84").status, "not_run");
+  assert.equal(snapshot.invocation_log, "");
+  assert.equal(result.code, "qualification_withheld", JSON.stringify(result));
+  assert.match(result.reason, /codex_native_policy_unproven/);
+  assert.equal(launchRejection.code, "qualification_withheld");
+  assert.match(launchRejection.reason, /codex_native_policy_unproven/);
+  await assert.rejects(stat(join(authorityDirectory, "direct-tasks")), { code: "ENOENT" });
+});

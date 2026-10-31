@@ -6,6 +6,12 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { createFlowRuntime, closeFlowRuntime } from "../src/runtime.mjs";
 
+import { claudeExecutionAdapter } from "../../../tools/flow/src/claude-execution-adapter.mjs";
+import { fixtureCodexAdapter } from "../test-support/direct-feature-test-runtime.mjs";
+
+const linuxTaskMechanism = { skip: process.platform !== "linux" &&
+  "Linux subreaper/pidfd task containment is unsupported on this host; this skip is not macOS qualification" };
+
 test("public direct description pins Codex identity and denies old approval profiles", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-direct-description-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -16,7 +22,7 @@ test("public direct description pins Codex identity and denies old approval prof
     authorityDirectory: join(scratch, "authority"),
     env: { HOME: scratch, PATH: process.env.PATH },
     executionBackend: "direct",
-    directExecutionOptions: { executables: { codex: executable } },
+    directExecutionOptions: { executables: { codex: executable }, providers: { codex: fixtureCodexAdapter, claude: claudeExecutionAdapter } },
     autonomous: false,
   });
   t.after(() => closeFlowRuntime(runtime));
@@ -25,7 +31,7 @@ test("public direct description pins Codex identity and denies old approval prof
     launch: { harness: "codex", model: "gpt-fixture", effort: "high", capability },
     caller_metadata: { owner: "test" },
   });
-  const supported = await query("workspace-write-denied");
+  const supported = await query("read-only");
   assert.equal(supported.status, "compatible", JSON.stringify(supported));
   assert.equal(supported.description.schema, "flow.execution-description/v1");
   assert.equal(supported.description.backend.executable.path, executable);
@@ -34,14 +40,28 @@ test("public direct description pins Codex identity and denies old approval prof
   assert.equal(supported.description.effective_authority.network, "disabled");
   assert.equal(supported.description.capabilities.steering, false);
   assert.equal(supported.description.capabilities.session_reuse, false);
+  const mutation = await query("workspace-write-denied");
+  if (process.platform === "linux") {
+    assert.equal(mutation.status, "compatible", JSON.stringify(mutation));
+    assert.equal(mutation.description.effective_authority.approvals, "denied");
+    assert.equal(mutation.description.effective_authority.network, "disabled");
+  } else {
+    assert.equal(mutation.status, "blocked");
+    assert.equal(mutation.compatibility.code, "direct_mutation_containment_unsupported");
+  }
   const claude = await runtime.query({schema:"flow.query/v1",query:"delegated_agent_description",launch:{harness:"claude",model:"fixture",effort:"high",capability:"read-only"},caller_metadata:{}});
   assert.equal(claude.status,"blocked");assert.equal(claude.compatibility.code,"claude_native_policy_unproven");
   for (const capability of ["workspace-write", "auto", "on-approve", "unrestricted"]) {
     assert.equal((await query(capability)).status, "blocked");
   }
+  for (const query of ["push", "merge", "remote_mutation"]) {
+    const rejected = await runtime.query({ schema: "flow.query/v1", query });
+    assert.equal(rejected.schema, "flow.rejection/v1");
+    assert.equal(rejected.code, "unsupported_query");
+  }
 });
 
-for (const scenario of ["success", "cancel", "restart"]) test(scenario === "cancel" ? "detached public cancellation retains its writer through affirmative task retirement" : scenario === "restart" ? "detached owner replacement retains direct writer and adopts exactly one task" : "detached public direct feature fixture edits files before an operation commits and seals unknown candidate", async (t) => {
+for (const scenario of ["success", "cancel", "restart"]) test(scenario === "cancel" ? "detached public cancellation retains its writer through affirmative task retirement" : scenario === "restart" ? "detached owner replacement retains direct writer and adopts exactly one task" : "detached public direct feature fixture edits files before an operation commits and seals unknown candidate", linuxTaskMechanism, async (t) => {
   const cancellation = scenario === "cancel";
   const { execFileSync } = await import("node:child_process");
   const { mkdir, readFile, readdir } = await import("node:fs/promises");
@@ -94,7 +114,8 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
   await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: sourceRepository });
   const { startFlowOwner, stopFlowOwner } = await import("../src/owner-process.mjs");
   const { requestFlowTransport } = await import("../src/transport.mjs");
-  const ownerEnv={...env,FLOW_REPOSITORY_ROOT:repository,FLOW_AUTHORITY_DIRECTORY:authorityDirectory,FLOW_CONFIG_DIRECTORY:configDirectory,FLOW_QUALIFICATION_REPOSITORY_ROOT:sourceRepository,FLOW_EXECUTION_BACKEND:"direct",FLOW_CODEX_EXECUTABLE:executable};
+  const fixtureRuntime = fileURLToPath(new URL("../test-support/direct-feature-test-runtime.mjs", import.meta.url));
+  const ownerEnv={FLOW_OWNER_RUNTIME_MODULE:fixtureRuntime,...env,FLOW_REPOSITORY_ROOT:repository,FLOW_AUTHORITY_DIRECTORY:authorityDirectory,FLOW_CONFIG_DIRECTORY:configDirectory,FLOW_QUALIFICATION_REPOSITORY_ROOT:sourceRepository,FLOW_EXECUTION_BACKEND:"direct",FLOW_CODEX_EXECUTABLE:executable};
   let owner=await startFlowOwner({env:ownerEnv});
   assert.equal(owner.state,"running");assert.notEqual(owner.pid,process.pid);
   ownerCleanup=async()=>{

@@ -217,6 +217,7 @@ export function createFlowRuntime({
           operation: "prepare",
           request: proposal,
           composition,
+          delegationPort,
           authority,
           env,
         });
@@ -246,6 +247,7 @@ export function createFlowRuntime({
           operation: "launch",
           request,
           composition,
+          delegationPort,
           authority,
           env,
         });
@@ -332,6 +334,7 @@ function publicReplacementGate({
   operation,
   request,
   composition,
+  delegationPort,
   authority,
   env,
 }) {
@@ -447,6 +450,27 @@ function publicReplacementGate({
       legalActions: [],
     });
   }
+  let nativeIssue;
+  try {
+    const repository = request?.repository;
+    nativeIssue = delegationPort?.nativeAdmissionIssue?.({
+      workspacePath: typeof repository === "string" ? repository : repository?.path,
+    });
+  } catch {
+    nativeIssue = "native_qualification_unproven";
+  }
+  if (nativeIssue) {
+    return createRejection({
+      operation,
+      code: nativeIssue === "unproved_ambient_authority" ? nativeIssue : "qualification_withheld",
+      outcome: "disabled",
+      reason: `official native execution is unavailable: ${nativeIssue}`,
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+
   return selection;
 }
 

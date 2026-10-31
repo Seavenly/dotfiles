@@ -30,10 +30,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "6e2888e7d970aa39f015397fc2f8bc6dbd8aa619",
+    "candidate_tree_sha": "19fd4812fb40b482bee6eb981d1078ea53c47358",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:eed296c7f92baa40c8e4c1ddd8400c4b2211c6dac5eb534be67cce289eacd02d",
+  "content_digest": "sha256:fbf382b87417b05d11084543283555ed34276d3a5c3e4447ebccf664e59eaf42",
   "files": [
     {
       "path": "CONTEXT.md",
@@ -692,8 +692,8 @@
     {
       "path": "config/flow/src/host-recovery-tuicr-scenario.mjs",
       "mode": "100644",
-      "git_blob_sha": "6d98c33707c96af9ae2829d90fb3ebd201fe1021",
-      "sha256": "673d3ecc70b2b9d9748ccbfbe358c667918e8cee2455b1f9bebdf16ab254d1e7"
+      "git_blob_sha": "ea02745ee0b00d4763fe98afbdc1666635cac8e3",
+      "sha256": "b8ae8c99441736a916a85d5a2af404c9edf6a515b4d64a6df747480679eaa3bd"
     },
     {
       "path": "config/flow/src/legacy-compatibility-adapter.mjs",
@@ -764,8 +764,8 @@
     {
       "path": "config/flow/src/runtime.mjs",
       "mode": "100644",
-      "git_blob_sha": "7ee2d3dfc3653d5835156dff063d691e7473e568",
-      "sha256": "044be726a9c45f52a8f87b8c3f2164a84404d1be8f956c14e44e4f10088724d4"
+      "git_blob_sha": "2278928d265d459104090b5b002651014f3b1043",
+      "sha256": "b5d4717c6a4b762d27f53ea557fab6fdfad43578b9a8215d5945bc5a963a5f06"
     },
     {
       "path": "config/flow/src/transport.mjs",
@@ -782,8 +782,8 @@
     {
       "path": "config/flow/test-support/direct-feature-test-runtime.mjs",
       "mode": "100644",
-      "git_blob_sha": "34f537549de21f665337e381e5381e8f4b4f1896",
-      "sha256": "38f5f9ad6819cbf1f6f7c552b3ca4355360774cf84c74d494ba1572c51d3ce2e"
+      "git_blob_sha": "d358203381f9af8eb0953038deeaa4e39970b162",
+      "sha256": "e754d3fd9327da08cf9acad1ebbd4d06dac6222d457c763df367a370ba5a2d04"
     },
     {
       "path": "config/flow/test-support/issue-46-provider-owner-entrypoint.mjs",
@@ -842,14 +842,14 @@
     {
       "path": "config/flow/test/direct-execution.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "cb52f7ede27a68aa2779b6284a9809426115a1ec",
-      "sha256": "97336a58908f5666e51c3feffd8ee38fa5261d53c32ddd2e5cce810cf1cd83ca"
+      "git_blob_sha": "6f89561c8cfead7e425af170702110c8d9c81c87",
+      "sha256": "7e724438930e4dbfdffec7125406f7dc7bd25dbda1dfecca1bfbd28dde8b5d8b"
     },
     {
       "path": "config/flow/test/direct-feature-test.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "2d17c3bb779966938a7c8e787883b133ec91aeb4",
-      "sha256": "18b6148e98b7fc3c25922bc3eaf8a9eda5fd437b2ec6ed8408c157eb1dffdc39"
+      "git_blob_sha": "3144230deae35e3e325acaa482e408c477ae02e1",
+      "sha256": "4b1675394b2e853dd948a35c5dc79ee03a59df73090ae7c30366dd4780ca3e58"
     },
     {
       "path": "config/flow/test/feature-test-preparation.test.mjs",
@@ -920,8 +920,8 @@
     {
       "path": "config/flow/test/host-recovery-tuicr-scenario.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "2f93ea4666d3748c278811303fd2a677799c0c17",
-      "sha256": "cda28028d93b1d04df444719d6feaf1e93f0cb0571b28766361b42e160fd237f"
+      "git_blob_sha": "1f30d373982a9f5f13f859201c4757fdbe6366df",
+      "sha256": "3f6565c89af6441f6ce96030c86d9f9ff4050bc4231f355402e2c8b382aa1bb9"
     },
     {
       "path": "config/flow/test/operator-guide.test.mjs",
@@ -938,8 +938,8 @@
     {
       "path": "config/flow/test/production-runtime.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "ec20e0567c617183da973cc68f6da759c4b24db9",
-      "sha256": "daee76f2c683a1e4b946826c5827187f3e0a908652cb3801546aec6a0217979d"
+      "git_blob_sha": "744e7c5cdf44bad9b6133af28962df809f56d23b",
+      "sha256": "4daa8ff9a0d47782f221d36337cb42120518e929cdfb23158ebcfd9850de01dd"
     },
     {
       "path": "config/flow/test/public-process.test.mjs",
@@ -956,8 +956,8 @@
     {
       "path": "config/flow/test/runtime.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "fd8faa048dce6abe4d219471d4dee9bb32a99776",
-      "sha256": "198442ad88e32a3e8521403989d214e2f6eb96882ced32ae41f0f4f3a9b1ab6b"
+      "git_blob_sha": "a93194245c3b078dfc8ac54922136d1a433f7196",
+      "sha256": "4d0f3809a00e4a9bee142a25d25b677b9799da540376c66f09186b8b5743bd73"
     },
     {
       "path": "config/flow/test/schema-contracts.test.mjs",
@@ -1436,8 +1436,8 @@
     {
       "path": "tools/flow/src/codex-execution-adapter.mjs",
       "mode": "100644",
-      "git_blob_sha": "943acb7ff01015d67f44b293345b0d41305197f9",
-      "sha256": "8aff576904131f36f05c5bb78e8a80aab6872e4a02f198d7b6ab1893e1cce0fd"
+      "git_blob_sha": "4f42e9140cb242544a5a9c8fa84a1912c41e4d9d",
+      "sha256": "17a6a5f800548bfd823bdef9808da961eec60036a9939d17c32e3e032bcec54e"
     },
     {
       "path": "tools/flow/src/contract-catalog.mjs",
@@ -1466,8 +1466,8 @@
     {
       "path": "tools/flow/src/direct-delegated-agent-port.mjs",
       "mode": "100644",
-      "git_blob_sha": "2b4c700dd44a2dce856223e5f237947791ececea",
-      "sha256": "0b0b141a121c177e71fabc841f771087a669c319393185f297f325203989c8c3"
+      "git_blob_sha": "6e96a9d7c0610f4de88bda03f5bd0b4d1fc0b2c6",
+      "sha256": "180225c72b18113c7950a0409e9c2224ea417eac21b81b5ee80665512d8a6373"
     },
     {
       "path": "tools/flow/src/direct-output-contract.mjs",
@@ -1814,8 +1814,8 @@
     {
       "path": "tools/flow/src/transition-projection.mjs",
       "mode": "100644",
-      "git_blob_sha": "e7f85fa2aeec1b608f7f1fee98d8d7cb5f65ff87",
-      "sha256": "8272976afc13ce6c9b81bb4797711fc9e2464cc7ed1bab9cc40158a3a9054815"
+      "git_blob_sha": "acc170d4a886cb9ac2f103babfbeee317352f4c9",
+      "sha256": "1c3c5df981b2690099ad885a1220bf6c2aa644120a76fe48ad4cf97824a9c512"
     },
     {
       "path": "tools/flow/src/transition-status.mjs",
@@ -1862,8 +1862,8 @@
     {
       "path": "tools/flow/test-support/direct-task-fixture.mjs",
       "mode": "100644",
-      "git_blob_sha": "f34232b520b2718861c1fc771344040784c98bce",
-      "sha256": "51f2b941e767f07d102d627b6003dd9cdc3733790f98ab4bed4b9cd37c0e9f24"
+      "git_blob_sha": "bd6fc7baf33ee70555f655aab332f58ad540cbe6",
+      "sha256": "2e7ec2f1ab102e2d53bcf4131e1877ce28c19323c33504eb7e363c54fcaddcbb"
     },
     {
       "path": "tools/flow/test-support/durable-owner-process.mjs",
@@ -1940,8 +1940,8 @@
     {
       "path": "tools/flow/test/codex-execution-adapter.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "0d62ef6b5523fb141ffb5136ea38aaa2746cc344",
-      "sha256": "fade1e6649a2672c9a5a8e6a8c8821f9083bb6ed9dc9ec273bbccb51649a40a5"
+      "git_blob_sha": "863fe3cac2f5938290828a4977546188bf668fec",
+      "sha256": "ed5530f63c7b997ac83febfa3383d787e7c9dc404ef15e7cd2b938a4530e8e59"
     },
     {
       "path": "tools/flow/test/contract-catalog.test.mjs",
@@ -1988,8 +1988,8 @@
     {
       "path": "tools/flow/test/direct-task.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "b4a552be456e4c3de69f6d709c79b63f80bc8139",
-      "sha256": "7ec394fd9f963e88746b73da60def92d2816e17a6b2abc2e2ead52ba23cf4eed"
+      "git_blob_sha": "6d5ecc62b342f8bb277f4fca664feb162c85ffc9",
+      "sha256": "70e2d126bdc1740c83cdc7267cbe4722c263c4a2f99131dcab3d7169f74b1273"
     },
     {
       "path": "tools/flow/test/durable-authority.test.mjs",
@@ -2102,8 +2102,8 @@
     {
       "path": "tools/flow/test/transition-projection.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "0470ed1648f0705ba6943deacb66492659f9e80c",
-      "sha256": "0cf4aa2d17f2b078fe54756f265ee3e4b83b0416adc301fa7a2acbe36327ccf3"
+      "git_blob_sha": "f03d91d346eacc53f0e05603ebdf668acaaf632e",
+      "sha256": "7097c12eea4c3142b87768c58170246170e9cc367079dbd6aa81b8ddaccfaa81"
     },
     {
       "path": "tools/flow/test/work-authority.test.mjs",

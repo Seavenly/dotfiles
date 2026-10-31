@@ -1020,3 +1020,19 @@ test("dark test qualification rejects old-only route assertions despite correctl
   await writeFile(ledgerPath, JSON.stringify(ledger));
   await assert.rejects(queryTransition({ configDirectory: selectedConfig, repositoryRoot: clonedRepository }), /deterministic qualification evidence is not bound to the release/u);
 });
+
+
+test("source-qualified transition distinguishes direct native refusal from optional Drovr availability", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "native-backend-admission", { qualified: true });
+  const options = { configDirectory: copiedConfig, repositoryRoot };
+  const direct = await queryTransition({ ...options, executionBackend: "direct" });
+  const drovr = await queryTransition({ ...options, executionBackend: "drovr" });
+  const unknown = await queryTransition({ ...options, executionBackend: "unknown" });
+  assert.equal(direct.dark_opt_in.available, false);
+  assert.equal(drovr.dark_opt_in.available, true);
+  assert.equal(unknown.dark_opt_in.available, false);
+  assert.deepEqual(direct.evidence_statuses, drovr.evidence_statuses);
+  assert.equal(direct.not_run.find(({ id }) => id === "issue-84").status, "not_run");
+  assert.equal(drovr.dark_opt_in.normal_use_authorized, false);
+  assert.equal(drovr.dark_opt_in.remote_mutations_authorized, false);
+});

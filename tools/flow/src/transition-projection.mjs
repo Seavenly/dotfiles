@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { codexExecutionAdapter } from "./codex-execution-adapter.mjs";
 import { execFileSync } from "node:child_process";
 import {
   lstatSync,
@@ -66,6 +67,7 @@ const REQUIRED_PREREQUISITES = Object.freeze([
   [29, "a4a9a88", "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"],
 ]);
 export async function queryTransition({
+  executionBackend = process.env.FLOW_EXECUTION_BACKEND ?? "direct",
   configDirectory,
   repositoryRoot,
   homeDirectory,
@@ -222,7 +224,9 @@ export async function queryTransition({
     environment_fingerprint: ledger.environment_fingerprint,
     dark_opt_in: {
       schema: "flow.dark-opt-in/v1",
-      available: qualificationClear,
+      // Source prerequisites do not establish official native permission.
+      available: qualificationClear && (executionBackend === "drovr" ||
+        (executionBackend === "direct" && codexExecutionAdapter.nativeQualificationIssue() === null)),
       scope: releaseManifest.scope,
       not_authorized_before_issue: releaseManifest.not_authorized_before_issue,
       routes: releaseManifest.supported_routes.map(({ flow, mode }) => ({

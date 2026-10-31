@@ -6,10 +6,14 @@ import test from "node:test";
 import filesystem from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { createDirectDelegatedAgentPort } from "../src/direct-delegated-agent-port.mjs";
+import { fixtureCodexAdapter } from "../test-support/direct-task-fixture.mjs";
 import { digest } from "../src/canonical.mjs";
 import { digestDelegateInputBytes } from "../src/delegate-input-envelope.mjs";
 
-test("direct task keeps exact stdin and output and adopts duplicate dispatch once", async (t) => {
+const linuxTaskMechanism = { skip: process.platform !== "linux" &&
+  "Linux subreaper/pidfd task containment is unsupported on this host; this skip is not macOS qualification" };
+
+test("direct task keeps exact stdin and output and adopts duplicate dispatch once", linuxTaskMechanism, async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-direct-task-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const executable = join(scratch, "codex");
@@ -23,7 +27,7 @@ for(const event of [{type:"thread.started",thread_id:"thread-fixture"},{type:"tu
 `);
   await chmod(executable, 0o700);
   const port = createDirectDelegatedAgentPort({ env: { HOME: scratch, PATH: process.env.PATH },
-    executables: { codex: executable }, taskDirectory: join(scratch, "tasks"),
+    providers: { codex: fixtureCodexAdapter }, executables: { codex: executable }, taskDirectory: join(scratch, "tasks"),
     resolveWorkspace: () => ({ canonical_path: scratch }) });
   const { description } = await port.describe({schema:"flow.delegated-agent-description-request/v1",
     launch:{harness:"codex",model:"fixture-model",effort:"high",capability:"read-only"},caller_metadata:{}});
@@ -52,7 +56,92 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 const execFile = promisify(execFileCallback);
 
-test("direct reservation publication faults block before any worker or provider spawn", async (t) => {
+// Description and request guards need no Linux supervisor or Python fixture.
+async function portableTaskFixture(t) {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-direct-portable-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const executable = join(scratch, "codex-fixture");
+  await writeFile(executable, `#!${process.execPath}
+import { appendFileSync, writeFileSync } from "node:fs";
+if (process.argv[2] === "--version") {
+  appendFileSync(${JSON.stringify(join(scratch, "version-probes"))}, "version\\n");
+  console.log("codex-cli 0.160.0");
+} else {
+  writeFileSync(${JSON.stringify(join(scratch, "launches"))}, "unexpected task");
+  process.exitCode = 99;
+}
+`);
+  await chmod(executable, 0o700);
+  const options = { env: { HOME: scratch, PATH: process.env.PATH },
+    providers: { codex: fixtureCodexAdapter }, executables: { codex: executable }, taskDirectory: join(scratch, "tasks"),
+    resolveWorkspace: () => { throw new Error("unexpected_workspace_resolution"); } };
+  const port = createDirectDelegatedAgentPort(options);
+  const described = await port.describe({ schema: "flow.delegated-agent-description-request/v1",
+    launch: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" }, caller_metadata: {} });
+  assert.equal(described.status, "compatible", JSON.stringify(described));
+  const prompt = "portable request guard";
+  const request = { schema: "flow.delegated-agent-dispatch-request/v1", agent_id: "agent:portable",
+    caller_key: "attempt:portable", input_key: "attempt:portable:input:1", prompt,
+    payload_sha256: digestDelegateInputBytes(prompt), description: described.description,
+    task_binding: { run_id: "run:portable", card_id: "card:portable", attempt_id: "attempt:portable", effect_id: "effect:portable",
+      workspace_claim: { subject_id: "workspace:portable", generation: 1, mutation_epoch: 0, fingerprint: digest({ initial: true }), access: "read_only" },
+      output_contract: { schemas: ["fixture.result/v1"], schema: { type: "object" } } } };
+  return { scratch, options, port, request };
+}
+
+test("direct task rejects invalid requests before workspace resolution or reservation on every platform", async (t) => {
+  const fixture = await portableTaskFixture(t);
+  for (const [code, mutate] of [
+    ["invalid_dispatch_request", request => { request.payload_sha256 = digestDelegateInputBytes("foreign"); }],
+    ["invalid_task_binding", request => { request.task_binding.attempt_id = "attempt:foreign"; }],
+  ]) {
+    const request = structuredClone(fixture.request);
+    mutate(request);
+    const result = await fixture.port.dispatch(request);
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.equal(result.reason.code, code);
+  }
+  assert.equal(await readFile(join(fixture.scratch, "version-probes"), "utf8"), "version\n");
+  await assert.rejects(stat(fixture.options.taskDirectory), { code: "ENOENT" });
+  await assert.rejects(readFile(join(fixture.scratch, "launches")), { code: "ENOENT" });
+});
+
+test("isolated non-Linux valid direct task refuses before workspace, reservation or worker after its identity probe", async (t) => {
+  assert.equal(Object.getOwnPropertyDescriptor(process, "platform").configurable, true,
+    "platform simulation requires an actual configurable Node descriptor");
+  const fixture = await portableTaskFixture(t);
+  const module = new URL("../src/direct-delegated-agent-port.mjs", import.meta.url).href;
+  const code = `import assert from "node:assert/strict";
+import filesystem from "node:fs";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+assert.equal(Object.getOwnPropertyDescriptor(process, "platform").configurable, true);
+Object.defineProperty(process, "platform", { value: "darwin" });
+let mkdirs = 0, workers = 0, workspaces = 0;
+filesystem.mkdirSync = () => { mkdirs++; throw new Error("unexpected_mkdir"); };
+childProcess.spawn = () => { workers++; throw new Error("unexpected_worker"); };
+syncBuiltinESMExports();
+const { createDirectDelegatedAgentPort } = await import(${JSON.stringify(module)});
+const { fixtureCodexAdapter } = await import(${JSON.stringify(new URL("../test-support/direct-task-fixture.mjs", import.meta.url).href)});
+const port = createDirectDelegatedAgentPort({ ...${JSON.stringify(fixture.options)}, providers: { codex: fixtureCodexAdapter },
+  resolveWorkspace: () => { workspaces++; throw new Error("unexpected_workspace"); } });
+const result = await port.dispatch(${JSON.stringify(fixture.request)});
+console.log(JSON.stringify({ result, mkdirs, workers, workspaces, platform: process.platform }));`;
+  const observed = JSON.parse((await execFile(process.execPath, ["--input-type=module", "-e", code], {
+    env: fixture.options.env, timeout: 10_000,
+  })).stdout);
+  assert.equal(observed.result.schema, "flow.task-observation/v1");
+  assert.equal(observed.result.status, "blocked");
+  assert.equal(observed.result.reason.code, "direct_task_containment_unsupported");
+  assert.deepEqual([observed.mkdirs, observed.workers, observed.workspaces], [0, 0, 0]);
+  assert.equal(observed.platform, "darwin");
+  assert.equal(await readFile(join(fixture.scratch, "version-probes"), "utf8"), "version\nversion\n",
+    "description and new dispatch each perform the permitted owned identity probe");
+  await assert.rejects(stat(fixture.options.taskDirectory), { code: "ENOENT" });
+  await assert.rejects(readFile(join(fixture.scratch, "launches")), { code: "ENOENT" });
+});
+
+test("direct reservation publication faults block before any worker or provider spawn", linuxTaskMechanism, async (t) => {
   for (const boundary of ["hierarchy", "reservation"]) {
     await t.test(boundary, async (t) => {
       const fixture = await directTaskFixture(t);
@@ -87,7 +176,7 @@ test("direct reservation publication faults block before any worker or provider 
 
 function digestBytesKey(key) { return digestDelegateInputBytes(key).slice(7); }
 
-test("exact worker binding and blocked observations refuse adoption and cancellation intent", async (t) => {
+test("exact worker binding and blocked observations refuse adoption and cancellation intent", linuxTaskMechanism, async (t) => {
   const corruptions = [
     ["missing schema", (record) => { delete record.schema; }],
     ["conflicting schema", (record) => { record.schema = "foreign.worker/v1"; }],
@@ -139,7 +228,7 @@ test("exact worker binding and blocked observations refuse adoption and cancella
 });
 
 for (const mode of ["malformed", "nonterminal", "failure", "duplicate_final"]) {
-  test(`direct task quarantines ${mode} provider output without success`, async (t) => {
+  test(`direct task quarantines ${mode} provider output without success`, linuxTaskMechanism, async (t) => {
     const fixture = await directTaskFixture(t, mode);
     const dispatched = await fixture.port.dispatch(fixture.request);
     assert.ok(dispatched.task?.id, JSON.stringify(dispatched));
@@ -150,14 +239,15 @@ for (const mode of ["malformed", "nonterminal", "failure", "duplicate_final"]) {
   });
 }
 
-test("owned task survives launch-client exit and a fresh process adopts exact invocation", async (t) => {
+test("owned task survives launch-client exit and a fresh process adopts exact invocation", linuxTaskMechanism, async (t) => {
   const fixture = await directTaskFixture(t, "wait");
   const requestPath = join(fixture.scratch,"request.json");
   await writeFile(requestPath, JSON.stringify(fixture.request));
   const module = fileURLToPath(new URL("../src/direct-delegated-agent-port.mjs",import.meta.url));
   const clientCode = `import {readFileSync} from "node:fs";import {createDirectDelegatedAgentPort} from ${JSON.stringify(module)};
+const {fixtureCodexAdapter}=await import(${JSON.stringify(new URL("../test-support/direct-task-fixture.mjs", import.meta.url).href)});
 const request=JSON.parse(readFileSync(${JSON.stringify(requestPath)},"utf8"));
-const port=createDirectDelegatedAgentPort({env:${JSON.stringify(fixture.options.env)},executables:${JSON.stringify(fixture.options.executables)},taskDirectory:${JSON.stringify(fixture.options.taskDirectory)},resolveWorkspace:()=>({canonical_path:${JSON.stringify(fixture.scratch)}})});
+const port=createDirectDelegatedAgentPort({providers:{codex:fixtureCodexAdapter},env:${JSON.stringify(fixture.options.env)},executables:${JSON.stringify(fixture.options.executables)},taskDirectory:${JSON.stringify(fixture.options.taskDirectory)},resolveWorkspace:()=>({canonical_path:${JSON.stringify(fixture.scratch)}})});
 console.log(JSON.stringify(await port.dispatch(request)));process.exit(0);`;
   const launched = JSON.parse((await execFile(process.execPath,["--input-type=module","-e",clientCode])).stdout);
   assert.equal(launched.status,"still_running");
@@ -170,7 +260,7 @@ console.log(JSON.stringify(await port.dispatch(request)));process.exit(0);`;
   assert.equal(await readFile(join(fixture.scratch,"launches"),"utf8"),"once\n");
 });
 
-test("double-fork setsid descendant prevents retirement until worker cancels and reaps exact tree", async (t) => {
+test("double-fork setsid descendant prevents retirement until worker cancels and reaps exact tree", linuxTaskMechanism, async (t) => {
   const fixture=await directTaskFixture(t,"descendant");
   const dispatched=await fixture.port.dispatch(fixture.request);
   const pending=await fixture.port.wait({turn_id:dispatched.task.id,timeout_ms:150});
@@ -184,7 +274,7 @@ test("double-fork setsid descendant prevents retirement until worker cancels and
   assert.throws(()=>process.kill(descendant,0),/ESRCH/u);
 });
 
-test("missing terminal receipt remains uncertain after owner loss and never replays", async (t) => {
+test("missing terminal receipt remains uncertain after owner loss and never replays", linuxTaskMechanism, async (t) => {
   const fixture=await directTaskFixture(t);
   const dispatched=await fixture.port.dispatch(fixture.request);
   const completed=await fixture.port.wait({turn_id:dispatched.task.id,timeout_ms:3000});
@@ -196,7 +286,7 @@ test("missing terminal receipt remains uncertain after owner loss and never repl
   assert.equal(await readFile(join(fixture.scratch,"launches"),"utf8"),"once\n");
 });
 
-test("boot or process-start ambiguity blocks cancellation without signalling the task", async (t) => {
+test("boot or process-start ambiguity blocks cancellation without signalling the task", linuxTaskMechanism, async (t) => {
   const fixture=await directTaskFixture(t,"wait");
   const dispatched=await fixture.port.dispatch(fixture.request);
   const path=join(fixture.options.taskDirectory,dispatched.task.id.slice(5),"worker.json");
@@ -210,7 +300,7 @@ test("boot or process-start ambiguity blocks cancellation without signalling the
   assert.equal(cancelled.status,"cancelled");
 });
 
-test("task supervision pins isolated Python and ignores hostile sitecustomize", async (t) => {
+test("task supervision pins isolated Python and ignores hostile sitecustomize", linuxTaskMechanism, async (t) => {
   const fixture = await directTaskFixture(t);
   await writeFile(join(fixture.scratch, "sitecustomize.py"), `from pathlib import Path\nPath(${JSON.stringify(join(fixture.scratch, "unexpected-python-code"))}).write_text('executed')\n`);
   const previous = process.env.PYTHONPATH;
@@ -226,7 +316,7 @@ test("task supervision pins isolated Python and ignores hostile sitecustomize", 
   await assert.rejects(readFile(join(fixture.scratch, "unexpected-python-code")), { code: "ENOENT" });
 });
 
-test("cancellation uses owned process handles and leaves an unrelated owned test child alive", async (t) => {
+test("cancellation uses owned process handles and leaves an unrelated owned test child alive", linuxTaskMechanism, async (t) => {
   const { spawn } = await import("node:child_process");
   const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"]);
   t.after(() => unrelated.kill());
@@ -237,14 +327,14 @@ test("cancellation uses owned process handles and leaves an unrelated owned test
   assert.doesNotThrow(() => process.kill(unrelated.pid, 0));
 });
 
-test("cancellation ancestry snapshot rejects reuse before pidfd validation without signalling", async () => {
+test("cancellation ancestry snapshot rejects reuse before pidfd validation without signalling", linuxTaskMechanism, async () => {
   const workerPath = fileURLToPath(new URL("../src/direct-task-worker.py", import.meta.url));
   const code = `import ast, pathlib, os, signal, select\nsource=ast.parse(pathlib.Path(${JSON.stringify(workerPath)}).read_text())\nfunctions=[node for node in source.body if isinstance(node,ast.FunctionDef) and node.name in ['identity','snapshot','handle_alive','owned_handles']]\nexec(compile(ast.Module(body=functions,type_ignores=[]),'worker-helpers','exec'))\nparent={'pid':1,'start':'original-parent','group':1,'boot':'boot'}\nexpected={'pid':2,'start':'original-child','group':2,'boot':'boot'}\nforeign={**expected,'start':'reused-child'}\nclass Entry:\n name='2'\nclass Proc:\n def iterdir(self):return [Entry()]\npathlib.Path=lambda _:Proc()\nidentity=lambda pid:parent if pid==1 else foreign\nsnapshots=iter([(expected,1),(foreign,1)])\nsnapshot=lambda pid:next(snapshots)\nopened=[];closed=[]\nos.pidfd_open=lambda pid,flags:opened.append(pid) or 42\nos.close=lambda fd:closed.append(fd)\nassert owned_handles(parent)==[]\nassert opened==[2] and closed==[42]\nhandle_alive=lambda handle:False\nassert owned_handles(parent,42)==[]\nprint('reused child identity and dead ancestor handle rejected; no signal invoked')\n`;
   const result = await execFile("/usr/bin/python3", ["-I", "-S", "-c", code]);
   assert.match(result.stdout, /no signal invoked/u);
 });
 
-test("direct description, immutable descriptor, observations and positive receipt satisfy source schemas", async (t) => {
+test("direct description, immutable descriptor, observations and positive receipt satisfy source schemas", linuxTaskMechanism, async (t) => {
   const { default: Ajv } = await import("ajv/dist/2020.js");
   const ajv = new Ajv({ strict: true, allErrors: true });
   const names = ["flow.execution-description.v1", "flow.execution-description-projection.v1", "flow.task-invocation.v1", "flow.task-observation.v1", "flow.task-settlement-proof.v1", "flow.task-terminal-receipt.v1"];
@@ -259,7 +349,7 @@ test("direct description, immutable descriptor, observations and positive receip
   }
 });
 
-test("attempt identity refuses changed model, effort, workspace, schema and executable binding without a second launch", async (t) => {
+test("attempt identity refuses changed model, effort, workspace, schema and executable binding without a second launch", linuxTaskMechanism, async (t) => {
   const fixture=await directTaskFixture(t);
   const dispatched=await fixture.port.dispatch(fixture.request);
   assert.equal((await fixture.port.wait({turn_id:dispatched.task.id,timeout_ms:3000})).status,"completed");
@@ -279,7 +369,7 @@ test("attempt identity refuses changed model, effort, workspace, schema and exec
   assert.equal(await readFile(join(fixture.scratch,"launches"),"utf8"),"once\n");
 });
 
-test("exact reservation recovery adopts stored invocation before ambient spawn probes", async (t) => {
+test("exact reservation recovery adopts stored invocation before ambient spawn probes", linuxTaskMechanism, async (t) => {
   for (const mode of ["complete", "wait"]) {
     await t.test(mode, async (t) => {
       const fixture = await directTaskFixture(t, mode);
@@ -311,7 +401,7 @@ test("exact reservation recovery adopts stored invocation before ambient spawn p
   }
 });
 
-test("stored recovery preserves owner, input, descriptor integrity and terminal worker binding", async (t) => {
+test("stored recovery preserves owner, input, descriptor integrity and terminal worker binding", linuxTaskMechanism, async (t) => {
   const fixture = await directTaskFixture(t);
   const dispatched = await fixture.port.dispatch(fixture.request);
   assert.equal((await fixture.port.wait({ turn_id: dispatched.task.id, timeout_ms: 3000 })).status, "completed");
@@ -348,7 +438,7 @@ test("stored recovery preserves owner, input, descriptor integrity and terminal 
 });
 
 test("direct discovery proves absence only for a valid direct backend description", async (t) => {
-  const fixture = await directTaskFixture(t);
+  const fixture = await portableTaskFixture(t);
   const foreign = structuredClone(fixture.request.description);
   foreign.backend.id = "drovr";
   for (const description of [undefined, { schema: "drovr.delegated-agent-description/v1" }, foreign]) {
@@ -359,7 +449,7 @@ test("direct discovery proves absence only for a valid direct backend descriptio
   await assert.rejects(readFile(join(fixture.scratch, "launches")), { code: "ENOENT" });
 });
 
-test("worker failure retires its exact owned tree even when failure persistence fails", async (t) => {
+test("worker failure retires its exact owned tree even when failure persistence fails", linuxTaskMechanism, async (t) => {
   const unrelated = childProcess.spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"]);
   t.after(() => unrelated.kill());
   for (const fault of ["cancellation_conflict", "running_record"]) {
@@ -392,7 +482,7 @@ test("worker failure retires its exact owned tree even when failure persistence 
   }
 });
 
-test("terminal output durability precedes receipt publication and sync faults retain uncertainty", async (t) => {
+test("terminal output durability precedes receipt publication and sync faults retain uncertainty", linuxTaskMechanism, async (t) => {
   const cases = [
     { fault: "output_order", mode: "complete", status: "completed" },
     ...["stdout.bin", "stderr.bin", "last-message.json"].map((name) => ({ fault: `output_sync_${name}`, mode: "complete", status: "blocked" })),

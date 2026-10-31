@@ -2,8 +2,8 @@
   "schema": "flow.transition-qualification-evidence/v1",
   "release_id": "flow-release-1.1-dark-test/v1",
   "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
-  "release_content_digest": "sha256:f1d007e590938b76e30d4c330f0b51f69cd653d6ff1aeb3b1d25f5b139597c6d",
-  "status": "not_run",
+  "release_content_digest": "sha256:58249d352130617012951c238f79826e50fe3b0c116c7ca94ab0e687cff9e2cf",
+  "status": "passed",
   "scope": "deterministic_route_and_host_fault_conformance",
   "contracts": [
     "flow.launch-policy/v1",
@@ -92,7 +92,132 @@
       }
     ]
   },
-  "recipe": null,
+  "recipe": {
+    "schema": "flow.deterministic-qualification-recipe/v1",
+    "digest": "sha256:b34bb44769cb3a7fd66bd398696c88660c1ce446dfe99c7b89ef026dbda77ae8",
+    "commands": [
+      {
+        "id": "launch_selector",
+        "command": "node --test tools/flow/test/launch-selector.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/launch-selector.tap",
+        "receipt_sha256": "cdcbfcc9456f9b1b2d599817dd8c25a6bb2da8e501e9fb6c458a8314a0602056",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 21,
+        "passed": 21,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "release_tree_integrity",
+        "command": "node --test --test-name-pattern='release content binds|release content validates from a fresh clone|release-content generator excludes ignored files|Git tree derivation matches|release manifest with a missing governed file|candidate-tree bytes|wrong or unavailable candidate tree binding|evidence symlink outside authority|external symlink before reading' tools/flow/test/transition-projection.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/release-tree-integrity.tap",
+        "receipt_sha256": "b1ab242e3bdbcd057263999745927ced18725c22117b9c96455439ad0a6966ea",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "contract_catalog",
+        "command": "node --test tools/flow/test/contract-catalog.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/contract-catalog.tap",
+        "receipt_sha256": "96b5ab1e140543dab018fbc7c2153625c4842b963581b08aa7d004ec0275e2b0",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "feature_review_drovr_conformance",
+        "command": "node --test tools/flow/test/feature-flow.test.mjs tools/flow/test/review-flow.test.mjs tools/flow/test/delegated-agent-port.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/feature-review-drovr.tap",
+        "receipt_sha256": "c6579e23be89c16a5ec98f7e1b14d453656224a0c49a63adce0c450c387cb558",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 266,
+        "passed": 266,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "production_runtime_reboot",
+        "command": "node --test --test-name-pattern='default FlowRuntime is durable|default production work evidence fails closed|production reboot observation|production critique evidence is strict' config/flow/test/production-runtime.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/production-runtime-reboot.tap",
+        "receipt_sha256": "0ba150171d759ee7d145ec51ae43534a0a4b2f4342e900d97f911fdc2e0e664b",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "public_host_negative_routes",
+        "command": "node --test --test-name-pattern='public prepare withholds|public launch withholds|public dynamic prepare|public dynamic plans cannot|exact-definition graph with a registered push|public launch with opt-in rejects|public prepare requires explicit|public launch cannot bypass|public dark feature verify fails closed|public verify plans requiring unavailable|public local review rejects forged extra|public module imports cannot mint|public admission withholds qualification captured' config/flow/test/runtime.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/public-host-negative-routes.tap",
+        "receipt_sha256": "bc435669d1e534e27e88bc17389b705032dad4692ffefbdc6774822ea51df633",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 20,
+        "passed": 20,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "host_fault_reboot",
+        "command": "node --test --test-skip-pattern='public host (?:rebuilds the review inbox after the producing client exits|supersedes a production review and rejects stale follow-up actions)' config/flow/test/host-lifecycle.test.mjs config/flow/test/public-process.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/host-fault-reboot.tap",
+        "receipt_sha256": "dce18e4447823c86a272626c8101cd121699962118580fa70eec67d816d1e1f5",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 36,
+        "passed": 36,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      },
+      {
+        "id": "schema_contracts",
+        "command": "node --test config/flow/test/schema-contracts.test.mjs",
+        "working_directory": ".",
+        "receipt_path": "evidence/receipts/schema-contracts.tap",
+        "receipt_sha256": "3630586b47cc4c5b371264b4dd5e813ab7dc8bceb6d13e101033d8936db65caf",
+        "status": "passed",
+        "exit_code": 0,
+        "tests": 13,
+        "passed": 13,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "flaky": 0
+      }
+    ]
+  },
   "assertions": [
     "legacy Claude remains the repeated default policy selection",
     "dark opt-in resolves only exact feature verify, feature test, and local review routes",
@@ -124,7 +249,7 @@
       "status": "not_run"
     }
   ],
-  "captured_at": "2026-10-05T03:31:01Z",
+  "captured_at": "2026-10-31T01:14:05Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",
@@ -132,5 +257,5 @@
     "npm": "10.9.8",
     "git": "2.53.0"
   },
-  "candidate_tree_sha": "6e2888e7d970aa39f015397fc2f8bc6dbd8aa619"
+  "candidate_tree_sha": "19fd4812fb40b482bee6eb981d1078ea53c47358"
 }

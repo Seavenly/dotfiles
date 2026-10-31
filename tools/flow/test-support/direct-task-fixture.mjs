@@ -2,8 +2,15 @@ import { mkdtemp, chmod, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDirectDelegatedAgentPort } from "../src/direct-delegated-agent-port.mjs";
+import { codexExecutionAdapter } from "../src/codex-execution-adapter.mjs";
 import { digest } from "../src/canonical.mjs";
 import { digestDelegateInputBytes } from "../src/delegate-input-envelope.mjs";
+
+export const fixtureCodexAdapter = Object.freeze({ ...codexExecutionAdapter,
+  id: "flow.fixture-codex-exec", nativeQualificationIssue() { return null; }, authorityIssue(context) {
+    const issue = codexExecutionAdapter.authorityIssue(context);
+    return issue === "codex_native_policy_unproven" ? null : issue;
+  } });
 
 export async function directTaskFixture(t, mode = "complete") {
   const scratch = await mkdtemp(join(tmpdir(), "flow-direct-owned-"));
@@ -41,7 +48,7 @@ if mode=='failure':sys.exit(12)
   await chmod(executable, 0o700);
   const env = { HOME: scratch, PATH: process.env.PATH };
   const taskDirectory = join(scratch, "tasks");
-  const options = { env, executables: { codex: executable }, taskDirectory,
+  const options = { env, providers: { codex: fixtureCodexAdapter }, executables: { codex: executable }, taskDirectory,
     resolveWorkspace: () => ({ canonical_path: scratch }) };
   const port = createDirectDelegatedAgentPort(options);
   const { description } = await port.describe({ schema: "flow.delegated-agent-description-request/v1",

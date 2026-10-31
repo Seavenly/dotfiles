@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import test from "node:test";
@@ -22,9 +22,51 @@ const productionRuntimeModule = fileURLToPath(new URL("../src/runtime.mjs", impo
 const checkId = "check:feature-text";
 const criterion = "feature.txt contains after";
 const fixtureRelease = "flow-release-1.1-dark-test/v1";
+const linuxCheckMechanism = { skip: process.platform !== "linux" &&
+  "Linux subreaper/pidfd and bubblewrap check containment are unsupported on this host; this skip is not macOS qualification" };
+
+test("isolated non-Linux valid check configuration is unavailable before mkdir or worker spawn", async (t) => {
+  assert.equal(Object.getOwnPropertyDescriptor(process, "platform").configurable, true,
+    "platform simulation requires an actual configurable Node descriptor");
+  const scratch = await mkdtemp(join(tmpdir(), "flow-check-portable-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const authorityDirectory = join(scratch, "authority");
+  const hash = `sha256:${"0".repeat(64)}`;
+  const config = { schema: "flow.production-feature-test-check/v1", check_id: checkId,
+    executable: { path: process.execPath, version: "v22.23.1", sha256: hash },
+    health: { path: "health.test.mjs", sha256: hash, case_name: "positive health probe" },
+    acceptance: { path: "acceptance.test.mjs", sha256: hash, case_name: "selected feature behavior" },
+    pinned_files: [], criteria: [criterion],
+    expected_failure: { code: "ERR_ASSERTION", operator: "strictEqual", expected: "after\n", actual: "before\n" },
+    environment: { PATH: "/usr/bin:/bin" }, limits: { timeout_ms: 5000, max_output_bytes: 64 * 1024 } };
+  const module = new URL("../src/production-feature-test-check.mjs", import.meta.url).href;
+  const code = `import assert from "node:assert/strict";
+import filesystem from "node:fs";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+assert.equal(Object.getOwnPropertyDescriptor(process, "platform").configurable, true);
+Object.defineProperty(process, "platform", { value: "darwin" });
+let mkdirs = 0, workers = 0;
+filesystem.mkdirSync = () => { mkdirs++; throw new Error("unexpected_mkdir"); };
+childProcess.spawn = () => { workers++; throw new Error("unexpected_worker"); };
+syncBuiltinESMExports();
+const { validateProductionFeatureTestCheck, createProductionFeatureCheckRunner } = await import(${JSON.stringify(module)});
+const featureTestCheck = validateProductionFeatureTestCheck(${JSON.stringify(config)});
+const runner = createProductionFeatureCheckRunner({ authorityDirectory: ${JSON.stringify(authorityDirectory)}, featureTestCheck });
+await assert.rejects(runner.run({ effect_id: "effect:portable", idempotency_key: "portable" },
+  { path: ${JSON.stringify(join(scratch, "missing-workspace"))} }, {}), { code: "feature_test_check_unavailable" });
+console.log(JSON.stringify({ valid: true, available: runner.available, mkdirs, workers, platform: process.platform }));`;
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const observed = JSON.parse((await promisify(execFile)(process.execPath, ["--input-type=module", "-e", code], {
+    env: { HOME: scratch, PATH: process.env.PATH }, timeout: 10_000,
+  })).stdout);
+  assert.deepEqual(observed, { valid: true, available: false, mkdirs: 0, workers: 0, platform: "darwin" });
+  await assert.rejects(lstat(authorityDirectory), { code: "ENOENT" });
+});
 
 for (const scenario of ["success", "restart", "check-restart"]) {
-  test(`public production feature test proves real RED/GREEN and ${scenario === "restart" ? "one writer across owner restart" : scenario === "check-restart" ? "one checker across owner restart" : "sealed unknown candidate"}`, async (t) => {
+  test(`public production feature test proves real RED/GREEN and ${scenario === "restart" ? "one writer across owner restart" : scenario === "check-restart" ? "one checker across owner restart" : "sealed unknown candidate"}`, linuxCheckMechanism, async (t) => {
     const fixture = await createFixture(t, scenario);
     const { repository, git, initial, request, invocations, ownerEnv, scratch } = fixture;
     let owner = await fixture.start();
@@ -233,7 +275,7 @@ for (const scenario of ["success", "restart", "check-restart"]) {
   });
 }
 
-test("public trusted owner accepts check_id with an embedded recipe and no caller configuration", async (t) => {
+test("public trusted owner accepts check_id with an embedded recipe and no caller configuration", linuxCheckMechanism, async (t) => {
   const fixture = await createFixture(t, "trusted-factory");
   const owner = await fixture.start();
   const prepared = await publicClient(owner.socket_path).prepare(fixture.request);
@@ -265,7 +307,7 @@ test("public trusted owner withholds missing or invalid private recipes before d
 });
 
 test("public owner rejects changed trusted module bytes before runtime construction", async (t) => {
-  const fixture = await createFixture(t, "factory-module-drift");
+  const fixture = await createFixture(t, "factory-module-drift", { recipe: "missing" });
   const binding = deriveOwnerRuntimeBinding({ env: fixture.ownerEnv });
   await writeFile(fixture.runtimeModule, fixture.factoryBytes + '\nthrow new Error("changed factory executed");\n');
   await assert.rejects(startFlowOwner({ env: {
@@ -277,7 +319,7 @@ test("public owner rejects changed trusted module bytes before runtime construct
   fixture.completed();
 });
 
-test("public launch rejects a newly provisioned recipe after owner replacement", async (t) => {
+test("public launch rejects a newly provisioned recipe after owner replacement", linuxCheckMechanism, async (t) => {
   const fixture = await createFixture(t, "factory-check-drift");
   let owner = await fixture.start();
   const prepared = await publicClient(owner.socket_path).prepare(fixture.request);
@@ -302,9 +344,10 @@ test("public launch rejects a newly provisioned recipe after owner replacement",
 
 function trustedFactorySource(featureTestCheck) {
   return `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(productionRuntimeModule).href)};
+import { fixtureExecutionOptions } from ${JSON.stringify(new URL("../test-support/direct-feature-test-runtime.mjs", import.meta.url).href)};
 const featureTestCheck = ${JSON.stringify(featureTestCheck, null, 2)};
 export function createFlowRuntime(options = {}) {
-  return production({ ...options, featureTestCheck });
+  return production(fixtureExecutionOptions({ ...options, featureTestCheck }));
 }
 `;
 }
@@ -377,6 +420,20 @@ async function createFixture(t, scenario, { recipe = "valid" } = {}) {
       : { ...featureTestCheck, environment: { PATH: "/caller/bin" } };
     await writeFile(runtimeModule, trustedFactorySource(selectedCheck), { flag: "wx", mode: 0o600 });
   }
+  // Keep the documented generated factory intact. A private, digest-bound test
+  // wrapper supplies an explicit fixture adapter through trusted construction.
+  const documentedFactory = `${runtimeModule}.prepared.mjs`;
+  await rename(runtimeModule, documentedFactory);
+  const documentedBytes = await readFile(documentedFactory);
+  const fixtureOptionsModule = pathToFileURL(fileURLToPath(new URL("../test-support/direct-feature-test-runtime.mjs", import.meta.url))).href;
+  await writeFile(runtimeModule, `import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { fixtureExecutionOptions } from ${JSON.stringify(fixtureOptionsModule)};
+const original = ${JSON.stringify(documentedFactory)};
+if (createHash("sha256").update(readFileSync(original)).digest("hex") !== ${JSON.stringify(sha256(documentedBytes))}) throw new Error("fixture_factory_drift");
+const { createFlowRuntime: documented } = await import(${JSON.stringify(pathToFileURL(documentedFactory).href)});
+export function createFlowRuntime(options = {}) { return documented(fixtureExecutionOptions(options)); }
+`, { flag: "wx", mode: 0o600 });
   const factoryBytes = await readFile(runtimeModule, "utf8");
   const invocationPath = join(scratch, "invocations");
   const executable = join(scratch, "codex-fixture");

@@ -13,7 +13,7 @@ test("direct description checks known workspace ambient authority before executa
   const port = createDirectDelegatedAgentPort({
     env: { HOME: "/fixture/home", PATH: "" },
     executables: { codex: "/fixture/unavailable-executable" },
-    providers: { codex: { ...adapter,
+    providers: { codex: { ...adapter, id: "flow.fixture-codex-exec", nativeQualificationIssue() { return null; },
       authorityIssue({ workspacePath }) {
         return workspacePath === "/fixture/repository" ? "unproved_ambient_authority" : null;
       },
@@ -59,14 +59,14 @@ for (const codexHome of [undefined, "/fixture/selected-codex"]) {
   }
 }
 
-test("Codex ambient authority guard permits absent inventories and stops at filesystem root", () => {
+test("Codex keeps native qualification withheld after absent inventories and stops at filesystem root", () => {
   const checked = [];
   assert.equal(adapter.authorityIssue({
     env: { HOME: "/fixture/home" }, workspacePath: "/fixture/home/dev/repository",
   }, {
     pathExists(path) { checked.push(path); return false; },
     canonicalPath: (path) => path,
-  }), null);
+  }), "codex_native_policy_unproven");
   assert.equal(checked.filter((path) => path === "/.codex/config.toml").length, 1);
   assert.equal(checked.filter((path) => path === "/.codex/hooks").length, 1);
 });
@@ -88,10 +88,11 @@ await import("node:fs").then(fs => fs.writeFileSync(${JSON.stringify(launched)},
     env: { HOME: scratch, PATH: process.env.PATH }, taskDirectory,
     executables: { codex: executable },
     resolveWorkspace: () => ({ canonical_path: scratch }),
-    providers: { codex: { ...adapter,
+    providers: { codex: { ...adapter, id: "flow.fixture-codex-exec", nativeQualificationIssue() { return null; },
       authorityIssue(context) {
-        return adapter.authorityIssue(context, { canonicalPath: (path) => path,
+        const issue = adapter.authorityIssue(context, { canonicalPath: (path) => path,
           pathExists: (path) => ambient && path === join(scratch, ".codex", "config.toml") });
+        return issue === "codex_native_policy_unproven" ? null : issue;
       },
     } },
   });
@@ -136,4 +137,24 @@ test("direct description rejects widened recomputed authority", () => {
   description.comparison_keys.effective_authority=digest(description.effective_authority);
   const {description_digest,...identity}=description;description.description_digest=digest(identity);
   assert.equal(directDescriptionIssue(description),"contradictory_execution_description");
+});
+
+
+test("official Codex refuses stale described dispatch before native startup", async (t) => {
+  if (process.platform !== "linux") return t.skip("direct containment is Linux-only; this skip is not macOS qualification");
+  const { directTaskFixture } = await import("../test-support/direct-task-fixture.mjs");
+  const fixture = await directTaskFixture(t);
+  const description = executionDescription({
+    launch: fixture.request.description.launch, callerMetadata: {},
+    backend: { ...fixture.request.description.backend, adapter: adapter.id },
+  });
+  const port = createDirectDelegatedAgentPort({ ...fixture.options,
+    env: { ...fixture.options.env, FLOW_NATIVE_QUALIFICATION_PASSED: "1", FLOW_ALLOW_NATIVE: "1" },
+    providers: { codex: adapter },
+  });
+  const result = await port.dispatch({ ...fixture.request, description });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason.code, "codex_native_policy_unproven");
+  await assert.rejects(stat(fixture.options.taskDirectory), { code: "ENOENT" });
+  await assert.rejects(stat(join(fixture.scratch, "launches")), { code: "ENOENT" });
 });
