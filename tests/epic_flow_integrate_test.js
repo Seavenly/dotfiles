@@ -262,3 +262,18 @@ test("detach and wait return the integration result", (t) => {
   const r = run("wait", fx.epicDir, "--token", started.token, "--timeout", "60");
   assert.equal(r.ok, true, JSON.stringify(r));
 });
+
+test("an epic that lands on its target refuses to integrate, refresh, or land, and leaves the target untouched", (t) => {
+  const fx = fixture(t);
+  fs.writeFileSync(path.join(fx.epicDir, "epic.json"), JSON.stringify({ repo: fx.repo, branch: "main", target: "main" }));
+  const s = story(fx, "a", { "a.txt": "a\n" }, { from: "origin/main" });
+  const before = sh(fx.origin, "git rev-parse refs/heads/main");
+  const integrated = run("integrate", fx.epicDir, "--story", "ABC-2", "--run", s.runDir, "--head", s.head);
+  assert.equal(integrated.reason, "lands-by-pr", JSON.stringify(integrated));
+  assert.equal(run("refresh", fx.epicDir).reason, "lands-by-pr");
+  assert.equal(run("land", fx.epicDir, "--head", s.head).reason, "lands-by-pr");
+  assert.equal(sh(fx.origin, "git rev-parse refs/heads/main"), before, "the target must never be pushed");
+  const r = run("receipts", fx.epicDir);
+  assert.equal(r.ok, true);
+  assert.equal(r.behind, 0);
+});

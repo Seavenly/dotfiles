@@ -11,7 +11,9 @@
 //
 // `integrate` merges one approved story head into the epic branch. `refresh`
 // merges the target branch (main) into a candidate branch cut from the epic
-// tip, for the owner to review; `land` pushes that reviewed candidate.
+// tip, for the owner to review; `land` pushes that reviewed candidate. An
+// epic whose integration branch is its target (`main`, the default) lands
+// each story as its own PR instead, so those three return `lands-by-pr`.
 //
 // The shared branch is never touched until a candidate is verified: every
 // merge is built on a script-owned candidate branch from the exact remote tip,
@@ -467,7 +469,12 @@ function main() {
   let result;
   try {
     const epic = new Epic(epicDir);
+    // An epic whose integration branch is its target (the default, `main`)
+    // lands each story as its own PR: there is no shared branch to merge into,
+    // and pushing to the target is never this script's to do.
+    const landsByPr = command !== "receipts" && epic.branch === epic.target;
     const run = () => {
+      if (landsByPr) return { ok: false, reason: "lands-by-pr", message: `${epic.branch} is this epic's target; each story lands as its own PR to it` };
       switch (command) {
         case "integrate": return epic.integrate(opts);
         case "refresh": return epic.refresh(opts);

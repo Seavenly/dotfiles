@@ -25,17 +25,41 @@ new epic or stories for an existing one.
 Commit the design docs on a local branch from the target (`design/<slug>`),
 run the repo's formatter over them (the repo formatter script, not a scoped
 call), and tell the owner to open the PR to main for team review. Do not push
-it or open the PR yourself, and do not seed an epic branch: `/epic-flow`
-creates the integration branch from main once the docs have merged.
+it or open the PR yourself. Stories land on `main` directly, so there is no
+epic branch to seed, and the build need not wait for the design PR: the epic's
+Landing note points builders at `design/<slug>` until it merges. Ask the owner
+for the PR number once it is open; until then, the note names the branch alone.
 
 ### 3. The epic
 New epic: create a fresh **Epic** (never convert a Story; Jira promotion is
-lossy and often blocked). Summary = the feature name. Description: the goal,
-links to the requirement doc, plan, and ADRs, the integration branch with the
-real key (`epic/proj-123`, filled in after creation), and a `## Constraints`
-section with the rules every story inherits (for example "additive only:
-existing stacks keep working"). Parent the originating story to the epic; it
-tracks the design PR.
+lossy and often blocked). Summary = the feature name. Description, in order:
+
+- `## Goal`.
+- `## Links`: the requirement doc, the plan, the ADRs, the glossary terms, the
+  design PR and the story that tracks it, and `Integration branch: main`.
+- `## Landing`, as below.
+- `## Constraints`: the rules every story inherits, always including "each
+  story is safe to merge on its own" (for example also "additive only:
+  existing stacks keep working").
+
+```md
+## Landing
+There's no epic branch. The integration branch is `main`: epic-flow builds
+from `origin/main` with `--stack` and never runs `--integrate`. Each story
+lands as its own PR to `main`, in dependency order.
+
+**Until #<PR> merges**, read the plan, ADR <NNNN> and the glossary terms from
+branch `design/<slug>`; they aren't on `main` yet. Once it merges, this note
+is obsolete.
+```
+
+Name a separate integration branch (`Integration branch: epic/<key>`, with no
+Landing section) only when the stories cannot each be safe to merge on their
+own; `/epic-flow` then integrates them into it and refreshes it from main.
+
+Parent the originating story to the epic as a `human-only` story that tracks
+the design PR. It blocks nothing: the Landing note covers the docs until the
+PR merges.
 
 ### 4. Draft the stories
 Slice by behavior, not by layer:
@@ -44,13 +68,19 @@ Slice by behavior, not by layer:
   a deterministic check (a codemod, a rename) may be bigger.
 - Keep code and its live proof apart. A story whose criteria need a live
   environment, credentials, or a person tapping something splits: the code
-  story proves what tests and diffs can, and the live proof is its own story.
+  story proves what tests and diffs can and stays `agent-auto`, and the live
+  proof is its own `human-only` story, blocked by the code and blocking
+  nothing.
 - Label each story with exactly one of:
-  - `agent-auto`: the flow builds it and integrates it after the owner's review.
-  - `human-gate`: the flow builds it, but integrating it carries a human action
-    (a deploy, a cross-team handshake, a live check). Name the action in the story.
+  - `agent-auto`: the flow builds it, and it lands after the owner's review.
+    The default for code stories.
+  - `human-gate`: the flow builds it, but landing it carries a human action
+    its dependents need done first (a deploy they read from, a cross-team
+    handshake). Name the action in the story. Its dependents wait until the
+    owner marks it Done, even in a stacked run, so a mid-chain `human-gate`
+    stalls everything after it; use it only when that wait is real.
   - `human-only`: a person does it (a live apply or destroy, a certification, a
-    spike run by hand). The flow never builds it.
+    spike run by hand, the design PR). The flow never builds it.
 - Blocked by: which stories must land first. Keep the graph acyclic, and add a
   blocker only for a real dependency.
 
@@ -58,7 +88,8 @@ Slice by behavior, not by layer:
 Present a numbered breakdown: title, label, blocked by, and the one behavior
 each story delivers. Then list every risk you see (a criterion an agent cannot
 prove, an assumed external contract, a story too large to review, a live step
-inside a code story) with a proposed disposition for each. The owner answers
+inside a code story, a `human-gate` story with dependents, a story that is not
+safe to merge alone) with a proposed disposition for each. The owner answers
 the risk list along with the breakdown; do not take a blanket approval while a
 listed risk has no answer. Iterate until approved.
 
@@ -70,7 +101,8 @@ sprint.
 ### 7. Hand off
 Report the epic key, the stories with labels and blockers, the first ready set
 (stories with no open blockers that are not `human-only`), and the design PR
-to open. Next step: once the design PR has merged, `/epic-flow <EPIC-KEY>`.
+to open. Next step: `/epic-flow <EPIC-KEY> --stack`, which can start before the
+design PR merges.
 
 ## Story body
 
