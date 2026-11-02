@@ -24,10 +24,13 @@ User's invocation: `/epic-flow $ARGUMENTS`. Defaults: `~/.claude/defaults.yaml`
 - `--integrate`: only integrate approved work. `--refresh`: only merge the target branch in (step 3).
 - `--done KEY`: the owner confirms a `human-gate` story's human action or a `human-only` story is finished; record it and transition the story Done.
 - `--finish`: the close-out (step 8).
+- `--stack`: a dependent may build on an agent-approved blocker before the owner integrates it (Stacking, below).
+- `--unattended`: never ask; run until nothing is running and nothing is ready (Unattended, below). Use with `--stack` for a long run.
+- `--codex-effort E`: with `--codex`, the final review's Codex effort for every story in this run (overrides `feature_flow.codex_effort`).
 
 ## State
 `epic_dir=~/.agent-teams/runs/epic-<key>/`, owned by this command:
-- `epic.json`: `{ epic, repo, branch, target, remote, installCmd, holder: { session, since }, constraints[], stories: { KEY: { label, state, runs[], reviewSlug, reviewedHead, approvedHead, outcome, liveOnMerge, needsHuman, continuations } }, decisions[] }`. `state` is one of `ready`, `running`, `built`, `integrated`, `done`, `needs-human`. `outcome` keeps the run's `uncoveredAcceptance`, `deferredProof`, `openFindings`, and `decisions`.
+- `epic.json`: `{ epic, repo, branch, target, remote, installCmd, holder: { session, since }, constraints[], stories: { KEY: { label, state, runs[], reviewSlug, reviewedHead, approvedHead, outcome, liveOnMerge, needsHuman, continuations, agentApproved, stackBase, stackedOn } }, decisions[] }`. `state` is one of `ready`, `running`, `built`, `integrated`, `done`, `needs-human`. `outcome` keeps the run's `uncoveredAcceptance`, `deferredProof`, `openFindings`, and `decisions`.
 - `gate.template.json`: the repo's gate commands (feature-flow step 4 without the per-story fields), written with the first story and treated as defaults: every story's own `gate init` is its baseline.
 - `integrations.json`: receipts, written only by the integration script.
 
@@ -60,23 +63,40 @@ It merges on a candidate branch from the exact remote tip, verifies the merged t
 Report `behind` (commits on the target not on the epic branch) every run. With `--refresh`, or when the owner agrees to it: `epic-flow-integrate.js refresh <epic_dir> --detach` and `wait`. It merges the target into `agt/refresh-<branch>` in `<epic_dir>/refresh` and verifies it. Register it with `tuicr-reviews add --repo <repo> --worktree <epic_dir>/refresh --base <branch> --branch agt/refresh-<branch> --slug <key>-refresh` and a summary naming `bothSides` (files changed on both sides, where a clean merge can still be wrong). It reaches the epic branch only through step 2 after approval. A conflict stops with the file list for the owner.
 
 ## 4. Ready set
-A story is ready when its label is `agent-auto` or `human-gate`, it has no run in progress and no registered review, it passes `--only`/`--skip`, and every blocker is integrated (its `approvedHead` is on the remote tip) or Done; a `human-gate` blocker must be Done. A run dir without `out/report.md` is in progress until the owner says it is dead. Order by how many stories each unblocks, then Jira rank.
+A story is ready when its label is `agent-auto` or `human-gate`, it has no run in progress and no registered review, it passes `--only`/`--skip`, and every blocker is integrated (its `approvedHead` is on the remote tip) or Done; a `human-gate` blocker must be Done. With `--stack`, an `agent-auto` blocker that is `built` and `agentApproved` also counts. A run dir without `out/report.md` is in progress until the owner says it is dead. Order by how many stories each unblocks, then Jira rank.
+
+## Stacking (`--stack`)
+A story is `agentApproved` when its run ended on the clean path of step 7 (state `built`), every stage in `stageStatus` is `ok` or `skipped`, the gate audit passed, and `uncoveredAcceptance` is empty. Nothing else, including a stuck or continued run, counts.
+
+- **Base.** A story whose blockers are all integrated or Done starts from `origin/<branch>` as usual. Otherwise build a local stack base `agt/stack-<KEY>` (never pushed) from `origin/<branch>`, merging each unintegrated direct blocker's `reviewedHead` in dependency order; transitive blockers come with them. A merge conflict defers the story with the files listed, and it is retried once a blocker integrates. Record `stackBase` (its sha) and `stackedOn` (`{ BLOCKER: reviewedHead }`).
+- **Run.** The researcher, the worktree, `gate init`, and the final review all use the stack base, so the review covers only the story's own commits.
+- **Register** the tuicr review with `--base <stackBase>` and the summary prefixed `STACKED on <KEYS>:`.
+- **A blocker that fails later** (`needs-human`, dropped, or rejected in review) marks every story stacked on it `needs-human` with "stale base: <KEY>"; it is rebuilt after the blocker is repaired.
+- **Integration** (step 2) offers a stacked story only in the same batch as, or after, every blocker it stacked on, in dependency order. When a blocker's `approvedHead` differs from the sha in `stackedOn` (review fixes), show that in the batch; the integration merge and its verification decide, and a failure takes the usual repair path.
 
 ## 5. Prepare the wave
-Spawn one `researcher` per ready story, in parallel, against the current epic tip. Each returns: acceptance criteria already satisfied, assumptions the code contradicts, the areas the story will touch, whether integrating it changes behavior anything deployed sees (`liveOnMerge`, with why), and a feature-flow brief: one observable behavior per criterion with an evidence tag (a property becomes an invariant with a concrete check that would show it false), `constraints`: the epic's and the story's Constraints and Out of scope as `source: user` (the owner approved them in the epic) and anything the researcher derives as `source: inferred`, which the wave approval confirms or drops; verify commands from its `Verify:` lines that do not modify files. Defer a story whose areas overlap a running or higher-ranked story. Show all briefs at once and take one answer: launch all, edit, or drop.
+Spawn one `researcher` per ready story, in parallel, against the current epic tip. Each returns: acceptance criteria already satisfied, assumptions the code contradicts, the areas the story will touch, whether integrating it changes behavior anything deployed sees (`liveOnMerge`, with why), and a feature-flow brief: one observable behavior per criterion with an evidence tag (a property becomes an invariant with a concrete check that would show it false), `constraints`: the epic's and the story's Constraints and Out of scope as `source: user` (the owner approved them in the epic) and anything the researcher derives as `source: inferred`, which the wave approval confirms or drops; verify commands from its `Verify:` lines that do not modify files. Defer a story whose areas overlap a running or higher-ranked story. Show all briefs at once and take one answer: launch all, edit, or drop. With `--unattended`, launch every brief without asking, except a story whose researcher reports an assumption the code contradicts: defer that one and list it in the summary.
 
 ## 6. Launch
-Up to the concurrency limit, for each approved brief: reserve it in `epic.json` (`running`, run id), then run feature-flow steps 3-5 without the interview: the run dir and brief, the worktree from `origin/<branch>`, the install (`installCmd`), `gate.json` from the template plus the story's worktree, branch, `commitPrefix` (`"<KEY>: "`), and `verifyCmds`, `gate init`, and the background launch. Transition the story In Progress.
+Up to the concurrency limit, for each approved brief: reserve it in `epic.json` (`running`, run id), then run feature-flow steps 3-5 without the interview: the run dir and brief, the worktree from `origin/<branch>` (or its `stackBase` when stacked), the install (`installCmd`), `gate.json` from the template plus the story's worktree, branch, `commitPrefix` (`"<KEY>: "`), and `verifyCmds`, `gate init`, and the background launch, with `codex.effort` from `--codex-effort` when given. Transition the story In Progress.
 
 ## 7. When a run finishes
 Do feature-flow step 6 (report, audit, register, story comment), with the story's key as the only key anywhere that reaches GitHub, and no smart-commit `#` commands in agent-written text. Record `reviewedHead`, `reviewSlug`, and `outcome`. Then by result:
-- clean: `built`.
+- clean: `built`, and record `agentApproved` (Stacking).
 - `stuck` entries: one continuation (`epic_flow.continuations`). Append a short failure brief to `brief.md` (each stuck slice, the gate reason, the failing tail, what was ruled out), then relaunch the same run dir, worktree, gate, and `baseSha` without `gate init`: `slices` = the `spec` of each stuck and not-attempted entry, `continuation: true`, a new `launchId`, and `priorRunStats`. Register after it finishes.
 - a non-ok review stage: feature-flow's `--review-only` relaunch.
 - `RE_PLAN`, `uncoveredAcceptance` after the review loop, or a second failure: `needs-human` with the reason; register what exists with the summary prefixed `NEEDS HUMAN:`.
 - a platform failure (login, API, spend cap, a dead workflow): resume the workflow run when it is this session's; otherwise launch a fresh run dir and worktree. Neither counts as a continuation.
 
 Launch the next ready story whenever a slot frees.
+
+## Unattended (`--unattended`)
+The owner is away, so never ask; where a step would ask, take the action below and log it in `epic.json` `decisions`.
+- Holder: if another session holds the epic and was active in the last 24 hours, stop.
+- Step 2: integrate nothing (integration needs the owner's confirmation); only list what is approved.
+- Step 3: report drift; do not refresh.
+- Step 5: as above. Step 7: a `needs-human` story never blocks the rest; keep launching whatever is ready.
+- Keep going until nothing is running and nothing is ready. Then post the status comment and write `<epic_dir>/summary.md`: every story's state, what to review first (blockers before their stacked dependents), deferred and `needs-human` stories with the reason, and the integration order for the owner's next `/epic-flow <KEY> --integrate`.
 
 ## Status
 When state changed, add one short comment to the epic: a table of story | state | review | needs a human | live on merge, plus drift. No prose recap.
