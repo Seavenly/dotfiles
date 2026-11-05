@@ -8,6 +8,15 @@
   "properties": {
     "schema": { "const": "flow.feature-preparation-request/v1" },
     "dark_opt_in": { "$ref": "flow.dark-opt-in.v1.schema.json" },
+    "execution_trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "acknowledgment"],
+      "properties": {
+        "schema": { "const": "flow.supervised-native-cli/v1" },
+        "acknowledgment": { "const": "trust-official-cli-permissions" }
+      }
+    },
     "brief": { "$ref": "#/$defs/brief" },
     "repository": {
       "oneOf": [

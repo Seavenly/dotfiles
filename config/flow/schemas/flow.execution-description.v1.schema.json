@@ -57,6 +57,9 @@
             "sha256",
             "version"
           ]
+        },
+        "trust_contract": {
+          "const": "flow.supervised-native-cli/v1"
         }
       },
       "required": [
@@ -100,6 +103,9 @@
         "role": {
           "type": "string",
           "minLength": 1
+        },
+        "trust_posture": {
+          "const": "supervised-native-cli"
         }
       },
       "required": [
@@ -113,56 +119,117 @@
       "type": "object"
     },
     "effective_authority": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "approvals": {
-          "const": "denied"
-        },
-        "capability": {
-          "enum": [
-            "read-only",
-            "workspace-write-denied"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "approvals": {
+              "const": "denied"
+            },
+            "capability": {
+              "enum": [
+                "read-only",
+                "workspace-write-denied"
+              ]
+            },
+            "escalation": {
+              "const": false
+            },
+            "filesystem": {
+              "enum": [
+                "read_only",
+                "workspace_write"
+              ]
+            },
+            "network": {
+              "const": "disabled"
+            },
+            "protected_paths": {
+              "const": [
+                ".git",
+                ".agents",
+                ".codex"
+              ]
+            },
+            "writable_roots": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "authority_workspace",
+                  "task_scratch"
+                ]
+              }
+            }
+          },
+          "required": [
+            "approvals",
+            "capability",
+            "escalation",
+            "filesystem",
+            "network",
+            "protected_paths",
+            "writable_roots"
           ]
         },
-        "escalation": {
-          "const": false
-        },
-        "filesystem": {
-          "enum": [
-            "read_only",
-            "workspace_write"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "enum": [
+                "read-only",
+                "workspace-write-denied"
+              ]
+            },
+            "assurance": {
+              "const": "operator_supervised_cli"
+            },
+            "approvals": {
+              "const": "cli_requested_never"
+            },
+            "filesystem": {
+              "enum": [
+                "cli_requested_read_only",
+                "cli_requested_workspace_write"
+              ]
+            },
+            "network": {
+              "const": "not_independently_verified"
+            },
+            "writable_roots": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "authority_workspace",
+                  "task_scratch"
+                ]
+              }
+            },
+            "protected_paths": {
+              "const": []
+            },
+            "escalation": {
+              "const": "not_independently_verified"
+            },
+            "ambient_startup": {
+              "const": "trusted_official_cli"
+            }
+          },
+          "required": [
+            "capability",
+            "assurance",
+            "approvals",
+            "filesystem",
+            "network",
+            "writable_roots",
+            "protected_paths",
+            "escalation",
+            "ambient_startup"
           ]
-        },
-        "network": {
-          "const": "disabled"
-        },
-        "protected_paths": {
-          "const": [
-            ".git",
-            ".agents",
-            ".codex"
-          ]
-        },
-        "writable_roots": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "authority_workspace",
-              "task_scratch"
-            ]
-          }
         }
-      },
-      "required": [
-        "approvals",
-        "capability",
-        "escalation",
-        "filesystem",
-        "network",
-        "protected_paths",
-        "writable_roots"
       ]
     },
     "capabilities": {
@@ -243,5 +310,60 @@
     "comparison_keys",
     "watermark",
     "description_digest"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "launch": {
+            "required": [
+              "trust_posture"
+            ],
+            "type": "object",
+            "properties": {
+              "trust_posture": {}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "backend": {
+            "required": [
+              "trust_contract"
+            ],
+            "type": "object",
+            "properties": {
+              "trust_contract": {}
+            }
+          },
+          "effective_authority": {
+            "required": [
+              "assurance"
+            ],
+            "type": "object",
+            "properties": {
+              "assurance": {}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "backend": {
+            "properties": {
+              "trust_contract": false
+            },
+            "type": "object"
+          },
+          "effective_authority": {
+            "properties": {
+              "assurance": false
+            },
+            "type": "object"
+          }
+        }
+      }
+    }
   ]
 }

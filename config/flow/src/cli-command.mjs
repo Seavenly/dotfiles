@@ -4,6 +4,9 @@ import { summarizeFlowRuntimeError } from
   "../../../tools/flow/src/flow-runtime-runner.mjs";
 import { closeFlowRuntime } from "./runtime.mjs";
 import { createFlowClient } from "./client.mjs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import {
   flowOwnerPaths,
   startFlowOwner,
@@ -17,6 +20,9 @@ const USAGE = `Usage:
   flow start [--json]
   flow status [--json]
   flow stop [--json]
+  flow pilot setup --execution-trust supervised-native-cli [--mode test|verify] [--parent DIRECTORY]
+  flow pilot accept-prepared PILOT_DIRECTORY PREPARED_JSON_FILE
+  flow pilot review-request PILOT_DIRECTORY PRODUCER_RUN_ID
   flow prepare --input JSON [--json]
   flow launch --input JSON [--json]
   flow command --input JSON [--json]
@@ -51,6 +57,21 @@ export async function runCli(
   if (args.length === 0 || ["--help", "-h"].includes(args[0])) {
     stdout.write(USAGE);
     return 0;
+  }
+  if (args[0] === "pilot") {
+    try {
+      const result = await promisify(execFile)(process.execPath, [
+        fileURLToPath(new URL("../scripts/prepare-feature-pilot.mjs", import.meta.url)),
+        ...args.slice(1),
+      ], { env, maxBuffer: 1024 * 1024 });
+      stdout.write(result.stdout);
+      if (result.stderr) stderr.write(result.stderr);
+      return 0;
+    } catch (error) {
+      if (error.stdout) stdout.write(error.stdout);
+      stderr.write(error.stderr || "Flow pilot preparation failed\n");
+      return 1;
+    }
   }
   const lifecycle = parseLifecycle(args);
   if (lifecycle !== null) {

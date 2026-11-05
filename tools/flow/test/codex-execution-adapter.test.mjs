@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexExecutionAdapter as adapter } from "../src/codex-execution-adapter.mjs";
@@ -157,4 +157,33 @@ test("official Codex refuses stale described dispatch before native startup", as
   assert.equal(result.reason.code, "codex_native_policy_unproven");
   await assert.rejects(stat(fixture.options.taskDirectory), { code: "ENOENT" });
   await assert.rejects(stat(join(fixture.scratch, "launches")), { code: "ENOENT" });
+});
+
+test("supervised native description is constructor-owned and cannot leak into a strict port", async (t) => {
+  if (process.platform !== "linux") return t.skip("Linux supervision only");
+  const { directTaskFixture } = await import("../test-support/direct-task-fixture.mjs");
+  const fixture = await directTaskFixture(t);
+  const executable = fixture.options.executables.codex;
+  await writeFile(executable, (await readFile(executable, "utf8")).replace("codex-cli 0.160.0", "codex-cli 0.166.0"));
+  const port = createDirectDelegatedAgentPort({ ...fixture.options, providers: { codex: adapter }, executionTrust: "supervised-native-cli" });
+  const request = { schema: "flow.delegated-agent-description-request/v1", launch: fixture.request.description.launch, caller_metadata: {} };
+  const described = await port.describe(request);
+  assert.equal(described.status, "compatible", JSON.stringify(described));
+  assert.equal(described.description.backend.executable.version, "codex-cli 0.166.0");
+  assert.equal(described.description.effective_authority.network, "not_independently_verified");
+  const strict = createDirectDelegatedAgentPort({ ...fixture.options, providers: { codex: adapter }, env: { ...fixture.options.env, FLOW_EXECUTION_TRUST: "supervised-native-cli" } });
+  const refused = await strict.dispatch({ ...fixture.request, description: described.description });
+  assert.equal(refused.reason.code, "execution_trust_mismatch");
+  const injected = await strict.describe({ ...request, launch: { ...request.launch, trust_posture: "supervised-native-cli" } });
+  assert.equal(injected.compatibility.code, "request_supplied_execution_trust");
+  await assert.rejects(stat(fixture.options.taskDirectory), { code: "ENOENT" });
+  const started = await port.dispatch({ ...fixture.request, description: described.description });
+  const done = started.status === "completed" ? started : await port.wait({ turn_id: started.task.id, timeout_ms: 5000 });
+  assert.equal(done.status, "completed", JSON.stringify(done));
+  assert.equal(done.task.receipt.tree_retired, true);
+  assert.equal(done.task.descriptor.description.launch.trust_posture, "supervised-native-cli");
+  assert.equal((await readFile(join(fixture.scratch, "launches"), "utf8")).trim(), "once");
+  const again = await port.dispatch({ ...fixture.request, description: described.description });
+  assert.equal(again.status, "completed");
+  assert.equal((await readFile(join(fixture.scratch, "launches"), "utf8")).trim(), "once");
 });

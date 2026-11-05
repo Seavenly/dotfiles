@@ -14,6 +14,7 @@ export const RELEASE_CONTENT_GOVERNANCE = Object.freeze({
     "docs/adr/0009-separate-delegated-resource-and-turn-lifecycles.md",
     "docs/adr/0010-retire-hermes-host-integration.md",
     "docs/adr/0011-use-direct-cli-tasks-as-primary-flow-execution.md",
+    "docs/adr/0012-offer-explicit-supervised-native-execution.md",
     "tests/flow_cli_test.sh",
     "tests/flow_transition_test.sh",
     "tools/drovr/HARNESS-INTERFACE.md",

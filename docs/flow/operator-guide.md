@@ -1,11 +1,80 @@
 # Flow dark opt-in operator guide
 
 This documents the default first-release public operator path and the separate
-feature-test pilot configuration. The current source
-qualification is `not_run`, so public admission returns `qualification_withheld`.
+feature-test pilot configuration. The current strict source
+qualification is `not_run`, so strict public admission returns `qualification_withheld`.
 The legacy Claude launcher remains the default. These examples require a
 separately qualified release and disposable local resources that you own.
 This guide does not authorize normal use or any remote mutation.
+
+## Supervised native pilot
+
+ADR-0012 adds an explicit Linux contract that trusts the official CLI's requested
+permissions and ambient startup. Flow does not independently enforce workspace,
+protected-path, escalation or tool-network boundaries under this contract.
+Strict qualification remains `not_run`. Supervise a disposable repository and
+inspect the exact preparation confirmation before launch. Setup and accepting
+a prepared artifact start no provider task.
+
+Use the CLI from this source version. From an uninstalled checkout, replace the
+first `flow` below with `node config/flow/src/cli.mjs`:
+
+```sh
+PILOT="$(flow pilot setup --execution-trust supervised-native-cli \
+  --codex-executable /absolute/path/to/official/codex-0.166.0 \
+  --mode test | jq -er '.directory')"
+"$PILOT/flow" start --json
+"$PILOT/flow" prepare --input "$(cat "$PILOT/prepare-request.json")" --json \
+  > "$PILOT/receipts/prepared.json"
+jq '{confirmation,trust_posture,requested_authority,explicit_facts}' \
+  "$PILOT/receipts/prepared.json"
+```
+
+After inspecting and accepting those exact facts, materialize the launch request.
+The helper binds the prepared graph, confirmation, closed facts and supervised
+acknowledgment. The final `launch` command starts native work:
+
+```sh
+LAUNCH_REQUEST="$("$PILOT/flow" pilot accept-prepared "$PILOT" \
+  "$PILOT/receipts/prepared.json" | jq -er '.request')"
+"$PILOT/flow" launch --input "$(cat "$LAUNCH_REQUEST")" --json \
+  | tee "$PILOT/receipts/launched.json"
+RUN_ID="$(jq -er '.run_id' "$PILOT/receipts/launched.json")"
+"$PILOT/flow" query --input "$(jq -cn --arg id "$RUN_ID" '{run_id:$id}')" \
+  --json | tee "$PILOT/receipts/run.json"
+```
+
+Repeat the last query to inspect progress and returned legal actions. The test
+route retains its expected pre-change failure, successful post-change check,
+registered local commit, independent critique and exact sealed candidate.
+`--mode verify` creates a separate verification-first pilot.
+
+After the producer succeeds, prepare a separate review of its exact candidate:
+
+```sh
+REVIEW_REQUEST="$("$PILOT/flow" pilot review-request "$PILOT" "$RUN_ID" \
+  | jq -er '.request')"
+"$PILOT/flow" prepare --input "$(cat "$REVIEW_REQUEST")" --json \
+  > "$PILOT/receipts/review-prepared.json"
+jq '.confirmation' "$PILOT/receipts/review-prepared.json"
+```
+
+Inspect the independent review confirmation, then use `accept-prepared` and
+`launch` with `review-prepared.json` as above. Automated review cannot approve or
+integrate the candidate. To cancel an active run, refresh its public query and
+submit its returned cancel action:
+
+```sh
+CANCEL="$(jq -ce '.views.operator.legal_actions[] | select(.type == "cancel")' \
+  "$PILOT/receipts/run.json")"
+"$PILOT/flow" command --input "$CANCEL" --json
+```
+
+Require exact task-retirement evidence before treating the workspace as idle.
+Owner `stop` alone does not cancel workers. When all work has settled,
+`"$PILOT/flow" stop --json` stops this pilot's owner. Keep the receipts. This
+procedure grants no publication, remote mutation, normal-use rollout, global
+permission change or default cutover.
 
 ADR-0011 makes direct CLI tasks primary for Flow execution. The first direct
 implementation uses Linux subreaper and pidfd support with Python; macOS direct

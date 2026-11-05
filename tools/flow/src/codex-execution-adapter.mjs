@@ -4,12 +4,14 @@ import { dirname, join } from "node:path";
 export const codexExecutionAdapter = Object.freeze({
   id: "flow.codex-exec", version: "1", harness: "codex",
   supportedVersion: "codex-cli 0.160.0",
+  supportedVersionForTrust(trust) { return trust === "supervised-native-cli" ? "codex-cli 0.166.0" : this.supportedVersion; },
   nativeQualificationIssue() { return "codex_native_policy_unproven"; },
   // Filesystem dependencies are a trusted adapter test seam, never supplied
   // by a Flow request or native invocation environment.
-  authorityIssue({ env, workspacePath }, {
+  authorityIssue({ env, workspacePath, executionTrust }, {
     pathExists = existsSync, canonicalPath = realpathSync,
   } = {}) {
+    if (executionTrust === "supervised-native-cli") return null;
     const home = env.CODEX_HOME ?? join(env.HOME, ".codex");
     // Ignore user config/rules, but never assume these flags disable managed
     // policy or plugin/hook inventories. Do not inspect authentication bytes.
@@ -28,6 +30,9 @@ export const codexExecutionAdapter = Object.freeze({
   },
   buildInvocation({ descriptor, taskDirectory }) {
     const launch = descriptor.description.launch;
+    if (typeof launch.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(launch.model) ||
+        !["low", "medium", "high", "xhigh"].includes(launch.effort) ||
+        !["read-only", "workspace-write-denied"].includes(launch.capability)) throw new Error("unsupported_codex_launch");
     const args = ["exec", "--strict-config", "--ignore-user-config", "--ignore-rules", "--ephemeral",
       "--json", "--color", "never", "--cd", descriptor.workspace.path,
       "--model", launch.model, "--sandbox", launch.capability === "read-only" ? "read-only" : "workspace-write",

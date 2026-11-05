@@ -1,4 +1,5 @@
 import { isDirectDescription, directDescriptionIssue } from "../../../tools/flow/src/execution-contract.mjs";
+import { supervisedTrustPosture } from "./supervised-native-trust.mjs";
 import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
@@ -94,6 +95,7 @@ const TIME_OBSERVATION_UNCERTAINTY_NS =
  */
 export function createProductionComposition({
   delegatedAgentPort,
+  executionTrust = "strict",
   env = process.env,
   authorityDirectory = undefined,
   legacyRoots = {},
@@ -172,8 +174,8 @@ export function createProductionComposition({
   });
   const definitions = mergeRegistrations({
     defaults: {
-      "feature/v1": createFeatureDefinition({ independentCritique: true }),
-      "review/v1": createReviewDefinition(),
+      "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust),
+      "review/v1": supervisedTrustPosture(createReviewDefinition(), executionTrust),
     },
     overrides: predefinedDefinitions,
   });
@@ -1422,7 +1424,12 @@ function observeReviewRoute({ cardId, role, choice, workspacePath, delegatedAgen
   }
   const projection = delegatedAgentPort.describe({
     schema: "flow.delegated-agent-description-request/v1",
-    launch: { ...launch, capability: launch.capability ?? "read-only" },
+    launch: {
+      ...(suppliedDescription !== null && choice.launch === undefined
+        ? Object.fromEntries(Object.entries(launch).filter(([key]) => key !== "trust_posture"))
+        : launch),
+      capability: launch.capability ?? "read-only",
+    },
     caller_metadata: { flow: "review/v1", role },
     ...(delegatedAgentPort.backend === "direct"
       ? { workspace_path: workspacePath } : {}),

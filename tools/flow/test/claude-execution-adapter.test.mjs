@@ -212,3 +212,19 @@ test("Claude rejects ambiguous nested JSON keys and contradictory StructuredOutp
   assert.throws(() => parse(stream(init(), structured, toolResult("structured-1"),
     { ...terminal(), structured_output: { answer: 43 } })), { message: "ambiguous_structured_output" });
 });
+
+test("supervised Claude pins installed official version and preserves subscription auth controls", () => {
+  const d = descriptor();
+  d.description.launch.trust_posture = "supervised-native-cli";
+  d.description.backend.trust_contract = "flow.supervised-native-cli/v1";
+  d.description.backend.executable.version = "2.1.318 (Claude Code)";
+  d.description.effective_authority = { assurance: "operator_supervised_cli", approvals: "cli_requested_never", filesystem: "cli_requested_read_only", network: "not_independently_verified", escalation: "not_independently_verified", writable_roots: [] };
+  assert.equal(claudeExecutionAdapter.supportedVersionForTrust("supervised-native-cli"), "2.1.318 (Claude Code)");
+  assert.equal(claudeExecutionAdapter.authorityIssue({ executionTrust: "supervised-native-cli", launch: d.description.launch }), null);
+  const invocation = claudeExecutionAdapter.buildInvocation({ descriptor: d });
+  assert.ok(invocation.args.includes("--restricted")); assert.ok(invocation.args.includes("--safe-mode"));
+  assert.equal(invocation.args.some(a => ["--bare", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"].includes(a)), false);
+  const initialized = { ...init(), claude_code_version: "2.1.318" };
+  assert.equal(claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(initialized, terminal()), exitCode: 0 }).native_session, "session-fixture");
+  assert.throws(() => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(init(), terminal()), exitCode: 0 }), /native_launch_mismatch/u);
+});

@@ -106,3 +106,40 @@ test("setup rejects invalid mode and oversized socket paths before allocating a 
   assert.equal(invalidReview.status, 1);
   assert.match(invalidReview.stderr, /exact run_id/u);
 });
+
+test("supervised pilot creates and accepts real public prepared bundles without native dispatch", (t) => {
+  const parent = mkdtempSync(join(tmpdir(), "flow-supervised-pilot-"));
+  const clients = [];
+  t.after(() => { for (const client of clients) run(client, ["stop", "--json"]); rmSync(parent, { recursive: true, force: true }); });
+  const executable = join(parent, "codex");
+  writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.166.0"; exit 0; fi\nexit 99\n', { mode: 0o700 });
+  for (const mode of ["test", "verify"]) {
+    const setup = run(process.execPath, [script, "setup", "--mode", mode, "--parent", parent,
+      "--execution-trust", "supervised-native-cli", "--codex-executable", executable]);
+    assert.equal(setup.status, 0, setup.stderr);
+    const pilot = JSON.parse(setup.stdout), client = join(pilot.directory, "flow");
+    clients.push(client);
+    assert.equal(pilot.execution_trust.acknowledgment, "trust-official-cli-permissions");
+    assert.equal(pilot.native_executable.version, "codex-cli 0.166.0");
+    const request = load(join(pilot.directory, "prepare-request.json"));
+    assert.equal(request.dark_opt_in, undefined);
+    assert.deepEqual(request.execution_trust, pilot.execution_trust);
+    assert.equal(run(client, ["start", "--json"]).status, 0);
+    const prepared = run(client, ["prepare", "--input", JSON.stringify(request), "--json"]);
+    assert.equal(prepared.status, 0, prepared.stdout + prepared.stderr);
+    const value = JSON.parse(prepared.stdout);
+    assert.equal(value.schema, "flow.prepared-run/v1", JSON.stringify(value));
+    assert.match(JSON.stringify(value.confirmation), /supervised-native-cli/u);
+    const preparedPath = join(pilot.directory, "prepared.json");
+    writeFileSync(preparedPath, prepared.stdout);
+    const accepted = run(process.execPath, [script, "accept-prepared", pilot.directory, preparedPath]);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const launch = load(JSON.parse(accepted.stdout).request);
+    assert.equal(launch.prepared.bundle_digest, value.bundle_digest);
+    assert.equal(launch.confirmation.confirmation_digest, value.confirmation_digest);
+    assert.deepEqual(launch.closed_facts.facts, value.explicit_facts);
+    assert.deepEqual(launch.execution_trust, pilot.execution_trust);
+    assert.equal(existsSync(join(pilot.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
+    const stopped = run(client, ["stop", "--json"]); assert.equal(stopped.status, 0, stopped.stderr);
+  }
+});

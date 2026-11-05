@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import Ajv from "ajv/dist/2020.js";
 import { canonicalize, digest, freezeCanonical } from "./canonical.mjs";
 import { digestDelegateInputBytes } from "./delegate-input-envelope.mjs";
-import { directDescriptionIssue } from "./execution-contract.mjs";
+import { directDescriptionIssue, descriptionTrustIssue } from "./execution-contract.mjs";
 import { executableIdentity } from "./direct-delegated-agent-port.mjs";
 
 const pythonPath = "/usr/bin/python3";
@@ -15,7 +15,7 @@ const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const hashBytes = (bytes) => "sha256:" + createHash("sha256").update(bytes).digest("hex");
 const keyDigest = (key) => hashBytes(Buffer.from(key)).slice(7);
 
-export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWorkspace }) {
+export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWorkspace, executionTrust }) {
   const directory = (id) => {
     if (typeof id !== "string" || !/^task:[0-9a-f]{64}$/u.test(id)) throw new TypeError("invalid_task_identity");
     return join(taskDirectory, id.slice(5));
@@ -24,7 +24,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
   return Object.freeze({
     async discover(request) {
       if (typeof request?.caller_key !== "string" || !request.caller_key) return blocked("invalid_discovery_request");
-      const issue = directDescriptionIssue(request.description);
+      const issue = directDescriptionIssue(request.description) ?? descriptionTrustIssue(request.description, executionTrust);
       if (issue) return blocked(issue);
       const adapter = adapters[request.description.backend.harness];
       if (adapter?.id !== request.description.backend.adapter || adapter.version !== request.description.backend.adapter_version) return blocked("adapter_identity_changed");
@@ -40,7 +40,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
             typeof request.caller_key !== "string" || !request.caller_key ||
             typeof request.input_key !== "string" || !request.input_key ||
             digestDelegateInputBytes(request.prompt) !== request.payload_sha256) throw new Error("invalid_dispatch_request");
-        const issue = directDescriptionIssue(request.description); if (issue) throw new Error(issue);
+        const issue = directDescriptionIssue(request.description) ?? descriptionTrustIssue(request.description, executionTrust); if (issue) throw new Error(issue);
         const binding = request.task_binding;
         if (!binding || binding.attempt_id !== request.caller_key ||
             !binding.run_id || !binding.card_id || !binding.effect_id || !binding.workspace_claim ||
@@ -65,7 +65,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
         // Recovery uses the immutable reservation, not today's spawn environment
         // or executable. Ambient checks remain mandatory for a new invocation.
         if (existsSync(root)) return adopt();
-        const identity = executableIdentity(request.description.backend.executable.path, adapter, env);
+        const identity = executableIdentity(request.description.backend.executable.path, adapter, env, executionTrust);
         if (digest(identity) !== digest(request.description.backend.executable)) throw new Error("executable_identity_changed");
         if (process.platform !== "linux") throw new Error("direct_task_containment_unsupported");
         // No fallback executable: Python availability and subreaper capability
@@ -77,7 +77,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
         const workspace = resolveWorkspace(binding.workspace_claim, { owner: { run_id: binding.run_id, card_id: binding.card_id } });
         if (!workspace?.canonical_path) throw new Error("workspace_claim_uncertain");
         const workspacePath = realpathSync(workspace.canonical_path);
-        const authorityIssue = adapter.authorityIssue({ env, workspacePath }); if (authorityIssue) throw new Error(authorityIssue);
+        const authorityIssue = adapter.authorityIssue({ env, workspacePath, executionTrust, launch: request.description.launch }); if (authorityIssue) throw new Error(authorityIssue);
         const outputSchemaBytes = JSON.stringify(canonicalize(binding.output_contract.schema));
         const identityInput = {
           schema: "flow.task-invocation/v1", task_id: id, caller_key: request.caller_key,

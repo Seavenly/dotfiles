@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
+import { isSupervisedDescription } from "./execution-contract.mjs";
 import { canonicalize } from "./canonical.mjs";
 
 const READ_TOOLS = ["Read", "Glob", "Grep"];
@@ -9,7 +10,11 @@ const READ_TOOLS = ["Read", "Glob", "Grep"];
 export const claudeExecutionAdapter = Object.freeze({
   id: "flow.claude-print", version: "1", harness: "claude",
   supportedVersion: "2.1.287 (Claude Code)",
-  authorityIssue() { return "claude_native_policy_unproven"; },
+  supportedVersionForTrust(trust) { return trust === "supervised-native-cli" ? "2.1.318 (Claude Code)" : this.supportedVersion; },
+  authorityIssue({ executionTrust, launch } = {}) {
+    if (executionTrust === "supervised-native-cli") return launch?.capability === "read-only" ? null : "unsupported_claude_capability";
+    return "claude_native_policy_unproven";
+  },
   buildInvocation({ descriptor }) {
     validateDescriptor(descriptor);
     const launch = descriptor.description.launch;
@@ -47,7 +52,7 @@ export const claudeExecutionAdapter = Object.freeze({
         if (session || typeof event.session_id !== "string" || !event.session_id.trim()) throw new Error("ambiguous_native_session");
         const launch = descriptor.description.launch;
         if (event.cwd !== descriptor.workspace.path || event.model !== launch.model ||
-            event.claude_code_version !== "2.1.287" || event.permissionMode !== "dontAsk") throw new Error("native_launch_mismatch");
+            event.claude_code_version !== descriptor.description.backend.executable.version.split(" ")[0] || event.permissionMode !== "dontAsk") throw new Error("native_launch_mismatch");
         const tools = event.tools;
         if (!Array.isArray(tools) || new Set(tools).size !== tools.length ||
             READ_TOOLS.some((tool) => !tools.includes(tool)) ||
@@ -121,7 +126,11 @@ function validateDescriptor(descriptor) {
   if (!["low", "medium", "high", "max"].includes(launch.effort)) throw new Error("unsupported_claude_effort");
   if (typeof launch.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(launch.model)) throw new Error("unsupported_claude_model");
   const authority = descriptor.description.effective_authority;
-  if (authority?.approvals !== "denied" || authority.filesystem !== "read_only" || authority.network !== "disabled" ||
+  const supervised = isSupervisedDescription(descriptor.description);
+  if (supervised ? authority?.assurance !== "operator_supervised_cli" || authority.approvals !== "cli_requested_never" ||
+      authority.filesystem !== "cli_requested_read_only" || authority.network !== "not_independently_verified" ||
+      authority.escalation !== "not_independently_verified" || !Array.isArray(authority.writable_roots) || authority.writable_roots.length :
+      authority?.approvals !== "denied" || authority.filesystem !== "read_only" || authority.network !== "disabled" ||
       authority.escalation !== false || !Array.isArray(authority.writable_roots) || authority.writable_roots.length) {
     throw new Error("unsupported_claude_authority");
   }
@@ -131,7 +140,7 @@ function validateDescriptor(descriptor) {
   const backend = descriptor.description.backend;
   const executable = backend?.executable;
   if (backend?.harness !== "claude" || backend.adapter !== "flow.claude-print" || backend.adapter_version !== "1" ||
-      typeof executable?.path !== "string" || !isAbsolute(executable.path) || executable.version !== "2.1.287 (Claude Code)") {
+      typeof executable?.path !== "string" || !isAbsolute(executable.path) || executable.version !== (supervised ? "2.1.318 (Claude Code)" : "2.1.287 (Claude Code)")) {
     throw new Error("invalid_claude_executable");
   }
   if (typeof descriptor.output_schema_bytes !== "string" ||

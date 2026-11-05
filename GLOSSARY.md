@@ -92,6 +92,13 @@ content set. It can make a dark opt-in available only when every required
 record is passed; it does not authorize scope expansion or remote mutation.
 _Avoid_: Synthetic pass, production run
 
+**Supervised native execution**:
+An explicit per-run trust choice in which the operator supervises the official
+agent CLI and trusts its requested permissions and ambient startup behavior.
+It does not claim independently enforced workspace or tool-network boundaries,
+or provide qualification evidence for the strict execution contract.
+_Avoid_: Qualified native execution, permission bypass
+
 **Run ownership**:
 The authority-recorded relationship that identifies a flow run as top-level or
 as a child of one exact parent run.

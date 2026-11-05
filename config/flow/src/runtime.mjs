@@ -44,6 +44,12 @@ import {
 import {
   qualificationRepositoryRootFor,
 } from "./owner-runtime-binding.mjs";
+import {
+  executionTrustFromEnvironment,
+  supervisedAdmissionIssue,
+  SUPERVISED_NATIVE_CONTRACT,
+  SUPERVISED_NATIVE_POSTURE,
+} from "./supervised-native-trust.mjs";
 
 const RUNNER_CAPACITY_LIMIT = 64;
 const FLOW_CONFIG_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -72,6 +78,7 @@ export function createFlowRuntime({
   runnerErrorSink = undefined,
   featureTestCheck = undefined,
 } = {}) {
+  const executionTrust = executionTrustFromEnvironment(env);
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
     throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
   }
@@ -94,11 +101,13 @@ export function createFlowRuntime({
   const delegationPort = delegatedAgentPort ?? (executionBackend === "drovr"
     ? createDrovrDelegatedAgentPort({ dependencies: { env } })
     : createDirectDelegatedAgentPort({ ...directExecutionOptions, env,
+      executionTrust: executionTrust === SUPERVISED_NATIVE_POSTURE ? executionTrust : undefined,
       taskDirectory: join(resolvedAuthorityDirectory, "direct-tasks"),
       resolveWorkspace: (claim, request) => composition.resolveDelegatedWorkspaceClaim(claim, request),
     }));
   composition = createProductionComposition({
     delegatedAgentPort: delegationPort,
+    executionTrust,
     env,
     authorityDirectory: resolvedAuthorityDirectory,
     // Default compatibility roots are ambient legacy state. Only caller
@@ -220,6 +229,7 @@ export function createFlowRuntime({
           delegationPort,
           authority,
           env,
+          executionTrust,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicProposal = withoutDarkOptIn(proposal);
@@ -250,6 +260,7 @@ export function createFlowRuntime({
           delegationPort,
           authority,
           env,
+          executionTrust,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicRequest = withoutDarkOptIn(request);
@@ -337,12 +348,34 @@ function publicReplacementGate({
   delegationPort,
   authority,
   env,
+  executionTrust,
 }) {
   const route = classifyPublicRoute(request);
+  const supervisedIssue = supervisedAdmissionIssue({
+    operation, request, route, executionTrust, backend: delegationPort.backend,
+  });
+  if (supervisedIssue) {
+    return createRejection({
+      operation,
+      code: supervisedIssue,
+      outcome: "disabled",
+      reason: "supervised native execution requires the matching host posture, explicit request acknowledgment and exact prepared contract",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+    });
+  }
+  const supervised = executionTrust === SUPERVISED_NATIVE_POSTURE;
   const configDirectory = env.FLOW_CONFIG_DIRECTORY ?? FLOW_CONFIG_DIRECTORY;
   let selection;
   try {
-    selection = resolvePublicLaunchPolicy({
+    selection = supervised ? {
+      schema: "flow.supervised-launch-selection/v1",
+      execution_contract: SUPERVISED_NATIVE_CONTRACT,
+      route,
+      normal_use_authorized: false,
+      remote_mutations_authorized: false,
+      qualification: "not_claimed",
+    } : resolvePublicLaunchPolicy({
       policyPath: env.FLOW_LAUNCH_POLICY_PATH ??
         join(configDirectory, "launch-policy.v1.json"),
       releaseManifestPath: env.FLOW_RELEASE_MANIFEST_PATH ??
@@ -439,7 +472,7 @@ function publicReplacementGate({
   } catch {
     qualificationAvailable = false;
   }
-  if (!qualificationAvailable) {
+  if (!qualificationAvailable && !supervised) {
     return createRejection({
       operation,
       code: "qualification_withheld",
@@ -475,9 +508,8 @@ function publicReplacementGate({
 }
 
 function withoutDarkOptIn(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value) ||
-      !Object.hasOwn(value, "dark_opt_in")) return value;
-  const { dark_opt_in: _darkOptIn, ...withoutOptIn } = value;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const { dark_opt_in: _darkOptIn, execution_trust: _executionTrust, ...withoutOptIn } = value;
   return withoutOptIn;
 }
 

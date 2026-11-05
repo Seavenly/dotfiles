@@ -393,6 +393,31 @@ reports known health problems without performing repairs.
 
 ## Direct CLI execution and optional Drovr
 
+For an explicitly supervised first Linux run, `flow pilot setup` creates a
+disposable Git repository, private owner state, pinned verification checks and a
+local `flow` client. It starts no owner or provider task:
+
+```sh
+flow pilot setup --execution-trust supervised-native-cli \
+  --codex-executable /absolute/path/to/codex --mode test
+```
+
+Use `--mode verify` for the verification-first route. This additive contract pins
+official Codex 0.166.0; the read-only Claude route pins Claude Code 2.1.318.
+The generated client's environment explicitly selects supervised execution, and
+the prepare and launch requests carry its acknowledgment. Inspect the prepared
+confirmation before accepting it. It describes **requested CLI permissions**:
+the operator trusts the official CLI's ambient startup and permission controls.
+Flow does not independently enforce workspace or tool-network boundaries under
+this contract. Use it only with a supervised disposable repository and the
+documented [pilot procedure](docs/flow/operator-guide.md#supervised-native-pilot).
+
+Supervised execution retains ownership, cancellation, conservative recovery,
+registered verification, exact candidate sealing and independent local review.
+It does not alter strict qualification, normal-use authorization, global CLI
+permissions, the default launcher, or remote-mutation authority. The strict
+direct route described below remains withheld.
+
 The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
 decision does not qualify native execution: current release qualification remains
 `not_run`, and public admission remains `qualification_withheld`. Issue #84 must

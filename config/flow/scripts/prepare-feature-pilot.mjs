@@ -1,3 +1,4 @@
+import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -14,8 +15,9 @@ const save = (path, value) => writeFileSync(path, `${JSON.stringify(value, null,
 try {
   const [command, ...args] = process.argv.slice(2);
   if (command === "setup") setup(args);
+  else if (command === "accept-prepared" && args.length === 2) acceptPrepared(...args);
   else if (command === "review-request" && args.length === 2) reviewRequest(...args);
-  else throw new Error("Usage: prepare-feature-pilot.mjs setup [--mode test|verify] [--parent DIRECTORY]\n       prepare-feature-pilot.mjs review-request PILOT_DIRECTORY PRODUCER_RUN_ID");
+  else throw new Error("Usage: prepare-feature-pilot.mjs setup [--mode test|verify] [--parent DIRECTORY] [--execution-trust supervised-native-cli --codex-executable ABSOLUTE_PATH]\n       prepare-feature-pilot.mjs review-request PILOT_DIRECTORY PRODUCER_RUN_ID");
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
@@ -25,16 +27,27 @@ function setup(args) {
   if (!/^v22\./u.test(process.version)) throw new Error("Setup requires the approved Node 22 executable");
   let mode = "test";
   let parent = tmpdir();
+  let executionTrust, codexExecutable;
   const seen = new Set();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (!["--mode", "--parent"].includes(flag) || !value || seen.has(flag)) throw new Error("Invalid setup arguments");
+    if (!["--mode", "--parent", "--execution-trust", "--codex-executable"].includes(flag) || !value || seen.has(flag)) throw new Error("Invalid setup arguments");
     seen.add(flag);
     if (flag === "--mode") mode = value;
-    else parent = value;
+    else if (flag === "--parent") parent = value;
+    else if (flag === "--execution-trust") executionTrust = value;
+    else codexExecutable = value;
   }
   if (!["test", "verify"].includes(mode)) throw new Error("Mode must be test or verify");
+  if (executionTrust !== undefined && executionTrust !== "supervised-native-cli") throw new Error("Unsupported execution trust");
+  if (executionTrust) {
+    if (!codexExecutable?.startsWith("/")) throw new Error("Supervised setup requires --codex-executable with an installed absolute Codex0.166 path");
+    codexExecutable = realpathSync(codexExecutable);
+    const version = execFileSync(codexExecutable, ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 8192 });
+    if (version.trim() !== "codex-cli 0.166.0") throw new Error("Supervised setup requires official Codex0.166.0");
+  } else if (codexExecutable) throw new Error("An explicit native executable requires supervised setup");
+  const trustAcknowledgment = executionTrust ? { schema: "flow.supervised-native-cli/v1", acknowledgment: "trust-official-cli-permissions" } : null;
   parent = realpathSync(parent);
   // Check before allocation. Unix socket limits are shorter than filesystem limits.
   if (Buffer.byteLength(join(parent, "flow-pilot-XXXXXX/authority/owner.sock")) > 100) {
@@ -79,6 +92,7 @@ function setup(args) {
   const environment = {
     FLOW_CONFIG_DIRECTORY: join(runtimeRoot, "config/flow/releases/1.1-dark-test"),
     FLOW_QUALIFICATION_REPOSITORY_ROOT: runtimeRoot, FLOW_EXECUTION_BACKEND: "direct",
+    ...(executionTrust ? { FLOW_EXECUTION_TRUST: executionTrust, FLOW_CODEX_EXECUTABLE: codexExecutable } : {}),
     FLOW_REPOSITORY_ROOT: workspace, FLOW_OWNER_RUNTIME_MODULE: modulePath,
     FLOW_AUTHORITY_DIRECTORY: join(directory, "authority"),
     FLOW_OWNER_SOCKET_PATH: join(directory, "authority/owner.sock"),
@@ -92,7 +106,9 @@ function setup(args) {
     ...(mode === "test" ? { test: { check_id: featureTestCheck.check_id } } : {}),
     routes: { apply: { harness: "codex", capability: "workspace-write-denied" }, critique: { harness: "codex", capability: "read-only" } },
     limits: { max_elapsed_seconds: 600, max_revisions: 0 },
-    dark_opt_in: { schema: "flow.dark-opt-in/v1", release_id: "flow-release-1.1-dark-test/v1", purpose: "sacrificial_qualification" },
+    ...(executionTrust ? { execution_trust: trustAcknowledgment } : {
+      dark_opt_in: { schema: "flow.dark-opt-in/v1", release_id: "flow-release-1.1-dark-test/v1", purpose: "sacrificial_qualification" },
+    }),
   };
   save(join(directory, "prepare-request.json"), request);
   save(join(directory, "starting-git-facts.json"), { clean: true, commit_sha: git(["rev-parse", "HEAD"]).trim(), tree_sha: git(["rev-parse", "HEAD^{tree}"]).trim() });
@@ -102,9 +118,42 @@ function setup(args) {
     status: "preparation_only", directory, mode, runtime_root: runtimeRoot, node: executable, environment,
     owner_module_sha256: sha(moduleBytes), canary_sha256: sha(readFileSync(join(directory, "untouched-canary.txt"))),
     native_execution: "not_run", qualification: "not_run", normal_use_authorized: false,
+    ...(executionTrust ? { execution_trust: trustAcknowledgment,
+      trust_limitations: "Official CLI permissions and ambient startup are trusted by the supervisor; Flow has not independently established workspace, protected-path, escalation or tool-network enforcement.",
+      native_executable: { path: codexExecutable, version: "codex-cli 0.166.0", sha256: sha(readFileSync(codexExecutable)) } } : {}),
   };
   save(join(directory, "pilot.json"), result);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+function acceptPrepared(directory, preparedPath) {
+  directory = realpathSync(directory);
+  const pilot = json(join(directory, "pilot.json"));
+  if (pilot.directory !== directory || pilot.runtime_root !== runtimeRoot) throw new Error("Pilot runtime/directory binding changed");
+  const prepared = json(preparedPath);
+  if (prepared.schema !== "flow.prepared-run/v1" || prepared.kind !== "predefined" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(prepared.bundle_digest ?? "") ||
+      prepared.confirmation_digest !== digest(prepared.confirmation) ||
+      prepared.plan_fingerprint !== digest(prepared.graph) || !prepared.explicit_facts) {
+    throw new Error("Use the exact public prepare response after inspecting its confirmation");
+  }
+  const request = {
+    prepared,
+    confirmation: { schema: "flow.predefined-flow-confirmation-decision/v1", decision: "accept",
+      bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest },
+    closed_facts: { schema: "flow.closed-fact-observation/v1", bundle_digest: prepared.bundle_digest,
+      facts: prepared.explicit_facts },
+    ...(pilot.execution_trust ? { execution_trust: pilot.execution_trust } : {
+      dark_opt_in: json(join(directory, "prepare-request.json")).dark_opt_in,
+    }),
+  };
+  const receiptDirectory = mkdtempSync(join(directory, "receipts/accepted-"));
+  chmodSync(receiptDirectory, 0o700);
+  save(join(receiptDirectory, "prepared.json"), prepared);
+  save(join(receiptDirectory, "launch-request.json"), request);
+  process.stdout.write(`${JSON.stringify({ status: "launch_request_only", directory: receiptDirectory,
+    request: join(receiptDirectory, "launch-request.json"),
+    instruction: "Inspect the retained confirmation and exact launch request before explicitly calling flow launch. No task has been started." }, null, 2)}\n`);
 }
 
 function reviewRequest(directory, runId) {
@@ -144,7 +193,9 @@ function reviewRequest(directory, runId) {
       lenses: selection.lenses, preparation_selection: selection, preparation_facts: facts,
       delegation: { schema: "flow.review-delegation-bindings/v1", lenses: { security: binding("review-lens-security") }, critic: binding("review-critic") },
     },
-    dark_opt_in: json(join(directory, "prepare-request.json")).dark_opt_in,
+    ...(pilot.execution_trust ? { execution_trust: pilot.execution_trust } : {
+      dark_opt_in: json(join(directory, "prepare-request.json")).dark_opt_in,
+    }),
   };
   // Exclusive writes keep earlier attempts available; use a new receipt directory per observation.
   const receiptDirectory = mkdtempSync(join(directory, "receipts/review-"));
