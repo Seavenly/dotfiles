@@ -868,15 +868,24 @@ async function cloneRepositoryAtHead(t, label, { noLocal = false, revision } = {
   const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
     cwd: repositoryRoot,
   });
-  await execFileAsync("git", [
-    "clone",
-    "-q",
-    ...(noLocal ? ["--no-local"] : []),
-    ...(revision === undefined ? [] : ["--revision", revision]),
-    "--no-checkout",
-    repositoryRoot,
-    copiedRepository,
-  ]);
+  if (revision === undefined) {
+    await execFileAsync("git", [
+      "clone",
+      "-q",
+      ...(noLocal ? ["--no-local"] : []),
+      "--no-checkout",
+      repositoryRoot,
+      copiedRepository,
+    ]);
+  } else {
+    // Fetch only the declared base and its ancestors, without a local clone's
+    // object copying or a dependency on newer Git clone options.
+    await mkdir(copiedRepository);
+    await execFileAsync("git", ["init", "--quiet"], { cwd: copiedRepository });
+    await execFileAsync("git", [
+      "fetch", "--quiet", "--no-tags", repositoryRoot, revision,
+    ], { cwd: copiedRepository });
+  }
   await execFileAsync("git", ["checkout", "-q", revision ?? stdout.trim()], {
     cwd: copiedRepository,
   });
