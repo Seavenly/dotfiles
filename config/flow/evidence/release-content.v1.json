@@ -30,10 +30,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "19fd4812fb40b482bee6eb981d1078ea53c47358",
+    "candidate_tree_sha": "672f327dfdf7f6f8403041b2e5df7b8c27656f6b",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:fbf382b87417b05d11084543283555ed34276d3a5c3e4447ebccf664e59eaf42",
+  "content_digest": "sha256:cc87e85780fb37a33714af702b918d17e845d7c8f79c539ed9b682988d6994fa",
   "files": [
     {
       "path": "CONTEXT.md",
@@ -576,6 +576,12 @@
       "sha256": "0902ea719d4c6545f5c6c46034d6ae862b6758b66ed73f3fe304b52dbfed87ac"
     },
     {
+      "path": "config/flow/scripts/prepare-feature-pilot.mjs",
+      "mode": "100644",
+      "git_blob_sha": "79d05ab8c6af4a8611e74aceb3d26e07dbbbb913",
+      "sha256": "373a980724755b9ab1970015a922b48e6bfffee24219b68b3dc5b26100db1427"
+    },
+    {
       "path": "config/flow/scripts/run-host-recovery-headless-provider.mjs",
       "mode": "100644",
       "git_blob_sha": "7bd6e74256af35028f7250cf6a29c904315ca379",
@@ -850,6 +856,12 @@
       "mode": "100644",
       "git_blob_sha": "3144230deae35e3e325acaa482e408c477ae02e1",
       "sha256": "4b1675394b2e853dd948a35c5dc79ee03a59df73090ae7c30366dd4780ca3e58"
+    },
+    {
+      "path": "config/flow/test/feature-pilot-preparation.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "129a67dbed48c69f6010ed8c7770562fff48523d",
+      "sha256": "238d7adfe6d29724d29cbe069a1680896a8e292c7bce07477499f850869ffc99"
     },
     {
       "path": "config/flow/test/feature-test-preparation.test.mjs",
@@ -1366,6 +1378,42 @@
       "mode": "100644",
       "git_blob_sha": "f53a7ac75c999e2f5a3840281dc702d1676114df",
       "sha256": "68a8fcd3fcf3441dda60f73c504a3057cfe72b964444d9f33cf93534c2fa24fd"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/README.md",
+      "mode": "100644",
+      "git_blob_sha": "e60b5e28bde85d6235bdabc1d80ec82d8ad13c5b",
+      "sha256": "3511a74d3a8ed8ce32f68c226ac45a7b5ec89a01b259db6ecaf5040ce0c3c4a3"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/host-inventory.sh",
+      "mode": "100644",
+      "git_blob_sha": "14a15777cc9459c4e3e78a087a1727a52e47289e",
+      "sha256": "a31340f40c0f79ee3716d5486dab000f0cdf74c26b462f7cdf89b75e115810ea"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/package.py",
+      "mode": "100644",
+      "git_blob_sha": "2ade4ba700482334944b835b335d64a199ffa1c4",
+      "sha256": "2a9b0ff2c3084cc73698a00ce37a7720561b9b18e0d08df016f0c2dd67a20057"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/probe.py",
+      "mode": "100644",
+      "git_blob_sha": "f77290c6f46e8b0a4382867ddb7c61a905527537",
+      "sha256": "67ad7ac3cd3b8102e4cc6a491b0c8c32b6f8210feabbd2196a02a691310b80cb"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/test.py",
+      "mode": "100644",
+      "git_blob_sha": "c600a0ec6d52f9bc9724502697540fe09758b05a",
+      "sha256": "3a1a8570f699662b71deada249f53dfb3ecfe40126ff7c123fa2e8a7f55dc02a"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/verify-report.py",
+      "mode": "100644",
+      "git_blob_sha": "c2b6ab0e4d8fd73a9d5cf326438351e9c0fc5e43",
+      "sha256": "c507bbf97ef0a8974ac627f2c413cc52b40dac8a8a738e1a7882cad162e064e5"
     },
     {
       "path": "tools/flow/package-lock.json",

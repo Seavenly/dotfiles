@@ -2,9 +2,9 @@
   "schema": "flow.production-route-conformance-evidence/v1",
   "release_id": "flow-release-1.1-dark-test/v1",
   "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
-  "candidate_tree_sha": "19fd4812fb40b482bee6eb981d1078ea53c47358",
-  "release_content_digest": "sha256:58249d352130617012951c238f79826e50fe3b0c116c7ca94ab0e687cff9e2cf",
-  "status": "passed",
+  "candidate_tree_sha": "672f327dfdf7f6f8403041b2e5df7b8c27656f6b",
+  "release_content_digest": "sha256:5e3eaf6abd04acc59cfa2335414c95c4d7e423d4e7354f668ba649466ffd7034",
+  "status": "not_run",
   "scope": "production_public_route_conformance",
   "routes": [
     {
@@ -26,76 +26,11 @@
     "production route cases use isolated local repositories and do not authorize remote mutations",
     "public direct feature test proves healthy RED, one writer, unchanged checker GREEN, independent critique, sealed clean Git, and owner restart without duplicate dispatch"
   ],
-  "phase1_evidence_sha256": "53741810175ee78aab20be7e89e71badb5288243061e6814d314f1ad0ca28bf6",
+  "phase1_evidence_sha256": null,
   "generation_id": null,
   "generation_binding_sha256": null,
-  "recipe": {
-    "schema": "flow.production-route-conformance-recipe/v1",
-    "digest": "sha256:50200df963b09212f2d4007c5a77c20179ea54fb18d238d36308e1a591940e26",
-    "commands": [
-      {
-        "id": "production_feature_verify",
-        "command": "node --test --experimental-test-isolation=none --test-name-pattern='production feature runs a real Git mutation through a local candidate' config/flow/test/production-runtime.test.mjs",
-        "working_directory": ".",
-        "receipt_path": "evidence/receipts/production-feature-verify.tap",
-        "receipt_sha256": "b459cc3d26d931f0e4505e1f95aa5483e05721d2f3f2c7fd0128f03ee024a991",
-        "status": "passed",
-        "exit_code": 0,
-        "tests": 1,
-        "passed": 1,
-        "failed": 0,
-        "cancelled": 0,
-        "skipped": 0,
-        "flaky": 0
-      },
-      {
-        "id": "public_local_review_process",
-        "command": "node --test --experimental-test-isolation=none --test-name-pattern='public host rebuilds the review inbox after the producing client exits|public host supersedes a production review and rejects stale follow-up actions' config/flow/test/public-process.test.mjs",
-        "working_directory": ".",
-        "receipt_path": "evidence/receipts/public-local-review-process.tap",
-        "receipt_sha256": "1f54dd1139cb0a5e2e85f839be72c401959f1182fe0f03acc12f81cd4f2a1426",
-        "status": "passed",
-        "exit_code": 0,
-        "tests": 2,
-        "passed": 2,
-        "failed": 0,
-        "cancelled": 0,
-        "skipped": 0,
-        "flaky": 0
-      },
-      {
-        "id": "public_drovr_finding_schema",
-        "command": "node --test --experimental-test-isolation=none --test-name-pattern='public preparation normalizes real Drovr feature findings' config/flow/test/runtime.test.mjs",
-        "working_directory": ".",
-        "receipt_path": "evidence/receipts/public-drovr-finding-schema.tap",
-        "receipt_sha256": "9ea63c0da1f2e62006982ba88b88bca982eb07b6bb9c7073a3ffdab6aa86e51a",
-        "status": "passed",
-        "exit_code": 0,
-        "tests": 1,
-        "passed": 1,
-        "failed": 0,
-        "cancelled": 0,
-        "skipped": 0,
-        "flaky": 0
-      },
-      {
-        "id": "public_production_feature_test",
-        "command": "node --test config/flow/test/direct-feature-test.test.mjs",
-        "working_directory": ".",
-        "receipt_path": "evidence/receipts/public-production-feature-test.tap",
-        "receipt_sha256": "c3cd531c73d4f788e4007fe19e4b9f5add5db2e165fd9364d8beb33483a223be",
-        "status": "passed",
-        "exit_code": 0,
-        "tests": 10,
-        "passed": 10,
-        "failed": 0,
-        "cancelled": 0,
-        "skipped": 0,
-        "flaky": 0
-      }
-    ]
-  },
-  "captured_at": "2026-10-31T01:15:00Z",
+  "recipe": null,
+  "captured_at": "2026-11-05T01:48:39Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",
