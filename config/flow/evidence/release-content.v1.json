@@ -31,10 +31,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "cc4bdb75a98af216ec4ca2794365a7592529baa6",
+    "candidate_tree_sha": "fcb06a1607f3b80300d61ed59f226bc933defb53",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:01413f2f4f811894612c48fbf1f4930b3ed385c6c622f04d198b12392b87a073",
+  "content_digest": "sha256:b93c9fde6c494bdec721c436c12ed9a35ebe728b38b3a95af0f52b8a5e441a5b",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -123,8 +123,8 @@
     {
       "path": "config/flow/qualification/README.md",
       "mode": "100644",
-      "git_blob_sha": "cb18e1f4b3d620ceb52028e7ee09620e33e64911",
-      "sha256": "b3fd2f01e28a02f5dd9262d066aac0de4ec449b9e443a38a4327dad40e5b6583"
+      "git_blob_sha": "57a187c930db08ab13692d9d229289b5119657c7",
+      "sha256": "7a8b2619267c76ea45f35ac032653133eb7025d3c67bc4ab66f21a3a7f1ea258"
     },
     {
       "path": "config/flow/qualification/host-recovery.v1.json",
