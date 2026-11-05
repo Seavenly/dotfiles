@@ -5,10 +5,47 @@ Issue 46 qualification is driven by the versioned catalog in
 stores external raw receipts; it does not infer a scenario pass from a command
 exit code.
 
+## Historical Tuicr prerequisite
+
+The retained issue-46 consumer checks require the installed regular
+`github-agavra-tuicr/0.19.0/tuicr` executable reporting `tuicr 0.19.0`.
+This is a qualification prerequisite, separate from the current Tuicr version
+in `mise.lock`. The normal managed Tuicr selection stays current.
+
+`./dotfiles check` resolves this already installed version with
+`mise where github:agavra/tuicr@0.19.0` and validates it before the expensive
+suites. Only its Flow and Flow transition children receive the historical
+binary directory on `PATH`. Missing or invalid bytes fail with an actionable
+message; the check never installs tools or skips those checks.
+
+Provision the historical version explicitly when setting up a qualification
+host. The following separate, opt-in command can download it; it does not
+activate it, change the normal selection, or modify repository configuration:
+
+```sh
+MISE_LOCKED=false mise install github:agavra/tuicr@0.19.0
+```
+
+The command-local lock exception is required because this historical version is
+outside the current managed lock. Do not use `mise use`, downgrade the normal
+Tuicr lock, or substitute current Tuicr bytes for historical proof. Preserve
+its exact executable identity in new qualification receipts.
+
+For a direct historical qualification-runner invocation, use an equally scoped
+installed-only environment:
+
+```sh
+TUICR_QUALIFICATION_DIRECTORY="$(MISE_AUTO_INSTALL=false mise where github:agavra/tuicr@0.19.0)"
+```
+
+Prefix each collector invocation below with the scoped `PATH` assignment. The
+runner retains its own strict historical executable checks; this setup grants
+no qualification.
+
 Create a private run root under `/tmp` and provide every path explicitly:
 
 ```sh
-node config/flow/scripts/run-host-recovery-qualification.mjs \
+PATH="$TUICR_QUALIFICATION_DIRECTORY:$PATH" node config/flow/scripts/run-host-recovery-qualification.mjs \
   --worktree /absolute/path/to/this/worktree \
   --raw-root /tmp/issue-46-<run>/raw \
   --scenario concurrent_runs_owner_restart \

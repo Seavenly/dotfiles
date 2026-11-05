@@ -34,6 +34,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y zsh
       - name: Install validators from the lock
         run: mise install --locked actionlint gitleaks shellcheck lua uv ripgrep fzf node
+      - name: Install historical Flow qualification prerequisite
+        # Install side by side only; the normal managed Tuicr lock stays current.
+        # This explicit setup may download. The public check never installs tools.
+        run: MISE_LOCKED=false mise install github:agavra/tuicr@0.19.0
       - name: Install JavaScript test dependencies
         run: |
           mise exec --locked -C "$GITHUB_WORKSPACE" -E "${{ matrix.env_name }}" -- npm ci --prefix config/agent-flow

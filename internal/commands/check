@@ -40,6 +40,12 @@ if [[ ${DOTFILES_CHECK_MISE_EXEC:-0} != 1 ]] \
     mise exec --locked -C "$root" -E "$check_exec_env" -- "$root/dotfiles" check
 fi
 
+# shellcheck source=internal/commands/check-flow-prerequisites
+source "$root/internal/commands/check-flow-prerequisites"
+# Fail before expensive suites when the retained qualification consumer is
+# unavailable. Keep its PATH private to the two Flow validation children.
+flow_check_tuicr_directory="$(dotfiles_flow_check_tuicr_directory)" || exit 1
+
 run "bash syntax" bash -n "${bash_files[@]}"
 run "zsh syntax" zsh -n "$root/config/zsh/zshrc" "$root/config/zsh/aliases.zsh" "$root/config/sketchybar/sketchybarrc" "$root/config/sketchybar/plugins/aerospace.sh" "$root/config/sketchybar/plugins/battery.sh" "$root/config/sketchybar/plugins/rec.sh" "$root/config/sketchybar/plugins/spotify.sh" "$root/config/sketchybar/plugins/weather.sh"
 # shellcheck disable=SC2016
@@ -103,8 +109,8 @@ run "Lua" bash -c 'find "$1/config/nvim" -name "*.lua" -print0 | xargs -0 luac -
 run "Python" env PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/dotfiles-pycache" python3 -m py_compile "$root/tools/recorder/clean.py" "$root/tools/recorder/record.py" "$root/tools/recorder/transcribe.py" "$root/tools/review-feed/review_feed.py"
 run "recorder lock" env UV_CACHE_DIR="${TMPDIR:-/tmp}/dotfiles-uv-cache" uv lock --project "$root/tools/recorder" --check
 run "Drovr" npm --prefix "$root/tools/drovr" test
-run "Flow" npm --prefix "$root/config/flow" test
-run "Flow transition" npm --prefix "$root/tools/flow" test
+run "Flow" env PATH="$flow_check_tuicr_directory:$PATH" npm --prefix "$root/config/flow" test
+run "Flow transition" env PATH="$flow_check_tuicr_directory:$PATH" npm --prefix "$root/tools/flow" test
 run "behavior" "$root/tests/run"
 if command -v actionlint >/dev/null 2>&1; then
   run "GitHub Actions" actionlint "$root/.github/workflows/check.yml"
