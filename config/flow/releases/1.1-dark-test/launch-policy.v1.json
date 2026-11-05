@@ -1,0 +1,34 @@
+{
+  "schema": "flow.launch-policy/v1",
+  "generation": 2,
+  "default_implementation": "legacy-claude/v1",
+  "implementations": {
+    "legacy-claude/v1": {
+      "launch_enabled": true,
+      "authority_root": {
+        "base": "home",
+        "path": ".agent-teams"
+      }
+    },
+    "legacy-agent-flow/v1": {
+      "launch_enabled": false,
+      "authority_root": {
+        "base": "state",
+        "path": "agent-flow"
+      }
+    },
+    "flow-runtime/v1": {
+      "launch_enabled": false,
+      "dark_opt_in": {
+        "enabled": true,
+        "manifest": "release-manifest.v1.json",
+        "manifest_sha256": "a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b",
+        "scope": "dark_sacrificial"
+      },
+      "authority_root": {
+        "base": "state",
+        "path": "flow"
+      }
+    }
+  }
+}

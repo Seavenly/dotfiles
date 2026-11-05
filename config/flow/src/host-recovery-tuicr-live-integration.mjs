@@ -86,7 +86,7 @@ export async function runTuicrLiveIntegration(options = {}) {
     prepared = true;
     const env = {
       ...context.env,
-      FLOW_PUBLIC_REPOSITORY: isolation.repository_root,
+      FLOW_REPOSITORY_ROOT: isolation.repository_root,
     };
     await preparePinnedDrovrConfig(isolation);
     await mkdir(isolation.repository_root, { recursive: true, mode: 0o700 });
@@ -453,7 +453,7 @@ export async function runProductionSeedChild({ inputPath, outputPath } = {}) {
     authorityDirectory: input.isolation.authority_directory,
     env: {
       ...input.environment,
-      FLOW_PUBLIC_REPOSITORY: input.repository,
+      FLOW_REPOSITORY_ROOT: input.repository,
     },
     repository: input.repository,
   });
@@ -512,7 +512,7 @@ async function prepareIntegrationContext(options) {
       options.isolation,
       options.baseEnvironment ?? process.env,
     ),
-    FLOW_PUBLIC_REPOSITORY: options.isolation.repository_root,
+    FLOW_REPOSITORY_ROOT: options.isolation.repository_root,
   };
   return { isolation: options.isolation, rawRoot, env };
 }

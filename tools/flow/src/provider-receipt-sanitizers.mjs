@@ -1,3 +1,4 @@
+import { DIRECT_RECEIPT_SCHEMA_FIELDS, DIRECT_NESTED_FIELDS } from "./provider-receipt-policies/delegate-direct.mjs";
 /**
  * The generic provider receipt boundary composes versioned domain policies.
  * Domain modules own their schema fields; this module owns only recursive
@@ -31,6 +32,7 @@ import {
 const PROVIDER_RECEIPT_SCHEMA_FIELDS = new Map([
   ...CORE_RECEIPT_SCHEMA_FIELDS,
   ...DELEGATE_RECEIPT_SCHEMA_FIELDS,
+  ...DIRECT_RECEIPT_SCHEMA_FIELDS,
   ...FEATURE_WORK_RECEIPT_SCHEMA_FIELDS,
   ...REVIEW_RECEIPT_SCHEMA_FIELDS,
   ...TRACKER_SUBRUN_RESOURCE_RECEIPT_SCHEMA_FIELDS,
@@ -39,6 +41,7 @@ const PROVIDER_RECEIPT_SCHEMA_FIELDS = new Map([
 const SAFE_PROVIDER_RECEIPT_NESTED_FIELDS = new Set([
   ...CORE_NESTED_FIELDS,
   ...DELEGATE_NESTED_FIELDS,
+  ...DIRECT_NESTED_FIELDS,
   ...FEATURE_WORK_NESTED_FIELDS,
   ...REVIEW_NESTED_FIELDS,
   ...TRACKER_SUBRUN_RESOURCE_NESTED_FIELDS,
@@ -110,12 +113,14 @@ export function sanitizeProviderReceiptValue(value, { root = true } = {}) {
       CORE_RECEIPT_SCHEMA_FIELDS.get("flow.provider-receipt/v1");
   const rootFields = new Set([
     ...schemaFields,
+    ...(schema === "flow.delegate-evidence/v1" || schema === "flow.delegate-quarantine/v1" ? ["execution_watermark"] : []),
+    ...(schema === "flow.delegate-failure-observation/v1" ? ["direct"] : []),
     ...OBSERVATION_DERIVED_RECEIPT_FIELDS,
   ]);
   const allowedFields = root
     ? rootFields
     : schema !== null && PROVIDER_RECEIPT_SCHEMA_FIELDS.has(schema)
-      ? PROVIDER_RECEIPT_SCHEMA_FIELDS.get(schema)
+      ? new Set([...PROVIDER_RECEIPT_SCHEMA_FIELDS.get(schema), ...(schema === "flow.delegate-evidence/v1" || schema === "flow.delegate-quarantine/v1" ? ["execution_watermark"] : [])])
       : SAFE_PROVIDER_RECEIPT_NESTED_FIELDS;
   const result = {};
   for (const [key, candidate] of Object.entries(value)) {

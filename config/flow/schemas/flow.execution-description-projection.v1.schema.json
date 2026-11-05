@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.execution-description-projection.v1.schema.json",
+  "title": "flow.execution-description-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "flow.execution-description-projection/v1"
+    },
+    "status": {
+      "enum": [
+        "compatible",
+        "blocked"
+      ]
+    },
+    "description": {
+      "oneOf": [
+        {
+          "$ref": "flow.execution-description.v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "watermark": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "const": "flow.execution-watermark/v1"
+            },
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "schema",
+            "content_sha256"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "flow.delegated-agent-port/v1"
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "contract",
+        "code",
+        "findings"
+      ]
+    },
+    "legal_next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "description",
+    "watermark",
+    "compatibility",
+    "legal_next_actions"
+  ]
+}

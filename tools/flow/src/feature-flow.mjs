@@ -1,3 +1,5 @@
+import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
+export const FEATURE_DIRECT_COMMIT_CONTRACT = "flow.operation/feature-direct-commit/v1";
 import { digest, freezeCanonical } from "./canonical.mjs";
 import {
   FEATURE_REPAIR_CONTRACTS,
@@ -192,7 +194,7 @@ function featureDelegateCapabilities(selection) {
 }
 
 function featureOperationContracts(selection) {
-  const contracts = [FEATURE_OPERATION_CONTRACTS.capture,
+  const contracts = [...(isDirectDescription(selection.delegation.apply.description) ? [FEATURE_DIRECT_COMMIT_CONTRACT] : []), FEATURE_OPERATION_CONTRACTS.capture,
     FEATURE_OPERATION_CONTRACTS.verify,
     FEATURE_OPERATION_CONTRACTS.seal];
   if (selection.setup !== null) contracts.unshift(FEATURE_OPERATION_CONTRACTS.setup);
@@ -234,14 +236,14 @@ function featureCardBuilders(selection, workspaceClaim) {
     { resourceClaims = common.resource_claims } = {},
   ) => ({
     ...common,
-    recovery: contract === FEATURE_OPERATION_CONTRACTS.capture
+    recovery: [FEATURE_OPERATION_CONTRACTS.capture, FEATURE_DIRECT_COMMIT_CONTRACT].includes(contract)
       ? "reconcilable"
       : common.recovery,
     id,
     executor: {
       ...common.executor,
       contract,
-      effect_classification: contract === FEATURE_OPERATION_CONTRACTS.capture
+      effect_classification: [FEATURE_OPERATION_CONTRACTS.capture, FEATURE_DIRECT_COMMIT_CONTRACT].includes(contract)
         ? "reconcilable"
         : common.executor.effect_classification,
     },
@@ -328,7 +330,7 @@ function legacyFeatureCards(
   const capture = operation(
     "feature-capture",
     FEATURE_OPERATION_CONTRACTS.capture,
-    ["feature-apply"],
+    [isDirectDescription(selection.delegation.apply.description) ? "feature-direct-commit" : "feature-apply"],
     {
       ...shared,
       phase: "capture",
@@ -404,9 +406,14 @@ function legacyFeatureCards(
       },
       ["review_candidate_receipt"],
     );
+  const commit = isDirectDescription(selection.delegation.apply.description)
+    ? [operation("feature-direct-commit", FEATURE_DIRECT_COMMIT_CONTRACT, ["feature-apply"], {
+        ...shared, phase: "direct-commit", delegate_evidence_card_ids: ["feature-apply"],
+        permitted_paths: ["."], receipt_owner: "registered_operation",
+      }, ["flow.git-candidate-commit-receipt/v1"])] : [];
   return independentCritique
-    ? [apply, capture, critique, verify, seal]
-    : [apply, capture, verify, critique, seal];
+    ? [apply, ...commit, capture, critique, verify, seal]
+    : [apply, ...commit, capture, verify, critique, seal];
 }
 
 function serializedFeatureCards(
@@ -414,6 +421,10 @@ function serializedFeatureCards(
   workspaceClaim,
   { independentCritique = false } = {},
 ) {
+  const direct = isDirectDescription(selection.delegation.apply.description);
+  if (direct && selection.slices.length !== 1) {
+    invalidFeature("unsupported_direct_feature_slices", "direct feature slices require one bounded writer slice");
+  }
   const { delegate, operation } = featureCardBuilders(selection, workspaceClaim);
   const shared = {
     brief: selection.brief,
@@ -504,6 +515,15 @@ function serializedFeatureCards(
     cards.push(apply);
     applyCardIds.push(apply.id);
     dependency = apply.id;
+
+    if (direct) {
+      const commit = operation("feature-direct-commit", FEATURE_DIRECT_COMMIT_CONTRACT, [apply.id], {
+        ...shared, phase: "direct-commit", delegate_evidence_card_ids: [apply.id],
+        permitted_paths: ["."], receipt_owner: "registered_operation",
+      }, ["flow.git-candidate-commit-receipt/v1"]);
+      cards.push(commit);
+      dependency = commit.id;
+    }
 
     const captureCard = operation(
       `feature-capture-${slice.id}`,
@@ -1440,7 +1460,7 @@ function validateDelegationBindings(delegation, explicitFacts) {
 function validateDelegateBinding(binding, role, explicitFacts) {
   if (!isRecord(binding) ||
       !isRecord(binding.description) ||
-      binding.description.schema !== "drovr.delegated-agent-description/v1" ||
+      (!isDirectDescription(binding.description) && binding.description.schema !== "drovr.delegated-agent-description/v1") ||
       !isDigest(binding.description.description_digest) ||
       !isDigest(binding.description.comparison_keys?.launch) ||
       !isDigest(binding.description.comparison_keys?.effective_authority) ||
@@ -1461,6 +1481,9 @@ function validateDelegateBinding(binding, role, explicitFacts) {
       "invalid_delegate_binding",
       `feature/v1 ${role} delegate binding is incomplete or not exact`,
     );
+  }
+  if (isDirectDescription(binding.description) && directDescriptionIssue(binding.description)) {
+    invalidFeature("invalid_delegate_binding", "direct description is incompatible");
   }
   const { description_digest: ignoredDigest, ...descriptionIdentity } =
     binding.description;

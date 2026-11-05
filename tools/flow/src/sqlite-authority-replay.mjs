@@ -15,15 +15,17 @@ import {
 const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
 
 export function readAuthorityStream(database, streamId) {
-  const stream = database.prepare(`
-    SELECT * FROM authority_streams WHERE stream_id = ?
-  `).get(streamId);
-  if (!stream) return null;
-  // Inspectors may open a store before a mutable owner has had a chance to
-  // run the narrow review-fold migration.  The compatibility path below is
-  // still an exact replay/fold comparison and never writes to the database.
-  return replayAuthorityStream(database, streamId, {
-    allowLegacyReviewFold: true,
+  return withReadSnapshot(database, () => {
+    const stream = database.prepare(`
+      SELECT * FROM authority_streams WHERE stream_id = ?
+    `).get(streamId);
+    if (!stream) return null;
+    // Inspectors may open a store before a mutable owner has had a chance to
+    // run the narrow review-fold migration. The compatibility path below is
+    // still an exact replay/fold comparison and never writes to the database.
+    return replayAuthorityStream(database, streamId, {
+      allowLegacyReviewFold: true,
+    });
   });
 }
 
@@ -31,6 +33,29 @@ export function replayAuthorityStream(
   database,
   streamId,
   { verifyFold = true, allowLegacyReviewFold = false } = {},
+) {
+  return withReadSnapshot(database, () => replayAuthoritySnapshot(
+    database, streamId, { verifyFold, allowLegacyReviewFold },
+  ));
+}
+
+function withReadSnapshot(database, read) {
+  if (database.isTransaction) return read();
+  // A committed writer may append between SELECTs. Pin one read snapshot so
+  // its stream head, events, and fold cannot appear spuriously inconsistent.
+  // Existing mutation transactions remain entirely owned by their callers.
+  database.exec("BEGIN");
+  try {
+    return read();
+  } finally {
+    database.exec("ROLLBACK");
+  }
+}
+
+function replayAuthoritySnapshot(
+  database,
+  streamId,
+  { verifyFold, allowLegacyReviewFold },
 ) {
   const metadata = database.prepare(`
     SELECT contract FROM authority_metadata WHERE singleton = 1

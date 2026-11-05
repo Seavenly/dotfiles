@@ -38,6 +38,8 @@ import {
   describeDelegatedAgent,
 } from "../../../tools/drovr/src/description.mjs";
 
+import { resolveQualificationConfigDirectory } from "./host-recovery-qualification.mjs";
+
 export const HOST_RECOVERY_PROVIDER_SCENARIO_SCHEMA =
   "flow.host-recovery-provider-scenario/v1";
 export const HOST_RECOVERY_PROVIDER_OBSERVATION_SCHEMA =
@@ -378,7 +380,8 @@ async function createPublicProviderOwner(options, scenario) {
     ...providerEnvironment({ ...options, worktreeRoot: root, homeDirectory: home }),
     HOME: home,
     XDG_STATE_HOME: stateHome,
-    FLOW_CONFIG_DIRECTORY: join(root, "config/flow"),
+    FLOW_CONFIG_DIRECTORY: options.configDirectory === undefined ? join(root, "config/flow")
+      : resolveQualificationConfigDirectory({ worktreeRoot: root, configDirectory: options.configDirectory }),
     FLOW_QUALIFICATION_REPOSITORY_ROOT: root,
     FLOW_AUTHORITY_DIRECTORY: authorityDirectory,
     FLOW_OWNER_ENDPOINT_PATH: endpointPath,
@@ -1657,7 +1660,8 @@ async function runPublicOwnerLifecycleProbe(options) {
     ...process.env,
     HOME: home,
     XDG_STATE_HOME: state,
-    FLOW_CONFIG_DIRECTORY: join(root, "config/flow"),
+    FLOW_CONFIG_DIRECTORY: options.configDirectory === undefined ? join(root, "config/flow")
+      : resolveQualificationConfigDirectory({ worktreeRoot: root, configDirectory: options.configDirectory }),
     FLOW_AUTHORITY_DIRECTORY: authorityDirectory,
     FLOW_OWNER_ENDPOINT_PATH: endpointPath,
     FLOW_SOCKET_PATH: socketPath,
@@ -2736,6 +2740,9 @@ async function caseAuthorityDirectory(label) {
 
 function validateOptions(options) {
   if (!isRecord(options)) throw new ProviderScenarioError("options_invalid", "provider scenario options must be an object");
+  if (options.configDirectory !== undefined) {
+    resolveQualificationConfigDirectory({ worktreeRoot: options.worktreeRoot ?? repositoryRoot(), configDirectory: options.configDirectory });
+  }
   if (options.authorityDirectory !== undefined &&
       (!isAbsolute(options.authorityDirectory) || options.authorityDirectory.includes(".."))) {
     throw new ProviderScenarioError("authority_directory_invalid", "provider authority directory must be an absolute bounded path");

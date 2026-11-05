@@ -75,6 +75,7 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
       HOME: scratch,
       XDG_STATE_HOME: join(scratch, "state"),
       DROVR_CONFIG_DIR: join(import.meta.dirname, "../../drovr"),
+      FLOW_EXECUTION_BACKEND: "drovr",
     },
     autonomous: false,
   });
@@ -118,7 +119,7 @@ test("flow CLI describes an exact Drovr launch through FlowRuntime query", async
   assert.deepEqual(projection.compatibility.findings, []);
 });
 
-test("flow CLI classifies an invalid launch selector without suggesting retry", async () => {
+test("flow CLI classifies an unsupported direct backend without suggesting retry", async () => {
   let stdout = "";
   let stderr = "";
 
@@ -144,7 +145,7 @@ test("flow CLI classifies an invalid launch selector without suggesting retry", 
   assert.equal(projection.status, "blocked");
   assert.equal(
     projection.compatibility.code,
-    "invalid_description_request",
+    "unsupported_execution_backend",
   );
   assert.deepEqual(projection.legal_next_actions, []);
 });

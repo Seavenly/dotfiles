@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { join } from "node:path";
 
@@ -7,6 +7,8 @@ import {
   closeFlowRuntime,
   createFlowRuntime,
 } from "../src/runtime.mjs";
+import { flowRuntimeAuthority } from "../src/production-runtime.mjs";
+import { getWorkspaceAuthority } from "../../../tools/flow/src/work-authority.mjs";
 import {
   completedTurnProjection,
 } from "../../../tools/flow/test-support/delegate-card.mjs";
@@ -14,7 +16,6 @@ import {
   repositoryDrovrDependencies,
   supportedDescription,
 } from "../../../tools/flow/test-support/delegated-agent-description.mjs";
-import { dynamicCheckpointProposal } from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
 import { digest, freezeCanonical } from "../../../tools/flow/src/canonical.mjs";
 import { deriveDelegatedAgentResourceKey } from
   "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
@@ -37,29 +38,37 @@ export async function seedPublicReview({
   env,
   repository,
 } = {}) {
+  const darkOptIn = env?.FLOW_CONFIG_DIRECTORY === undefined ? DARK_OPT_IN : {
+    ...DARK_OPT_IN,
+    release_id: JSON.parse(await readFile(join(env.FLOW_CONFIG_DIRECTORY, "release-manifest.v1.json"), "utf8")).release_id,
+  };
   const delegatedAgentPort = createPublicDelegatedAgentPort({ repository });
-  const runtime = createFlowRuntime({
+  const runtimeOptions = {
     env,
     authorityDirectory,
     delegatedAgentPort,
     delegatedAgentResourcePort: publicResourcePort(),
     autonomous: true,
-  });
+  };
+  const boundaryEvents = [];
+  let runtime = createFlowRuntime(runtimeOptions);
+  let featureCompleted;
+  let candidateProjection;
   try {
     const featurePrepared = await runtime.prepare(
-      featurePreparationRequest(repository),
+      featurePreparationRequest(repository, darkOptIn),
     );
     assertPrepared(featurePrepared, "feature");
     const featureLaunch = runtime.launch(
-      confirmedPredefinedLaunchRequest(featurePrepared),
+      confirmedPredefinedLaunchRequest(featurePrepared, darkOptIn),
     );
     assertAcceptedLaunch(featureLaunch, "feature");
-    const featureCompleted = await waitForTerminal(runtime, featureLaunch.run_id);
+    featureCompleted = await waitForTerminal(runtime, featureLaunch.run_id);
     if (featureCompleted.phase !== "succeeded") {
       throw new Error(`public feature seed failed: ${JSON.stringify(featureCompleted)}`);
     }
     const candidateId = featureCompleted.review_candidate_reference?.candidate_id;
-    const candidateProjection = runtime.query({
+    candidateProjection = runtime.query({
       contract: "work.review/v1",
       subject_id: candidateId,
     });
@@ -67,19 +76,75 @@ export async function seedPublicReview({
         candidateProjection.status !== "sealed") {
       throw new Error(`public feature seed produced no sealed candidate: ${JSON.stringify(candidateProjection)}`);
     }
+    boundaryEvents.push("feature_candidate_sealed");
+  } finally {
+    closeFlowRuntime(runtime);
+    runtime = null;
+    boundaryEvents.push("feature_runtime_closed");
+  }
 
+  const producerRuntimeClosedBeforeReview = runtime === null &&
+    boundaryEvents.at(-1) === "feature_runtime_closed";
+  if (!producerRuntimeClosedBeforeReview) {
+    throw new Error("public review seed did not close its producer runtime before review");
+  }
+
+  runtime = createFlowRuntime(runtimeOptions);
+  boundaryEvents.push("review_runtime_opened");
+  try {
+    const reviewSelection = reviewPreparationSelection();
+    const preparationFacts = await runtime.query({
+      schema: "flow.query/v1",
+      query: "review_preparation_facts",
+      candidate_id: candidateProjection.subject_id,
+      candidate_fingerprint: candidateProjection.candidate_fingerprint,
+      selection: reviewSelection,
+    });
+    if (preparationFacts?.schema !== "flow.review-preparation-facts/v1") {
+      throw new Error(`public review seed preparation facts rejected: ${JSON.stringify(preparationFacts)}`);
+    }
+    boundaryEvents.push("review_facts_derived");
+    const invalidPreparationQuery = await runtime.query({
+      schema: "flow.query/v1",
+      query: "review_preparation_facts",
+      candidate_id: candidateProjection.subject_id,
+      candidate_fingerprint: candidateProjection.candidate_fingerprint,
+      selection: reviewSelection,
+      review_id: "review:forbidden-alias",
+    });
+    const invalidPreparationFingerprint = await runtime.query({
+      schema: "flow.query/v1",
+      query: "review_preparation_facts",
+      candidate_id: candidateProjection.subject_id,
+      candidate_fingerprint: digest({
+        candidate_id: candidateProjection.subject_id,
+        wrong_fingerprint: candidateProjection.candidate_fingerprint,
+      }),
+      selection: reviewSelection,
+    });
+    const actualCandidateProjection = runtime.query({
+      contract: "work.review/v1",
+      subject_id: candidateProjection.subject_id,
+    });
+    const sourceRunProjection = runtime.query({ run_id: featureCompleted.run_id });
+    const workspaceProjection = getWorkspaceAuthority({
+      runAuthority: flowRuntimeAuthority(runtime),
+    }).query({
+      contract: "work.workspace/v1",
+      subject_id: candidateProjection.candidate.workspace.subject_id,
+    });
     const reviewPrepared = await runtime.prepare({
       schema: "flow.predefined-flow-selection/v1",
       definition: "review/v1",
-      inputs: await reviewInputs(candidateProjection),
-      explicit_facts: reviewFacts(candidateProjection),
-      dark_opt_in: DARK_OPT_IN,
+      inputs: reviewInputs(candidateProjection, preparationFacts, reviewSelection),
+      dark_opt_in: darkOptIn,
     });
     assertPrepared(reviewPrepared, "review");
-    const reviewLaunch = runtime.launch(
-      confirmedPredefinedLaunchRequest(reviewPrepared),
+    const reviewLaunch = await runtime.launch(
+      confirmedPredefinedLaunchRequest(reviewPrepared, darkOptIn),
     );
     assertAcceptedLaunch(reviewLaunch, "review");
+    boundaryEvents.push("review_run_launched");
     const reviewCompleted = await waitForTerminal(runtime, reviewLaunch.run_id);
     if (reviewCompleted.phase !== "succeeded") {
       throw new Error(`public review seed failed: ${JSON.stringify(reviewCompleted)}`);
@@ -93,11 +158,30 @@ export async function seedPublicReview({
         reviewProjection.current !== true) {
       throw new Error(`public review seed produced no current review: ${JSON.stringify(reviewProjection)}`);
     }
+    const reviewInbox = runtime.query({
+      schema: "flow.query/v1",
+      query: "review_inbox",
+    });
+    if (reviewInbox?.schema !== "flow.review-inbox-projection/v1" ||
+        !reviewInbox.items.some(({ review_id }) => review_id === reviewId)) {
+      throw new Error(`public review seed produced no inbox item: ${JSON.stringify(reviewInbox)}`);
+    }
+    boundaryEvents.push("review_inbox_queried");
     return {
       candidate: candidateProjection,
+      preparationFacts,
+      invalidPreparationQuery,
+      invalidPreparationFingerprint,
+      actualCandidateProjection,
+      sourceRunProjection,
+      workspaceProjection,
       feature: featureCompleted,
       review: reviewProjection,
       reviewRun: reviewCompleted,
+      boundary: {
+        events: boundaryEvents,
+        producer_runtime_closed_before_review: producerRuntimeClosedBeforeReview,
+      },
     };
   } finally {
     closeFlowRuntime(runtime);
@@ -199,7 +283,7 @@ export async function initializePublicReviewRepository(repository) {
   await execFile("git", ["-C", repository, "commit", "--quiet", "--allow-empty", "-m", "initial"]);
 }
 
-function featurePreparationRequest(repository) {
+function featurePreparationRequest(repository, darkOptIn = DARK_OPT_IN) {
   return {
     schema: "flow.feature-preparation-request/v1",
     brief: {
@@ -210,7 +294,7 @@ function featurePreparationRequest(repository) {
     },
     repository: { path: repository },
     mode: "verify",
-    dark_opt_in: DARK_OPT_IN,
+    dark_opt_in: darkOptIn,
     routes: {
       apply: {
         launch: {
@@ -235,7 +319,7 @@ function featurePreparationRequest(repository) {
   };
 }
 
-async function reviewInputs(candidateProjection) {
+function reviewInputs(candidateProjection, preparationFacts, preparationSelection) {
   const target = {
     schema: "flow.review-local-candidate/v1",
     candidate: candidateProjection.candidate,
@@ -243,82 +327,65 @@ async function reviewInputs(candidateProjection) {
     candidate_authority_watermark: candidateProjection.watermark,
     lifecycle_generation: 1,
   };
-  const [security, critic] = await Promise.all([
-    reviewDescription("codex", "gpt-5.6-sol", "security"),
-    reviewDescription("claude", "haiku", "critic"),
-  ]);
+  const routes = preparationFacts.route.bindings;
+  const security = routes.find(({ card_id }) => card_id === "review-lens-security");
+  const critic = routes.find(({ card_id }) => card_id === "review-critic");
+  if (!security || !critic) throw new Error("review preparation facts omitted selected review routes");
   return {
     schema: "flow.review-request/v1",
     target,
     lenses: ["security"],
+    preparation_selection: preparationSelection,
+    preparation_facts: preparationFacts,
     delegation: {
       schema: "flow.review-delegation-bindings/v1",
       lenses: {
         security: {
-          description: security,
-          route: reviewRoute("agent:public-review-security", security),
+          description: security.description,
+          route: security.route,
         },
       },
       critic: {
-        description: critic,
-        route: reviewRoute("agent:public-review-critic", critic),
+        description: critic.description,
+        route: critic.route,
       },
     },
   };
 }
 
-function reviewFacts(candidateProjection) {
-  const proposal = dynamicCheckpointProposal();
-  const facts = proposal.explicit_facts;
-  facts.operation_contracts.push("flow.operation/review-record/v1");
-  facts.validator_contracts.push(
-    "flow.validator/review-result/v1",
-    "flow.validator/operation-receipt/v1",
-  );
-  facts.resource_claims.push({
-    kind: "workspace",
-    id: candidateProjection.workspace.subject_id,
-    generation: candidateProjection.workspace.generation,
-    mutation_epoch: candidateProjection.workspace.mutation_epoch,
-    fingerprint: candidateProjection.workspace.fingerprint,
-  });
-  facts.limits = {
-    ...facts.limits,
-    max_cards: 4,
-    max_resources: 1,
-    max_elapsed_seconds: 600,
-  };
-  return facts;
-}
-
-function reviewDescription(harness, model, owner) {
-  const launch = {
-    harness,
-    role: "reviewer",
-    model,
-    effort: "high",
-    capability: "read-only",
-  };
-  return supportedDescription({
-    schema: "drovr.delegated-agent-description-request/v1",
-    launch,
-    caller_metadata: { flow: "review/v1", owner },
-  }, repositoryDrovrDependencies());
-}
-
-function reviewRoute(agentId, description) {
+function reviewPreparationSelection() {
   return {
-    agent_id: agentId,
-    configuration_watermark: description.watermark.content_sha256,
-    description_digest: description.description_digest,
-    launch_comparison_key: description.comparison_keys.launch,
+    schema: "flow.review-preparation-selection/v1",
+    lenses: ["security"],
+    routes: {
+      lenses: {
+        security: {
+          launch: {
+            harness: "codex",
+            role: "reviewer",
+            model: "gpt-5.6-sol",
+            effort: "high",
+            capability: "read-only",
+          },
+        },
+      },
+      critic: {
+        launch: {
+          harness: "claude",
+          role: "reviewer",
+          model: "haiku",
+          effort: "high",
+          capability: "read-only",
+        },
+      },
+    },
   };
 }
 
-function confirmedPredefinedLaunchRequest(prepared) {
+function confirmedPredefinedLaunchRequest(prepared, darkOptIn = DARK_OPT_IN) {
   return {
     prepared,
-    dark_opt_in: DARK_OPT_IN,
+    dark_opt_in: darkOptIn,
     confirmation: {
       schema: "flow.predefined-flow-confirmation-decision/v1",
       decision: "accept",

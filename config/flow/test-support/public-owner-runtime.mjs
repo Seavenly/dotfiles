@@ -39,11 +39,11 @@ export async function createFlowRuntime({
       `owner-process:${process.pid}`,
     ),
     timeObservationAdapter: fixedExecutionTimeAdapter({ bootId: BOOT_ID }),
-    ...(typeof env.FLOW_PUBLIC_REPOSITORY === "string" ? {
+    ...(typeof env.FLOW_REPOSITORY_ROOT === "string" ? {
       gitWorkspaceObservationAdapter: createGitWorkspaceObservationAdapter(),
       gitRetentionAdapter: createGitRetentionAdapter({
         resolveRepository() {
-          return env.FLOW_PUBLIC_REPOSITORY;
+          return env.FLOW_REPOSITORY_ROOT;
         },
       }),
     } : {}),

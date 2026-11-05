@@ -11,6 +11,9 @@ const scenario = required(options, "scenario");
 const runId = required(options, "run-id");
 const result = await runHostRecoveryProviderScenario(scenario, {
   worktreeRoot: requiredAbsolute(options, "worktree"),
+  ...(options["config-directory"] === undefined ? {} : {
+    configDirectory: requiredAbsolute(options, "config-directory"),
+  }),
   ...(options["authority-directory"] === undefined ? {} : {
     authorityDirectory: requiredAbsolute(options, "authority-directory"),
   }),
@@ -49,6 +52,7 @@ function parseArgs(args) {
   const flags = new Map([
     ["--scenario", "scenario"],
     ["--worktree", "worktree"],
+    ["--config-directory", "config-directory"],
     ["--authority-directory", "authority-directory"],
     ["--home-directory", "home-directory"],
     ["--xdg-state-home", "xdg-state-home"],

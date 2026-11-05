@@ -21,6 +21,11 @@ import {
   readGovernedReleaseFile,
 } from "../src/transition-projection.mjs";
 import { digest as canonicalDigest } from "../src/canonical.mjs";
+import { DETERMINISTIC_QUALIFICATION_ASSERTIONS } from "../src/qualification-recipe.mjs";
+import {
+  bindQualifiedReleaseFixture,
+  rebindReleaseContentFixture,
+} from "../../../config/flow/test-support/qualified-release-fixture.mjs";
 import {
   deriveGitTreeSha,
   isGovernedReleasePath,
@@ -47,12 +52,15 @@ test("release content binds the governed candidate tree and declared base", asyn
   }, {
     qualification_base_commit: "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
     included_paths: [
-      "CONTEXT.md",
+      "GLOSSARY.md",
       "README.md",
       "bin/flow",
       "config/flow/",
       "docs/adr/0007-use-drovr-as-the-delegated-agent-runtime.md",
       "docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md",
+      "docs/adr/0009-separate-delegated-resource-and-turn-lifecycles.md",
+      "docs/adr/0010-retire-hermes-host-integration.md",
+      "docs/adr/0011-use-direct-cli-tasks-as-primary-flow-execution.md",
       "tests/flow_cli_test.sh",
       "tests/flow_transition_test.sh",
       "tools/drovr/HARNESS-INTERFACE.md",
@@ -66,6 +74,8 @@ test("release content binds the governed candidate tree and declared base", asyn
     excluded_paths: [
       "config/flow/evidence/",
       "config/flow/node_modules/",
+      "config/flow/releases/1.1-dark-test/evidence/",
+      "config/flow/releases/1.1-dark-test/transition-ledger.v1.json",
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/",
     ],
@@ -93,7 +103,9 @@ test("release content binds the governed candidate tree and declared base", asyn
 
 test("release content validates from a fresh clone without synthesized Git objects", async (t) => {
   const { content, clonedConfig, clonedRepository } =
-    await copyReleaseCandidateToFreshClone(t, "portable-release-content");
+    await copyReleaseCandidateToFreshClone(t, "portable-release-content", {
+      baseOnly: true,
+    });
   assert.equal(
     deriveGitTreeSha(content.files),
     content.git_binding.candidate_tree_sha,
@@ -274,9 +286,36 @@ test("transition query rejects a wrong or unavailable candidate tree binding", a
   );
 });
 
-test("transition query derives its watermark and legal actions from authority", async () => {
+test("release fixture rebinding preserves unqualified evidence with a null production path", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "unqualified-rebind");
+  const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const phase2 = ledger.evidence.find(({ id }) =>
+    id === "production_route_conformance");
+  phase2.path = null;
+  phase2.sha256 = null;
+  phase2.status = "not_run";
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  const qualificationPath = join(copiedConfig, "evidence/release-qualification.v1.json");
+  const qualificationBytes = await readFile(qualificationPath);
+
+  await rebindReleaseContentFixture({ configDirectory: copiedConfig, repositoryRoot });
+
+  const rebound = JSON.parse(await readFile(ledgerPath, "utf8"));
+  assert.deepEqual(rebound.evidence.find(({ id }) =>
+    id === "production_route_conformance"), phase2);
+  assert.deepEqual(rebound.evidence.find(({ id }) =>
+    id === "deterministic_qualification"), ledger.evidence.find(({ id }) =>
+    id === "deterministic_qualification"));
+  assert.deepEqual(await readFile(qualificationPath), qualificationBytes);
+  const projection = await queryTransition({ configDirectory: copiedConfig, repositoryRoot });
+  assert.equal(projection.dark_opt_in.available, false);
+});
+
+test("transition query derives its watermark and legal actions from authority", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "current-projection");
   const projection = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/home",
     stateDirectory: "/test/state",
@@ -298,12 +337,12 @@ test("transition query derives its watermark and legal actions from authority", 
   assert.equal(projection.selected_implementation, "legacy-claude/v1");
   assert.equal(projection.selected_authority_root, "/test/home/.agent-teams");
   assert.deepEqual(projection.evidence_statuses, {
-    passed: 6,
+    passed: 5,
     failed: 0,
     blocked: 0,
-    not_run: 1,
+    not_run: 3,
   });
-  assert.equal(projection.dark_opt_in.available, true);
+  assert.equal(projection.dark_opt_in.available, false);
   assert.equal(projection.legacy_baseline_audit.status, "passed");
   assert.equal(projection.capability_manifest.release_id, "flow-release-1.0-dark/v1");
   assert.deepEqual(projection.capability_manifest.supported_routes, [
@@ -360,15 +399,16 @@ test("transition status withholds dark opt-in when production-route conformance 
     `sha256:${phase2.sha256}`);
 });
 
-test("transition watermark binds the resolved authority root", async () => {
+test("transition watermark binds the resolved authority root", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "authority-root-watermark");
   const first = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/first-home",
     stateDirectory: "/test/first-state",
   });
   const second = await queryTransition({
-    configDirectory,
+    configDirectory: copiedConfig,
     repositoryRoot,
     homeDirectory: "/test/second-home",
     stateDirectory: "/test/second-state",
@@ -380,7 +420,11 @@ test("transition watermark binds the resolved authority root", async () => {
 
 for (const status of ["failed", "blocked", "not_run"]) {
   test(`dark opt-in availability fails closed when qualification evidence is ${status}`, async (t) => {
-    const { copiedConfig } = await copyTransitionConfig(t, `qualification-${status}`);
+    const { copiedConfig } = await copyTransitionConfig(
+      t,
+      `qualification-${status}`,
+      { qualified: true },
+    );
     const ledgerPath = join(copiedConfig, "transition-ledger.v1.json");
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     const evidence = ledger.evidence.find(({ id }) =>
@@ -512,7 +556,11 @@ for (const [label, mutate] of [
   }],
 ]) {
   test(`transition query rejects tampered qualification receipt with updated ledger digest: ${label}`, async (t) => {
-    const { scratch, copiedConfig } = await copyTransitionConfig(t, `tampered-${label}`);
+    const { scratch, copiedConfig } = await copyTransitionConfig(
+      t,
+      `tampered-${label}`,
+      { qualified: true },
+    );
     const evidencePath = join(
       copiedConfig,
       "evidence/release-qualification.v1.json",
@@ -763,7 +811,7 @@ test("transition query derives the launch action from either legacy default", as
   ]);
 });
 
-async function copyTransitionConfig(t, label) {
+async function copyTransitionConfig(t, label, { qualified = false } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), `flow-transition-${label}-`));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const copiedConfig = join(scratch, "flow");
@@ -771,15 +819,24 @@ async function copyTransitionConfig(t, label) {
     recursive: true,
     filter: (source) => !source.split(sep).includes("node_modules"),
   });
+  const bind = qualified
+    ? bindQualifiedReleaseFixture
+    : rebindReleaseContentFixture;
+  await bind({ configDirectory: copiedConfig, repositoryRoot });
   return { scratch, copiedConfig };
 }
 
-async function copyReleaseCandidateToFreshClone(t, label) {
+async function copyReleaseCandidateToFreshClone(t, label, { baseOnly = false } = {}) {
   const content = JSON.parse(await readFile(
     join(configDirectory, "evidence/release-content.v1.json"),
     "utf8",
   ));
-  const clonedRepository = await cloneRepositoryAtHead(t, label, { noLocal: true });
+  // Only the portability scenario requires missing candidate objects. Other
+  // scenarios also need later selected-release qualification bases from HEAD.
+  const clonedRepository = await cloneRepositoryAtHead(t, label, {
+    noLocal: true,
+    revision: baseOnly ? content.git_binding.qualification_base_commit : undefined,
+  });
   const clonedConfig = join(clonedRepository, "config/flow");
   await rm(clonedConfig, { recursive: true, force: true });
   await cp(configDirectory, clonedConfig, {
@@ -803,25 +860,36 @@ async function copyReleaseCandidateToFreshClone(t, label) {
     await mkdir(dirname(target), { recursive: true });
     await cp(join(repositoryRoot, path), target);
   }
+  await rebindReleaseContentFixture({ configDirectory: clonedConfig, repositoryRoot });
   return { content, clonedConfig, clonedRepository };
 }
 
-async function cloneRepositoryAtHead(t, label, { noLocal = false } = {}) {
+async function cloneRepositoryAtHead(t, label, { noLocal = false, revision } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), `flow-repository-${label}-`));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const copiedRepository = join(scratch, "repository");
   const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
     cwd: repositoryRoot,
   });
-  await execFileAsync("git", [
-    "clone",
-    "-q",
-    ...(noLocal ? ["--no-local"] : []),
-    "--no-checkout",
-    repositoryRoot,
-    copiedRepository,
-  ]);
-  await execFileAsync("git", ["checkout", "-q", stdout.trim()], {
+  if (revision === undefined) {
+    await execFileAsync("git", [
+      "clone",
+      "-q",
+      ...(noLocal ? ["--no-local"] : []),
+      "--no-checkout",
+      repositoryRoot,
+      copiedRepository,
+    ]);
+  } else {
+    // Fetch only the declared base and its ancestors, without a local clone's
+    // object copying or a dependency on newer Git clone options.
+    await mkdir(copiedRepository);
+    await execFileAsync("git", ["init", "--quiet"], { cwd: copiedRepository });
+    await execFileAsync("git", [
+      "fetch", "--quiet", "--no-tags", repositoryRoot, revision,
+    ], { cwd: copiedRepository });
+  }
+  await execFileAsync("git", ["checkout", "-q", revision ?? stdout.trim()], {
     cwd: copiedRepository,
   });
   return copiedRepository;
@@ -863,3 +931,166 @@ async function persistQualificationEvidenceMutation(configDirectory, evidence) {
     createHash("sha256").update(evidenceBytes).digest("hex");
   await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
 }
+
+async function generateCopiedDarkTestRelease(t, label, { fresh = false } = {}) {
+  const copied = await copyReleaseCandidateToFreshClone(t, label);
+  const selectedConfig = join(copied.clonedConfig, "releases/1.1-dark-test");
+  if (fresh) {
+    const manifest = await readFile(join(selectedConfig, "release-manifest.v1.json"));
+    await rm(selectedConfig, { recursive: true, force: true });
+    await mkdir(selectedConfig, { recursive: true });
+    await writeFile(join(selectedConfig, "release-manifest.v1.json"), manifest);
+  }
+  const generate = () => execFileAsync(process.execPath, [
+    "config/flow/scripts/generate-release-content.mjs",
+    "--config-directory", selectedConfig,
+    "--repository-root", copied.clonedRepository,
+  ], { cwd: copied.clonedRepository });
+  await generate();
+  return { ...copied, selectedConfig, generate };
+}
+
+test("dark test generator preserves inventory origin in a real selected transition query", async (t) => {
+  const { selectedConfig, clonedRepository } = await generateCopiedDarkTestRelease(t, "test-release-transition", { fresh: true });
+  const projection = await queryTransition({ configDirectory: selectedConfig, repositoryRoot: clonedRepository });
+  assert.equal(projection.schema, "flow.transition-projection/v1");
+  const ledger = JSON.parse(await readFile(join(selectedConfig, "transition-ledger.v1.json"), "utf8"));
+  const inventory = JSON.parse(await readFile(join(selectedConfig, "legacy-baselines.v1.json"), "utf8"));
+  assert.equal(ledger.release.source_commit, inventory.source_commit);
+  assert.equal(ledger.release.qualification_base_commit, "c34c6e881ce375691d4f3e4ca626c1af9eef81cc");
+  assert.equal(ledger.sequence, 32);
+  assert.equal(projection.dark_opt_in.available, false);
+});
+
+test("existing dark test regeneration follows maintained inventory and retired host launch policy", async (t) => {
+  const { selectedConfig, clonedConfig, clonedRepository, generate } =
+    await generateCopiedDarkTestRelease(t, "test-release-maintained-host", { fresh: true });
+  const ledgerPath = join(selectedConfig, "transition-ledger.v1.json");
+  const policyPath = join(selectedConfig, "launch-policy.v1.json");
+  const rootInventory = JSON.parse(await readFile(join(clonedConfig, "legacy-baselines.v1.json"), "utf8"));
+  const rootPolicyBytes = await readFile(join(clonedConfig, "launch-policy.v1.json"));
+  const rootPolicy = JSON.parse(rootPolicyBytes);
+  const hostEvidence = await readFile(join(selectedConfig, "evidence/host-recovery-qualification.v1.json"));
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const policy = JSON.parse(await readFile(policyPath, "utf8"));
+  // Reproduce an existing selected release from before maintained Claude and
+  // host retirement, with a genuine selected-release decision date to retain.
+  ledger.release.source_commit = "1e3e4665d4241419ad573d208077a20d845289bc";
+  ledger.decision.decided_at = "2026-10-02T00:00:00Z";
+  policy.generation = 1;
+  policy.implementations["legacy-agent-flow/v1"].launch_enabled = true;
+  await writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  await writeFile(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
+
+  await generate();
+
+  const refreshedLedger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  const refreshedPolicy = JSON.parse(await readFile(policyPath, "utf8"));
+  assert.equal(refreshedLedger.release.source_commit, rootInventory.source_commit);
+  assert.equal(refreshedLedger.release.qualification_base_commit, "c34c6e881ce375691d4f3e4ca626c1af9eef81cc");
+  assert.equal(refreshedLedger.decision.decided_at, ledger.decision.decided_at);
+  assert.equal(refreshedPolicy.generation, rootPolicy.generation);
+  assert.equal(refreshedPolicy.default_implementation, "legacy-claude/v1");
+  assert.equal(refreshedPolicy.implementations["legacy-agent-flow/v1"].launch_enabled, false);
+  assert.equal(refreshedPolicy.implementations["flow-runtime/v1"].launch_enabled, false);
+  assert.equal(refreshedPolicy.implementations["flow-runtime/v1"].dark_opt_in.manifest_sha256,
+    createHash("sha256").update(await readFile(join(selectedConfig, "release-manifest.v1.json"))).digest("hex"));
+  assert.deepEqual(await readFile(join(clonedConfig, "launch-policy.v1.json")), rootPolicyBytes);
+  assert.deepEqual(await readFile(join(selectedConfig, "evidence/host-recovery-qualification.v1.json")), hostEvidence);
+  const projection = await queryTransition({ configDirectory: selectedConfig, repositoryRoot: clonedRepository });
+  assert.equal(projection.dark_opt_in.available, false);
+  assert.ok(!projection.legal_actions.includes("launch_explicit_legacy_agent_flow"));
+});
+
+test("dark test generator repairs only copied provenance and preserves real initialized decision history", async (t) => {
+  const started = new Date().toISOString().replace(/\.\d{3}Z$/u, "Z");
+  const { selectedConfig, clonedConfig, clonedRepository, generate } = await generateCopiedDarkTestRelease(t, "test-release-provenance", { fresh: true });
+  const ledgerPath = join(selectedConfig, "transition-ledger.v1.json");
+  const templatePath = join(selectedConfig, "evidence/release-qualification.v1.json");
+  const rootLedgerBytes = await readFile(join(clonedConfig, "transition-ledger.v1.json"));
+  const rootLedger = JSON.parse(rootLedgerBytes);
+  const rootQualificationBytes = await readFile(join(clonedConfig, "evidence/release-qualification.v1.json"));
+  const sourceHostBytes = await readFile(join(clonedConfig, "evidence/host-recovery-qualification.v1.json"));
+  let ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  let template = JSON.parse(await readFile(templatePath, "utf8"));
+  assert.ok(template.captured_at >= started);
+  assert.ok(ledger.decision.decided_at >= started);
+  assert.equal(template.status, "not_run");
+  assert.equal(template.recipe, null);
+  assert.equal(template.environment.node, process.version);
+  assert.equal(template.assertions[1], "dark opt-in resolves only exact feature verify, feature test, and local review routes");
+  assert.ok(ledger.evidence.find(({ id }) => id === "issue_46_host_recovery").recorded_at >= started);
+  assert.deepEqual(await readFile(join(selectedConfig, "evidence/host-recovery-qualification.v1.json")), sourceHostBytes);
+
+  // Reproduce the already-initialized copy produced by the old initializer.
+  ledger.release.source_commit = ledger.release.qualification_base_commit;
+  ledger.decision.decided_at = rootLedger.decision.decided_at;
+  const recovery = ledger.evidence.find(({ id }) => id === "issue_46_host_recovery");
+  recovery.recorded_at = rootLedger.evidence.find(({ id }) => id === recovery.id).recorded_at;
+  await writeFile(ledgerPath, JSON.stringify(ledger));
+  await generate();
+  ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  assert.equal(ledger.release.source_commit, JSON.parse(await readFile(join(selectedConfig, "legacy-baselines.v1.json"), "utf8")).source_commit);
+  assert.notEqual(ledger.decision.decided_at, rootLedger.decision.decided_at);
+  assert.ok(ledger.evidence.find(({ id }) => id === recovery.id).recorded_at >= started);
+  await queryTransition({ configDirectory: selectedConfig, repositoryRoot: clonedRepository });
+
+  // A genuine independently recorded decision is history, not stale copy data.
+  const decisionDate = "2026-10-02T00:00:00Z";
+  ledger.decision.decided_at = decisionDate;
+  await writeFile(ledgerPath, JSON.stringify(ledger));
+  await generate();
+  ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  assert.equal(ledger.decision.decided_at, decisionDate);
+  assert.equal(ledger.sequence, 32);
+  assert.deepEqual(await readFile(join(clonedConfig, "transition-ledger.v1.json")), rootLedgerBytes);
+  assert.deepEqual(await readFile(join(clonedConfig, "evidence/release-qualification.v1.json")), rootQualificationBytes);
+  for (const path of ["legacy-baselines.v1.json", "contracts/catalog.v1.json", "contracts/drovr-required-features.v1.json", "evidence/host-recovery-qualification.v1.json"]) {
+    assert.deepEqual(await readFile(join(selectedConfig, path)), await readFile(join(clonedConfig, path)));
+  }
+});
+
+test("dark test fixture receipt flag rejects root generation before any outputs change", async (t) => {
+  const { clonedConfig, clonedRepository } = await copyReleaseCandidateToFreshClone(t, "root-fixture-flag");
+  const paths = ["launch-policy.v1.json", "transition-ledger.v1.json", "evidence/release-content.v1.json", "evidence/release-qualification.v1.json", "evidence/production-route-conformance.v1.json"];
+  const before = await Promise.all(paths.map(path => readFile(join(clonedConfig, path))));
+  await assert.rejects(execFileAsync(process.execPath, [
+    "config/flow/scripts/generate-release-content.mjs",
+    "--feature-test-fixture-receipt", join(clonedConfig, "releases/1.1-dark-test/evidence/receipts/public-production-feature-test.tap"),
+  ], { cwd: clonedRepository }), /fixture receipt requires the curated dark test release/u);
+  for (const [index, path] of paths.entries()) assert.deepEqual(await readFile(join(clonedConfig, path)), before[index], path);
+});
+
+test("dark test qualification rejects old-only route assertions despite correctly bound fixture receipts", async (t) => {
+  const { selectedConfig: generatedConfig, clonedRepository } = await generateCopiedDarkTestRelease(t, "test-release-assertions");
+  const selectedConfig = join(dirname(clonedRepository), "qualified-dark-test");
+  await cp(generatedConfig, selectedConfig, { recursive: true });
+  await bindQualifiedReleaseFixture({ configDirectory: selectedConfig, repositoryRoot: clonedRepository });
+  const qualificationPath = join(selectedConfig, "evidence/release-qualification.v1.json");
+  const qualification = JSON.parse(await readFile(qualificationPath, "utf8"));
+  assert.equal(qualification.assertions[1], "dark opt-in resolves only exact feature verify, feature test, and local review routes");
+  qualification.assertions = [...DETERMINISTIC_QUALIFICATION_ASSERTIONS];
+  const bytes = Buffer.from(JSON.stringify(qualification));
+  await writeFile(qualificationPath, bytes);
+  const ledgerPath = join(selectedConfig, "transition-ledger.v1.json");
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+  ledger.evidence.find(({ id }) => id === "deterministic_qualification").sha256 = createHash("sha256").update(bytes).digest("hex");
+  await writeFile(ledgerPath, JSON.stringify(ledger));
+  await assert.rejects(queryTransition({ configDirectory: selectedConfig, repositoryRoot: clonedRepository }), /deterministic qualification evidence is not bound to the release/u);
+});
+
+
+test("source-qualified transition distinguishes direct native refusal from optional Drovr availability", async (t) => {
+  const { copiedConfig } = await copyTransitionConfig(t, "native-backend-admission", { qualified: true });
+  const options = { configDirectory: copiedConfig, repositoryRoot };
+  const direct = await queryTransition({ ...options, executionBackend: "direct" });
+  const drovr = await queryTransition({ ...options, executionBackend: "drovr" });
+  const unknown = await queryTransition({ ...options, executionBackend: "unknown" });
+  assert.equal(direct.dark_opt_in.available, false);
+  assert.equal(drovr.dark_opt_in.available, true);
+  assert.equal(unknown.dark_opt_in.available, false);
+  assert.deepEqual(direct.evidence_statuses, drovr.evidence_statuses);
+  assert.equal(direct.not_run.find(({ id }) => id === "issue-84").status, "not_run");
+  assert.equal(drovr.dark_opt_in.normal_use_authorized, false);
+  assert.equal(drovr.dark_opt_in.remote_mutations_authorized, false);
+});

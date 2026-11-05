@@ -309,6 +309,7 @@ export function createQualificationIsolation(options = {}) {
     runId,
     runtimeDirectory = undefined,
     qualificationWorkspace = undefined,
+    configDirectory = undefined,
   } = options;
   const pinnedWorktree = absoluteInput(worktreeRoot, "worktreeRoot");
   const paths = Object.fromEntries(PATH_FIELDS.map((field) => [
@@ -391,6 +392,9 @@ export function createQualificationIsolation(options = {}) {
   }
   return Object.freeze({
     worktree_root: pinnedWorktree,
+    ...(configDirectory === undefined ? {} : {
+      config_directory: resolveQualificationConfigDirectory({ worktreeRoot: pinnedWorktree, configDirectory }),
+    }),
     xdg_state_home: paths.xdgStateHome,
     authority_directory: paths.authorityDirectory,
     socket_path: paths.socketPath,
@@ -408,7 +412,9 @@ export function createQualificationIsolation(options = {}) {
 /** Return the exact environment overlay consumed by the public launcher. */
 export function isolatedQualificationEnvironment(isolation, baseEnvironment = {}) {
   assertIsolationShape(isolation);
-  const configDirectory = join(isolation.worktree_root, "config", "flow");
+  const configDirectory = isolation.config_directory === undefined
+    ? join(isolation.worktree_root, "config/flow")
+    : resolveQualificationConfigDirectory({ worktreeRoot: isolation.worktree_root, configDirectory: isolation.config_directory });
   const privateHome = isolation.qualification_workspace;
   const inherited = Object.fromEntries(
     Object.entries(baseEnvironment)
@@ -446,6 +452,7 @@ export function qualificationIsolationIdentity(isolation) {
   assertIsolationShape(isolation);
   return canonicalDigest({
     run_id: isolation.run_id,
+    ...(isolation.config_directory === undefined ? {} : { config_directory: isolation.config_directory }),
     xdg_state_home: isolation.xdg_state_home,
     authority_directory: isolation.authority_directory,
     socket_path: isolation.socket_path,
@@ -632,15 +639,36 @@ export function qualificationHostIdentity() {
   };
 }
 
+/** Select one real configuration below the pinned Flow configuration root. */
+export function resolveQualificationConfigDirectory({ worktreeRoot, configDirectory = undefined } = {}) {
+  const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
+  const configRoot = join(worktree, "config/flow");
+  const selected = configDirectory === undefined ? configRoot : absoluteInput(configDirectory, "configDirectory");
+  if (!isContained(configRoot, selected)) {
+    throw configurationError("selected_config_outside_worktree", "selected configuration must remain below the pinned config/flow directory");
+  }
+  try {
+    assertNoSymlinkAncestors(selected, "configDirectory");
+    if (!lstatSync(selected).isDirectory() || realpathSync(selected) !== selected) {
+      throw configurationError("selected_config_untrusted", "selected configuration must be a real non-symlink directory");
+    }
+  } catch (error) {
+    if (error instanceof QualificationConfigurationError) throw error;
+    throw configurationError("selected_config_untrusted", `selected configuration is unavailable: ${error.message}`);
+  }
+  return selected;
+}
+
 /**
  * Derive the exact release identity from the pinned worktree without trusting
  * a receipt-provided candidate or content digest.
  */
-export function derivePinnedReleaseIdentity({ worktreeRoot, gitCommand = "git" } = {}) {
+export function derivePinnedReleaseIdentity({ worktreeRoot, configDirectory = undefined, gitCommand = "git" } = {}) {
   const root = absoluteInput(worktreeRoot, "worktreeRoot");
   assertNoSymlinkAncestors(root, "worktreeRoot");
-  const manifestPath = securePinnedFile(root, join(root, "config/flow/release-manifest.v1.json"), "release manifest");
-  const contentPath = securePinnedFile(root, join(root, "config/flow/evidence/release-content.v1.json"), "release content");
+  const configRoot = resolveQualificationConfigDirectory({ worktreeRoot: root, configDirectory });
+  const manifestPath = securePinnedFile(root, join(configRoot, "release-manifest.v1.json"), "release manifest");
+  const contentPath = securePinnedFile(root, join(configRoot, "evidence/release-content.v1.json"), "release content");
   let manifest;
   let content;
   const contentBytes = readFileSync(contentPath);
@@ -1086,6 +1114,7 @@ function validateExternalEvidenceFiles(receipt, root) {
  */
 export function generateHostRecoveryEvidence({
   worktreeRoot,
+  configDirectory = undefined,
   rawRoot,
   receiptPaths,
   outputPath,
@@ -1097,7 +1126,9 @@ export function generateHostRecoveryEvidence({
   const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
   const root = assertExternalQualificationRoot(rawRoot, { worktreeRoot: worktree });
   const output = absoluteInput(outputPath, "outputPath");
+  const configRoot = resolveQualificationConfigDirectory({ worktreeRoot: worktree, configDirectory });
   assertEvidenceOutputPath(worktree, output, {
+    configDirectory: configRoot,
     allowExternal: allowExternalOutput,
     forbiddenRoots: [root],
   });
@@ -1145,7 +1176,9 @@ export function generateHostRecoveryEvidence({
       );
     }
   }
-  const release = expectedRelease ?? derivePinnedReleaseIdentity({ worktreeRoot: worktree });
+  const release = configDirectory === undefined && expectedRelease !== undefined
+    ? expectedRelease
+    : derivePinnedReleaseIdentity({ worktreeRoot: worktree, configDirectory });
   if (!sameRelease(first.release, release)) {
     throw new QualificationReceiptError(
       "release_identity_mismatch",
@@ -1382,18 +1415,19 @@ export function validateHostRecoveryEvidence(evidence, { catalog = HOST_RECOVERY
  */
 export function validateTrackedHostRecoveryEvidence({
   worktreeRoot,
+  configDirectory = undefined,
   evidencePath = undefined,
   ledgerPath = undefined,
 } = {}) {
   const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
-  const configRoot = resolve(worktree, "config/flow");
+  const configRoot = resolveQualificationConfigDirectory({ worktreeRoot: worktree, configDirectory });
   const aggregatePath = resolve(
     evidencePath ?? join(configRoot, "evidence/host-recovery-qualification.v1.json"),
   );
   const transitionLedgerPath = resolve(
     ledgerPath ?? join(configRoot, "transition-ledger.v1.json"),
   );
-  if (!isContained(worktree, aggregatePath) || !isContained(worktree, transitionLedgerPath)) {
+  if (!isContained(join(configRoot, "evidence"), aggregatePath) || !isContained(configRoot, transitionLedgerPath)) {
     throw new QualificationReceiptError(
       "tracked_aggregate_path_invalid",
       "tracked issue-46 evidence and transition ledger must remain inside the worktree",
@@ -1403,6 +1437,7 @@ export function validateTrackedHostRecoveryEvidence({
   let aggregateBytes;
   let evidence;
   try {
+    securePinnedFile(worktree, aggregatePath, "tracked aggregate");
     aggregateBytes = readFileSync(aggregatePath);
     evidence = JSON.parse(aggregateBytes.toString("utf8"));
   } catch (error) {
@@ -1413,7 +1448,7 @@ export function validateTrackedHostRecoveryEvidence({
   }
   validateHostRecoveryEvidence(evidence);
 
-  const release = derivePinnedReleaseIdentity({ worktreeRoot: worktree });
+  const release = derivePinnedReleaseIdentity({ worktreeRoot: worktree, configDirectory });
   // The aggregate is generated before the landing commit, so the Git tree
   // observed by the receipt cannot remain equal after that commit. Bind the
   // consumer to release fields stable across landing and retain the pinned
@@ -1429,15 +1464,19 @@ export function validateTrackedHostRecoveryEvidence({
   validateReceiptToolIdentity(evidence.tools, tools);
 
   let ledger;
+  let ledgerBytes;
   try {
-    ledger = JSON.parse(readFileSync(transitionLedgerPath, "utf8"));
+    securePinnedFile(worktree, transitionLedgerPath, "transition ledger");
+    ledgerBytes = readFileSync(transitionLedgerPath);
+    ledger = JSON.parse(ledgerBytes.toString("utf8"));
   } catch (error) {
     throw new QualificationReceiptError(
       "tracked_aggregate_ledger_unreadable",
       `transition ledger is unreadable: ${error.message}`,
     );
   }
-  if (ledger?.schema !== "flow.transition-ledger/v1" || !Array.isArray(ledger.evidence)) {
+  if (ledger?.schema !== "flow.transition-ledger/v1" || !Array.isArray(ledger.evidence) ||
+      ledger.release?.id !== release.release_id) {
     throw new QualificationReceiptError(
       "tracked_aggregate_ledger_invalid",
       "transition ledger does not expose its versioned evidence records",
@@ -1454,7 +1493,7 @@ export function validateTrackedHostRecoveryEvidence({
       evidence.status !== "passed" ||
       ledgerEvidence.status !== "passed") {
     throw new QualificationReceiptError(
-      evidence.status === "passed" && ledgerEvidence.status === "passed"
+      evidence.status === "passed" && ledgerEvidence?.status === "passed"
         ? "tracked_aggregate_ledger_binding_invalid"
         : "tracked_aggregate_unqualified",
       "transition ledger must bind a passed issue-46 aggregate with exact bytes, digest, and status",
@@ -1474,16 +1513,18 @@ export function validateTrackedHostRecoveryEvidence({
 /**
  * Validate the predecessor binding required before replacing tracked issue-46
  * evidence.  This deliberately does not require the predecessor release to
- * match the current worktree: successor generation exists for refreshing a
- * valid, ledger-bound artifact after the governed release changes.
+ * match the current worktree content: successor generation refreshes a valid,
+ * ledger-bound artifact after governed content changes. An explicitly selected
+ * configuration still requires a predecessor from its own release ID.
  */
 export function validateTrackedHostRecoverySuccessor({
   worktreeRoot,
+  configDirectory = undefined,
   evidencePath = undefined,
   ledgerPath = undefined,
 } = {}) {
   const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
-  const configRoot = resolve(worktree, "config/flow");
+  const configRoot = resolveQualificationConfigDirectory({ worktreeRoot: worktree, configDirectory });
   const aggregatePath = resolve(
     evidencePath ?? join(configRoot, "evidence/host-recovery-qualification.v1.json"),
   );
@@ -1492,7 +1533,7 @@ export function validateTrackedHostRecoverySuccessor({
   );
   const evidenceRoot = resolve(configRoot, "evidence");
   if (!isContained(evidenceRoot, aggregatePath) ||
-      !isContained(worktree, transitionLedgerPath)) {
+      !isContained(configRoot, transitionLedgerPath)) {
     throw new QualificationReceiptError(
       "tracked_successor_path_invalid",
       "tracked issue-46 successor paths must remain inside the pinned worktree",
@@ -1502,6 +1543,7 @@ export function validateTrackedHostRecoverySuccessor({
   let aggregateBytes;
   let evidence;
   try {
+    securePinnedFile(worktree, aggregatePath, "tracked aggregate");
     aggregateBytes = readFileSync(aggregatePath);
     evidence = JSON.parse(aggregateBytes.toString("utf8"));
   } catch (error) {
@@ -1513,10 +1555,20 @@ export function validateTrackedHostRecoverySuccessor({
   validateHostRecoveryEvidence(evidence, {
     catalog: predecessorCatalog(evidence),
   });
+  if (configRoot !== resolve(worktree, "config/flow")) {
+    const manifestPath = securePinnedFile(worktree, join(configRoot, "release-manifest.v1.json"), "selected release manifest");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (evidence.release.release_id !== manifest.release_id) {
+      throw new QualificationReceiptError("tracked_successor_release_mismatch", "historical copied evidence cannot be a selected-release predecessor");
+    }
+  }
 
   let ledger;
+  let ledgerBytes;
   try {
-    ledger = JSON.parse(readFileSync(transitionLedgerPath, "utf8"));
+    securePinnedFile(worktree, transitionLedgerPath, "transition ledger");
+    ledgerBytes = readFileSync(transitionLedgerPath);
+    ledger = JSON.parse(ledgerBytes.toString("utf8"));
   } catch (error) {
     throw new QualificationReceiptError(
       "tracked_successor_ledger_unreadable",
@@ -1546,10 +1598,40 @@ export function validateTrackedHostRecoverySuccessor({
     aggregatePath,
     transitionLedgerPath,
     aggregateBytes,
+    ledgerBytes,
     evidence: structuredClone(evidence),
     ledger: structuredClone(ledger),
     ledgerEvidence: structuredClone(ledgerEvidence),
   });
+}
+
+/** Validate only the explicit, unqualified first binding of the selected 1.1 release. */
+export function validateTrackedHostRecoveryInitialBinding({ worktreeRoot, configDirectory } = {}) {
+  const worktree = absoluteInput(worktreeRoot, "worktreeRoot");
+  const configRoot = resolveQualificationConfigDirectory({ worktreeRoot: worktree, configDirectory });
+  if (configDirectory === undefined || configRoot === join(worktree, "config/flow")) {
+    throw new QualificationReceiptError("tracked_initial_selection_required", "first binding requires an explicit selected 1.1 configuration");
+  }
+  const release = derivePinnedReleaseIdentity({ worktreeRoot: worktree, configDirectory: configRoot });
+  const aggregatePath = securePinnedFile(worktree, join(configRoot, "evidence/host-recovery-qualification.v1.json"), "historical aggregate");
+  const transitionLedgerPath = securePinnedFile(worktree, join(configRoot, "transition-ledger.v1.json"), "transition ledger");
+  const aggregateBytes = readFileSync(aggregatePath);
+  const ledgerBytes = readFileSync(transitionLedgerPath);
+  const evidence = JSON.parse(aggregateBytes.toString("utf8"));
+  const ledger = JSON.parse(ledgerBytes.toString("utf8"));
+  validateHostRecoveryEvidence(evidence, { catalog: predecessorCatalog(evidence) });
+  const records = Array.isArray(ledger?.evidence)
+    ? ledger.evidence.filter(({ id }) => id === "issue_46_host_recovery") : [];
+  const record = records?.[0];
+  if (release.release_id !== "flow-release-1.1-dark-test/v1" ||
+      ledger?.schema !== "flow.transition-ledger/v1" || ledger.release?.id !== release.release_id ||
+      records?.length !== 1 || record.status !== "not_run" ||
+      record.path !== null || record.sha256 !== null || record.evidence_digest !== null ||
+      evidence.status !== "passed" || evidence.release.release_id !== "flow-release-1.0-dark/v1") {
+    throw new QualificationReceiptError("tracked_initial_binding_invalid", "first binding requires the unqualified selected 1.1 ledger and its historical passed 1.0 copy");
+  }
+  return Object.freeze({ aggregatePath, transitionLedgerPath, aggregateBytes, ledgerBytes,
+    evidence: structuredClone(evidence), ledger: structuredClone(ledger), release });
 }
 
 function predecessorCatalog(evidence) {
@@ -2538,9 +2620,8 @@ function securePinnedFile(root, path, label) {
   }
 }
 
-function assertEvidenceOutputPath(worktree, output, { allowExternal, forbiddenRoots = [] }) {
+function assertEvidenceOutputPath(worktree, output, { allowExternal, configDirectory, forbiddenRoots = [] }) {
   const parent = dirname(output);
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
   try {
     if (forbiddenRoots.some((root) => {
       const forbidden = absoluteInput(root, "output forbidden root");
@@ -2551,11 +2632,15 @@ function assertEvidenceOutputPath(worktree, output, { allowExternal, forbiddenRo
         "output path must be disjoint from external raw roots",
       );
     }
+    if (!allowExternal && !isContained(join(configDirectory, "evidence"), output)) {
+      throw configurationError("tracked_output_outside_release", "tracked issue-46 evidence must be written below the selected configuration evidence directory");
+    }
     assertNoSymlinkAncestors(output, "outputPath");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
     if (existsSync(output)) assertRegularFile(output, "outputPath");
     const parentReal = realpathSync(parent);
     if (!allowExternal) {
-      const evidenceRoot = join(worktree, "config", "flow", "evidence");
+      const evidenceRoot = join(configDirectory, "evidence");
       assertNoSymlinkAncestors(evidenceRoot, "tracked evidence root");
       const evidenceReal = realpathSync(evidenceRoot);
       if (!isContained(evidenceReal, parentReal)) {

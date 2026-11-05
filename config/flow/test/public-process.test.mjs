@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
 
 import { runCli } from "../src/cli-command.mjs";
 import { createFlowClient } from "../src/client.mjs";
@@ -40,9 +41,15 @@ import {
 import { confirmedLaunchRequest } from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
 import { registeredOperationProposal } from "../../../tools/flow/test-support/registered-operation.mjs";
 import {
+  reviewOwnerProjectionDigest,
+  validateReviewPreparationFacts,
+} from "../../../tools/flow/src/review-preparation-facts.mjs";
+import {
   initializePublicReviewRepository,
   seedPublicReview,
 } from "../test-support/public-review-seed.mjs";
+import { bindQualifiedReleaseFixture } from "../test-support/qualified-release-fixture.mjs";
+import { digest } from "../../../tools/flow/src/canonical.mjs";
 
 const PUBLIC_OWNER_RUNTIME_MODULE = resolve(
   import.meta.dirname,
@@ -180,12 +187,98 @@ test("client process exit does not stop the detached owner or its autonomous run
 });
 
 test("public host rebuilds the review inbox after the producing client exits", async (t) => {
-  const fixture = await disposableOwnerFixture(t, { production: true });
+  const fixture = await disposableOwnerFixture(t, {
+    production: true,
+    qualifiedRelease: true,
+  });
   const seeded = await seedPublicReview({
     authorityDirectory: fixture.paths.authorityDirectory,
     env: fixture.env,
     repository: fixture.repository,
   });
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  for (const name of [
+    "flow.authority-fact.v1.schema.json",
+    "flow.time-fact.v1.schema.json",
+    "flow.review-preparation-facts.v1.schema.json",
+    "flow.rejection.v1.schema.json",
+  ]) {
+    ajv.addSchema(JSON.parse(await readFile(
+      resolve(import.meta.dirname, "../schemas", name),
+      "utf8",
+    )));
+  }
+  const validateFacts = ajv.getSchema(
+    "https://dotfiles.local/schemas/flow.review-preparation-facts.v1.schema.json",
+  );
+  const validateRejection = ajv.getSchema(
+    "https://dotfiles.local/schemas/flow.rejection.v1.schema.json",
+  );
+  assert.equal(validateFacts(seeded.preparationFacts), true,
+    ajv.errorsText(validateFacts.errors));
+  assert.equal(validateRejection(seeded.invalidPreparationQuery), true,
+    ajv.errorsText(validateRejection.errors));
+  assert.equal(validateRejection(seeded.invalidPreparationFingerprint), true,
+    ajv.errorsText(validateRejection.errors));
+  assert.equal(seeded.invalidPreparationQuery.code,
+    "invalid_review_preparation_query");
+  assert.equal(seeded.invalidPreparationFingerprint.code,
+    "candidate_fingerprint_mismatch");
+  assert.equal(seeded.invalidPreparationFingerprint.authority_watermark_domain,
+    "host");
+  assert.equal(seeded.invalidPreparationFingerprint.authority_fact.authority_id,
+    "ReviewAuthority");
+  assert.equal(seeded.invalidPreparationFingerprint.authority_fact.watermark_domain,
+    "review");
+  assert.equal(seeded.invalidPreparationFingerprint.authority_fact.provider_identity.id,
+    "flow.production.review-authority");
+  assert.equal(seeded.actualCandidateProjection.schema,
+    "work.review-candidate-projection/v1");
+  assert.equal(seeded.workspaceProjection.schema,
+    "work.workspace-projection/v1");
+  assert.equal(seeded.sourceRunProjection.schema, "flow.run-projection/v1");
+  assert.equal(seeded.preparationFacts.owner_authorities.review.facts.projection_digest,
+    digest(seeded.actualCandidateProjection));
+  assert.equal(seeded.preparationFacts.owner_authorities.workspace.facts.projection_digest,
+    digest(seeded.workspaceProjection));
+  assert.equal(seeded.preparationFacts.owner_authorities.run.facts.projection_digest,
+    reviewOwnerProjectionDigest("run", seeded.sourceRunProjection));
+  assert.equal(seeded.preparationFacts.owner_authorities.review.provider_identity.id,
+    "flow.production.review-authority");
+  assert.equal(seeded.preparationFacts.owner_authorities.workspace.provider_identity.id,
+    "flow.production.workspace-authority");
+  assert.equal(seeded.preparationFacts.owner_authorities.run.provider_identity.id,
+    "flow.production.run-authority");
+  for (const mutate of [
+    (facts) => { facts.candidate.candidate_id = ""; },
+    (facts) => { facts.source_run.run_id = ""; },
+    (facts) => { facts.workspace.subject_id = ""; },
+    (facts) => { facts.route.route_id = ""; },
+    (facts) => { facts.authority_facts[0].authority_id = ""; },
+    (facts) => { facts.authority_facts[0].watermark = "invalid"; },
+    (facts) => { facts.authority_facts[0].generation = -1; },
+    (facts) => { facts.owner_authorities.run.watermark_domain = "workspace"; },
+    (facts) => { facts.owner_authorities.workspace.untrusted = true; },
+    (facts) => { facts.time_facts = Array(4).fill(facts.time_facts[0]); },
+    (facts) => { facts.untrusted = true; },
+  ]) {
+    const invalidFacts = redigestPreparationFacts(seeded.preparationFacts, mutate);
+    assert.equal(validateFacts(invalidFacts), false,
+      "published schema must reject the mutated owner-derived envelope");
+    assert.equal(validateReviewPreparationFacts(invalidFacts).valid, false,
+      "runtime validator must reject the same owner-derived envelope");
+  }
+  assert.equal(JSON.stringify(seeded.preparationFacts).includes(fixture.repository), false,
+    "public facts must not expose canonical workspace paths");
+  assert.deepEqual(seeded.boundary.events, [
+    "feature_candidate_sealed",
+    "feature_runtime_closed",
+    "review_runtime_opened",
+    "review_facts_derived",
+    "review_run_launched",
+    "review_inbox_queried",
+  ]);
+  assert.equal(seeded.boundary.producer_runtime_closed_before_review, true);
   fixture.env.FLOW_OWNER_RUNTIME_MODULE = PUBLIC_OWNER_RUNTIME_MODULE;
   await startDetachedFixture(fixture);
 
@@ -399,7 +492,10 @@ test("public host rebuilds the review inbox after the producing client exits", a
 });
 
 test("public host supersedes a production review and rejects stale follow-up actions", async (t) => {
-  const fixture = await disposableOwnerFixture(t, { production: true });
+  const fixture = await disposableOwnerFixture(t, {
+    production: true,
+    qualifiedRelease: true,
+  });
   const seeded = await seedPublicReview({
     authorityDirectory: fixture.paths.authorityDirectory,
     env: fixture.env,
@@ -984,8 +1080,12 @@ test("fallback rejects a symlinked XDG runtime component before chmod", async (t
     ...paths,
     env,
   });
-  await assert.rejects(owner.start(), { code: "socket_runtime_directory_symlink" });
-  assert.equal((await stat(target)).mode & 0o777, 0o700);
+  try {
+    await assert.rejects(owner.start(), { code: "socket_runtime_directory_symlink" });
+    assert.equal((await stat(target)).mode & 0o777, 0o700);
+  } finally {
+    await owner.stop();
+  }
 });
 
 test("detached startup preserves the bounded fallback path across the child boundary", async (t) => {
@@ -1698,7 +1798,7 @@ test("watch carries watermarks and returns the server iterator on client disconn
 
 async function disposableOwnerFixture(
   t,
-  { cleanupOwner = true, production = false } = {},
+  { cleanupOwner = true, production = false, qualifiedRelease = false } = {},
 ) {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-process-"));
   const state = join(scratch, "state");
@@ -1716,12 +1816,27 @@ async function disposableOwnerFixture(
     FLOW_AUTHORITY_DIRECTORY: paths.authorityDirectory,
     FLOW_OWNER_ENDPOINT_PATH: paths.endpointPath,
     FLOW_OWNER_SOCKET_PATH: paths.socketPath,
-    ...(production ? { FLOW_PUBLIC_REPOSITORY: repository } : {}),
+    ...(production ? { FLOW_REPOSITORY_ROOT: repository } : {}),
   };
   if (production) {
     await mkdir(repository, { recursive: true, mode: 0o700 });
     await writeFile(join(repository, "feature.txt"), "before\n");
     await initializePublicReviewRepository(repository);
+  }
+  if (production && qualifiedRelease) {
+    const configDirectory = join(scratch, "qualified-flow");
+    await cp(process.env.FLOW_CONFIG_DIRECTORY ?? resolve(import.meta.dirname, ".."), configDirectory, {
+      recursive: true,
+      filter: (source) => !source.split("/").includes("node_modules"),
+    });
+    const qualificationRepositoryRoot = resolve(import.meta.dirname, "../../..");
+    await bindQualifiedReleaseFixture({
+      configDirectory,
+      repositoryRoot: qualificationRepositoryRoot,
+    });
+    env.FLOW_CONFIG_DIRECTORY = configDirectory;
+    env.FLOW_QUALIFICATION_REPOSITORY_ROOT = qualificationRepositoryRoot;
+    env.FLOW_EXECUTION_BACKEND = "drovr";
   }
   t.after(async () => {
     if (!cleanupOwner) {
@@ -1904,4 +2019,12 @@ function assertProtocolError(raw, code) {
     code,
   });
   assert.equal(Object.hasOwn(response, "result"), false);
+}
+
+function redigestPreparationFacts(source, mutate) {
+  const facts = structuredClone(source);
+  mutate(facts);
+  delete facts.facts_digest;
+  facts.facts_digest = digest(facts);
+  return facts;
 }

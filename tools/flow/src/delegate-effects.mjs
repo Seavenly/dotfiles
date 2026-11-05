@@ -1,3 +1,5 @@
+import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
+import { directOutputContract } from "./direct-output-contract.mjs";
 import {
   digest,
   freezeCanonical,
@@ -49,6 +51,7 @@ export function snapshotDelegatedAgentPort(port) {
   if (port === null) return null;
   return Object.freeze({
     contract: port?.contract,
+    backend: port?.backend,
     ...Object.fromEntries(REQUIRED_PORT_OPERATIONS.map((operation) => [
       operation,
       typeof port?.[operation] === "function"
@@ -109,7 +112,16 @@ export function delegateCompatibilityIssue(
         (operation) => typeof port?.[operation] === "function")) {
     return "delegated_agent_port_unavailable";
   }
-  if (requiredFeatureSnapshot?.issue) {
+  const descriptions = [
+    card.inputs.description,
+    ...(card.inputs.fallback ? [card.inputs.fallback.description] : []),
+  ];
+  if (descriptions.some((description) =>
+    delegateBackendIssue(description, port) !== null)) {
+    return "execution_backend_mismatch";
+  }
+  const direct = isDirectDescription(card.inputs.description);
+  if (!direct && requiredFeatureSnapshot?.issue) {
     return requiredFeatureSnapshot.issue;
   }
   if (resourcePort !== null &&
@@ -120,17 +132,12 @@ export function delegateCompatibilityIssue(
     return "delegated_agent_resource_port_unavailable";
   }
   const requiredFeatures = requiredFeatureSnapshot?.features;
-  if (!Array.isArray(requiredFeatures)) {
+  if (!direct && !Array.isArray(requiredFeatures)) {
     return "required_feature_contract_unavailable";
   }
-  const descriptions = [
-    card.inputs.description,
-    ...(card.inputs.fallback ? [card.inputs.fallback.description] : []),
-  ];
-  if (descriptions.some((description) => featureConformanceFindings(
-    description,
-    requiredFeatures,
-  ).length > 0)) {
+  if (descriptions.some((description) => isDirectDescription(description)
+    ? directDescriptionIssue(description) !== null
+    : featureConformanceFindings(description, requiredFeatures).length > 0)) {
     return "incompatible_feature_advertisement";
   }
   if (card.validators.some((contract) =>
@@ -142,6 +149,19 @@ export function delegateCompatibilityIssue(
     return "unregistered_delegate_evidence_safety";
   }
   return null;
+}
+
+function delegateBackendIssue(description, port) {
+  if (isDirectDescription(description)) {
+    return port?.backend === "direct" && description.backend?.id === "direct"
+      ? null : "execution_backend_mismatch";
+  }
+  // Older Drovr port implementations predate the explicit backend field.
+  // This compatibility applies only to their exact historical description;
+  // an unidentified port can never adopt a direct attempt.
+  return description?.schema === "drovr.delegated-agent-description/v1" &&
+      (port?.backend === "drovr" || port?.backend === undefined)
+    ? null : "execution_backend_mismatch";
 }
 
 export function dispatchDelegateEffect(
@@ -157,6 +177,15 @@ export function dispatchDelegateEffect(
   void runAuthority.invokeEffect(intent, {
     settleCancelled,
     async invoke(effectiveIntent) {
+      const input = effectiveIntent.delegate_input;
+      if (delegateBackendIssue(input?.description, port) !== null ||
+          input?.fallback &&
+            delegateBackendIssue(input.fallback.description, port) !== null) {
+        throw delegatedRuntimeError({ reason: { code: "execution_backend_mismatch" } });
+      }
+      if (isDirectDescription(effectiveIntent.delegate_input?.description)) {
+        return executeDirectDelegate(effectiveIntent, port, validators, { settleCancelled });
+      }
       if (effectiveIntent.effect_kind === "delegate_cancellation") {
         return executeDelegateCancellation(
           effectiveIntent,
@@ -251,12 +280,14 @@ function delegateFailureObservation(error, intent, execution = null) {
     }),
     ...(preDispatch ? { absence_proven: true } : {}),
     request_envelope: requestEnvelopeObservation(intent),
-    drovr: {
+    ...(isDirectDescription(intent?.delegate_input?.description) ? { direct: {
+      schema: "flow.execution-failure-classification/v1", outcome, classification: "unproven",
+    } } : { drovr: {
       schema: "drovr.failure-classification/v1",
       outcome,
       classification: preDispatch ? "pre_dispatch_validation" : "unproven",
       ...(dispatchProof === null ? {} : { dispatch_proof: dispatchProof }),
-    },
+    } }),
   };
 }
 
@@ -868,7 +899,7 @@ async function validateSettledDelegate({
     sequence: input.sequence,
     caller_key: input.input_key,
     payload_sha256: input.payload_sha256,
-    delivery_proof: "exact_transcript_correlation",
+    delivery_proof: isDirectDescription(description) ? "exact_task_input_binding" : "exact_transcript_correlation",
   }));
   const expectedDeliveredInputs = expectedInputs.map((input) => ({
     sequence: input.sequence,
@@ -906,8 +937,8 @@ async function validateSettledDelegate({
     reason = "late_output";
   } else if (current?.status !== "completed" || turn?.status !== "completed") {
     reason = "terminal_output_not_completed";
-  } else if (proof?.schema !== "drovr.turn-settlement-proof/v1" ||
-      proof.classification !== "exact_transcript_correlation" ||
+  } else if (!((isDirectDescription(description) && proof?.schema === "flow.task-settlement-proof/v1" && proof.classification === "exact_task_correlation" && hasExactRecordDigest(proof)) ||
+        (proof?.schema === "drovr.turn-settlement-proof/v1" && proof.classification === "exact_transcript_correlation")) ||
       proof.launch_comparison_key !== description.comparison_keys.launch ||
       proof.configuration_watermark !== description.watermark.content_sha256 ||
       proof.description_digest !== description.description_digest ||
@@ -957,7 +988,7 @@ async function validateSettledDelegate({
     attempt_id: intent.attempt_id,
     card_id: intent.card_id,
     turn_id: typeof turn?.id === "string" ? turn.id : null,
-    drovr_watermark: current?.watermark ?? null,
+    ...(isDirectDescription(description) ? { execution_watermark: current?.watermark ?? null } : { drovr_watermark: current?.watermark ?? null }),
     route_binding: intent.route_binding,
     settlement_proof: proof ?? null,
     validator_receipts: validatorReceipts,
@@ -1915,8 +1946,85 @@ function delegatedRuntimeError(projection) {
   return error;
 }
 
+function hasExactRecordDigest(record) {
+  if (!isPlainRecord(record)) return false;
+  const { record_sha256, ...identity } = record;
+  try { return record_sha256 === digest(identity); }
+  catch { return false; }
+}
+
 const REVIEW_OPERATIONAL_ERROR_CODES = new Set([
   "delegated_runtime_unresolved",
   "delegated_runtime_unavailable",
   "delegated_agent_port_unavailable",
 ]);
+
+
+async function executeDirectDelegate(intent, port, validators, { settleCancelled }) {
+  if ((intent.delegate_input.steering ?? []).length || intent.delegate_input.fallback) {
+    throw delegatedRuntimeError({ reason: { code: "unsupported_direct_execution" } });
+  }
+  const cancellation = intent.effect_kind === "delegate_cancellation" || settleCancelled;
+  const attemptId = intent.delegate_attempt_id ?? intent.attempt_id;
+  if (cancellation) {
+    let observed = await port.discover({ schema: "flow.delegated-agent-discover-request/v1",
+      caller_key: attemptId, description: intent.delegate_input.description });
+    if (observed.status === "proven_absent") throw delegatedRuntimeError({ reason: { code: "cancellation_dispatch_absence_unresolved" } });
+    if (!observed.task?.id) throw delegatedRuntimeError(observed);
+    observed = await port.cancel({ schema: "flow.delegated-agent-cancel-request/v1", turn_id: observed.task.id });
+    if (observed.task?.receipt?.tree_retired !== true) throw delegatedRuntimeError(observed);
+    return freezeCanonical({ schema: "flow.effect-receipt/v1", effect_id: intent.effect_id, idempotency_key: intent.idempotency_key,
+      outcome: "succeeded", provider_receipt: { schema: "flow.delegate-cancellation-receipt/v1",
+        delegate_attempt_id: attemptId, delegate_effect_id: intent.delegate_effect_id ?? intent.effect_id,
+        turn_id: observed.task.id, terminal_disposition: directTaskDisposition(observed.task),
+      } });
+  }
+  const orderedInputs = materializeDelegateWireInputs(intent);
+  const initial = orderedInputs[0];
+  const workspaceClaim = initial.envelope.resource_references.find(({ kind }) => kind === "workspace");
+  if (!workspaceClaim) throw new DelegateInputEnvelopeError("workspace_claim_missing", "direct tasks require an exact workspace resource");
+  const outputContract = directOutputContract(intent);
+  let current = await port.dispatch({ schema: "flow.delegated-agent-dispatch-request/v1", agent_id: intent.route_binding.agent_id,
+    caller_key: attemptId, input_key: initial.input_key, prompt: initial.bytes, payload_sha256: initial.payload_sha256,
+    description: intent.delegate_input.description,
+    task_binding: { run_id: intent.run_id, card_id: intent.card_id, attempt_id: attemptId, effect_id: intent.effect_id,
+      workspace_claim: workspaceClaim, output_contract: outputContract } });
+  if (current.status === "still_running") current = await port.wait({ schema: "flow.delegated-agent-wait-request/v1",
+    turn_id: current.task.id, timeout_ms: intent.delegate_input.wait_timeout_ms });
+  if (!["completed", "quarantined", "cancelled"].includes(current.status) || current.task?.receipt?.tree_retired !== true) {
+    throw delegatedRuntimeError(current);
+  }
+  const task = current.task;
+  const descriptor = task.descriptor;
+  if (descriptor.attempt_id !== intent.attempt_id || descriptor.run_id !== intent.run_id ||
+      descriptor.card_id !== intent.card_id || descriptor.effect_id !== intent.effect_id ||
+      descriptor.input_sha256 !== initial.payload_sha256 || digest(descriptor.description) !== digest(intent.delegate_input.description) ||
+      descriptor.output_contract_digest !== digest(outputContract)) throw delegateIdentityConflict(current, "incompatible_task_identity");
+  const description = intent.delegate_input.description;
+  let proof = null;
+  if (task.settlement_proof) {
+    if (!hasExactRecordDigest(task.settlement_proof)) {
+      throw delegateIdentityConflict(current, "incompatible_settlement_proof");
+    }
+    const { record_sha256: _taskProofDigest, ...taskProofIdentity } = task.settlement_proof;
+    const proofIdentity = { ...taskProofIdentity,
+      description_digest: description.description_digest, launch_comparison_key: description.comparison_keys.launch,
+      configuration_watermark: description.watermark.content_sha256,
+      ordered_inputs: [{ sequence: 1, caller_key: initial.input_key, payload_sha256: initial.payload_sha256, delivery_proof: "exact_task_input_binding" }],
+    };
+    proof = { ...proofIdentity, record_sha256: digest(proofIdentity) };
+  }
+  const projection = { status: current.status, delegation: { agent_id: intent.route_binding.agent_id },
+    watermark: { schema: "flow.execution-watermark/v1", content_sha256: task.descriptor_digest },
+    turn: { id: task.id, status: current.status, caller: { dispatch_key: intent.attempt_id },
+      launch_binding: { comparison_key: description.comparison_keys.launch, configuration_watermark: description.watermark.content_sha256,
+        description_digest: description.description_digest },
+      inputs: [{ sequence: 1, caller_key: initial.input_key, payload_sha256: initial.payload_sha256, delivery: { status: "submitted" } }],
+      result: task.result, settlement_proof: proof } };
+  const receipt = await validateSettledDelegate({ current: projection, intent, validators, orderedInputs, expectedAgentId: intent.route_binding.agent_id });
+  return freezeCanonical({ ...receipt, provider_receipt: { ...receipt.provider_receipt, terminal_disposition: directTaskDisposition(task) } });
+}
+function directTaskDisposition(task) {
+  return { schema: "flow.resource-retirement/v1", resource: { type: "direct_task", id: task.id },
+    proof: "linux_subreaper_echild", terminal_receipt_digest: digest(task.receipt), retired: true };
+}

@@ -22,7 +22,15 @@
         }
       ]
     },
-    "mode": { "const": "verify" },
+    "mode": { "enum": ["verify", "test"] },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id"],
+      "properties": {
+        "check_id": { "type": "string", "minLength": 1 }
+      }
+    },
     "routes": { "$ref": "#/$defs/routes" },
     "verification": {
       "type": "object",
@@ -50,6 +58,19 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "test" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["test"],
+        "properties": { "test": true, "verification": false }
+      },
+      "else": { "properties": { "test": false } }
+    }
+  ],
   "$defs": {
     "brief": {
       "type": "object",
@@ -101,6 +122,7 @@
             "read-only",
             "on-approve",
             "workspace-write",
+            "workspace-write-denied",
             "auto",
             "unrestricted"
           ]

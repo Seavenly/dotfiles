@@ -22,6 +22,7 @@ import {
 import { createFlowClient } from "./client.mjs";
 import {
   flowOwnerPaths,
+  readProcessStartIdentity,
   startFlowOwner,
   stopFlowOwner,
 } from "./owner-process.mjs";
@@ -94,6 +95,7 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
   let client = null;
   let producer = null;
   let outcome = null;
+  let ownerShutdown = null;
   try {
     producer = await options.producer.seed({
       env: context.env,
@@ -210,11 +212,12 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
     validateStaleReceipt(staleReceipt);
 
     const beforeRestart = identityProjection(approved);
-    const stopped = await stopFlowOwner({ ...context.ownerPaths, force: true });
-    if (stopped.state !== "stopped") {
+    const stopped = await stopCapturedOwner(context, owner);
+    if (stopped.complete !== true) {
+      ownerShutdown = stopped;
       throw new TuicrScenarioBlocked(
         "owner_restart_unavailable",
-        `public owner did not stop cleanly: ${stopped.state}`,
+        `public owner retirement is unproven: ${stopped.stop?.state ?? stopped.error?.code ?? "unknown"}`,
       );
     }
     owner = null;
@@ -306,12 +309,14 @@ export async function runTuicrReviewAfterProducerExit(options = {}) {
   } catch (error) {
     outcome = { error: normalizeError(error) };
   } finally {
-    if (owner !== null) {
-      await stopFlowOwner({ ...context.ownerPaths, force: true }).catch(() => {});
+    if (owner !== null && ownerShutdown === null) {
+      ownerShutdown = await stopCapturedOwner(context, owner);
     }
   }
 
-  const cleanup = await cleanupOwned(context, options);
+  const cleanup = ownerShutdown?.complete === false
+    ? blockedOwnerCleanup(context, ownerShutdown)
+    : await cleanupOwned(context, options);
   const finishedAt = now(options.clock);
   if (outcome?.error) {
     return Object.freeze({
@@ -726,6 +731,71 @@ async function cleanupOwned(context, options) {
   }
 }
 
+async function stopCapturedOwner(context, owner) {
+  const identity = { pid: owner.pid, process_start_identity: owner.process_start_identity };
+  const shutdown = { complete: false, owner: identity, stop: null, absence: null, error: null };
+  if (!Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+      typeof identity.process_start_identity !== "string" || identity.process_start_identity.length === 0) {
+    return shutdown;
+  }
+  try {
+    shutdown.stop = await stopFlowOwner({
+      ...context.ownerPaths, force: true,
+      pid: identity.pid, processStartIdentity: identity.process_start_identity,
+    });
+    shutdown.absence = capturedOwnerAbsence(identity);
+    if (shutdown.stop.state !== "stopped") return shutdown;
+    // An endpoint may disappear before the captured process stops. A bound
+    // stop receipt can also precede Node's child reaping, so await that owner
+    // observation within the same owner-start wait budget before cleanup.
+    const deadline = Date.now() + (context.options.ownerWaitMs ?? 10_000);
+    while (shutdown.stop.pid === identity.pid && shutdown.absence.status === "present" && Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      shutdown.absence = capturedOwnerAbsence(identity);
+    }
+    shutdown.complete = shutdown.absence.status === "absent";
+  } catch (error) {
+    shutdown.error = normalizeError(error);
+    shutdown.absence ??= capturedOwnerAbsence(identity);
+  }
+  return shutdown;
+}
+
+function capturedOwnerAbsence(identity) {
+  const current = readProcessStartIdentity(identity.pid);
+  if (current !== null) {
+    return current === identity.process_start_identity
+      ? { status: "present", proof: "captured_start_identity_present" }
+      : { status: "absent", proof: "pid_start_identity_replaced" };
+  }
+  try {
+    process.kill(identity.pid, 0);
+    return { status: "unknown", proof: "pid_present_without_start_identity" };
+  } catch (error) {
+    return error.code === "ESRCH"
+      ? { status: "absent", proof: "kill_0_esrch" }
+      : { status: "unknown", proof: "process_observation_unavailable", code: error.code };
+  }
+}
+
+function blockedOwnerCleanup(context, shutdown) {
+  const identities = [
+    "isolation/qualification-workspace", "isolation/state", "isolation/authority",
+    "isolation/backup", "isolation/repository", "isolation/drovr-config",
+    ...(context.isolation.runtime_directory === null ? [] : ["isolation/runtime"]),
+  ];
+  return {
+    disposition: "blocked",
+    owned_resources: identities.map((identity_ref) => ({ kind: "isolated_root", identity_ref })),
+    resource_dispositions: identities.map((identity_ref) => ({
+      kind: "isolated_root", identity_ref, disposition: "cleanup_blocked",
+      proof: "owner_retirement_unproven",
+    })),
+    unresolved_obligations: [{ code: "owner_retirement_unproven", ...shutdown }],
+    completed_at: null,
+  };
+}
+
 function blockedResult(options, startedAt, error) {
   const reason = error?.code ?? "configuration_invalid";
   const context = options?.isolation && options?.rawRoot
@@ -817,17 +887,26 @@ function now(clock) {
 
 function waitForChild(child, timeoutMs) {
   return new Promise((resolveResult, reject) => {
-    let timer = setTimeout(() => {
+    let timedOut = false;
+    let spawnError = null;
+    let killTimer = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGTERM");
-      resolveResult({ exitCode: null, signal: "SIGTERM", timedOut: true });
+      killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, 1_000);
     }, timeoutMs);
     child.once("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      clearTimeout(killTimer);
+      spawnError = error;
     });
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
-      resolveResult({ exitCode, signal, timedOut: false });
+      clearTimeout(killTimer);
+      if (spawnError !== null) reject(spawnError);
+      else resolveResult({ exitCode, signal, timedOut });
     });
   });
 }

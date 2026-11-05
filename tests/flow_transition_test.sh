@@ -13,10 +13,7 @@ home="$tmp/home"
 mkdir -p "$home/.config" "$home/.local/state"
 
 for _ in 1 2; do
-  HOME="$home" XDG_CONFIG_HOME="$home/.config" \
-    XDG_STATE_HOME="$home/.local/state" MISE_TRUSTED_CONFIG_PATHS="$root" \
-    mise -C "$root" -E linux bootstrap dotfiles apply --yes \
-    >/dev/null 2>&1
+  converge_test_dotfiles "$root" "$home" >/dev/null
 done
 
 managed_flow="$home/.config/flow"
@@ -33,9 +30,11 @@ selection="$(HOME="$home" XDG_STATE_HOME="$home/.local/state" node --input-type=
   process.stdout.write(JSON.stringify({
     selected_implementation: result.selected_implementation,
     hermes_launch_available: result.legal_actions.includes("launch_explicit_legacy_agent_flow"),
+    dark_opt_in_available: result.dark_opt_in.available,
   }));
 ' "$root/tools/flow/src/transition-projection.mjs" "$managed_flow" "$root")"
-[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","hermes_launch_available":false}' ]] \
-  || fail "repeated convergence changed the default or exposed retired Hermes launches"
+[[ "$selection" == '{"selected_implementation":"legacy-claude/v1","hermes_launch_available":false,"dark_opt_in_available":false}' ]] \
+  || fail "repeated convergence changed the default or exposed unqualified or retired launches"
+
 
 echo "ok - repeated convergence preserves the Claude default and retires Hermes launches"

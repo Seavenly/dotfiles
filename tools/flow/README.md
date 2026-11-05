@@ -6,7 +6,7 @@ disabled, so this API does not authorize normal replacement launches.
 
 ## Release capability and qualification
 
-`config/flow/release-manifest.v1.json` is the versioned capability manifest.
+`config/flow/release-manifest.v1.json` is the default versioned capability manifest.
 Its `flow.dark-opt-in/v1` value is request-local authority for only feature
 `verify` and local review. The public `config/flow` runtime gates both
 `prepare` and `launch` through the same selector; missing opt-in is a typed
@@ -14,6 +14,16 @@ Its `flow.dark-opt-in/v1` value is request-local authority for only feature
 `unsupported` rejection. Claude remains the default implementation, and the
 gate never authorizes normal use, remote mutation, publication, merge, push,
 tracker/forge work, GitHub review, spikes, epics, or mixed/test feature modes.
+
+The explicitly selected `config/flow/releases/1.1-dark-test/` configuration
+declares `flow-release-1.1-dark-test/v1` and adds one bounded direct Linux Codex
+test route. Public admission accepts only an ordinary brief plus
+`test:{check_id}`; trusted owner configuration derives its internal test slice.
+The root release still rejects test/mixed, and historical qualification grants
+no new native permission. Native test qualification is **NOT_RUN**. See the
+[operator guide](../../docs/flow/operator-guide.md#separate-feature-test-pilot)
+for selection and the [production composition notes](../../config/flow/README.md#separate-feature-test-pilot)
+for host provisioning and recovery.
 
 The transition ledger binds the exact environment, prerequisite commits,
 catalog, policy, manifest, release-content digest, legacy inventory, and
@@ -53,8 +63,8 @@ adapter or synthetic pass mechanism.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v34 binds it to
-`flow.contract-catalog/v1@34`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v38 binds it to
+`flow.contract-catalog/v1@38`. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key
@@ -291,8 +301,12 @@ ambient workspace path; local review targets alone receive a read-only
   bundle, then atomically creates or adopts the content-derived run. Declining
   confirmation returns a typed rejection and creates no run. Repeating an
   accepted launch returns the same run identity and records no second launch
-  event. Launch never invokes the plan compiler or refreshes identity-bearing
-  facts; the caller supplies the closed observation.
+  event. Launch never invokes the plan compiler or refreshes generic
+  identity-bearing facts; the caller supplies the closed observation. A local
+  `review/v1` envelope is the deliberate exception: launch freshly revalidates
+  its owner-derived preparation facts before adopting an exact existing review
+  run or creating a new run, so replay drift is rejected without weakening
+  idempotent adoption.
   Invalid prepared bundles, confirmation decisions, and changed closed facts
   return typed launch rejections rather than escaping as transport errors.
   Launch also rejects operation cards with
@@ -617,6 +631,14 @@ slice, that slice is first, and the baseline fingerprint equals the selected
 workspace fingerprint. Other serialized verify arrangements require the
 aggregate compensating assertion. Test-only slices may retain a safe baseline
 for the aggregate verification receipt.
+
+These are internal definition contracts. The production test pilot does not
+admit caller-derived slices, intended failures, fingerprints or receipts through
+public preparation. Its host-derived single slice covers the whole brief;
+launch compares the fresh complete slice before claims or effects. The direct
+test graph serializes test, apply, registered direct commit, slice capture and
+GREEN verification, aggregate capture, critique, aggregate verification and
+seal. Only real positive health and expected RED receipts admit the writer.
 
 An identity-free selection may provide a versioned `capture_policy` using
 `flow.feature-capture-policy/v1`. It binds the selected starting workspace and
@@ -1370,7 +1392,7 @@ The managed sources under `config/flow/` are:
   feature-capture identities, the five `FlowRuntime` operations, authority
   ownership, the execution-time accounting contract, and the reboot-admission
   typed-fact and uncertainty policy. The current catalog identity is
-  `flow.contract-catalog/v1@34`; a catalog change must update this managed
+  `flow.contract-catalog/v1@38`; a catalog change must update this managed
   source and the source constants/tests that validate its exact contents. Any
   future import registration must name
   both an adapter contract and validation-receipt contract. Its receipt must bind the exact imported
@@ -1391,7 +1413,9 @@ The managed sources under `config/flow/` are:
   `schemas/flow.runtime-runner-status.v1.schema.json`,
   `schemas/flow.feature-preparation-request.v1.schema.json`, and
   `schemas/flow.feature-candidate-archive.v1.schema.json` - the public host
-  and ordinary-preparation payload contracts.
+  and ordinary-preparation payload contracts; and
+- `schemas/flow.review-preparation-facts.v1.schema.json` - the
+  authority-derived, digest-bound local-review preparation envelope.
 - `schemas/flow.time-fact.v1.schema.json`,
   `schemas/flow.execution-time-accounting.v1.schema.json`,
   `schemas/flow.execution-time-projection.v1.schema.json`,
@@ -1467,3 +1491,66 @@ Run the deterministic contract and projection suite with:
 ```sh
 npm --prefix tools/flow test
 ```
+
+## Direct CLI execution and optional Drovr
+
+The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
+decision does not qualify native execution: current release qualification remains
+`not_run`, and public admission remains `qualification_withheld`. Issue #84 must
+qualify real Codex startup and permission enforcement against the exact pilot
+release before native pilot use. The later full release under parent #2 still
+requires both official harnesses. Claude remains blocked by
+`claude_native_policy_unproven`; macOS direct execution is unsupported. Sole owner
+authority, conservative recovery and independent review remain mandatory. This
+pilot does not authorize normal use, legacy-default cutover or remote mutation.
+
+The replacement Flow runtime selects the `direct` execution backend by default.
+This is separate from the public launcher policy, whose legacy default remains
+unchanged. Set `FLOW_EXECUTION_BACKEND=drovr` before starting an isolated owner
+to select the optional historical Drovr adapter. Backend selection never
+rebinds existing attempts. `FLOW_CODEX_EXECUTABLE` selects an absolute official
+Codex executable; the adapter pins its resolved path, bytes and exact version
+(`codex-cli 0.160.0`). An explicit unavailable executable never falls back.
+
+Direct descriptions use `flow.execution-description/v1` and advertise only
+implemented initial-input/structured-output semantics. `workspace-write-denied`
+requires the card's `repository:write` grant and denies escalation, approvals
+and delegate tool network. Direct tasks reject the old human/automatic-review
+postures, steering, session continuation and backend switching. `read-only`
+uses no mutation grant. Unknown ambient project/managed hooks, plugins or
+configuration block; argv alone is not permission qualification. The only writable roots are the exact workspace and owned task scratch;
+ambient `/tmp` and `$TMPDIR` grants are excluded. Provider transport and native
+saved authentication remain the official CLI's concern.
+
+The provider-local Claude argv/parser is implemented against Claude Code 2.1.287,
+but native admission always returns `claude_native_policy_unproven`: managed
+hooks and additive roots cannot yet be proven before startup. It advertises no
+usable Claude route. Generic effort selection remains Codex-shaped until that
+blocker is resolved, so Claude `max` is not admitted by the shared port.
+
+Linux direct tasks require `/usr/bin/python3` with subreaper and pidfd support.
+The resolved interpreter and worker bytes are pinned; Python starts with
+`-I -S`, and cancellation signals verified ancestry through exact process handles. Flow
+owns a private immutable descriptor, exact input/schema bytes, raw output and
+atomic terminal receipt under its authority directory. The detached task worker
+has no scheduling authority. It retains escaped descendants until positively
+reaped; PID age, parent death, missing output or empty process group never prove
+retirement. Missing or conflicting receipts remain blocked without blind replay.
+macOS direct mutation is unsupported before spawn; use the optional Drovr path
+until equivalent containment is implemented and qualified.
+
+Direct feature delegates edit files without access to protected `.git` state.
+The prepared `flow.operation/feature-direct-commit/v1` records a local Git
+mutation explicitly, reserves exact old/new commit evidence before ref CAS,
+and then leaves existing capture, independent critique, operation verification,
+sealing, retention and handoff gates in force. No future candidate identity is
+supplied by the preparation caller. No push, separate review, remote mutation
+or normal-use permission follows from task success.
+
+Implementation fixtures are deterministic subprocess evidence. Native direct
+startup/permission, both harnesses, public host recovery and supported-host
+qualification remain pending. Changed source/catalog identity withholds public
+admission; release content must be regenerated by the documented generator,
+and older Drovr qualification cannot be relabeled. See
+[ADR-0011](../../docs/adr/0011-use-direct-cli-tasks-as-primary-flow-execution.md) for
+the execution decision and limits.

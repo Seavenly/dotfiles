@@ -126,6 +126,7 @@ export function createDrovrDelegatedAgentPort({
 } = {}) {
   return Object.freeze({
     contract: PORT_CONTRACT,
+    backend: "drovr",
 
     async describe(request) {
       if (!validRequest(request)) {

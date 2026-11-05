@@ -14,7 +14,8 @@ export DOTFILES_ROOT="$root"
 export MISE_TRUSTED_CONFIG_PATHS="$root"
 mkdir -p "$HOME"
 
-mise -C "$root" -E linux bootstrap dotfiles apply --yes > /dev/null 2>&1
+converge_test_dotfiles "$root" "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" \
+  > /dev/null 2>&1
 [[ ! -e "$HOME/.hermes" ]] || fail "convergence recreated the Hermes home"
 [[ ! -e "$XDG_CONFIG_HOME/dotfiles/hermes-routing.yaml" ]] ||
   fail "convergence recreated Hermes routing"

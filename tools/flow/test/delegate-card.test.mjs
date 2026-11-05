@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { executionDescription } from "../src/execution-contract.mjs";
 import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import {
   delegateCompatibilityIssue,
@@ -33,6 +34,203 @@ import {
 } from
   "../test-support/fixed-host-identity.mjs";
 import { executionTimeFacts } from "../test-support/time-facts.mjs";
+
+for (const [binding, backend] of [
+  ["drovr", "direct"],
+  ["direct", "drovr"],
+  ["direct", undefined],
+]) {
+  test(`delegate backend mismatch blocks ${binding} binding with ${backend ?? "unidentified"} port before intent`, async (t) => {
+    const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-backend-binding-"));
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+    const authority = createDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-a", "process-backend"),
+    });
+    t.after(() => authority.close());
+    const description = binding === "direct" ? directTestDescription() : await compatibleDescription();
+    const calls = [];
+    const runtime = delegateRuntime(authority, {
+      backend,
+      async discover() { calls.push("discover"); return absentDiscovery(); },
+      async dispatch() { calls.push("dispatch"); },
+    });
+    const prepared = runtime.prepare(delegateCardProposal(description));
+    const launch = runtime.launch(confirmedLaunchRequest(prepared));
+
+    assert.equal(launch.code, "execution_backend_mismatch");
+    assert.deepEqual(runtime.query().runs, []);
+    assert.deepEqual(calls, []);
+  });
+}
+
+function directTestDescription() {
+  return executionDescription({
+    launch: { harness: "codex", role: "reviewer", model: "fixture", effort: "high", capability: "read-only" },
+    callerMetadata: { owner: "flow" },
+    backend: { contract: "flow.direct-task/v1", id: "direct", harness: "codex",
+      adapter: "flow.codex-exec", adapter_version: "1",
+      executable: { path: "/fixture/codex", version: "codex-cli 0.160.0", sha256: digest("fixture-executable") },
+      native_session_strategy: "fresh_ephemeral" },
+  });
+}
+
+for (const cancelled of [false, true]) {
+  test(`historical Drovr ${cancelled ? "cancellation" : "delegate"} blocks a direct owner before discovery`, async (t) => {
+    const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-historical-backend-"));
+    t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+    const description = await compatibleDescription();
+    const firstAuthority = createDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-a", "process-historical"),
+    });
+    let firstClosed = false;
+    t.after(() => { if (!firstClosed) firstAuthority.close(); });
+    let discoveries = 0;
+    const firstRuntime = delegateRuntime(firstAuthority, {
+      backend: "drovr",
+      async discover() {
+        discoveries += 1;
+        if (cancelled && discoveries === 1) return absentDiscovery();
+        throw new Error("owner lost after exact effect intent");
+      },
+      async wait() { return stillWorkingProjection(); },
+    });
+    const proposal = delegateCardProposal(description);
+    proposal.requested_authority.commands.push("cancel");
+    const prepared = firstRuntime.prepare(proposal);
+    const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+    approveAndExecute(firstRuntime, launch.run_id);
+    await until(() => firstRuntime.query({ run_id: launch.run_id }).effects
+      .find(({ effect_kind }) => effect_kind === "delegate")?.last_observation);
+    if (cancelled) {
+      const action = firstRuntime.query({ run_id: launch.run_id }).legal_actions
+        .find(({ type }) => type === "cancel");
+      firstRuntime.command(action);
+      await until(() => firstRuntime.query({ run_id: launch.run_id }).effects
+        .find(({ effect_kind }) => effect_kind === "delegate_cancellation")?.last_observation);
+    }
+    const before = firstRuntime.query({ run_id: launch.run_id });
+    const effectKind = cancelled ? "delegate_cancellation" : "delegate";
+    const effectId = before.effects.find(({ effect_kind }) => effect_kind === effectKind).effect_id;
+    firstAuthority.close();
+    firstClosed = true;
+
+    const recoveredAuthority = createDurableRunAuthority({
+      authorityDirectory,
+      hostIdentityAdapter: fixedHostIdentity("boot-a", "process-direct-owner"),
+    });
+    t.after(() => recoveredAuthority.close());
+    const calls = [];
+    const recovered = delegateRuntime(recoveredAuthority, {
+      backend: "direct",
+      async discover() { calls.push("discover"); return absentDiscovery(); },
+      async dispatch() { calls.push("dispatch"); throw new Error("wrong backend"); },
+      async cancel() { calls.push("cancel"); },
+    });
+    await until(() => calls.length || recovered.query({ run_id: launch.run_id }).effects
+      .find(({ effect_id }) => effect_id === effectId)?.last_observation?.provider_observation?.code === "execution_backend_mismatch");
+    const after = recovered.query({ run_id: launch.run_id });
+    const effect = after.effects.find(({ effect_id }) => effect_id === effectId);
+
+    assert.deepEqual(calls, []);
+    assert.equal(effect.last_observation.provider_observation.code, "execution_backend_mismatch");
+    assert.equal(effect.last_observation.presence, "indeterminate");
+    assert.equal(effect.receipt, null);
+    assert.equal(after.delegate_attempts[0].description_digest, before.delegate_attempts[0].description_digest);
+    assert.equal(after.delegate_attempts[0].attempt_id, before.delegate_attempts[0].attempt_id);
+  });
+}
+
+for (const tampered of [false, true]) {
+test(`direct settlement proof digest ${tampered ? "rejects a corrupt task record" : "covers the complete persisted Flow binding"}`, async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-direct-proof-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-direct-proof"),
+  });
+  t.after(() => authority.close());
+  const description = directTestDescription();
+  const proposal = delegateCardProposal(description);
+  const claim = { kind: "workspace", id: "workspace:proof", generation: 1,
+    mutation_epoch: 0, fingerprint: digest("proof-workspace") };
+  proposal.explicit_facts.resource_claims.push(claim);
+  proposal.explicit_facts.limits.max_resources = 1;
+  const card = proposal.graph.cards[1];
+  card.resource_claims = [claim];
+  card.inputs.task_inputs = { schema: "flow.delegate-task-inputs/v1", phase: "critique" };
+  card.inputs.resource_references = [{
+    schema: "flow.delegate-execution-resource-selection/v1", kind: "workspace",
+    authority: "WorkspaceAuthority", contract: "work.workspace/v1", subject_id: claim.id,
+    generation: claim.generation, mutation_epoch: claim.mutation_epoch, fingerprint: claim.fingerprint,
+    access: "read_only", authority_binding_id: "resource:facts",
+  }];
+  const output = JSON.stringify({ schema: "flow.delegate-evidence/v1", observation: "exact proof fixture" });
+  const registeredAuthorities = {
+    "resource:facts": {
+      schema: "flow.registered-authority/v1", id: "resource:facts", contract: "flow.resource-authority/v1",
+      provider_identity: { schema: "flow.registered-authority/v1", id: "provider:proof-fixture", version: "v1" },
+      observe({ observation_input }) {
+        return { schema: "flow.authority-observation/v1", status: "available",
+          watermark: digest(proposal.explicit_facts.resource_claims), observation_input };
+      },
+    },
+  };
+  const definition = {
+    schema: "flow.predefined-definition/v1", id: "direct-proof/v1", contract: "flow.definition/direct-proof/v1",
+    promised_outcomes: ["exact direct evidence"], negative_outcomes: ["no unproved evidence"],
+    trust_posture: { authority: "RunAuthority" },
+    required_authorities: [{ schema: "flow.required-authority/v1", id: "resource:facts",
+      contract: "flow.resource-authority/v1", observation_input: { fact: "resource_claims" } }],
+    compile() { return proposal; },
+  };
+  const runtime = delegateRuntime(authority, {
+    backend: "direct",
+    async dispatch(request) {
+      const descriptor = { ...request.task_binding, description: request.description,
+        input_sha256: request.payload_sha256, output_contract_digest: digest(request.task_binding.output_contract) };
+      const descriptorDigest = digest(descriptor);
+      const receipt = { schema: "flow.task-terminal-receipt/v1", tree_retired: true };
+      const proofIdentity = { schema: "flow.task-settlement-proof/v1", classification: "exact_task_correlation",
+        descriptor_digest: descriptorDigest, input_sha256: request.payload_sha256,
+        output_contract_digest: descriptor.output_contract_digest, stdout_sha256: digest(output),
+        terminal_receipt_digest: digest(receipt), native_session: "session:proof-fixture" };
+      return { status: "completed", task: { id: "task:proof-fixture", descriptor,
+        descriptor_digest: descriptorDigest, receipt, result: { text: output },
+        settlement_proof: { ...proofIdentity,
+          record_sha256: tampered ? digest("corrupt-record") : digest(proofIdentity) } } };
+    },
+  }, (actual) => actual === output, {
+    registeredAuthorities, predefinedDefinitions: { "direct-proof/v1": definition },
+  });
+  const prepared = runtime.prepare({ schema: "flow.predefined-flow-selection/v1", definition: "direct-proof/v1",
+    inputs: {}, explicit_facts: proposal.explicit_facts });
+  const launch = runtime.launch({
+    prepared,
+    confirmation: { schema: "flow.predefined-flow-confirmation-decision/v1", decision: "accept",
+      bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest },
+    closed_facts: { schema: "flow.closed-fact-observation/v1", bundle_digest: prepared.bundle_digest,
+      facts: structuredClone(prepared.explicit_facts) },
+  });
+  approveAndExecute(runtime, launch.run_id);
+  if (tampered) {
+    await until(() => runtime.query({ run_id: launch.run_id }).effects[0]?.last_observation);
+    const effect = runtime.query({ run_id: launch.run_id }).effects[0];
+    assert.equal(effect.last_observation.provider_observation.code, "incompatible_settlement_proof");
+    assert.equal(effect.last_observation.presence, "indeterminate");
+    assert.equal(effect.receipt, null);
+    return;
+  }
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
+  const proof = runtime.query({ run_id: launch.run_id }).delegate_attempts[0].evidence.settlement_proof;
+  const { record_sha256, ...identity } = proof;
+
+  assert.equal(record_sha256, digest(identity));
+  assert.equal(proof.description_digest, description.description_digest);
+  assert.equal(proof.ordered_inputs.length, 1);
+});
+}
 
 test("FlowRuntime executes one exact delegate card from reserved authority", async (t) => {
   const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-delegate-"));
@@ -2623,10 +2821,14 @@ function delegateRuntime(
   {
     evidenceSafety = validateDelegateEvidenceSafety,
     resourcePort = null,
+    registeredAuthorities = {},
+    predefinedDefinitions = {},
   } = {},
 ) {
   return createFlowRuntime({
     runAuthority: authority,
+    registeredAuthorities,
+    predefinedDefinitions,
     delegatedAgentResourcePort: resourcePort,
     delegatedAgentPort: {
       contract: "flow.delegated-agent-port/v1",

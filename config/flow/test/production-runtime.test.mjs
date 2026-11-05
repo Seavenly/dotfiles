@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -16,7 +17,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { before, after } from "node:test";
 
 import {
   digest,
@@ -39,17 +40,77 @@ import { createProductionBackupRestoreAdapter } from
   "../src/production-backup-restore.mjs";
 import { validateFeatureCritiqueOutput } from
   "../src/production-feature-operations.mjs";
+import { bindQualifiedReleaseFixture } from
+  "../test-support/qualified-release-fixture.mjs";
+import { createDirectDelegatedAgentPort } from
+  "../../../tools/flow/src/direct-delegated-agent-port.mjs";
+import { codexExecutionAdapter } from
+  "../../../tools/flow/src/codex-execution-adapter.mjs";
+import { executionDescription } from
+  "../../../tools/flow/src/execution-contract.mjs";
+
+import { fixtureCodexAdapter } from "../test-support/direct-feature-test-runtime.mjs";
 
 const execFile = promisify(execFileCallback);
+const FLOW_CONFIG_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
+const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const DARK_OPT_IN = {
   schema: "flow.dark-opt-in/v1",
-  release_id: "flow-release-1.0-dark/v1",
+  release_id: process.env.FLOW_CONFIG_DIRECTORY === undefined
+    ? "flow-release-1.0-dark/v1"
+    : JSON.parse(await readFile(join(process.env.FLOW_CONFIG_DIRECTORY, "release-manifest.v1.json"), "utf8")).release_id,
   purpose: "sacrificial_qualification",
 };
+let qualifiedFixtureRoot;
+let qualifiedFixtureConfig;
+const QUALIFICATION_REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+before(async () => {
+  if (process.env.FLOW_CONFIG_DIRECTORY !== undefined ||
+      process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT !== undefined) return;
+  qualifiedFixtureRoot = await mkdtemp(join(tmpdir(), "flow-production-file-config-"));
+  qualifiedFixtureConfig = join(qualifiedFixtureRoot, "flow");
+  await cp(fileURLToPath(new URL("..", import.meta.url)), qualifiedFixtureConfig, {
+    recursive: true,
+    filter: (source) => !source.split("/").includes("node_modules"),
+  });
+  await bindQualifiedReleaseFixture({
+    configDirectory: qualifiedFixtureConfig,
+    repositoryRoot: QUALIFICATION_REPOSITORY_ROOT,
+  });
+});
+after(async () => {
+  if (qualifiedFixtureRoot !== undefined) {
+    await rm(qualifiedFixtureRoot, { recursive: true, force: true });
+  }
+});
 
 function createFlowRuntime(options = {}) {
+  const { qualifiedReleaseRepository, ...runtimeOptions } = options;
+  if (qualifiedReleaseRepository !== undefined) {
+    return (async () => {
+      const configDirectory = join(qualifiedReleaseRepository, "..", "qualified-flow");
+      await rm(configDirectory, { recursive: true, force: true });
+      await cp(FLOW_CONFIG_DIRECTORY, configDirectory, { recursive: true, filter: source => !source.split("/").includes("node_modules") });
+      await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
+      return createProductionFlowRuntime({ ...runtimeOptions, env: { ...process.env, ...runtimeOptions.env, FLOW_CONFIG_DIRECTORY: configDirectory, FLOW_REPOSITORY_ROOT: qualifiedReleaseRepository, FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_EXECUTION_BACKEND: runtimeOptions.env?.FLOW_EXECUTION_BACKEND ?? "drovr" }, ...(runtimeOptions.delegatedAgentPort === undefined || runtimeOptions.delegatedAgentResourcePort !== undefined ? {} : { delegatedAgentResourcePort: deterministicResourcePort() }) });
+    })();
+  }
+  const bindInjectedFixture = options.delegatedAgentPort !== undefined &&
+    qualifiedFixtureConfig !== undefined &&
+    options.env?.FLOW_CONFIG_DIRECTORY === undefined &&
+    options.env?.FLOW_QUALIFICATION_REPOSITORY_ROOT === undefined &&
+    options.env?.FLOW_EXECUTION_BACKEND === undefined;
   return createProductionFlowRuntime({
     ...options,
+    ...(bindInjectedFixture ? {
+      env: {
+        ...options.env,
+        FLOW_CONFIG_DIRECTORY: qualifiedFixtureConfig,
+        FLOW_QUALIFICATION_REPOSITORY_ROOT: QUALIFICATION_REPOSITORY_ROOT,
+        FLOW_EXECUTION_BACKEND: "drovr",
+      },
+    } : {}),
     ...(options.delegatedAgentPort === undefined ||
         options.delegatedAgentResourcePort !== undefined
       ? {}
@@ -168,9 +229,10 @@ test("production feature binds copied config to the explicit governed qualificat
     recursive: true,
     filter: (source) => !source.split("/").includes("node_modules"),
   });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: governedRepositoryRoot });
   await initializeRepository(repository);
 
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: {
       HOME: scratch,
       XDG_STATE_HOME: state,
@@ -204,7 +266,7 @@ test("default FlowRuntime is durable and autonomous", async (t) => {
   await execFile("git", ["-C", repository, "add", "README.md"]);
   await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "initial"]);
 
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
     delegatedAgentPort: {
       async describe() {
@@ -225,7 +287,7 @@ test("production backup_create records a durable provider receipt", async (t) =>
   const repository = await createCommittedRepository(scratch, "backup");
   t.after(() => rm(scratch, { recursive: true, force: true }));
 
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: {
       HOME: scratch,
       XDG_STATE_HOME: state,
@@ -423,7 +485,7 @@ test("production backup binds a Drovr handoff receipt to a handoff obligation", 
       },
     }],
   });
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: {
       HOME: scratch,
       XDG_STATE_HOME: join(scratch, "state"),
@@ -467,7 +529,7 @@ test("production backup succeeds while the public owner endpoint is live", async
     await rm(scratch, { recursive: true, force: true });
   });
 
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: {
       HOME: scratch,
       XDG_STATE_HOME: state,
@@ -541,7 +603,7 @@ test("production restore rebuilds isolated authority after disposable loss", asy
   await rm(join(state, "flow"), { recursive: true, force: true });
   await rm(legacyFile, { force: true });
 
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env,
     legacyRoots: { isolated: legacyRoot },
     delegatedAgentPort: supportedDelegatedAgentPort(),
@@ -860,9 +922,10 @@ test("ordinary feature preparation derives immutable facts from a brief and repo
       };
     },
   };
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
     delegatedAgentPort,
+    qualifiedReleaseRepository: repository,
     autonomous: false,
   });
   t.after(() => closeFlowRuntime(runtime));
@@ -923,13 +986,91 @@ test("ordinary feature preparation derives immutable facts from a brief and repo
   );
 });
 
+test("direct production preparation rejects known workspace ambient authority before intent", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-production-ambient-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "ambient");
+  const taskDirectory = join(scratch, "tasks");
+  const env = { HOME: scratch, PATH: "", XDG_STATE_HOME: join(scratch, "state") };
+  const delegatedAgentPort = createDirectDelegatedAgentPort({
+    env, taskDirectory,
+    executables: { codex: join(scratch, "unavailable-executable") },
+    providers: { codex: { ...codexExecutionAdapter, id: "flow.fixture-codex-exec", nativeQualificationIssue() { return null; },
+      authorityIssue(context) {
+        return codexExecutionAdapter.authorityIssue(context, {
+          canonicalPath: (path) => path,
+          pathExists: (path) => path === join(scratch, ".codex", "config.toml"),
+        });
+      },
+    } },
+  });
+  const runtime = createFlowRuntime({ env, delegatedAgentPort, autonomous: false });
+  t.after(() => closeFlowRuntime(runtime));
+  const request = preparationRequest(repository, "brief:direct-ambient");
+  request.routes.apply.launch.capability = "workspace-write-denied";
+  const result = await runtime.prepare(request);
+
+  assert.equal(result.operation, "prepare");
+  assert.equal(result.code, "unproved_ambient_authority");
+  await assert.rejects(stat(taskDirectory), { code: "ENOENT" });
+});
+
+for (const backend of ["direct", "drovr"]) {
+  test(`production preparation binds canonical workspace preflight only for ${backend} requests`, async (t) => {
+    const scratch = await mkdtemp(join(tmpdir(), "flow-production-preflight-path-"));
+    t.after(() => rm(scratch, { recursive: true, force: true }));
+    const repository = await createCommittedRepository(scratch, "path");
+    const alias = join(scratch, "repository-alias");
+    await symlink(repository, alias);
+    const requests = [];
+    const delegatedAgentPort = {
+      backend,
+      async describe(request) {
+        requests.push(structuredClone(request));
+        if (backend === "drovr") {
+          assert.equal(Object.hasOwn(request, "workspace_path"), false);
+          return supportedDelegatedAgentPort().describe(request);
+        }
+        const description = executionDescription({
+          launch: request.launch, callerMetadata: request.caller_metadata,
+          backend: { id: "direct", contract: "flow.direct-task/v1", harness: request.launch.harness,
+            adapter: "flow.codex-exec", adapter_version: "1", native_session_strategy: "fresh_ephemeral",
+            executable: { path: "/fixture/codex", version: "codex-cli 0.160.0", sha256: digest("fixture") } },
+        });
+        return { status: "compatible", description };
+      },
+    };
+    const runtime = createFlowRuntime({
+      env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
+      delegatedAgentPort, autonomous: false,
+    });
+    t.after(() => closeFlowRuntime(runtime));
+    const request = preparationRequest(alias, `brief:preflight-${backend}`);
+    if (backend === "direct") {
+      request.routes.apply.launch.capability = "workspace-write-denied";
+      request.routes.critique.launch.harness = "codex";
+    }
+    const prepared = await runtime.prepare(request);
+
+    assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+    assert.equal(requests.length, 2);
+    for (const described of requests) {
+      assert.equal(described.workspace_path, backend === "direct" ? await realpath(repository) : undefined);
+    }
+    for (const route of Object.values(prepared.selection.inputs.delegation).filter((value) => value?.description)) {
+      assert.equal(Object.hasOwn(route.description, "workspace_path"), false);
+    }
+  });
+}
+
 test("production preparation enforces the closed published request schema", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-production-preparation-schema-"));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const repository = await createCommittedRepository(scratch, "schema");
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") },
     delegatedAgentPort: supportedDelegatedAgentPort(),
+    qualifiedReleaseRepository: repository,
     autonomous: false,
   });
   t.after(() => closeFlowRuntime(runtime));
@@ -971,9 +1112,10 @@ test("concurrent production preparations keep authority observations selection-s
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const firstRepository = await createCommittedRepository(scratch, "first");
   const secondRepository = await createCommittedRepository(scratch, "second");
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
     delegatedAgentPort: supportedDelegatedAgentPort(),
+    qualifiedReleaseRepository: firstRepository,
     autonomous: false,
   });
   t.after(() => closeFlowRuntime(runtime));
@@ -1021,7 +1163,7 @@ test("production preparation rejects a dirty repository before route description
   const repository = await createCommittedRepository(scratch, "dirty");
   await writeFile(join(repository, "uncommitted.txt"), "dirty\n");
   let described = false;
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
     delegatedAgentPort: {
       async describe() {
@@ -1029,6 +1171,7 @@ test("production preparation rejects a dirty repository before route description
         throw new Error("route description should not be reached");
       },
     },
+    qualifiedReleaseRepository: repository,
     autonomous: false,
   });
   t.after(() => closeFlowRuntime(runtime));
@@ -1049,6 +1192,15 @@ test("production feature runs a real Git mutation through a local candidate", as
   const repository = join(scratch, "repository");
   t.after(() => rm(scratch, { recursive: true, force: true }));
   await initializeRepository(repository);
+  const configDirectory = process.env.FLOW_CONFIG_DIRECTORY ?? join(scratch, "flow");
+  const governedRepositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
+  if (!process.env.FLOW_CONFIG_DIRECTORY) {
+    await cp(fileURLToPath(new URL("..", import.meta.url)), configDirectory, {
+      recursive: true,
+      filter: (source) => !source.split("/").includes("node_modules"),
+    });
+    await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: governedRepositoryRoot });
+  }
   const initialGit = await gitFacts(repository);
   let mutationCount = 0;
   let candidateText = "after\n";
@@ -1068,20 +1220,16 @@ test("production feature runs a real Git mutation through a local candidate", as
     criterionExpected: () => candidateText,
     critiqueFindings: [retainedFinding],
   });
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: {
+      ...process.env,
       HOME: scratch,
       XDG_STATE_HOME: state,
-      ...(typeof process.env.FLOW_CONFIG_DIRECTORY === "string" ? {
-        FLOW_CONFIG_DIRECTORY: process.env.FLOW_CONFIG_DIRECTORY,
-      } : {}),
-      ...(typeof process.env.FLOW_REPOSITORY_ROOT === "string" ? {
-        FLOW_REPOSITORY_ROOT: process.env.FLOW_REPOSITORY_ROOT,
-      } : {}),
-      ...(typeof process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT === "string" ? {
-        FLOW_QUALIFICATION_REPOSITORY_ROOT:
-          process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT,
-      } : {}),
+      FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_EXECUTION_BACKEND: "drovr",
+      FLOW_REPOSITORY_ROOT: repository,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT:
+        process.env.FLOW_QUALIFICATION_REPOSITORY_ROOT ?? governedRepositoryRoot,
     },
     delegatedAgentPort,
   });
@@ -1122,6 +1270,7 @@ test("production feature runs a real Git mutation through a local candidate", as
       },
     },
   });
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
   const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
   assert.equal(launch.schema, "flow.launch-receipt/v1", JSON.stringify(launch));
 
@@ -1197,8 +1346,9 @@ test("production feature launch fails closed when an operation is missing", asyn
   const state = join(scratch, "state");
   const repository = await createCommittedRepository(scratch, "missing-operation");
   t.after(() => rm(scratch, { recursive: true, force: true }));
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: supportedDelegatedAgentPort(),
     registeredOperations: {
       "flow.operation/feature-verify/v1": null,
@@ -1223,8 +1373,9 @@ test("production feature does not seal when apply omits criterion evidence", asy
   t.after(() => rm(scratch, { recursive: true, force: true }));
   await initializeRepository(repository);
   const turns = new Map();
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: productionDelegatedAgentPort({
       repository,
       turns,
@@ -1257,8 +1408,9 @@ test("production feature does not seal when apply criterion evidence disagrees w
   t.after(() => rm(scratch, { recursive: true, force: true }));
   await initializeRepository(repository);
   const turns = new Map();
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: productionDelegatedAgentPort({
       repository,
       turns,
@@ -1489,8 +1641,9 @@ test("production seal refuses an independently validated blocking critique", asy
   t.after(() => rm(scratch, { recursive: true, force: true }));
   await initializeRepository(repository);
   const turns = new Map();
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: productionDelegatedAgentPort({
       repository,
       turns,
@@ -1528,8 +1681,9 @@ test("a failed production feature releases its workspace claim for a later run",
   let candidateText = "after-first\n";
   let critiqueAvailable = false;
   const turns = new Map();
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: productionDelegatedAgentPort({
       repository,
       turns,
@@ -1583,8 +1737,9 @@ test("a sealed production feature reobserves a clean external commit before a la
   await initializeRepository(repository);
   let candidateText = "after-first\n";
   const turns = new Map();
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: productionDelegatedAgentPort({
       repository,
       turns,
@@ -1657,8 +1812,9 @@ test("production feature captures a candidate archive larger than one MiB", asyn
   await execFile("git", ["-C", repository, "add", "large.bin"]);
   await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "large candidate archive"]);
   const turns = new Map();
-  const runtime = createFlowRuntime({
+  const runtime = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort: productionDelegatedAgentPort({
       repository,
       turns,
@@ -1735,8 +1891,9 @@ test("production capture reboot admission resumes an interrupted capture exactly
       }
     },
   };
-  const runtimeA = createFlowRuntime({
+  const runtimeA = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
     authorityOptions,
   });
@@ -1753,8 +1910,9 @@ test("production capture reboot admission resumes an interrupted capture exactly
   closeFlowRuntime(runtimeA);
   bootId = "boot-capture-b";
 
-  const runtimeB = createFlowRuntime({
+  const runtimeB = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
     authorityOptions,
   });
@@ -1870,8 +2028,9 @@ test("production same-boot owner recomposition resumes an interrupted capture ex
       }
     },
   };
-  const runtimeA = createFlowRuntime({
+  const runtimeA = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
     authorityOptions,
   });
@@ -1887,8 +2046,9 @@ test("production same-boot owner recomposition resumes an interrupted capture ex
   ));
   closeFlowRuntime(runtimeA);
 
-  const runtimeB = createFlowRuntime({
+  const runtimeB = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
     authorityOptions,
   });
@@ -1940,8 +2100,9 @@ test("production owner recomposition resumes a real feature after delegate settl
       return initializeCandidate(repository);
     },
   });
-  const runtimeA = createFlowRuntime({
+  const runtimeA = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
   });
   const prepared = await runtimeA.prepare(preparationRequest(
@@ -1958,8 +2119,9 @@ test("production owner recomposition resumes a real feature after delegate settl
   closeFlowRuntime(runtimeA);
   releaseApply();
 
-  const runtimeB = createFlowRuntime({
+  const runtimeB = await createFlowRuntime({
     env: { HOME: scratch, XDG_STATE_HOME: state },
+    qualifiedReleaseRepository: repository,
     delegatedAgentPort,
   });
   t.after(() => closeFlowRuntime(runtimeB));
@@ -2394,3 +2556,72 @@ async function until(predicate, timeout = 5000) {
   }
   assert.fail("condition did not become true before timeout");
 }
+
+
+test("source-qualified public native admission remains withheld without native permission proof", { skip: process.platform !== "linux" && "The controlled positive feature writer requires Linux; this skip is not macOS qualification" }, async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-native-admission-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const repository = await createCommittedRepository(scratch, "subject");
+  const configDirectory = join(scratch, "selected-config");
+  await cp(join(FLOW_CONFIG_DIRECTORY, "releases/1.1-dark-test"), configDirectory, { recursive: true });
+  await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
+  const invocations = join(scratch, "native-invocations");
+  const executable = join(scratch, "private-codex-sentinel");
+  await writeFile(executable, `#!/usr/bin/env node
+if (process.argv[2] === "--version") { console.log("codex-cli 0.160.0"); process.exit(0); }
+(await import("node:fs/promises")).appendFile(${JSON.stringify(invocations)}, "unexpected-native-invocation\\n").then(() => process.exit(86));
+`);
+  await chmod(executable, 0o700);
+  const authorityDirectory = join(scratch, "authority");
+  const runtime = createProductionFlowRuntime({
+    env: { HOME: scratch, PATH: process.env.PATH, FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_REPOSITORY_ROOT: repository,
+      FLOW_NATIVE_QUALIFICATION_PASSED: "1", FLOW_ALLOW_NATIVE: "1" },
+    authorityDirectory, autonomous: false,
+    directExecutionOptions: { executables: { codex: executable } },
+  });
+  t.after(() => closeFlowRuntime(runtime));
+  const request = preparationRequest(repository, "brief:native-permission-unproven");
+  request.dark_opt_in = { ...request.dark_opt_in, release_id: "flow-release-1.1-dark-test/v1" };
+  request.routes = {
+    apply: { harness: "codex", model: "fixture-model", effort: "high", capability: "workspace-write-denied" },
+    critique: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" },
+  };
+  const { publicQualificationIsAvailable } = await import("../../../tools/flow/src/transition-projection.mjs");
+  const { resolvePublicLaunchPolicy } = await import("../../../tools/flow/src/launch-selector.mjs");
+  const selection = resolvePublicLaunchPolicy({ policyPath: join(configDirectory, "launch-policy.v1.json"),
+    releaseManifestPath: join(configDirectory, "release-manifest.v1.json"), darkOptIn: request.dark_opt_in,
+    route: { flow: "feature", mode: "verify" }, homeDirectory: scratch, stateDirectory: join(scratch, ".local/state") });
+  const sourceQualificationAvailable = publicQualificationIsAvailable({ configDirectory, repositoryRoot: REPOSITORY_ROOT,
+    selection, homeDirectory: scratch, stateDirectory: join(scratch, ".local/state") });
+  assert.equal(sourceQualificationAvailable, true, "the same source binding must be valid before testing native refusal");
+  const controlled = createProductionFlowRuntime({
+    env: { HOME: scratch, PATH: process.env.PATH, FLOW_CONFIG_DIRECTORY: configDirectory,
+      FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_REPOSITORY_ROOT: repository },
+    authorityDirectory: join(scratch, "fixture-authority"), autonomous: false,
+    directExecutionOptions: { executables: { codex: executable }, providers: { codex: fixtureCodexAdapter } },
+  });
+  t.after(() => closeFlowRuntime(controlled));
+  const prepared = await controlled.prepare(request);
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  assert.equal(prepared.selection.inputs.delegation.apply.description.backend.adapter, "flow.fixture-codex-exec");
+  const result = await runtime.prepare(request);
+  const launchRejection = runtime.launch({ prepared, dark_opt_in: request.dark_opt_in });
+  const ledger = JSON.parse(await readFile(join(configDirectory, "transition-ledger.v1.json"), "utf8"));
+  const snapshot = { fixture_only: true, official_provider_invoked: false, result, launchRejection, sourceQualificationAvailable,
+    source_evidence: ledger.evidence.map(({ id, status }) => ({ id, status })), native: ledger.not_run,
+    invocation_log: await readFile(invocations, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; }) };
+  if (process.env.FLOW_NATIVE_ADMISSION_RECEIPT_DIRECTORY) {
+    await mkdir(process.env.FLOW_NATIVE_ADMISSION_RECEIPT_DIRECTORY, { recursive: true });
+    await writeFile(join(process.env.FLOW_NATIVE_ADMISSION_RECEIPT_DIRECTORY, "public-prepare.json"), JSON.stringify(snapshot, null, 2) + "\n");
+  }
+  assert.equal(snapshot.source_evidence.find(({ id }) => id === "deterministic_qualification").status, "passed");
+  assert.equal(snapshot.source_evidence.find(({ id }) => id === "production_route_conformance").status, "passed");
+  assert.equal(snapshot.native.find(({ id }) => id === "issue-84").status, "not_run");
+  assert.equal(snapshot.invocation_log, "");
+  assert.equal(result.code, "qualification_withheld", JSON.stringify(result));
+  assert.match(result.reason, /codex_native_policy_unproven/);
+  assert.equal(launchRejection.code, "qualification_withheld");
+  assert.match(launchRejection.reason, /codex_native_policy_unproven/);
+  await assert.rejects(stat(join(authorityDirectory, "direct-tasks")), { code: "ENOENT" });
+});

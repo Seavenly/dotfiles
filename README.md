@@ -115,7 +115,7 @@ flow query legacy-inventory --json
                                 inventory retained legacy flow evidence read-only
 flow query delegated-agent --harness codex --capability read-only \
   --caller-metadata '{"owner":"preparation"}' --json
-                                inspect an exact non-mutating Drovr launch contract
+                                inspect an exact non-mutating execution contract
 flow start --json                start the optional host-owned replacement runtime
 flow status --json               inspect owner, runner capacity, and errors
 flow stop --json                 stop the exact recorded owner
@@ -202,18 +202,30 @@ the same versioned policy from `config/flow/launch-policy.v1.json`; it does not 
 selector merely because replacement sources are installed. The launcher
 enforces that converged decision.
 
-The copyable first-release operator path is the [Flow 1.0 dark opt-in guide](docs/flow/operator-guide.md).
+The operator paths are in the [Flow dark opt-in guide](docs/flow/operator-guide.md).
 
 The public replacement Interface is also fail-closed: `prepare` and `launch`
 require a request-local `flow.dark-opt-in/v1` bound to the exact release
-manifest. That opt-in admits only the production feature `verify` and local
-review routes for sacrificial qualification. Feature test or mixed modes,
+manifest. The default `flow-release-1.0-dark/v1` scope contains only the
+production feature `verify` and local review routes for sacrificial qualification.
+Feature test or mixed modes,
 spikes, epics, GitHub review, tracker/forge operations, publication, merge,
 push, and other remote mutations return typed disabled or unsupported
 outcomes. It does not authorize normal use, remote mutation, later issue runs,
 or a change to the Claude default. Use `config/flow/transition-ledger.v1.json`
 and the transition projection for the exact release, evidence status, and
 legal actions before selecting it deliberately.
+
+The separate `flow-release-1.1-dark-test/v1` configuration adds the bounded Linux
+Codex feature-test pilot. Its ordinary request selects only `test:{check_id}`;
+the host privately supplies the committed acceptance and positive health checks.
+Preparation binds that check without running it, launch refuses changed bindings,
+and admitted execution requires real health and RED evidence before one writer,
+then GREEN evidence and independent critique before sealing a local candidate.
+Select the separate configuration explicitly as described in the guide. Native
+test qualification is **NOT_RUN**; deterministic fixture success and historical
+qualification do not grant native test permission. The default configuration,
+legacy default, normal-use and remote-mutation limits remain unchanged.
 
 Dark opt-in admission requires both deterministic/core qualification and a
 separate production-route conformance record. Phase one includes host-fault
@@ -227,9 +239,9 @@ incomplete, or foreign-environment phase keeps admission withheld.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
-`tools/flow/src/evidence-safety.mjs`. Catalog v33 binds policy
+`tools/flow/src/evidence-safety.mjs`. Catalog v38 binds policy
 `flow.evidence-safety-policy/v1` to exact catalog identity
-`flow.contract-catalog/v1@34`; rejected evidence produces only typed redacted
+`flow.contract-catalog/v1@38`; rejected evidence produces only typed redacted
 codes and never reads ambient host state.
 
 The three implementations use disjoint authority roots, and existing runs
@@ -378,3 +390,66 @@ This repository does not clone the notes repository, manage SSH configuration,
 configure firewalls or server services, authenticate applications, remove
 unrelated Homebrew software, or delete arbitrary stale symlinks. `dotfiles doctor`
 reports known health problems without performing repairs.
+
+## Direct CLI execution and optional Drovr
+
+The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
+decision does not qualify native execution: current release qualification remains
+`not_run`, and public admission remains `qualification_withheld`. Issue #84 must
+qualify real Codex startup and permission enforcement against the exact pilot
+release before native pilot use. The later full release under parent #2 still
+requires both official harnesses. Claude remains blocked by
+`claude_native_policy_unproven`; macOS direct execution is unsupported. Sole owner
+authority, conservative recovery and independent review remain mandatory. This
+pilot does not authorize normal use, legacy-default cutover or remote mutation.
+
+The replacement Flow runtime selects the `direct` execution backend by default.
+This is separate from the public launcher policy, whose legacy default remains
+unchanged. Set `FLOW_EXECUTION_BACKEND=drovr` before starting an isolated owner
+to select the optional historical Drovr adapter. Backend selection never
+rebinds existing attempts. `FLOW_CODEX_EXECUTABLE` selects an absolute official
+Codex executable; the adapter pins its resolved path, bytes and exact version
+(`codex-cli 0.160.0`). An explicit unavailable executable never falls back.
+
+Direct descriptions use `flow.execution-description/v1` and advertise only
+implemented initial-input/structured-output semantics. `workspace-write-denied`
+requires the card's `repository:write` grant and denies escalation, approvals
+and delegate tool network. Direct tasks reject the old human/automatic-review
+postures, steering, session continuation and backend switching. `read-only`
+uses no mutation grant. Unknown ambient project/managed hooks, plugins or
+configuration block; argv alone is not permission qualification. The only writable roots are the exact workspace and owned task scratch;
+ambient `/tmp` and `$TMPDIR` grants are excluded. Provider transport and native
+saved authentication remain the official CLI's concern.
+
+The provider-local Claude argv/parser is implemented against Claude Code 2.1.287,
+but native admission always returns `claude_native_policy_unproven`: managed
+hooks and additive roots cannot yet be proven before startup. It advertises no
+usable Claude route. Generic effort selection remains Codex-shaped until that
+blocker is resolved, so Claude `max` is not admitted by the shared port.
+
+Linux direct tasks require `/usr/bin/python3` with subreaper and pidfd support.
+The resolved interpreter and worker bytes are pinned; Python starts with
+`-I -S`, and cancellation signals verified ancestry through exact process handles. Flow
+owns a private immutable descriptor, exact input/schema bytes, raw output and
+atomic terminal receipt under its authority directory. The detached task worker
+has no scheduling authority. It retains escaped descendants until positively
+reaped; PID age, parent death, missing output or empty process group never prove
+retirement. Missing or conflicting receipts remain blocked without blind replay.
+macOS direct mutation is unsupported before spawn; use the optional Drovr path
+until equivalent containment is implemented and qualified.
+
+Direct feature delegates edit files without access to protected `.git` state.
+The prepared `flow.operation/feature-direct-commit/v1` records a local Git
+mutation explicitly, reserves exact old/new commit evidence before ref CAS,
+and then leaves existing capture, independent critique, operation verification,
+sealing, retention and handoff gates in force. No future candidate identity is
+supplied by the preparation caller. No push, separate review, remote mutation
+or normal-use permission follows from task success.
+
+Implementation fixtures are deterministic subprocess evidence. Native direct
+startup/permission, both harnesses, public host recovery and supported-host
+qualification remain pending. Changed source/catalog identity withholds public
+admission; release content must be regenerated by the documented generator,
+and older Drovr qualification cannot be relabeled. See
+[ADR-0011](docs/adr/0011-use-direct-cli-tasks-as-primary-flow-execution.md) for
+the execution decision and limits.

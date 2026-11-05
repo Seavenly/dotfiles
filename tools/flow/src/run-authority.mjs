@@ -51,6 +51,7 @@ import {
 } from "./reboot-revalidation.mjs";
 import { validateTimeFacts } from "./reboot-facts.mjs";
 import {
+  unobservedCallerIdempotentInvocation,
   applyExecutionTimeObservation,
   foldRun,
   projectRun,
@@ -517,6 +518,22 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
         }), hostProjection());
       }
       return hostProjection();
+    },
+
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: hostProjection(),
+        readRun: (runId) => {
+          const run = runs.get(runId);
+          if (!run) return null;
+          return projectRunWithHostBarrier(projectRun({
+            authorityEventStreamDigest: runWatermark(run),
+            fold: foldRun(run),
+            events: run.events,
+          }), hostProjection());
+        },
+      });
     },
 
     watch(runId, { unrefPollTimer = false } = {}) {
@@ -2148,6 +2165,14 @@ export function createDurableRunAuthority({
       }
     },
 
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: this.query(),
+        readRun: (runId) => this.query(runId),
+      });
+    },
+
     watch(runId, { unrefPollTimer = false } = {}) {
       assertOpen();
       const initial = this.query(runId);
@@ -2269,6 +2294,12 @@ export function createDurableRunAuthority({
           latestInvocation?.type === "effect_invocation_started" &&
           (!validateTimeFacts(latestInvocation.time_facts) ||
             latestInvocation.time_facts.length === 0);
+        const unobservedInvocation = unobservedCallerIdempotentInvocation(intent, runEventsFromRecords(stream.records));
+        const resumesUnobservedIdempotentInvocation = reconciliation === null &&
+          adapter?.operatorRecovery === true && intent.authority_boot_id === bootId &&
+          intent.authority_epoch < authorityEpoch &&
+          unobservedInvocation !== null && unobservedInvocation.authority_epoch < authorityEpoch;
+        const resumesInvocation = resumesUnknownInvocation || resumesUnobservedIdempotentInvocation;
         const observedPresence = validateEffectObservation(
           latestObservation,
           intent,
@@ -2344,7 +2375,7 @@ export function createDurableRunAuthority({
           payload.effect_id === intent.effect_id);
         if (reconciliation !== "adopt_present" &&
             reconciliation !== "settle_absent" &&
-            !resumesUnknownInvocation &&
+            !resumesInvocation &&
             (intent.effect_kind === undefined || intent.effect_kind === "operation")) {
           const invocationCount = stream.records.filter(({ payload }) =>
             payload.type === "effect_invocation_started" &&
@@ -2457,10 +2488,10 @@ export function createDurableRunAuthority({
             );
           }
           assertDurableHostRestoreClear(database);
-          const recordsInvocationStart = !resumesUnknownInvocation &&
+          const recordsInvocationStart = !resumesInvocation &&
             (!settleCancelled ||
               effectiveIntent.effect_kind === "delegate_cancellation");
-          if (recordsInvocationStart || resumesUnknownInvocation) {
+          if (recordsInvocationStart || resumesInvocation) {
             // beforeEffect is the last injected boundary before dispatch. It
             // may advance time or invalidate an authority fence, so it must
             // run before the final typed time observation and invocation
@@ -5219,6 +5250,33 @@ function fencedRunFold(
     authority_epoch: admission.authority_epoch,
     authority_boot_id: admission.boot_id,
   });
+  // Recovery under a newer owner is a fenced query decision. Keep the
+  // persisted reducer output compatible with stores written before takeover
+  // recovery was supported.
+  const runEvents = runEventsFromRecords(stream.records);
+  const recoveryActions = stream.fold.phase === "active"
+    ? stream.fold.effect_intents.flatMap((intent) => {
+        const effect = stream.fold.effects.find(({ effect_id: effectId }) =>
+          effectId === intent.effect_id);
+        const invocation = unobservedCallerIdempotentInvocation(intent, runEvents);
+        if (effect?.retry?.status !== "exhausted" || effect.receipt !== null ||
+            invocation === null || intent.authority_boot_id !== admission.boot_id ||
+            intent.authority_epoch >= admission.authority_epoch ||
+            invocation.authority_epoch >= admission.authority_epoch ||
+            stream.fold.legal_actions.some((action) =>
+              action.type === "recovery" && action.effect_id === intent.effect_id)) {
+          return [];
+        }
+        return [{
+          schema: "flow.command/v1",
+          type: "recovery",
+          run_id: stream.fold.run_id,
+          effect_id: intent.effect_id,
+          recovery: effectClassPolicy(intent.classification).recovery,
+          expected_watermark: watermark,
+        }];
+      })
+    : [];
   const legalActions = hostRestoreBarrier
     ? []
     : suspendedAfterReboot
@@ -5232,7 +5290,7 @@ function fencedRunFold(
         expected_generation: stream.generation,
         revalidation,
       }]
-    : stream.fold.legal_actions.map((action) => ({
+    : [...stream.fold.legal_actions, ...recoveryActions].map((action) => ({
         ...action,
         expected_watermark: watermark,
       }));
@@ -5240,7 +5298,7 @@ function fencedRunFold(
     stream.fold,
     legalActions,
     executionTimeObservation,
-    runEventsFromRecords(stream.records),
+    runEvents,
   );
   const retryProjection = applyRetryTimeObservation(
     stream.fold,
@@ -6037,6 +6095,74 @@ function unknownRunRejection(operation, runId, authorityEvents, commandType) {
     authorityWatermark: authorityWatermark(authorityEvents),
     authorityWatermarkDomain: "host",
   });
+}
+
+/**
+ * Resolve the retained completed run that published one exact review
+ * candidate reference.  The candidate projection intentionally does not
+ * carry source_run_id, so callers must use this RunAuthority-owned index
+ * rather than guessing a run from caller input.
+ */
+export function queryRetainedSourceRunByReviewCandidateReference({
+  reference,
+  hostProjection,
+  readRun,
+} = {}) {
+  const watermark = hostProjection?.watermark ?? EMPTY_WATERMARK;
+  if (!isPlainRecord(reference) ||
+      typeof reference.candidate_id !== "string" ||
+      reference.candidate_id.length === 0 ||
+      !isDigestValue(reference.candidate_fingerprint)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_missing",
+      reason: "RunAuthority has no exact retained source run reference",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  if (typeof readRun !== "function" || !Array.isArray(hostProjection?.runs)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_unavailable",
+      reason: "RunAuthority cannot inspect retained source runs",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  const matches = [];
+  for (const runId of hostProjection.runs) {
+    const projection = readRun(runId);
+    const candidateReference = projection?.review_candidate_reference;
+    if (projection?.schema !== "flow.run-projection/v1" ||
+        projection.phase !== "succeeded" ||
+        candidateReference?.candidate_id !== reference.candidate_id ||
+        candidateReference?.candidate_fingerprint !==
+          reference.candidate_fingerprint ||
+        reference.review_authority_watermark !== undefined &&
+          candidateReference.review_authority_watermark !==
+            reference.review_authority_watermark) {
+      continue;
+    }
+    matches.push(projection);
+  }
+  if (matches.length === 1) return matches[0];
+  return createRejection({
+    operation: "query",
+    code: matches.length === 0 ? "source_run_missing" : "source_run_ambiguous",
+    reason: matches.length === 0
+      ? "RunAuthority has no retained completed source run for this candidate"
+      : "RunAuthority retained more than one source run for this candidate",
+    authorityWatermark: watermark,
+    authorityWatermarkDomain: "host",
+    legalActions: [],
+  });
+}
+
+function isDigestValue(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function launchRejection(code, prepared, authorityEvents, reason = null) {

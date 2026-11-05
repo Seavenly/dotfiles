@@ -43,7 +43,7 @@ assert_contains "$output" '"content_sha256"'
 echo "ok - flow exposes the read-only legacy compatibility inventory"
 
 delegation_output="$(HOME="$tmp" XDG_STATE_HOME="$tmp/state" PATH="$fake_bin:$PATH" DOTFILES_ROOT="$root" \
-  DROVR_CONFIG_DIR="$root/config/drovr" "$root/bin/flow" query delegated-agent \
+  FLOW_EXECUTION_BACKEND=drovr DROVR_CONFIG_DIR="$root/config/drovr" "$root/bin/flow" query delegated-agent \
   --harness codex --capability read-only \
   --caller-metadata '{"run_id":"run:test","card_id":"review"}' --json)"
 assert_contains "$delegation_output" '"schema":"flow.delegated-agent-description-projection/v1"'

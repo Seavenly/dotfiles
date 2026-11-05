@@ -18,6 +18,7 @@ import {
   createInMemoryRunAuthority,
 } from "./run-authority.mjs";
 import {
+  createAuthorityFact,
   snapshotPredefinedAuthorityCatalog,
   snapshotRegisteredAuthorities,
 } from "./authority-bindings.mjs";
@@ -65,6 +66,11 @@ import {
 import { parseReviewDelegateResult } from "./review-rendering.mjs";
 import { validateDelegateEvidenceSafety } from "./evidence-safety.mjs";
 import {
+  reviewExplicitFactsFromPreparationFacts,
+  reviewPreparationFactsDigest,
+  validateReviewPreparationFacts,
+} from "./review-preparation-facts.mjs";
+import {
   createFlowRuntimeRunner,
   FLOW_RUNTIME_BACKGROUND_WATCH,
 } from "./flow-runtime-runner.mjs";
@@ -93,6 +99,7 @@ export function createFlowRuntime({
   runAuthority = hostRunAuthority,
   registeredOperations = {},
   registeredQueries = {},
+  reviewPreparationProvider = null,
   delegatedAgentPort = null,
   delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
@@ -187,6 +194,7 @@ export function createFlowRuntime({
   const predefinedAuthorityCatalog = snapshotPredefinedAuthorityCatalog(
     predefinedRegistry,
   );
+  const preparationProvider = reviewPreparationProvider;
   attachAuthorityBindingCatalogs(runAuthority, {
     authorities: authorityRegistry,
     predefinedDefinitions: predefinedAuthorityCatalog,
@@ -199,6 +207,12 @@ export function createFlowRuntime({
     : planCompiler;
   runtime = Object.freeze({
     prepare(proposal) {
+      const preparedReview = prepareReviewSelectionWithFacts(
+        proposal,
+        preparationProvider,
+      );
+      if (preparedReview?.schema === "flow.rejection/v1") return preparedReview;
+      proposal = preparedReview;
       if (isPredefinedFlowSelection(proposal)) {
         return compilePredefinedFlowSelection(
           proposal,
@@ -213,12 +227,24 @@ export function createFlowRuntime({
     },
 
     launch(request) {
-      const adopted = typeof runAuthority.adoptExactLaunch === "function"
-        ? runAuthority.adoptExactLaunch(request)
-        : null;
-      if (adopted !== null && adopted !== undefined) return adopted;
       const validation = validateLaunchRequest(request);
-      if (validation.accepted) {
+      if (validation.accepted &&
+          validation.prepared?.selection?.inputs?.preparation_facts === undefined &&
+          executionCards(validation.prepared).some((card) =>
+            card.inputs?.target?.schema === "flow.review-local-candidate/v1")) {
+        return createRejection({
+          operation: "launch",
+          code: "review_preparation_required",
+          reason: "local review requires authority-derived preparation_facts",
+          bundleDigest: validation.prepared.bundle_digest,
+          authorityWatermark: runAuthority.query().watermark,
+          authorityWatermarkDomain: "host",
+          legalActions: [],
+        });
+      }
+      const factsBoundReview = validation.accepted &&
+        validation.prepared?.selection?.inputs?.preparation_facts !== undefined;
+      const reviewAuthorityRejection = () => {
         const reviewTargets = executionCards(validation.prepared)
           .map((card) => card.inputs?.target)
           .filter((target) => target?.schema === "flow.review-local-candidate/v1");
@@ -229,18 +255,24 @@ export function createFlowRuntime({
           );
           if (issue) {
             const host = runAuthority.query();
+            const authorityFact = reviewAuthorityFact(issue.projection);
             return createRejection({
               operation: "launch",
               code: issue.code,
               reason: issue.reason,
               bundleDigest: validation.prepared.bundle_digest,
-              authorityWatermark: issue.projection?.watermark ?? host.watermark,
-              authorityWatermarkDomain: issue.projection?.schema ===
-                "work.review-candidate-projection/v1" ? "review" : "host",
-              legalActions: issue.projection?.legal_actions ?? [],
+              authorityWatermark: host.watermark,
+              authorityWatermarkDomain: "host",
+              legalActions: authorityFact.legal_actions,
+              authorityFact,
             });
           }
         }
+        return null;
+      };
+      const launchValidated = () => {
+        const authorityRejection = reviewAuthorityRejection();
+        if (authorityRejection !== null) return authorityRejection;
         const operationCards = executionCards(validation.prepared);
         const incompatible = operationCards.map((card) => ({
           card,
@@ -314,20 +346,77 @@ export function createFlowRuntime({
             authorityWatermarkDomain: "host",
           });
         }
-        if (operationCards.some(({ executor }) =>
-          ["delegate", "operation", "subrun"].includes(executor.kind)) &&
-            typeof runAuthority.invokeEffect !== "function") {
-          const host = runAuthority.query();
-          return createRejection({
-            operation: "launch",
-            code: "durable_authority_required",
-            reason: "registered operations require durable effect authority",
-            bundleDigest: validation.prepared.bundle_digest,
-            authorityWatermark: host.watermark,
-            authorityWatermarkDomain: "host",
-          });
+        const settlePreparation = (preparationIssue) => {
+          if (preparationIssue !== null) {
+            return reviewPreparationLaunchRejection(
+              runAuthority,
+              validation.prepared,
+              preparationIssue,
+            );
+          }
+          if (operationCards.some(({ executor }) =>
+            ["delegate", "operation", "subrun"].includes(executor.kind)) &&
+              typeof runAuthority.invokeEffect !== "function") {
+            const host = runAuthority.query();
+            return createRejection({
+              operation: "launch",
+              code: "durable_authority_required",
+              reason: "registered operations require durable effect authority",
+              bundleDigest: validation.prepared.bundle_digest,
+              authorityWatermark: host.watermark,
+              authorityWatermarkDomain: "host",
+            });
+          }
+          return runAuthority.launch(request);
+        };
+        const preparationIssue = factsBoundReview
+          ? null
+          : revalidatePreparedReviewFacts(validation.prepared, preparationProvider);
+        if (isPromiseLike(preparationIssue)) {
+          return preparationIssue.then(settlePreparation);
         }
+        return settlePreparation(preparationIssue);
+      };
+      if (validation.accepted && factsBoundReview) {
+        const settleReviewPreparation = (preparationIssue) => {
+          if (preparationIssue !== null) {
+            return reviewPreparationLaunchRejection(
+              runAuthority,
+              validation.prepared,
+              preparationIssue,
+            );
+          }
+          const authorityRejection = reviewAuthorityRejection();
+          if (authorityRejection !== null) return authorityRejection;
+          const adopted = typeof runAuthority.adoptExactLaunch === "function"
+            ? runAuthority.adoptExactLaunch(request)
+            : null;
+          return adopted !== null && adopted !== undefined
+            ? adopted
+            : launchValidated();
+        };
+        const preparationIssue = revalidatePreparedReviewFacts(
+          validation.prepared,
+          preparationProvider,
+        );
+        if (isPromiseLike(preparationIssue)) {
+          return preparationIssue.then(settleReviewPreparation);
+        }
+        return settleReviewPreparation(preparationIssue);
       }
+      if (validation.accepted) {
+        // Non-review retries remain read-only and idempotent. A missing run
+        // continues through every fresh compatibility and authority check.
+        const adopted = typeof runAuthority.adoptExactLaunch === "function"
+          ? runAuthority.adoptExactLaunch(request)
+          : null;
+        if (adopted !== null && adopted !== undefined) return adopted;
+        return launchValidated();
+      }
+      const adopted = typeof runAuthority.adoptExactLaunch === "function"
+        ? runAuthority.adoptExactLaunch(request)
+        : null;
+      if (adopted !== null && adopted !== undefined) return adopted;
       return runAuthority.launch(request);
     },
 
@@ -427,6 +516,13 @@ export function createFlowRuntime({
     },
 
     query(request = {}) {
+      if (isReviewPreparationFactsQuery(request)) {
+        return dispatchReviewPreparationFactsQuery(
+          request,
+          preparationProvider,
+          runAuthority,
+        );
+      }
       if (request?.query === "review_inbox") {
         if (!isExactReviewInboxRequest(request, "flow.query/v1")) {
           return reviewInboxRequestRejection(ownedReviewAuthority, "query");
@@ -695,6 +791,42 @@ function isCanonicalEqual(left, right) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function reviewAuthorityFact(projection) {
+  const existing = isRecord(projection?.authority_fact)
+    ? projection.authority_fact
+    : {};
+  const existingFacts = isRecord(existing.facts) ? existing.facts : {};
+  let projectionDigest = null;
+  try {
+    projectionDigest = digest(projection);
+  } catch {
+    // Keep available authority identity even when the projection is malformed.
+  }
+  return createAuthorityFact({
+    authorityId: "ReviewAuthority",
+    authorityContract: "work.review/v1",
+    providerIdentity: {
+      schema: "flow.registered-authority/v1",
+      id: "flow.production.review-authority",
+      version: "1",
+    },
+    watermark: projection?.watermark ?? null,
+    watermarkDomain: "review",
+    subjectId: projection?.subject_id ?? null,
+    disposition: projection?.status ?? null,
+    generation: projection?.generation ?? null,
+    facts: {
+      ...existingFacts,
+      candidate_fingerprint: projection?.candidate_fingerprint ?? null,
+      workspace_subject_id: projection?.candidate?.workspace?.subject_id ?? null,
+      workspace_generation: projection?.candidate?.workspace?.generation ?? null,
+      workspace_fingerprint: projection?.candidate?.workspace?.fingerprint ?? null,
+      projection_digest: projectionDigest,
+    },
+    legalActions: projection?.legal_actions ?? [],
+  });
 }
 
 function decorateGitHubReviewProjection(
@@ -1144,4 +1276,439 @@ function hostQueryRejection(runAuthority, code, reason = null) {
     authorityWatermark: hostProjection.watermark,
     authorityWatermarkDomain: "host",
   });
+}
+
+function isReviewPreparationFactsQuery(request) {
+  return request?.query === "review_preparation_facts";
+}
+
+function isDigest(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
+function isPublicReviewPreparationSelection(selection) {
+  const selectionKeys = isRecord(selection) ? Reflect.ownKeys(selection) : [];
+  if (!isRecord(selection) ||
+      selection.schema !== "flow.review-preparation-selection/v1" ||
+      !Array.isArray(selection.lenses) || selection.lenses.length === 0 ||
+      !isRecord(selection.routes) || !isRecord(selection.routes.lenses) ||
+      !isRecord(selection.routes.critic) ||
+      selectionKeys.some((key) =>
+        !["schema", "target", "lenses", "routes"].includes(key)) ||
+      selection.target !== undefined &&
+        (!isRecord(selection.target) ||
+         Object.keys(selection.target).sort().join(",") !==
+           "candidate_fingerprint,candidate_id" ||
+         typeof selection.target.candidate_id !== "string" ||
+         selection.target.candidate_id.length === 0 ||
+         !isDigest(selection.target.candidate_fingerprint))) {
+    return false;
+  }
+  if (selection.lenses.some((lens) =>
+    typeof lens !== "string" || lens.length === 0)) {
+    return false;
+  }
+  if (Reflect.ownKeys(selection.routes).sort().join(",") !== "critic,lenses") {
+    return false;
+  }
+  const selectedLenses = new Set(selection.lenses);
+  if (selectedLenses.size !== selection.lenses.length ||
+      Object.keys(selection.routes.lenses).some((lens) =>
+        !selectedLenses.has(lens)) ||
+      selection.lenses.some((lens) =>
+        !Object.hasOwn(selection.routes.lenses, lens))) return false;
+  const choices = [
+    ...selection.lenses.map((lens) => selection.routes.lenses[lens]),
+    selection.routes.critic,
+  ];
+  return choices.every((choice) => isPublicReviewRouteChoice(choice)) &&
+    !containsReviewAuthorityFacts(selection);
+}
+
+function isPublicReviewRouteChoice(choice) {
+  return isRecord(choice) &&
+    Reflect.ownKeys(choice).every((key) =>
+      ["launch", "description"].includes(key)) &&
+    (choice.launch === undefined || isRecord(choice.launch)) &&
+    (choice.description === undefined || isRecord(choice.description)) &&
+    (choice.launch !== undefined || choice.description !== undefined);
+}
+
+function containsReviewAuthorityFacts(value) {
+  const forbidden = new Set([
+    "authority_bindings",
+    "authority_facts",
+    "catalog_fingerprint",
+    "explicit_facts",
+    "facts_digest",
+    "preparation_facts",
+    "resource_claims",
+    "route_snapshot",
+    "time_facts",
+  ]);
+  if (Array.isArray(value)) return value.some(containsReviewAuthorityFacts);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, nested]) =>
+    forbidden.has(key) || containsReviewAuthorityFacts(nested));
+}
+
+function dispatchReviewPreparationFactsQuery(
+  request,
+  provider,
+  runAuthority,
+) {
+  const required = [
+    "schema",
+    "query",
+    "candidate_id",
+    "candidate_fingerprint",
+    "selection",
+  ];
+  const keys = isRecord(request) ? Reflect.ownKeys(request) : [];
+  const candidateId = request?.candidate_id;
+  const candidateFingerprint = request?.candidate_fingerprint;
+  if (!isRecord(request) ||
+      request.schema !== "flow.query/v1" ||
+      keys.length !== required.length ||
+      required.some((key) => !Object.hasOwn(request, key)) ||
+      keys.some((key) => !required.includes(key)) ||
+      typeof candidateId !== "string" || candidateId.length === 0 ||
+      !isDigest(candidateFingerprint) ||
+      !isPublicReviewPreparationSelection(request.selection)) {
+    return hostQueryRejection(
+      runAuthority,
+      "invalid_review_preparation_query",
+      "review preparation query must identify one exact candidate and bounded selection",
+    );
+  }
+  if (typeof provider?.derive !== "function") {
+    return hostQueryRejection(
+      runAuthority,
+      "review_preparation_unavailable",
+      "review preparation facts authority is unavailable",
+    );
+  }
+  const safeRequest = Object.freeze({
+    schema: request.schema,
+    query: request.query,
+    ...(typeof request.candidate_id === "string"
+      ? { candidate_id: request.candidate_id }
+      : {}),
+    ...(typeof request.candidate_fingerprint === "string"
+      ? { candidate_fingerprint: request.candidate_fingerprint }
+      : {}),
+    selection: structuredClone(request.selection),
+  });
+  let result;
+  try {
+    result = provider.derive(safeRequest, { runAuthority });
+  } catch (error) {
+    return reviewPreparationProviderRejection(runAuthority, error);
+  }
+  if (isPromiseLike(result)) {
+    return result.then((value) => normalizeReviewPreparationQueryResult(
+      value,
+      runAuthority,
+      { candidateId, candidateFingerprint },
+    )).catch((error) => reviewPreparationProviderRejection(
+      runAuthority,
+      error,
+    ));
+  }
+  return normalizeReviewPreparationQueryResult(result, runAuthority, {
+    candidateId,
+    candidateFingerprint,
+  });
+}
+
+function normalizeReviewPreparationQueryResult(
+  result,
+  runAuthority,
+  { candidateId, candidateFingerprint } = {},
+) {
+  const rejection = reviewPreparationRejectionValue(result);
+  if (rejection?.schema === "flow.rejection/v1") {
+    return reviewPreparationIssueRejection(runAuthority, rejection);
+  }
+  if (result?.accepted === false) {
+    return reviewPreparationIssueRejection(runAuthority, rejection);
+  }
+  const facts = result?.accepted === true ? result.facts : result;
+  const validation = validateReviewPreparationFacts(facts);
+  if (!validation.valid) {
+    return reviewPreparationIssueRejection(
+      runAuthority,
+      validation.issues[0],
+    );
+  }
+  if (facts.candidate.candidate_id !== candidateId ||
+      facts.candidate.candidate_fingerprint !== candidateFingerprint) {
+    return reviewPreparationIssueRejection(runAuthority, {
+      code: "candidate_fingerprint_mismatch",
+      reason: "review preparation facts do not match the requested candidate",
+      authority_watermark: facts.candidate.authority_watermark,
+      authority_watermark_domain: "candidate",
+    });
+  }
+  return facts;
+}
+
+function reviewPreparationRejectionValue(value) {
+  if (value?.schema === "flow.rejection/v1") return value;
+  if (value?.rejection !== undefined) return value.rejection;
+  if (value?.issue !== undefined) return value.issue;
+  return value?.accepted === false ? value : null;
+}
+
+function reviewPreparationProviderRejection(runAuthority, error) {
+  return reviewPreparationIssueRejection(runAuthority, {
+    code: typeof error?.code === "string" && error.code.length > 0
+      ? error.code
+      : "review_preparation_unavailable",
+    reason: error?.reason ?? "review preparation facts authority is unavailable",
+    legal_actions: error?.legal_actions ?? [],
+    authority_watermark: error?.authority_watermark,
+    authority_watermark_domain: error?.authority_watermark_domain,
+    authority_fact: error?.authority_fact,
+  });
+}
+
+function reviewPreparationIssueRejection(runAuthority, issue = {}) {
+  const host = runAuthority?.query?.() ?? null;
+  const topLevelDomain = ["host", "run"].includes(
+    issue?.authority_watermark_domain,
+  ) ? issue.authority_watermark_domain : "host";
+  const authorityFact = sanitizeTerminalWorkspaceAuthorityFact(
+    issue?.authority_fact,
+  );
+  const terminalWorkspace = isTerminalWorkspaceAuthorityFact(authorityFact);
+  return createRejection({
+    operation: "query",
+    code: typeof issue?.code === "string"
+      ? issue.code
+      : "review_preparation_unavailable",
+    reason: typeof issue?.reason === "string" ? issue.reason : null,
+    authorityWatermark: topLevelDomain === "run"
+      ? issue?.authority_watermark ?? host?.watermark ?? null
+      : host?.watermark ?? null,
+    authorityWatermarkDomain: topLevelDomain,
+    legalActions: terminalWorkspace
+      ? []
+      : Array.isArray(issue?.legal_actions)
+        ? issue.legal_actions
+        : authorityFact?.legal_actions ?? [],
+    authorityFact,
+  });
+}
+
+function reviewPreparationLaunchRejection(runAuthority, prepared, issue) {
+  const host = runAuthority.query();
+  const sourceRunId = issue.authority_watermark_domain === "run" &&
+      issue.authority_fact?.authority_id === "RunAuthority" &&
+      issue.authority_fact.watermark_domain === "run" &&
+      typeof issue.authority_fact.subject_id === "string"
+    ? issue.authority_fact.subject_id
+    : null;
+  return createRejection({
+    operation: "launch",
+    code: issue.code,
+    reason: issue.reason ?? null,
+    runId: sourceRunId,
+    bundleDigest: prepared.bundle_digest,
+    authorityWatermark: sourceRunId === null
+      ? host?.watermark ?? null
+      : issue.authority_watermark ?? issue.authority_fact.watermark ?? null,
+    authorityWatermarkDomain: sourceRunId === null ? "host" : "run",
+    legalActions: issue.legal_actions ?? [],
+    authorityFact: issue.authority_fact,
+  });
+}
+
+function prepareReviewSelectionWithFacts(proposal, provider) {
+  if (!isPredefinedFlowSelection(proposal) ||
+      proposal.definition !== "review/v1" ||
+      !isRecord(proposal.inputs)) {
+    return proposal;
+  }
+  const localReview = proposal.inputs.target?.schema ===
+    "flow.review-local-candidate/v1";
+  if (localReview && proposal.inputs.preparation_facts === undefined) {
+    return createRejection({
+      operation: "prepare",
+      code: "review_preparation_required",
+      reason: "local review requires authority-derived preparation_facts",
+      authorityWatermark: null,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  if (proposal.inputs.preparation_facts === undefined) return proposal;
+  const facts = proposal.inputs.preparation_facts;
+  const validation = validateReviewPreparationFacts(facts);
+  if (!validation.valid) {
+    const issue = validation.issues[0];
+    return createRejection({
+      operation: "prepare",
+      code: issue?.code ?? "facts_changed",
+      reason: issue?.reason ?? "review preparation facts are invalid",
+      authorityWatermark: null,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  let explicitFacts;
+  try {
+    const materialized = typeof provider?.materialize === "function"
+      ? provider.materialize({ facts, proposal })
+      : null;
+    if (isPromiseLike(materialized)) {
+      return createRejection({
+        operation: "prepare",
+        code: "review_preparation_unavailable",
+        reason: "review preparation materialization must be synchronous",
+        authorityWatermark: facts.authority_watermarks.candidate,
+        authorityWatermarkDomain: "candidate",
+        legalActions: [],
+      });
+    }
+    explicitFacts = materialized?.explicit_facts ?? materialized ??
+      reviewExplicitFactsFromPreparationFacts(facts, {
+        limits: proposal.inputs.limits,
+      });
+  } catch (error) {
+    return createRejection({
+      operation: "prepare",
+      code: error?.code ?? "review_preparation_unavailable",
+      reason: error?.reason ?? "review preparation facts could not be materialized",
+      authorityWatermark: facts.authority_watermarks.candidate,
+      authorityWatermarkDomain: "candidate",
+      legalActions: [],
+    });
+  }
+  return {
+    ...proposal,
+    explicit_facts: explicitFacts,
+  };
+}
+
+export function revalidatePreparedReviewFacts(prepared, provider) {
+  const facts = prepared?.selection?.inputs?.preparation_facts;
+  if (facts === undefined) return null;
+  const validation = validateReviewPreparationFacts(facts);
+  if (!validation.valid) {
+    return preparationLaunchIssue(validation.issues[0]);
+  }
+  const localTargets = [
+    prepared.selection.inputs.target,
+    ...(prepared.graph?.cards ?? []).map((card) => card.inputs?.target),
+    ...(prepared.revision_templates ?? []).flatMap(({ changes }) =>
+      (changes.add_cards ?? []).map((card) => card.inputs?.target)),
+  ].filter((target) => target?.schema === "flow.review-local-candidate/v1");
+  if (localTargets.some((target) =>
+    target.candidate?.candidate_id !== facts.candidate.candidate_id ||
+    target.candidate_fingerprint !== facts.candidate.candidate_fingerprint)) {
+    return preparationLaunchIssue({
+      code: "preparation_facts_candidate_mismatch",
+      reason: "review preparation facts do not identify the exact review target",
+    });
+  }
+  if (typeof provider?.revalidate !== "function") {
+    return preparationLaunchIssue({
+      code: "review_preparation_unavailable",
+      reason: "review preparation owners cannot be revalidated",
+    });
+  }
+  let result;
+  try {
+    result = provider.revalidate({
+      facts,
+      prepared,
+      inputs: prepared.selection.inputs,
+    });
+  } catch (error) {
+    return preparationLaunchIssue({
+      code: error?.code ?? "review_preparation_unavailable",
+      reason: error?.reason ?? "review preparation owner revalidation failed",
+      legal_actions: error?.legal_actions,
+      authority_watermark: error?.authority_watermark,
+      authority_watermark_domain: error?.authority_watermark_domain,
+      authority_fact: error?.authority_fact,
+    });
+  }
+  const settle = (value) => {
+    if (value?.valid === false || value?.accepted === false) {
+      return preparationLaunchIssue(reviewPreparationRejectionValue(value));
+    }
+    const freshFacts = value?.valid === true || value?.accepted === true
+      ? value.facts
+      : value;
+    const freshValidation = validateReviewPreparationFacts(freshFacts);
+    if (!freshValidation.valid) {
+      return preparationLaunchIssue(freshValidation.issues[0]);
+    }
+    if (reviewPreparationFactsDigest(freshFacts) !==
+        reviewPreparationFactsDigest(facts)) {
+      const changedOwner = ["run", "review", "workspace"].find((owner) =>
+        digest(freshFacts?.owner_authorities?.[owner] ?? null) !==
+          digest(facts?.owner_authorities?.[owner] ?? null)) ?? "review";
+      const authorityFact = freshFacts?.owner_authorities?.[changedOwner];
+      return preparationLaunchIssue({
+        code: "facts_changed",
+        reason: "review preparation authority facts changed",
+        authority_watermark: authorityFact?.watermark ??
+          freshFacts.authority_watermarks.candidate,
+        authority_watermark_domain: authorityFact?.watermark_domain ?? "host",
+        legal_actions: authorityFact?.legal_actions ?? [],
+        authority_fact: authorityFact,
+      });
+    }
+    return null;
+  };
+  if (isPromiseLike(result)) {
+    return result.then(settle).catch((error) => preparationLaunchIssue({
+      code: error?.code ?? "review_preparation_unavailable",
+      reason: error?.reason ?? "review preparation owner revalidation failed",
+      legal_actions: error?.legal_actions,
+      authority_watermark: error?.authority_watermark,
+      authority_watermark_domain: error?.authority_watermark_domain,
+      authority_fact: error?.authority_fact,
+    }));
+  }
+  return settle(result);
+}
+
+function preparationLaunchIssue(issue = {}) {
+  const rejection = reviewPreparationRejectionValue(issue) ?? issue;
+  const authorityFact = sanitizeTerminalWorkspaceAuthorityFact(
+    rejection?.authority_fact,
+  );
+  const terminalWorkspace = isTerminalWorkspaceAuthorityFact(authorityFact);
+  return {
+    code: typeof rejection?.code === "string" ? rejection.code : "facts_changed",
+    reason: typeof rejection?.reason === "string" ? rejection.reason : null,
+    authority_watermark: rejection?.authority_watermark ?? null,
+    authority_watermark_domain: rejection?.authority_watermark_domain ?? "host",
+    legal_actions: terminalWorkspace
+      ? []
+      : Array.isArray(rejection?.legal_actions)
+        ? rejection.legal_actions
+        : [],
+    authority_fact: authorityFact,
+  };
+}
+
+function isTerminalWorkspaceAuthorityFact(authorityFact) {
+  return authorityFact?.authority_contract === "work.workspace/v1" &&
+    ["cleaned", "released", "disposed"].includes(authorityFact.disposition);
+}
+
+function sanitizeTerminalWorkspaceAuthorityFact(authorityFact) {
+  return isTerminalWorkspaceAuthorityFact(authorityFact)
+    ? { ...authorityFact, legal_actions: [] }
+    : authorityFact;
+}
+
+function isPromiseLike(value) {
+  return value !== null && (typeof value === "object" ||
+    typeof value === "function") && typeof value.then === "function";
 }

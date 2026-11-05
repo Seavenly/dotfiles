@@ -5,12 +5,15 @@ import { digest as canonicalDigest } from "./canonical.mjs";
 export const RELEASE_CONTENT_GOVERNANCE = Object.freeze({
   schema: "flow.release-content-git-binding/v1",
   included_paths: Object.freeze([
-    "CONTEXT.md",
+    "GLOSSARY.md",
     "README.md",
     "bin/flow",
     "config/flow/",
     "docs/adr/0007-use-drovr-as-the-delegated-agent-runtime.md",
     "docs/adr/0008-use-a-sole-run-authority-for-flow-lifecycle.md",
+    "docs/adr/0009-separate-delegated-resource-and-turn-lifecycles.md",
+    "docs/adr/0010-retire-hermes-host-integration.md",
+    "docs/adr/0011-use-direct-cli-tasks-as-primary-flow-execution.md",
     "tests/flow_cli_test.sh",
     "tests/flow_transition_test.sh",
     "tools/drovr/HARNESS-INTERFACE.md",
@@ -24,6 +27,8 @@ export const RELEASE_CONTENT_GOVERNANCE = Object.freeze({
   excluded_paths: Object.freeze([
     "config/flow/evidence/",
     "config/flow/node_modules/",
+    "config/flow/releases/1.1-dark-test/evidence/",
+    "config/flow/releases/1.1-dark-test/transition-ledger.v1.json",
     "config/flow/transition-ledger.v1.json",
     "tools/flow/node_modules/",
   ]),

@@ -80,3 +80,7 @@ Production composition supplies the WorkspaceAuthority resolver; no ambient
 cwd or registry lookup is accepted. The resource port and its schemas become
 catalogued contracts, while the existing delegated-agent port and public
 FlowRuntime interface remain unchanged.
+
+ADR-0011 retains these contracts for the optional Drovr adapter. Direct CLI
+tasks use their own bounded invocation and receipt contract and never emulate
+Drovr resources or claim its registry semantics.

@@ -83,6 +83,11 @@ const PUBLIC_HOST_OWNER = {
   endpoint: "flow.owner-endpoint/v1",
   status: "flow.owner-status/v1",
   authority: "RunAuthority",
+  provider_identity: {
+    schema: "flow.registered-authority/v1",
+    id: "flow.production.run-authority",
+    version: "1",
+  },
   identity: ["owner_token", "pid", "process_start_identity"],
   state_directory_mode: "0700",
   endpoint_mode: "0600",
@@ -131,11 +136,23 @@ const PUBLIC_FEATURE_PREPARATION = {
   brief: "flow.feature-brief/v1",
   definition: "flow.definition/feature/v1",
   selection: "flow.predefined-flow-selection/v1",
-  mode: "verify",
+  modes: ["verify", "test"],
   facts: "starting_clean_git_and_workspace_only",
   future_identity: "forbidden",
   callbacks: "forbidden",
   patch_bytes: "forbidden",
+  test: {
+    selection: "check_id_only",
+    configuration: "trusted_owner_constructor_only",
+    operation: "flow.operation/feature-test/v1",
+    receipt: "work.feature-test-receipt/v1",
+    runner: "fixed_node_health_and_acceptance_with_os_confinement",
+    health: "positive_probe_before_behavioral_red",
+    acceptance: "same_committed_check_green",
+    identity: "exact_check_and_runtime_fingerprint_before_claims",
+    generic_test_inputs: "rejected_before_effects",
+    native_qualification: "separate_required",
+  },
 };
 const PUBLIC_HOST_CONTRACTS = Object.freeze([
   PUBLIC_HOST_TRANSPORT.request,
@@ -521,6 +538,11 @@ const WORKSPACE_AUTHORITY = {
   interface: "work.workspace-authority/v1",
   contract: "work.workspace/v1",
   projection: "work.workspace-projection/v1",
+  provider_identity: {
+    schema: "flow.registered-authority/v1",
+    id: "flow.production.workspace-authority",
+    version: "1",
+  },
   commands: [
     "work.workspace-register-command/v1",
     "work.workspace-observation-command/v1",
@@ -544,7 +566,7 @@ const EVIDENCE_SAFETY = {
   binding: "flow.evidence-safety-binding/v1",
   catalog_view: "flow.evidence-safety-catalog/v1",
   policy_id: "flow.evidence-safety-policy/v1",
-  catalog_id: "flow.contract-catalog/v1@34",
+  catalog_id: "flow.contract-catalog/v1@38",
   allowed_uses: [
     "delegate_transfer",
     "artifact_acceptance",
@@ -640,6 +662,11 @@ const REVIEW_AUTHORITY = {
   contract: "work.review/v1",
   candidate: "work.review-candidate/v1",
   projection: "work.review-candidate-projection/v1",
+  provider_identity: {
+    schema: "flow.registered-authority/v1",
+    id: "flow.production.review-authority",
+    version: "1",
+  },
   review_projection: "flow.review-projection/v1",
   event: "work.review-event/v1",
   commands: [
@@ -676,6 +703,8 @@ const REVIEW_AUTHORITY = {
   summary: "flow.review-summary/v1",
   automated_evidence: "flow.review-automated-evidence/v1",
   provenance: "flow.review-provenance/v1",
+  preparation_selection: "flow.review-preparation-selection/v1",
+  preparation_facts: "flow.review-preparation-facts/v1",
   artifacts: "flow.review-artifacts/v1",
   artifact_formats: [
     "flow.review-artifact-json/v1",
@@ -787,6 +816,11 @@ const REVIEW_QUERY = {
     authority: "ReviewAuthority",
     watermark: "flow.review-inbox-watermark/v1",
   },
+  rejection: "flow.rejection/v1",
+};
+const REVIEW_PREPARATION_QUERY = {
+  request: "flow.query/v1",
+  projection: "flow.review-preparation-facts/v1",
   rejection: "flow.rejection/v1",
 };
 const REVIEW_WATCH = {
@@ -1119,6 +1153,9 @@ export async function loadContractCatalog({
     catalog.flow_runtime?.operation_contracts?.query?.registered?.review,
     REVIEW_QUERY,
   ) || !isDeepStrictEqual(
+    catalog.flow_runtime?.operation_contracts?.query?.registered?.review_preparation_facts,
+    REVIEW_PREPARATION_QUERY,
+  ) || !isDeepStrictEqual(
     catalog.flow_runtime?.operation_contracts?.watch?.review,
     REVIEW_WATCH,
   ) || ![
@@ -1153,6 +1190,8 @@ export async function loadContractCatalog({
     REVIEW_AUTHORITY.summary,
     REVIEW_AUTHORITY.automated_evidence,
     REVIEW_AUTHORITY.provenance,
+    REVIEW_AUTHORITY.preparation_selection,
+    REVIEW_AUTHORITY.preparation_facts,
     REVIEW_AUTHORITY.artifacts,
     ...REVIEW_AUTHORITY.artifact_formats,
     REVIEW_AUTHORITY.receipt,
@@ -1229,6 +1268,12 @@ export async function loadContractCatalog({
     if (!isValidLegacyImportAdapter(catalog, adapter)) {
       throw new Error("contract catalog legacy import adapter is invalid");
     }
+  }
+  const execution = catalog.execution_backends;
+  if (execution?.primary !== "direct/v1" || execution.authority !== "non_authoritative" ||
+      execution.containment !== "linux_subreaper" || execution.native_qualification !== "not_run" ||
+      !["flow.execution-description/v1", "flow.task-invocation/v1", "flow.task-observation/v1", "flow.task-terminal-receipt/v1", "flow.task-settlement-proof/v1", "flow.operation/feature-direct-commit/v1", "flow.git-candidate-commit-receipt/v1"].every(contract=>catalog.contracts.includes(contract))) {
+    throw new Error("direct execution contracts are incomplete or weakened");
   }
   return catalog;
 }

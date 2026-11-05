@@ -1,3 +1,12 @@
+import { createProductionDirectCommitOperation } from "./production-direct-commit.mjs";
+export { resolveProductionFeatureTestSelection } from "./production-feature-test-check.mjs";
+import {
+  createProductionFeatureCheckRunner,
+  resolveProductionFeatureTestSelection,
+  validateProductionFeatureCheckObservation,
+  featureTestError,
+} from "./production-feature-test-check.mjs";
+import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
@@ -12,8 +21,10 @@ import {
   FEATURE_CRITERION_EVIDENCE_SCHEMA,
   FEATURE_CRITIQUE_OUTPUT_SCHEMA,
   FEATURE_OPERATION_CONTRACTS,
+  FEATURE_TEST_RECEIPT_VALIDATOR,
   FEATURE_VERIFICATION_RECEIPT_VALIDATOR,
   validateFeatureCaptureReceipt,
+  validateFeatureTestReceipt,
   validateFeatureVerificationReceipt,
 } from "../../../tools/flow/src/feature-flow.mjs";
 import {
@@ -44,6 +55,8 @@ export function createProductionFeatureOperations({
   resolveWorkspace,
   gitWorkspaceObservationAdapter,
   gitRetentionAdapter,
+  authorityDirectory,
+  featureTestCheck,
 } = {}) {
   if (typeof resolveWorkspace !== "function") {
     throw new TypeError("production feature operations require workspace resolution");
@@ -111,17 +124,21 @@ export function createProductionFeatureOperations({
     },
   });
 
+  const checkRunner = createProductionFeatureCheckRunner({ authorityDirectory, featureTestCheck });
   const operations = {
+    [FEATURE_DIRECT_COMMIT_CONTRACT]: createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority: () => authorityRef.value }),
     [FEATURE_OPERATION_CONTRACTS.setup]: unavailableOperation(
       FEATURE_OPERATION_CONTRACTS.setup,
     ),
-    [FEATURE_OPERATION_CONTRACTS.test]: unavailableOperation(
-      FEATURE_OPERATION_CONTRACTS.test,
-    ),
+    [FEATURE_OPERATION_CONTRACTS.test]: checkRunner.available
+      ? createTestOperation({ resolveWorkspace, gitWorkspaceObservationAdapter, featureTestCheck, checkRunner })
+      : unavailableOperation(FEATURE_OPERATION_CONTRACTS.test),
     [FEATURE_OPERATION_CONTRACTS.capture]: capture,
     [FEATURE_OPERATION_CONTRACTS.verify]: createVerificationOperation({
       resolveWorkspace,
       gitWorkspaceObservationAdapter,
+      featureTestCheck,
+      checkRunner,
     }),
     [FEATURE_OPERATION_CONTRACTS.seal]: createSealOperation({
       resolveWorkspace,
@@ -440,12 +457,54 @@ function unavailableOperation(contract) {
   return Object.freeze({
     schema: "flow.registered-operation/v1",
     classification: "caller_idempotent",
+    availability: "unavailable",
     invoke() {
       const error = new TypeError(
         `production operation is not implemented: ${contract}`,
       );
       error.code = "production_operation_unavailable";
       throw error;
+    },
+  });
+}
+
+function selectedCheckForIntent(intent, workspace, featureTestCheck) {
+  const selected = resolveProductionFeatureTestSelection({ checkId: featureTestCheck?.check_id,
+    brief: intent.operation_input?.brief, workspace, featureTestCheck });
+  const expected = intent.operation_input?.slice?.test ?? intent.operation_input?.test_selection?.slices?.[0];
+  if (expected?.environment_fingerprint !== selected.checkBinding.fingerprint ||
+      expected?.intended_failure !== selected.slice.test.intended_failure ||
+      intent.operation_input?.slice !== undefined && digest(intent.operation_input.slice) !== digest(selected.slice)) throw featureTestError("feature_test_check_drift");
+  return selected;
+}
+
+function createTestOperation({ resolveWorkspace, gitWorkspaceObservationAdapter, featureTestCheck, checkRunner }) {
+  return Object.freeze({
+    schema: "flow.registered-operation/v1", availability: "available", classification: "caller_idempotent",
+    provider_receipt_validator: FEATURE_TEST_RECEIPT_VALIDATOR, validateReceipt: validateFeatureTestReceipt,
+    async invoke(intent) {
+      if (intent.operation_contract !== FEATURE_OPERATION_CONTRACTS.test || intent.operation_input?.phase !== "test_before") throw featureTestError("feature_test_intent_invalid");
+      const workspace = resolveIntentWorkspace(intent, resolveWorkspace);
+      const selected = selectedCheckForIntent(intent, workspace, featureTestCheck);
+      const before = observeGit({ workspace, gitWorkspaceObservationAdapter });
+      if (before.clean !== true || digest({ git: before }) !== intent.operation_input.workspace?.fingerprint) throw featureTestError("feature_test_workspace_changed");
+      const observed = await checkRunner.run(intent, workspace, selected);
+      const evidence = validateProductionFeatureCheckObservation(observed, featureTestCheck, "red");
+      if (digest(observeGit({ workspace, gitWorkspaceObservationAdapter })) !== digest(before)) throw featureTestError("feature_test_workspace_changed");
+      selectedCheckForIntent(intent, workspace, featureTestCheck);
+      const starting = intent.operation_input.workspace;
+      const receipt = freezeCanonical({
+        schema: "work.feature-test-receipt/v1", attempt_id: intent.attempt_id, effect_id: intent.effect_id,
+        idempotency_key: intent.idempotency_key, operation_contract: FEATURE_OPERATION_CONTRACTS.test,
+        source_authority_watermark: intent.source_authority_watermark, slice_id: selected.slice.id,
+        phase: "test_before", outcome: "expected_failure", intended_failure: selected.slice.test.intended_failure,
+        environment_status: "healthy", environment_fingerprint: selected.checkBinding.fingerprint,
+        workspace: { subject_id: starting.subject_id, generation: starting.generation,
+          mutation_epoch: starting.mutation_epoch, fingerprint: starting.fingerprint },
+      });
+      if (!validateFeatureTestReceipt(receipt, intent)) throw featureTestError("feature_test_receipt_invalid");
+      checkRunner.retainRed(intent, receipt, evidence);
+      return operationReceipt(intent, receipt);
     },
   });
 }
@@ -682,6 +741,8 @@ function storeCaptureArtifacts({ intent, artifacts, artifactAuthority }) {
 function createVerificationOperation({
   resolveWorkspace,
   gitWorkspaceObservationAdapter,
+  featureTestCheck,
+  checkRunner,
 }) {
   return Object.freeze({
     schema: "flow.registered-operation/v1",
@@ -702,8 +763,10 @@ function createVerificationOperation({
       }
       const operationInput = intent.operation_input;
       const startingWorkspace = operationInput.workspace;
-      const selectedEvidence = operationInput.verification?.baseline ??
-        operationInput.verification?.compensating_assertion;
+      const testMode = operationInput.slice?.mode === "test" ||
+        operationInput.mode === "test" && operationInput.verification === undefined;
+      const selectedEvidence = testMode ? operationInput.test_selection :
+        operationInput.verification?.baseline ?? operationInput.verification?.compensating_assertion;
       if (selectedEvidence === undefined) {
         throw featureOperationError(
           "feature_verification_evidence_missing",
@@ -716,6 +779,31 @@ function createVerificationOperation({
           "feature_verification_criterion_evidence_invalid",
           "feature verification requires exact independent criterion evidence",
         );
+      }
+      let checkEvidence = null;
+      let redEvidence = [];
+      let redBindings = [];
+      if (testMode) {
+        const selected = selectedCheckForIntent(intent, workspace, featureTestCheck);
+        const receipts = operationInput.authority_materialized_evidence?.operation_receipts ?? [];
+        const card = `feature-slice-${selected.slice.id}-test`;
+        const red = receipts.filter((entry) => entry.card_id === card &&
+          entry.receipt?.provider_receipt?.schema === "work.feature-test-receipt/v1");
+        if (red.length !== 1 || !operationInput.operation_evidence_card_ids?.includes(card)) throw featureTestError("feature_test_red_evidence_missing");
+        const accepted = checkRunner.readRed(red[0].receipt.provider_receipt);
+        if (accepted.provider_receipt.environment_fingerprint !== selected.checkBinding.fingerprint ||
+            accepted.provider_receipt.intended_failure !== selected.slice.test.intended_failure ||
+            accepted.provider_receipt.slice_id !== selected.slice.id) throw featureTestError("feature_test_check_drift");
+        validateProductionFeatureCheckObservation({ terminal: accepted.evidence.terminal,
+          reservation: { check_fingerprint: accepted.evidence.check_fingerprint } }, featureTestCheck, "red");
+        redEvidence = [accepted];
+        if (red[0].effect_id !== accepted.provider_receipt.effect_id) throw featureTestError("feature_test_evidence_conflict");
+        redBindings = red.map((entry) => ({ card_id: entry.card_id, effect_id: entry.effect_id,
+          receipt_digest: digest(entry.receipt.provider_receipt), slice_id: entry.receipt.provider_receipt.slice_id }));
+        const observed = await checkRunner.run(intent, workspace, selected);
+        checkEvidence = validateProductionFeatureCheckObservation(observed, featureTestCheck, "green");
+        if (digest(observeGit({ workspace, gitWorkspaceObservationAdapter })) !== digest(git)) throw featureTestError("feature_test_workspace_changed");
+        selectedCheckForIntent(intent, workspace, featureTestCheck);
       }
       const workspaceIdentity = {
         subject_id: startingWorkspace.subject_id,
@@ -740,11 +828,18 @@ function createVerificationOperation({
               commit_sha: git.commit_sha,
               tree_sha: git.tree_sha,
             },
+            ...(checkEvidence === null ? {} : { check: checkEvidence.evidence_digest,
+              red: redEvidence.map(({ evidence_digest }) => evidence_digest) }),
           }),
           verdict: "passed",
         };
       });
-      const discriminating = operationInput.verification?.baseline !== undefined
+      const discriminating = testMode ? {
+        schema: "flow.feature-discriminating-evidence/v1", kind: "test_failure",
+        selected_fingerprint: selectedEvidence.fingerprint, post_mutation_fingerprint: workspaceIdentity.fingerprint,
+        distinguished: selectedEvidence.fingerprint !== workspaceIdentity.fingerprint,
+        test_failures: redBindings,
+      } : operationInput.verification?.baseline !== undefined
         ? {
             schema: "flow.feature-discriminating-evidence/v1",
             kind: "safe_baseline",
@@ -810,9 +905,7 @@ function createSealOperation({ resolveWorkspace, gitRetentionAdapter }) {
       const materialized = operationInput.authority_materialized_evidence;
       const critiqueEvidence = materialized?.accepted_delegates?.find(({ card_id }) =>
         card_id === operationInput.authority_materialized_critique_binding?.card_id);
-      const verification = materialized?.operation_receipts?.find(({ receipt }) =>
-        receipt?.provider_receipt?.operation_contract ===
-          FEATURE_OPERATION_CONTRACTS.verify)?.receipt?.provider_receipt;
+      const verification = finalSealVerification(intent);
       if (candidateView?.schema !== "flow.feature-candidate-view/v1" ||
           critiqueEvidence === undefined || verification === undefined) {
         throw featureOperationError(
@@ -926,6 +1019,61 @@ function featureCriterionEvidenceFromIntent(intent) {
     parsed?.feature_evidence,
     operationInput?.brief?.acceptance,
   );
+}
+
+function finalSealVerification(intent) {
+  const input = intent.operation_input;
+  const invalid = () => featureOperationError(
+    "feature_seal_verification_invalid",
+    "feature seal requires one exact final verification producer",
+  );
+  // Slice and aggregate verification share a contract. Only the aggregate
+  // producer joins the independent critique and can authorize the seal.
+  const receipts = input.authority_materialized_evidence?.operation_receipts;
+  if (!Array.isArray(receipts)) throw invalid();
+  const entries = receipts.filter((entry) => entry?.card_id === "feature-verify");
+  const entry = entries[0];
+  const envelope = entry?.receipt;
+  const verification = envelope?.provider_receipt;
+  const verificationIntent = {
+    ...intent,
+    operation_contract: FEATURE_OPERATION_CONTRACTS.verify,
+    effect_id: entry?.effect_id,
+    attempt_id: entry?.attempt_id,
+    idempotency_key: entry?.idempotency_key,
+    source_authority_watermark: entry?.source_authority_watermark,
+    operation_input: { ...input, phase: "verify" },
+  };
+  if (entries.length !== 1 ||
+      envelope?.schema !== "flow.effect-receipt/v1" ||
+      envelope.outcome !== "succeeded" ||
+      envelope.effect_id !== entry.effect_id ||
+      envelope.idempotency_key !== entry.idempotency_key ||
+      !validateFeatureVerificationReceipt(verification, verificationIntent) ||
+      !isRecord(input.authority_materialized_candidate?.git) ||
+      digest(verification.workspace.git) !== digest(input.authority_materialized_candidate?.git)) {
+    throw invalid();
+  }
+  const bindings = input.authority_materialized_result_bindings;
+  if (bindings !== undefined) {
+    if (!Array.isArray(bindings)) throw invalid();
+    const finalBindings = bindings.filter((binding) =>
+      binding?.producer_card_id === "feature-verify");
+    const binding = finalBindings[0];
+    if (finalBindings.length !== 1 ||
+        binding.output_contract !== "verification_receipt" ||
+        binding.expected_schema !== "work.feature-verification-receipt/v1" ||
+        binding.observed_schema !== binding.expected_schema ||
+        binding.attempt_id !== entry.attempt_id ||
+        binding.provenance?.effect_id !== entry.effect_id ||
+        binding.provenance?.attempt_id !== entry.attempt_id ||
+        binding.provenance?.idempotency_key !== entry.idempotency_key ||
+        binding.provenance?.source_authority_watermark !== entry.source_authority_watermark ||
+        !isRecord(binding.content) ||
+        binding.content_digest !== digest(verification) ||
+        digest(binding.content) !== binding.content_digest) throw invalid();
+  }
+  return verification;
 }
 
 function parseCritiqueEvidence(accepted, expectedCriteria, critiqueInput) {

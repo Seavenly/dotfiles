@@ -11,6 +11,7 @@ import {
 import {
   createDrovrDelegatedAgentResourcePort,
 } from "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
+import { createDirectDelegatedAgentPort } from "../../../tools/flow/src/direct-delegated-agent-port.mjs";
 import { contentDigest } from "./canonical-json.mjs";
 import {
   FilesystemLegacyCompatibilityAdapter,
@@ -54,6 +55,8 @@ const RUNNER_CAPACITY_ENV = Object.freeze({
 export function createFlowRuntime({
   env = process.env,
   delegatedAgentPort = null,
+  executionBackend = env.FLOW_EXECUTION_BACKEND ?? "direct",
+  directExecutionOptions = {},
   delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
   registeredOperations = {},
@@ -67,6 +70,7 @@ export function createFlowRuntime({
   autonomous = undefined,
   runnerOptions = undefined,
   runnerErrorSink = undefined,
+  featureTestCheck = undefined,
 } = {}) {
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
     throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
@@ -85,10 +89,15 @@ export function createFlowRuntime({
       ? defaultLegacyRoots(env)
       : legacyRoots,
   });
-  const delegationPort = delegatedAgentPort ?? createDrovrDelegatedAgentPort({
-    dependencies: { env },
-  });
-  const composition = createProductionComposition({
+  if (!["direct", "drovr"].includes(executionBackend)) throw new TypeError("unsupported execution backend");
+  let composition;
+  const delegationPort = delegatedAgentPort ?? (executionBackend === "drovr"
+    ? createDrovrDelegatedAgentPort({ dependencies: { env } })
+    : createDirectDelegatedAgentPort({ ...directExecutionOptions, env,
+      taskDirectory: join(resolvedAuthorityDirectory, "direct-tasks"),
+      resolveWorkspace: (claim, request) => composition.resolveDelegatedWorkspaceClaim(claim, request),
+    }));
+  composition = createProductionComposition({
     delegatedAgentPort: delegationPort,
     env,
     authorityDirectory: resolvedAuthorityDirectory,
@@ -100,12 +109,13 @@ export function createFlowRuntime({
     registeredAuthorities,
     predefinedDefinitions,
     delegateOutputValidators,
+    featureTestCheck,
   });
   const delegationResourcePort = delegatedAgentResourcePort ??
-    createDrovrDelegatedAgentResourcePort({
+    (delegationPort.backend === "direct" ? null : createDrovrDelegatedAgentResourcePort({
       resolveWorkspace: composition.resolveDelegatedWorkspaceClaim,
       dependencies: { env },
-    });
+    }));
   const ownsAuthority = runAuthority === undefined;
   let authority = null;
   let coreRuntime = null;
@@ -136,6 +146,7 @@ export function createFlowRuntime({
       registeredOperations: composition.operations,
       predefinedDefinitions: composition.definitions,
       registeredAuthorities: composition.authorities,
+      reviewPreparationProvider: composition.reviewPreparationProvider,
       autonomous: autonomous ?? ownsAuthority,
       runnerOptions: coreRunnerOptions,
       registeredQueries: {
@@ -206,6 +217,7 @@ export function createFlowRuntime({
           operation: "prepare",
           request: proposal,
           composition,
+          delegationPort,
           authority,
           env,
         });
@@ -235,15 +247,12 @@ export function createFlowRuntime({
           operation: "launch",
           request,
           composition,
+          delegationPort,
           authority,
           env,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicRequest = withoutDarkOptIn(request);
-        const adopted = typeof authority?.adoptExactLaunch === "function"
-          ? authority.adoptExactLaunch(publicRequest)
-          : null;
-        if (adopted !== null && adopted !== undefined) return adopted;
         let launchPreparation = null;
         try {
           launchPreparation = composition.beforeLaunch?.(publicRequest, authority) ?? null;
@@ -262,10 +271,19 @@ export function createFlowRuntime({
         }
         try {
           const receipt = coreRuntime.launch(publicRequest);
-          if (receipt?.schema === "flow.rejection/v1") {
-            launchPreparation?.rollback?.();
+          const settle = (value) => {
+            if (value?.schema === "flow.rejection/v1") {
+              launchPreparation?.rollback?.();
+            }
+            return value;
+          };
+          if (isPromiseLike(receipt)) {
+            return receipt.then(settle).catch((error) => {
+              launchPreparation?.rollback?.();
+              throw error;
+            });
           }
-          return receipt;
+          return settle(receipt);
         } catch (error) {
           launchPreparation?.rollback?.();
           throw error;
@@ -316,6 +334,7 @@ function publicReplacementGate({
   operation,
   request,
   composition,
+  delegationPort,
   authority,
   env,
 }) {
@@ -385,6 +404,19 @@ function publicReplacementGate({
     });
   }
 
+  if (operation === "prepare" && route.flow === "feature" &&
+      route.mode === "test" &&
+      request?.schema !== "flow.feature-preparation-request/v1") {
+    return createRejection({
+      operation,
+      code: "invalid_preparation_request",
+      outcome: "unsupported",
+      reason: "public test preparation requires an ordinary brief and trusted check selection",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+    });
+  }
+
   let qualificationAvailable = false;
   try {
     const qualificationRepositoryRoot = qualificationRepositoryRootFor({
@@ -418,6 +450,27 @@ function publicReplacementGate({
       legalActions: [],
     });
   }
+  let nativeIssue;
+  try {
+    const repository = request?.repository;
+    nativeIssue = delegationPort?.nativeAdmissionIssue?.({
+      workspacePath: typeof repository === "string" ? repository : repository?.path,
+    });
+  } catch {
+    nativeIssue = "native_qualification_unproven";
+  }
+  if (nativeIssue) {
+    return createRejection({
+      operation,
+      code: nativeIssue === "unproved_ambient_authority" ? nativeIssue : "qualification_withheld",
+      outcome: "disabled",
+      reason: `official native execution is unavailable: ${nativeIssue}`,
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+
   return selection;
 }
 
@@ -426,6 +479,11 @@ function withoutDarkOptIn(value) {
       !Object.hasOwn(value, "dark_opt_in")) return value;
   const { dark_opt_in: _darkOptIn, ...withoutOptIn } = value;
   return withoutOptIn;
+}
+
+function isPromiseLike(value) {
+  return value !== null && (typeof value === "object" ||
+    typeof value === "function") && typeof value.then === "function";
 }
 
 function safeAuthorityWatermark(authority) {

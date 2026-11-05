@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { digest } from "../src/canonical.mjs";
+import { createAuthorityFact } from "../src/authority-bindings.mjs";
 import { compileDynamicPlan } from "../src/plan-compiler.mjs";
 import { validateDelegateEvidenceSafety } from "../src/evidence-safety.mjs";
 import { preparedObservation } from "../src/reboot-revalidation.mjs";
@@ -16,6 +17,7 @@ import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
 import {
   AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   createFeatureDefinition,
+  FEATURE_DIRECT_COMMIT_CONTRACT,
   FEATURE_CAPTURE_RECEIPT_VALIDATOR,
   FEATURE_CRITIQUE_OUTPUT_SCHEMA,
   FEATURE_CRITIQUE_PROMPT,
@@ -35,6 +37,11 @@ import {
   REVIEW_HUMAN_COMMAND_SCHEMA,
   REVIEW_DELEGATE_OUTPUT_VALIDATOR,
 } from "../src/review-flow.mjs";
+import {
+  deriveReviewPreparationFacts,
+  reviewOwnerProjectionDigest,
+  reviewExplicitFactsFromPreparationFacts,
+} from "../src/review-preparation-facts.mjs";
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { createInMemoryRunAuthority } from
   "../src/run-authority.mjs";
@@ -2055,6 +2062,28 @@ test("feature/v1 test mode prepares an honest failure-proving slice", () => {
   );
 });
 
+test("feature/v1 direct single test slice commits after its sole writer before capture", async (t) => {
+  const { directTaskFixture } = await import("../test-support/direct-task-fixture.mjs");
+  const fixture = await directTaskFixture(t);
+  const inputs = featureInputs();
+  inputs.mode = "test";
+  inputs.slices = [{ schema: "flow.feature-slice/v1", id: "behavior", mode: "test", acceptance: inputs.brief.acceptance,
+    test: { schema: "flow.feature-test-request/v1", intended_failure: "expected behavior missing", environment_fingerprint: `sha256:${"a".repeat(64)}` } }];
+  for (const [role, capability] of [["apply", "workspace-write-denied"], ["critique", "read-only"]]) {
+    const value = await fixture.port.describe({ schema: "flow.delegated-agent-description-request/v1", launch: { harness: "codex", model: "fixture-model", effort: "high", capability }, caller_metadata: { owner: "feature-flow", role } });
+    inputs.delegation[role] = featureDelegateBindingFromDescription(role, value.description);
+  }
+  const proposal = createFeatureDefinition({ independentCritique: true }).compile({ inputs, explicit_facts: featureFactsForInputs(inputs) });
+  const commit = proposal.graph.cards.find(({ id }) => id === "feature-direct-commit");
+  assert.ok(commit, "a direct writer cannot publish protected Git metadata itself");
+  assert.equal(commit.executor.contract, FEATURE_DIRECT_COMMIT_CONTRACT);
+  assert.deepEqual(commit.dependencies, ["feature-apply"]);
+  assert.deepEqual(proposal.graph.cards.find(({ id }) => id === "feature-capture-behavior").dependencies, [commit.id]);
+  assert.equal(proposal.graph.cards.filter(({ executor }) => executor.kind === "delegate").length, 2);
+  assert.equal(proposal.graph.cards.length, 9);
+  assert.ok(proposal.graph.result_bindings.some(({ producer_card_id, consumer_card_id }) => producer_card_id === "feature-apply" && consumer_card_id === commit.id));
+});
+
 test("feature/v1 serialized slices own the brief acceptance exactly once", async (t) => {
   const cases = [
     {
@@ -3347,6 +3376,10 @@ test("durable ReviewAuthority accepts a human session command through FlowRuntim
     "succeeded");
 
   const completed = fixture.runtime.query({ run_id: fixture.runId });
+  const completedWorkspace = getWorkspaceAuthority({ runAuthority: fixture.runAuthority }).query({
+    contract: "work.workspace/v1",
+    subject_id: "workspace:producer",
+  });
   const candidateId = completed.review_candidate_reference.candidate_id;
   fixture.runAuthority.close();
   const reviewRunAuthority = createDurableRunAuthority({
@@ -3420,6 +3453,13 @@ test("durable ReviewAuthority accepts a human session command through FlowRuntim
       },
     },
   };
+  const preparationFacts = featureReviewPreparationFacts({
+    candidateProjection: candidateAuthority,
+    sourceRunProjection: completed,
+    workspaceProjection: completedWorkspace,
+    inputs,
+  });
+  inputs.preparation_facts = preparationFacts;
   const facts = structuredClone(fixture.facts);
   facts.operation_contracts.push("flow.operation/review-record/v1");
   facts.validator_contracts.push(
@@ -3435,10 +3475,19 @@ test("durable ReviewAuthority accepts a human session command through FlowRuntim
   });
   facts.limits.max_cards = 8;
   facts.limits.max_resources = 2;
+  const reviewExplicitFacts = reviewExplicitFactsFromPreparationFacts(
+    preparationFacts,
+    { limits: facts.limits },
+  );
   const runtime = createFlowRuntime({
     runAuthority: reviewRunAuthority,
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     registeredAuthorities: shippedAuthorityRegistrations({
-      current: shippedAuthorityStateFromFacts(facts),
+      current: shippedAuthorityStateFromFacts(reviewExplicitFacts),
     }),
     delegatedAgentPort: {
       contract: "flow.delegated-agent-port/v1",
@@ -3496,7 +3545,7 @@ test("durable ReviewAuthority accepts a human session command through FlowRuntim
     schema: "flow.predefined-flow-selection/v1",
     definition: "review/v1",
     inputs,
-    explicit_facts: facts,
+    explicit_facts: reviewExplicitFacts,
   });
   const launch = runtime.launch({
     prepared,
@@ -4427,7 +4476,18 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   });
   reviewFacts.limits.max_cards = 8;
   reviewFacts.limits.max_resources = 2;
-  Object.assign(authorityState, shippedAuthorityStateFromFacts(reviewFacts));
+  const reviewPreparationFacts = featureReviewPreparationFacts({
+    candidateProjection: review,
+    sourceRunProjection: runtime.query({ run_id: launch.run_id }),
+    workspaceProjection: workspaceAuthority.query(workspaceQuery()),
+    inputs: reviewInputs,
+  });
+  reviewInputs.preparation_facts = reviewPreparationFacts;
+  const reviewExplicitFacts = reviewExplicitFactsFromPreparationFacts(
+    reviewPreparationFacts,
+    { limits: reviewFacts.limits },
+  );
+  Object.assign(authorityState, shippedAuthorityStateFromFacts(reviewExplicitFacts));
   const reviewPrompts = [];
   const reviewDelegatedAgentPort = {
     contract: "flow.delegated-agent-port/v1",
@@ -4483,6 +4543,11 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   };
   const reviewRuntime = createFlowRuntime({
     runAuthority,
+    reviewPreparationProvider: {
+      revalidate({ facts: preparationFacts }) {
+        return { valid: true, facts: preparationFacts };
+      },
+    },
     registeredAuthorities,
     reviewAuthority: reviewAuthorityWithReceiptLoss,
     delegatedAgentPort: reviewDelegatedAgentPort,
@@ -4495,7 +4560,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
     schema: "flow.predefined-flow-selection/v1",
     definition: "review/v1",
     inputs: reviewInputs,
-    explicit_facts: reviewFacts,
+    explicit_facts: reviewExplicitFacts,
   });
   const reviewLaunch = reviewRuntime.launch(
     confirmedPredefinedLaunchRequest(preparedReview),
@@ -7803,6 +7868,205 @@ function featureInputs() {
       critique: featureDelegateBinding("critique", "2", "4", "6"),
     },
   };
+}
+
+function featureReviewPreparationFacts({
+  candidateProjection,
+  sourceRunProjection,
+  workspaceProjection,
+  inputs,
+}) {
+  const normalizedWorkspaceProjection = {
+    ...workspaceProjection,
+    clean: workspaceProjection.clean ?? workspaceProjection.git?.clean === true,
+    fingerprint: workspaceProjection.fingerprint ??
+      workspaceProjection.workspace_fingerprint ??
+      (workspaceProjection.git === undefined
+        ? undefined
+        : digestValue({ git: workspaceProjection.git })),
+    owner_projection_digest: digestValue(workspaceProjection),
+  };
+  const sourceCandidateReference = sourceRunProjection.review_candidate_reference;
+  const runProjectionDigest = reviewOwnerProjectionDigest(
+    "run",
+    sourceRunProjection,
+  );
+  const candidateProjectionDigest = digestValue(candidateProjection);
+  const workspaceProjectionDigest = digestValue(workspaceProjection);
+  const ownerAuthorities = {
+    run: createAuthorityFact({
+      authorityId: "RunAuthority",
+      authorityContract: "flow.run-projection/v1",
+      providerIdentity: {
+        schema: "flow.registered-authority/v1",
+        id: "flow.production.run-authority",
+        version: "1",
+      },
+      watermark: sourceRunProjection.watermark,
+      watermarkDomain: "run",
+      subjectId: sourceRunProjection.run_id,
+      disposition: sourceRunProjection.phase,
+      generation: sourceRunProjection.stream_generation ??
+        sourceRunProjection.sequence ?? 0,
+      facts: {
+        run_id: sourceRunProjection.run_id,
+        phase: sourceRunProjection.phase,
+        candidate_id: sourceCandidateReference.candidate_id,
+        candidate_fingerprint: sourceCandidateReference.candidate_fingerprint,
+        sequence: sourceRunProjection.sequence ?? null,
+        current_revision: {
+          ordinal: sourceRunProjection.current_revision?.ordinal ?? null,
+          plan_fingerprint: sourceRunProjection.current_revision?.plan_fingerprint ?? null,
+        },
+        bundle_digest: sourceRunProjection.bundle_digest ?? null,
+        projection_digest: runProjectionDigest,
+      },
+      legalActions: sourceRunProjection.legal_actions ?? [],
+    }),
+    review: createAuthorityFact({
+      authorityId: "ReviewAuthority",
+      authorityContract: "work.review/v1",
+      providerIdentity: {
+        schema: "flow.registered-authority/v1",
+        id: "flow.production.review-authority",
+        version: "1",
+      },
+      watermark: candidateProjection.watermark,
+      watermarkDomain: "review",
+      subjectId: candidateProjection.subject_id,
+      disposition: candidateProjection.status,
+      generation: candidateProjection.generation,
+      facts: {
+        candidate_fingerprint: candidateProjection.candidate_fingerprint,
+        workspace_subject_id: candidateProjection.candidate.workspace.subject_id,
+        workspace_generation: candidateProjection.candidate.workspace.generation,
+        workspace_fingerprint: candidateProjection.candidate.workspace.fingerprint,
+        projection_digest: candidateProjectionDigest,
+      },
+      legalActions: candidateProjection.legal_actions ?? [],
+    }),
+    workspace: workspaceProjection.authority_fact ?? createAuthorityFact({
+      authorityId: "WorkspaceAuthority",
+      authorityContract: "work.workspace/v1",
+      providerIdentity: {
+        schema: "flow.registered-authority/v1",
+        id: "flow.production.workspace-authority",
+        version: "1",
+      },
+      watermark: workspaceProjection.watermark,
+      watermarkDomain: "workspace",
+      subjectId: workspaceProjection.subject_id,
+      disposition: workspaceProjection.disposition,
+      generation: workspaceProjection.generation,
+      facts: {
+        fingerprint: normalizedWorkspaceProjection.fingerprint,
+        git_commit_sha: workspaceProjection.git?.commit_sha ?? null,
+        git_tree_sha: workspaceProjection.git?.tree_sha ?? null,
+        git_ref: workspaceProjection.git?.ref ?? null,
+        git_clean: workspaceProjection.git?.clean === true,
+        mutation_epoch: workspaceProjection.mutation_epoch,
+        taint_status: workspaceProjection.taint === null ||
+          workspaceProjection.taint === undefined ? "clear" : "tainted",
+        claims_digest: digestValue(workspaceProjection.claims ?? []),
+        projection_digest: workspaceProjectionDigest,
+      },
+      legalActions: workspaceProjection.legal_actions ?? [],
+    }),
+  };
+  const routeBindings = [
+    ...Object.entries(inputs.delegation.lenses).map(([lens, binding]) => ({
+      card_id: `review-lens-${lens}`,
+      route: binding.route,
+      description: binding.description,
+    })),
+    {
+      card_id: "review-critic",
+      route: inputs.delegation.critic.route,
+      description: inputs.delegation.critic.description,
+    },
+  ].sort((left, right) => left.card_id.localeCompare(right.card_id));
+  const routeIdentity = routeBindings.map(({ card_id, route, description }) => ({
+    card_id,
+    route,
+    description_digest: description.description_digest,
+  }));
+  const comparisonIdentity = routeBindings.map(({ card_id, route }) => ({
+    card_id,
+    launch_comparison_key: route.launch_comparison_key,
+  }));
+  const binding = (id, contract, fact, watermark) => ({
+    schema: "flow.required-authority-binding/v1",
+    id,
+    contract,
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: `test.preparation.${id.replaceAll(":", "-")}`,
+      version: "1",
+    },
+    observation_input: { fact },
+    observation: {
+      schema: "flow.authority-observation/v1",
+      status: "available",
+      watermark,
+      observation_input: { fact },
+      legal_actions: [],
+    },
+  });
+  const result = deriveReviewPreparationFacts({
+    candidateProjection,
+    sourceRunProjection,
+    workspaceProjection: normalizedWorkspaceProjection,
+    ownerAuthorities,
+    authorityBindings: [
+      binding("route:facts", "flow.route-authority/v1", "route_snapshot", digestValue("feature-review-route")),
+      binding("resource:facts", "flow.resource-authority/v1", "resource_claims", digestValue("feature-review-resource")),
+      binding("contract:facts", "flow.contract-authority/v1", "contract_facts", digestValue("feature-review-contract")),
+      binding("generation:facts", "flow.subject-generation/v1", "subject_generations", digestValue("feature-review-generation")),
+    ],
+    routeSnapshot: {
+      route_id: "route:review",
+      configuration_watermark: digest(routeIdentity),
+      comparison_key: digest(comparisonIdentity),
+      bindings: routeBindings,
+    },
+    catalog: {
+      id: "flow.contract-catalog/v1@38",
+      fingerprint: digestValue("feature-review-catalog"),
+    },
+    operationContracts: ["flow.operation/review-record/v1"],
+    validatorContracts: [
+      "flow.validator/review-result/v1",
+      "flow.validator/operation-receipt/v1",
+    ],
+    timeFacts: [
+      {
+        schema: "flow.time-fact/v1",
+        kind: "wall_clock",
+        value_ms: 1_700_000_000_000,
+        uncertainty_ms: 0,
+        clock_source_id: "wall:feature-review",
+      },
+      {
+        schema: "flow.time-fact/v1",
+        kind: "suspend_excluding_monotonic",
+        value_ns: "1000000000",
+        uncertainty_ns: "0",
+        clock_source_id: "mono:feature-review",
+      },
+      {
+        schema: "flow.time-fact/v1",
+        kind: "boot",
+        boot_id: "boot:feature-review",
+      },
+      {
+        schema: "flow.time-fact/v1",
+        kind: "clock_source",
+        identity: "clock:feature-review",
+      },
+    ],
+  });
+  assert.equal(result.accepted, true, JSON.stringify(result));
+  return result.facts;
 }
 
 function normalizedFeatureVerificationInput(inputs) {
