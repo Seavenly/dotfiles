@@ -332,7 +332,16 @@ export function createProductionComposition({
         runAuthority: boundAuthority,
         featureTestCheck,
       });
-      return compileSelection(prepared.selection);
+      const compiled = await compileSelection(prepared.selection);
+      if (compiled?.schema === "flow.prepared-run/v1" &&
+          boundAuthority?.mutationAuthority === true) {
+        persistPreparedWorkspace({
+          prepared: compiled,
+          repository: workspaceRepositories.get(compiled.selection.inputs.workspace.subject_id),
+          runAuthority: boundAuthority,
+        });
+      }
+      return compiled;
     },
     bindAuthority(authority) {
       boundAuthority = authority;
@@ -428,6 +437,39 @@ function registerConfiguredRepositoryRoot(repositories, repositoryRoot) {
     // Feature preparation reports the precise repository error when the path
     // is selected. A stale ambient path must not make unrelated queries fail
     // during composition construction.
+  }
+}
+
+function persistPreparedWorkspace({ prepared, repository, runAuthority }) {
+  const workspace = prepared.selection.inputs.workspace;
+  if (currentWorkspaceProjection(runAuthority, workspace.subject_id) !== null) return;
+  // Persist only host-observed resource identity, after successful compilation.
+  // Run creation and the mutation claim still belong to launch. A restarted
+  // owner resolves this authority record rather than trusting a caller path.
+  const receipt = getWorkspaceAuthority({ runAuthority }).command({
+    schema: "work.workspace-register-command/v1",
+    command_id: `workspace-register:${workspace.subject_id}`,
+    type: "workspace_register",
+    contract: "work.workspace/v1",
+    subject_id: workspace.subject_id,
+    expected_generation: 0,
+    registration: {
+      repository: { canonical_id: repository.repository_id },
+      workspace: {
+        canonical_id: workspace.subject_id,
+        canonical_path: repository.path,
+      },
+      git: workspace.git,
+      mutation_epoch: workspace.mutation_epoch,
+      disposition: "producer_owned",
+    },
+    git_observation: { schema: "work.git-observation/v1", git: workspace.git },
+  });
+  if (receipt?.accepted !== true) {
+    throw new ProductionPreparationError(
+      receipt?.code ?? "workspace_registration_rejected",
+      "WorkspaceAuthority could not retain the prepared workspace identity",
+    );
   }
 }
 
