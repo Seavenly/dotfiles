@@ -2,17 +2,19 @@
 set -euo pipefail
 
 # Changing HOME does not stop mise discovering configs above the repository.
-# Keep convergence sources local while writing only into this test's HOME.
+# Keep convergence sources local while writing only into this test's fixture.
 converge_test_dotfiles() (
   local repository_root="$1"
   local test_home="$2"
+  local test_config_home="${3:-$test_home/.config}"
+  local test_state_home="${4:-$test_home/.local/state}"
   local mise_directory="$test_home/.local/state/mise-convergence"
   local installed_data="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
   mkdir -p "$mise_directory/config" "$mise_directory/cache" "$mise_directory/state"
   : > "$mise_directory/config/config.toml"
   unset __MISE_DIFF __MISE_SHIM
-  HOME="$test_home" XDG_CONFIG_HOME="$test_home/.config" \
-    XDG_STATE_HOME="$test_home/.local/state" DOTFILES_ROOT="$repository_root" \
+  HOME="$test_home" XDG_CONFIG_HOME="$test_config_home" \
+    XDG_STATE_HOME="$test_state_home" DOTFILES_ROOT="$repository_root" \
     MISE_CONFIG_DIR="$mise_directory/config" \
     MISE_GLOBAL_CONFIG_FILE="$mise_directory/config/config.toml" \
     MISE_CACHE_DIR="$mise_directory/cache" MISE_STATE_DIR="$mise_directory/state" \
