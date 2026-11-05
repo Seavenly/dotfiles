@@ -45,7 +45,7 @@ backup="$XDG_STATE_HOME/dotfiles/legacy-agent-skills/011-shared-agent-skills/han
 echo "ok - pre-links runs conflict-clearing migrations before convergence"
 
 converge_test_dotfiles "$root" "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" \
-  >/dev/null 2>&1
+  --only dotfiles --yes >/dev/null 2>&1
 [[ -L "$HOME/.agents/skills/handoff" ]] \
   || fail "mise did not converge the common skill after migration"
 [[ -L "$HOME/.claude/skills/handoff" ]] \

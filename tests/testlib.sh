@@ -8,6 +8,10 @@ converge_test_dotfiles() (
   local test_home="$2"
   local test_config_home="${3:-$test_home/.config}"
   local test_state_home="${4:-$test_home/.local/state}"
+  local bootstrap_args=(dotfiles apply --yes)
+  if (($# > 4)); then
+    bootstrap_args=("${@:5}")
+  fi
   local mise_directory="$test_home/.local/state/mise-convergence"
   local installed_data="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
   mkdir -p "$mise_directory/config" "$mise_directory/cache" "$mise_directory/state"
@@ -21,7 +25,7 @@ converge_test_dotfiles() (
     MISE_DATA_DIR="$installed_data" MISE_AUTO_INSTALL=false \
     MISE_CEILING_PATHS="$(dirname "$repository_root")" \
     MISE_TRUSTED_CONFIG_PATHS="$repository_root" \
-    mise -C "$repository_root" -E linux bootstrap dotfiles apply --yes
+    mise -C "$repository_root" -E linux bootstrap "${bootstrap_args[@]}"
 )
 
 fail() {
