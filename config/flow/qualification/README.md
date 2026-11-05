@@ -23,11 +23,12 @@ host. The following separate, opt-in command can download it; it does not
 activate it, change the normal selection, or modify repository configuration:
 
 ```sh
-MISE_LOCKED=false mise install github:agavra/tuicr@0.19.0
+MISE_LOCKED=false MISE_LOCKFILE=false mise install github:agavra/tuicr@0.19.0
 ```
 
 The command-local lock exception is required because this historical version is
-outside the current managed lock. Do not use `mise use`, downgrade the normal
+outside the current managed lock. Disabling lockfile writes for this command
+preserves that lock as well. Do not use `mise use`, downgrade the normal
 Tuicr lock, or substitute current Tuicr bytes for historical proof. Preserve
 its exact executable identity in new qualification receipts.
 
