@@ -11,7 +11,9 @@
 //
 // `integrate` merges one approved story head into the epic branch. `refresh`
 // merges the target branch (main) into a candidate branch cut from the epic
-// tip, for the owner to review; `land` pushes that reviewed candidate.
+// tip, for the owner to review; `land` pushes that reviewed candidate. An
+// epic whose integration branch is its target (`main`, the default) lands
+// each story as its own PR instead, so those three return `lands-by-pr`.
 //
 // The shared branch is never touched until a candidate is verified: every
 // merge is built on a script-owned candidate branch from the exact remote tip,
@@ -130,6 +132,18 @@ class Epic {
 
   isAncestor(a, b) {
     return git(this.repo, ["merge-base", "--is-ancestor", a, b], { allowFail: true }).ok;
+  }
+
+  // A stacked story (epic-flow --stack) is cut from a local merge of its
+  // blockers' reviewed heads: not foreign once every such head is on the tip
+  // and the base adds nothing but those merges.
+  stackBaseLanded(story, base, tip) {
+    const stackedOn = this.config.stories?.[story]?.stackedOn;
+    const heads = stackedOn && typeof stackedOn === "object" ? Object.values(stackedOn) : [];
+    if (!heads.length || !heads.every((h) => /^[0-9a-f]{40}$/.test(String(h)) && this.isAncestor(h, tip))) return false;
+    const extra = git(this.repo, ["rev-list", "--parents", base, "--not", tip], { allowFail: true });
+    if (!extra.ok) return false;
+    return extra.out.split("\n").filter(Boolean).every((line) => line.trim().split(/\s+/).length > 2);
   }
 
   // A script-owned worktree on a candidate branch reset to `startSha`. Any
@@ -270,7 +284,7 @@ class Epic {
     const unaccepted = audit.unknown.filter((c) => !accepted.includes(c));
     if (unaccepted.length) return { ok: false, reason: "unknown-commits", message: "the story has commits the gate did not make that the owner has not accepted", unknown: unaccepted };
     if (audit.configChanged) return { ok: false, reason: "config-changed", message: "the story's gate.json changed after init" };
-    if (!this.isAncestor(audit.base, tip)) {
+    if (!this.isAncestor(audit.base, tip) && !this.stackBaseLanded(story, audit.base, tip)) {
       return { ok: false, reason: "foreign-base", message: `the story was cut from ${audit.base}, which is not on ${this.branch}; it would bring another branch's unreviewed commits` };
     }
 
@@ -455,7 +469,12 @@ function main() {
   let result;
   try {
     const epic = new Epic(epicDir);
+    // An epic whose integration branch is its target (the default, `main`)
+    // lands each story as its own PR: there is no shared branch to merge into,
+    // and pushing to the target is never this script's to do.
+    const landsByPr = command !== "receipts" && epic.branch === epic.target;
     const run = () => {
+      if (landsByPr) return { ok: false, reason: "lands-by-pr", message: `${epic.branch} is this epic's target; each story lands as its own PR to it` };
       switch (command) {
         case "integrate": return epic.integrate(opts);
         case "refresh": return epic.refresh(opts);

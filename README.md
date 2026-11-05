@@ -80,10 +80,8 @@ or silently enable services that require personal credentials.
 
 Homebrew is retained for genuine macOS system packages and applications:
 
-- Mise's native package bootstrap owns `eza`, SketchyBar, and Bun. Bun is a
-  Homebrew package so Hex, a GUI app with a minimal `PATH`, finds it at
-  `/opt/homebrew/bin/bun`.
-- `Brewfile.macos` owns Ghostty, Obsidian, Hex, Scrawl, and workstation fonts.
+- Mise's native package bootstrap owns `eza` and SketchyBar.
+- `Brewfile.macos` owns Ghostty, Obsidian, Hex, and workstation fonts.
 - `Brewfile.recorder` owns BlackHole when the recorder is enabled.
 - Unrelated applications installed by the user remain unmanaged.
 

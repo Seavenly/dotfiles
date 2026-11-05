@@ -5,6 +5,14 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 [[ "$(uname -s)" == Darwin ]] && export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
+# Android Studio's SDK and bundled JDK, for adb and apksigner.
+if [[ -d "$HOME/Library/Android/sdk" ]]; then
+  export ANDROID_HOME="$HOME/Library/Android/sdk"
+  [[ -d "/Applications/Android Studio.app/Contents/jbr/Contents/Home" ]] && export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+  android_build_tools=("$ANDROID_HOME"/build-tools/*(N/nOn))
+  export PATH="$ANDROID_HOME/platform-tools${android_build_tools:+:${android_build_tools[1]}}:$PATH"
+  unset android_build_tools
+fi
 export DOTFILES_ROOT="$(dotfiles-root)"
 source "$DOTFILES_ROOT/internal/shell/paths.sh"
 dotfiles_load_paths
