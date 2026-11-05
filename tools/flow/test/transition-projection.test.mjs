@@ -102,7 +102,9 @@ test("release content binds the governed candidate tree and declared base", asyn
 
 test("release content validates from a fresh clone without synthesized Git objects", async (t) => {
   const { content, clonedConfig, clonedRepository } =
-    await copyReleaseCandidateToFreshClone(t, "portable-release-content");
+    await copyReleaseCandidateToFreshClone(t, "portable-release-content", {
+      baseOnly: true,
+    });
   assert.equal(
     deriveGitTreeSha(content.files),
     content.git_binding.candidate_tree_sha,
@@ -823,16 +825,16 @@ async function copyTransitionConfig(t, label, { qualified = false } = {}) {
   return { scratch, copiedConfig };
 }
 
-async function copyReleaseCandidateToFreshClone(t, label) {
+async function copyReleaseCandidateToFreshClone(t, label, { baseOnly = false } = {}) {
   const content = JSON.parse(await readFile(
     join(configDirectory, "evidence/release-content.v1.json"),
     "utf8",
   ));
-  // Start before the candidate commits so missing-object portability is tested
-  // deliberately, including when the complete candidate has been committed.
+  // Only the portability scenario requires missing candidate objects. Other
+  // scenarios also need later selected-release qualification bases from HEAD.
   const clonedRepository = await cloneRepositoryAtHead(t, label, {
     noLocal: true,
-    revision: content.git_binding.qualification_base_commit,
+    revision: baseOnly ? content.git_binding.qualification_base_commit : undefined,
   });
   const clonedConfig = join(clonedRepository, "config/flow");
   await rm(clonedConfig, { recursive: true, force: true });

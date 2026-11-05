@@ -135,9 +135,7 @@ assert_contains "$(cat "$builder_home/sessions/session.json")" 'session'
 assert_contains "$(cat "$unmanaged/config.yaml")" 'unmanaged: true'
 echo "ok - repeated Hermes convergence renders routing and preserves runtime state"
 
-HOME="$home" XDG_CONFIG_HOME="$config_home" XDG_STATE_HOME="$state_home" \
-  MISE_TRUSTED_CONFIG_PATHS="$root" \
-  mise -C "$root" -E linux bootstrap dotfiles apply --yes >/dev/null 2>&1
+converge_test_dotfiles "$root" "$home" >/dev/null 2>&1
 for profile in flow-controller analyst critic builder artifact gate; do
   profile_home="$home/.hermes/profiles/$profile"
   for managed in SOUL.md distribution.yaml; do
