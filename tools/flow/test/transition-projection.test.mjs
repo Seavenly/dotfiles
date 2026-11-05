@@ -828,7 +828,12 @@ async function copyReleaseCandidateToFreshClone(t, label) {
     join(configDirectory, "evidence/release-content.v1.json"),
     "utf8",
   ));
-  const clonedRepository = await cloneRepositoryAtHead(t, label, { noLocal: true });
+  // Start before the candidate commits so missing-object portability is tested
+  // deliberately, including when the complete candidate has been committed.
+  const clonedRepository = await cloneRepositoryAtHead(t, label, {
+    noLocal: true,
+    revision: content.git_binding.qualification_base_commit,
+  });
   const clonedConfig = join(clonedRepository, "config/flow");
   await rm(clonedConfig, { recursive: true, force: true });
   await cp(configDirectory, clonedConfig, {
@@ -856,7 +861,7 @@ async function copyReleaseCandidateToFreshClone(t, label) {
   return { content, clonedConfig, clonedRepository };
 }
 
-async function cloneRepositoryAtHead(t, label, { noLocal = false } = {}) {
+async function cloneRepositoryAtHead(t, label, { noLocal = false, revision } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), `flow-repository-${label}-`));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const copiedRepository = join(scratch, "repository");
@@ -867,11 +872,12 @@ async function cloneRepositoryAtHead(t, label, { noLocal = false } = {}) {
     "clone",
     "-q",
     ...(noLocal ? ["--no-local"] : []),
+    ...(revision === undefined ? [] : ["--revision", revision]),
     "--no-checkout",
     repositoryRoot,
     copiedRepository,
   ]);
-  await execFileAsync("git", ["checkout", "-q", stdout.trim()], {
+  await execFileAsync("git", ["checkout", "-q", revision ?? stdout.trim()], {
     cwd: copiedRepository,
   });
   return copiedRepository;
