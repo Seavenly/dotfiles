@@ -200,15 +200,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `e55efcccf595c25bc0f7c5c4669467be906e9894` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `005d20715f6b0128d7ea9220778603b0c6e519f1` |
-| Governed release content | `sha256:6b9a83d607516e251656b5907eec245f7e3fe0ea82f33ede388fd776746e783a` |
+| Governed release candidate tree (`release-content.v1.json`) | `bfa23f062b5f23eb152bd0c71a6be53236e5b89d` |
+| Governed release content | `sha256:fbc6bf18c73d3f55644082bbd1ef766e8bfb4887b751801cc454acf893817f95` |
 | Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:9718f8719e206895d6b760c247dc01c1ec9b34830413c9bc0acf04be2a438c8c` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:d4c45ef2a83e79714443f27af684a60404df995a0d5bf010fe4c04afe3ecc2de` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:0d5a009f0a0f339ea99a4fcf5281530f9ebec42dd49f9cb4012cb5ceeccde135` |
 | Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
-| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:eab9f5b5e4f26979a63452f76cf4fb577cdfc8d3b438db8ef657b4cf79e3e291` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:57ddbef28a7aac46d61f28253381a19830f54d90cbc0a40b5ea300a98439a0f9` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:28ee888206aeef33a797756046e2e5ff2606eb4f7e3bc0534d303415fc72fb27` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:2680ee7c982bc5c3e57ab03c522c867713481c96b7ae93a47c192c2e8ad76834` |
 
 Historical deterministic qualification evidence is bound to its recorded
 release and is not bound to the current ticket candidate. The current ledger
@@ -299,7 +299,7 @@ for that separately qualified, disposable pilot.
 | Test pilot manifest | `config/flow/releases/1.1-dark-test/release-manifest.v1.json`, `flow-release-1.1-dark-test/v1`, `sha256:a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b` |
 | Test pilot catalog | `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
 | Test pilot qualification base | `c34c6e881ce375691d4f3e4ca626c1af9eef81cc` |
-| Test pilot content | `005d20715f6b0128d7ea9220778603b0c6e519f1`, `sha256:e1dc0265aa1b4e9b7c82959c63ffef9f5c7acce1503e7a53c01b2554c0119885`, `sha256:aa696e36d875e9ef4e3b80148041de975632cef1480d10deef158d4df8cef965` |
+| Test pilot content | `bfa23f062b5f23eb152bd0c71a6be53236e5b89d`, `sha256:464e24857b5c721973b6f9c11ffbcdfe9065de941ab2625b6274135ff6702f0b`, `sha256:9abbc6dcf7c723ece94ff964b349bde2eb7030df9eabab71a494ccd5ae2ce2e2` |
 | Test pilot source qualification | Final qualification `not_run`; deterministic prerequisites `not_run`, production prerequisites `not_run`; historical host aggregate is not consumed as new native qualification |
 | Historical fixture bootstrap | Generator input: retained pre-D deterministic fixture `sha256:3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050`. Current prerequisite TAP: `config/flow/releases/1.1-dark-test/evidence/receipts/public-production-feature-test.tap`, `sha256:c3cd531c73d4f788e4007fe19e4b9f5add5db2e165fd9364d8beb33483a223be`; neither grants native qualification |
 
