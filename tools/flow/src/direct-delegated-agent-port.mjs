@@ -57,7 +57,7 @@ export function createDirectDelegatedAgentPort({
         if (issue) throw new Error(issue);
         const executable = executableIdentity(executables[launch.harness] ?? env[`FLOW_${launch.harness.toUpperCase()}_EXECUTABLE`] ?? findExecutable(launch.harness, env), adapter, env, executionTrust);
         const backend = { contract: "flow.direct-task/v1", id: "direct", harness: launch.harness,
-          adapter: adapter.id, adapter_version: adapter.version, executable, native_session_strategy: "fresh_ephemeral", ...(executionTrust === SUPERVISED_NATIVE_TRUST ? { trust_contract: SUPERVISED_NATIVE_CONTRACT } : {}) };
+          adapter: adapter.id, adapter_version: adapter.versionForTrust?.(executionTrust) ?? adapter.version, executable, native_session_strategy: "fresh_ephemeral", ...(executionTrust === SUPERVISED_NATIVE_TRUST ? { trust_contract: SUPERVISED_NATIVE_CONTRACT } : {}) };
         const description = executionDescription({ launch, callerMetadata: request.caller_metadata ?? {}, backend });
         const contradiction = directDescriptionIssue(description); if (contradiction) throw new Error(contradiction);
         return freezeCanonical({ schema: "flow.execution-description-projection/v1", status: "compatible",

@@ -37,6 +37,7 @@ if mode in ['descendant','stubborn_descendant']:
   while not (root/'release').exists():time.sleep(.02)
   os._exit(0)
 output=json.dumps({'schema':'fixture.result/v1','answer':42},separators=(',',':'))
+if json.loads(pathlib.Path(sys.argv[sys.argv.index('--output-schema')+1]).read_text()).get('required')==['output_json']:output=json.dumps({'output_json':output},separators=(',',':'))
 if mode!='complete_without_result':pathlib.Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text(output)
 events=[{'type':'thread.started','thread_id':'thread-fixture'},{'type':'turn.started'}, {'type':'item.completed','item':{'id':'commentary','type':'agent_message','text':'Checking the workspace.'}}, {'type':'item.completed','item':{'id':'final','type':'agent_message','text':output}},{'type':'turn.completed','usage':{}}]
 if mode=='nonterminal':events=events[:-1]

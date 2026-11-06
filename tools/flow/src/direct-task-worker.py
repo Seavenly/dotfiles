@@ -124,6 +124,10 @@ try:
     input_bytes = (root / 'input.bin').read_bytes()
     if (root / 'output-schema.json').read_text() != descriptor['output_schema_bytes']:
         raise RuntimeError('output_schema_digest_conflict')
+    if 'native_output_schema_bytes' in descriptor:
+        native_schema = (root / 'native-output-schema.json').read_bytes()
+        if native_schema.decode('utf-8') != descriptor['native_output_schema_bytes'] or sha(native_schema) != descriptor['native_output_schema_sha256']:
+            raise RuntimeError('native_output_schema_digest_conflict')
     if sha(input_bytes) != descriptor['input_sha256']:
         raise RuntimeError('input_digest_conflict')
     if sha(pathlib.Path(invocation['executable']).read_bytes()) != descriptor['description']['backend']['executable']['sha256']:

@@ -10,6 +10,7 @@ const READ_TOOLS = ["Read", "Glob", "Grep"];
 export const claudeExecutionAdapter = Object.freeze({
   id: "flow.claude-print", version: "1", harness: "claude",
   supportedVersion: "2.1.287 (Claude Code)",
+  versionForTrust(trust) { return trust === "supervised-native-cli" ? "2" : this.version; },
   supportedVersionForTrust(trust) { return trust === "supervised-native-cli" ? "2.1.318 (Claude Code)" : this.supportedVersion; },
   authorityIssue({ executionTrust, launch } = {}) {
     if (executionTrust === "supervised-native-cli") return launch?.capability === "read-only" ? null : "unsupported_claude_capability";
@@ -57,10 +58,12 @@ export const claudeExecutionAdapter = Object.freeze({
         if (!Array.isArray(tools) || new Set(tools).size !== tools.length ||
             READ_TOOLS.some((tool) => !tools.includes(tool)) ||
             tools.some((tool) => ![...READ_TOOLS, "StructuredOutput"].includes(tool))) throw new Error("unexpected_native_inventory");
-        for (const key of ["mcp_servers", "plugins", "agents", "skills", "slash_commands"]) {
+        const supervisedV2 = isSupervisedDescription(descriptor.description) && descriptor.description.backend.adapter_version === "2";
+        if (supervisedV2) validateBuiltinMetadata(event);
+        for (const key of (supervisedV2 ? ["mcp_servers", "skills", "slash_commands"] : ["mcp_servers", "plugins", "agents", "skills", "slash_commands"])) {
           if (!Array.isArray(event[key]) || event[key].length) throw new Error("unexpected_native_inventory");
         }
-        for (const key of ["plugin_errors", "plugin_warnings", "mcp_server_errors", "memory_paths", "terminal_slash_commands", "capabilities"]) {
+        for (const key of ["plugin_errors", "plugin_warnings", "mcp_server_errors", "memory_paths", "terminal_slash_commands", ...(supervisedV2 ? [] : ["capabilities"])]) {
           if (event[key] !== undefined && (!event[key] || typeof event[key] !== "object" || Object.keys(event[key]).length)) {
             throw new Error("unexpected_native_inventory");
           }
@@ -68,6 +71,11 @@ export const claudeExecutionAdapter = Object.freeze({
         if (event.worker_epoch !== undefined || event.messaging_socket_path !== undefined) throw new Error("unexpected_native_inventory");
         if (event.output_style !== "default") throw new Error("unexpected_native_inventory");
         session = event.session_id;
+      } else if (event.type === "rate_limit_event" && isSupervisedDescription(descriptor.description) && descriptor.description.backend.adapter_version === "2") {
+        if (!session || event.session_id !== session) throw new Error("ambiguous_native_session");
+        // Informational subscription usage is not a tool invocation or a result.
+        // A rejected primary window cannot be mistaken for successful output.
+        if (event.rate_limit_info?.status !== "allowed") throw new Error("provider_terminal_failure");
       } else if (event?.type === "result") {
         if (event.subtype !== "success" || event.is_error !== false ||
             !Array.isArray(event.permission_denials) || event.permission_denials.length) throw new Error("provider_terminal_failure");
@@ -115,6 +123,21 @@ export const claudeExecutionAdapter = Object.freeze({
   },
 });
 
+const BUILTIN_PLUGINS = ["agents-md", "telemetry", "privacy", "plugin-authoring"].map(name => "cc-plugin-" + name);
+const BUILTIN_AGENTS = ["claude", "Explore", "general-purpose", "Plan", "web-fetch"];
+const PROTOCOL_CAPABILITIES = ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "interrupt_send_now_v1", "interrupt_requeue_taken_v1", "msg_lifecycle_v1", "request_marker_lists_v1", "ask_user_question_unanswered_v1", "lifecycle_wakeup_source_v1", "sdk_mcp_tools_list_changed", "sdk_mcp_manifests", "mcp_read_resource_v1", "mcp_tool_ui_meta_v1", "ui_surface_v1", "mcp_call_result_not_for_model_v1"];
+function validateBuiltinMetadata(event) {
+  // These are the exact 2.1.318 builtin inventory/protocol names observed with
+  // --restricted/--safe-mode. They are metadata, not permission evidence.
+  // Actual available tools and every subsequent tool call are checked separately.
+  if (!Array.isArray(event.plugins) || new Set(event.plugins.map(p => p?.name)).size !== event.plugins.length ||
+      event.plugins.some(p => !p || Object.keys(p).sort().join(",") !== "name,path,source" || !BUILTIN_PLUGINS.includes(p.name) || p.path !== "builtin" || p.source !== p.name + "@builtin")) throw new Error("unexpected_native_inventory");
+  for (const [key, allowed] of [["agents", BUILTIN_AGENTS], ["capabilities", PROTOCOL_CAPABILITIES]]) {
+    if (!Array.isArray(event[key]) || new Set(event[key]).size !== event[key].length || event[key].some(value => !allowed.includes(value))) throw new Error("unexpected_native_inventory");
+  }
+  if (event.additional_directories !== undefined && (!Array.isArray(event.additional_directories) || event.additional_directories.length)) throw new Error("unexpected_native_inventory");
+}
+
 function withinWorkspace(workspace, path) {
   const delta = relative(workspace, resolve(workspace, path));
   return delta !== ".." && !delta.startsWith("../") && !isAbsolute(delta);
@@ -139,7 +162,7 @@ function validateDescriptor(descriptor) {
       workspace.path === "/" || workspace.claim?.access !== "read_only") throw new Error("unsupported_claude_workspace");
   const backend = descriptor.description.backend;
   const executable = backend?.executable;
-  if (backend?.harness !== "claude" || backend.adapter !== "flow.claude-print" || backend.adapter_version !== "1" ||
+  if (backend?.harness !== "claude" || backend.adapter !== "flow.claude-print" || !["1", ...(supervised ? ["2"] : [])].includes(backend.adapter_version) ||
       typeof executable?.path !== "string" || !isAbsolute(executable.path) || executable.version !== (supervised ? "2.1.318 (Claude Code)" : "2.1.287 (Claude Code)")) {
     throw new Error("invalid_claude_executable");
   }

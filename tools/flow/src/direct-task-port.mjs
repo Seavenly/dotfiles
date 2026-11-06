@@ -27,7 +27,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
       const issue = directDescriptionIssue(request.description) ?? descriptionTrustIssue(request.description, executionTrust);
       if (issue) return blocked(issue);
       const adapter = adapters[request.description.backend.harness];
-      if (adapter?.id !== request.description.backend.adapter || adapter.version !== request.description.backend.adapter_version) return blocked("adapter_identity_changed");
+      if (adapter?.id !== request.description.backend.adapter || (adapter.versionForTrust?.(executionTrust) ?? adapter.version) !== request.description.backend.adapter_version) return blocked("adapter_identity_changed");
       const id = `task:${keyDigest(request.caller_key)}`;
       // Only an atomic reservation's exact absence permits the initial spawn.
       if (!existsSync(directory(id))) return { schema: "flow.task-observation/v1", status: "proven_absent", task: null };
@@ -46,7 +46,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
             !binding.run_id || !binding.card_id || !binding.effect_id || !binding.workspace_claim ||
             !binding.output_contract?.schema || !Array.isArray(binding.output_contract.schemas)) throw new Error("invalid_task_binding");
         const adapter = adapters[request.description.backend.harness];
-        if (adapter?.id !== request.description.backend.adapter || adapter.version !== request.description.backend.adapter_version) throw new Error("adapter_identity_changed");
+        if (adapter?.id !== request.description.backend.adapter || (adapter.versionForTrust?.(executionTrust) ?? adapter.version) !== request.description.backend.adapter_version) throw new Error("adapter_identity_changed");
         const id = `task:${keyDigest(request.caller_key)}`;
         root = directory(id);
         const adopt = () => {
@@ -79,6 +79,8 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
         const workspacePath = realpathSync(workspace.canonical_path);
         const authorityIssue = adapter.authorityIssue({ env, workspacePath, executionTrust, launch: request.description.launch }); if (authorityIssue) throw new Error(authorityIssue);
         const outputSchemaBytes = JSON.stringify(canonicalize(binding.output_contract.schema));
+        const nativeSchema = adapter.nativeOutputSchema?.({ description: request.description, logicalSchema: binding.output_contract.schema });
+        const nativeSchemaBytes = nativeSchema ? JSON.stringify(canonicalize(nativeSchema)) : null;
         const identityInput = {
           schema: "flow.task-invocation/v1", task_id: id, caller_key: request.caller_key,
           input_key: request.input_key, input_sha256: request.payload_sha256,
@@ -86,6 +88,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
           description: request.description, workspace: { path: workspacePath, claim: binding.workspace_claim },
           output_contract: binding.output_contract,
           output_schema_bytes: outputSchemaBytes,
+          ...(nativeSchemaBytes ? { native_output_schema_bytes: nativeSchemaBytes, native_output_schema_sha256: hashBytes(nativeSchemaBytes) } : {}),
           output_contract_digest: digest(binding.output_contract),
           environment: taskEnvironment(env, join(root, "scratch")),
           supervision, process_containment: "linux_subreaper", retention: "authority_owned_until_explicit_disposition",
@@ -105,6 +108,7 @@ export function createDirectTaskPort({ taskDirectory, env, adapters, resolveWork
         atomicJson(root, "descriptor.json", descriptor);
         durableBytes(root, "input.bin", Buffer.from(request.prompt));
         durableBytes(root, "output-schema.json", Buffer.from(outputSchemaBytes));
+        if (nativeSchemaBytes) durableBytes(root, "native-output-schema.json", Buffer.from(nativeSchemaBytes));
         mkdirSync(join(root, "scratch"), { mode: 0o700 });
         const errorFd = openSync(join(root, "worker-errors.bin"), "wx", 0o600);
         let worker;
@@ -201,7 +205,14 @@ function validatedDescriptor(root) {
   try { checkPrivateDirectory(root); } catch { return null; }
   const descriptor = readJson(join(root, "descriptor.json")); if (!descriptor) return null;
   const { descriptor_digest: expected, ...identity } = descriptor;
-  try { return digest(identity) === expected && hashBytes(readFileSync(join(root, "input.bin"))) === descriptor.input_sha256 ? descriptor : null; } catch { return null; }
+  try {
+    if (digest(identity) !== expected || hashBytes(readFileSync(join(root, "input.bin"))) !== descriptor.input_sha256 ||
+        readFileSync(join(root, "output-schema.json"), "utf8") !== descriptor.output_schema_bytes) return null;
+    if (descriptor.native_output_schema_bytes !== undefined &&
+        (readFileSync(join(root, "native-output-schema.json"), "utf8") !== descriptor.native_output_schema_bytes ||
+         hashBytes(descriptor.native_output_schema_bytes) !== descriptor.native_output_schema_sha256)) return null;
+    return descriptor;
+  } catch { return null; }
 }
 function workerBindingMatches(record, descriptor) {
   return record?.schema === "flow.task-process/v1" &&

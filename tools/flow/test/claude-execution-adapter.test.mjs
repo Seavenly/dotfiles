@@ -228,3 +228,27 @@ test("supervised Claude pins installed official version and preserves subscripti
   assert.equal(claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(initialized, terminal()), exitCode: 0 }).native_session, "session-fixture");
   assert.throws(() => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(init(), terminal()), exitCode: 0 }), /native_launch_mismatch/u);
 });
+
+
+test("supervised Claude recognizes observed builtin metadata without enabling ambient tools", () => {
+  const d = descriptor();
+  d.description.launch.trust_posture = "supervised-native-cli";
+  d.description.backend.trust_contract = "flow.supervised-native-cli/v1";
+  d.description.backend.adapter_version = "2";
+  d.description.backend.executable.version = "2.1.318 (Claude Code)";
+  d.description.effective_authority = { assurance: "operator_supervised_cli", approvals: "cli_requested_never", filesystem: "cli_requested_read_only", network: "not_independently_verified", escalation: "not_independently_verified", writable_roots: [] };
+  const metadata = { ...init(), claude_code_version: "2.1.318", tools: [...init().tools, "StructuredOutput"],
+    plugins: ["agents-md", "telemetry", "privacy", "plugin-authoring"].map(name => ({ name: "cc-plugin-" + name, path: "builtin", source: "cc-plugin-" + name + "@builtin" })),
+    agents: ["claude", "Explore", "general-purpose", "Plan", "web-fetch"], capabilities: ["interrupt_receipt_v1", "sdk_mcp_manifests", "mcp_call_result_not_for_model_v1"] };
+  const read = () => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(metadata, terminal()), exitCode: 0 });
+  assert.equal(read().output, '{"answer":42}');
+  const rate = { type: "rate_limit_event", session_id: "session-fixture", rate_limit_info: { status: "allowed", overageStatus: "rejected", isUsingOverage: false } };
+  assert.equal(claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(metadata, rate, terminal()), exitCode: 0 }).output, '{"answer":42}');
+  for (const changed of [{ ...rate, session_id: "other" }, { ...rate, rate_limit_info: { status: "rejected" } }]) assert.throws(() => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(metadata, changed, terminal()), exitCode: 0 }));
+  assert.throws(() => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(metadata, terminal(), rate), exitCode: 0 }), /out_of_order_provider_event/u);
+  for (const mutation of [m => m.plugins.push({ name: "external", path: "/ambient", source: "external" }), m => m.tools.push("Agent"), m => m.capabilities.push("unknown"), m => m.agents.push("external"), m => m.mcp_servers.push({ name: "external" })]) {
+    const copy = structuredClone(metadata); mutation(copy);
+    assert.throws(() => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(copy, terminal()), exitCode: 0 }), /unexpected_native_inventory/u);
+  }
+  assert.throws(() => parse(stream({ ...metadata, claude_code_version: "2.1.287" }, terminal())), /unexpected_native_inventory/u);
+});

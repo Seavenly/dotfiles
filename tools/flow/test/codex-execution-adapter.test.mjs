@@ -182,8 +182,85 @@ test("supervised native description is constructor-owned and cannot leak into a 
   assert.equal(done.status, "completed", JSON.stringify(done));
   assert.equal(done.task.receipt.tree_retired, true);
   assert.equal(done.task.descriptor.description.launch.trust_posture, "supervised-native-cli");
+  assert.equal(done.task.descriptor.description.backend.adapter_version, "2");
+  const nativeBytes = await readFile(join(fixture.options.taskDirectory, done.task.id.slice(5), "native-output-schema.json"), "utf8");
+  assert.equal(nativeBytes, done.task.descriptor.native_output_schema_bytes);
+  assert.equal(done.task.descriptor.native_output_schema_sha256, "sha256:" + (await import("node:crypto")).createHash("sha256").update(nativeBytes).digest("hex"));
+  const argv = done.task.descriptor.invocation.args;
+  assert.equal(argv[argv.indexOf("--output-schema") + 1], join(fixture.options.taskDirectory, done.task.id.slice(5), "native-output-schema.json"));
+  assert.equal(done.task.descriptor.output_schema_bytes, JSON.stringify((await import("../src/canonical.mjs")).canonicalize(fixture.request.task_binding.output_contract.schema)));
+  assert.equal(JSON.parse(done.task.result.text).answer, 42);
   assert.equal((await readFile(join(fixture.scratch, "launches"), "utf8")).trim(), "once");
   const again = await port.dispatch({ ...fixture.request, description: described.description });
   assert.equal(again.status, "completed");
   assert.equal((await readFile(join(fixture.scratch, "launches"), "utf8")).trim(), "once");
+});
+
+
+test("supervised Codex transports full logical schema through a bounded native object envelope", () => {
+  const logical = { type: "object", not: { required: ["coverage", "terminal_disposition"] }, properties: { schema: { const: "flow.review-result/v1" } } };
+  const description = { launch: { trust_posture: "supervised-native-cli" }, backend: { trust_contract: "flow.supervised-native-cli/v1", adapter_version: "2" } };
+  const native = adapter.nativeOutputSchema({ description, logicalSchema: logical });
+  assert.deepEqual(Object.keys(native).sort(), ["additionalProperties", "properties", "required", "type"]);
+  assert.equal(native.type, "object"); assert.equal(native.additionalProperties, false);
+  assert.deepEqual(native.required, ["output_json"]);
+  assert.ok(native.properties.output_json.description.includes(JSON.stringify(logical)));
+  const wrapped = JSON.stringify({ output_json: output });
+  const list = events(); list[list.length - 2].item.text = wrapped;
+  const parsed = adapter.parseTerminal({ descriptor: { description }, stdout: list.map(JSON.stringify).join("\n") + "\n", lastMessage: wrapped, exitCode: 0 });
+  assert.equal(parsed.output, output);
+  for (const invalid of [{ output_json: "not JSON" }, { output_json: "[]" }, { output_json: output, extra: true }, { output_json: "x".repeat(4194305) }]) {
+    const raw = JSON.stringify(invalid); const bad = events(); bad[bad.length - 2].item.text = raw;
+    assert.throws(() => adapter.parseTerminal({ descriptor: { description }, stdout: bad.map(JSON.stringify).join("\n") + "\n", lastMessage: raw, exitCode: 0 }));
+  }
+});
+
+
+test("supervised wire output still fails the original host logical contract", async (t) => {
+  const { directTaskFixture } = await import("../test-support/direct-task-fixture.mjs");
+  const fixture = await directTaskFixture(t);
+  const executable = fixture.options.executables.codex;
+  await writeFile(executable, (await readFile(executable, "utf8")).replace("codex-cli 0.160.0", "codex-cli 0.166.0"));
+  const port = createDirectDelegatedAgentPort({ ...fixture.options, providers: { codex: adapter }, executionTrust: "supervised-native-cli" });
+  const { description } = await port.describe({ schema: "flow.delegated-agent-description-request/v1", launch: fixture.request.description.launch, caller_metadata: {} });
+  const contract = structuredClone(fixture.request.task_binding.output_contract);
+  contract.schema.not = { properties: { answer: { const: 42 } }, required: ["answer"] };
+  const started = await port.dispatch({ ...fixture.request, description, task_binding: { ...fixture.request.task_binding, output_contract: contract } });
+  const done = started.task?.receipt ? started : await port.wait({ turn_id: started.task.id, timeout_ms: 5000 });
+  assert.equal(done.status, "quarantined"); assert.equal(done.reason.code, "structured_output_invalid");
+  assert.equal(done.task.receipt.tree_retired, true);
+});
+
+test("wire schema tampering is rejected by the actual worker before native execution and by adoption", async (t) => {
+  const childProcess = (await import("node:child_process")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const { writeFileSync } = await import("node:fs");
+  const { directTaskFixture } = await import("../test-support/direct-task-fixture.mjs");
+  const fixture = await directTaskFixture(t);
+  const executable = fixture.options.executables.codex;
+  await writeFile(executable, (await readFile(executable, "utf8")).replace("codex-cli 0.160.0", "codex-cli 0.166.0"));
+  const port = createDirectDelegatedAgentPort({ ...fixture.options, providers: { codex: adapter }, executionTrust: "supervised-native-cli" });
+  const { description } = await port.describe({ schema: "flow.delegated-agent-description-request/v1", launch: fixture.request.description.launch, caller_metadata: {} });
+  const original = childProcess.spawn;
+  const mock = t.mock.method(childProcess, "spawn", function (executable, args, options) {
+    if (args[2]?.endsWith("direct-task-worker.py")) writeFileSync(join(args[3], "native-output-schema.json"), "{}");
+    return original(executable, args, options);
+  });
+  syncBuiltinESMExports();
+  const request = { ...fixture.request, description };
+  try {
+    const result = await port.dispatch(request);
+    assert.equal(result.status, "blocked");
+    // Task IDs hash the caller's bytes, rather than canonical JSON.
+    const roots = await (await import("node:fs/promises")).readdir(fixture.options.taskDirectory);
+    const root = join(fixture.options.taskDirectory, roots[0]);
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try { const failure = JSON.parse(await readFile(join(root, "failure.json"))); assert.equal(failure.reason, "native_output_schema_digest_conflict"); break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; await new Promise(r => setTimeout(r, 10)); }
+    }
+    assert.equal(JSON.parse(await readFile(join(root, "failure.json"))).reason, "native_output_schema_digest_conflict");
+    await assert.rejects(stat(join(fixture.scratch, "launches")), { code: "ENOENT" });
+    const again = await port.dispatch(request); assert.equal(again.reason.code, "reservation_outcome_unknown");
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });

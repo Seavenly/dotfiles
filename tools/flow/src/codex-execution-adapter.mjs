@@ -1,9 +1,16 @@
+import { isSupervisedDescription } from "./execution-contract.mjs";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const codexExecutionAdapter = Object.freeze({
   id: "flow.codex-exec", version: "1", harness: "codex",
   supportedVersion: "codex-cli 0.160.0",
+  versionForTrust(trust) { return trust === "supervised-native-cli" ? "2" : this.version; },
+  nativeOutputSchema({ description, logicalSchema }) {
+    if (!isSupervisedDescription(description) || description.backend.adapter_version !== "2") return null;
+    return { type: "object", additionalProperties: false, required: ["output_json"], properties: { output_json: { type: "string", maxLength: 4194304,
+      description: "Return the complete JSON object satisfying the following Flow logical schema, encoded as this string. Preserve all required fields and constraints. Logical schema: " + JSON.stringify(logicalSchema) } } };
+  },
   supportedVersionForTrust(trust) { return trust === "supervised-native-cli" ? "codex-cli 0.166.0" : this.supportedVersion; },
   nativeQualificationIssue() { return "codex_native_policy_unproven"; },
   // Filesystem dependencies are a trusted adapter test seam, never supplied
@@ -41,11 +48,11 @@ export const codexExecutionAdapter = Object.freeze({
       "-c", "sandbox_workspace_write.writable_roots=" + JSON.stringify(launch.capability === "read-only" ? [] : [join(taskDirectory, "scratch")]),
       "-c", 'model_reasoning_effort=' + JSON.stringify(launch.effort),
       "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "hooks={}",
-      "--output-schema", join(taskDirectory, "output-schema.json"),
+      "--output-schema", join(taskDirectory, descriptor.native_output_schema_bytes ? "native-output-schema.json" : "output-schema.json"),
       "--output-last-message", join(taskDirectory, "last-message.json"), "-"];
     return { executable: descriptor.description.backend.executable.path, args, cwd: descriptor.workspace.path };
   },
-  parseTerminal({ stdout, lastMessage, exitCode }) {
+  parseTerminal({ descriptor, stdout, lastMessage, exitCode }) {
     if (exitCode !== 0) throw new Error("provider_exit_failure");
     if (!stdout.endsWith("\n")) throw new Error("truncated_provider_output");
     const lines = stdout.split("\n").filter((line) => line.trim());
@@ -70,7 +77,7 @@ export const codexExecutionAdapter = Object.freeze({
           if (typeof event.item.id !== "string" || !event.item.id || typeof event.item.text !== "string" || completedMessages.has(event.item.id)) throw new Error("ambiguous_structured_output");
           completedMessages.add(event.item.id);
           if (final !== null) {
-            try { const previous = JSON.parse(final); if (previous && typeof previous === "object" && previous.schema) throw new Error("ambiguous_structured_output"); }
+            try { const previous = JSON.parse(final); if (previous && typeof previous === "object" && (previous.schema || (isSupervisedDescription(descriptor?.description) && descriptor.description.backend.adapter_version === "2" && typeof previous.output_json === "string"))) throw new Error("ambiguous_structured_output"); }
             catch (error) { if (error.message === "ambiguous_structured_output") throw error; }
           }
           final = event.item.text;
@@ -81,6 +88,12 @@ export const codexExecutionAdapter = Object.freeze({
     if (typeof lastMessage !== "string" || lastMessage.trim() !== final.trim()) throw new Error("output_file_disagreement");
     let output; try { output = JSON.parse(final); } catch { throw new Error("unstructured_provider_output"); }
     if (output === null || typeof output !== "object" || Array.isArray(output)) throw new Error("unstructured_provider_output");
+    if (isSupervisedDescription(descriptor?.description) && descriptor.description.backend.adapter_version === "2") {
+      if (Object.keys(output).length !== 1 || typeof output.output_json !== "string" || Buffer.byteLength(output.output_json) > 4194304) throw new Error("invalid_native_output_envelope");
+      final = output.output_json;
+      try { output = JSON.parse(final); } catch { throw new Error("unstructured_provider_output"); }
+      if (!output || typeof output !== "object" || Array.isArray(output)) throw new Error("unstructured_provider_output");
+    }
     return { output: final, native_session: session };
   },
 });

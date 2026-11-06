@@ -165,6 +165,14 @@
         "args",
         "signal_identity"
       ]
+    },
+    "native_output_schema_bytes": {
+      "type": "string",
+      "minLength": 1
+    },
+    "native_output_schema_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
     }
   },
   "required": [
@@ -188,5 +196,13 @@
     "invocation",
     "descriptor_digest",
     "supervision"
-  ]
+  ],
+  "dependentRequired": {
+    "native_output_schema_bytes": [
+      "native_output_schema_sha256"
+    ],
+    "native_output_schema_sha256": [
+      "native_output_schema_bytes"
+    ]
+  }
 }
