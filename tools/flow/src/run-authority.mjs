@@ -6321,6 +6321,7 @@ function cancelledWorkspaceSettlement(database, stream, fold) {
     const retirement = evidence?.terminal_disposition;
     if (retirement?.schema !== "flow.resource-retirement/v1" || retirement.retired !== true ||
         retirement.proof !== "linux_subreaper_echild" || retirement.resource?.type !== "direct_task" ||
+        typeof evidence.turn_id !== "string" || !evidence.turn_id.startsWith("task:") || evidence.turn_id.length <= 5 ||
         retirement.resource.id !== evidence.turn_id || !/^sha256:[a-f0-9]{64}$/u.test(retirement.terminal_receipt_digest ?? "")) {
       return { code: "cancelled_workspace_retirement_unproven" };
     }
