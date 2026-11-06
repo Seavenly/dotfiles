@@ -8,10 +8,10 @@ const shell = quoteShell;
 const sha = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 /** Materialize a private client and trusted owner configuration, without starting either. */
-export function writeFeatureClient({ directory, runtimeRoot, workspace, featureTestCheck, executionTrust, codexExecutable, localStateHome }) {
+export function writeFeatureClient({ directory, runtimeRoot, workspace, featureTestCheck, executionTrust, codexExecutable, localStateHome, authorityDirectory = join(directory, "authority") }) {
   const node = realpathSync(process.execPath);
   const modulePath = join(directory, "trusted-owner.mjs");
-  const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href)};\nconst featureTestCheck = ${JSON.stringify(featureTestCheck) ?? "undefined"};\nexport function createFlowRuntime(options = {}) { return production({ ...options, featureTestCheck }); }\n`;
+  const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href)};\nconst featureTestCheck = ${JSON.stringify(featureTestCheck) ?? "undefined"};\nexport function createFlowRuntime(options = {}) { return production({ ...options, featureTestCheck${localStateHome ? `, localClientCheck: { repository: ${JSON.stringify(workspace)}, featureTestCheck }` : ""} }); }\n`;
   const environment = {
     FLOW_CONFIG_DIRECTORY: join(runtimeRoot, "config/flow/releases/1.1-dark-test"),
     FLOW_QUALIFICATION_REPOSITORY_ROOT: runtimeRoot,
@@ -20,9 +20,9 @@ export function writeFeatureClient({ directory, runtimeRoot, workspace, featureT
     ...(codexExecutable ? { FLOW_CODEX_EXECUTABLE: codexExecutable } : {}),
     FLOW_REPOSITORY_ROOT: workspace,
     FLOW_OWNER_RUNTIME_MODULE: modulePath,
-    FLOW_AUTHORITY_DIRECTORY: join(directory, "authority"),
-    FLOW_OWNER_SOCKET_PATH: join(directory, "authority/owner.sock"),
-    FLOW_OWNER_ENDPOINT_PATH: join(directory, "authority/owner.json"),
+    FLOW_AUTHORITY_DIRECTORY: authorityDirectory,
+    FLOW_OWNER_SOCKET_PATH: join(authorityDirectory, "owner.sock"),
+    FLOW_OWNER_ENDPOINT_PATH: join(authorityDirectory, "owner.json"),
     XDG_STATE_HOME: join(directory, "state"),
     ...(localStateHome ? { FLOW_LOCAL_CLIENT_STATE_HOME: localStateHome } : {}),
   };

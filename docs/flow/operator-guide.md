@@ -47,10 +47,21 @@ authority epochs, so review facts must be freshly prepared after a restart.
 
 One private profile is reused for each canonical repository, with one durable
 authority and workspace claim namespace. Later setup calls create new request
-files. They preserve prior state and reject changed source/tool/check pins;
-they do not create a second owner for a new brief or overwrite an active client.
+files. They preserve prior state and reject changed source/tool pins; they do
+not create a second authority for a new brief or overwrite an active client.
 Changing the profile's host state directory selects a different authority and
 must not be used to work around an existing workspace claim.
+
+For a different checked feature or a verify-to-test change, first settle all
+retained runs, uncertain effects and workspace claims, then stop the owner.
+Repeat `local setup` with the new brief/check and `--reconfigure-check yes`.
+This creates an immutable client revision sharing the original authority;
+old clients, owner modules, requests and receipts remain intact. Use the
+returned client path or a new `--client-link` name. An existing link is preserved.
+After a profile contains several revisions, selecting any revision through
+setup requires this explicit stopped/settled procedure. A client starting later
+also checks retained active work under the authority lease before recovery:
+checked work can resume only with its original exact check fingerprint.
 
 Default `verify` means **Git-backed content observations plus independent model
 critique; project checks NOT_RUN; runtime behavior not established**. The

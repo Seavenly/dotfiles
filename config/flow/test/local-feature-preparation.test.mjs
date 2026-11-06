@@ -10,6 +10,10 @@ import { createFlowRuntime } from "../../../tools/flow/src/flow-runtime.mjs";
 import { createInMemoryRunAuthority } from "../../../tools/flow/src/run-authority.mjs";
 import { dynamicCheckpointProposal } from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
 import { supervisedTrustPosture } from "../src/supervised-native-trust.mjs";
+import { createFlowRuntime as productionRuntime, closeFlowRuntime } from "../src/runtime.mjs";
+import { createDurableRunAuthority } from "../../../tools/flow/src/run-authority.mjs";
+import { getWorkspaceAuthority } from "../../../tools/flow/src/work-authority.mjs";
+import { createGitWorkspaceObservationAdapter } from "../../../tools/flow/src/git-retention-adapter.mjs";
 
 const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 const load = path => JSON.parse(readFileSync(path, "utf8"));
@@ -49,7 +53,7 @@ function fixture(t) {
     environment: { PATH: "/usr/bin:/bin" }, limits: { timeout_ms: 5000, max_output_bytes: 65536 } };
   const checkPath = join(root, "check.json"); writeFileSync(checkPath, JSON.stringify(check));
   const args = [cli, "local", "setup", "--execution-trust", "supervised-native-cli", "--repository", repository, "--brief", briefPath, "--codex-executable", executable];
-  return { root, repository, executable, run, success, git, args, checkPath, ownClient(value) { client = value; } };
+  return { root, repository, executable, run, success, git, args, checkPath, env, ownClient(value) { client = value; } };
 }
 
 test("local setup preserves an existing repo, installs an explicit client link and reuses one authority", t => {
@@ -112,4 +116,100 @@ test("retained run status preserves the exact supervised verification scope from
   const projection = runtime.query({ run_id: launched.run_id });
   assert.deepEqual(projection.views.operator.trust_posture, prepared.confirmation.trust_posture);
   assert.deepEqual(projection.views.trust.trust_posture, prepared.confirmation.trust_posture);
+});
+
+test("a stopped repository client advances from verify to a new checked feature without replacing its authority or old client", t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  const oldBytes = readFileSync(original.client);
+  const rejected = f.run(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath]);
+  assert.equal(rejected.status, 1, "a changed check requires explicit selection");
+  const next = f.success(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]);
+  assert.notEqual(next.client, original.client);
+  assert.equal(load(join(next.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY,
+    load(join(original.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY);
+  assert.deepEqual(readFileSync(original.client), oldBytes);
+  f.ownClient(next.client);
+  f.success(next.client, ["start", "--json"]);
+  assert.equal(f.success(next.client, ["prepare", "--input-file", next.request, "--json"]).schema, "flow.prepared-run/v1");
+  assert.equal(f.run(process.execPath, [...f.args, "--reconfigure-check", "yes"]).status, 1, "a live owner prevents selecting a different check");
+  f.success(next.client, ["stop", "--json"]);
+  const reverted = f.success(process.execPath, [...f.args, "--reconfigure-check", "yes"]);
+  assert.equal(reverted.client, original.client);
+  const briefPath = f.args[f.args.indexOf("--brief") + 1];
+  const brief = load(briefPath);
+  brief.id = "brief:second-feature";
+  brief.acceptance = ["feature.txt contains later"];
+  writeFileSync(briefPath, JSON.stringify(brief));
+  const check = load(f.checkPath);
+  check.check_id = "check:second-feature";
+  check.criteria = brief.acceptance;
+  check.expected_failure.expected = "later\n";
+  const acceptancePath = join(f.repository, check.acceptance.path);
+  const nextAcceptance = readFileSync(acceptancePath, "utf8").replace('"after\\n"', '"later\\n"');
+  writeFileSync(acceptancePath, nextAcceptance);
+  check.acceptance.sha256 = sha(nextAcceptance);
+  writeFileSync(f.checkPath, JSON.stringify(check));
+  f.git(["add", "."]); f.git(["commit", "--quiet", "-m", "Register next feature acceptance"]);
+  const third = f.success(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]);
+  assert.notEqual(third.client, next.client);
+  assert.equal(load(join(third.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY,
+    load(join(original.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY);
+  f.success(third.client, ["start", "--json"]);
+  const prepared = f.success(third.client, ["prepare", "--input-file", third.request, "--json"]);
+  assert.deepEqual(prepared.selection.inputs.brief.acceptance, brief.acceptance);
+  f.success(third.client, ["stop", "--json"]);
+});
+
+test("a different retained client refuses active checked work before recovery or provider dispatch", async t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  const next = f.success(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]);
+  const profile = load(join(next.directory, "pilot.json"));
+  const options = { env: { ...f.env, ...profile.environment }, featureTestCheck: load(f.checkPath),
+    localClientCheck: { repository: f.repository, featureTestCheck: load(f.checkPath) }, autonomous: false };
+  const runtime = productionRuntime(options);
+  let launched;
+  try {
+    const prepared = await runtime.prepare(load(next.request));
+    launched = runtime.launch({ prepared, execution_trust: prepared.selection.inputs.execution_trust ?? profile.execution_trust,
+      confirmation: { schema: "flow.predefined-flow-confirmation-decision/v1", decision: "accept", bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest },
+      closed_facts: { schema: "flow.closed-fact-observation/v1", bundle_digest: prepared.bundle_digest, facts: prepared.explicit_facts } });
+    assert.equal(launched.schema, "flow.launch-receipt/v1", JSON.stringify(launched));
+  } finally { closeFlowRuntime(runtime); }
+  assert.equal(f.run(process.execPath, [...f.args, "--reconfigure-check", "yes"]).status, 1, "offline setup sees active retained work");
+  const wrong = f.run(original.client, ["start", "--json"]);
+  assert.equal(wrong.status, 1, wrong.stdout + wrong.stderr);
+  assert.equal(existsSync(join(profile.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
+  const same = productionRuntime(options);
+  try { assert.equal(same.query({ run_id: launched.run_id }).phase, "active"); }
+  finally { closeFlowRuntime(same); }
+});
+
+test("check revision changes retain and refuse claimed or tainted workspace authority", t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  f.ownClient(original.client);
+  f.success(original.client, ["start", "--json"]);
+  const prepared = f.success(original.client, ["prepare", "--input-file", original.request, "--json"]);
+  f.success(original.client, ["stop", "--json"]);
+  const authorityDirectory = load(join(original.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY;
+  const authority = createDurableRunAuthority({ authorityDirectory, gitWorkspaceObservationAdapter: createGitWorkspaceObservationAdapter() });
+  try {
+    const workspace = getWorkspaceAuthority({ runAuthority: authority });
+    const query = { contract: "work.workspace/v1", subject_id: prepared.selection.inputs.workspace.subject_id };
+    const before = workspace.query(query);
+    const claim = workspace.command({ schema: "work.workspace-claim-command/v1", command_id: "claim:local-held", type: "workspace_claim", ...query,
+      expected_generation: before.generation, expected_watermark: before.watermark, expected_fingerprint: prepared.selection.inputs.workspace.fingerprint,
+      claim: { claim_id: "claim:local-held", holder: "run:retained", operations: ["feature-apply"] } });
+    assert.equal(claim.accepted, true, JSON.stringify(claim));
+    assert.equal(f.run(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]).status, 1);
+    assert.equal(workspace.query(query).claims.length, 1);
+    assert.equal(workspace.command(workspace.query(query).legal_actions.find(action => action.type === "workspace_claim_release")).accepted, true);
+    const taint = workspace.command({ schema: "work.workspace-taint-command/v1", command_id: "taint:local-uncertain", type: "workspace_taint", ...query,
+      expected_watermark: workspace.query(query).watermark, taint: { reason: "effect_outcome_uncertain", evidence_digest: `sha256:${"8".repeat(64)}` } });
+    assert.equal(taint.accepted, true, JSON.stringify(taint));
+    assert.equal(f.run(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]).status, 1);
+    assert.equal(workspace.query(query).taint.reason, "effect_outcome_uncertain");
+  } finally { authority.close(); }
 });

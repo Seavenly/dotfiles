@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,8 @@ import { createGitWorkspaceObservationAdapter } from "../../../tools/flow/src/gi
 import { resolveProductionFeatureTestSelection, validateProductionFeatureTestCheck } from "../src/production-feature-test-check.mjs";
 import { SUPERVISED_NATIVE_ACKNOWLEDGMENT } from "../src/supervised-native-trust.mjs";
 import { quoteShell, writeFeatureClient } from "./feature-client-files.mjs";
+import { assertLocalCheckChangeQuiescent } from "../src/local-client-state.mjs";
+import { statusFlowOwner } from "../src/owner-process.mjs";
 
 const runtimeRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
 const load = path => JSON.parse(readFileSync(path, "utf8"));
@@ -17,16 +19,16 @@ const save = (path, value) => writeFileSync(path, `${JSON.stringify(value, null,
 const verifyScope = "Git-backed content observations plus independent model critique; project checks NOT_RUN; runtime behavior not established";
 
 try {
-  setup(process.argv.slice(2));
+  await setup(process.argv.slice(2));
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 }
 
-function setup(args) {
+async function setup(args) {
   if (!/^v22\./u.test(process.version)) throw new Error("Local setup requires Node 22");
   const options = {};
-  const allowed = ["--repository", "--brief", "--codex-executable", "--execution-trust", "--mode", "--check", "--client-link"];
+  const allowed = ["--repository", "--brief", "--codex-executable", "--execution-trust", "--mode", "--check", "--client-link", "--reconfigure-check"];
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index], value = args[index + 1];
     if (!allowed.includes(flag) || !value || Object.hasOwn(options, flag)) throw new Error("Invalid local setup arguments");
@@ -37,6 +39,7 @@ function setup(args) {
     throw new Error("Local setup requires --repository PATH --brief JSON_FILE --codex-executable ABSOLUTE_PATH");
   }
   const mode = options["--mode"] ?? "verify";
+  if (options["--reconfigure-check"] !== undefined && options["--reconfigure-check"] !== "yes") throw new Error("Use --reconfigure-check yes to explicitly select a different check");
   if (!["test", "verify"].includes(mode) || (mode === "test") !== Boolean(options["--check"])) {
     throw new Error("Use verify without --check, or test with one explicit trusted --check JSON_FILE");
   }
@@ -64,22 +67,39 @@ function setup(args) {
   if (check) resolveProductionFeatureTestSelection({ checkId: check.check_id, brief, workspace: { path: repository }, featureTestCheck: check });
   const stateHome = process.env.FLOW_LOCAL_CLIENT_STATE_HOME ?? process.env.XDG_STATE_HOME ?? join(process.env.HOME ?? homedir(), ".local/state");
   const parent = join(stateHome, "flow-local");
-  const directory = join(parent, digest(repository).slice(7, 31));
+  const profileRoot = join(parent, digest(repository).slice(7, 31));
   const identity = { schema: "flow.local-client/v1", repository, runtime_root: runtimeRoot,
-    node: realpathSync(process.execPath), executable, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT,
-    check_digest: check ? digest(check) : null };
+    node: realpathSync(process.execPath), executable, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT };
+  const checkDigest = check ? digest(check) : null;
+  const directory = join(profileRoot, "clients", checkDigest?.slice(7) ?? "verify");
+  const authorityDirectory = join(profileRoot, "authority");
   let profile;
   const reused = existsSync(directory);
-  if (reused) {
-    if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error("Local client path is not an owned profile directory");
-    profile = load(join(directory, "pilot.json"));
-    if (digest(profile.local_client) !== digest(identity)) throw new Error("This repository already has a differently pinned local client; retain its authority and settle existing work before explicit reconfiguration");
+  if (existsSync(profileRoot)) {
+    if (!lstatSync(profileRoot).isDirectory() || lstatSync(profileRoot).isSymbolicLink()) throw new Error("Local client path is not an owned profile directory");
+    const pinned = load(join(profileRoot, "profile.json"));
+    if (digest(pinned.identity) !== digest(identity)) throw new Error("This repository already has different runtime or executable pins; retain its authority and existing clients");
+    if (pinned.initial_check_digest !== checkDigest || readdirSync(join(profileRoot, "clients")).length > 1) {
+      if (options["--reconfigure-check"] !== "yes") throw new Error("Use --reconfigure-check yes to select a different check while retaining the same authority");
+      const owner = await statusFlowOwner({ authorityDirectory });
+      if (owner.state !== "stopped") throw new Error("Stop the existing local owner before selecting a different check");
+      assertLocalCheckChangeQuiescent({ authorityDirectory, repository });
+    }
   } else {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
+    mkdirSync(profileRoot, { mode: 0o700 });
+    mkdirSync(join(profileRoot, "clients"), { mode: 0o700 });
+    mkdirSync(authorityDirectory, { mode: 0o700 });
+    save(join(profileRoot, "profile.json"), { identity, initial_check_digest: checkDigest });
+  }
+  if (reused) {
+    profile = load(join(directory, "pilot.json"));
+    if (digest(profile.local_client) !== digest(identity)) throw new Error("Local client identity changed");
+  } else {
     mkdirSync(directory, { mode: 0o700 });
-    for (const name of ["authority", "state", "receipts", "requests"]) mkdirSync(join(directory, name), { mode: 0o700 });
+    for (const name of ["state", "receipts", "requests"]) mkdirSync(join(directory, name), { mode: 0o700 });
     const clientFiles = writeFeatureClient({ directory, runtimeRoot, workspace: repository,
-      featureTestCheck: check, executionTrust: "supervised-native-cli", codexExecutable: executable.path, localStateHome: stateHome });
+      featureTestCheck: check, executionTrust: "supervised-native-cli", codexExecutable: executable.path, localStateHome: stateHome, authorityDirectory });
     profile = { directory, runtime_root: runtimeRoot, ...clientFiles, local_client: identity,
       execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT };
     save(join(directory, "pilot.json"), profile);

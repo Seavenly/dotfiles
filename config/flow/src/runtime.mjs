@@ -58,6 +58,8 @@ const RUNNER_CAPACITY_ENV = Object.freeze({
   operationCapacity: "FLOW_RUNNER_OPERATION_CAPACITY",
 });
 
+import { assertCompatibleLocalCheck } from "./local-client-state.mjs";
+
 export function createFlowRuntime({
   env = process.env,
   delegatedAgentPort = null,
@@ -77,6 +79,7 @@ export function createFlowRuntime({
   runnerOptions = undefined,
   runnerErrorSink = undefined,
   featureTestCheck = undefined,
+  localClientCheck = undefined,
 } = {}) {
   const executionTrust = executionTrustFromEnvironment(env);
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
@@ -142,6 +145,7 @@ export function createFlowRuntime({
         })
       : runAuthority;
     authorityLeaseAcquired = ownsAuthority;
+    if (localClientCheck !== undefined) assertCompatibleLocalCheck(authority, localClientCheck);
     // Core runtime construction performs synchronous same-boot recovery. Bind
     // production registrations before that sweep so provider-backed recovery
     // can use the exact durable authority rather than being dropped as an

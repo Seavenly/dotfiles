@@ -25,7 +25,7 @@ const USAGE = `Usage:
   flow pilot setup --execution-trust supervised-native-cli [--mode test|verify] [--parent DIRECTORY]
   flow pilot accept-prepared PILOT_DIRECTORY PREPARED_JSON_FILE
   flow pilot review-request PILOT_DIRECTORY PRODUCER_RUN_ID
-  flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode test --check JSON_FILE] [--client-link PATH]
+  flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode test --check JSON_FILE] [--reconfigure-check yes] [--client-link PATH]
   flow local accept-prepared CLIENT_DIRECTORY PREPARED_JSON_FILE
   flow local inspect-prepared PREPARED_JSON_FILE
   flow local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID
