@@ -25,6 +25,10 @@ const USAGE = `Usage:
   flow pilot setup --execution-trust supervised-native-cli [--mode test|verify] [--parent DIRECTORY]
   flow pilot accept-prepared PILOT_DIRECTORY PREPARED_JSON_FILE
   flow pilot review-request PILOT_DIRECTORY PRODUCER_RUN_ID
+  flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode test --check JSON_FILE] [--client-link PATH]
+  flow local accept-prepared CLIENT_DIRECTORY PREPARED_JSON_FILE
+  flow local inspect-prepared PREPARED_JSON_FILE
+  flow local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID
   flow prepare (--input JSON | --input-file PATH) [--json]
   flow launch (--input JSON | --input-file PATH) [--json]
   flow command (--input JSON | --input-file PATH) [--json]
@@ -63,11 +67,12 @@ export async function runCli(
     stdout.write(USAGE);
     return 0;
   }
-  if (args[0] === "pilot") {
+  if (["pilot", "local"].includes(args[0])) {
     try {
+      const localSetup = args[0] === "local" && args[1] === "setup";
       const result = await promisify(execFile)(process.execPath, [
-        fileURLToPath(new URL("../scripts/prepare-feature-pilot.mjs", import.meta.url)),
-        ...args.slice(1),
+        fileURLToPath(new URL(localSetup ? "../scripts/prepare-local-feature.mjs" : "../scripts/prepare-feature-pilot.mjs", import.meta.url)),
+        ...args.slice(localSetup ? 2 : 1),
       ], { env, maxBuffer: 1024 * 1024 });
       stdout.write(result.stdout);
       if (result.stderr) stderr.write(result.stderr);

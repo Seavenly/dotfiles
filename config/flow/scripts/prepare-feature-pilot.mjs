@@ -1,20 +1,21 @@
+import { quoteShell, writeFeatureClient } from "./feature-client-files.mjs";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const runtimeRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
 const sha = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-const shell = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 const save = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 
 try {
   const [command, ...args] = process.argv.slice(2);
   if (command === "setup") setup(args);
+  else if (command === "inspect-prepared" && args.length === 1) inspectPrepared(args[0]);
   else if (command === "accept-prepared" && args.length === 2) acceptPrepared(...args);
   else if (command === "review-request" && args.length === 2) reviewRequest(...args);
   else throw new Error("Usage: prepare-feature-pilot.mjs setup [--mode test|verify] [--parent DIRECTORY] [--execution-trust supervised-native-cli --codex-executable ABSOLUTE_PATH]\n       prepare-feature-pilot.mjs review-request PILOT_DIRECTORY PRODUCER_RUN_ID");
@@ -86,19 +87,8 @@ function setup(args) {
     expected_failure: { code: "ERR_ASSERTION", operator: "strictEqual", expected: "after\n", actual: "before\n" },
     environment: { PATH: "/usr/bin:/bin" }, limits: { timeout_ms: 5000, max_output_bytes: 65536 },
   };
-  const modulePath = join(directory, "trusted-owner.mjs");
-  const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href)};\nconst featureTestCheck = ${JSON.stringify(featureTestCheck, null, 2)};\nexport function createFlowRuntime(options = {}) { return production({ ...options, featureTestCheck }); }\n`;
-  writeFileSync(modulePath, moduleBytes, { flag: "wx", mode: 0o600 });
-  const environment = {
-    FLOW_CONFIG_DIRECTORY: join(runtimeRoot, "config/flow/releases/1.1-dark-test"),
-    FLOW_QUALIFICATION_REPOSITORY_ROOT: runtimeRoot, FLOW_EXECUTION_BACKEND: "direct",
-    ...(executionTrust ? { FLOW_EXECUTION_TRUST: executionTrust, FLOW_CODEX_EXECUTABLE: codexExecutable } : {}),
-    FLOW_REPOSITORY_ROOT: workspace, FLOW_OWNER_RUNTIME_MODULE: modulePath,
-    FLOW_AUTHORITY_DIRECTORY: join(directory, "authority"),
-    FLOW_OWNER_SOCKET_PATH: join(directory, "authority/owner.sock"),
-    FLOW_OWNER_ENDPOINT_PATH: join(directory, "authority/owner.json"),
-    XDG_STATE_HOME: join(directory, "state"),
-  };
+  const clientFiles = writeFeatureClient({ directory, runtimeRoot, workspace,
+    featureTestCheck, executionTrust, codexExecutable });
   const request = {
     schema: "flow.feature-preparation-request/v1",
     brief: { schema: "flow.feature-brief/v1", id: `brief:pilot-${mode}`, summary: "Change feature.txt from before to after, preserving the committed checks", acceptance: criteria },
@@ -112,11 +102,9 @@ function setup(args) {
   };
   save(join(directory, "prepare-request.json"), request);
   save(join(directory, "starting-git-facts.json"), { clean: true, commit_sha: git(["rev-parse", "HEAD"]).trim(), tree_sha: git(["rev-parse", "HEAD^{tree}"]).trim() });
-  const entrypoint = join(runtimeRoot, "config/flow/src/cli.mjs");
-  writeFileSync(join(directory, "flow"), `#!/bin/sh\nset -eu\n${Object.entries(environment).map(([key, value]) => `export ${key}=${shell(value)}`).join("\n")}\nexec ${shell(executable)} ${shell(entrypoint)} "$@"\n`, { flag: "wx", mode: 0o700 });
   const result = {
-    status: "preparation_only", directory, mode, runtime_root: runtimeRoot, node: executable, environment,
-    owner_module_sha256: sha(moduleBytes), canary_sha256: sha(readFileSync(join(directory, "untouched-canary.txt"))),
+    status: "preparation_only", directory, mode, runtime_root: runtimeRoot, ...clientFiles,
+    canary_sha256: sha(readFileSync(join(directory, "untouched-canary.txt"))),
     native_execution: "not_run", qualification: "not_run", normal_use_authorized: false,
     ...(executionTrust ? { execution_trust: trustAcknowledgment,
       trust_limitations: "Official CLI permissions and ambient startup are trusted by the supervisor; Flow has not independently established workspace, protected-path, escalation or tool-network enforcement.",
@@ -130,13 +118,7 @@ function acceptPrepared(directory, preparedPath) {
   directory = realpathSync(directory);
   const pilot = json(join(directory, "pilot.json"));
   if (pilot.directory !== directory || pilot.runtime_root !== runtimeRoot) throw new Error("Pilot runtime/directory binding changed");
-  const prepared = json(preparedPath);
-  if (prepared.schema !== "flow.prepared-run/v1" || prepared.kind !== "predefined" ||
-      !/^sha256:[0-9a-f]{64}$/u.test(prepared.bundle_digest ?? "") ||
-      prepared.confirmation_digest !== digest(prepared.confirmation) ||
-      prepared.plan_fingerprint !== digest(prepared.graph) || !prepared.explicit_facts) {
-    throw new Error("Use the exact public prepare response after inspecting its confirmation");
-  }
+  const prepared = readPrepared(preparedPath);
   const request = {
     prepared,
     confirmation: { schema: "flow.predefined-flow-confirmation-decision/v1", decision: "accept",
@@ -150,10 +132,37 @@ function acceptPrepared(directory, preparedPath) {
   const receiptDirectory = mkdtempSync(join(directory, "receipts/accepted-"));
   chmodSync(receiptDirectory, 0o700);
   save(join(receiptDirectory, "prepared.json"), prepared);
-  save(join(receiptDirectory, "launch-request.json"), request);
+  const requestPath = join(receiptDirectory, "launch-request.json");
+  save(requestPath, request);
   process.stdout.write(`${JSON.stringify({ status: "launch_request_only", directory: receiptDirectory,
-    request: join(receiptDirectory, "launch-request.json"),
+    request: requestPath,
+    launch_command: `${quoteShell(join(directory, "flow"))} launch --input-file ${quoteShell(requestPath)} --json`,
     instruction: "Inspect the retained confirmation and exact launch request before explicitly calling flow launch. No task has been started." }, null, 2)}\n`);
+}
+
+function readPrepared(preparedPath) {
+  const prepared = json(preparedPath);
+  if (prepared.schema !== "flow.prepared-run/v1" || prepared.kind !== "predefined" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(prepared.bundle_digest ?? "") ||
+      prepared.confirmation_digest !== digest(prepared.confirmation) ||
+      prepared.plan_fingerprint !== digest(prepared.graph) || !prepared.explicit_facts) {
+    throw new Error("Use the exact public prepare response after inspecting its confirmation");
+  }
+  return prepared;
+}
+
+function inspectPrepared(path) {
+  const prepared = readPrepared(path);
+  process.stdout.write(`${JSON.stringify({ status: "inspection_only", prepared_file: realpathSync(path),
+    bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest,
+    definition: prepared.definition.id, mode: prepared.selection.inputs.mode ?? "local_review",
+    brief: prepared.selection.inputs.brief ?? null, trust_posture: prepared.trust_posture,
+    requested_authority: prepared.requested_authority, limits: prepared.explicit_facts.limits,
+    routes: prepared.graph.cards.filter(card => card.executor.kind === "delegate")
+      .map(card => ({ card_id: card.id, launch: card.inputs.description?.launch,
+        executable: card.inputs.description?.backend?.executable,
+        requested_permissions: card.inputs.description?.effective_authority })),
+    instruction: "Inspect the complete retained confirmation before accepting this exact prepared file. This summary grants no authority." }, null, 2)}\n`);
 }
 
 function reviewRequest(directory, runId) {

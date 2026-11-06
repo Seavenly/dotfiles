@@ -409,14 +409,32 @@ the prepare and launch requests carry its acknowledgment. Inspect the prepared
 confirmation before accepting it. It describes **requested CLI permissions**:
 the operator trusts the official CLI's ambient startup and permission controls.
 Flow does not independently enforce workspace or tool-network boundaries under
-this contract. Use it only with a supervised disposable repository and the
-documented [pilot procedure](docs/flow/operator-guide.md#supervised-native-pilot).
+this contract. Start with the documented
+[pilot procedure](docs/flow/operator-guide.md#supervised-native-pilot), or select
+an existing clean repository with the
+[local setup procedure](docs/flow/operator-guide.md#supervised-local-repositories).
 
 Supervised execution retains ownership, cancellation, conservative recovery,
 registered verification, exact candidate sealing and independent local review.
 It does not alter strict qualification, normal-use authorization, global CLI
 permissions, the default launcher, or remote-mutation authority. The strict
 direct route described below remains withheld.
+
+`flow local setup --execution-trust supervised-native-cli --repository PATH
+--brief JSON_FILE --codex-executable PATH` creates a private, reusable client for
+an existing repository and prints four preparation commands. An optional
+`--client-link PATH` installs a named link without replacing an existing file.
+Setup starts no owner, accepts no confirmation, and runs no provider task.
+Use the CLI from this source version; the reviewed `flow-supervised` launcher
+pins that source and Node executable while the existing `flow` stays unchanged.
+
+The default `verify` mode checks committed Git content observations and an
+independent model critique. It does not execute project test suites or establish
+runtime behavior. `--mode test --check JSON_FILE` selects the existing registered
+contract for one pinned Node health check and one acceptance check with a known
+expected failure followed by success. These limits appear in the prepared
+confirmation and retained run status. Selecting a supervised local request is
+separate from changing the legacy default or qualifying the strict release.
 
 The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
 decision does not qualify native execution: current release qualification remains

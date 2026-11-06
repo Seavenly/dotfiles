@@ -20,3 +20,11 @@ conservative recovery, registered verification, candidate sealing and independen
 review retain their existing contracts. The initial route permits feature
 verify/test and local review only. It grants no publication, remote mutation,
 normal-use rollout, global permission change or default cutover.
+
+Explicit supervised local requests may target an existing clean repository;
+disposable repositories are the first-trial procedure rather than a permanent
+admission restriction. One reusable private owner per repository retains its
+workspace authority across requests. Content verification reports Git-backed
+observations and independent model critique, while behavioral test execution
+requires the registered pinned health/expected-RED/GREEN contract. Preparation
+confirmation and retained status state that distinction.

@@ -33,6 +33,9 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     throw new TypeError("run views require an authoritative fold");
   }
   assertMatchingAuthorityEvents(fold, events, authorityEventStreamDigest);
+  const preparedTrustPosture = fold.trust_posture;
+  const supervisedTrust = preparedTrustPosture?.execution_contract === "flow.supervised-native-cli/v1"
+    ? { trust_posture: preparedTrustPosture } : {};
   const common = {
     run_id: fold.run_id,
     authority_watermark: fold.watermark,
@@ -102,6 +105,7 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
     outcomes: fold.revision_outcomes,
   };
   const operator = {
+    ...supervisedTrust,
     schema: "flow.operator-projection/v1",
     ...common,
     phase: fold.phase,
@@ -160,6 +164,7 @@ export function buildRunViews({ authorityEventStreamDigest, events, fold } = {})
       legal_actions: fold.legal_actions,
     },
     trust: {
+      ...supervisedTrust,
       schema: "flow.trust-projection/v1",
       ...common,
       authority_boundaries: {

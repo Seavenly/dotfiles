@@ -1,4 +1,4 @@
-# Flow dark opt-in operator guide
+# Flow operator guide
 
 This documents the default first-release public operator path and the separate
 feature-test pilot configuration. The current strict source
@@ -6,6 +6,77 @@ qualification is `not_run`, so strict public admission returns `qualification_wi
 The legacy Claude launcher remains the default. These examples require a
 separately qualified release and disposable local resources that you own.
 This guide does not authorize normal use or any remote mutation.
+
+## Supervised local repositories
+
+The explicit supervised contract also accepts an existing clean repository.
+It is independent of the strict release's rollout/qualification fields: those
+fields remain false or `not_run`, while an operator may select this per-request
+local contract. The existing `flow` launcher and its authority state stay
+unchanged. Use the reviewed `flow-supervised` launcher pinned to this source, or
+invoke `node /absolute/path/to/this/checkout/config/flow/src/cli.mjs` directly.
+
+Write the accepted feature brief outside the target repository:
+
+```json
+{
+  "schema": "flow.feature-brief/v1",
+  "id": "brief:local-change",
+  "summary": "Describe the requested local change",
+  "acceptance": ["Describe the exact expected content or behavior"]
+}
+```
+
+Select the repository and official executable explicitly. The optional client
+link must be a new name; setup never replaces an existing command:
+
+```sh
+flow-supervised local setup --execution-trust supervised-native-cli \
+  --repository /absolute/path/to/project --brief /path/to/brief.json \
+  --codex-executable /absolute/path/to/official/codex-0.166.0 \
+  --client-link "$HOME/.local/bin/flow-project"
+```
+
+The result prints four `next_commands`: start the private owner, prepare the
+request by file, inspect a compact confirmation summary, and materialize the
+accepted launch request. Setup itself does none of those actions. Inspect the
+complete retained confirmation before `local accept-prepared`; that helper
+prints an explicit `launch --input-file` command and still starts no provider.
+Keep the owner running while accepting a separate review: owner restart advances
+authority epochs, so review facts must be freshly prepared after a restart.
+
+One private profile is reused for each canonical repository, with one durable
+authority and workspace claim namespace. Later setup calls create new request
+files. They preserve prior state and reject changed source/tool/check pins;
+they do not create a second owner for a new brief or overwrite an active client.
+Changing the profile's host state directory selects a different authority and
+must not be used to work around an existing workspace claim.
+
+Default `verify` means **Git-backed content observations plus independent model
+critique; project checks NOT_RUN; runtime behavior not established**. The
+registered operation checks exact committed `git_file_equals` observations for
+every criterion and a changed clean workspace. It does not prove that broad
+behavioral prose works or that an agent's claimed test command passed.
+
+For behavioral evidence, add `--mode test --check /path/to/check.json` at setup.
+The check must satisfy `flow.production-feature-test-check/v1`: one committed
+Node 22 health test, one committed acceptance test, pinned executable/file
+digests, exact criterion coverage, and one expected `ERR_ASSERTION` /
+`strictEqual` failure with string values before the change. The registered worker
+must observe that expected RED and subsequent GREEN. It accepts no arbitrary
+shell command, npm suite or GREEN-only suite as a substitute. The check is
+validated at setup without executing it and embedded into the private owner.
+The selected verification scope is bound into the prepared confirmation and
+retained in `views.operator.trust_posture` and `views.trust.trust_posture`.
+
+Use `flow-project local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID` after
+the producer succeeds, prepare that returned request with `--input-file`, inspect
+it, then use `local accept-prepared` and its printed launch command. Review binds
+the exact sealed candidate and remains automated review, not human approval or
+Git integration. Cancellation and positive task retirement follow the public
+actions described below. The named client is reversible: after all work has
+positively retired and its owner is stopped, remove only its optional named
+link; keep the profile and receipts for recovery and inspection.
 
 ## Supervised native pilot
 
@@ -24,7 +95,7 @@ PILOT="$(flow pilot setup --execution-trust supervised-native-cli \
   --codex-executable /absolute/path/to/official/codex-0.166.0 \
   --mode test | jq -er '.directory')"
 "$PILOT/flow" start --json
-"$PILOT/flow" prepare --input "$(cat "$PILOT/prepare-request.json")" --json \
+"$PILOT/flow" prepare --input-file "$PILOT/prepare-request.json" --json \
   > "$PILOT/receipts/prepared.json"
 jq '{confirmation,trust_posture,requested_authority,explicit_facts}' \
   "$PILOT/receipts/prepared.json"
@@ -37,7 +108,7 @@ acknowledgment. The final `launch` command starts native work:
 ```sh
 LAUNCH_REQUEST="$("$PILOT/flow" pilot accept-prepared "$PILOT" \
   "$PILOT/receipts/prepared.json" | jq -er '.request')"
-"$PILOT/flow" launch --input "$(cat "$LAUNCH_REQUEST")" --json \
+"$PILOT/flow" launch --input-file "$LAUNCH_REQUEST" --json \
   | tee "$PILOT/receipts/launched.json"
 RUN_ID="$(jq -er '.run_id' "$PILOT/receipts/launched.json")"
 "$PILOT/flow" query --input "$(jq -cn --arg id "$RUN_ID" '{run_id:$id}')" \
@@ -54,7 +125,7 @@ After the producer succeeds, prepare a separate review of its exact candidate:
 ```sh
 REVIEW_REQUEST="$("$PILOT/flow" pilot review-request "$PILOT" "$RUN_ID" \
   | jq -er '.request')"
-"$PILOT/flow" prepare --input "$(cat "$REVIEW_REQUEST")" --json \
+"$PILOT/flow" prepare --input-file "$REVIEW_REQUEST" --json \
   > "$PILOT/receipts/review-prepared.json"
 jq '.confirmation' "$PILOT/receipts/review-prepared.json"
 ```

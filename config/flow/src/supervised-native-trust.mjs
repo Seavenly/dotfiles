@@ -29,6 +29,12 @@ export function supervisedTrustPosture(definition, executionTrust) {
       ambient_startup: "trusted_official_cli",
       independent_workspace_and_tool_network_enforcement: false,
       qualification: "not_claimed",
+      ...(definition.id === "feature/v1" ? {
+        verification_scope: {
+          verify: "Git-backed content observations plus independent model critique; project checks NOT_RUN; runtime behavior not established",
+          test: "Registered pinned Node health and acceptance checks with expected RED then GREEN; arbitrary project suites are not registered",
+        },
+      } : {}),
     },
   };
 }
