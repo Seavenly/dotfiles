@@ -76,6 +76,13 @@ export const claudeExecutionAdapter = Object.freeze({
         // Informational subscription usage is not a tool invocation or a result.
         // A rejected primary window cannot be mistaken for successful output.
         if (event.rate_limit_info?.status !== "allowed") throw new Error("provider_terminal_failure");
+      } else if (event.type === "system" && event.subtype === "thinking_tokens" && isSupervisedDescription(descriptor.description) && descriptor.description.backend.adapter_version === "2") {
+        if (!session || event.session_id !== session) throw new Error("ambiguous_native_session");
+        if (!Number.isSafeInteger(event.estimated_tokens) || event.estimated_tokens < 0 ||
+            !Number.isSafeInteger(event.estimated_tokens_delta) || event.estimated_tokens_delta < 0 ||
+            Object.keys(event).some(key => !["type", "subtype", "estimated_tokens", "estimated_tokens_delta", "session_id", "uuid"].includes(key))) throw new Error("malformed_provider_output");
+        // Native 2.1.318 progress only; it never supplies structured output or
+        // changes the outstanding tools, launch authority, or session identity.
       } else if (event?.type === "result") {
         if (event.subtype !== "success" || event.is_error !== false ||
             !Array.isArray(event.permission_denials) || event.permission_denials.length) throw new Error("provider_terminal_failure");

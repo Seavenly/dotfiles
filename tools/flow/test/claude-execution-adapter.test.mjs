@@ -252,3 +252,25 @@ test("supervised Claude recognizes observed builtin metadata without enabling am
   }
   assert.throws(() => parse(stream({ ...metadata, claude_code_version: "2.1.287" }, terminal())), /unexpected_native_inventory/u);
 });
+
+test("supervised Claude accepts session-bound thinking token progress without treating it as output", () => {
+  const d = descriptor();
+  d.description.launch.trust_posture = "supervised-native-cli";
+  d.description.backend.trust_contract = "flow.supervised-native-cli/v1";
+  d.description.backend.adapter_version = "2";
+  d.description.backend.executable.version = "2.1.318 (Claude Code)";
+  d.description.effective_authority = { assurance: "operator_supervised_cli", approvals: "cli_requested_never", filesystem: "cli_requested_read_only", network: "not_independently_verified", escalation: "not_independently_verified", writable_roots: [] };
+  const metadata = { ...init(), claude_code_version: "2.1.318", capabilities: [] };
+  // Actual 2.1.318 protocol shape; session/UUID anonymized. This is progress,
+  // not a tool call, permission grant, or a successful terminal result.
+  const progress = { type: "system", subtype: "thinking_tokens", estimated_tokens: 50, estimated_tokens_delta: 50, session_id: "session-fixture", uuid: "progress-fixture" };
+  const parseV2 = (...events) => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(...events), exitCode: 0 });
+  assert.equal(parseV2(metadata, progress, { ...progress, estimated_tokens: 219, estimated_tokens_delta: 169 }, terminal()).output, '{"answer":42}');
+  for (const changed of [{ ...progress, session_id: "other" }, { ...progress, estimated_tokens: -1 }, { ...progress, estimated_tokens_delta: -1 }, { ...progress, estimated_tokens: 1.5 }, { ...progress, estimated_tokens_delta: null }, { ...progress, estimated_tokens: 1e100 }, { ...progress, subtype: "unknown" }, { ...progress, permissions: ["Write"] }]) {
+    assert.throws(() => parseV2(metadata, changed, terminal()));
+  }
+  assert.throws(() => parseV2(progress, metadata, terminal()), /ambiguous_native_session/u);
+  assert.throws(() => parseV2(metadata, progress), /nonterminal_provider_output/u);
+  assert.throws(() => parseV2(metadata, terminal(), progress), /out_of_order_provider_event/u);
+  assert.throws(() => parse(stream(init(), progress, terminal())), /unsupported_provider_event/u);
+});
