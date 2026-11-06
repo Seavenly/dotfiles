@@ -975,6 +975,21 @@ effects. A quarantined result cannot satisfy a dependency. If no `cancel`
 action is returned, refresh the projection and follow the action that is
 actually legal.
 
+After cancellation, process retirement alone does not release a quarantined
+workspace claim. Query the same run through its retained local client. If the
+public projection offers `recovery: settle_cancelled_workspace`, inspect that
+exact action and submit it with `command --input-file`. This explicit settlement
+requires every invoked native task to have a bound positive retirement receipt,
+no unresolved external operation, the sole exact workspace claim, and a fresh
+registered clean Git observation equal to the recorded baseline. It releases the
+claim atomically while retaining the cancellation and settlement history.
+
+Dirty or changed Git state, missing retirement proof, and unsupported invoked
+external operations remain blocked with a concrete rejection. This observes the
+managed Git baseline; it does not establish that ignored or ambient filesystem
+writes were undone. Never delete authority records or manufacture a low-level
+claim-release command to bypass the public settlement.
+
 ## Same-boot recovery and explicit reboot admission
 
 If a client or owner process exits during a run, restart the owner and query

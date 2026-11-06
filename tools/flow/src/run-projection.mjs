@@ -294,11 +294,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       : run.events.some(({ type }) => type === "run_succeeded")
         ? "succeeded"
         : "active";
-  const resourceDispositions = cancellationEvent?.resource_dispositions ??
+  const resourceDispositions = cancellationEvent?.resource_dispositions?.map(entry => ({ ...entry })) ??
     resourceClaims.map((claim) => ({
       claim,
       disposition: phase === "active" ? "held" : "released",
     }));
+  for (const event of run.events.filter(event => event.type === "cancelled_workspace_settled")) {
+    const item = resourceDispositions.find(item => digest(item.claim) === digest(event.resource_claim));
+    if (item) item.disposition = "released";
+  }
   const declinedGatedRevisions = revisionEvents.filter((revision) =>
     revision.repair?.checkpoint_id !== undefined &&
     revision.repair.checkpoint_id !== null &&

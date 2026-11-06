@@ -713,7 +713,7 @@ export function createDurableRunAuthority({
   const bootId = hostIdentity.boot_id;
   const processIdentity = hostIdentity.process_identity;
   const recoveryAdapter = snapshotBackupRestoreAdapter(backupRestoreAdapter);
-  const fenceRun = (database, stream) => fencedRunFold(
+  const fenceRun = (database, stream) => withCancelledWorkspaceSettlement(database, stream, fencedRunFold(
     database,
     stream,
     rebootObservationAdapter,
@@ -722,7 +722,7 @@ export function createDurableRunAuthority({
       retryTimeObservation: observeRetryTime(retryTimeAdapter),
       executionTimeObservation: observeExecutionTime(timeObservationAdapter, bootId),
     },
-  );
+  ));
   const fenceRunWithoutAuthorityRevalidation = (database, stream) =>
     fencedRunFold(
       database,
@@ -1525,6 +1525,13 @@ export function createDurableRunAuthority({
           );
         }
         const fold = fenceRun(database, stream);
+        if (command?.type === "recovery" && command.recovery === "settle_cancelled_workspace") {
+          const result = settleCancelledWorkspace(database, stream, command, {
+            fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity,
+          });
+          for (const watcher of watchers.get(command.run_id) ?? []) watcher.publish(this.query(command.run_id));
+          return result;
+        }
         let canonicalCommand;
         let commandDigest;
         try {
@@ -6288,4 +6295,93 @@ function authorityWatermark(events) {
     schema: "flow.host-run-authority-stream/v1",
     events,
   });
+}
+
+
+// This operator-only action has no effect_id, so autonomous effect recovery
+// cannot select it. Historical cancelled folds remain unchanged until the
+// explicit, atomically recorded settlement below.
+function cancelledWorkspaceSettlement(database, stream, fold) {
+  if (fold.phase !== "cancelled") return { code: "run_not_cancelled" };
+  const claims = fold.resource_claims.filter(claim => claim.kind === "workspace");
+  if (claims.length !== 1 || fold.resource_claims.length !== 1) return { code: "cancelled_workspace_scope_unsupported" };
+  const resource = claims[0];
+  const identity = workStreamIdentity("work.workspace/v1", resource.id);
+  const workspace = readStream(database, identity.streamId)?.fold;
+  if (!workspace || workspace.taint !== null || workspace.claims.length !== 1 ||
+      workspace.claims[0].holder !== fold.run_id || workspace.generation !== resource.generation ||
+      workspace.mutation_epoch !== resource.mutation_epoch || digest({ git: workspace.git }) !== resource.fingerprint) {
+    return { code: "cancelled_workspace_claim_mismatch" };
+  }
+  for (const effect of fold.effects) {
+    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
+    if (!effect.receipt || !["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status)) return { code: "cancelled_workspace_unsettled_effects" };
+    if (!["delegate", "delegate_cancellation"].includes(effect.effect_kind)) return { code: "cancelled_workspace_external_operation_requires_resolution" };
+    const evidence = effect.receipt.provider_receipt;
+    const retirement = evidence?.terminal_disposition;
+    if (retirement?.schema !== "flow.resource-retirement/v1" || retirement.retired !== true ||
+        retirement.proof !== "linux_subreaper_echild" || retirement.resource?.type !== "direct_task" ||
+        retirement.resource.id !== evidence.turn_id || !/^sha256:[a-f0-9]{64}$/u.test(retirement.terminal_receipt_digest ?? "")) {
+      return { code: "cancelled_workspace_retirement_unproven" };
+    }
+    if (effect.effect_kind === "delegate_cancellation") {
+      const original = fold.effects.find(candidate => candidate.effect_id === evidence.delegate_effect_id);
+      if (original?.receipt?.provider_receipt?.turn_id !== evidence.turn_id ||
+          digest(original.receipt.provider_receipt.terminal_disposition) !== digest(retirement)) return { code: "cancelled_workspace_retirement_unproven" };
+    }
+  }
+  if (fold.effects.length === 0) return { code: "cancelled_workspace_retirement_unproven" };
+  return { workspace, resource, claim: workspace.claims[0], action: {
+    schema: "flow.command/v1", type: "recovery", recovery: "settle_cancelled_workspace",
+    run_id: fold.run_id, expected_watermark: fold.watermark,
+    workspace_subject_id: resource.id, expected_workspace_watermark: workspace.watermark,
+    claim_id: workspace.claims[0].claim_id, expected_generation: resource.generation,
+    expected_mutation_epoch: resource.mutation_epoch, expected_fingerprint: resource.fingerprint,
+  } };
+}
+
+function withCancelledWorkspaceSettlement(database, stream, fold) {
+  if (fold.phase !== "cancelled" || fold.admission === "suspended_host_reconciliation") return fold;
+  const result = cancelledWorkspaceSettlement(database, stream, fold);
+  return result.action ? freezeCanonical({ ...fold, legal_actions: [...fold.legal_actions, result.action] }) : fold;
+}
+
+function settleCancelledWorkspace(database, stream, command, context) {
+  const { fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity } = context;
+  const reject = code => createRejection({ operation: "command", code, runId: stream.fold.run_id,
+    commandType: "recovery", authorityWatermark: fenceRun(database, stream).watermark, authorityWatermarkDomain: "run", legalActions: [] });
+  const commandDigest = digest(command);
+  const previous = stream.records.find(({ payload }) => payload.type === "cancelled_workspace_settled" && payload.command_digest === commandDigest);
+  if (previous) return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: stream.fold.run_id, accepted: true, replayed: true, authority_watermark: fenceRun(database, stream).watermark });
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertMutationFence(lockDatabase, database, { authorityEpoch, bootId, processIdentity });
+    assertDurableHostRestoreClear(database);
+    stream = readStream(database, command.run_id);
+    const fold = fenceRun(database, stream);
+    if (command.expected_watermark !== fold.watermark) { database.exec("ROLLBACK"); return reject("stale_authority_watermark"); }
+    const state = cancelledWorkspaceSettlement(database, stream, fold);
+    if (!state.action) { database.exec("ROLLBACK"); return reject(state.code); }
+    if (command.expected_workspace_watermark !== state.workspace.watermark) { database.exec("ROLLBACK"); return reject("stale_workspace_observation"); }
+    if (digest(command) !== digest(state.action)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_settlement_mismatch"); }
+    let observation;
+    try { observation = gitWorkspaceObservationAdapter.observe({ repository_id: state.workspace.repository.canonical_id,
+      workspace_path: state.workspace.workspace.canonical_path, ref: state.workspace.git.ref }); } catch { observation = null; }
+    if (observation?.schema !== "work.git-observation/v1" || observation.git?.clean !== true ||
+        digest(observation.git) !== digest(state.workspace.git)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_git_changed"); }
+    const fence = { authorityEpoch, bootId, processIdentity };
+    const settlement = { type: "cancelled_workspace_settled", command_digest: commandDigest,
+      workspace_subject_id: state.resource.id, claim_id: state.claim.claim_id,
+      resource_claim: state.resource, workspace_watermark: state.workspace.watermark, git_observation: observation };
+    appendAuthorityEvents(database, { streamId: workStreamIdentity("work.workspace/v1", state.resource.id).streamId,
+      streamKind: "workspace", events: [{ contract: "work.workspace-event/v1", payload: {
+        type: "workspace_claim_released", claim_id: state.claim.claim_id, holder: fold.run_id,
+        reason: "cancelled_workspace_settlement", settlement_command_digest: commandDigest,
+      } }], ...fence });
+    appendAuthorityEvents(database, { streamId: fold.run_id, streamKind: "run",
+      events: [{ contract: "flow.run-event/v1", payload: settlement }], ...fence });
+    database.exec("COMMIT");
+    return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: fold.run_id,
+      authority_watermark: fenceRun(database, readStream(database, fold.run_id)).watermark, accepted: true });
+  } catch (error) { if (database.isTransaction) database.exec("ROLLBACK"); throw error; }
 }
