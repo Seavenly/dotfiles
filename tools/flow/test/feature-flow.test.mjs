@@ -2074,6 +2074,14 @@ test("feature/v1 direct single test slice commits after its sole writer before c
     inputs.delegation[role] = featureDelegateBindingFromDescription(role, value.description);
   }
   const proposal = createFeatureDefinition({ independentCritique: true }).compile({ inputs, explicit_facts: featureFactsForInputs(inputs) });
+  const writer = proposal.graph.cards.find(({ id }) => id === "feature-apply");
+  assert.equal(writer.inputs.description.launch.capability, "workspace-write-denied");
+  assert.match(writer.inputs.prompt, /permits editing files in the exact bound workspace/u);
+  assert.match(writer.inputs.prompt, /denied refers to approval requests and escalation, not repository file edits/u);
+  assert.match(writer.inputs.prompt, /Flow alone owns the candidate commit/u);
+  const changed = structuredClone(proposal.graph);
+  changed.cards.find(({ id }) => id === "feature-apply").inputs.prompt = "different write authority";
+  assert.notEqual(digest(changed), digest(proposal.graph), "the exact writer guidance is part of immutable plan identity");
   const commit = proposal.graph.cards.find(({ id }) => id === "feature-direct-commit");
   assert.ok(commit, "a direct writer cannot publish protected Git metadata itself");
   assert.equal(commit.executor.contract, FEATURE_DIRECT_COMMIT_CONTRACT);

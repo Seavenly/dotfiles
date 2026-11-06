@@ -92,6 +92,35 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
     validateIdentity(value.identity);
     return value;
   };
+  const exactNoChangeRecord = (intent) => {
+    const root = recordRoot(intent), path = join(root, "no-change.json");
+    if (!existsSync(path)) return null;
+    if (existsSync(join(root, "intent.json")) || existsSync(join(root, "index-lock.json"))) throw new Error("candidate_commit_identity_conflict");
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    const { record_sha256: hash, ...identity } = value;
+    const reserved = JSON.parse(readFileSync(join(root, "identity.json"), "utf8"));
+    const { record_sha256: reservedHash, ...reservedIdentity } = reserved;
+    if (digest(identity) !== hash || digest(reservedIdentity) !== reservedHash ||
+        value.schema !== "flow.git-candidate-commit-absence/v1" || value.proof !== "pre_cas_unchanged_tree" ||
+        value.effect_id !== intent.effect_id || value.idempotency_key !== intent.idempotency_key ||
+        value.attempt_id !== intent.attempt_id || value.identity_record_sha256 !== reservedHash ||
+        value.old_commit_sha !== reserved.old_commit_sha || value.ref !== reserved.ref ||
+        value.old_commit_sha !== intent.operation_input.workspace.git.commit_sha ||
+        value.ref !== intent.operation_input.workspace.git.ref || value.tree_sha !== intent.operation_input.workspace.git.tree_sha) throw new Error("candidate_commit_identity_conflict");
+    const repository = resolveWorkspace(intent.operation_input.workspace.subject_id).path;
+    safeRepository(repository);
+    const index = resolve(repository, gitText(repository, ["rev-parse", "--git-path", "index"]));
+    if (gitText(repository, ["rev-parse", "HEAD"]) !== value.old_commit_sha ||
+        gitText(repository, ["symbolic-ref", "HEAD"]) !== value.ref ||
+        byteDigest(readFileSync(index)) !== value.ordinary_index_sha256 ||
+        git(repository, ["status", "--porcelain"]).length !== 0) throw new Error("candidate_commit_outcome_uncertain");
+    return value;
+  };
+  const noChangeEvidence = (record) => ({ schema: "flow.provider-observation/v1", found: false,
+    complete: true, reason: "candidate_commit_no_change", rejection_code: "candidate_commit_no_change",
+    proof: record.proof, content_sha256: record.record_sha256 });
+  const noChangeReceipt = (intent, record) => ({ schema: "flow.effect-receipt/v1", effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key, outcome: "not_created", provider_receipt: noChangeEvidence(record) });
   const receipt = (intent, record) => freezeCanonical({ schema: "flow.git-candidate-commit-receipt/v1",
     effect_id: intent.effect_id, idempotency_key: intent.idempotency_key, attempt_id: intent.attempt_id,
     workspace: intent.operation_input.workspace, old_commit_sha: record.old_commit_sha,
@@ -118,7 +147,12 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
   const observe = (intent) => {
     try {
       const record = exactRecord(intent);
-      if (!record) return observation(intent, "indeterminate", { schema: "flow.provider-observation/v1", reason: "commit_record_missing" });
+      if (!record) {
+        const noChange = exactNoChangeRecord(intent);
+        return noChange ? observation(intent, "absent", noChangeEvidence(noChange)) :
+          observation(intent, "indeterminate", { schema: "flow.provider-observation/v1", reason: "commit_record_missing" });
+      }
+      if (existsSync(join(recordRoot(intent), "no-change.json"))) throw new Error("candidate_commit_identity_conflict");
       const repository = resolveWorkspace(intent.operation_input.workspace.subject_id).path;
       safeRepository(repository);
       const head = gitText(repository, ["rev-parse", "HEAD"]);
@@ -149,6 +183,8 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
         if (result.presence !== "present") throw new Error("candidate_commit_outcome_uncertain");
         return effectReceipt(intent, result.provider_observation);
       }
+      const noChange = exactNoChangeRecord(intent);
+      if (noChange) return noChangeReceipt(intent, noChange);
       const initial = intent.operation_input.workspace.git;
       let fenced = false;
       try { fenced = gitText(repository, ["rev-parse", "HEAD"]) === initial.commit_sha &&
@@ -173,7 +209,22 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
       git(repository, ["read-tree", initial.commit_sha], { index });
       git(repository, ["add", "--all", "--", "."], { index });
       const tree = gitText(repository, ["write-tree"], { index });
-      if (tree === initial.tree_sha) throw new Error("candidate_commit_no_change");
+      if (tree === initial.tree_sha) {
+        // This branch precedes commit-tree, the durable commit intent, index
+        // locking and ref CAS. Publish an exact absence witness; a missing or
+        // damaged witness remains indeterminate on recovery.
+        if (gitText(repository, ["rev-parse", "HEAD"]) !== initial.commit_sha ||
+            gitText(repository, ["symbolic-ref", "HEAD"]) !== initial.ref ||
+            git(repository, ["status", "--porcelain"]).length !== 0) throw new Error("candidate_commit_git_fence_changed");
+        const identity = { schema: "flow.git-candidate-commit-absence/v1", effect_id: intent.effect_id,
+          idempotency_key: intent.idempotency_key, attempt_id: intent.attempt_id,
+          old_commit_sha: initial.commit_sha, tree_sha: tree, ref: initial.ref,
+          identity_record_sha256: reservation.record_sha256,
+          ordinary_index_sha256: byteDigest(readFileSync(ordinaryIndex)), proof: "pre_cas_unchanged_tree" };
+        const record = { ...identity, record_sha256: digest(identity) };
+        writeDurable(root, "no-change.json", JSON.stringify(record));
+        return noChangeReceipt(intent, exactNoChangeRecord(intent));
+      }
       const message = `Flow local candidate\n\nEffect: ${intent.effect_id}\nIdempotency: ${intent.idempotency_key}\n`;
       const commit = gitText(repository, ["commit-tree", "--no-gpg-sign", tree, "-p", initial.commit_sha], { input: message, identity });
       const oldIndex = readFileSync(ordinaryIndex), replacement = readFileSync(index);

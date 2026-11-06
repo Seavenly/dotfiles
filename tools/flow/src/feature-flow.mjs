@@ -104,7 +104,13 @@ const FEATURE_APPLY_OUTPUTS = Object.freeze([
 const FEATURE_APPLY_PROMPT =
   "apply the accepted brief in the exact fenced workspace; return " +
   "feature_criterion_evidence/v1 with one Git-backed observation for every " +
-  "acceptance criterion";
+  "acceptance criterion. The workspace-write-denied capability permits " +
+  "editing files in the exact bound workspace; denied refers to approval " +
+  "requests and escalation, not repository file edits. Preserve committed " +
+  "checks and protected .git, .agents and .codex paths. Do not request " +
+  "approvals, escalate permissions, access the network or create Git commits: " +
+  "Flow alone owns the candidate commit. If a requested edit is blocked, " +
+  "report that fact without claiming the acceptance criterion was satisfied";
 
 /**
  * Return the trusted feature/v1 definition used by FlowRuntime's predefined

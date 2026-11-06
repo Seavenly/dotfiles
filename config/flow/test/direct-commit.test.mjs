@@ -436,3 +436,62 @@ for (const kind of ["leading whitespace", "non-UTF8 bytes"]) test(`direct commit
   assert.equal(f.operation.reconcile(f.intent).presence, "indeterminate");
   assert.equal(f.operation.reconcile(f.intent).provider_observation.reason, "commit_record_missing");
 });
+
+test("real unchanged writer work settles as a durable pre-CAS absence through the registered operation boundary", async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.repository, "feature.txt"), "before\n");
+  const beforeIndex = await readFile(join(f.repository, ".git/index"));
+  const beforeObjects = f.git(["count-objects", "-v"]);
+  const intent = { ...f.intent, operation_contract: FEATURE_DIRECT_COMMIT_CONTRACT, classification: "reconcilable" };
+  const dispatched = await new Promise(resolve => dispatchRegisteredEffect(intent, { [FEATURE_DIRECT_COMMIT_CONTRACT]: f.operation }, {
+    async invokeEffect(effectiveIntent, { invoke }) {
+      try { resolve({ receipt: await invoke(effectiveIntent) }); }
+      catch (error) { resolve({ failure: error.provider_observation }); }
+    },
+  }));
+  assert.equal(dispatched.failure, undefined, JSON.stringify(dispatched));
+  assert.equal(dispatched.receipt.outcome, "not_created");
+  assert.equal(dispatched.receipt.provider_receipt.found, false);
+  assert.equal(dispatched.receipt.provider_receipt.reason, "candidate_commit_no_change");
+  assert.equal(dispatched.receipt.provider_receipt.proof, "pre_cas_unchanged_tree");
+  assert.equal(f.git(["rev-parse", "HEAD"]), f.initial);
+  assert.equal(f.git(["status", "--porcelain"]), "");
+  assert.deepEqual(await readFile(join(f.repository, ".git/index")), beforeIndex);
+  assert.equal(f.git(["count-objects", "-v"]), beforeObjects);
+  const dirs = await readdir(join(f.root, "authority/candidate-commits"));
+  assert.equal(dirs.length, 1);
+  const recordRoot = join(f.root, "authority/candidate-commits", dirs[0]);
+  const records = await readdir(recordRoot);
+  assert.ok(records.includes("no-change.json"));
+  assert.ok(!records.includes("intent.json"));
+  assert.ok(!records.includes("index-lock.json"));
+  const recovered = createProductionDirectCommitOperation(f.options);
+  assert.equal(recovered.reconcile(f.intent).presence, "absent");
+  assert.deepEqual(await recovered.invoke(f.intent), dispatched.receipt);
+  assert.equal(f.git(["rev-parse", "HEAD"]), f.initial);
+  const absencePath = join(recordRoot, "no-change.json");
+  const absenceBytes = await readFile(absencePath, "utf8");
+  const absence = JSON.parse(absenceBytes);
+  absence.old_commit_sha = "0".repeat(40);
+  await writeFile(absencePath, JSON.stringify(absence));
+  assert.equal(recovered.reconcile(f.intent).presence, "indeterminate", "changed absence bytes cannot prove that a commit was not made");
+  await writeFile(absencePath, absenceBytes);
+  await writeFile(join(f.repository, "feature.txt"), "external drift\n");
+  assert.equal(recovered.reconcile(f.intent).presence, "indeterminate", "a valid absence marker cannot bless a changed workspace");
+  await writeFile(join(f.repository, "feature.txt"), "before\n");
+  await rm(absencePath);
+  assert.equal(recovered.reconcile(f.intent).presence, "indeterminate", "unchanged HEAD and missing intent alone are not an absence witness");
+});
+
+for (const bad of [{ found: true, complete: true }, { complete: true }, { found: false }, { found: false, complete: false }]) {
+  test(`registered no-commit outcome rejects incomplete or contradictory absence ${JSON.stringify(bad)}`, async () => {
+    const intent = { run_id: "run:absence", card_id: "commit", attempt_id: "attempt:absence", effect_id: "effect:absence", idempotency_key: "key:absence", operation_contract: FEATURE_DIRECT_COMMIT_CONTRACT, classification: "reconcilable" };
+    const registration = { classification: "reconcilable", observe() {}, async invoke() {
+      return { schema: "flow.effect-receipt/v1", effect_id: intent.effect_id, idempotency_key: intent.idempotency_key, outcome: "not_created", provider_receipt: { schema: "flow.provider-observation/v1", ...bad } };
+    } };
+    const failure = await new Promise(resolve => dispatchRegisteredEffect(intent, { [FEATURE_DIRECT_COMMIT_CONTRACT]: registration }, {
+      async invokeEffect(value, { invoke }) { try { await invoke(value); resolve(null); } catch (error) { resolve(error.provider_observation); } },
+    }));
+    assert.equal(failure.status, "invalid_output");
+  });
+}
