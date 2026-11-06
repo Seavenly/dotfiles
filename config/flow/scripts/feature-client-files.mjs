@@ -8,10 +8,10 @@ const shell = quoteShell;
 const sha = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 /** Materialize a private client and trusted owner configuration, without starting either. */
-export function writeFeatureClient({ directory, runtimeRoot, workspace, featureTestCheck, executionTrust, codexExecutable, localStateHome, authorityDirectory = join(directory, "authority") }) {
+export function writeFeatureClient({ directory, runtimeRoot, workspace, featureTestCheck, executionTrust, codexExecutable, localStateHome, authorityDirectory = join(directory, "authority"), gitIdentity }) {
   const node = realpathSync(process.execPath);
   const modulePath = join(directory, "trusted-owner.mjs");
-  const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href)};\nconst featureTestCheck = ${JSON.stringify(featureTestCheck) ?? "undefined"};\nexport function createFlowRuntime(options = {}) { return production({ ...options, featureTestCheck${localStateHome ? `, localClientCheck: { repository: ${JSON.stringify(workspace)}, featureTestCheck }` : ""} }); }\n`;
+  const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href)};\nconst featureTestCheck = ${JSON.stringify(featureTestCheck) ?? "undefined"};\nexport function createFlowRuntime(options = {}) { return production({ ...options, featureTestCheck${gitIdentity === undefined ? "" : `, gitIdentity: ${JSON.stringify(gitIdentity)}`}${localStateHome ? `, localClientCheck: { repository: ${JSON.stringify(workspace)}, featureTestCheck }` : ""} }); }\n`;
   const environment = {
     FLOW_CONFIG_DIRECTORY: join(runtimeRoot, "config/flow/releases/1.1-dark-test"),
     FLOW_QUALIFICATION_REPOSITORY_ROOT: runtimeRoot,

@@ -105,6 +105,7 @@ export function createProductionComposition({
   predefinedDefinitions = {},
   delegateOutputValidators = {},
   featureTestCheck = undefined,
+  gitIdentity = undefined,
 } = {}) {
   if (typeof delegatedAgentPort?.describe !== "function") {
     throw new TypeError("production FlowRuntime requires a Drovr description port");
@@ -167,6 +168,8 @@ export function createProductionComposition({
     gitRetentionAdapter,
     authorityDirectory,
     featureTestCheck,
+    gitIdentity,
+    env,
   });
   operations = mergeRegistrations({
     defaults: featureOperationRegistrations(featureOperations.operations),
@@ -174,7 +177,7 @@ export function createProductionComposition({
   });
   const definitions = mergeRegistrations({
     defaults: {
-      "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust),
+      "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust, { gitIdentity }),
       "review/v1": supervisedTrustPosture(createReviewDefinition(), executionTrust),
     },
     overrides: predefinedDefinitions,
@@ -359,6 +362,10 @@ export function createProductionComposition({
     beforeLaunch(request, authority) {
       const prepared = request?.prepared;
       const inputs = prepared?.selection?.inputs;
+      if (prepared?.definition?.id === "feature/v1" && gitIdentity !== undefined &&
+          digest(prepared.trust_posture?.git_identity ?? null) !== digest(gitIdentity)) {
+        throw new ProductionPreparationError("feature_git_identity_drift", "The prepared author and committer must match the selected local client identity");
+      }
       if (prepared?.definition?.id === "feature/v1" && inputs?.mode === "test") {
         const repository = resolveProductionWorkspace(inputs.workspace?.subject_id);
         if (repository === null || !Array.isArray(inputs.slices) ||

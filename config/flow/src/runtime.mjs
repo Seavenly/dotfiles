@@ -80,6 +80,7 @@ export function createFlowRuntime({
   runnerErrorSink = undefined,
   featureTestCheck = undefined,
   localClientCheck = undefined,
+  gitIdentity = undefined,
 } = {}) {
   const executionTrust = executionTrustFromEnvironment(env);
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
@@ -122,6 +123,7 @@ export function createFlowRuntime({
     predefinedDefinitions,
     delegateOutputValidators,
     featureTestCheck,
+    gitIdentity,
   });
   const delegationResourcePort = delegatedAgentResourcePort ??
     (delegationPort.backend === "direct" ? null : createDrovrDelegatedAgentResourcePort({

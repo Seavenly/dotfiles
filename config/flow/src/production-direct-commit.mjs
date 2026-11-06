@@ -9,7 +9,9 @@ import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-
 const REPOSITORY_ENUMERATION_MAX_BYTES = 64 * 1024 * 1024;
 
 /** One operation-owned local commit, protected by a durable before-CAS record. */
-export function createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority, onBoundary = () => {}, env = process.env }) {
+export function createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority, onBoundary = () => {}, env = process.env, gitIdentity = undefined }) {
+  if (gitIdentity !== undefined) validateIdentity(gitIdentity);
+  const selectedIdentity = gitIdentity === undefined ? undefined : freezeCanonical(gitIdentity);
   const roots = typeof authorityDirectory === "string" ? join(authorityDirectory, "candidate-commits") : null;
   // Ambient Git redirection/configuration never reaches this mutation path.
   const gitExecutable = realpathSync("/usr/bin/git");
@@ -38,17 +40,7 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
   const configuredIdentity = (repository) => {
     // Only this non-mutating lookup reads the approved machine-local include.
     // Its configuration never reaches status, add, commit-tree or ref mutation.
-    const configEnvironment = { ...gitEnvironment, ...(env.XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: env.XDG_CONFIG_HOME } : {}) };
-    delete configEnvironment.GIT_CONFIG_GLOBAL;
-    const value = (key) => {
-      try { return execFileSync(gitExecutable, ["-C", repository, "config", "--get", key], { encoding: "utf8", timeout: 10000, env: configEnvironment }).replace(/\n$/u, ""); }
-      catch (error) { if (error.status === 1) return undefined; throw error; }
-    };
-    const userName = value("user.name"), userEmail = value("user.email");
-    const identity = { author: { name: value("author.name") ?? userName, email: value("author.email") ?? userEmail },
-      committer: { name: value("committer.name") ?? userName, email: value("committer.email") ?? userEmail } };
-    validateIdentity(identity);
-    return freezeCanonical(identity);
+    return resolveProductionGitIdentity(repository, env);
   };
   const safeRepository = (repository) => {
     if (realpathSync(gitText(repository, ["rev-parse", "--show-toplevel"])) !== realpathSync(repository)) throw new Error("candidate_commit_repository_redirected");
@@ -135,6 +127,7 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
         digest({ git: current.git }) !== workspace.fingerprint ||
         !current.claims?.some((claim) => claim.holder === intent.run_id && claim.operations?.includes(intent.card_id))) throw new Error("candidate_commit_claim_unproven");
     const run = authority().query(intent.run_id);
+    if (selectedIdentity !== undefined && digest(run.views?.operator?.trust_posture?.git_identity ?? null) !== digest(selectedIdentity)) throw new Error("candidate_commit_author_identity_changed");
     if (!run.capability_bindings?.some((binding) => binding.capability === "repository:write" &&
         (binding.card_ids?.includes(intent.card_id) || binding.card_ids?.includes("*")))) throw new Error("candidate_commit_grant_unproven");
     const bindings = intent.operation_input?.authority_materialized_result_bindings ?? [];
@@ -193,7 +186,7 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
       const ordinaryIndex = resolve(repository, gitText(repository, ["rev-parse", "--git-path", "index"]));
       const lockPath = ordinaryIndex + ".lock";
       if (existsSync(lockPath)) throw new Error("candidate_commit_index_locked");
-      const identity = configuredIdentity(repository);
+      const identity = selectedIdentity ?? configuredIdentity(repository);
       const root = recordRoot(intent);
       mkdirSync(roots, { recursive: true, mode: 0o700 }); mkdirSync(root, { mode: 0o700 });
       // Existing ancestors can remain after a failed directory publication.
@@ -277,6 +270,21 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
 }
 function effectReceipt(intent, providerReceipt) { return { schema: "flow.effect-receipt/v1", effect_id: intent.effect_id, idempotency_key: intent.idempotency_key, outcome: "succeeded", provider_receipt: providerReceipt }; }
 function observation(intent, presence, evidence) { return { schema: "flow.effect-observation/v1", effect_id: intent.effect_id, idempotency_key: intent.idempotency_key, presence, causation: presence === "present" ? { effect_id: intent.effect_id, idempotency_key: intent.idempotency_key } : null, provider_observation: evidence }; }
+/** Read only the configured identity; unsafe Git options never reach mutation. */
+export function resolveProductionGitIdentity(repository, env = process.env) {
+  const configEnvironment = { PATH: "/usr/bin:/bin", HOME: env.HOME, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0",
+    ...(env.XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: env.XDG_CONFIG_HOME } : {}) };
+  const value = key => {
+    try { return execFileSync(realpathSync("/usr/bin/git"), ["-C", repository, "config", "--get", key], { encoding: "utf8", timeout: 10000, env: configEnvironment }).replace(/\n$/u, ""); }
+    catch (error) { if (error.status === 1) return undefined; throw error; }
+  };
+  const userName = value("user.name"), userEmail = value("user.email");
+  const identity = { author: { name: value("author.name") ?? userName, email: value("author.email") ?? userEmail },
+    committer: { name: value("committer.name") ?? userName, email: value("committer.email") ?? userEmail } };
+  validateIdentity(identity);
+  return freezeCanonical(identity);
+}
+
 function validateIdentity(identity) {
   for (const role of ["author", "committer"]) for (const field of ["name", "email"]) {
     const value = identity?.[role]?.[field];

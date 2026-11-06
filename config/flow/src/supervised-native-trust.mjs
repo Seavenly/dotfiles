@@ -17,7 +17,7 @@ export function executionTrustFromEnvironment(env) {
   return trust;
 }
 
-export function supervisedTrustPosture(definition, executionTrust) {
+export function supervisedTrustPosture(definition, executionTrust, { gitIdentity } = {}) {
   if (executionTrust !== SUPERVISED_NATIVE_POSTURE) return definition;
   return {
     ...definition,
@@ -30,6 +30,7 @@ export function supervisedTrustPosture(definition, executionTrust) {
       independent_workspace_and_tool_network_enforcement: false,
       qualification: "not_claimed",
       ...(definition.id === "feature/v1" ? {
+        ...(gitIdentity === undefined ? {} : { git_identity: gitIdentity }),
         verification_scope: {
           schema: "flow.supervised-verification-scope/v1",
           verify: "Git-backed content observations plus independent model critique; project checks NOT_RUN; runtime behavior not established",

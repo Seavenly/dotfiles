@@ -47,6 +47,14 @@ prints an explicit `launch --input-file` command and still starts no provider.
 Keep the owner running while accepting a separate review: owner restart advances
 authority epochs, so review facts must be freshly prepared after a restart.
 
+Setup reads the author and committer from the selected Git configuration and
+binds that identity into the client and preparation confirmation. Configure
+`user.name` and `user.email` before setup, including when an isolated
+`XDG_CONFIG_HOME` selects a different Git configuration. Missing identity stops
+setup before any owner or model task. Later host configuration changes cannot
+change the selected commit identity; setup never writes repository or global
+Git configuration.
+
 One private profile is reused for each canonical repository, with one durable
 authority and workspace claim namespace. Later setup calls create new request
 files. They preserve prior state and reject changed source/tool pins; they do

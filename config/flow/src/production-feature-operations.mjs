@@ -57,6 +57,8 @@ export function createProductionFeatureOperations({
   gitRetentionAdapter,
   authorityDirectory,
   featureTestCheck,
+  gitIdentity,
+  env = process.env,
 } = {}) {
   if (typeof resolveWorkspace !== "function") {
     throw new TypeError("production feature operations require workspace resolution");
@@ -126,7 +128,7 @@ export function createProductionFeatureOperations({
 
   const checkRunner = createProductionFeatureCheckRunner({ authorityDirectory, featureTestCheck });
   const operations = {
-    [FEATURE_DIRECT_COMMIT_CONTRACT]: createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority: () => authorityRef.value }),
+    [FEATURE_DIRECT_COMMIT_CONTRACT]: createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority: () => authorityRef.value, gitIdentity, env }),
     [FEATURE_OPERATION_CONTRACTS.setup]: unavailableOperation(
       FEATURE_OPERATION_CONTRACTS.setup,
     ),

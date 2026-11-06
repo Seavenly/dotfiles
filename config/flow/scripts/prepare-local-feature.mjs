@@ -12,6 +12,7 @@ import { SUPERVISED_NATIVE_ACKNOWLEDGMENT } from "../src/supervised-native-trust
 import { quoteShell, writeFeatureClient } from "./feature-client-files.mjs";
 import { assertLocalCheckChangeQuiescent } from "../src/local-client-state.mjs";
 import { statusFlowOwner } from "../src/owner-process.mjs";
+import { resolveProductionGitIdentity } from "../src/production-direct-commit.mjs";
 
 const runtimeRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
 const load = path => JSON.parse(readFileSync(path, "utf8"));
@@ -63,13 +64,19 @@ async function setup(args) {
     throw new Error("Brief must be flow.feature-brief/v1 with id, summary and non-empty acceptance criteria");
   }
   const executable = executableIdentity(options["--codex-executable"], codexExecutionAdapter, process.env, "supervised-native-cli");
+  let gitIdentity;
+  try { gitIdentity = resolveProductionGitIdentity(repository); }
+  catch (error) {
+    if (error.message !== "candidate_commit_author_identity_unproven") throw error;
+    throw new Error("Git author and committer identity are required; configure user.name and user.email in the repository or selected Git configuration, then repeat local setup");
+  }
   const check = options["--check"] ? validateProductionFeatureTestCheck(load(options["--check"])) : undefined;
   if (check) resolveProductionFeatureTestSelection({ checkId: check.check_id, brief, workspace: { path: repository }, featureTestCheck: check });
   const stateHome = process.env.FLOW_LOCAL_CLIENT_STATE_HOME ?? process.env.XDG_STATE_HOME ?? join(process.env.HOME ?? homedir(), ".local/state");
   const parent = join(stateHome, "flow-local");
   const profileRoot = join(parent, digest(repository).slice(7, 31));
   const identity = { schema: "flow.local-client/v1", repository, runtime_root: runtimeRoot,
-    node: realpathSync(process.execPath), executable, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT };
+    node: realpathSync(process.execPath), executable, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT, git_identity: gitIdentity };
   const checkDigest = check ? digest(check) : null;
   const directory = join(profileRoot, "clients", checkDigest?.slice(7) ?? "verify");
   const authorityDirectory = join(profileRoot, "authority");
@@ -99,7 +106,7 @@ async function setup(args) {
     mkdirSync(directory, { mode: 0o700 });
     for (const name of ["state", "receipts", "requests"]) mkdirSync(join(directory, name), { mode: 0o700 });
     const clientFiles = writeFeatureClient({ directory, runtimeRoot, workspace: repository,
-      featureTestCheck: check, executionTrust: "supervised-native-cli", codexExecutable: executable.path, localStateHome: stateHome, authorityDirectory });
+      featureTestCheck: check, executionTrust: "supervised-native-cli", codexExecutable: executable.path, localStateHome: stateHome, authorityDirectory, gitIdentity });
     profile = { directory, runtime_root: runtimeRoot, ...clientFiles, local_client: identity,
       execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT };
     save(join(directory, "pilot.json"), profile);
@@ -120,7 +127,7 @@ async function setup(args) {
     } else symlinkSync(client, link);
   }
   process.stdout.write(`${JSON.stringify({ status: "request_only", directory, client,
-    request: requestPath, mode, verification_scope: check
+    request: requestPath, mode, commit_identity: gitIdentity, verification_scope: check
       ? "Registered pinned Node health and acceptance checks, including expected RED then GREEN; arbitrary project suites are not registered"
       : verifyScope, owner_started: false, provider_execution: "not_run", profile_reused: reused,
     next_commands: [

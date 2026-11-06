@@ -30,6 +30,8 @@ function fixture(t) {
   const repository = join(root, "repository"), executable = join(root, "codex-fixture");
   writeFileSync(executable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.166.0"; exit 0; fi\nexit 99\n', { mode: 0o700 });
   const env = { ...process.env, HOME: join(root, "home"), XDG_STATE_HOME: join(root, "state"), XDG_CONFIG_HOME: join(root, "config") };
+  mkdirSync(join(env.XDG_CONFIG_HOME, "git"), { recursive: true });
+  writeFileSync(join(env.XDG_CONFIG_HOME, "git/config"), '[user]\n name = Flow Fixture\n email = flow@example.test\n');
   delete env.NODE_TEST_CONTEXT;
   delete env.FLOW_LOCAL_CLIENT_STATE_HOME;
   const run = (file, args) => spawnSync(file, args, { env, encoding: "utf8", timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
@@ -116,6 +118,30 @@ test("retained run status preserves the exact supervised verification scope from
   const projection = runtime.query({ run_id: launched.run_id });
   assert.deepEqual(projection.views.operator.trust_posture, prepared.confirmation.trust_posture);
   assert.deepEqual(projection.views.trust.trust_posture, prepared.confirmation.trust_posture);
+});
+
+test("local setup refuses missing commit identity before creating a client or starting work", t => {
+  const f = fixture(t);
+  rmSync(join(f.env.XDG_CONFIG_HOME, "git"), { recursive: true });
+  const result = f.run(process.execPath, f.args);
+  assert.equal(result.status, 1, "a repository without configured author/committer must fail before model work");
+  assert.match(result.stderr, /identity/u);
+  assert.equal(existsSync(join(f.root, "state/flow-local")), false);
+  assert.equal(f.git(["status", "--porcelain=v1"]), "");
+});
+
+test("local setup binds global XDG Git identity in confirmation despite later configuration drift", t => {
+  const f = fixture(t);
+  const setup = f.success(process.execPath, f.args);
+  assert.equal(setup.commit_identity.author.name, "Flow Fixture");
+  assert.equal(f.run("/usr/bin/git", ["-C", f.repository, "config", "--local", "--get", "user.name"]).status, 1);
+  writeFileSync(join(f.env.XDG_CONFIG_HOME, "git/config"), '[user]\n name = Changed Host\n email = changed@example.test\n');
+  f.ownClient(setup.client);
+  f.success(setup.client, ["start", "--json"]);
+  const prepared = f.success(setup.client, ["prepare", "--input-file", setup.request, "--json"]);
+  assert.deepEqual(prepared.confirmation.trust_posture.git_identity, setup.commit_identity);
+  assert.deepEqual(prepared.trust_posture.git_identity, setup.commit_identity);
+  assert.equal(existsSync(join(load(join(setup.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
 });
 
 test("a stopped repository client advances from verify to a new checked feature without replacing its authority or old client", t => {

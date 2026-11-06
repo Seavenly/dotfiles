@@ -495,3 +495,20 @@ for (const bad of [{ found: true, complete: true }, { complete: true }, { found:
     assert.equal(failure.status, "invalid_output");
   });
 }
+
+test("a prepared commit identity remains exact despite host configuration drift and rejects a different binding", async t => {
+  const f = await fixture(t);
+  const identity = { author: { name: "Selected Author", email: "author@example.test" }, committer: { name: "Selected Committer", email: "committer@example.test" } };
+  f.run.views = { operator: { trust_posture: { git_identity: identity } } };
+  const operation = createProductionDirectCommitOperation({ ...f.options, gitIdentity: identity });
+  const before = f.git(["rev-parse", "HEAD"]);
+  f.run.views.operator.trust_posture.git_identity = { ...identity, author: { ...identity.author, name: "Other Author" } };
+  await assert.rejects(operation.invoke(f.intent), /candidate_commit_author_identity_changed/u);
+  assert.equal(f.git(["rev-parse", "HEAD"]), before);
+  await assert.rejects(readdir(join(f.root, "authority/candidate-commits")), { code: "ENOENT" });
+  f.run.views.operator.trust_posture.git_identity = identity;
+  await writeFile(join(f.home, ".gitconfig"), '[user]\n name = Changed Global\n email = changed@example.test\n');
+  const receipt = await operation.invoke(f.intent);
+  assert.equal(receipt.outcome, "succeeded");
+  assert.equal(f.git(["show", "-s", "--format=%an|%ae|%cn|%ce", "HEAD"]), "Selected Author|author@example.test|Selected Committer|committer@example.test");
+});
