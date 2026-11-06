@@ -884,7 +884,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
 
   return freezeCanonical({
     schema: "flow.run-fold/v1",
-    ...(run.prepared.trust_posture?.execution_contract === "flow.supervised-native-cli/v1"
+    ...(run.prepared.trust_posture?.execution_contract === "flow.supervised-native-cli/v1" &&
+      run.prepared.trust_posture.verification_scope?.schema === "flow.supervised-verification-scope/v1"
       ? { trust_posture: run.prepared.trust_posture } : {}),
     run_id: run.run_id,
     ...(run.lineage === undefined ? {} : { parent: run.lineage }),

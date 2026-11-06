@@ -31,6 +31,7 @@ export function supervisedTrustPosture(definition, executionTrust) {
       qualification: "not_claimed",
       ...(definition.id === "feature/v1" ? {
         verification_scope: {
+          schema: "flow.supervised-verification-scope/v1",
           verify: "Git-backed content observations plus independent model critique; project checks NOT_RUN; runtime behavior not established",
           test: "Registered pinned Node health and acceptance checks with expected RED then GREEN; arbitrary project suites are not registered",
         },

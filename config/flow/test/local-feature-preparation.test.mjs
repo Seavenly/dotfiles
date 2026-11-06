@@ -182,7 +182,11 @@ test("a different retained client refuses active checked work before recovery or
   assert.equal(wrong.status, 1, wrong.stdout + wrong.stderr);
   assert.equal(existsSync(join(profile.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
   const same = productionRuntime(options);
-  try { assert.equal(same.query({ run_id: launched.run_id }).phase, "active"); }
+  try {
+    const retained = same.query({ run_id: launched.run_id });
+    assert.equal(retained.phase, "active");
+    assert.equal(retained.views.operator.trust_posture.verification_scope.schema, "flow.supervised-verification-scope/v1");
+  }
   finally { closeFlowRuntime(same); }
 });
 

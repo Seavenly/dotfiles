@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "ed8c12d5acb192ecf0b1440de282c0b9f3268466",
+    "candidate_tree_sha": "5855bf56e2455fac0662d67cb6c6b5ec07fcded6",
     "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc"
   },
-  "content_digest": "sha256:fdd78f38f2664fac4f0582dfc55f41e803f91e27e3c3dce44d5486ec34c329bf",
+  "content_digest": "sha256:b33d63053a04600a81a8fd6becc52166e8654dda38ddef6331c0cb9f1c2237c9",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -796,8 +796,8 @@
     {
       "path": "config/flow/src/supervised-native-trust.mjs",
       "mode": "100644",
-      "git_blob_sha": "675200a400722899b41b0feac4421f5bac56e097",
-      "sha256": "cab53fdbcd1391946940f4d906c03955fa1b67fa9f1761adbb32ee6d4074b1d7"
+      "git_blob_sha": "fabe7d92a7db67864ea35a20ed8803445d119251",
+      "sha256": "d22fa02db0a729117913fb6529a54721f227aff333b3b96e9018fa92718ed2a6"
     },
     {
       "path": "config/flow/src/transport.mjs",
@@ -970,8 +970,8 @@
     {
       "path": "config/flow/test/local-feature-preparation.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "8a35870f4c5aac4c5f1af48e3aab12b89f66cb03",
-      "sha256": "09a70824ac5316ee101844ddada14c0ab247b15ec8476874ff375ff554c04656"
+      "git_blob_sha": "d2c69e80155fdfa51ecd7764cd80d19145d838a9",
+      "sha256": "0fcd3939b0a4ee0aca195655d2e75977d38308481e32974cbb00a23f123991a7"
     },
     {
       "path": "config/flow/test/operator-guide.test.mjs",
@@ -1026,6 +1026,12 @@
       "mode": "100644",
       "git_blob_sha": "2dd403cc7b803d0b47fd1f75bdc667d44f809764",
       "sha256": "c1f2cb9ca30688a5f0ab1f4825cfc88fd9c0d117712a000194aa6b012e903f12"
+    },
+    {
+      "path": "config/flow/test/supervised-replay-compatibility.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "2969f8be50e4435b3731323203fd12a36e0118df",
+      "sha256": "286c32c1e725a42188595619d1cf808a1e1b18b8145aa029abe63064f4f96b42"
     },
     {
       "path": "config/flow/test/supervised-workspace-restart.test.mjs",
@@ -1894,8 +1900,8 @@
     {
       "path": "tools/flow/src/run-projection.mjs",
       "mode": "100644",
-      "git_blob_sha": "f5de374da3154a862404a57ac125976f6386b0c5",
-      "sha256": "d3a9bbc7a9fdb6f57344991f0f8499e0695b30848c2a943baf40e34c90f723fd"
+      "git_blob_sha": "f8a9a47a9cf2b62faa3a7746797945a94bde0313",
+      "sha256": "909fb1daae95ec56dfff01c2727972076bc8788038a14e3343997d6cf6cd5d53"
     },
     {
       "path": "tools/flow/src/spike-flow.mjs",
