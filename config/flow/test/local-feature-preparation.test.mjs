@@ -68,7 +68,7 @@ test("local setup preserves an existing repo, installs an explicit client link a
   assert.match(first.verification_scope, /project checks NOT_RUN; runtime behavior not established/u);
   assert.equal(realpathSync(link), first.client);
   assert.equal(statSync(first.client).mode & 0o777, 0o700);
-  assert.equal(existsSync(join(first.directory, "authority/authority.sqlite")), false);
+  assert.equal(existsSync(join(load(join(first.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite")), false);
   const second = f.success(link, f.args.slice(1));
   assert.equal(second.directory, first.directory);
   assert.equal(second.client, first.client);
@@ -100,7 +100,7 @@ test("local test setup binds explicit committed checks and public confirmation w
   assert.equal(inspected.routes[0].executable.version, "codex-cli 0.166.0");
   const accepted = f.success(profile.client, ["local", "accept-prepared", profile.directory, preparedPath]);
   assert.match(accepted.launch_command, /launch --input-file/u);
-  assert.equal(existsSync(join(profile.directory, "authority/direct-tasks")), false);
+  assert.equal(existsSync(join(load(join(profile.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
   assert.equal(readFileSync(join(f.repository, "feature.txt"), "utf8"), "before\n");
 });
 
