@@ -80,7 +80,9 @@ export const claudeExecutionAdapter = Object.freeze({
         if (!session || event.session_id !== session) throw new Error("ambiguous_native_session");
         if (!Number.isSafeInteger(event.estimated_tokens) || event.estimated_tokens < 0 ||
             !Number.isSafeInteger(event.estimated_tokens_delta) || event.estimated_tokens_delta < 0 ||
-            Object.keys(event).some(key => !["type", "subtype", "estimated_tokens", "estimated_tokens_delta", "session_id", "uuid"].includes(key))) throw new Error("malformed_provider_output");
+            typeof event.uuid !== "string" || !event.uuid.trim() ||
+            (event.user_message_uuid !== undefined && (typeof event.user_message_uuid !== "string" || !event.user_message_uuid.trim())) ||
+            Object.keys(event).some(key => !["type", "subtype", "estimated_tokens", "estimated_tokens_delta", "session_id", "uuid", "user_message_uuid"].includes(key))) throw new Error("malformed_provider_output");
         // Native 2.1.318 progress only; it never supplies structured output or
         // changes the outstanding tools, launch authority, or session identity.
       } else if (event?.type === "result") {

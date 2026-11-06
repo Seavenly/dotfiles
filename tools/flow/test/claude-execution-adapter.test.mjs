@@ -265,8 +265,8 @@ test("supervised Claude accepts session-bound thinking token progress without tr
   // not a tool call, permission grant, or a successful terminal result.
   const progress = { type: "system", subtype: "thinking_tokens", estimated_tokens: 50, estimated_tokens_delta: 50, session_id: "session-fixture", uuid: "progress-fixture" };
   const parseV2 = (...events) => claudeExecutionAdapter.parseTerminal({ descriptor: d, stdout: stream(...events), exitCode: 0 });
-  assert.equal(parseV2(metadata, progress, { ...progress, estimated_tokens: 219, estimated_tokens_delta: 169 }, terminal()).output, '{"answer":42}');
-  for (const changed of [{ ...progress, session_id: "other" }, { ...progress, estimated_tokens: -1 }, { ...progress, estimated_tokens_delta: -1 }, { ...progress, estimated_tokens: 1.5 }, { ...progress, estimated_tokens_delta: null }, { ...progress, estimated_tokens: 1e100 }, { ...progress, subtype: "unknown" }, { ...progress, permissions: ["Write"] }]) {
+  assert.equal(parseV2(metadata, progress, { ...progress, estimated_tokens: 219, estimated_tokens_delta: 169, user_message_uuid: "user-fixture" }, terminal()).output, '{"answer":42}');
+  for (const changed of [{ ...progress, session_id: "other" }, { ...progress, estimated_tokens: -1 }, { ...progress, estimated_tokens_delta: -1 }, { ...progress, estimated_tokens: 1.5 }, { ...progress, estimated_tokens_delta: null }, { ...progress, estimated_tokens: 1e100 }, { ...progress, subtype: "unknown" }, { ...progress, permissions: ["Write"] }, { ...progress, uuid: null }, { ...progress, user_message_uuid: 1 }]) {
     assert.throws(() => parseV2(metadata, changed, terminal()));
   }
   assert.throws(() => parseV2(progress, metadata, terminal()), /ambiguous_native_session/u);
