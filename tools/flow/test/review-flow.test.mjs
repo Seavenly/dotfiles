@@ -6330,7 +6330,7 @@ test("FlowRuntime reserves the trusted review validator against an always-true i
   const completed = runtime.query({ run_id: launch.run_id });
   assert.equal(completed.phase, "succeeded");
   const review = runtime.query({
-    review_id: `review:${candidate.candidate_fingerprint}:4`,
+    review_id: completed.effects.find(({ card_id }) => card_id === "review-record").receipt.provider_receipt.review_id,
   });
   assert.deepEqual(review.summary.coverage.lenses, [{
     lens: "security",
@@ -7005,7 +7005,7 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
   }
   const completed = runtime.query({ run_id: launch.run_id });
   assert.equal(completed.phase, "succeeded");
-  const reviewId = `review:${candidate.candidate_fingerprint}:4`;
+  const reviewId = completed.effects.find(({ card_id }) => card_id === "review-record").receipt.provider_receipt.review_id;
   const review = runtime.query({ review_id: reviewId });
   assert.equal(review.schema, "flow.review-projection/v1");
   assert.equal(review.candidate_fingerprint, candidate.candidate_fingerprint);
@@ -7218,6 +7218,123 @@ test("review/v1 runs every enabled lens and a fresh critic through FlowRuntime",
       command_id: "review-record:forged-first-record",
     });
   assert.equal(nonCanonicalCommand.code, "invalid_review_record");
+});
+
+test("fresh accepted local review runs retain independent records for the same candidate", async (t) => {
+  const candidate = reviewCandidate();
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-review-attempts-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const runAuthority = createDurableRunAuthority({ authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("review-attempts-boot", "writer"),
+    gitWorkspaceObservationAdapter: reviewGitWorkspaceObservationAdapter(candidate) });
+  t.after(() => runAuthority.close());
+  const workspaceAuthority = getWorkspaceAuthority({ runAuthority });
+  assert.equal(workspaceAuthority.command(reviewWorkspaceRegistration(candidate)).accepted, true);
+  const commands = [];
+  const base = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: getRunEffectIntentReader({ runAuthority }),
+  });
+  const reviewAuthority = { ...base, command(command) {
+    if (command.type === "review_record") commands.push(structuredClone(command));
+    return base.command(command);
+  } };
+  const [security, critic] = await Promise.all([
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-sol", "security"), {}),
+    supportedDescription(reviewDescriptionRequest("codex", "gpt-5.6-luna", "critic"), {}),
+  ]);
+  let incomplete = true;
+  const delegates = githubReviewDelegatedPort();
+  const runtime = createFlowRuntime({
+    runAuthority, reviewAuthority,
+    delegatedAgentPort: { ...delegates, dispatch(request) {
+      if (incomplete && request.agent_id === "agent:security") return completedTurnProjection({
+        agentId: request.agent_id, callerKey: request.caller_key, description: request.description,
+        output: "not structured review output", prompt: request.prompt, turnId: `turn:${request.caller_key}`,
+      });
+      return delegates.dispatch(request);
+    } },
+    reviewPreparationProvider: { revalidate: ({ facts }) => ({ valid: true, facts }) },
+    delegateOutputValidators: { [REVIEW_DELEGATE_OUTPUT_VALIDATOR]: {
+      validate: validateReviewDelegateOutput, evidenceSafety: validateDelegateEvidenceSafety,
+    } },
+    registeredAuthorities: shippedAuthorityRegistrations({ current: shippedAuthorityStateFromFacts(reviewRuntimeFacts()) }),
+    predefinedDefinitions: { "review/v1": createReviewDefinition() },
+  });
+  const records = [];
+  for (const orientation of ["First review", "Fresh review after unavailable lens"]) {
+    const inputs = { ...reviewInputsForCandidate(candidate), orientation };
+    inputs.delegation.lenses.security = { description: security, route: reviewRoute("agent:security", security) };
+    inputs.delegation.critic = { description: critic, route: reviewRoute("agent:critic", critic) };
+    inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
+    const prepared = runtime.prepare({ schema: "flow.predefined-flow-selection/v1", definition: "review/v1",
+      inputs, explicit_facts: reviewRuntimeFacts() });
+    assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+    const launch = runtime.launch(reviewLaunchRequest(prepared));
+    assert.ok(launch.run_id, JSON.stringify(launch));
+    assert.equal(workspaceAuthority.command(reviewWorkspaceClaim({ candidate, holder: launch.run_id,
+      operations: ["review-lens-security", "review-critic"], workspaceAuthority })).accepted, true);
+    const completed = await driveUntilTerminal(runtime, launch.run_id).catch(() => {
+      const current = runtime.query({ run_id: launch.run_id });
+      assert.fail(`${orientation}: ${JSON.stringify({ phase: current.phase, cards: current.cards,
+        effects: current.effects.map(({ card_id, status, last_observation }) => ({ card_id, status, last_observation })) })}`);
+    });
+    assert.equal(completed.phase, "succeeded");
+    const receipt = completed.effects.find(({ card_id }) => card_id === "review-record").receipt.provider_receipt;
+    const projection = runtime.query({ review_id: receipt.review_id });
+    assert.equal(projection.candidate_fingerprint, candidate.candidate_fingerprint);
+    assert.equal(projection.lifecycle_generation, 4);
+    assert.equal(projection.source_run_id, launch.run_id);
+    assert.equal(projection.approval, "not_requested");
+    records.push(projection);
+    incomplete = false;
+  }
+  assert.equal(records[0].posture, "review_incomplete");
+  assert.equal(records[1].summary.coverage.complete, true);
+  assert.notEqual(records[0].subject_id, records[1].subject_id);
+  assert.notEqual(commands[0].command_id, commands[1].command_id);
+  for (const [index, command] of commands.entries()) {
+    const reopened = foldWorkStream("review", command.subject_id,
+      [{ payload: reviewRecordEventPayload(command) }], DIGEST("f"));
+    assert.equal(reopened.source_run_id, records[index].source_run_id);
+    assert.deepEqual(reopened.artifacts, records[index].artifacts);
+  }
+  assert.deepEqual(runtime.query({ review_id: records[0].subject_id }), records[0]);
+  assert.equal(reviewAuthority.command(commands[1]).replayed, true);
+  assert.equal(reviewAuthority.command({ ...commands[1], source_run_id: "run:contradictory" }).code, "idempotency_conflict");
+  assert.equal(reviewAuthority.command({ ...commands[1], subject_id: `${commands[1].subject_id}:forged` }).code, "invalid_review_record");
+  const intent = getRunEffectIntentReader({ runAuthority }).query(commands[1].source_run_id, commands[1].operation_effect_id);
+  const operation = createReviewOperationRegistration({ reviewAuthority });
+  assert.equal(operation.invoke(intent).provider_receipt.review_id, records[1].subject_id);
+  assert.throws(() => operation.invoke({ ...intent, attempt_id: "attempt:contradictory" }),
+    error => error.code === "idempotency_conflict");
+  assert.deepEqual(runtime.query({ review_id: records[1].subject_id }), records[1]);
+});
+
+test("local review record recovery adopts exact legacy attempt identity without rewriting history", () => {
+  const candidate = reviewCandidate();
+  const command = reviewRecordCommand(candidate, 4);
+  const reader = sourceEffectIntentReaderFor(command);
+  const authority = createInMemoryReviewAuthority({
+    candidateProjection: candidateAuthorityProjection(candidate, DIGEST("c")),
+    sourceEffectIntentReader: reader,
+  });
+  assert.equal(authority.command(command).accepted, true);
+  const before = authority.query({ contract: "work.review/v1", subject_id: command.subject_id });
+  const operation = createReviewOperationRegistration({ reviewAuthority: authority });
+  const intent = reader.query(command.source_run_id, command.operation_effect_id);
+  const receipt = operation.invoke(intent);
+  assert.equal(receipt.outcome, "succeeded");
+  assert.equal(receipt.provider_receipt.review_id, command.subject_id);
+  assert.deepEqual(operation.invoke(intent), receipt);
+  assert.throws(() => operation.invoke({ ...intent, attempt_id: "attempt:contradictory" }),
+    error => error.code === "idempotency_conflict");
+  assert.deepEqual(authority.query({ contract: "work.review/v1", subject_id: command.subject_id }), before);
+  const payload = reviewRecordEventPayload(command);
+  const reopened = foldWorkStream("review", command.subject_id, [{ payload }], DIGEST("f"));
+  assert.equal(reopened.subject_id, command.subject_id);
+  assert.equal(reopened.artifacts.formats.json, before.artifacts.formats.json);
+  assert.equal(reopened.source_run_id, command.source_run_id);
 });
 
 function reviewInputsForCandidate(candidate, target = {}) {

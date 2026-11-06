@@ -1573,10 +1573,22 @@ export function createReviewOperationRegistration({
         throw reviewValidationError(candidateIssue.code, candidateIssue.reason);
       }
       const materialized = input.authority_materialized_evidence;
-      const current = reviewAuthority.query({
+      const legacy = reviewAuthority.query({
         contract: "work.review/v1",
         subject_id: reviewSubjectId(target),
       });
+      // Recovery must adopt an exact pre-attempt-identity record, never create
+      // a second result for an already recorded effect in the same run.
+      if (legacy?.schema === "flow.review-projection/v1" &&
+          legacy.source_run_id === intent.run_id &&
+          (legacy.operation_effect_id !== intent.effect_id ||
+           legacy.operation_attempt_id !== intent.attempt_id ||
+           legacy.operation_idempotency_key !== intent.idempotency_key)) {
+        throw reviewValidationError("idempotency_conflict", "review run already owns a different recorded attempt");
+      }
+      const subjectId = reviewSubjectId(target, intent.run_id);
+      const current = legacy?.schema === "flow.review-projection/v1" && legacy.source_run_id === intent.run_id
+        ? legacy : reviewAuthority.query({ contract: "work.review/v1", subject_id: subjectId });
       const previousWatermark = current?.schema === "flow.review-projection/v1"
         ? current.watermark
         : EMPTY_WATERMARK;
@@ -1663,7 +1675,7 @@ export function createReviewOperationRegistration({
       });
       const eventBody = {
         schema: "flow.review-record/v1",
-        review_id: reviewSubjectId(target),
+        review_id: subjectId,
         candidate_fingerprint: target.candidate.candidate_fingerprint,
         candidate_authority_watermark: target.candidate_authority_watermark,
         lifecycle_generation: target.lifecycle_generation,
@@ -1697,8 +1709,8 @@ export function createReviewOperationRegistration({
         schema: "work.review-record-command/v1",
         type: "review_record",
         contract: "work.review/v1",
-        subject_id: reviewSubjectId(target),
-        command_id: `review-record:${target.candidate.candidate_fingerprint}:${target.lifecycle_generation}`,
+        subject_id: subjectId,
+        command_id: reviewRecordCommandId(target.candidate.candidate_fingerprint, target.lifecycle_generation, intent.run_id),
         expected_watermark: previousWatermark,
         candidate_fingerprint: target.candidate.candidate_fingerprint,
         candidate_authority_watermark: target.candidate_authority_watermark,
@@ -4114,13 +4126,16 @@ export function validateReviewRecordCommand(command) {
       "review record requires an exact RunAuthority source run",
     );
   }
-  if (!nonEmpty(command.command_id) ||
-      command.command_id !==
-        `review-record:${command.candidate_fingerprint}:${command.lifecycle_generation}` ||
+  const legacyIdentity = command.subject_id ===
+      `review:${command.candidate_fingerprint}:${command.lifecycle_generation}` &&
+    command.command_id === reviewRecordCommandId(command.candidate_fingerprint, command.lifecycle_generation);
+  const attemptIdentity = command.subject_id ===
+      `review:${command.candidate_fingerprint}:${command.lifecycle_generation}${reviewAttemptSuffix(command.source_run_id)}` &&
+    command.command_id === reviewRecordCommandId(command.candidate_fingerprint, command.lifecycle_generation, command.source_run_id);
+  if (!(legacyIdentity || attemptIdentity) ||
       !isDigest(command.candidate_fingerprint) ||
       !isDigest(command.candidate_authority_watermark) ||
       !Number.isSafeInteger(command.lifecycle_generation) || command.lifecycle_generation < 1 ||
-      command.subject_id !== `review:${command.candidate_fingerprint}:${command.lifecycle_generation}` ||
       command.operation_contract !== REVIEW_OPERATION_CONTRACTS.record ||
       !nonEmpty(command.operation_effect_id) ||
       !nonEmpty(command.operation_attempt_id) ||
@@ -4687,10 +4702,20 @@ function oneShot(value) {
   };
 }
 
-export function reviewSubjectId(target) {
+export function reviewSubjectId(target, sourceRunId = null) {
   return reviewTargetKind(target) === "github"
     ? `review:github:${target.snapshot_fingerprint}:${target.lifecycle_generation}`
-    : `review:${target.candidate.candidate_fingerprint}:${target.lifecycle_generation}`;
+    : `review:${target.candidate.candidate_fingerprint}:${target.lifecycle_generation}${reviewAttemptSuffix(sourceRunId)}`;
+}
+
+function reviewAttemptSuffix(sourceRunId) {
+  if (sourceRunId === null) return "";
+  if (!nonEmpty(sourceRunId)) throw reviewValidationError("invalid_review_record", "review attempt requires its exact source run");
+  return `:run:${digest(sourceRunId).slice(7)}`;
+}
+
+function reviewRecordCommandId(fingerprint, lifecycleGeneration, sourceRunId = null) {
+  return `review-record:${fingerprint}:${lifecycleGeneration}${reviewAttemptSuffix(sourceRunId)}`;
 }
 
 export function reviewEventWatermark({ previousWatermark, event }) {

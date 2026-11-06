@@ -28,3 +28,9 @@ workspace authority across requests. Content verification reports Git-backed
 observations and independent model critique, while behavioral test execution
 requires the registered pinned health/expected-RED/GREEN contract. Preparation
 confirmation and retained status state that distinction.
+
+A fresh accepted local review run owns a separate automated review attempt for
+the same candidate and lifecycle. Its RunAuthority source run binds the review
+record and command identity; retries preserve earlier incomplete records and
+never create a new candidate generation or grant human approval. Exact legacy
+attempt records remain readable and recoverable without rewriting their history.

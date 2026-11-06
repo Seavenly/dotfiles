@@ -764,6 +764,12 @@ to the candidate seal watermark and review lifecycle generation; it records
 automated completion only and never grants human approval or integration power.
 _Avoid_: Approval record, merge decision
 
+**Automated review attempt**:
+One accepted local review flow run for an exact candidate and lifecycle, distinct
+from earlier reviews of the unchanged candidate. An attempt preserves earlier
+incomplete evidence and never implies human approval.
+_Avoid_: Candidate generation, replacement record, latest review
+
 **GitHub pull-request snapshot**:
 An immutable review target binding one open repository pull request to its base
 and head commits, diff digest, lifecycle generation, and exact target-authority
